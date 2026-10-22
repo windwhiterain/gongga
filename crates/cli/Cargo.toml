@@ -1,0 +1,29 @@
+[package]
+name = "gongga-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Gongga harness terminal client: command surface, sticky arguments, TUI driver"
+
+[[bin]]
+name = "gongga"
+path = "src/main.rs"
+
+[dependencies]
+protocol = { workspace = true }
+tui = { workspace = true }
+
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+
+clap = { version = "4", features = ["derive", "wrap_help"] }
+dirs = "6"
+toml = "0.8"
+shell-words = "1"
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,36 @@
+[package]
+name = "gongga-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Gongga harness server: sessions, agent loop, tools, sqlite storage"
+
+[[bin]]
+name = "gongga-server"
+path = "src/main.rs"
+
+[dependencies]
+protocol = { workspace = true }
+
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+bytes = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+clap = { version = "4", features = ["derive", "wrap_help"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+toml = "0.8"
+dirs = "6"
+uuid = { version = "1", features = ["v4"] }
+which = "8"
+shell-words = "1"
+futures-util = "0.3"
+tokio-util = "0.7"
+tempfile = "3"
