@@ -22,8 +22,8 @@ use crate::{Tui, UiEvent};
 /// restart`, and the cap keeps a server that is down for an hour from spinning.
 ///
 /// This is a *redial* cadence, not a budget on anything the agent does: the
-/// operator keeps the window, the history and the input line throughout, and
-/// Ctrl+Q still works while it backs off.
+/// operator keeps the window, the history, the input line and its scroll
+/// position throughout, and Alt+Q still works while it backs off.
 const RECONNECT_MIN: Duration = Duration::from_millis(250);
 const RECONNECT_MAX: Duration = Duration::from_secs(5);
 
@@ -99,7 +99,7 @@ enum Step {
 /// whole handshake timeout to give up, and waiting for it inside the loop would
 /// freeze the keyboard for five seconds at a stretch — the TUI would be
 /// unresponsive exactly while the server is down, which is when the operator is
-/// most likely to be pressing Ctrl+Q.
+/// most likely to be pressing Alt+Q.
 type Dialing = Pin<Box<dyn Future<Output = Result<(Link, Greeting), DialFailure>>>>;
 
 /// The interactive front-end.
@@ -158,21 +158,21 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                     cli::Submission::Send(msg) => match link.as_ref() {
                         Some(open) => {
                             if let Err(e) = open.send(msg).await {
-                                    // The channel task is gone but its
-                                    // half-open end had not been noticed yet.
-                                    // This message may or may not have arrived,
-                                    // so it is reported, not silently re-queued.
-                                    TuiSink(&mut ui).line(
-                                        LineKind::Error,
-                                        &format!(
-                                            "connection dropped while sending ({e}); \
+                                // The channel task is gone but its
+                                // half-open end had not been noticed yet.
+                                // This message may or may not have arrived,
+                                // so it is reported, not silently re-queued.
+                                TuiSink(&mut ui).line(
+                                    LineKind::Error,
+                                    &format!(
+                                        "connection dropped while sending ({e}); \
                                              that line may not have arrived"
-                                        ),
-                                    );
-                                    link = None;
-                                    backoff = RECONNECT_MIN;
-                                    attempts = 0;
-                                    next_try = tokio::time::Instant::now();
+                                    ),
+                                );
+                                link = None;
+                                backoff = RECONNECT_MIN;
+                                attempts = 0;
+                                next_try = tokio::time::Instant::now();
                                 client.set_offline(0, &mut TuiSink(&mut ui));
                             }
                         }
@@ -226,7 +226,7 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                             TuiSink(&mut ui).line(
                                 LineKind::Error,
                                 &format!(
-                                    "{} — retrying in the background, Ctrl+Q still leaves",
+                                    "{} — retrying in the background, Alt+Q still leaves",
                                     failure.message()
                                 ),
                             );

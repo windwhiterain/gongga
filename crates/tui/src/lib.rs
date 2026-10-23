@@ -53,9 +53,10 @@ pub use cli::{Candidate, Completer, Completion, LineKind, SharedCompleter, token
 /// The only thing left to the keyboard is leaving.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiEvent {
-    /// A finished input line.
+    /// A finished input line. It may contain newlines: a message with
+    /// paragraphs is still one message.
     Submit(String),
-    /// Ctrl+Q: leave.
+    /// Alt+Q: leave.
     Quit,
 }
 
@@ -117,7 +118,8 @@ impl Tui {
         // Mouse capture is what makes the wheel a scroll key. Without it
         // crossterm never sees the wheel at all -- the terminal keeps the
         // events for its own scrollback, which an alternate screen has none of.
-        execute!(out, EnterAlternateScreen, EnableMouseCapture).context("entering alternate screen")?;
+        execute!(out, EnterAlternateScreen, EnableMouseCapture)
+            .context("entering alternate screen")?;
         let terminal = Terminal::new(CrosstermBackend::new(out))?;
         Ok(Self {
             terminal,
@@ -180,7 +182,7 @@ impl Tui {
         self.screen.completion = None;
         self.screen.input.clear();
         self.screen.input.insert_str(text);
-        self.screen.input.end();
+        self.screen.input.to_document_end();
         self.dirty = true;
     }
 
@@ -188,14 +190,7 @@ impl Tui {
     ///
     /// `key` identifies the stream (a response part, a tool's stdout) and
     /// `done` closes it, so the next chunk with the same key starts a new line.
-    pub fn stream(
-        &mut self,
-        key: &str,
-        kind: LineKind,
-        prefix: &str,
-        text: &str,
-        done: bool,
-    ) {
+    pub fn stream(&mut self, key: &str, kind: LineKind, prefix: &str, text: &str, done: bool) {
         stream_into(
             &mut self.screen.log,
             &mut self.streams,
@@ -273,19 +268,32 @@ impl Tui {
     ///
     /// Pure and separate from [`Self::handle_key`] because it is the part worth
     /// testing without a terminal: what a key means must not depend on whether
-    /// a TTY exists. It also collects both spellings of Ctrl+Q -- a terminal
-    /// that reports no modifiers sends `DC1` (`\u{11}`) instead of `'q'`+Ctrl,
-    /// and the two have to mean the same thing.
+    /// a TTY exists.
+    ///
+    /// Alt, not Ctrl: VS Code's terminal (and several others) consume Ctrl+Q,
+    /// Ctrl+K and Ctrl+arrows themselves, so a Ctrl binding is one the program
+    /// never sees. `Ctrl+Q` used to be the exit here and simply did nothing in
+    /// that terminal.
     fn shortcut(key: &KeyEvent) -> Option<UiEvent> {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
         match key.code {
-            // A terminal that reports no modifiers sends DC1 for Ctrl+Q, so
-            // this spelling does not need the flag to be set.
-            KeyCode::Char('\u{11}') => Some(UiEvent::Quit),
-            // Case-insensitive: Shift+Ctrl+Q arrives as 'Q'.
-            KeyCode::Char('q' | 'Q') if ctrl => Some(UiEvent::Quit),
+            // Case-insensitive: Shift+Alt+Q arrives as 'Q'.
+            KeyCode::Char('q' | 'Q') if alt => Some(UiEvent::Quit),
             _ => None,
         }
+    }
+
+    /// Whether Enter should break the line instead of sending it.
+    ///
+    /// Shift is what everyone tries; Alt is the spelling that survives
+    /// terminals which do not report a modified Enter (they send the same CR
+    /// for both), because Alt+Enter arrives as ESC CR and is always
+    /// distinguishable.
+    fn line_break(key: &KeyEvent) -> bool {
+        matches!(key.code, KeyCode::Enter)
+            && key
+                .modifiers
+                .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT)
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Option<UiEvent> {
@@ -293,12 +301,20 @@ impl Tui {
             return Some(action);
         }
 
-        if key.modifiers.contains(KeyModifiers::CONTROL) {
+        if Self::line_break(&key) {
+            self.newline();
+            return None;
+        }
+
+        // The other modifier bindings, on Alt for the same reason as the exit:
+        // a terminal that keeps Ctrl+K for itself is not unusual, and a binding
+        // nobody can press is worse than no binding.
+        if key.modifiers.contains(KeyModifiers::ALT) {
             match key.code {
-                KeyCode::Char('k') => self.screen.input.kill_to_end(),
+                KeyCode::Char('k' | 'K') => self.screen.input.kill_to_end(),
                 KeyCode::Left => self.screen.input.word_left(),
-                // Paging on the same arrows that already mean "history" and
-                // "cursor": Ctrl+arrows, because PgUp/PgDn on a laptop hide
+                // Paging on the arrows that already mean "history" and
+                // "cursor": Alt+arrows, because PgUp/PgDn on a laptop hide
                 // behind Fn, where some of them are not even wired to scroll.
                 // Plain ↑↓ stay with history -- that is what a shell does with
                 // them, and it is the one thing operators try first.
@@ -306,6 +322,12 @@ impl Tui {
                 KeyCode::Down => self.screen.scroll_by(-(self.page_height() as i64)),
                 _ => {}
             }
+            return None;
+        }
+
+        // Ctrl+<letter> would otherwise insert its letter: a terminal that does
+        // deliver Ctrl+K here (some do) must not type a `k`.
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
             return None;
         }
 
@@ -318,16 +340,15 @@ impl Tui {
                 self.apply_completion();
             }
             KeyCode::Up => {
-                // Arrows belong to the completion popup and to history, which
-                // is what a shell does with them. The log needs a key of its
-                // own, so Shift is what says "move the view, not the line" --
-                // it is the only way to scroll on keyboards where PgUp/PgDn
-                // hide behind Fn.
+                // Arrows belong to the completion popup, then to the text, and
+                // only then to history: inside a multi-line message the line
+                // above is what ↑ means, exactly as in every other editor.
+                // Shift is what says "move the view, not the line".
                 if key.modifiers.contains(KeyModifiers::SHIFT) {
                     self.screen.scroll_by(1);
                 } else if let Some(c) = self.screen.completion.as_mut() {
                     c.move_selection(-1);
-                } else {
+                } else if !self.screen.input.up() {
                     self.history_prev();
                 }
             }
@@ -336,7 +357,7 @@ impl Tui {
                     self.screen.scroll_by(-1);
                 } else if let Some(c) = self.screen.completion.as_mut() {
                     c.move_selection(1);
-                } else {
+                } else if !self.screen.input.down() {
                     self.history_next();
                 }
             }
@@ -405,29 +426,30 @@ impl Tui {
         }
     }
 
-    /// What one page-up should move: the height of the log window itself.
+    /// What one page-up should move: the rows of the log window itself.
     fn page_height(&self) -> usize {
         let Ok(size) = self.terminal.size() else {
             return 1;
         };
-        size.height.saturating_sub(render::NON_LOG_ROWS).max(1) as usize
+        // The input's height depends on what has been typed into it, so the
+        // log's does too: a page has to be measured against the window that is
+        // left, not against a constant.
+        let input = render::input_rows(self.screen.input.text(), size.width, size.height);
+        size.height
+            .saturating_sub(render::CHROME_ROWS + input)
+            .max(1) as usize
+    }
+
+    /// Breaks the line instead of sending it.
+    fn newline(&mut self) {
+        self.screen.input.insert('\n');
+        // The popup was about the token before the break; it says nothing about
+        // the one after it.
+        self.screen.completion = None;
     }
 
     fn refresh_completion(&mut self) {
-        let candidates = self
-            .completer
-            .complete(self.screen.input.text(), self.screen.input.cursor());
-        if candidates.is_empty() {
-            self.screen.completion = None;
-            return;
-        }
-        let (start, end, _) = token_bounds(self.screen.input.text(), self.screen.input.cursor());
-        self.screen.completion = Some(Completion {
-            start,
-            end,
-            candidates,
-            selected: 0,
-        });
+        self.screen.completion = next_completion(&self.screen.input, &self.completer);
     }
 
     fn close_completion(&mut self) {
@@ -435,9 +457,17 @@ impl Tui {
     }
 
     fn apply_completion(&mut self) {
-        if let Some(c) = self.screen.completion.take() {
-            apply_completion(&mut self.screen.input, &c);
-        }
+        // `--session` is not the end of the thought: its value is. Asking again
+        // right after applying is what makes Tab twice fill both, instead of
+        // Tab, and then a letter before the list comes back.
+        //
+        // It costs nothing when the candidate ended the line: an empty answer
+        // simply leaves the popup shut.
+        apply_and_continue(
+            &mut self.screen.input,
+            &mut self.screen.completion,
+            &self.completer,
+        );
     }
 
     fn history_prev(&mut self) {
@@ -494,6 +524,43 @@ impl Drop for Tui {
     }
 }
 
+/// What the completer says about the input right now, as a popup.
+///
+/// The token bounds come from the same split the completer used, which is why
+/// they are asked for again here rather than returned with the candidates: two
+/// answers to "where does this token start" would drift, and the drift would
+/// show up as text inserted in the wrong place.
+fn next_completion(input: &InputLine, completer: &SharedCompleter) -> Option<Completion> {
+    let candidates = completer.complete(input.text(), input.cursor());
+    if candidates.is_empty() {
+        return None;
+    }
+    let (start, end, _) = token_bounds(input.text(), input.cursor());
+    Some(Completion {
+        start,
+        end,
+        candidates,
+        selected: 0,
+    })
+}
+
+/// Applies the chosen candidate, then asks what the same line wants next.
+///
+/// A flag wants its value, and asking immediately is what turns Tab into "fill
+/// the flag", Tab again into "fill the value" -- rather than one Tab and a
+/// letter typed only to make the list reappear.
+fn apply_and_continue(
+    input: &mut InputLine,
+    completion: &mut Option<Completion>,
+    completer: &SharedCompleter,
+) {
+    let Some(chosen) = completion.take() else {
+        return;
+    };
+    apply_completion(input, &chosen);
+    *completion = next_completion(input, completer);
+}
+
 /// A completer that always declines. Handy for tests and for headless modes.
 pub struct NoCompleter;
 
@@ -543,7 +610,10 @@ mod layering {
     #[test]
     fn the_front_end_depends_on_the_command_layer() {
         let manifest = include_str!("../Cargo.toml");
-        assert!(manifest.contains("cli = { workspace = true }"), "{manifest}");
+        assert!(
+            manifest.contains("cli = { workspace = true }"),
+            "{manifest}"
+        );
     }
 }
 
@@ -618,6 +688,56 @@ mod tests {
         }
     }
 
+    /// A stand-in for the command catalog: `--session` takes session names.
+    ///
+    /// Written here rather than borrowed from `cli` because the point is the
+    /// front-end's half of the job -- asking again after applying -- and the
+    /// command layer's types are not this crate's to build.
+    struct FlagCompleter;
+
+    impl Completer for FlagCompleter {
+        fn complete(&self, line: &str, cursor: usize) -> Vec<Candidate> {
+            let (_, _, token) = token_bounds(line, cursor);
+            if token.starts_with("--") {
+                return vec![Candidate::word("--session", "target")];
+            }
+            if token.is_empty() && line[..cursor].trim_end().ends_with("--session") {
+                return vec![
+                    Candidate::word("main", "session"),
+                    Candidate::word("scratch", "session"),
+                ];
+            }
+            Vec::new()
+        }
+    }
+
+    /// Tab on a flag, then Tab again, fills the value too: the list has to come
+    /// back on its own once the flag is on the line, because a letter typed
+    /// only to make it appear is a letter that has to be deleted again.
+    #[test]
+    fn completing_a_flag_asks_for_its_value() {
+        let completer: SharedCompleter = std::sync::Arc::new(FlagCompleter);
+        let mut input = InputLine::default();
+        input.insert_str("/cmd --sess");
+        let mut completion = next_completion(&input, &completer);
+        assert_eq!(
+            completion.as_ref().map(|c| c.candidates.len()),
+            Some(1),
+            "the flag itself is the first offer"
+        );
+
+        // First Tab: the flag, with the space that starts its value.
+        apply_and_continue(&mut input, &mut completion, &completer);
+        assert_eq!(input.text(), "/cmd --session ");
+        let popup = completion.as_ref().expect("the value list reopened");
+        assert_eq!(popup.candidates[0].insert, "main");
+
+        // Second Tab: the value, and the line has nothing left to offer.
+        apply_and_continue(&mut input, &mut completion, &completer);
+        assert_eq!(input.text(), "/cmd --session main ");
+        assert!(completion.is_none(), "nothing more to offer");
+    }
+
     #[test]
     fn deltas_on_one_key_become_one_line() {
         let mut h = Headless::new();
@@ -657,35 +777,37 @@ mod tests {
         assert!(Tui::actionable(&press));
     }
 
-    /// Leaving is the one thing the keyboard still does on its own, and Ctrl+Q
+    /// Leaving is the one thing the keyboard still does on its own, and Alt+Q
     /// is the only key that does it.
     ///
     /// Pinned down here rather than in prose because the TUI needs a real
-    /// terminal to run: without a test like this, "Ctrl+Q quits" is only a
-    /// claim, and the two bindings that were removed could come back unnoticed.
+    /// terminal to run: without a test like this, "Alt+Q quits" is only a
+    /// claim, and a binding that came back unnoticed is a Ctrl key the terminal
+    /// would have eaten before the program ever saw it.
     #[test]
-    fn ctrl_q_is_the_only_way_out() {
+    fn alt_q_is_the_only_way_out() {
         let quit = Some(UiEvent::Quit);
         // The plain case, and the shifted one, which arrives as 'Q'.
         assert_eq!(
-            Tui::shortcut(&KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)),
+            Tui::shortcut(&KeyEvent::new(KeyCode::Char('q'), KeyModifiers::ALT)),
             quit
         );
         assert_eq!(
             Tui::shortcut(&KeyEvent::new(
                 KeyCode::Char('Q'),
-                KeyModifiers::CONTROL | KeyModifiers::SHIFT
+                KeyModifiers::ALT | KeyModifiers::SHIFT
             )),
-            quit
-        );
-        // A terminal that sends the control code instead of 'q'+Ctrl.
-        assert_eq!(
-            Tui::shortcut(&KeyEvent::new(KeyCode::Char('\u{11}'), KeyModifiers::NONE)),
             quit
         );
         // A bare q is a letter to type, not an exit.
         assert_eq!(
             Tui::shortcut(&KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+            None
+        );
+        // Ctrl+Q is what VS Code takes for itself, which is why it is not the
+        // binding any more: leaving must not be a key the terminal swallows.
+        assert_eq!(
+            Tui::shortcut(&KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)),
             None
         );
         // The old bindings are gone: Ctrl+X and Ctrl+C mean nothing now.
@@ -696,6 +818,21 @@ mod tests {
                 "{code:?} must not do anything"
             );
         }
+    }
+
+    /// Enter sends, the modified Enter breaks the line. Getting this backwards
+    /// sends half a message every time someone starts a new paragraph.
+    #[test]
+    fn enter_sends_and_the_modified_enter_breaks_the_line() {
+        let enter = KeyCode::Enter;
+        assert!(!Tui::line_break(&KeyEvent::new(enter, KeyModifiers::NONE)));
+        assert!(Tui::line_break(&KeyEvent::new(enter, KeyModifiers::SHIFT)));
+        assert!(Tui::line_break(&KeyEvent::new(enter, KeyModifiers::ALT)));
+        // Anything else is not a break, however it is modified.
+        assert!(!Tui::line_break(&KeyEvent::new(
+            KeyCode::Char('j'),
+            KeyModifiers::SHIFT
+        )));
     }
 
     /// The wheel is the scroll control everybody reaches for first, so what one

@@ -12,8 +12,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use protocol::{ArgSpec, CommandSpec, CompletionSource};
 use crate::complete::{Candidate, Completer, token_bounds};
+use protocol::{ArgSpec, CommandSpec, CompletionSource};
 
 /// A catalog that can be swapped while the TUI holds a reference to it.
 #[derive(Clone, Default)]
@@ -124,22 +124,41 @@ impl Completer for Catalog {
                 inner.cwd.clone(),
             )
         };
-        let all: Vec<CommandSpec> = client.iter().cloned().chain(server.iter().cloned()).collect();
+        let all: Vec<CommandSpec> = client
+            .iter()
+            .cloned()
+            .chain(server.iter().cloned())
+            .collect();
         let cmd = words.first().map(|t| t.trim_start_matches('/'));
+        // The word the cursor is in, when it is in one: that word is about to
+        // be replaced, so it does not count as already on the line.
+        let word_at_cursor = if token.is_empty() {
+            None
+        } else {
+            position.checked_sub(1)
+        };
 
         if let Some(prefix) = token.strip_prefix("--") {
             let args: &[ArgSpec] = cmd
                 .and_then(|c| all.iter().find(|s| s.name == c))
                 .map(|c| c.args.as_slice())
                 .unwrap_or(&[]);
+            let used = flags_on_line(&words, word_at_cursor);
             return args
                 .iter()
+                // A flag already on the line is not a candidate: the command
+                // would take the second value for the same argument (or refuse
+                // it), and listing it again hides the flags still missing.
+                .filter(|a| !used.contains(a.name.as_str()))
                 .filter(|a| a.name.starts_with(prefix))
                 .map(|a| Candidate::word(format!("--{}", a.name), a.summary.clone()))
                 .collect();
         }
 
-        if position <= 1 {
+        // Command names, while the command has not been written yet. A space
+        // *after* it is not a command name any more: offering the whole list
+        // there reopened the popup over a line whose first word was settled.
+        if position == 1 && token.starts_with('/') {
             let prefix = token.trim_start_matches('/');
             return all
                 .iter()
@@ -169,7 +188,11 @@ impl Completer for Catalog {
         else {
             return Vec::new();
         };
-        let ctx = Ctx { sessions: &sessions, cwd: &cwd, all: &all };
+        let ctx = Ctx {
+            sessions: &sessions,
+            cwd: &cwd,
+            all: &all,
+        };
         resolve(&spec.completions, &token, &ctx, &words, 0)
     }
 }
@@ -191,9 +214,7 @@ fn resolve(
         CompletionSource::Sessions => {
             pick(ctx.sessions.iter().map(String::as_str), token, "session")
         }
-        CompletionSource::Static(values) => {
-            pick(values.iter().map(String::as_str), token, "value")
-        }
+        CompletionSource::Static(values) => pick(values.iter().map(String::as_str), token, "value"),
         CompletionSource::Arguments => {
             let mut names: Vec<&str> = ctx
                 .all
@@ -234,6 +255,21 @@ fn pick<'a>(values: impl Iterator<Item = &'a str>, prefix: &str, detail: &str) -
     values
         .filter(|v| v.starts_with(prefix))
         .map(|v| Candidate::word(v, detail))
+        .collect()
+}
+
+/// Flags the line already carries, in either spelling (`--name value` or
+/// `--name=value`).
+///
+/// `skip` is the word the cursor is in: it is the one being completed, so it is
+/// not yet a flag the line has.
+fn flags_on_line(words: &[String], skip: Option<usize>) -> std::collections::HashSet<&str> {
+    words
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| Some(*index) != skip)
+        .filter_map(|(_, word)| word.strip_prefix("--"))
+        .map(|flag| flag.split('=').next().unwrap_or(flag))
         .collect()
 }
 
@@ -301,7 +337,11 @@ fn directory(cwd: &Path, typed: &str) -> PathBuf {
         },
         None => PathBuf::from(typed),
     };
-    if path.is_absolute() { path } else { cwd.join(path) }
+    if path.is_absolute() {
+        path
+    } else {
+        cwd.join(path)
+    }
 }
 
 /// The commands the CLI handles itself. Their arguments complete against the
@@ -372,7 +412,13 @@ mod tests {
                 summary: "Send a message.".into(),
                 args: vec![
                     arg("message", "The text.", true, None, CompletionSource::None),
-                    arg("session", "Target.", false, None, CompletionSource::Sessions),
+                    arg(
+                        "session",
+                        "Target.",
+                        false,
+                        None,
+                        CompletionSource::Sessions,
+                    ),
                 ],
             },
             CommandSpec {
@@ -398,7 +444,10 @@ mod tests {
     #[test]
     fn completes_command_names_from_both_catalogs() {
         let c = catalog();
-        assert_eq!(values(&c, "/set_pers"), vec!["/set_persistant_cmd_argument"]);
+        assert_eq!(
+            values(&c, "/set_pers"),
+            vec!["/set_persistant_cmd_argument"]
+        );
         assert_eq!(values(&c, "/send"), vec!["/send_message"]);
     }
 
@@ -408,10 +457,51 @@ mod tests {
         assert_eq!(values(&c, "/send_message --s"), vec!["--session"]);
     }
 
+    /// A flag already on the line is not offered again: it is filled, and the
+    /// list is there to say what is still missing.
+    #[test]
+    fn a_filled_flag_is_not_offered_again() {
+        let c = catalog();
+        assert_eq!(
+            values(&c, "/send_message --session main --"),
+            vec!["--message"]
+        );
+        // The `--flag=value` spelling counts as filled too.
+        assert_eq!(
+            values(&c, "/send_message --session=main --"),
+            vec!["--message"]
+        );
+        // Typing the filled flag's name again finds nothing, rather than
+        // offering the one already there.
+        assert!(values(&c, "/send_message --session main --s").is_empty());
+        // Once everything is on the line there is nothing left to offer.
+        assert!(values(&c, "/send_message --session main --message hi --").is_empty());
+    }
+
+    /// The word being completed is not "already filled": typing `--sess` must
+    /// still offer `--session`, or the flag could never be completed at all.
+    #[test]
+    fn the_flag_being_typed_is_still_a_candidate() {
+        let c = catalog();
+        assert_eq!(values(&c, "/send_message --sess"), vec!["--session"]);
+    }
+
+    /// A space after the command name is the start of its flags, not another
+    /// opportunity to pick a command: reopening the whole list there covers the
+    /// line the operator has already decided.
+    #[test]
+    fn a_finished_command_does_not_reopen_the_command_list() {
+        let c = catalog();
+        assert!(values(&c, "/send_message ").is_empty());
+    }
+
     #[test]
     fn completes_flag_values_from_sessions() {
         let c = catalog();
-        assert_eq!(values(&c, "/send_message --session "), vec!["main", "scratch"]);
+        assert_eq!(
+            values(&c, "/send_message --session "),
+            vec!["main", "scratch"]
+        );
         assert_eq!(values(&c, "/send_message --session sc"), vec!["scratch"]);
     }
 
@@ -424,7 +514,10 @@ mod tests {
     #[test]
     fn sticky_names_complete_against_state() {
         let c = catalog();
-        assert_eq!(values(&c, "/del_persistant_cmd_argument --name "), vec!["session"]);
+        assert_eq!(
+            values(&c, "/del_persistant_cmd_argument --name "),
+            vec!["session"]
+        );
     }
 
     /// `--name` takes an argument name, so it offers the catalog's, once each,
@@ -475,17 +568,25 @@ mod tests {
 
         let line = "/set_session --session s --cwd s";
         let got = c.complete(line, line.len());
-        let dir = got.iter().find(|x| x.insert == "sub/").expect("the directory");
+        let dir = got
+            .iter()
+            .find(|x| x.insert == "sub/")
+            .expect("the directory");
         assert!(!dir.space, "a directory must not be followed by a space");
-        let file = got.iter().find(|x| x.insert == "solo.txt").expect("the file");
+        let file = got
+            .iter()
+            .find(|x| x.insert == "solo.txt")
+            .expect("the file");
         assert!(file.space, "a file ends the word");
 
         // Descending: the trailing `/` keeps the token inside the directory.
         assert_eq!(values(&c, "/set_session --cwd sub/"), vec!["sub/inner.txt"]);
         // Dotfiles only when asked for.
-        assert!(values(&c, "/set_session --cwd ")
-            .iter()
-            .all(|v| !v.starts_with('.')));
+        assert!(
+            values(&c, "/set_session --cwd ")
+                .iter()
+                .all(|v| !v.starts_with('.'))
+        );
         assert_eq!(values(&c, "/set_session --cwd .h"), vec![".hidden"]);
         // A prefix that names nothing is not an error, just no candidates.
         assert!(values(&c, "/set_session --cwd nowhere/").is_empty());
