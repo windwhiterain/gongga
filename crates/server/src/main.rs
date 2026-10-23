@@ -237,13 +237,14 @@ async fn run() -> anyhow::Result<()> {
     // The duration is part of the message because adoption has to finish
     // before the port is bound: a home with thousands of rows looked exactly
     // like a server that would not start, and there was nothing to point at.
-    if adopted > 0 {
-        tracing::info!(
-            adopted,
-            elapsed_ms = adoption_started.elapsed().as_millis() as u64,
-            "detached jobs from the previous run are still running and can be killed"
-        );
-    }
+    // Logged unconditionally, `adopted = 0` included -- the run that took 75
+    // seconds to bind had 156 stale rows and nothing to adopt, so the one line
+    // that would have said so was the one the condition suppressed.
+    tracing::info!(
+        adopted,
+        elapsed_ms = adoption_started.elapsed().as_millis() as u64,
+        "detached jobs adopted from the previous run"
+    );
 
     // A message that arrived while a turn was running is normally folded into
     // that turn at its next step boundary. If the turn ends first, nobody is

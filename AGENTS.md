@@ -1,6 +1,7 @@
 - SPEC is the only source of truth.
 - when designing new feature, search any existing wheels. 
 - setting any limit/budget is forbidden.
+- session turn end should kill all process it spawns so user won't use a process that tied to a session as a long running process.
 - server home for tests should be local to each worktree so worktree's servers won't conflict (otherwise will be locked).
 
 ## 自我进化（改服务端之后怎么让自己用上）

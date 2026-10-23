@@ -100,6 +100,13 @@ impl Sticky {
 }
 
 /// `--flag value` and `--flag=value`; nothing positional is accepted.
+///
+/// The value is whatever follows its flag, *including* a token that starts with
+/// `--`. Refusing those made the one thing a message flag exists for
+/// impossible: `--message "--version"` was read as a missing value, and the
+/// only way through was `--message=--version`, which nothing advertises. The
+/// cost is the other direction: a forgotten value swallows the next flag, which
+/// then fails on whatever follows it.
 pub fn parse_args(tokens: &[String]) -> anyhow::Result<Args> {
     let mut args = Args::new();
     let mut i = 0;
@@ -114,7 +121,6 @@ pub fn parse_args(tokens: &[String]) -> anyhow::Result<Args> {
         } else {
             let value = tokens
                 .get(i + 1)
-                .filter(|v| !v.starts_with("--"))
                 .ok_or_else(|| anyhow::anyhow!("--{flag} needs a value"))?;
             args.insert(flag.to_string(), value.clone());
             i += 2;
@@ -193,6 +199,16 @@ mod tests {
     fn both_flag_forms_parse() {
         assert_eq!(parse_args(&["--session".into(), "main".into()]).unwrap()["session"], "main");
         assert_eq!(parse_args(&["--session=main".into()]).unwrap()["session"], "main");
+    }
+
+    /// A value that looks like a flag is still a value: `send_message` exists to
+    /// carry arbitrary text, and "--version" is text.
+    #[test]
+    fn a_value_may_start_with_dashes() {
+        let args = parse_args(&["--message".into(), "--version".into()]).unwrap();
+        assert_eq!(args["message"], "--version");
+        let args = parse_args(&["--message=--version".into()]).unwrap();
+        assert_eq!(args["message"], "--version");
     }
 
     #[test]

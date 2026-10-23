@@ -502,9 +502,7 @@ async fn stream_once(
                     match chunk {
                         Ok(bytes) => {
                             buf.push_str(&String::from_utf8_lossy(&bytes));
-                            while let Some(pos) = buf.find("\n\n") {
-                                let block = buf[..pos].to_string();
-                                buf = buf[pos + 2..].to_string();
+                            while let Some(block) = next_sse_block(&mut buf) {
                                 if let Some(event) = parse_sse_block(&block) {
                                     if let Err(e) = handle(event, &mut items, &tx).await {
                                         tracing::debug!(error = %e, "llm stream closed early");
@@ -519,6 +517,15 @@ async fn stream_once(
                         }
                     }
                 }
+            }
+        }
+        // A stream that ends without its trailing blank line still sent a final
+        // event; dropping what is left is how the last `response.completed`
+        // goes missing and the turn looks like the model said nothing.
+        let tail = buf.trim_end_matches('\r').trim();
+        if !tail.is_empty() {
+            if let Some(event) = parse_sse_block(tail) {
+                let _ = handle(event, &mut items, &tx).await;
             }
         }
         tracing::info!(elapsed = ?started.elapsed(), "model request: stream ended");
@@ -557,6 +564,26 @@ enum ItemKind {
 struct SseEvent {
     name: String,
     data: Value,
+}
+
+/// Takes one complete server-sent-event block off the front of `buf`.
+///
+/// A block ends at a blank line, and providers do not agree on what a blank
+/// line is: `\n\n`, `\r\n\r\n`, and even `\n\r\n` all occur. Knowing only one
+/// of them looks exactly like silence -- no block ever completes, so nothing is
+/// parsed and the turn dies on the idle timeout with "no response data", which
+/// blames the provider for a separator nobody promised to send.
+///
+/// The block it returns has its trailing `\r` stripped, so the caller only ever
+/// sees `data:` lines.
+fn next_sse_block(buf: &mut String) -> Option<String> {
+    let (at, len) = ["\n\n", "\r\n\r\n", "\n\r\n"]
+        .iter()
+        .filter_map(|sep| buf.find(sep).map(|at| (at, sep.len())))
+        .min_by_key(|(at, _)| *at)?;
+    let block = buf[..at].trim_end_matches('\r').to_string();
+    buf.drain(..at + len);
+    Some(block)
 }
 
 fn parse_sse_block(block: &str) -> Option<SseEvent> {
@@ -807,6 +834,35 @@ fn summarise_error(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every separator a provider might use ends a block, and the `\r` does not
+    /// travel into the parser; a block split across two reads is only complete
+    /// once its separator lands.
+    #[test]
+    fn sse_blocks_end_at_any_blank_line() {
+        for wire in [
+            "data: a\n\ndata: b\n\n",
+            "data: a\r\n\r\ndata: b\r\n\r\n",
+            "data: a\n\r\ndata: b\n\r\n",
+        ] {
+            let mut buf = wire.to_string();
+            let mut got = Vec::new();
+            while let Some(block) = next_sse_block(&mut buf) {
+                got.push(block);
+            }
+            assert_eq!(got, vec!["data: a", "data: b"], "wire: {wire:?}");
+            assert!(buf.is_empty(), "leftover after {wire:?}: {buf:?}");
+        }
+
+        let mut buf = "data: partial\r\n\r".to_string();
+        assert!(next_sse_block(&mut buf).is_none(), "no separator yet");
+        buf.push('\n');
+        assert_eq!(
+            next_sse_block(&mut buf).as_deref(),
+            Some("data: partial"),
+            "the separator arrived with the next read"
+        );
+    }
 
     /// The tool schema is not part of the transcript, so nothing a compaction
     /// does can remove it -- but that also means nothing would notice if the

@@ -707,10 +707,12 @@ TUI 是一种实现（带样式的行），非交互模式是另一种（什么�
   在处理；两者在同一台机器上（同一个 `gongga` 进程旁边就是服务端），所以由客户端读盘比
   让服务端回一趟更直接。代价是相对路径仍由服务端按它自己的工作目录解析，两边不一致时
   Tab 出来的目录服务端可能找不到——写绝对路径就没有这个歧义。
-- **输入行只有一种语法：命令。** 首 token 命中已知命令就按命令解析；不命中就拒绝并提示
-  `send_message --message <text> --session <name>`。
-  曾经有一版「裸文本 = 发给 sticky `session` 的消息」的简写，已删除：它让同一行输入
-  的含义取决于一份看不见的状态，也正是 UI 看起来「有当前会话」的根源。
+- **输入行有两种写法，都直接来自 SPEC。** `/` 开头是命令：`/send_message --session main
+  --message hi`。其余整行是消息，展开成 `send_message --message "<text>"`（SPEC
+  「`<pure text>` expand to …」，代码在 `tui/src/run.rs` 的 `client.message()`）。
+  这一版曾经写成「裸文本不再被当成消息」，那是错的：它描述的是更早的一个设计，而
+  「粘一行字就能发出去」正是 TUI 存在的理由。`/` 开头但命令不认识时仍然拒绝并列出已知
+  命令 —— 打错命令名和发一句以 `/` 开头的话是两件事，前者应该报错。
 - sticky `session` 仍然生效，但只做 SPEC 说的那件事：**补齐命令里没写的参数**
   （`send_message --message hi` → 补 `--session`）。它不改变一行的含义。
 - **命令不认识的参数直接拒绝**，并列出它能接受的。以前多余参数一路透传到服务端、
@@ -926,7 +928,7 @@ Git Bash 自动探测常见安装路径，找不到再退回 PATH 上的 `bash`�
 | `detached` 立刻返回 + `cancel` 能杀掉（真 Git Bash） | 通过 |
 | sticky 参数客户端持久化 + 自动补齐 | 通过 |
 | `send_message` 缺 `--session` 被拒 / 有 sticky 才补齐 | 通过 |
-| 裸文本不再被当成消息：输入行只有命令一种语法 | 通过 |
+| 裸文本按 SPEC 展开成 `send_message --message`；`/` 开头才是命令 | 通过 |
 | `/` 只在输入行里：命令行是 argv，不带 `/`、不做纯文本展开 | 通过（`a_leading_slash_is_refused_with_the_command_line_it_meant`、`a_shell_rewritten_slash_is_recognised`）|
 | 非 UTF-8 输出不会让 shell 变哑：读字节、丢哨兵即换 shell | 通过（`binary_output_does_not_deafen_the_shell` 原样复现 `cat` 二进制后 `echo`；`a_shell_that_ended_is_not_reusable` 管 EOF）|
 | 拒绝信息由 schema 生成（`argument_error`）：列出全部参数/类型/required，缺 required 才拒 | 通过（单测 `a_call_missing_a_required_argument_is_answered_with_its_own_schema`）|

@@ -151,18 +151,6 @@ impl DetachedJob {
         }
     }
 
-    /// Whether the process is still there.
-    ///
-    /// With a handle this is exact. Without one -- a job adopted across a
-    /// restart -- it is a pid lookup, which is all that survives the process
-    /// that owned the handle.
-    pub fn running(&mut self) -> bool {
-        match &mut self.child {
-            Some(child) => matches!(child.try_wait(), Ok(None)),
-            None => pid_alive(self.pid),
-        }
-    }
-
     /// Stops it, taking the whole tree with it.
     ///
     /// Returns true when the process is no longer running, whether because we
@@ -201,7 +189,13 @@ impl DetachedJob {
         kill_tree(self.pid).await
     }
 
-    pub fn view(&mut self) -> JobView {
+    /// This job as a caller sees it.
+    ///
+    /// `live` is the answer one process listing gave for every adopted job at
+    /// once: a job with no handle left can only be asked about by pid, and
+    /// asking per job is a `tasklist` per job -- after a restart, the first
+    /// `list_bash` walked the list by starting a process for each entry.
+    pub fn view(&mut self, live: &std::collections::HashSet<u32>) -> JobView {
         JobView {
             job: self.job,
             shell: self.shell.clone(),
@@ -209,7 +203,13 @@ impl DetachedJob {
             cmd: self.cmd.clone(),
             log: self.log.display().to_string(),
             started_at: self.started_at,
-            running: self.running(),
+            running: match &mut self.child {
+                // Exact: the handle is the process.
+                Some(child) => matches!(child.try_wait(), Ok(None)),
+                // Adopted across a restart: only the pid survived, and the
+                // listing that answered for the whole set is already in hand.
+                None => live.contains(&self.pid),
+            },
         }
     }
 }
@@ -318,18 +318,34 @@ impl DetachedRegistry {
         launched.id = id;
         launched.job = job;
         launched.shell = shell.to_string();
-        let view = launched.view();
+        // A just-launched job has its handle, so no listing is needed.
+        let view = launched.view(&Default::default());
         registry.jobs.entry(session.to_string()).or_default().push(launched);
         Ok(view)
     }
 
     /// The jobs of one session, with their liveness.
     pub async fn list(&self, session: &str) -> Vec<JobView> {
+        // Asked before taking the registry lock: one listing for every adopted
+        // job, and it is a blocking call, so it must not run while the lock is
+        // held either.
+        let pids: Vec<u32> = {
+            let registry = self.inner.lock().await;
+            match registry.jobs.get(session) {
+                Some(jobs) => jobs
+                    .iter()
+                    .filter(|j| j.child.is_none())
+                    .map(|j| j.pid)
+                    .collect(),
+                None => return Vec::new(),
+            }
+        };
+        let live = live_batch(pids).await;
         let mut registry = self.inner.lock().await;
         let Some(jobs) = registry.jobs.get_mut(session) else {
             return Vec::new();
         };
-        jobs.iter_mut().map(|j| j.view()).collect()
+        jobs.iter_mut().map(|j| j.view(&live)).collect()
     }
 
     /// Stops one job, or every job of one shell when no number is given.
@@ -402,7 +418,7 @@ impl DetachedRegistry {
             }
         };
         let pids: Vec<u32> = rows.iter().map(|r| r.pid as u32).collect();
-        let live = alive_pids(&pids);
+        let live = live_batch(pids).await;
         let mut adopted = 0;
         let mut registry = self.inner.lock().await;
         // Job numbers must not be reused: a job adopted from the database has
@@ -604,6 +620,21 @@ fn parent_of(pid: u32) -> Option<u32> {
 #[cfg(not(any(windows, unix)))]
 fn parent_of(_pid: u32) -> Option<u32> {
     None
+}
+
+/// `alive_pids` off the runtime's worker threads.
+///
+/// The listing it runs is a blocking `Command::output()`: on a loaded machine
+/// it takes long enough that calling it inline stalls everything else this
+/// thread was going to do -- at startup, that is the bind every client is
+/// waiting on.
+async fn live_batch(pids: Vec<u32>) -> std::collections::HashSet<u32> {
+    if pids.is_empty() {
+        return Default::default();
+    }
+    tokio::task::spawn_blocking(move || alive_pids(&pids))
+        .await
+        .unwrap_or_default()
 }
 
 /// Which of `pids` are in use right now, answered for all of them at once.

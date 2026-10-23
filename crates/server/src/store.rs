@@ -219,37 +219,50 @@ impl Store {
 
     pub fn list_sessions(&self) -> anyhow::Result<Vec<SessionRow>> {
         let conn = self.lock();
-        let mut stmt = conn.prepare(
-            "SELECT s.id, s.name, s.status, s.model, s.cwd, s.created_at, s.updated_at,
-                    (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS messages,
-                    s.llm, s.compact_threshold
-             FROM sessions s
-             ORDER BY s.updated_at DESC",
-        )?;
+        let mut stmt = conn.prepare(&format!(
+            "{} ORDER BY s.updated_at DESC",
+            Self::SESSION_SELECT
+        ))?;
         let rows = stmt
-            .query_map([], |r| {
-                Ok(SessionRow {
-                    id: r.get(0)?,
-                    name: r.get(1)?,
-                    status: parse_status(&r.get::<_, String>(2)?),
-                    model: r.get(3)?,
-                    cwd: r.get(4)?,
-                    created_at: r.get(5)?,
-                    updated_at: r.get(6)?,
-                    messages: r.get::<_, i64>(7)? as u64,
-                    llm: r.get(8)?,
-                    compact_threshold: r.get::<_, Option<i64>>(9)?.map(|v| v as u8),
-                })
-            })?
+            .query_map([], Self::session_row)?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
 
+    /// The columns every session lookup returns, so the list and the single
+    /// lookup cannot drift apart.
+    const SESSION_SELECT: &'static str = "SELECT s.id, s.name, s.status, s.model, s.cwd,
+                    s.created_at, s.updated_at,
+                    (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS messages,
+                    s.llm, s.compact_threshold
+             FROM sessions s";
+
+    /// One session, in the same shape the list returns.
+    ///
+    /// A `WHERE name = ?` rather than "list every session and look for it":
+    /// `nudge_inboxes` asks this for each pending session on a two-second
+    /// timer, and the list query also runs a `COUNT(*)` per row, so the cost of
+    /// the wrong shape grows with the whole home instead of with the answer.
     pub fn get_session(&self, name: &str) -> anyhow::Result<Option<SessionRow>> {
-        Ok(self
-            .list_sessions()?
-            .into_iter()
-            .find(|s| s.name == name))
+        let conn = self.lock();
+        let mut stmt = conn.prepare(&format!("{} WHERE s.name = ?1", Self::SESSION_SELECT))?;
+        let row = stmt.query_row([name], Self::session_row).optional()?;
+        Ok(row)
+    }
+
+    fn session_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
+        Ok(SessionRow {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            status: parse_status(&r.get::<_, String>(2)?),
+            model: r.get(3)?,
+            cwd: r.get(4)?,
+            created_at: r.get(5)?,
+            updated_at: r.get(6)?,
+            messages: r.get::<_, i64>(7)? as u64,
+            llm: r.get(8)?,
+            compact_threshold: r.get::<_, Option<i64>>(9)?.map(|v| v as u8),
+        })
     }
 
     pub fn touch_session(&self, id: i64) -> anyhow::Result<()> {

@@ -105,6 +105,14 @@ fn draw_completion(f: &mut Frame, s: &Screen, input_area: Rect) {
         return;
     };
     let shown = completion.candidates.len().min(8);
+    // The window follows the selection. `move_selection` walks the whole list,
+    // so drawing only the first screenful leaves the ninth candidate selected
+    // with nothing highlighted -- and Tab still inserts it.
+    let start = if shown == 0 {
+        0
+    } else {
+        completion.selected.saturating_sub(shown - 1)
+    };
     let height = shown + 2; // borders
     let y = input_area.y.saturating_sub(height as u16);
     let width = 60.min(f.area().width);
@@ -120,6 +128,7 @@ fn draw_completion(f: &mut Frame, s: &Screen, input_area: Rect) {
         .candidates
         .iter()
         .enumerate()
+        .skip(start)
         .take(shown)
         .map(|(i, c)| {
             let style = if i == completion.selected {
