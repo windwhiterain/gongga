@@ -1161,9 +1161,27 @@ home 就空着，没有进程去 resume 这个回合 ���— 一次失败�
 旧 socket 释放前 bind 失败；少了前者，`server.lock` 会认出旧 pid 还活着而拒绝启动（这是
 `instance.rs` 的正确行为，不该为进化放宽）。
 
+**只有最新的 stage 能接管 home**：`stage` 把 stamp 写进 `.dev/evolve-current`，launcher 每轮
+读它，发现自己不是当前的就在循环里退出；`swap` 也拒绝非当前的 stamp。这不是预算（等待仍然
+没有上限，仍然是「等到它来」），是身份检查。没有它的时候，一次没被 `swap` 的 `stage` 会留下
+一个**永远在等**的继任者：每 200ms 一次 `tasklist` + `netstat`，旧服务端不死就永不退出；它
+已经被记进 `detached_jobs`，于是每个后来的服务端都收养它一次，`list_bash` 里永久挂着一条
+杀不掉的作业；更糟的是端口空出来那一刻，它可能比真正的继任者先到，把更旧的二进制顶上去。
+
+**`clean` 是这条规则的兜底**：早于这条规则的 launcher 没有自退出口，只能靠
+`evolve.sh clean` 杀掉。`--artifacts` 顺手清掉旧 stamp 的暂存件 —— 每个 `-server.exe` 约
+18MB，而每个 stamp 留下的三件套没有任何代码会删（一个 stamp 三件，`stage` 只增不减）。
+
+**launcher 生成必须用带引号的模板**：原来的 unquoted heredoc 会让模板里的反引号在**生成时**
+当命令替换执行。真实事故：注释里提到 `tasklist`，`stage` 就把整张进程表注进了 launcher，
+继任者随即死在第一行。现在模板是 `<<'LAUNCH'`，值由 `sed` 从占位符换成实参，并在写完后再
+`bash -n` 一次。
+
 验证过的部分：`stage` 在本机跑通（含 162 个测试）；launcher 的两个分支分别用「活 pid」
 「死 pid」+ 独立端口验过（该等的时候等，该死的时候 exec）；新二进制在独立 home/端口上
-真的接得住客户端（`set_session` / `get_messages` 回执正常）。
+真的接得住客户端（`set_session` / `get_messages` 回执正常）。身份检查另在沙箱里验过四条：
+被取代的 launcher 退出而不 exec、当前的 launcher 照常接管、`swap` 拒绝旧 stamp、`clean`
+杀掉陈旧等待者并保留当前 stamp 的文件。
 
 ### 顺带修掉的两处
 
@@ -1178,10 +1196,11 @@ home 就空着，没有进程去 resume 这个回合 ���— 一次失败�
 
 ### 仍然存在的风险（**未做**，需要你定）
 
-1. **进化会把 detached 作业表搅混**：launcher 由旧服务端以 detached 启动、pid 记录在库，
-   `exec` 之后那个 pid 就是新服务端自己。`adopt()` 已经丢弃「pid 是自己」的行，所以
-   `kill_bash` 不会自杀 —— 但这依赖 `exec` 保 pid。若哪天 launcher 改成 `spawn` 子进程，
-   这条保护就落空了。
+1. **杀自己的那条路已经堵上，但只堵了「祖先」这一种形状**：launcher 用 `exec` 时，行里的
+   pid 就是新服务端自己，`adopt()` 丢弃它；launcher 改成 `spawn` 加等待时，行里记的是服务端
+   的**父进程**，`taskkill /T` 会把服务端连根拔掉。现在 `adopt()` 拒绝收养任何「自己或自己的
+   祖先」，`stop()` 落刀前再挡一次。剩下的缺口是 **pid 复用**：行里的 pid 只验活性、不验
+   「是不是当年那个进程」，被回收的 pid 仍可能被当成作业收养，代价由显式的 `kill_bash` 兜底。
 2. **没有回滚**：新二进制起来了但行为是坏的（比如 LLM 配置读错），`swap` 无从知道。
    要不要让 `swap` 等新服务端 hello 之后再删旧 launcher，或保留「上一版 exe」一个指针，
    让下一回合的 agent 能一键退回？

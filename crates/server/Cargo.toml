@@ -42,4 +42,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
+    # Walking the parent chain: a detached job that wraps this server is its
+    # parent, and adopting it would let `kill_bash` kill the server itself.
+    "Win32_System_Diagnostics_ToolHelp",
 ] }

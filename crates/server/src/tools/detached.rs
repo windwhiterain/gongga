@@ -188,6 +188,16 @@ impl DetachedJob {
         if !pid_alive(self.pid) {
             return true;
         }
+        if is_self_or_ancestor(self.pid) {
+            // A row written before `adopt` learned to refuse ancestors, or one
+            // put there by hand. Killing the tree would kill this process, so
+            // the honest answer is "I did not stop it".
+            tracing::warn!(
+                pid = self.pid,
+                "refusing to stop a detached job that is this server's parent"
+            );
+            return false;
+        }
         kill_tree(self.pid).await
     }
 
@@ -373,7 +383,9 @@ impl DetachedRegistry {
     /// Rows whose process is gone are dropped: that is finished work, and
     /// keeping it would only make the list lie. Rows naming our own pid are
     /// dropped too -- that is a server that recorded its own launch, and
-    /// adopting it would let `kill_bash` shut this process down.
+    /// adopting it would let `kill_bash` shut this process down. The same goes
+    /// for any ancestor of ours, which is what a launcher that spawns the
+    /// server instead of `exec`ing it leaves behind (see `is_self_or_ancestor`).
     ///
     /// The pid is only checked for liveness, never proven to be the same
     /// process, so a recycled pid could in principle be adopted. The window is
@@ -389,7 +401,6 @@ impl DetachedRegistry {
                 }
             }
         };
-        let me = std::process::id();
         let pids: Vec<u32> = rows.iter().map(|r| r.pid as u32).collect();
         let live = alive_pids(&pids);
         let mut adopted = 0;
@@ -398,7 +409,21 @@ impl DetachedRegistry {
         // to keep the number the previous run gave it.
         registry.next_job = registry.next_job.max(rows.iter().map(|r| r.job).max().unwrap_or(0));
         for row in rows {
-            if row.pid as u32 == me || !live.contains(&(row.pid as u32)) {
+            let pid = row.pid as u32;
+            // Dead rows are the common case and the cheap one to answer: no
+            // walk up the parent chain for a process that is not there.
+            if !live.contains(&pid) {
+                let _ = registry.store.delete_detached_job(row.id);
+                continue;
+            }
+            if is_self_or_ancestor(pid) {
+                tracing::warn!(
+                    session = %row.session,
+                    job = row.job,
+                    pid,
+                    "not adopting a detached job that is this server or one of its \
+                     ancestors: `kill_bash` kills the tree, and the tree contains us"
+                );
                 let _ = registry.store.delete_detached_job(row.id);
                 continue;
             }
@@ -495,6 +520,90 @@ fn pid_alive(pid: u32) -> bool {
     {
         false
     }
+}
+
+/// Whether `pid` is this process or one of its ancestors.
+///
+/// `adopt` refuses a row naming our own pid, because `kill_bash` kills the
+/// whole tree and a job that is us would let the model shut the server down.
+/// That check only covers a launcher that `exec`s the new server: `exec` keeps
+/// the pid, so the row ends up naming us. A launcher that *spawns* the server
+/// and waits -- `bash --detached "cd . && ./gongga-server"`, which is what a
+/// hand-written launcher looks like -- leaves the row naming our parent, and
+/// the tree under that pid still contains us. Same trap, one level up, which is
+/// why the answer is the whole chain and not just the parent.
+fn is_self_or_ancestor(pid: u32) -> bool {
+    let me = std::process::id();
+    if pid == me {
+        return true;
+    }
+    let mut child = me;
+    // Bounded because a parent chain is a handful of links and a snapshot can
+    // lie: a pid recycled mid-walk must not turn this into a hang at startup.
+    for _ in 0..32 {
+        match parent_of(child) {
+            Some(parent) if parent != 0 && parent != child => {
+                if parent == pid {
+                    return true;
+                }
+                child = parent;
+            }
+            _ => break,
+        }
+    }
+    false
+}
+
+/// The process that started `pid`, as the OS sees it.
+#[cfg(windows)]
+fn parent_of(pid: u32) -> Option<u32> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
+    };
+
+    // One snapshot per hop rather than one for the whole walk: the walk is a
+    // few links deep and a snapshot is a kernel call -- unlike `tasklist`, which
+    // is a subprocess, and this runs on the startup path where that matters.
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        let mut found = None;
+        let mut more = Process32FirstW(snapshot, &mut entry) != 0;
+        while more {
+            if entry.th32ProcessID == pid {
+                found = Some(entry.th32ParentProcessID);
+                break;
+            }
+            more = Process32NextW(snapshot, &mut entry) != 0;
+        }
+        CloseHandle(snapshot);
+        found
+    }
+}
+
+/// The process that started `pid`, as the OS sees it.
+#[cfg(unix)]
+fn parent_of(pid: u32) -> Option<u32> {
+    // One field, no header, and present wherever the shell is; `/proc` would be
+    // faster but is not shaped the same on macOS.
+    let out = std::process::Command::new("ps")
+        .args(["-o", "ppid=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
+#[cfg(not(any(windows, unix)))]
+fn parent_of(_pid: u32) -> Option<u32> {
+    None
 }
 
 /// Which of `pids` are in use right now, answered for all of them at once.
@@ -720,5 +829,36 @@ mod tests {
         let fresh = DetachedRegistry::new(store.clone(), None, dir.path().join("logs"), vec![]);
         assert_eq!(fresh.adopt().await, 0, "we must not adopt ourselves");
         assert!(store.detached_jobs().expect("rows").is_empty());
+    }
+
+    /// Our own pid is the `exec` case; the parent is the spawn-and-wait case,
+    /// which is what a hand-written launcher produces. Adopting it would put
+    /// `taskkill /T` one call away from the server's own process tree.
+    #[cfg(any(windows, unix))]
+    #[tokio::test]
+    async fn a_server_never_adopts_a_job_that_is_its_own_parent() {
+        let parent = parent_of(std::process::id()).expect("a test process has a parent");
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = Store::open(&dir.path().join("g.db")).expect("store");
+        store
+            .add_detached_job(&DetachedRow {
+                id: 0,
+                session: "main".into(),
+                shell: "default".into(),
+                job: 3,
+                pid: parent as i64,
+                cmd: "bash ./gongga-server &".into(),
+                log: "x.log".into(),
+                started_at: 0,
+            })
+            .expect("recording our parent");
+
+        let fresh = DetachedRegistry::new(store.clone(), None, dir.path().join("logs"), vec![]);
+        assert_eq!(fresh.adopt().await, 0, "a parent is not a job we may manage");
+        assert!(
+            store.detached_jobs().expect("rows").is_empty(),
+            "the row must go, so nothing lists a job that would kill us"
+        );
+        assert!(fresh.list("main").await.is_empty());
     }
 }
