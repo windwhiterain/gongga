@@ -1,12 +1,5 @@
-//! Wire protocol and reliable-UDP transport shared by `gongga-server`,
-//! `gongga-cli` and `gongga-tui`.
-//!
-//! The crate is deliberately dependency-light so the CLI does not inherit the
-//! server's runtime. It contains three things:
-//!
-//! * [`frame`] — the fixed 26-byte datagram header.
-//! * [`channel`] — a reliable, ordered, fragmented message channel over UDP.
-//! * [`message`] — the JSON event vocabulary the two peers speak.
+//! Wire protocol and reliable-UDP transport for the server, CLI and TUI.
+//! See `docs/notes/protocol-lib.md`.
 
 pub mod channel;
 pub mod frame;

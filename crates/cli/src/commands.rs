@@ -1,9 +1,6 @@
 //! Sticky command arguments and the two commands that manage them.
 //!
-//! `persistant_cmd_arguments[{name, value}]` is a client-side idea: the CLI
-//! keeps them, fills them into every command before it goes out, and never
-//! tells the server. They persist in `~/.gongga/cli.toml`, so a restarted client
-//! still knows which session you were talking to.
+//! See `docs/notes/cli-commands.md`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -30,8 +27,7 @@ pub struct Sticky {
 }
 
 impl Sticky {
-    /// Loads from `home/cli.toml`, tolerating a missing or unreadable file: a
-    /// client that cannot remember its defaults is still usable.
+    /// Loads from `home/cli.toml`; a missing or unreadable file yields none.
     pub fn load(home: &Path) -> Self {
         let path = home.join("cli.toml");
         let args = match std::fs::read_to_string(&path) {
@@ -105,14 +101,8 @@ impl Sticky {
     }
 }
 
-/// `--flag value` and `--flag=value`; nothing positional is accepted.
-///
-/// The value is whatever follows its flag, *including* a token that starts with
-/// `--`. Refusing those made the one thing a message flag exists for
-/// impossible: `--message "--version"` was read as a missing value, and the
-/// only way through was `--message=--version`, which nothing advertises. The
-/// cost is the other direction: a forgotten value swallows the next flag, which
-/// then fails on whatever follows it.
+/// `--flag value` or `--flag=value`; nothing positional, and a value may
+/// start with `--`.
 pub fn parse_args(tokens: &[String]) -> anyhow::Result<Args> {
     let mut args = Args::new();
     let mut i = 0;
@@ -216,8 +206,8 @@ mod tests {
         );
     }
 
-    /// A value that looks like a flag is still a value: `send_message` exists to
-    /// carry arbitrary text, and "--version" is text.
+    /// A value that looks like a flag is still a value; `send_message` carries
+    /// arbitrary text.
     #[test]
     fn a_value_may_start_with_dashes() {
         let args = parse_args(&["--message".into(), "--version".into()]).unwrap();

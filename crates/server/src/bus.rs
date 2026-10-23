@@ -3,10 +3,11 @@
 use protocol::Event;
 use tokio::sync::broadcast;
 
-/// Broadcast bus with a bounded buffer.
+/// Broadcast bus with a bounded buffer; a lagging client is told it lagged.
 ///
-/// The buffer is generous because streaming produces bursts; a slow client that
-/// falls behind gets `RecvError::Lagged` rather than silently dropping the
+/// # Invariant
+///
+/// A client that falls behind gets `RecvError::Lagged`. It never slows the
 /// server's throughput, and the TUI shows that it skipped frames.
 #[derive(Clone)]
 pub struct EventBus {

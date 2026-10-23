@@ -1,18 +1,6 @@
 //! The machine's LLM roster: `~/.agents/llm.toml`.
 //!
-//! One file already describes every provider this machine can reach: endpoints,
-//! keys, model catalogue, context windows. Reading it is what lets a session say
-//! `--llm deepseek-official/deepseek-flash` and be understood, instead of every
-//! caller restating a base URL and the name of an environment variable.
-//!
-//! The file carries a lot this server has no use for -- prices, quota
-//! endpoints, holiday calendars. Only what a request needs is parsed and the
-//! rest is ignored, so the roster can keep growing without breaking this.
-//!
-//! Nothing here is fatal. A missing roster is a server that falls back to its
-//! own defaults; a broken one is the same, plus a line saying why. Refusing to
-//! start because a file we merely *prefer* is malformed would make the roster a
-//! worse dependency than not having it.
+//! See `docs/notes/server-providers.md`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -20,8 +8,7 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
-/// Where the roster lives, relative to the home directory. DSH reads the same
-/// path, which is the point: one file describes this machine.
+/// Where the roster lives. DSH reads the same path: one file, this machine.
 pub const DEFAULT_PATH: &str = ".agents/llm.toml";
 
 /// Everything `llm.toml` says about one provider.
@@ -49,17 +36,11 @@ pub struct Endpoint {
 pub struct Model {
     pub id: String,
     pub name: String,
-    /// Input+output ceiling, when the provider publishes one. This is what a
-    /// `--compact_threshold` percentage is a percentage *of*.
+    /// Input+output ceiling when published; a `--compact_threshold` percent is of it.
     pub context: Option<u64>,
-    /// Paths this model is known to accept. Empty means "not stated", which is
-    /// treated as "assume the provider's OpenAI endpoint works" -- the roster
-    /// predates this server and most entries never filled the field in.
+    /// Request paths this model accepts; empty means unstated, assume OpenAI.
     pub endpoints: Vec<String>,
-    /// Reasoning levels this model accepts, as the roster spells them
-    /// (`low`, `xhigh`, `on`/`off`, ...). Empty means "not stated", and a level
-    /// is then passed through untranslated: letting the provider answer for
-    /// itself is better than this server inventing a mapping.
+    /// Levels this model accepts, as the roster spells them; empty passes through.
     pub reasoning_levels: Vec<String>,
     /// The level the roster says to use when nobody asked for one.
     pub reasoning_default: Option<String>,
@@ -75,15 +56,9 @@ impl Model {
     }
 }
 
-/// One resolved entry: everything a request needs, and nothing else.
-/// Where a request goes: everything `--llm` names, and nothing about whose key
-/// pays for it.
+/// One resolved entry: where a request goes, nothing about whose key pays.
 ///
-/// Kept separate from [`Choice`] because the two callers need different things.
-/// `--llm` must be able to say "this is wrong" at the moment it is typed, so it
-/// wants a key. Startup must not: the server's own key comes from a longer
-/// chain (an exported `GONGGA_API_KEY`, the DSH credential store), and refusing
-/// to boot because `llm.toml` did not hold one would be a step backwards.
+/// See `docs/notes/server-providers.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     pub provider: String,
@@ -93,13 +68,10 @@ pub struct Entry {
     pub base_url: String,
     /// Variable the provider says its key lives in, when it says.
     pub api_key_env: Option<String>,
-    /// The key as written in the file, when it was written there. `None` is
-    /// normal: a roster that names a variable does not have to carry a secret.
+    /// The key as written in the file; `None` is normal when a var is named.
     pub key: Option<String>,
     pub context: Option<u64>,
-    /// What the roster says the model's reasoning levels are, in the roster's
-    /// own spelling. Copied onto the entry so a command can validate a level
-    /// without going back to the model list.
+    /// The roster's reasoning levels, in its own spelling, for validating a level.
     pub reasoning_levels: Vec<String>,
     pub reasoning_default: Option<String>,
     pub reasoning_mapping: HashMap<String, String>,
@@ -108,10 +80,11 @@ pub struct Entry {
 impl Entry {
     /// The level to send for `requested`, or why there is none.
     ///
-    /// Resolved at `set_session` time rather than per request: a level the
-    /// model does not take is a typo in the command that made it, and the
-    /// roster can say what it does take while the caller is still looking at
-    /// what they typed.
+    /// # Invariant
+    ///
+    /// A returned level is always one the roster lists for this model, mapped
+    /// through `reasoning_mapping`; otherwise the error names the levels that
+    /// would work. See `docs/notes/server-providers.md`.
     pub fn reasoning_effort(&self, requested: &str) -> Result<String, String> {
         if self.reasoning_levels.is_empty() {
             return Ok(requested.to_string());
@@ -151,8 +124,7 @@ pub struct Choice {
 pub struct Catalog {
     path: Option<PathBuf>,
     providers: Vec<Provider>,
-    /// Why the file could not be read, when it could not be. Kept rather than
-    /// returned so startup can proceed and still report it once.
+    /// Why the file could not be read, kept so startup can report it once and go on.
     problem: Option<String>,
 }
 
@@ -199,10 +171,7 @@ impl Catalog {
         &self.providers
     }
 
-    /// Every `provider/model` worth offering a caller, in file order. This is
-    /// the completion list for `--llm`, so it includes entries whose key does
-    /// not resolve yet: choosing one and then being told to set a variable is a
-    /// better path than the model never appearing at all.
+    /// Every `provider/model` worth offering, in file order, keys unresolved too.
     pub fn specs(&self) -> Vec<String> {
         let mut out = Vec::new();
         for p in &self.providers {
@@ -214,8 +183,6 @@ impl Catalog {
     }
 
     /// Resolves `provider/model` into a destination plus the key to use for it.
-    /// This is what `--llm` is checked against: if it resolves, the next turn
-    /// has somewhere to go and something to authenticate with.
     pub fn resolve(&self, spec: &str) -> Result<Choice, String> {
         self.resolve_with(spec, &lookup_env)
     }
@@ -232,8 +199,7 @@ impl Catalog {
             .and_then(|e| self.resolve_with(&e.spec(), &lookup_env).ok())
     }
 
-    /// The same search as [`Self::find_model`], without requiring a key: what
-    /// startup needs to turn `model = "deepseek-flash"` into a provider.
+    /// The same search as [`Self::find_model`], without requiring a key at all.
     pub fn find_model_entry(&self, model: &str) -> Option<Entry> {
         self.providers
             .iter()
@@ -241,8 +207,7 @@ impl Catalog {
             .and_then(|p| self.entry_with(&format!("{}/{}", p.id, model)).ok())
     }
 
-    /// The first model of a provider, for `provider` configured without a
-    /// model: naming only the company still has to pick something.
+    /// The first model of `provider`, for a provider configured without a model.
     pub fn first_entry_of(&self, provider_id: &str) -> Option<Entry> {
         let provider = self.providers.iter().find(|p| p.id == provider_id)?;
         let model = provider.models.first()?;
@@ -250,12 +215,13 @@ impl Catalog {
             .ok()
     }
 
-    /// The entry a server with nothing configured should use: the first one
-    /// that has an OpenAI-compatible endpoint and can speak Responses.
+    /// The entry a server with nothing configured should use: the first one that
+    /// speaks Responses.
     ///
-    /// File order is the preference order -- whoever keeps this roster puts the
-    /// provider they would reach for first at the top -- so this only skips
-    /// what cannot work rather than re-ranking what is left.
+    /// # Invariant
+    ///
+    /// File order is the preference order: the scan only skips what cannot work,
+    /// never re-ranks what is left. See `docs/notes/server-providers.md`.
     pub fn default_entry(&self) -> Option<Entry> {
         for p in &self.providers {
             for m in &p.models {
@@ -353,8 +319,7 @@ fn lookup_env(name: &str) -> Option<String> {
     std::env::var(name).ok()
 }
 
-/// The endpoint to talk to. `openai-responses` is preferred when a provider
-/// lists both flavours, because it is the one this server actually speaks.
+/// The endpoint to talk to; `openai-responses` beats the other flavours.
 fn openai_endpoint(provider: &Provider) -> Option<&Endpoint> {
     provider
         .endpoints
@@ -370,9 +335,11 @@ fn openai_endpoint(provider: &Provider) -> Option<&Endpoint> {
 
 /// The key, and what to call it in a message.
 ///
-/// The environment wins over the literal: a file that names both is a file
-/// waiting for the literal to be rotated out, and an exported variable is the
-/// operator's most recent word on the subject.
+/// # Invariant
+///
+/// An exported environment variable wins over a literal key in the file.
+///
+/// See `docs/notes/server-providers.md`.
 fn credential(
     provider: &Provider,
     lookup: &dyn Fn(&str) -> Option<String>,
@@ -390,9 +357,10 @@ fn credential(
 
 /// How many tokens `n%` of a context window is.
 ///
-/// This is exact arithmetic on a number the roster states: no character-to-token
-/// guesswork belongs here. Converting the transcript into tokens is the agent's
-/// job, and it does that by measurement rather than by a constant (see `Meter`).
+/// # Invariant
+///
+/// A non-zero percentage never rounds down to zero: zero reads as compression
+/// being off. See `docs/notes/server-providers.md`.
 pub fn tokens_for_percent(context: u64, percent: u8) -> u64 {
     if percent == 0 {
         return 0;
@@ -442,9 +410,7 @@ struct FileModel {
     context: Option<u64>,
     #[serde(default)]
     endpoints: Vec<String>,
-    /// Levels this model accepts, as the roster spells them. Empty means the
-    /// roster does not say, which is the common case for anything older than
-    /// the field.
+    /// Levels this model accepts, as the roster spells them; empty means unstated.
     #[serde(default)]
     reasoning_levels: Vec<String>,
     #[serde(default)]
@@ -457,9 +423,7 @@ struct FileModel {
 
 fn parse(text: &str) -> Result<Vec<Provider>, toml::de::Error> {
     let file: FileRoster = toml::from_str(text)?;
-    // Duplicate ids would make `--llm` ambiguous, and the resolution above
-    // silently takes the first. Keep the first and drop the rest rather than
-    // pretend both exist.
+    // Duplicate ids make `--llm` ambiguous; keep the first, drop the rest.
     let mut seen: HashMap<String, ()> = HashMap::new();
     let providers = file
         .provider
@@ -507,10 +471,7 @@ fn parse(text: &str) -> Result<Vec<Provider>, toml::de::Error> {
     Ok(providers)
 }
 
-/// The roster for this process, read once.
-///
-/// One file, one read: the command catalog asks for it to build completions on
-/// every connect, and the agent asks for it on every turn that names a provider.
+/// The roster for this process, read once: every connect and turn asks for it.
 pub fn roster() -> &'static Catalog {
     static ROSTER: OnceLock<Catalog> = OnceLock::new();
     ROSTER.get_or_init(|| {
@@ -721,8 +682,7 @@ key = "k"
     fn a_percentage_becomes_a_token_budget() {
         assert_eq!(tokens_for_percent(1_000_000, 10), 100_000);
         assert_eq!(tokens_for_percent(1_000_000, 0), 0);
-        // Never zero for a real percentage: zero reads as "compression is off"
-        // in the agent, which is the opposite of what was asked.
+        // Never zero for a real percentage: zero reads as compression being off.
         assert_eq!(tokens_for_percent(10, 1), 1);
     }
 
@@ -771,9 +731,7 @@ key = "second"
         assert_eq!(providers[0].endpoints[0].base_url, "https://one.example/v1");
     }
 
-    /// The roster's reasoning fields are what `--thinking-effort` is checked
-    /// against, and the mapping is what turns a level a caller knows
-    /// (`medium`) into one the model actually takes (`high`).
+    /// `--thinking-effort` is checked against these, and the mapping translates.
     #[test]
     fn reasoning_levels_are_read_and_mapped() {
         let text = r#"
@@ -803,9 +761,7 @@ key = "k"
         );
     }
 
-    /// A level is mapped first, then checked: what the model is told is always
-    /// one of the levels the roster says it takes, and a level it does not take
-    /// is refused with the ones it does.
+    /// A level is mapped first, then checked against what the model takes.
     #[test]
     fn a_level_is_mapped_then_checked() {
         let entry = Entry {
@@ -834,8 +790,7 @@ key = "k"
             "the refusal has to say what would work: {refused}"
         );
 
-        // A roster that says nothing about levels cannot refuse one: the
-        // provider is the only party that knows, so the level goes through.
+        // A roster silent on levels cannot refuse one: the level goes through.
         let silent = Entry {
             reasoning_levels: Vec::new(),
             reasoning_mapping: Default::default(),

@@ -15,16 +15,12 @@ pub const DEFAULT_DB: &str = "gongga.db";
 pub const DEFAULT_BASE_URL: &str = "https://api.minimax.cn/v1";
 pub const DEFAULT_MODEL: &str = "MiniMax-M3.1-Flash";
 pub const DEFAULT_API_KEY_ENV: &str = "MINIMAX_CN_API_KEY";
-/// Tool output larger than this is capped and spilled to disk. Sized so a
-/// ordinary command still comes back whole while a `cat` of a source file does
-/// not smuggle the whole file into every later request.
+/// Tool output larger than this is capped and spilled to disk, keeping `cat`s out
+/// of later requests.
 pub const DEFAULT_MAX_OUTPUT_CHARS: usize = 8_000;
-/// Compress once a single request would carry more than this many input tokens.
-/// Only a fallback for a model whose context window the roster does not state;
-/// otherwise the threshold is a share of the window itself.
+/// Input-token ceiling that triggers compression; fallback with no roster window.
 pub const DEFAULT_COMPRESS_ABOVE_TOKENS: u64 = 40_000;
-/// Messages kept verbatim after a compression: enough that the model still has
-/// the last few steps in full, not just a paraphrase of them.
+/// Messages kept verbatim after a compression: the last few steps stay in full.
 pub const DEFAULT_KEEP_RECENT: usize = 30;
 
 /// Everything the server needs to boot.
@@ -43,15 +39,12 @@ pub struct Config {
 
 #[derive(Debug, Clone)]
 pub struct LlmConfig {
-    /// Roster id of the provider this configuration points at, when it points
-    /// at one. `None` means the built-in default was used because the machine
-    /// has no roster, and it is only used in messages.
+    /// Roster provider id this configuration points at; only used in messages.
     pub provider: Option<String>,
     /// Base URL of an OpenAI-compatible Responses API. Defaults to MiniMax CN.
     pub base_url: String,
     pub model: String,
-    /// Context window of `model`, when something told us. `--compact_threshold`
-    /// is a percentage of this, so without it a percentage has no meaning.
+    /// Context window of `model`; `--compact_threshold` is a percentage of it.
     pub context: Option<u64>,
     /// Name of the environment variable holding the API key.
     pub api_key_env: String,
@@ -63,21 +56,19 @@ pub struct LlmConfig {
     pub max_output_tokens: Option<u32>,
     /// Ask the API not to retain server-side state; we replay the transcript.
     pub store: bool,
-    /// Wall-clock ceiling on one request, streaming included. Without it a
-    /// provider that accepts the connection and then goes quiet parks the turn
-    /// forever: nothing in the process is waiting on a socket that ever
-    /// finishes, and no operator is watching to notice.
+    /// Wall-clock ceiling on one request, streaming included.
+    ///
+    /// # Invariant
+    ///
+    /// Past it the turn fails and can be retried, rather than waiting forever on
+    /// a socket that never finishes. See `docs/notes/server-config.md`.
     pub request_timeout: Duration,
-    /// How long a stream may stay silent between chunks before it counts as
-    /// broken. Shorter than `request_timeout` on purpose: a response that is
-    /// still arriving is fine, one that stalled is not.
+    /// Silence between chunks that counts as a broken stream, kept below
+    /// `request_timeout` on purpose.
     pub idle_timeout: Duration,
-    /// Extra attempts after a request fails, times out, or comes back with no
-    /// content at all. 0 means one attempt and then the turn fails.
+    /// Extra attempts after a failure or an empty response; 0 means one attempt.
     pub max_retries: u32,
-    /// First retry delay; every further attempt doubles it, capped at
-    /// [`MAX_RETRY_DELAY`], so a provider having a bad minute is waited out
-    /// rather than hammered.
+    /// First retry delay; doubles per attempt up to the [`MAX_RETRY_DELAY`] cap.
     pub retry_base: Duration,
 }
 
@@ -87,22 +78,19 @@ pub struct BashConfig {
     pub program: Option<PathBuf>,
     /// How long a `bash` call waits before returning.
     ///
-    /// Not a budget on the command: a command still running when this passes is
-    /// left alone, keeps running, and posts its output to the session when it
-    /// finishes. The number decides when the model stops waiting, nothing else.
+    /// # Invariant
+    ///
+    /// Not a budget on the command: one still running when this passes keeps
+    /// running and posts its output when it finishes.
     pub timeout: Duration,
-    /// Tool output longer than this is capped: only the head and the tail come
-    /// back to the model, the whole thing is written to disk. Without this a
-    /// single `cat` of a source file parks tens of kilobytes in the transcript
-    /// and every later step pays for it again.
+    /// Tool output longer than this is capped: head and tail only, all of it on disk.
     pub max_output_chars: usize,
 }
 
 #[derive(Debug, Clone)]
 pub struct AgentConfig {
-    /// Fold the older transcript into a summary once a request would carry more
-    /// than this many input tokens. 0 disables compression, which will
-    /// eventually hit the provider's context limit.
+    /// Input tokens above which the older transcript is folded into a summary;
+    /// 0 disables it.
     pub compress_above_tokens: u64,
     /// How many of the most recent messages a compression keeps verbatim.
     pub keep_recent: usize,
@@ -173,11 +161,12 @@ struct FileTransport {
 impl Config {
     /// Loads the config, creating the home directory if it does not exist.
     ///
-    /// A flag beats the file, which beats the environment: `--home` is the most
-    /// specific thing the operator typed, and it also decides where the config
-    /// is looked for when `--config` is not given. Everything downstream --
-    /// database, logs, detached-job records, the instance lock -- already keys
-    /// off this one field, which is why there is nothing else to override.
+    /// # Invariant
+    ///
+    /// A flag beats the file, which beats the environment; everything downstream
+    /// -- db, logs, job records, the instance lock -- keys off `home`.
+    ///
+    /// See `docs/notes/server-config.md`.
     pub fn load_with_home(
         config_path: Option<&Path>,
         home_override: Option<&Path>,
@@ -217,9 +206,7 @@ impl Config {
             .unwrap_or_else(|| DEFAULT_BIND.to_string())
             .parse()?;
 
-        // Without a key anyone on the network could drive this machine's shell,
-        // so an unconfigured server mints one and writes it down rather than
-        // starting open.
+        // No key means anyone on the network drives this shell; mint one and store it.
         let key = env_or("GONGGA_KEY")
             .or_else(|| file.server.as_ref().and_then(|s| s.key.clone()))
             .filter(|v| !v.is_empty())
@@ -232,10 +219,7 @@ impl Config {
             });
 
         let llm_file = file.llm.unwrap_or_default();
-        // The roster (`~/.agents/llm.toml`) is the machine's own list of
-        // providers, endpoints and model context windows. Consulting it means
-        // the common case needs no configuration at all, and it is the same
-        // list `--llm` accepts, so there is one answer to "what models exist".
+        // The roster is the machine's own provider list; using it needs no config.
         let roster = crate::providers::roster();
         let entry = pick_entry(
             roster,
@@ -248,9 +232,7 @@ impl Config {
             .unwrap_or_else(|| DEFAULT_API_KEY_ENV.to_string());
         let api_key = env_or("GONGGA_API_KEY")
             .or_else(|| std::env::var(&api_key_env).ok())
-            // The roster is the machine's own answer, so it is consulted before
-            // the DSH credential store rather than after: a file that names the
-            // key is more specific than one that only names a variable.
+            // The roster's own key is more specific than the DSH store, so first.
             .or_else(|| {
                 entry
                     .as_ref()
@@ -294,10 +276,7 @@ impl Config {
             max_retries: llm_file
                 .max_retries
                 .or_else(|| env_or("GONGGA_LLM_MAX_RETRIES").and_then(|v| v.parse().ok()))
-                // 0 is no ceiling: retry until the turn is cancelled. A long
-                // run must not die because a provider had a bad minute at hour
-                // three, and nothing about a provider's recovery time is
-                // knowable in advance.
+                // 0 is no ceiling: retry until the turn is cancelled.
                 .unwrap_or(0),
             retry_base: Duration::from_millis(
                 llm_file
@@ -311,6 +290,7 @@ impl Config {
         let bash = BashConfig {
             program: env_path("GONGGA_BASH")
                 .or(bash_file.program)
+                .map(shell_program)
                 .or_else(detect_git_bash),
             timeout: Duration::from_millis(
                 bash_file
@@ -448,12 +428,11 @@ impl Config {
 
 /// Picks the roster entry the server should talk to.
 ///
-/// Precedence is "the more specific word wins": a provider and a model name an
-/// exact entry; a model alone finds the provider that carries it; nothing at
-/// all takes the roster's first usable entry. A configuration that names
-/// something the roster cannot place is a warning rather than a failure -- the
-/// built-in default still gets the server up, and the line says what was
-/// actually used, which is how a typo is found.
+/// # Invariant
+///
+/// A provider and a model name an exact entry, a model alone finds its provider,
+/// neither takes the first usable entry; a spec the roster cannot place warns and
+/// falls back rather than failing. See `docs/notes/server-config.md`.
 fn pick_entry(
     roster: &crate::providers::Catalog,
     provider: Option<String>,
@@ -489,12 +468,9 @@ fn pick_entry(
 }
 
 impl LlmConfig {
-    /// The same transport, retries and instructions, pointed at another roster
-    /// entry.
+    /// The same timeouts, retries and instructions, pointed at another entry.
     ///
-    /// A session that names its own `--llm` is choosing a different brain, not
-    /// a different protocol: timeouts, retry policy and the shell instructions
-    /// stay exactly as configured.
+    /// See `docs/notes/server-config.md`.
     pub fn for_entry(&self, entry: &crate::providers::Entry, api_key: String) -> Self {
         let mut cfg = self.clone();
         cfg.provider = Some(entry.provider.clone());
@@ -507,10 +483,7 @@ impl LlmConfig {
     }
 }
 
-/// Renders a path as a TOML basic string.
-///
-/// Windows separators are normalised to `/`: TOML would read `\` as an escape,
-/// and every Windows API accepts forward slashes anyway.
+/// Renders a path as a TOML basic string; `\` becomes `/` so it is no escape.
 fn toml_path(path: &Path) -> String {
     path.to_string_lossy()
         .replace('\\', "/")
@@ -551,10 +524,7 @@ fn home_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".gongga"))
 }
 
-/// Reads a provider key out of `~/.dsh/.credentials.yaml`.
-///
-/// Only the flat `refs:` mapping is understood. The file is DSH's, not ours, so
-/// anything it adds elsewhere is ignored rather than parsed.
+/// Reads a provider key out of `~/.dsh/.credentials.yaml`; only `refs:` is read.
 fn dsh_credential(name: &str) -> Option<String> {
     let path = dirs::home_dir()?.join(".dsh").join(".credentials.yaml");
     let text = std::fs::read_to_string(path).ok()?;
@@ -656,20 +626,36 @@ pub(crate) fn detect_git_bash() -> Option<PathBuf> {
         for c in candidates {
             let p = PathBuf::from(c);
             if p.exists() {
-                return Some(p);
+                return Some(shell_program(p));
             }
         }
     }
-    which::which("bash").ok()
+    which::which("bash").ok().map(shell_program)
+}
+
+/// The real shell behind a launcher: spawning the launcher would record a pid that works on nothing.
+pub(crate) fn shell_program(program: PathBuf) -> PathBuf {
+    let Some(name) = program.file_name() else {
+        return program;
+    };
+    let Some(bin) = program.parent() else {
+        return program;
+    };
+    if bin.file_name().and_then(|n| n.to_str()) != Some("bin") {
+        return program;
+    }
+    let Some(root) = bin.parent() else {
+        return program;
+    };
+    let real = root.join("usr").join("bin").join(name);
+    if real.is_file() { real } else { program }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The instructions are assembled by line continuation, where a stray
-    /// escape or a missing space is invisible until a model reads the prompt
-    /// as one run-on line.
+    /// Line continuations hide a stray escape until a model reads the prompt.
     #[test]
     fn the_instructions_are_well_formed() {
         let text = default_instructions();
@@ -712,8 +698,7 @@ mod tests {
 
     #[test]
     fn continuation_lines_are_not_treated_as_keys() {
-        // A folded value keeps its leading spaces, which is why the block test
-        // above matters: only two-space keys belong to `refs`.
+        // A folded value keeps its leading spaces, so only two-space keys count.
         let text = "refs:\n  A: 'x'\n    continued\n  B: 'y'\n";
         assert_eq!(dsh_ref(text, "B").as_deref(), Some("y"));
     }
@@ -739,9 +724,8 @@ mod tests {
         assert_eq!(cfg.server.unwrap().key.as_deref(), Some("abc"));
     }
 
-    /// The roster is what makes "no [llm] section" work. These are the four
-    /// ways a configuration can name something, and the one way it can be
-    /// wrong: a typo must not stop the server from starting.
+    /// The four ways a config names a provider, and a typo that must not stop
+    /// startup.
     #[test]
     fn the_roster_answers_what_the_config_does_not_say() {
         let d = tempfile::tempdir().unwrap();
@@ -807,5 +791,25 @@ key = "k2"
     fn expands_tilde_paths() {
         let p = expand(PathBuf::from("~/gongga/db.sqlite"));
         assert!(!p.to_string_lossy().starts_with("~"));
+    }
+
+    /// A launcher starts the real shell, so the path resolves to that shell.
+    #[test]
+    fn a_launcher_resolves_to_the_shell_it_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        let usr = dir.path().join("usr/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&usr).unwrap();
+        let launcher = bin.join("bash.exe");
+        std::fs::write(&launcher, b"launcher").unwrap();
+        // Nothing to resolve to yet: the launcher is the only shell there is.
+        assert_eq!(shell_program(launcher.clone()), launcher);
+        let real = usr.join("bash.exe");
+        std::fs::write(&real, b"shell").unwrap();
+        assert_eq!(shell_program(launcher), real);
+        // A shell that is not a launcher keeps its path.
+        let direct = usr.join("elsewhere.exe");
+        assert_eq!(shell_program(direct.clone()), direct);
     }
 }

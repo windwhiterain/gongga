@@ -1,21 +1,8 @@
-//! The input line: editing primitives plus the completion popup.
-//!
-//! Nothing here knows what a command is. The caller hands this module an
-//! arbitrary list of candidates for the token under the cursor and it renders
-//! the popup; deciding *what* completes is the command layer's job, and both
-//! the candidates and the token split come from there.
-//!
-//! What stays here is the part that is genuinely the editor's: what a keystroke
-//! does to the text, and how a chosen candidate is spliced back in.
+//! The input line: editing primitives, plus a popup someone else fills.
 
 use crate::Completion;
 
-/// A text editor with a byte cursor.
-///
-/// Multi-line, because a message to the agent is prose: a paragraph break is
-/// part of what is being said, not a second message. The breaks live in the
-/// text itself (`'\n'`), so everything that already treats the text as an
-/// opaque string -- history, submission, the wire -- keeps working unchanged.
+/// A text editor with a byte cursor; multi-line, breaks being `'\n'` in the text.
 #[derive(Debug, Clone, Default)]
 pub struct InputLine {
     text: String,
@@ -85,11 +72,7 @@ impl InputLine {
         }
     }
 
-    /// Byte range of the logical line the cursor is on, newline excluded.
-    ///
-    /// Logical lines, not the rows the terminal wrapped them into: a break the
-    /// operator typed is a place they can navigate to, and a wrap is only where
-    /// the glass ended.
+    /// Byte range of the logical line the cursor is on; a wrap is not a line.
     fn line_bounds(&self) -> (usize, usize) {
         let start = self.text[..self.cursor]
             .rfind('\n')
@@ -110,14 +93,12 @@ impl InputLine {
         self.cursor = self.line_bounds().1;
     }
 
-    /// End of the whole text, not of the line: where a restored line and a
-    /// recalled history entry want the cursor.
+    /// End of the whole text, not of the line: where a restored draft leaves the cursor.
     pub fn to_document_end(&mut self) {
         self.cursor = self.text.len();
     }
 
-    /// Moves to the line above, keeping the column. False when there is no line
-    /// above, which is what lets the caller fall back to history.
+    /// Moves to the line above, keeping the column; false when there is none.
     pub fn up(&mut self) -> bool {
         let (start, _) = self.line_bounds();
         if start == 0 {
@@ -158,11 +139,7 @@ impl InputLine {
     }
 }
 
-/// `at`, moved back to the nearest char boundary.
-///
-/// Vertical moves keep a byte column, and a column that lands inside a wide
-/// character has to round down rather than split it: slicing a `String` at a
-/// non-boundary panics.
+/// `at`, rounded down to a char boundary, since slicing off one panics.
 fn boundary(text: &str, at: usize) -> usize {
     let mut at = at.min(text.len());
     while at > 0 && !text.is_char_boundary(at) {
@@ -262,9 +239,7 @@ mod tests {
         assert_eq!(line.text(), "xac");
     }
 
-    /// A message can have paragraphs, so the text has to survive a newline and
-    /// the vertical moves have to walk them -- otherwise the second paragraph
-    /// is reachable only by arrowing through the first one character at a time.
+    /// A message can have paragraphs, so the vertical moves must walk typed newlines.
     #[test]
     fn a_newline_starts_a_line_the_cursor_can_leave() {
         let mut line = InputLine::default();
@@ -300,8 +275,7 @@ mod tests {
     fn vertical_moves_round_down_to_a_char_boundary() {
         let mut line = InputLine::default();
         line.insert_str("中文\nab");
-        // Column 2 on the second line; `中` is three bytes, so the same column
-        // on the first line is inside it and has to round back to its start.
+        // Column 2 on line two; `中` is three bytes, so that column splits it.
         line.up();
         assert_eq!(line.cursor, 0);
         assert!(line.text().is_char_boundary(line.cursor));

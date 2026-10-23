@@ -1,24 +1,6 @@
 //! `gongga-cli`: the command layer.
 //!
-//! This crate owns the command surface: it knows the catalog the server
-//! publishes, keeps the sticky arguments, and turns one command's tokens into
-//! either a local action or a message on the wire.
-//!
-//! It does not own the *input line*. Whether a line is a `/command` or prose for
-//! the agent is the interactive front-end's decision ([`Client::command`] and
-//! [`Client::message`] are the two things that decision can ask for), so the
-//! one-shot path -- `gongga send_message --message hi` -- never has to guess: its
-//! argv is already tokens.
-//!
-//! It knows nothing about terminals. That is the point of the split: anything
-//! that can present [`Sink`] events can drive it, and the interactive client is
-//! one such thing (the `gongga` binary in `crates/tui`). Nothing here names a
-//! rendering crate, so the command layer builds into a script, a test, or a UI
-//! without dragging a terminal along.
-//!
-//! Wire encoding stays here too: [`Link`] is the only thing that speaks the
-//! protocol, which is what lets a front-end hold a link without learning what a
-//! frame is.
+//! See `docs/notes/cli-lib.md`.
 
 pub mod catalog;
 pub mod commands;
@@ -47,15 +29,7 @@ use crate::commands::{parse_args, render_args};
 const DEFAULT_SERVER: &str = "127.0.0.1:9700";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
-// The parts of the command line that say *where* to connect.
-//
-// Separate from `Args` because a front-end has the same three flags but no
-// commands: it flattens this in and gets the resolution rules (flag, then
-// environment, then config.toml) from one definition.
-//
-// Deliberately *not* a doc comment: clap folds a flattened struct's `///` text
-// into the parent command's about line, which would replace the program's own
-// description with this paragraph.
+// Where to connect. Not a doc comment: clap would fold it into the about line.
 #[derive(Debug, Clone, clap::Args)]
 pub struct Connection {
     /// Server address, e.g. `127.0.0.1:9700`.
@@ -70,11 +44,7 @@ pub struct Connection {
 }
 
 impl Connection {
-    /// Where to dial and with which key.
-    ///
-    /// Resolved once per process: a running client does not re-read
-    /// config.toml between retries, because a file edited mid-outage would make
-    /// two attempts of the same reconnect mean two different servers.
+    /// Where to dial and with which key, resolved once per process.
     pub fn endpoint(&self) -> anyhow::Result<Endpoint> {
         let addr = resolve_server(self)?;
         let key = resolve_key(self).ok_or_else(|| {
@@ -97,11 +67,8 @@ pub struct Args {
 }
 
 impl Args {
-    /// Rejects a global flag written after the command name.
-    ///
-    /// clap hands an external subcommand every token after it, so `gongga
-    /// send_message --server 1.2.3.4:1` would take `--server` as one of the
-    /// command's own arguments and then quietly dial the default server.
+    /// Rejects a global flag written after the command name, where clap would
+    /// hide it.
     pub fn check_flag_order(&self) -> anyhow::Result<()> {
         let Some(Sub::Cmd(command)) = &self.command else {
             return Ok(());
@@ -122,13 +89,7 @@ impl Args {
 
 #[derive(Debug, clap::Subcommand)]
 pub enum Sub {
-    /// Anything but a flag is the command itself, because what the client can
-    /// run is decided by the server and only known after the handshake: there
-    /// is no fixed list of subcommands to declare here.
-    ///
-    /// `gongga set_session --name main`. One command per process, the answer on
-    /// stdout as JSON lines, then exit — this is how a script (or the model in
-    /// a `bash` tool) drives the harness.
+    /// The command itself, unknowable until the handshake; one per process.
     #[command(external_subcommand)]
     Cmd(Vec<String>),
 }
@@ -138,16 +99,9 @@ pub fn parse_argv() -> Args {
     Args::parse()
 }
 
-// ---------------------------------------------------------------------------
 // Where rendered output goes
-// ---------------------------------------------------------------------------
 
-/// What a rendered line is, which decides how it is presented.
-///
-/// This is the command layer's own vocabulary: the layer that reads events is
-/// the one that knows a line came from a tool call or a failure, so it says so.
-/// A front-end turns that into a colour; it does not decide what it is looking
-/// at.
+/// What a rendered line is; the front-end only colours it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineKind {
     System,
@@ -161,11 +115,8 @@ pub enum LineKind {
     Error,
 }
 
-/// Everything the client can ask a front-end to show.
-///
-/// The interactive client (`crates/tui`) implements it with styled lines;
-/// one-shot mode emits the events themselves as JSON and renders nothing.
-/// Neither implementation knows what produced the text.
+/// Everything the client can ask a front-end to show; neither implementation
+/// knows what produced the text.
 pub trait Sink {
     fn line(&mut self, kind: LineKind, text: &str);
     fn stream(&mut self, key: &str, kind: LineKind, prefix: &str, text: &str, done: bool);
@@ -175,12 +126,6 @@ pub trait Sink {
 
 /// The one-shot mode's sink: it prints nothing, but it remembers what went
 /// wrong.
-///
-/// What a script gets is the event stream itself, one JSON object per line,
-/// emitted where the events arrive. Anything the client renders for humans
-/// (banners, status lines, streamed text) belongs to the TUI only — except
-/// errors, which are the one thing a caller with no screen still needs, since
-/// a line rejected before it ever reached the server produces no event at all.
 #[derive(Default)]
 struct NullSink {
     errors: Vec<String>,
@@ -211,15 +156,11 @@ pub enum Submission {
     Local,
     /// Rejected, with the reason already reported through the sink.
     Rejected,
-    /// Nothing was sent because there is no link. Distinct from a rejection:
-    /// the line is valid, its turn had simply not come, so the front-end puts
-    /// it back in the prompt instead of treating it as a mistake.
+    /// Nothing was sent because there is no link; the line itself is valid.
     Offline,
 }
 
-// ---------------------------------------------------------------------------
 // Client state
-// ---------------------------------------------------------------------------
 
 pub struct Client {
     catalog: Catalog,
@@ -227,23 +168,14 @@ pub struct Client {
     sessions: Vec<SessionSummary>,
     model: String,
     next_id: u64,
-    /// Whether a link is open right now.
-    ///
-    /// Everything else the client knows about the server — the catalog, the
-    /// sessions, the model — is what the last greeting said. While this is
-    /// false that knowledge is stale by definition, and the status line says so
-    /// rather than showing a model number as if the server were still there.
+    /// Whether a link is open right now; while false, all server knowledge is
+    /// stale.
     connected: bool,
     /// Failed dials since the link went down, so silence is legible.
     attempts: u32,
 }
 
 /// What the operator typed, for the purpose of echoing it back into the log.
-///
-/// Both halves of the grammar reach the same code; the only difference the
-/// operator should see is that a command looks like a command (`/set_session
-/// --session main`) and a message looks like what they wrote. The wire never
-/// sees this distinction: a message is `send_message --message <text>`.
 #[derive(Clone, Copy)]
 enum Echo<'a> {
     /// A `/command`, echoed as typed.
@@ -281,22 +213,14 @@ impl Client {
         id
     }
 
-    /// Feeds one datagram from the link into the client.
-    ///
-    /// Decoding lives here so a front-end never has to name a `ServerMessage`:
-    /// it passes the bytes it got from [`Link::recv`] and reads the result off
-    /// the screen.
+    /// Feeds one datagram from the link into the client, decoding it here.
     pub fn handle_bytes(&mut self, bytes: &[u8], sink: &mut dyn Sink) -> anyhow::Result<()> {
         let msg = decode_server(bytes)?;
         self.handle(msg, sink);
         Ok(())
     }
 
-    /// The completion source for the input line.
-    ///
-    /// The catalog is the same object, shared rather than copied: when a
-    /// greeting replaces the server's half, the popup sees it without the
-    /// front-end being told anything.
+    /// The completion source for the input line, shared rather than copied.
     pub fn completer(&self) -> crate::SharedCompleter {
         Arc::new(self.catalog.clone())
     }
@@ -314,11 +238,8 @@ impl Client {
                 self.catalog.set_server_commands(commands);
                 self.catalog.set_sessions(self.session_names());
                 self.sync_sticky();
-                // A greeting *is* the recovery. There is no separate resync
-                // path: the same message that starts a session also hands back
-                // the catalog and the session list, so a client that redials
-                // after a restart comes up knowing exactly what a fresh one
-                // does. That is the whole reason reconnecting is cheap.
+                // A greeting *is* the recovery: it carries the catalog and
+                // sessions, so a redial comes up like a fresh client.
                 self.connected = true;
                 self.attempts = 0;
                 sink.line(
@@ -415,15 +336,8 @@ impl Client {
         self.catalog.set_sticky_names(&self.sticky.names());
     }
 
-    /// The status line.
-    ///
-    /// Deliberately has no "current session" in it. The only thing that ever
-    /// stood there was the sticky `session` argument, and printing it turned a
-    /// persistant argument into something that looked like a mode the UI was
-    /// in. What is left are facts about the server: its model and how many
-    /// sessions exist — and, when there is no link, that there is no link,
-    /// because a model name with no server behind it is a lie the operator
-    /// cannot see through.
+    /// The status line: server facts only, never a "current session".
+    /// See `docs/notes/cli-lib.md`.
     pub fn refresh(&self, sink: &mut dyn Sink) {
         let facts = if self.connected {
             format!("model {} | {} session(s)", self.model, self.sessions.len())
@@ -454,27 +368,12 @@ impl Client {
         self.refresh(sink);
     }
 
-    /// Runs one command, from argv that is already split into tokens.
-    ///
-    /// This is the whole interface of the one-shot path
-    /// (`gongga send_message --message hi`). There is no grammar here on
-    /// purpose: a command line arrives tokenised by the shell that started the
-    /// process, so there is nothing left to decide. `/name` is the *interactive*
-    /// input line's syntax and prose is not a command; splitting a string back
-    /// into tokens only to re-derive an intention would let the two paths
-    /// disagree, and that disagreement is exactly what made `$GONGGA_CLI cancel`
-    /// -- the form the agent is told to use -- send the word "cancel" to the
-    /// model as a chat message.
+    /// Runs one command from argv already split into tokens; no grammar here.
     pub fn command(&mut self, tokens: Vec<String>, sink: &mut dyn Sink) -> Submission {
         self.submit_tokens(tokens, sink, Echo::Command)
     }
 
-    /// Sends one line of prose to the agent as a message.
-    ///
-    /// The interactive input line decides that a line without `/` is prose; this
-    /// is what it asks for then. Assembled as tokens, never as a line: whatever
-    /// the operator typed -- quotes, `--`, backslashes, a whole paragraph -- is
-    /// one argument, and no parsing rule can turn part of it into a flag.
+    /// Sends one line of prose as one argument of `send_message`.
     pub fn message(&mut self, text: &str, sink: &mut dyn Sink) -> Submission {
         let tokens = vec![
             "send_message".to_string(),
@@ -484,16 +383,7 @@ impl Client {
         self.submit_tokens(tokens, sink, Echo::Message(text))
     }
 
-    /// The one path both entries take, once the caller has decided what the
-    /// line meant.
-    ///
-    /// `echo` is only about what the operator sees: a command is echoed as the
-    /// input line showed it, a message as the prose it was. What goes on the
-    /// wire has the same shape either way.
-    ///
-    /// Everything below is about *commands*: the catalog, sticky arguments,
-    /// required arguments, the wire. That a line without `/` is prose was
-    /// decided before this, by whoever had an input box.
+    /// The one path both entries take. `echo` only changes what is shown.
     fn submit_tokens(
         &mut self,
         tokens: Vec<String>,
@@ -504,11 +394,8 @@ impl Client {
             return Submission::Rejected;
         };
 
-        // Offline, the server's half of the catalog is whatever the last
-        // greeting said — possibly nothing at all, on a client started before
-        // its server. Falling through to "unknown command" would then blame the
-        // operator for the server being down, so say what is really wrong.
-        // Client commands are unaffected: they never leave this process.
+        // Offline, the applied catalog is stale: say so, and leave client
+        // commands alone.
         if !self.connected && !self.catalog.is_client_command(&head) {
             sink.line(
                 LineKind::Error,
@@ -518,32 +405,15 @@ impl Client {
         }
 
         let Some(spec) = self.catalog.command(&head) else {
-            // A command line is not an input line: here a command is just its
-            // name. Two shapes still arrive as something else --
-            //
-            //   `/name ...`          the interactive input line's syntax, carried
-            //                        onto a command line by a script or a model
-            //   `C:/.../Git/name ...` the same thing after Git Bash rewrote the
-            //                        leading `/` into a path, which happens
-            //                        before this program is even started
-            //
-            // -- and both are best answered with the line that was meant.
-            // "unknown command" over a path nobody typed says nothing about the
-            // mistake, and that mistake is easy to make: the agent is told to
-            // drive the harness with `$GONGGA_CLI <command>`.
-            //
-            // The last separator is what finds the name in both shapes. Split by
-            // hand rather than with `Path`, which does not call `\\` a separator
-            // on every platform.
+            // `/name` and a Git Bash-rewritten path get the line that was
+            // meant. See `docs/notes/cli-lib.md`.
             if head.contains('/') || head.contains('\\') {
                 let tail = match head.rfind(['/', '\\']) {
                     Some(at) => &head[at + 1..],
                     None => head.as_str(),
                 };
                 let name = tail.split_whitespace().next().unwrap_or_default();
-                // Whatever followed the name, in either shape: inside the one
-                // argument when the whole line was quoted, or in the remaining
-                // tokens when it was real argv.
+                // Whatever followed the name, in either shape.
                 let mut rest = tail[name.len()..].trim().to_string();
                 if tokens.len() > 1 {
                     if !rest.is_empty() {
@@ -599,12 +469,8 @@ impl Client {
                 return Submission::Rejected;
             }
         };
-        // A flag the command does not take is a typo, not decoration. Passing it
-        // through used to be harmless-looking and wrong: after the session
-        // argument was renamed, `--name x` filled nothing, a sticky `session`
-        // filled the real one, and the command quietly applied to a session the
-        // caller had not named. Checked before `fill` so only what was typed is
-        // judged -- sticky arguments never introduce unknown names.
+        // A flag the command does not take is a typo, not decoration; checked
+        // before `fill`, so only what was typed is judged.
         let unknown: Vec<String> = args
             .keys()
             .filter(|k| !spec.args.iter().any(|a| a.name == **k))
@@ -700,16 +566,10 @@ impl Client {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Front-ends
-// ---------------------------------------------------------------------------
 
 /// One open link: the two halves of the channel, kept together because a link
 /// is either wholly there or wholly gone.
-///
-/// A front-end holds one of these but never sees a frame. Encoding and decoding
-/// stay behind these methods, so "what does the wire look like" remains a
-/// question only this crate answers.
 pub struct Link {
     sink: protocol::ChannelSink,
     stream: protocol::ChannelStream,
@@ -727,27 +587,15 @@ impl Link {
         self.stream.recv().await
     }
 
-    /// Best-effort goodbye, so the server can drop this connection now instead
-    /// of waiting out its idle timeout. Worth nothing if it fails: the caller is
-    /// already closing.
+    /// Best-effort goodbye, so the server can drop this connection now.
     pub async fn goodbye(&self) {
         let _ = self.send(ClientMessage::Bye).await;
     }
 }
 
-/// Headless: one command in, its result out.
+/// Headless: one command in, its JSON events out, then exit.
 ///
-/// Runs one command against the server, prints the events, exits.
-///
-/// `gongga send_message --message hi --session main`. One command per process is
-/// the whole interface: there is no `exec` to wrap it in, and nothing to
-/// configure about the wait — the command returns when the server answers, which
-/// for `send_message` is the moment the message is accepted, not the moment the
-/// turn finishes.
-///
-/// The argv is taken as it arrived. It is not turned back into a line first,
-/// because the line grammar is the interactive front-end's: here a command is
-/// just its name and its arguments, and there is no second meaning to fall into.
+/// See `docs/notes/cli-lib.md`.
 pub async fn run(args: &Args, command: &[String]) -> anyhow::Result<()> {
     let (mut client, mut link) = connect(args).await?;
     let result = run_once(&mut client, &mut link, command).await;
@@ -762,17 +610,16 @@ async fn run_once(client: &mut Client, link: &mut Link, command: &[String]) -> a
     let msg = match client.command(command.to_vec(), &mut printer) {
         // A client-side command already did its work; nothing goes on the wire.
         Submission::Local => return Ok(()),
-        // Rejected before it reached the server, so there is no event to print.
-        // The reason still has to come out: "did not produce a command" would
-        // leave the caller guessing whether the name or an argument was wrong.
+        // Rejected before the server saw it, so there is no event; the reason
+        // still has to come out.
         Submission::Rejected => {
             let why = printer
                 .take_error()
                 .unwrap_or_else(|| "not a command".to_string());
             anyhow::bail!("{why}");
         }
-        // Cannot happen here — this path only runs after a successful dial —
-        // but a silent `todo!()` would be worse than saying so.
+        // Cannot happen here, but a silent `todo!()` would be worse than
+        // saying so.
         Submission::Offline => anyhow::bail!("not connected to the server"),
         Submission::Send(msg) => msg,
     };
@@ -784,11 +631,8 @@ async fn run_once(client: &mut Client, link: &mut Link, command: &[String]) -> a
         .await
         .map_err(|e| anyhow!("send failed: {e}"))?;
 
-    // No deadline: what is being waited for is one command's acknowledgement,
-    // not the work it may start. `send_message` returns as soon as the server
-    // has taken the message, and the turn runs afterwards. A server that stops
-    // answering drops the connection at its own idle timeout, which ends this
-    // wait with an error of its own.
+    // No deadline: what is awaited is the command's acknowledgement, not the
+    // work it may start.
     loop {
         let Some(bytes) = link.recv().await else {
             anyhow::bail!("server disconnected");
@@ -796,8 +640,7 @@ async fn run_once(client: &mut Client, link: &mut Link, command: &[String]) -> a
         let ServerMessage::Event(event) = decode_server(&bytes)? else {
             continue;
         };
-        // The event *is* the output. JSON lines survive `jq`, a model reading
-        // them, and a pipe; rendered text survives none of those.
+        // The event *is* the output; JSON lines survive `jq` and a pipe.
         println!("{}", serde_json::to_string(&event)?);
         if let Event::CmdResult {
             id: rid,
@@ -817,15 +660,9 @@ async fn run_once(client: &mut Client, link: &mut Link, command: &[String]) -> a
     }
 }
 
-// ---------------------------------------------------------------------------
 // Connection
-// ---------------------------------------------------------------------------
 
-/// Where to dial and with which key.
-///
-/// Resolved once per process: a running client does not re-read config.toml
-/// between retries, because a file edited mid-outage would make two attempts of
-/// the same reconnect mean two different servers.
+/// A resolved address and key, fixed for the life of the process.
 #[derive(Clone)]
 pub struct Endpoint {
     addr: SocketAddr,
@@ -842,8 +679,7 @@ pub fn endpoint(args: &Connection) -> anyhow::Result<Endpoint> {
 
 /// Why a dial did not produce a link.
 pub enum DialFailure {
-    /// Asking again cannot help: the key is wrong, the address is malformed.
-    /// Retrying would only hide the reason behind an endless "reconnecting".
+    /// Asking again cannot help: wrong key, malformed address.
     Fatal(anyhow::Error),
     /// Worth retrying: the server is not listening right now.
     Temporary(anyhow::Error),
@@ -867,13 +703,9 @@ impl DialFailure {
     }
 }
 
-/// Dials, authenticates, and waits for the greeting.
+/// Dials, authenticates, and waits for the greeting; binds a fresh local port.
 ///
-/// Every call binds a new local port on purpose. The server routes datagrams by
-/// peer address, so a link that died and came back on the same address would be
-/// handed to the connection the server still remembers — the dead one. A fresh
-/// port makes the SYN unambiguously a new connection, which is also what the
-/// server's own demultiplexer expects.
+/// See `docs/notes/cli-lib.md`.
 pub async fn dial(endpoint: Endpoint) -> Result<(Link, Greeting), DialFailure> {
     let socket = Arc::new(
         UdpSocket::bind("0.0.0.0:0")
@@ -894,8 +726,7 @@ pub async fn dial(endpoint: Endpoint) -> Result<(Link, Greeting), DialFailure> {
         .await
         .map_err(|e| DialFailure::Temporary(anyhow!("handshake failed: {e}")))?;
 
-    // The greeting is the first thing the server sends, so waiting for it is
-    // both the handshake confirmation and the command catalog download.
+    // The greeting confirms the handshake and downloads the catalog.
     let greeting = tokio::time::timeout(HANDSHAKE_TIMEOUT, stream.recv())
         .await
         .map_err(|_| {
@@ -922,30 +753,18 @@ pub async fn dial(endpoint: Endpoint) -> Result<(Link, Greeting), DialFailure> {
     Ok((Link { sink: wire, stream }, Greeting(msg)))
 }
 
-/// The server's greeting, already decoded.
-///
-/// Opaque on purpose: the greeting *is* a `ServerMessage`, and keeping it out of
-/// the signature is what lets a front-end dial without linking against the
-/// protocol. It is applied later rather than inside [`dial`] so that dialling
-/// borrows nothing but its endpoint -- which is what lets the interactive loop
-/// keep dialling while it still owns the screen.
+/// The server's greeting, already decoded and opaque to a front-end.
 pub struct Greeting(ServerMessage);
 
 impl Greeting {
-    /// Brings a client up to date: catalog, session list, model.
-    ///
-    /// This *is* the resync, and there is no separate path -- the same message
-    /// that starts a session also hands back everything a fresh client needs,
-    /// which is the whole reason reconnecting is cheap.
+    /// Brings a client up to date: catalog, session list, model; this is the
+    /// resync.
     pub fn apply(self, client: &mut Client, sink: &mut dyn Sink) {
         client.handle(self.0, sink);
     }
 }
 
 /// The client's own state, built without touching the network.
-///
-/// The catalog starts with only the client's half; the server's half arrives
-/// with the greeting, which is why a client can exist before its server does.
 pub fn build_client(args: &Args) -> Client {
     let home = home_dir(args.conn.home.as_deref());
     let catalog = Catalog::new();
@@ -955,13 +774,9 @@ pub fn build_client(args: &Args) -> Client {
 }
 
 /// Connects and returns a client that already knows the server's catalog.
-///
-/// One-shot mode only: there is no reconnect here, because one command that
-/// cannot reach a server has nothing to wait for. An interactive client dials
-/// from inside its own loop instead, so it can outlive any number of restarts.
+/// One-shot only: it never reconnects.
 async fn connect(args: &Args) -> anyhow::Result<(Client, Link)> {
-    // One-shot mode's caller is usually a script or the model, so the one thing
-    // worth adding to the transport's own words is the usual cause.
+    // One-shot mode's caller is a script: add the usual cause to the words.
     let (link, greeting) = match dial(endpoint(&args.conn)?).await {
         Ok(pair) => pair,
         Err(failure) if failure.is_fatal() => return Err(failure.into_error()),
@@ -993,13 +808,7 @@ fn home_dir(explicit: Option<&Path>) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".gongga"))
 }
 
-/// The process environment, as far as these lookups are concerned.
-///
-/// Injected rather than read directly so the precedence rules can be tested
-/// without mutating global state. That is not tidiness: the harness exports
-/// `GONGGA_SERVER` into every tool call's shell (it is how the agent reaches
-/// its own server), so a test that reads the real environment passes or fails
-/// depending on who launched it.
+/// The process environment, injected so precedence can be tested.
 type Env = dyn Fn(&str) -> Option<String>;
 
 fn process_env(key: &str) -> Option<String> {
@@ -1072,16 +881,11 @@ mod tests {
     }
 
     /// A command as argv, the way the one-shot path receives it.
-    ///
-    /// The command layer takes tokens, not a line, so this is what the tests
-    /// below hand it -- splitting here would be the thing being avoided.
     fn argv(line: &str) -> Vec<String> {
         shell_words::split(line).expect("test argv parses")
     }
 
-    /// `gongga send_message --message "two words"` has to reach the server as
-    /// one argument, not two. Nothing splits or rejoins the argv, so the only
-    /// thing that could go wrong is the tokenizer inside the command layer.
+    /// A quoted argument containing a space has to stay one argument.
     #[test]
     fn an_argument_that_contains_a_space_stays_one_argument() {
         let d = tempfile::tempdir().unwrap();
@@ -1095,14 +899,8 @@ mod tests {
         }
     }
 
-    /// `/` is the interactive input line's syntax. On a command line it is not
-    /// a command name, and answering "unknown command `"/send_message"`" would
-    /// hide the one fact worth knowing -- so the rejection spells the line out.
-    ///
-    /// This is not hypothetical: the agent is told to drive the harness with
-    /// `$GONGGA_CLI <command>`, carried the TUI's `/` onto it, and on Windows
-    /// Git Bash turned the `/word` into a `C:/.../` path before the client ever
-    /// saw it, so the command quietly became a chat message.
+    /// `/` is the interactive line's syntax; the rejection spells out the line
+    /// meant. See `docs/notes/cli-lib.md`.
     #[test]
     fn a_leading_slash_is_refused_with_the_command_line_it_meant() {
         let d = tempfile::tempdir().unwrap();
@@ -1117,13 +915,7 @@ mod tests {
         assert!(said.contains("gongga send_message --message hi"), "{said}");
     }
 
-    /// The same mistake *after* the shell has rewritten it.
-    ///
-    /// Git Bash turns `/get_messages` into a path before the program is even
-    /// started, so what arrives is a path ending in the command's name -- with
-    /// the rest of the line attached when it was quoted as one argument. Both
-    /// shapes have to come back as the command line that was meant, or the
-    /// operator is left with "unknown command" over a path they never typed.
+    /// The same mistake after Git Bash turned `/get_messages` into a path.
     #[test]
     fn a_shell_rewritten_slash_is_recognised() {
         let d = tempfile::tempdir().unwrap();
@@ -1147,10 +939,8 @@ mod tests {
         }
     }
 
-    /// The layering this crate exists for. A command layer that pulled in the
-    /// front-end would drag a terminal into every script and every test that
-    /// only wants to send a command, and the cycle would come back the moment
-    /// the front-end needed a command name.
+    /// The command layer must not depend on a front-end: that is the split this
+    /// crate exists for.
     #[test]
     fn the_command_layer_does_not_depend_on_a_front_end() {
         let manifest = include_str!("../Cargo.toml");
@@ -1165,19 +955,15 @@ mod tests {
                 "the command layer must not depend on {forbidden}:\n{deps}"
             );
         }
-        // And it ships no program of its own: the binary is the composition
-        // root, which lives where both halves are available.
-        // The *comment* in the manifest says the same thing, so match a real
-        // section header rather than the substring.
+        // And no `[[bin]]` either: the binary is the composition root, compared
+        // as a whole line so a comment cannot match.
         assert!(
             !manifest.lines().any(|l| l.trim() == "[[bin]]"),
             "{manifest}"
         );
     }
 
-    /// A shell with nothing set. The real one is not empty -- the harness
-    /// exports GONGGA_SERVER/GONGGA_KEY so the agent can drive itself -- so
-    /// every precedence test states its environment explicitly.
+    /// A shell with nothing set, so every precedence test states its own.
     fn no_env(_: &str) -> Option<String> {
         None
     }
@@ -1215,8 +1001,7 @@ mod tests {
         assert_eq!(resolve_key_with(&args, &no_env).as_deref(), Some("abc"));
     }
 
-    /// The harness sets both of these for every tool call, so this is the
-    /// ordinary case, not an exotic one: the shell beats the config file.
+    /// The harness sets both, so the shell beats the config file.
     #[test]
     fn the_environment_beats_the_config_file() {
         let d = home_with("[server]\nbind = \"127.0.0.1:9999\"\nkey = \"abc\"\n");
@@ -1259,12 +1044,7 @@ mod tests {
         assert!(resolve_key_with(&args, &no_env).is_none());
     }
 
-    /// Drives a command without a terminal or a socket.
-    ///
-    /// The client is marked connected: these tests are about what a command
-    /// means, and an offline client refuses every server command before it gets
-    /// that far (see `submit_tokens`), which would make every one of them test
-    /// the same thing.
+    /// Drives a command without a terminal or a socket, marked connected.
     fn client_with(catalog: Catalog, sticky: Sticky, sessions: Vec<&str>) -> Client {
         let mut c = Client::new(catalog, sticky);
         c.connected = true;
@@ -1340,8 +1120,7 @@ mod tests {
         }
     }
 
-    /// One-shot mode renders nothing, but a rejected line has no event to fall
-    /// back on, so the reason has to survive somewhere the caller can read it.
+    /// One-shot mode renders nothing, so a rejection has to keep its reason.
     #[test]
     fn one_shot_sink_keeps_errors_and_nothing_else() {
         let mut s = NullSink::default();
@@ -1360,10 +1139,7 @@ mod tests {
         assert_eq!(s.take_error(), None);
     }
 
-    /// The input line is a command, always.
-    ///
-    /// The status line states facts about the server, not which session the
-    /// front-end considers itself to be in.
+    /// The status line states server facts, not a session the UI is "in".
     #[test]
     fn status_line_has_no_current_session() {
         let d = tempfile::tempdir().unwrap();
@@ -1438,9 +1214,8 @@ mod tests {
         assert!(c.sticky.pairs().is_empty());
     }
 
-    /// A flag the command does not take is refused, and the refusal names the
-    /// ones it does take. This is the guard against a renamed argument: the old
-    /// spelling must not be accepted and silently ignored.
+    /// An unknown flag is refused, and the refusal lists the ones accepted; the
+    /// old spelling must not pass silently.
     #[test]
     fn an_unknown_flag_is_refused_and_the_known_ones_are_listed() {
         let d = tempfile::tempdir().unwrap();
@@ -1458,8 +1233,8 @@ mod tests {
         }]);
         let mut c = client_with(cat, Sticky::load(d.path()), vec!["main"]);
         let mut s = VecSink(Vec::new());
-        // The pre-rename spelling is exactly the case that bit: it used to be
-        // passed through, and a sticky `session` made it look like it worked.
+        // The pre-rename spelling is the case that bit: it used to pass, and a
+        // sticky `session` made it look like it worked.
         assert!(matches!(
             c.command(argv("del_session --name main"), &mut s),
             Submission::Rejected

@@ -1,0 +1,14 @@
+# The test layout this repository is held to, enforced by `test-layout-check`.
+#
+# Cargo links one test binary per `tests/*.rs` and per `tests/<dir>/main.rs`, and
+# each one statically links the whole stack its crate depends on. Areas therefore
+# belong under `tests/<name>/` as modules of a single binary, so a test is picked
+# by argument instead of by file.
+#
+# `exempt` matches path patterns inside the root, not package names: a nested
+# checkout of this repository carries these crate names too, and no exemption is
+# wanted for it here.
+
+[layout]
+max_external_test_binaries = 1
+exempt = []

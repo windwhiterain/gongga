@@ -1,11 +1,4 @@
-//! What one frame costs as the log grows — the regression check for the
-//! scrollback rewrite.
-//!
-//! `cargo run --release -p gongga-tui --example frame_cost`
-//!
-//! The number that matters is that the "new" columns do not move when the log
-//! gets longer. The "old" column is the pre-rewrite renderer kept here on
-//! purpose: it wrapped every line and allocated a string per row, every frame.
+//! What one frame costs as the log grows. See `docs/notes/tui-frame_cost.md`.
 
 use std::time::Instant;
 
@@ -23,9 +16,7 @@ fn old_frame(lines: &[String], width: usize, height: usize) -> usize {
             let mut current = String::new();
             let mut column = 0usize;
             for ch in hard.chars() {
-                // The original measured a char by formatting it into a String,
-                // which is one allocation per character of the whole log -- the
-                // heart of the bug.
+                // The original measured a char by formatting it: one allocation each.
                 let w = ch.to_string().len().max(1);
                 if column + w > width && !current.is_empty() {
                     out.push(std::mem::take(&mut current));

@@ -1,16 +1,5 @@
-//! `gongga-bridge`: carries one IM chat per harness session.
-//!
-//! It is a protocol client like `cli` and `tui` -- same key, same handshake,
-//! same event stream -- with a chat platform bolted onto the far side. The
-//! server does not know it exists, which is the whole point: no new command
-//! surface, no second writer to the transcript, no session state invented on
-//! the server for the benefit of a chat app.
-//!
-//! The loop is single-threaded on purpose. Two conversations share one state
-//! machine (which chat is owed which answer, and where its transcript cursor
-//! stands); nothing about that gets easier with concurrency. The channel reads
-//! in its own task and hands messages over a queue, so the only await inside
-//! the loop is the platform's send call.
+//! One IM chat per harness session, as an ordinary protocol client.
+//! See `docs/notes/bridge-main.md`.
 
 mod channel;
 mod chat;
@@ -37,8 +26,7 @@ use crate::config::{Bridge as BridgeCfg, Config};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_SERVER: &str = "127.0.0.1:9700";
-/// Rows per read-back. One turn with 20 tool calls is ~45 rows, and 500 is the
-/// server's cap, so this is "the whole turn" without asking for the archive.
+/// Rows per read-back: a whole turn, at the server's 500-row cap.
 const READ_LIMIT: &str = "500";
 
 #[derive(Debug, Parser)]
@@ -59,9 +47,7 @@ struct Args {
     key: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// The bridge
-// ---------------------------------------------------------------------------
+// ------------------------------- The bridge -------------------------------
 
 /// A message that will never reach the harness, and the apology to send back.
 struct Refusal {
@@ -117,8 +103,7 @@ impl Bridge {
                 chat = %incoming.chat.label(),
                 "refused a message from a user that is not in [bridge] allowed"
             );
-            // Their own id is the one piece of information the refusal has to
-            // carry: without it the operator cannot fill in the allow-list.
+            // The refusal must carry their id: it is what goes in the allow-list.
             let text = if self.allowed.is_empty() {
                 format!(
                     "这个 bot 还没配置白名单，谁都不能用。把你的 id `{}` 填进 bridge.toml 的 [bridge] allowed，再重启。",
@@ -139,10 +124,10 @@ impl Bridge {
 
     /// Hands queued messages to the harness, as far as the state allows.
     ///
-    /// A conversation with no known cursor first asks where its transcript ends;
-    /// until that answer arrives the message stays parked, because writing to
-    /// the transcript first would make the read-back return the whole history
-    /// and relay an old answer as a new one.
+    /// # Invariant
+    ///
+    /// Nothing is written to a transcript whose end has not been read yet: the
+    /// read-back would replay the whole history and relay an old answer as new.
     async fn pump(
         &mut self,
         sink: &protocol::ChannelSink,
@@ -150,15 +135,11 @@ impl Bridge {
     ) -> anyhow::Result<()> {
         while let Some(incoming) = self.queue.front().cloned() {
             let session = incoming.chat.session_name(self.kind);
-            // Stopping is a command, not a prompt -- and it must not go near
-            // `cancel`, which shuts the whole server down and takes every other
-            // conversation with it.
+            // A stop is interrupt_session, never cancel: that stops every chat.
             if is_stop(&incoming.text) {
                 self.queue.pop_front();
                 if let Some(state) = self.chats.get_mut(&session) {
-                    // The answers are no longer wanted, so stop owing them --
-                    // otherwise the next Idle would read back and relay an
-                    // answer to a question the user just withdrew.
+                    // Forget what was owed, or the next Idle relays it anyway.
                     state.waiting.clear();
                 }
                 self.command(
@@ -196,8 +177,7 @@ impl Bridge {
             }
 
             self.queue.pop_front();
-            // `set_session` doubles as creation and is idempotent, so every
-            // message ensures its session rather than tracking which ones exist.
+            // `set_session` creates as well as selects, so send it every time.
             let mut ensure = vec![("session", session.as_str())];
             if !self.cwd.is_empty() {
                 ensure.push(("cwd", self.cwd.as_str()));
@@ -335,8 +315,7 @@ impl Bridge {
         let Some(state) = self.chats.get(session) else {
             return Ok(());
         };
-        // Idle also fires for turns this bridge did not start (a resumed turn,
-        // or someone typing in the TUI). Only read back what is owed.
+        // Idle also fires for turns we did not start; read back only what is owed.
         if state.waiting.is_empty() {
             return Ok(());
         }
@@ -395,14 +374,14 @@ impl Bridge {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Plumbing
-// ---------------------------------------------------------------------------
+// -------------------------------- Plumbing --------------------------------
 
 /// Delivers one chat message, logging instead of failing.
 ///
-/// A platform that refuses a reply must not take the bridge down: the answer is
-/// still in the transcript, and the next message will work.
+/// # Invariant
+///
+/// A refused reply never fails the caller: the answer is still in the
+/// transcript, and the next message will work.
 async fn deliver(out: &Arc<dyn Outbox>, chat: &ChatId, reference: &MsgRef, seq: u32, text: &str) {
     let outgoing = Outgoing {
         chat: chat.clone(),
@@ -414,11 +393,8 @@ async fn deliver(out: &Arc<dyn Outbox>, chat: &ChatId, reference: &MsgRef, seq: 
     }
 }
 
-/// `/stop` and `/cancel` end the running turn of the conversation that sent them.
-///
-/// The bare words `stop` and `cancel` are not included on purpose: a chat user
-/// types "cancel the last commit" to the agent all the time, and silently
-/// turning that into a stop would be a bug with a very confusing repro.
+/// `/stop` and `/cancel` end the turn of the conversation that sent them.
+/// See `docs/notes/bridge-main.md`.
 fn is_stop(text: &str) -> bool {
     matches!(text.trim(), "/stop" | "/cancel")
 }
@@ -455,9 +431,7 @@ async fn main() -> anyhow::Result<()> {
     let outbox = channels.outbox.clone();
     let mut inbox = channels.inbox;
 
-    // The socket lives in its own task so the bridge loop only ever waits on a
-    // queue -- a reconnect inside the platform code cannot stall the harness
-    // side, and vice versa.
+    // The socket has its own task, so a platform reconnect cannot stall us.
     let (sender, mut incoming) = mpsc::channel::<Incoming>(64);
     tokio::spawn(async move {
         loop {
@@ -476,11 +450,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let mut bridge = Bridge::new(kind, cfg.bridge);
-    // Reconnecting is the bridge's job, not the platform's calling loop's: the
-    // harness is replaced on purpose (`scripts/evolve.sh swap`), while the
-    // platform connection is meant to stay up for days. A bridge that exited
-    // with the old server took the whole chat integration down and needed a
-    // human to start it again.
+    // Redial here, not in the platform loop: the harness is replaced, we are not.
     let mut backoff = REDIAL_MIN;
     loop {
         let (sink, mut stream) = match dial(&args, &home).await {
@@ -532,11 +502,8 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-/// How long to wait before the first redial, and the ceiling it backs off to.
-///
-/// Not a budget on how long the bridge keeps trying -- it keeps trying for as
-/// long as the process lives, because the harness may be down for a rebuild --
-/// but a ceiling on how often it hammers a harness that is not there.
+/// First redial delay and the ceiling it backs off to; retrying never stops.
+/// See `docs/notes/bridge-main.md`.
 const REDIAL_MIN: Duration = Duration::from_secs(1);
 const REDIAL_MAX: Duration = Duration::from_secs(30);
 
@@ -552,9 +519,7 @@ impl std::fmt::Display for Refused {
 
 impl std::error::Error for Refused {}
 
-// ---------------------------------------------------------------------------
-// Connection to the harness
-// ---------------------------------------------------------------------------
+// ----------------------- Connection to the harness -----------------------
 
 /// Connects and authenticates, exactly as the CLI does.
 async fn dial(
@@ -666,8 +631,7 @@ fn resolve_key(args: &Args, home: &Path) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// A chat message saying "cancel the last commit" is a task for the agent,
-    /// not a request to abort it. Only the slash form is a control message.
+    /// Only the slash form is a control message; "cancel the commit" is a task.
     #[test]
     fn only_the_slash_form_stops_a_turn() {
         assert!(is_stop("/stop"));

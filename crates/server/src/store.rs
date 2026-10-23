@@ -1,14 +1,5 @@
 //! Everything durable lives in SQLite.
-//!
-//! The SPEC asks for data that is "structured for agentic retrieval/mutation",
-//! so the transcript is not an opaque JSON blob: each session, message, tool
-//! call and event is an addressable row with typed columns. A future tool can
-//! therefore `SELECT` a session's tool failures or rewrite one message without
-//! parsing and re-serialising a whole document.
-//!
-//! The connection is behind a mutex and used synchronously. Every statement here
-//! is a sub-millisecond local write, so the simplification costs nothing in
-//! practice; if that stops being true the fix is `spawn_blocking`, not a redesign.
+//! See `docs/notes/server-store.md`.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -16,10 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use protocol::SessionStatus;
 use rusqlite::{Connection, OptionalExtension, params};
 
-/// What the model is told about a tool call that never returned.
-///
-/// Written as an observation rather than an error: the command may well have
-/// run to completion, and the model should verify rather than assume.
+/// What the model is told about a tool call that never returned: verify, do not assume.
 const INTERRUPTED_CALL: &str = "No result was recorded: the turn was interrupted before this call returned. \
      Its outcome is unknown -- re-check before relying on it.";
 
@@ -116,9 +104,7 @@ CREATE INDEX IF NOT EXISTS detached_by_session ON detached_jobs(session);
 #[derive(Debug, Clone)]
 pub struct Store(Arc<Mutex<Connection>>);
 
-/// Adds columns to a database created before they existed. `CREATE TABLE IF NOT
-/// EXISTS` cannot do this, and a running harness must not lose its transcript
-/// just because the schema grew.
+/// Adds columns a `CREATE TABLE IF NOT EXISTS` cannot add to an old database.
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     for (column, ddl) in [
         ("summary", "ALTER TABLE sessions ADD COLUMN summary TEXT"),
@@ -151,11 +137,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 impl Store {
-    /// Opens (and creates) the database at `path`.
-    ///
-    /// `:memory:` is taken literally: it has no directory to create, and
-    /// creating one called `:` would be the wrong answer to `--db :memory:`,
-    /// which is how a throwaway run keeps its hands off the operator's data.
+    /// Opens (and creates) the database at `path`, taking `:memory:` literally.
     pub fn open(path: &Path) -> anyhow::Result<Self> {
         if path != Path::new(":memory:") {
             if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -171,8 +153,7 @@ impl Store {
     }
 
     fn lock(&self) -> MutexGuard<'_, Connection> {
-        // A poisoned mutex means a prior write panicked mid-transaction; the WAL
-        // keeps the database itself consistent, so recovering the guard is safe.
+        // A poisoned mutex is safe to recover: the WAL keeps the database consistent.
         self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 
@@ -209,9 +190,7 @@ impl Store {
         else {
             return Ok(false);
         };
-        // `events` carries no foreign key, so its rows would outlive the
-        // session. That is worse than a leak: SQLite hands a freed id out again,
-        // and the dead session's events then pose as the new session's history.
+        // `events` has no foreign key; SQLite reuses the id, so delete its rows first.
         tx.execute("DELETE FROM events WHERE session_id = ?1", params![id])?;
         let n = tx.execute("DELETE FROM sessions WHERE name = ?1", params![name])?;
         tx.commit()?;
@@ -238,12 +217,7 @@ impl Store {
                     s.llm, s.compact_threshold, s.thinking_effort
              FROM sessions s";
 
-    /// One session, in the same shape the list returns.
-    ///
-    /// A `WHERE name = ?` rather than "list every session and look for it":
-    /// `nudge_inboxes` asks this for each pending session on a two-second
-    /// timer, and the list query also runs a `COUNT(*)` per row, so the cost of
-    /// the wrong shape grows with the whole home instead of with the answer.
+    /// One session, in the same shape the list returns, by name rather than by scan.
     pub fn get_session(&self, name: &str) -> anyhow::Result<Option<SessionRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(&format!("{} WHERE s.name = ?1", Self::SESSION_SELECT))?;
@@ -275,15 +249,11 @@ impl Store {
         Ok(())
     }
 
-    /// Records what a session was told to use.
+    /// Records what a session was told to use: tuning columns and `model` at once.
     ///
-    /// Both columns at once: they are one decision ("how should this session
-    /// behave"), and `set_session` is the only thing that writes them, so a
-    /// half-applied tuning is not a state anything else has to handle.
+    /// # Invariant
     ///
-    /// `model` is kept in step rather than derived on read: it is what list
-    /// views show, and `llm` being cleared has to put it back to the server's
-    /// own model, which only the caller knows.
+    /// All of it in one statement, so no reader sees half-applied tuning.
     pub fn set_session_tuning(
         &self,
         id: i64,
@@ -351,16 +321,7 @@ impl Store {
         Ok(seq)
     }
 
-    /// Loads the transcript in the order the model should see it.
-    /// The part of the transcript after `seq`. A summary, once written, stands
-    /// in for everything up to its `summarised_upto`, so that is all a request
-    /// needs. The rows themselves are never deleted -- the full transcript
-    /// stays available to `history` and to anything that wants to audit it.
-    /// The whole transcript, as a request would see it.
-    ///
-    /// Test-only: production code always has a lower bound (a summary) or both
-    /// (compaction), and a method nobody calls is a second way to ask the same
-    /// question.
+    /// The whole transcript, as a request would see it. Test-only: nothing else needs it.
     #[cfg(test)]
     pub fn history(&self, session_id: i64) -> anyhow::Result<Vec<HistoryItem>> {
         self.history_between(session_id, 0, i64::MAX)
@@ -374,14 +335,7 @@ impl Store {
         self.history_between(session_id, after_seq, i64::MAX)
     }
 
-    /// The rows in `(after_seq, upto_seq]`, mapped exactly like
-    /// [`Self::history_since`].
-    ///
-    /// Compaction needs both bounds, and it needs them as one query: the
-    /// mapping below is not one-to-one with rows -- a `notice` row is skipped,
-    /// an unanswered tool call gains a placeholder -- so "how many items does
-    /// the old half hold" cannot be answered by counting rows, which is how the
-    /// summary used to cover a range that was not the one it was asked for.
+    /// The rows in `(after_seq, upto_seq]`, mapped exactly like [`Self::history_since`].
     pub fn history_between(
         &self,
         session_id: i64,
@@ -404,12 +358,7 @@ impl Store {
         };
 
         let mut out = Vec::with_capacity(rows.len());
-        // A call whose result never got recorded -- the turn was interrupted
-        // between asking for the tool and hearing back -- cannot be sent as a
-        // bare `function_call`: providers reject the whole request ("No tool
-        // output found for tool call ..."), which makes the session fail the
-        // same way on every later turn. The placeholder below is the honest
-        // fix: it says what happened instead of pretending the call is open.
+        // An unanswered call gets a placeholder; providers reject a bare `function_call`.
         let answered: std::collections::HashSet<String> = rows
             .iter()
             .filter(|(kind, _)| kind == "tool_result")
@@ -492,10 +441,7 @@ impl Store {
                         .unwrap_or_default()
                         .to_string(),
                 }),
-                // Written for the operator, not for the model: a notice explains
-                // why a turn stopped. Feeding it back as history would put our
-                // own bookkeeping in the transcript the provider sees, and make
-                // the model answer questions nobody asked.
+                // Operator-only: feeding a notice back would put our bookkeeping in the prompt.
                 "notice" => {}
                 other => tracing::warn!("unknown message kind {other}"),
             }
@@ -503,15 +449,7 @@ impl Store {
         Ok(out)
     }
 
-    /// A window of the transcript: the last `limit` rows after `after_seq`,
-    /// oldest first, plus where the transcript now ends.
-    ///
-    /// `history_since` answers "what should the model see"; this answers "what
-    /// happened while I was waiting", which is what an IM bridge asks after a
-    /// turn goes idle: it knows the seq the turn started at and wants the
-    /// assistant text that followed. `last_seq` comes back with the rows so a
-    /// caller can advance its cursor without a second round trip (and without
-    /// guessing: a turn whose only output was tool calls still moves it).
+    /// A window of the transcript after `after_seq`, oldest first, plus its end seq.
     pub fn messages_after(
         &self,
         session_id: i64,
@@ -524,9 +462,7 @@ impl Store {
             params![session_id],
             |r| r.get(0),
         )?;
-        // Newest `limit` first, then flipped, so a long transcript yields its
-        // tail rather than its head -- a caller that asked for 50 rows wants
-        // the 50 that just happened.
+        // Newest first, then flipped: a caller asking for 50 wants the tail, not the head.
         let mut stmt = conn.prepare(
             "SELECT seq, kind, content FROM (
                  SELECT seq, kind, content FROM messages
@@ -550,8 +486,7 @@ impl Store {
         Ok(Transcript { last_seq, messages })
     }
 
-    /// `(seq, kind)` of every message, oldest first. Compression needs the seqs
-    /// to decide where a summary may take over, not just the contents.
+    /// `(seq, kind)` of every message, oldest first; compression needs the seqs.
     pub fn message_index(&self, session_id: i64) -> anyhow::Result<Vec<(i64, String)>> {
         let conn = self.lock();
         let mut stmt =
@@ -595,10 +530,6 @@ impl Store {
     }
 
     /// Records what the provider said the last request cost in input tokens.
-    ///
-    /// Called with the number from `usage`, never with a computed one: the
-    /// provider is the only party that tokenises with the tokeniser it will
-    /// actually bill against.
     pub fn set_context_tokens(&self, session_id: i64, tokens: u64) -> anyhow::Result<()> {
         self.lock().execute(
             "UPDATE sessions SET context_tokens = ?1 WHERE id = ?2",
@@ -607,8 +538,7 @@ impl Store {
         Ok(())
     }
 
-    /// What a request is built from: the summary, plus whatever happened after
-    /// it. Returns `(None, full history)` when nothing has been compressed.
+    /// What a request is built from: the summary plus what came after it.
     pub fn context(&self, session_id: i64) -> anyhow::Result<(Option<String>, Vec<HistoryItem>)> {
         let (summary, upto) = self.summary(session_id)?;
         let items = self.history_since(session_id, upto)?;
@@ -677,11 +607,12 @@ impl Store {
 
     // -- pending tasks ------------------------------------------------------
 
-    /// Records work that has started but not finished.
+    /// Records work that has started but not finished, before it runs.
     ///
-    /// The row is written *before* the work runs and deleted once it completes,
-    /// so an aborted process is indistinguishable from a deliberate `cancel`:
-    /// either way, whatever is still in this table is what the next start owes.
+    /// # Invariant
+    ///
+    /// The row is written before the work runs and deleted once it completes, so
+    /// the table always holds what the next start owes.
     pub fn add_pending_task(
         &self,
         session: &str,
@@ -734,16 +665,12 @@ impl Store {
         Ok(())
     }
 
-    /// Takes everything this session's inbox holds, except the row the running
-    /// turn already owns, and deletes what it returns.
+    /// Takes this session's inbox except the running turn's row, and deletes what it returns.
     ///
-    /// One transaction, because the caller is about to write these into the
-    /// transcript: a message must be either still in the inbox or already in
-    /// the transcript, never both (delivered twice) and never neither (lost).
+    /// # Invariant
     ///
-    /// `except` is the row a turn was started from. That message is already in
-    /// the transcript -- it was written when the turn began -- so handing it
-    /// back here would append the operator's line a second time.
+    /// One transaction, so a message is either still in the inbox or already in
+    /// the transcript, never both and never neither.
     pub fn take_pending_tasks(
         &self,
         session: &str,
@@ -779,11 +706,7 @@ impl Store {
 
     // -- detached jobs ------------------------------------------------------
 
-    /// Records a process that outlives this run of the server.
-    ///
-    /// Written before the job is handed to the model, so a crash in between
-    /// leaves a row the next start adopts rather than a process nobody knows
-    /// about.
+    /// Records a process that outlives this run, before the model is told of it.
     pub fn add_detached_job(&self, job: &DetachedRow) -> anyhow::Result<i64> {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
@@ -866,12 +789,9 @@ pub struct SessionRow {
     pub name: String,
     pub status: SessionStatus,
     pub model: String,
-    /// Roster entry this session talks to, when it was given its own with
-    /// `set_session --llm`. `None` means "whatever the server is configured
-    /// with", which is what most sessions are.
+    /// Roster entry this session talks to, when `set_session --llm` gave it one.
     pub llm: Option<String>,
-    /// Compaction point as a percentage of the model's context window, when the
-    /// session was given one. `None` means the server-wide character budget.
+    /// Compaction point as a share of the window, when the session was given one.
     pub compact_threshold: Option<u8>,
     /// Reasoning level in the roster's spelling, when the session was given
     /// one. `None` means the model's own default.
@@ -890,12 +810,6 @@ pub struct Transcript {
 }
 
 /// One row of the transcript, flattened for readers that are not the model.
-///
-/// Deliberately not [`HistoryItem`]: a caller that only wants "what did it say"
-/// should not have to know about encrypted reasoning blobs or reassemble the
-/// Responses API shape. `text` carries whichever field is the human-meaningful
-/// one for the kind (message body, tool arguments, tool output, reasoning
-/// summary), so one column is enough to display any row.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MessageRow {
     pub seq: i64,
@@ -937,8 +851,7 @@ impl MessageRow {
                 row.call_id = str_of("call_id");
                 row.text = str_of("output").unwrap_or_default();
             }
-            // The harness talking to whoever is reading, which is why it has no
-            // role: no answer is being put in the model's mouth.
+            // The harness talking to the reader: no role, no answer in the model's mouth.
             "notice" => row.text = str_of("text").unwrap_or_default(),
             other => tracing::warn!("unknown message kind {other}"),
         }
@@ -1011,10 +924,7 @@ mod tests {
         (dir, store)
     }
 
-    /// `--db <path>` has to bring its directory with it, and `--db :memory:`
-    /// has to be taken literally: that is how a throwaway run keeps its hands
-    /// off the operator's real database, and creating a directory called `:`
-    /// would be the wrong answer to it.
+    /// `--db <path>` brings its directory, and `:memory:` must not become a directory.
     #[test]
     fn the_database_path_brings_its_directory() {
         let dir = tempfile::tempdir().unwrap();
@@ -1026,10 +936,7 @@ mod tests {
         store.create_session("main", "m", "C:/x").unwrap();
     }
 
-    /// Two messages queued on one session used to share a fate: the first turn
-    /// cleared the session's pending rows wholesale and took the second
-    /// message's row with it, so a crash before the second turn ran lost the
-    /// message from both places at once.
+    /// Finishing one pending task must leave another queued message's row alone.
     #[test]
     fn finishing_one_pending_task_leaves_the_others() {
         let (_d, store) = temp_store();
@@ -1094,9 +1001,7 @@ mod tests {
         assert!(matches!(h[2], HistoryItem::ToolResult { .. }));
     }
 
-    /// A summary stands in for the messages it covers, but the rows stay: the
-    /// transcript is a record, not a cache, and deleting them would lose the
-    /// only copy of what the session actually did.
+    /// A summary shrinks the request but never touches the transcript rows.
     #[test]
     fn a_summary_shrinks_the_request_without_touching_the_transcript() {
         let (_d, store) = temp_store();
@@ -1122,9 +1027,7 @@ mod tests {
         assert_eq!(store.message_index(id).unwrap().len(), 5);
     }
 
-    /// `set_session --llm` and `--compact_threshold` are per-session state, so
-    /// they have to survive a restart like everything else. `model` follows the
-    /// entry, because that is the column list views read.
+    /// `set_session` tuning is per-session state, so it must survive a restart.
     #[test]
     fn session_tuning_round_trips() {
         let (_d, store) = temp_store();
@@ -1151,10 +1054,7 @@ mod tests {
         assert_eq!(row.thinking_effort.as_deref(), Some("high"));
         assert_eq!(row.model, "deepseek-flash");
 
-        // The two halves of a compaction have to add up to the transcript.
-        // Splitting by sequence does that by construction; counting rows did
-        // not, because a `notice` is skipped and an unanswered tool call gains
-        // a placeholder.
+        // Splitting by sequence adds up; counting rows does not, so the halves must match.
         store
             .append_message(id, "text", &serde_json::json!({"role":"user","text":"a"}))
             .unwrap();
@@ -1176,9 +1076,7 @@ mod tests {
             )
             .unwrap();
         let all = store.history_between(id, 0, i64::MAX).unwrap();
-        // Four rows, four items -- but not four rows' worth: the notice
-        // contributes nothing and the unanswered call contributes two. That is
-        // exactly why a row count is the wrong way to find the cut.
+        // Four rows, four items: the notice adds none, the unanswered call adds two.
         assert_eq!(all.len(), 4);
         for (seq, _) in store.message_index(id).unwrap() {
             let old = store.history_between(id, 0, seq).unwrap();
@@ -1190,8 +1088,7 @@ mod tests {
             );
         }
 
-        // Clearing the entry goes back to the server's own, model included:
-        // the caller passes what that is, because only it knows.
+        // Clearing goes back to the server's model, which only the caller knows.
         store
             .set_session_tuning(id, None, None, None, "MiniMax-M3.1-Flash")
             .unwrap();
@@ -1201,8 +1098,7 @@ mod tests {
         assert_eq!(row.model, "MiniMax-M3.1-Flash");
     }
 
-    /// A database written before compression existed has to grow the columns
-    /// rather than fail to open, or every existing session would be stranded.
+    /// A database written before compression existed must grow columns, not fail.
     #[test]
     fn opening_an_old_database_adds_the_summary_columns() {
         let dir = tempfile::tempdir().unwrap();
@@ -1247,9 +1143,7 @@ mod tests {
         assert!(store.detached_jobs().unwrap().is_empty());
     }
 
-    /// The context size is the provider's own number, so it has to survive a
-    /// restart: the first request of the next run is compared against it
-    /// before any new measurement exists.
+    /// The measured context size survives a restart, for the next run's first request.
     #[test]
     fn the_measured_context_size_survives_a_restart() {
         let dir = tempfile::tempdir().unwrap();
@@ -1292,9 +1186,7 @@ mod tests {
         assert!(store.history(id).unwrap().is_empty());
     }
 
-    /// Events have no foreign key to rely on, so `delete_session` has to take
-    /// them explicitly. Otherwise a deleted session's rows stay behind and, once
-    /// SQLite reuses the id, show up as the next session's history.
+    /// Events have no foreign key, so deleting a session must take them explicitly.
     #[test]
     fn deleting_a_session_takes_its_events_with_it() {
         let (_d, store) = temp_store();
@@ -1314,11 +1206,7 @@ mod tests {
         assert_eq!(n, 0);
     }
 
-    /// A turn interrupted between "call this tool" and "here is what it said"
-    /// leaves a `function_call` with no `function_call_output`. Providers
-    /// reject that outright ("No tool output found for tool call ..."), so the
-    /// session fails the same way on every later turn. The transcript closes
-    /// the call on the way out instead.
+    /// An interrupted call is closed for the model, or every later turn fails too.
     #[test]
     fn a_call_interrupted_before_its_result_is_closed_for_the_model() {
         let (_d, store) = temp_store();
@@ -1364,9 +1252,7 @@ mod tests {
         assert_eq!(pairs[3].1, "result: ok");
     }
 
-    /// The read path an IM bridge uses: a window starting after a seq, ending
-    /// at the current tail, with that tail reported so the cursor can advance
-    /// even when the window turns out to be empty.
+    /// A window after a seq, ending at the tail, which is reported even when empty.
     #[test]
     fn messages_after_returns_a_window_and_the_tail() {
         let (_d, store) = temp_store();
@@ -1402,14 +1288,12 @@ mod tests {
         );
         assert_eq!(t.last_seq, 3);
 
-        // An empty window still reports the tail: "nothing new, and the
-        // transcript has not moved" is a different answer from "start over".
+        // An empty window still reports the tail: "nothing new" differs from "start over".
         let t = store.messages_after(id, 3, 50).unwrap();
         assert!(t.messages.is_empty());
         assert_eq!(t.last_seq, 3);
 
-        // The limit counts back from the end, so a long transcript yields the
-        // part that just happened rather than a re-read of the beginning.
+        // The limit counts back from the end, so a long transcript yields its tail.
         let t = store.messages_after(id, 0, 2).unwrap();
         assert_eq!(
             t.messages.iter().map(|m| m.seq).collect::<Vec<_>>(),
@@ -1417,9 +1301,7 @@ mod tests {
         );
     }
 
-    /// A notice explains a stopped turn to the operator. It belongs in the
-    /// transcript they read and must not leak into the request the model sees,
-    /// or the model ends up replying to the harness instead of the user.
+    /// A notice is readable but never sent back to the model, or it answers the harness.
     #[test]
     fn a_notice_is_readable_but_never_sent_back_to_the_model() {
         let (_d, store) = temp_store();

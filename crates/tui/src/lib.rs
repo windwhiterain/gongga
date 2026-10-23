@@ -1,18 +1,9 @@
-//! `gongga-tui`: the terminal front-end.
+//! `gongga-tui`: the terminal front-end. See `docs/notes/tui-lib.md`.
 //!
-//! This crate is deliberately ignorant. It renders lines, keeps an input line,
-//! and shows a completion popup whose contents somebody else supplies. It has
-//! no dependency on the wire protocol and no idea what a command is: the
-//! command layer (`gongga-cli`) owns the catalog, the wire, and the meaning of
-//! every line, and hands both completion candidates and typed lines over.
+//! # Invariant
 //!
-//! That is why the dependency runs this way -- `tui` depends on `cli`, never
-//! the reverse. A command layer that knew about terminals could not be used
-//! from a script; a front-end that knew about commands would have to change
-//! every time one is added.
-//!
-//! The `gongga` binary lives here because it is the composition root: the only
-//! program that needs both halves, and linking them is what a binary is for.
+//! `tui` depends on `cli`, never the reverse, so the command layer stays usable
+//! from a script and a new command never changes this crate.
 
 mod input;
 mod log;
@@ -39,18 +30,11 @@ pub use crate::input::{InputLine, apply_completion};
 pub use crate::log::Log;
 pub use crate::run::interactive;
 
-// The vocabulary belongs to the command layer: this crate paints whatever it is
-// told to paint. Re-exported so `crate::LineKind` and friends keep reading the
-// same from inside this crate -- the renderer and the log never have to know
-// where the words came from.
+// The vocabulary is the command layer's, re-exported so this crate can name it.
 pub use cli::{Candidate, Completer, Completion, LineKind, SharedCompleter, token_bounds};
 
-/// Something the operator did.
-///
-/// There is deliberately no "cancel" here. Stopping work is a command like any
-/// other (`interrupt_session`, `cancel`), so it reaches the server by the same
-/// path as everything else and can be typed by a script that has no keyboard.
-/// The only thing left to the keyboard is leaving.
+/// Something the operator did: only what a keyboard can do that a command
+/// cannot. See `docs/notes/tui-lib.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiEvent {
     /// A finished input line. It may contain newlines: a message with
@@ -60,32 +44,23 @@ pub enum UiEvent {
     Quit,
 }
 
-/// Everything the renderer reads. Kept separate so drawing never borrows the
-/// terminal while the caller is mutating state.
+/// Everything the renderer reads, separate from the terminal it draws to.
 pub struct Screen {
-    /// The scrollback. Its own type because a frame must not be allowed to walk
-    /// it: see [`crate::log`] for why that is the difference between a usable
-    /// window and a frozen one.
+    /// The scrollback: a frame may not walk it. See [`crate::log`].
     pub log: Log,
     pub completion: Option<Completion>,
     pub input: InputLine,
     pub status: String,
     pub footer: String,
     pub placeholder: String,
-    /// How far the log is scrolled: 0 is pinned to the newest line, `n` is `n`
-    /// wrapped rows up into the past.
+    /// Scroll offset in wrapped rows: 0 is the newest line, `n` is `n` rows up.
     pub scroll: usize,
-    /// How far up the log *can* be scrolled right now, written back by the
-    /// renderer, which is the only place that knows how many rows the lines
-    /// wrap into and how tall the log window is. Scrolling keys clamp against
-    /// it so a page-up cannot strand the view past the top.
+    /// Scroll bound, written back by the renderer; the keys clamp against it.
     pub max_scroll: usize,
 }
 
 impl Screen {
-    /// Positive scrolls into the past, negative back towards the newest line,
-    /// and both stop at the ends. The upper bound is the renderer's, since
-    /// only it knows how many rows the lines wrap into.
+    /// Positive scrolls into the past, negative towards the newest line; clamped.
     pub fn scroll_by(&mut self, rows: i64) {
         let next = (self.scroll as i64 + rows).clamp(0, self.max_scroll as i64);
         self.scroll = next as usize;
@@ -102,12 +77,7 @@ pub struct Tui {
     history_pos: Option<usize>,
     events: EventStream,
     restored: bool,
-    /// Whether anything on screen changed since the last frame.
-    ///
-    /// A redraw is a terminal write, and while a response streams the loop gets
-    /// an event for every chunk. Painting a frame nothing has changed is pure
-    /// cost, so the frame is skipped instead — the flag is what keeps that from
-    /// freezing the display: every mutation and every key sets it.
+    /// Whether anything changed since the last frame. Every mutation sets it.
     dirty: bool,
 }
 
@@ -115,9 +85,8 @@ impl Tui {
     pub fn new(completer: SharedCompleter) -> anyhow::Result<Self> {
         enable_raw_mode().context("enabling raw mode")?;
         let mut out = stdout();
-        // Mouse capture is what makes the wheel a scroll key. Without it
-        // crossterm never sees the wheel at all -- the terminal keeps the
-        // events for its own scrollback, which an alternate screen has none of.
+        // Mouse capture is what makes the wheel a scroll key; without it the
+        // terminal keeps the events for itself.
         execute!(out, EnterAlternateScreen, EnableMouseCapture)
             .context("entering alternate screen")?;
         let terminal = Terminal::new(CrosstermBackend::new(out))?;
@@ -148,9 +117,7 @@ impl Tui {
         &self.screen
     }
 
-    /// Both of these only ask for a frame when the text actually changed: the
-    /// caller recomputes the status from the session list as events arrive, and
-    /// most of those recomputations say the same thing as the last one.
+    /// Sets the status text, asking for a frame only when it actually changed.
     pub fn set_status(&mut self, status: impl Into<String>) {
         let status = status.into();
         if status != self.screen.status {
@@ -173,11 +140,7 @@ impl Tui {
         self.dirty = true;
     }
 
-    /// Puts a line back into the prompt, cursor at the end.
-    ///
-    /// The counterpart of Enter: a line that could not be sent is not swallowed
-    /// by a log entry. It goes back where it was typed, because the operator
-    /// already knows how to press Enter again and does not want to retype it.
+    /// Puts a line back into the prompt, cursor at the end. The counterpart of Enter.
     pub fn restore_input(&mut self, text: &str) {
         self.screen.completion = None;
         self.screen.input.clear();
@@ -186,10 +149,12 @@ impl Tui {
         self.dirty = true;
     }
 
-    /// Appends to an open stream, creating the line on first use.
+    /// Appends to the stream named `key`, opening the line on first use.
     ///
-    /// `key` identifies the stream (a response part, a tool's stdout) and
-    /// `done` closes it, so the next chunk with the same key starts a new line.
+    /// # Invariant
+    ///
+    /// `done` closes the key, so the next chunk with the same key opens a new
+    /// line rather than appending to the closed one.
     pub fn stream(&mut self, key: &str, kind: LineKind, prefix: &str, text: &str, done: bool) {
         stream_into(
             &mut self.screen.log,
@@ -204,41 +169,28 @@ impl Tui {
     }
 
     pub fn draw(&mut self) -> anyhow::Result<()> {
-        // Nothing changed, so nothing is written. This is what keeps a stream
-        // that arrives faster than the terminal can paint from spending the
-        // whole loop in the renderer.
+        // Nothing changed, so nothing is written: a fast stream cannot hog the loop.
         if !self.dirty {
             return Ok(());
         }
-        // The renderer writes the scroll bound back into the screen, which is
-        // why it takes it mutably even though it only reads the log.
+        // The renderer writes the scroll bound back, hence `&mut` on a read-only screen.
         self.terminal.draw(|f| render::draw(f, &mut self.screen))?;
-        // Cleared only after the frame landed: a failed paint must be retried
-        // by the next call rather than counted as done.
+        // Cleared only after the frame landed, so a failed paint is retried.
         self.dirty = false;
         Ok(())
     }
 
-    /// Waits for the operator. Paints a frame before every wait, so lines
-    /// pushed by the caller show up even with nobody at the keyboard, and after
-    /// any event that could have changed what is on screen.
+    /// Waits for the operator, painting a frame before every wait.
     pub async fn next_event(&mut self) -> Option<UiEvent> {
         loop {
             if self.draw().is_err() {
                 return None;
             }
             let next = self.events.next().await?;
-            // Only key events used to be looked at, which is why the wheel did
-            // nothing: it arrives as a mouse event and was dropped here. A
-            // resize needs no handling of its own beyond the redraw it asks
-            // for -- the layout is worked out from the area every frame, and
-            // the log reflows to the new width when it is asked for rows.
+            // Every event kind is handled; a resize only needs the redraw it asks for.
             match next {
                 Ok(TermEvent::Key(key)) => {
-                    // Windows reports a Release in addition to every Press, and
-                    // some rebuilds also emit Release on other platforms.
-                    // Without this filter one keystroke moves the cursor twice
-                    // or types twice.
+                    // Windows reports Release too; without the filter one key acts twice.
                     if !Self::actionable(&key) {
                         continue;
                     }
@@ -254,26 +206,12 @@ impl Tui {
         }
     }
 
-    /// Whether a key event should drive the UI.
-    ///
-    /// Only presses matter. `Release` is dropped so that a single keystroke is
-    /// handled once; `Repeat` (a held key) is kept, because holding Backspace
-    /// or an arrow is expected to keep working.
+    /// Whether a key event drives the UI: presses and repeats, never releases.
     fn actionable(key: &KeyEvent) -> bool {
         !matches!(key.kind, KeyEventKind::Release)
     }
 
-    /// The keys that are not editing at all: only leaving, which is the one
-    /// action this window owns rather than asks the server for.
-    ///
-    /// Pure and separate from [`Self::handle_key`] because it is the part worth
-    /// testing without a terminal: what a key means must not depend on whether
-    /// a TTY exists.
-    ///
-    /// Alt, not Ctrl: VS Code's terminal (and several others) consume Ctrl+Q,
-    /// Ctrl+K and Ctrl+arrows themselves, so a Ctrl binding is one the program
-    /// never sees. `Ctrl+Q` used to be the exit here and simply did nothing in
-    /// that terminal.
+    /// The one key that is not editing: leaving, on Alt+Q. See `docs/notes/tui-lib.md`.
     fn shortcut(key: &KeyEvent) -> Option<UiEvent> {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         match key.code {
@@ -283,12 +221,7 @@ impl Tui {
         }
     }
 
-    /// Whether Enter should break the line instead of sending it.
-    ///
-    /// Shift is what everyone tries; Alt is the spelling that survives
-    /// terminals which do not report a modified Enter (they send the same CR
-    /// for both), because Alt+Enter arrives as ESC CR and is always
-    /// distinguishable.
+    /// Whether Enter breaks instead of sending: Shift or Alt (ESC CR), not plain Enter.
     fn line_break(key: &KeyEvent) -> bool {
         matches!(key.code, KeyCode::Enter)
             && key
@@ -306,18 +239,13 @@ impl Tui {
             return None;
         }
 
-        // The other modifier bindings, on Alt for the same reason as the exit:
-        // a terminal that keeps Ctrl+K for itself is not unusual, and a binding
-        // nobody can press is worse than no binding.
+        // The other modifier bindings use Alt too: a terminal that eats Ctrl+K is common.
         if key.modifiers.contains(KeyModifiers::ALT) {
             match key.code {
                 KeyCode::Char('k' | 'K') => self.screen.input.kill_to_end(),
                 KeyCode::Left => self.screen.input.word_left(),
-                // Paging on the arrows that already mean "history" and
-                // "cursor": Alt+arrows, because PgUp/PgDn on a laptop hide
-                // behind Fn, where some of them are not even wired to scroll.
-                // Plain ↑↓ stay with history -- that is what a shell does with
-                // them, and it is the one thing operators try first.
+                // Alt+arrows page, because PgUp/PgDn hide behind Fn on laptops;
+                // plain ↑↓ stay with history.
                 KeyCode::Up => self.screen.scroll_by(self.page_height() as i64),
                 KeyCode::Down => self.screen.scroll_by(-(self.page_height() as i64)),
                 _ => {}
@@ -325,8 +253,7 @@ impl Tui {
             return None;
         }
 
-        // Ctrl+<letter> would otherwise insert its letter: a terminal that does
-        // deliver Ctrl+K here (some do) must not type a `k`.
+        // Ctrl+<letter> must not insert its letter where a terminal delivers it.
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return None;
         }
@@ -340,10 +267,7 @@ impl Tui {
                 self.apply_completion();
             }
             KeyCode::Up => {
-                // Arrows belong to the completion popup, then to the text, and
-                // only then to history: inside a multi-line message the line
-                // above is what ↑ means, exactly as in every other editor.
-                // Shift is what says "move the view, not the line".
+                // ↑↓ go popup, then text, then history; Shift moves the view instead.
                 if key.modifiers.contains(KeyModifiers::SHIFT) {
                     self.screen.scroll_by(1);
                 } else if let Some(c) = self.screen.completion.as_mut() {
@@ -388,9 +312,7 @@ impl Tui {
             KeyCode::Right => self.screen.input.right(),
             KeyCode::Home => self.screen.input.home(),
             KeyCode::End => self.screen.input.end(),
-            // A page is the log window, not a fixed ten rows: on a short
-            // terminal ten rows scrolls past what is visible and the jump
-            // looks arbitrary.
+            // A page is the log window, not a fixed ten rows, so short terminals work too.
             KeyCode::PageUp => self.screen.scroll_by(self.page_height() as i64),
             KeyCode::PageDown => self.screen.scroll_by(-(self.page_height() as i64)),
             _ => {}
@@ -398,11 +320,7 @@ impl Tui {
         None
     }
 
-    /// The wheel, which is the scroll control everybody tries first.
-    ///
-    /// A notch is three rows; Shift slows it to one, the way a terminal's own
-    /// scrollback behaves. Nothing else the mouse does is wired to anything:
-    /// clicks are not actions in a command line.
+    /// The wheel: a notch is three rows, Shift makes it one. See `docs/notes/tui-lib.md`.
     fn handle_mouse(&mut self, mouse: MouseEvent) {
         if let Some(rows) = Self::wheel_rows(&mouse) {
             self.screen.scroll_by(rows);
@@ -410,9 +328,7 @@ impl Tui {
         }
     }
 
-    /// What a wheel event meant, in rows: positive is into the past. `None`
-    /// for everything else the mouse can report, none of which is an action
-    /// here.
+    /// Rows a wheel event scrolls, positive into the past; `None` for anything else.
     fn wheel_rows(mouse: &MouseEvent) -> Option<i64> {
         let rows: i64 = if mouse.modifiers.contains(KeyModifiers::SHIFT) {
             1
@@ -431,9 +347,7 @@ impl Tui {
         let Ok(size) = self.terminal.size() else {
             return 1;
         };
-        // The input's height depends on what has been typed into it, so the
-        // log's does too: a page has to be measured against the window that is
-        // left, not against a constant.
+        // Measured against the rows left over, since the input's height varies.
         let input = render::input_rows(self.screen.input.text(), size.width, size.height);
         size.height
             .saturating_sub(render::CHROME_ROWS + input)
@@ -443,8 +357,7 @@ impl Tui {
     /// Breaks the line instead of sending it.
     fn newline(&mut self) {
         self.screen.input.insert('\n');
-        // The popup was about the token before the break; it says nothing about
-        // the one after it.
+        // The popup was about the token before the break, not the one after it.
         self.screen.completion = None;
     }
 
@@ -457,12 +370,7 @@ impl Tui {
     }
 
     fn apply_completion(&mut self) {
-        // `--session` is not the end of the thought: its value is. Asking again
-        // right after applying is what makes Tab twice fill both, instead of
-        // Tab, and then a letter before the list comes back.
-        //
-        // It costs nothing when the candidate ended the line: an empty answer
-        // simply leaves the popup shut.
+        // Ask again right after applying, so Tab twice fills a flag and then its value.
         apply_and_continue(
             &mut self.screen.input,
             &mut self.screen.completion,
@@ -505,8 +413,7 @@ impl Tui {
         }
         self.restored = true;
         disable_raw_mode()?;
-        // Leaving the capture on would keep the wheel (and text selection)
-        // away from the shell this process returns to.
+        // Leaving capture on would keep the wheel from the shell we return to.
         execute!(
             self.terminal.backend_mut(),
             LeaveAlternateScreen,
@@ -524,12 +431,7 @@ impl Drop for Tui {
     }
 }
 
-/// What the completer says about the input right now, as a popup.
-///
-/// The token bounds come from the same split the completer used, which is why
-/// they are asked for again here rather than returned with the candidates: two
-/// answers to "where does this token start" would drift, and the drift would
-/// show up as text inserted in the wrong place.
+/// The completer's answer for this input as a popup; bounds share its split.
 fn next_completion(input: &InputLine, completer: &SharedCompleter) -> Option<Completion> {
     let candidates = completer.complete(input.text(), input.cursor());
     if candidates.is_empty() {
@@ -544,11 +446,7 @@ fn next_completion(input: &InputLine, completer: &SharedCompleter) -> Option<Com
     })
 }
 
-/// Applies the chosen candidate, then asks what the same line wants next.
-///
-/// A flag wants its value, and asking immediately is what turns Tab into "fill
-/// the flag", Tab again into "fill the value" -- rather than one Tab and a
-/// letter typed only to make the list reappear.
+/// Applies the chosen candidate, then asks what the line wants next. See `docs/notes/tui-lib.md`.
 fn apply_and_continue(
     input: &mut InputLine,
     completion: &mut Option<Completion>,
@@ -570,12 +468,12 @@ impl Completer for NoCompleter {
     }
 }
 
-/// The stream bookkeeping, kept out of [`Tui`] so a test can drive it without a
-/// terminal — and so the test drives *this* code rather than a copy of it.
+/// Stream bookkeeping, kept out of [`Tui`] so a test drives it without a terminal.
 ///
-/// A closed stream must not append to a line that has since moved: `done`
-/// removes the key before the next chunk looks it up, which is what makes two
-/// consecutive responses end up as two lines rather than one.
+/// # Invariant
+///
+/// A closed stream never appends to a line that has since moved: `done` removes
+/// the key, so two consecutive responses end up as two lines rather than one.
 fn stream_into(
     log: &mut Log,
     streams: &mut HashMap<String, usize>,
@@ -586,11 +484,9 @@ fn stream_into(
     done: bool,
 ) {
     match streams.get(key) {
-        // In place, and only the new bytes are wrapped: a delta must cost what
-        // the delta is worth, not what the line has grown to.
+        // In place: only the new bytes are wrapped, so a delta costs what it is worth.
         Some(&idx) => log.append(idx, text),
-        // An empty first chunk still opens the line when the stream is not
-        // finished, so a slow first token does not lose its `prefix`.
+        // An empty first chunk still opens the line, so a slow token keeps its prefix.
         None if !text.is_empty() || !done => {
             log.push(kind, format!("{prefix}{text}"));
             streams.insert(key.to_string(), log.len() - 1);
@@ -604,9 +500,7 @@ fn stream_into(
 
 #[cfg(test)]
 mod layering {
-    /// The arrow this crate exists to point: the front-end depends on the
-    /// command layer, never the other way round. A comment cannot enforce that;
-    /// a manifest can be read.
+    /// The arrow this crate exists to point: `tui` depends on `cli`, not the reverse.
     #[test]
     fn the_front_end_depends_on_the_command_layer() {
         let manifest = include_str!("../Cargo.toml");
@@ -621,8 +515,7 @@ mod layering {
 mod tests {
     use super::*;
 
-    /// Drives the key handler without a terminal, which is the only part of the
-    /// UI that has logic worth testing.
+    /// Drives the key handler without a terminal: the only part with real logic.
     struct Headless {
         screen: Screen,
         streams: HashMap<String, usize>,
@@ -657,8 +550,7 @@ mod tests {
             );
         }
 
-        /// Every row the log holds, unwrapped at a width none of these cases
-        /// reach — which is what the assertions are about.
+        /// Every row the log holds, unwrapped at a width these cases never reach.
         fn rows(&mut self) -> Vec<String> {
             self.screen
                 .log
@@ -688,11 +580,7 @@ mod tests {
         }
     }
 
-    /// A stand-in for the command catalog: `--session` takes session names.
-    ///
-    /// Written here rather than borrowed from `cli` because the point is the
-    /// front-end's half of the job -- asking again after applying -- and the
-    /// command layer's types are not this crate's to build.
+    /// A stand-in catalog: `--session` takes session names. Not borrowed from `cli`.
     struct FlagCompleter;
 
     impl Completer for FlagCompleter {
@@ -711,9 +599,7 @@ mod tests {
         }
     }
 
-    /// Tab on a flag, then Tab again, fills the value too: the list has to come
-    /// back on its own once the flag is on the line, because a letter typed
-    /// only to make it appear is a letter that has to be deleted again.
+    /// Tab on a flag, then Tab again, fills the value: the list reopens on its own.
     #[test]
     fn completing_a_flag_asks_for_its_value() {
         let completer: SharedCompleter = std::sync::Arc::new(FlagCompleter);
@@ -754,9 +640,7 @@ mod tests {
         assert_eq!(h.rows(), vec!["a", "b"]);
     }
 
-    /// Two streams open at once have to stay separate: the index map is what
-    /// lets a tool's output and a response interleave without either one
-    /// appending to the other's line.
+    /// Two streams open at once stay separate: a tool's output never joins a response.
     #[test]
     fn two_open_streams_do_not_mix() {
         let mut h = Headless::new();
@@ -777,13 +661,7 @@ mod tests {
         assert!(Tui::actionable(&press));
     }
 
-    /// Leaving is the one thing the keyboard still does on its own, and Alt+Q
-    /// is the only key that does it.
-    ///
-    /// Pinned down here rather than in prose because the TUI needs a real
-    /// terminal to run: without a test like this, "Alt+Q quits" is only a
-    /// claim, and a binding that came back unnoticed is a Ctrl key the terminal
-    /// would have eaten before the program ever saw it.
+    /// Leaving is the one thing the keyboard does on its own: Alt+Q, nothing else.
     #[test]
     fn alt_q_is_the_only_way_out() {
         let quit = Some(UiEvent::Quit);
@@ -804,8 +682,7 @@ mod tests {
             Tui::shortcut(&KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
             None
         );
-        // Ctrl+Q is what VS Code takes for itself, which is why it is not the
-        // binding any more: leaving must not be a key the terminal swallows.
+        // Ctrl+Q is taken by VS Code, so it is no longer the binding: leaving must work.
         assert_eq!(
             Tui::shortcut(&KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)),
             None
@@ -820,8 +697,7 @@ mod tests {
         }
     }
 
-    /// Enter sends, the modified Enter breaks the line. Getting this backwards
-    /// sends half a message every time someone starts a new paragraph.
+    /// Enter sends, the modified Enter breaks the line; backwards sends half a message.
     #[test]
     fn enter_sends_and_the_modified_enter_breaks_the_line() {
         let enter = KeyCode::Enter;
@@ -835,8 +711,7 @@ mod tests {
         )));
     }
 
-    /// The wheel is the scroll control everybody reaches for first, so what one
-    /// notch means is worth pinning down.
+    /// What one wheel notch means, pinned down: three rows, one with Shift.
     #[test]
     fn wheel_notches_become_rows() {
         let up = MouseEvent {
@@ -864,8 +739,7 @@ mod tests {
         assert_eq!(Tui::wheel_rows(&click), None);
     }
 
-    /// Pag Up pressed ten times must not leave the view past the top, and
-    /// PgDn must not walk off the bottom: both ends stop the scroll.
+    /// Both ends stop the scroll: page-up past the top, page-down past the bottom.
     #[test]
     fn scrolling_stops_at_both_ends() {
         let mut h = Headless::new();

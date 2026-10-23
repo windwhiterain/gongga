@@ -1,22 +1,5 @@
-//! QQ 官方机器人通道（QQ 开放平台 v2 API）。
-//!
-//! Why this platform first: it is the only domestic one that hands events to a
-//! plain Rust program without an SDK. Both other serious options (飞书 long
-//! connection, 钉钉 Stream) frame their events in protobuf and ship SDKs only
-//! for Go/Python/Node/Java; QQ's gateway is JSON over a WebSocket that
-//! `tokio-tungstenite` already speaks.
-//!
-//! Two halves, because they need different things:
-//! * [`Inbox`] owns the gateway socket: identify, heartbeat, reconnect.
-//! * [`Outbox`] is just the HTTP API, so a reply can be sent from the bridge
-//!   loop without touching the socket.
-//!
-//! Platform limits that shape the code (官方文档):
-//! * 被动回复只对 5 分钟内的消息有效，一条消息最多回 5 次（`msg_seq` 1~5）。
-//!   所以「先回一句收到、跑完再回结果」要按 seq 计数，超时就必须改成主动消息。
-//! * 主动消息有频控（认证主体 60/min，未认证 30/min，单个群 20/min，
-//!   每群每天 1000 条）。一个人用远够。
-//! * 群消息不支持流式，所以回复必须是拼好的整段。
+//! QQ 官方机器人通道（QQ 开放平台 v2 API）：gateway 收消息，HTTP API 发消息。
+//! 见 `docs/notes/bridge-channel-qq.md`。
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -35,9 +18,7 @@ use super::{
 };
 use crate::config::Qq as Config;
 
-/// 群与单聊的 @ 消息。`1 << 25` covers `GROUP_AT_MESSAGE_CREATE` and
-/// `C2C_MESSAGE_CREATE`; the guild intents are deliberately not requested --
-/// this bridge has no business in a channel.
+/// 群与单聊的 @ 消息：`1 << 25` 覆盖 `GROUP_AT_MESSAGE_CREATE` 和 `C2C_MESSAGE_CREATE`。
 const INTENTS: u32 = 1 << 25;
 
 const TOKEN_URL: &str = "https://bots.qq.com/app/getAppAccessToken";
@@ -79,12 +60,9 @@ pub async fn open(cfg: &Config) -> anyhow::Result<Channels> {
     Ok(Channels { inbox, outbox })
 }
 
-// ---------------------------------------------------------------------------
-// Access token
-// ---------------------------------------------------------------------------
+// ------------------------------ Access token ------------------------------
 
-/// `access_token` lives two hours. Fetched lazily and shared by both halves, so
-/// connecting the socket does not burn a second round trip on the same value.
+/// `access_token` 的 TTL 取 `expires_in`（缺省按两小时）；惰性获取，两半共用一份缓存。
 struct Token {
     cfg: Config,
     http: reqwest::Client,
@@ -101,8 +79,7 @@ impl Token {
     }
 
     async fn get(&self) -> anyhow::Result<String> {
-        // Scoped so the guard is dropped before the await below: a std
-        // mutex held across an await is how a bridge deadlocks itself.
+        // Guard dropped before the await: a std mutex held across one deadlocks.
         let cached = { self.cache.lock().unwrap().clone() };
         if let Some((token, until)) = cached {
             if Instant::now() < until {
@@ -141,9 +118,7 @@ impl Token {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Inbound: the gateway socket
-// ---------------------------------------------------------------------------
+// ---------------------- Inbound: the gateway socket ----------------------
 
 pub struct Inbox {
     cfg: Config,
@@ -152,8 +127,7 @@ pub struct Inbox {
     socket: Option<(Sink, Source)>,
     heartbeat: Duration,
     next_ping: Instant,
-    /// Last sequence number seen. Sent with the heartbeat so the platform can
-    /// tell a live-but-quiet connection from a dead one.
+    /// 最后见到的 `s`，随心跳发出，平台据此分辨「活着但安静」和「已死」。
     last_s: Option<i64>,
     backoff: Duration,
 }
@@ -173,8 +147,7 @@ impl Inbox {
         }
     }
 
-    /// Connects, says hello, and identifies. Errors here are retried by
-    /// [`recv`](Self::recv), so a flapping network does not kill the bridge.
+    /// 连上、说 hello、identify。失败由 [`recv`](Self::recv) 重试，网络抖动不会拖垮 bridge。
     async fn connect(&mut self) -> anyhow::Result<()> {
         let token = self.token.get().await?;
         let url = self.gateway(&token).await?;
@@ -340,9 +313,7 @@ impl InboxTrait for Inbox {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Outbound: the HTTP API
-// ---------------------------------------------------------------------------
+// ------------------------- Outbound: the HTTP API -------------------------
 
 pub struct Outbox {
     cfg: Config,
@@ -387,10 +358,7 @@ impl OutboxTrait for Outbox {
             ChatId::Group(id) => format!("/v2/groups/{id}/messages"),
             ChatId::Direct(id) => format!("/v2/users/{id}/messages"),
         };
-        // Passive first: it threads the answer under the question, which is what
-        // a chat looks like. After five minutes (or the sixth reply) the
-        // platform refuses that, and a plain message is the only way left to
-        // deliver an answer to a long-running turn.
+        // 先试被动回复（挂在原消息下，才像聊天）；被拒就改发普通消息。
         if let Some((reference, seq)) = &out.reply_to {
             let body = json!({
                 "content": out.text,
@@ -410,9 +378,7 @@ impl OutboxTrait for Outbox {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Decoding one dispatch
-// ---------------------------------------------------------------------------
+// ------------------------- Decoding one dispatch -------------------------
 
 fn parse_dispatch(kind: &str, d: &Value) -> Option<Incoming> {
     let (chat, user) = match kind {
@@ -438,10 +404,7 @@ fn parse_dispatch(kind: &str, d: &Value) -> Option<Incoming> {
     })
 }
 
-/// Removes `<@!123456>` / `<@123456>` and the leading space the platform adds.
-///
-/// Left in, the mention becomes part of the prompt: the agent would see
-/// "<@!1234> 跑一下测试" and could reasonably decide the id is significant.
+/// 去掉 `<@!123>` / `<@123>` 和前导空格，否则 @ 会变成 prompt 的一部分。
 fn strip_mentions(content: &str) -> String {
     let mut out = String::with_capacity(content.len());
     let mut rest = content;

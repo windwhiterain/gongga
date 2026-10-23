@@ -1,24 +1,6 @@
-//! One server per home directory.
+//! One server per home directory, claimed by a `server.lock`.
 //!
-//! Two servers sharing one home is a state nothing here has an answer for:
-//! they share the SQLite file, so each would resume the same pending turn,
-//! compress the same transcript, and drive the same session at the same time.
-//! Binding the UDP port already refuses a second server on the *same* port,
-//! but a different port pointed at the same home slips past that, and both
-//! servers would then happily run the same agent twice.
-//!
-//! So the home itself is claimed: a `server.lock` holding this process's pid.
-//! `create_new` is atomic, so of two servers starting together exactly one
-//! wins, and the loser is told who holds it. A pid left behind by a kill is
-//! recognised as stale and taken over, so a crash does not lock the home
-//! forever -- only a live process does.
-//!
-//! The pid is written through the handle `create_new` returned, never by a
-//! separate `fs::write` afterwards: the file becomes visible the moment it is
-//! created, so a second server arriving in between would read an empty lock,
-//! call it litter, and take a home that was already claimed. For the same
-//! reason an empty or unparsable lock is *not* stale: it is a claim being
-//! written, and it is waited out (briefly) rather than taken over.
+//! See `docs/notes/server-instance.md`.
 
 use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
@@ -29,23 +11,12 @@ use std::time::{Duration, Instant};
 use anyhow::Context;
 
 /// How long a lock that is being written is given before it is called broken.
-///
-/// The writer writes one short line through an already-open handle, so this is
-/// orders of magnitude more than it needs; it exists so a genuinely empty file
-/// (a disk that lies, a killed `create_new`) fails with a message instead of
-/// waiting forever.
 const CLAIM_GRACE: Duration = Duration::from_millis(250);
 
 /// How often the lock is re-read while waiting out a claim.
 const CLAIM_POLL: Duration = Duration::from_millis(10);
 
-/// How many times the whole claim is retried.
-///
-/// Each pass either wins `create_new` or learns something new about the file --
-/// it disappeared, it is being written, it names a live pid. The loop exists
-/// because those are separate observations of a file other processes are
-/// changing: a pass that finds the file gone goes round once more and races for
-/// it.
+/// How many passes the claim makes before giving up on a home that keeps changing.
 const ATTEMPTS: usize = 3;
 
 /// Claims `home` for this process. The claim lasts as long as the value does.
@@ -82,8 +53,7 @@ impl InstanceLock {
                 other => other,
             };
             match holder {
-                // A pid nobody holds any more is not a lock, it is litter: the
-                // process that wrote it was killed before it could clean up.
+                // A pid nobody holds any more is litter, not a lock: its process was killed.
                 Holder::Pid(holder) if alive(holder) => {
                     anyhow::bail!(
                         "another gongga server is already running on this home \
@@ -116,9 +86,7 @@ impl InstanceLock {
 
 impl Drop for InstanceLock {
     fn drop(&mut self) {
-        // Only our own claim is removed. A file that now names somebody else
-        // was taken over after a `cancel` outlived this process's own lock --
-        // deleting it would hand the home to a third server.
+        // Remove only our own claim: a lock naming someone else is theirs.
         if read_holder(&self.path) == Holder::Pid(self.pid) {
             // Best effort: a kill leaves the file behind, which is exactly what
             // the liveness check above exists for.
@@ -127,16 +95,14 @@ impl Drop for InstanceLock {
     }
 }
 
-/// Creates `path` and writes `pid` into the handle that created it.
+/// Creates `path` and writes `pid` through that same handle; false if taken.
 ///
-/// Returns `false` when the file was already there, which is not an error: the
-/// caller is the one that knows what to do about the holder.
+/// See `docs/notes/server-instance.md`.
 fn claim(path: &Path, pid: u32) -> anyhow::Result<bool> {
     match OpenOptions::new().write(true).create_new(true).open(path) {
         Ok(mut file) => {
-            // Written through *this* handle, and synced before it closes: the
-            // file is visible to everybody from the instant `create_new`
-            // returns, so its contents must arrive in the same breath.
+            // Written through this handle and synced: the file is visible the moment
+            // it exists.
             file.write_all(pid.to_string().as_bytes())
                 .and_then(|()| file.sync_all())
                 .with_context(|| format!("writing {}", path.display()))?;
@@ -151,24 +117,24 @@ fn claim(path: &Path, pid: u32) -> anyhow::Result<bool> {
 fn read_holder(path: &Path) -> Holder {
     match std::fs::read_to_string(path) {
         Ok(text) => match text.trim().parse::<u32>() {
-            // `0` is not a pid any process has; it is what a half-written file
-            // reads as, which is why it is not treated as a holder either.
+            // `0` is not a pid; a half-written file reads that way, so it is no holder.
             Ok(pid) if pid != 0 => Holder::Pid(pid),
             _ => Holder::Reading,
         },
         Err(e) if e.kind() == ErrorKind::NotFound => Holder::Missing,
-        // Unreadable for any other reason: assume somebody is writing it. That
-        // is the direction that cannot hand the home to a second server.
+        // Unreadable otherwise: assume a writer, the direction that cannot split a home.
         Err(_) => Holder::Reading,
     }
 }
 
 /// Waits out a claim that is being written, then reports what it says.
 ///
-/// The writer only has to put a few digits into an open handle, so a lock that
-/// stays empty for [`CLAIM_GRACE`] is not being written by anybody -- but that
-/// is still not grounds to take it over. The caller refuses instead, and the
-/// message names the file so a human can decide.
+/// # Invariant
+///
+/// An empty lock is waited out and then refused, never taken over: taking one
+/// over is how two servers end up sharing a home.
+///
+/// See `docs/notes/server-instance.md`.
 fn wait_out_claim(path: &Path) -> Holder {
     let deadline = Instant::now() + CLAIM_GRACE;
     loop {
@@ -182,10 +148,12 @@ fn wait_out_claim(path: &Path) -> Holder {
 
 /// Moves a stale lock out of the way so the next `create_new` can happen.
 ///
-/// `rename` is the atomic part: of two servers that both decided the holder is
-/// dead, exactly one moves the file, and the other sees it disappear. Neither
-/// writes over the other's claim -- the following `create_new` is what decides
-/// the owner, and only one process can win that.
+/// # Invariant
+///
+/// `rename` is the atomic step: of two servers that both judged the holder dead,
+/// exactly one moves the file, and only one `create_new` then wins it.
+///
+/// See `docs/notes/server-instance.md`.
 fn take_over(path: &Path) -> anyhow::Result<()> {
     let aside = path.with_file_name(format!(
         "server.lock.stale-{}-{}",
@@ -212,8 +180,7 @@ fn take_over(path: &Path) -> anyhow::Result<()> {
 fn alive(pid: u32) -> bool {
     #[cfg(windows)]
     {
-        // `tasklist` prints the matching line, or reports that nothing
-        // matched. Matching on the pid itself is locale-independent.
+        // `tasklist` prints the matching line or nothing; the pid match is locale-free.
         let Ok(out) = Command::new("tasklist")
             .args(["/NH", "/FI", &format!("PID eq {pid}")])
             .output()
@@ -258,8 +225,7 @@ mod tests {
         InstanceLock::acquire(dir.path()).unwrap();
     }
 
-    /// A lock that exists but has no pid in it is a claim being written, not
-    /// litter. Taking it over is how two servers end up sharing one home.
+    /// A lock with no pid in it is a claim being written, not litter.
     #[test]
     fn an_empty_lock_is_not_taken_over() {
         for contents in ["", "   ", "not-a-pid"] {
@@ -273,8 +239,7 @@ mod tests {
         }
     }
 
-    /// Releasing a claim removes only that claim: a lock that now names a
-    /// different process belongs to it, and dropping ours must not delete it.
+    /// Dropping a claim removes only that claim; a new owner's lock must survive.
     #[test]
     fn dropping_a_stale_claim_does_not_delete_the_new_owner() {
         let dir = tempfile::tempdir().unwrap();
@@ -291,9 +256,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let home = Arc::new(dir.path().to_path_buf());
         let gate = Arc::new(Barrier::new(8));
-        // The winners keep their claim until every thread is done: a claim that
-        // is released immediately would let the next thread have the home, and
-        // the test would prove nothing.
+        // Winners hold their claim until every thread is done, or the test proves nothing.
         let held: Arc<std::sync::Mutex<Vec<InstanceLock>>> = Arc::default();
         let mut threads = Vec::new();
         for _ in 0..8 {

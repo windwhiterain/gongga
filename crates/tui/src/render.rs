@@ -11,20 +11,14 @@ use crate::{LineKind, Screen};
 pub const HELP: &str =
     "↑↓ history · Shift+↑↓ row · Alt+↑↓ page · Tab complete · Shift+Enter newline · Alt+Q quit";
 
-/// Rows the layout spends on everything that is not the log or the input:
-/// header, footer and help. The input's own height varies with its text, so it
-/// is asked for separately (see [`input_rows`]).
+/// Rows spent on header, footer and help; the input's height is asked separately.
 pub const CHROME_ROWS: u16 = 3;
 
-/// The prompt on the first row, and the padding continuation rows line up
-/// behind.
+/// The prompt on the first row; continuation rows pad behind it.
 const PREFIX: &str = "> ";
 const PREFIX_WIDTH: u16 = 2;
 
-/// The most rows the input box grows to before it scrolls.
-///
-/// A message is prose, not a file: past a screenful of it, what the operator
-/// needs to see is the answer they are replying to, so the box stops growing.
+/// The most rows the input box grows to before it scrolls: prose, not a file.
 const MAX_INPUT_ROWS: u16 = 8;
 
 pub fn draw(f: &mut Frame, s: &mut Screen) {
@@ -40,8 +34,7 @@ pub fn draw(f: &mut Frame, s: &mut Screen) {
     .split(area);
 
     draw_header(f, s, chunks[0]);
-    // The log borrows the screen mutably: it is where the scroll offset gets
-    // clamped against a height that only the renderer can compute.
+    // The log borrows the screen mutably: here the scroll offset gets clamped.
     draw_log(f, s, chunks[1]);
     draw_footer(f, s, chunks[2]);
     draw_input(f, s, chunks[3]);
@@ -51,24 +44,17 @@ pub fn draw(f: &mut Frame, s: &mut Screen) {
     }
 }
 
-/// How many rows the input box needs for `text` at this width, and how many the
-/// window can spare.
-///
-/// Wrapping is part of the answer: the box is one row until the text outgrows
-/// the line, then it is one row per wrapped row -- a long message must stay
-/// visible, not scroll sideways off the edge where nothing can be edited.
+/// Rows the input box needs for `text` here, capped so the log keeps three.
 pub fn input_rows(text: &str, width: u16, height: u16) -> u16 {
     let rows = layout_input(text, text.len(), content_width(width))
         .rows
         .len() as u16;
-    // The log keeps at least three rows: a box that eats the window would hide
-    // the very thing the message is about.
+    // The log keeps at least three rows, so the box cannot hide the answer.
     let spare = height.saturating_sub(CHROME_ROWS + 3).max(1);
     rows.clamp(1, MAX_INPUT_ROWS.min(spare))
 }
 
-/// Columns available for text: the prefix on the left, and one spare on the
-/// right so a full row is not wrapped a second time by the terminal itself.
+/// Columns for text: the prefix on the left, one spare on the right.
 fn content_width(width: u16) -> usize {
     width.saturating_sub(PREFIX_WIDTH + 1).max(1) as usize
 }
@@ -80,11 +66,12 @@ struct InputLayout {
     cursor_col: u16,
 }
 
-/// Breaks the input into rows the way the terminal will show it: a `'\n'` is a
-/// hard break, and a row that reaches `width` columns continues on the next one.
+/// Splits the input into rows: `'\n'` is a hard break, width wraps the rest.
 ///
-/// The last row always exists, so an empty input -- or one that ends with a
-/// newline -- has somewhere for the cursor to sit.
+/// # Invariant
+///
+/// The last row always exists, so an empty input, or one ending in a newline,
+/// has somewhere for the cursor to sit. See `docs/notes/tui-render.md`.
 fn layout_input(text: &str, cursor: usize, width: usize) -> InputLayout {
     let width = width.max(1);
     let cursor = cursor.min(text.len());
@@ -131,26 +118,18 @@ fn draw_header(f: &mut Frame, s: &Screen, area: Rect) {
     );
 }
 
-/// Draws the log window.
-///
-/// The log hands back exactly the rows that fit, already wrapped and borrowed
-/// from its own buffers, so this walks a screenful and nothing else. The
-/// scroll bound comes back with them because only here is the window height
-/// known, and the key handler needs it between frames.
+/// Draws the log window: the rows that fit, borrowed, and the scroll bound back.
 fn draw_log(f: &mut Frame, s: &mut Screen, area: Rect) {
-    // One column short: a row that exactly fills the width leaves the terminal
-    // free to wrap it again on its own, which double-spaces every full line.
+    // One column short: a full-width row would otherwise be wrapped again.
     let width = area.width.saturating_sub(1).max(1) as usize;
     let height = area.height as usize;
 
     let view = s.log.window(width, height, s.scroll);
     s.max_scroll = view.max_scroll;
-    // Clamping here as well as in the key handler covers the cases the handler
-    // cannot see: a window that just grew, or a line set that just shrank.
+    // Clamped here too, for a window that just grew or a log that just shrank.
     s.scroll = s.scroll.min(view.max_scroll);
 
-    // Borrowed, not cloned: the text lives in the log and the spans can point
-    // at it. Cloning every visible row was part of what made a long log slow.
+    // Borrowed, not cloned: cloning every visible row made a long log slow.
     let lines: Vec<Line> = view
         .rows
         .iter()
@@ -170,9 +149,7 @@ fn draw_footer(f: &mut Frame, s: &Screen, area: Rect) {
 fn draw_input(f: &mut Frame, s: &Screen, area: Rect) {
     let layout = layout_input(s.input.text(), s.input.cursor(), content_width(area.width));
     let height = area.height.max(1) as usize;
-    // The box stops at its cap rather than growing forever, so a long message
-    // scrolls inside it: the window follows the cursor instead of the cursor
-    // leaving the window.
+    // The box stops at its cap and scrolls, so the cursor never leaves the window.
     let first = (layout.cursor_row + 1).saturating_sub(height);
 
     let lines: Vec<Line> = layout
@@ -183,8 +160,7 @@ fn draw_input(f: &mut Frame, s: &Screen, area: Rect) {
         .take(height)
         .map(|(index, row)| {
             let lead = if index == 0 { PREFIX } else { "  " };
-            // The placeholder explains the empty box; it is not text, so it is
-            // only drawn where the text would have started.
+            // The placeholder is not text, so it only fills the first row.
             let body = if index == 0 && s.input.is_empty() {
                 Span::styled(s.placeholder.clone(), dim())
             } else {
@@ -198,8 +174,7 @@ fn draw_input(f: &mut Frame, s: &Screen, area: Rect) {
         .collect();
     f.render_widget(Paragraph::new(lines), area);
 
-    // A row that exactly fills the width puts the cursor one past its last
-    // column, which is outside the area: keep it on the edge.
+    // A row that exactly fills the width puts the cursor past the area: clamp it.
     let x = (area.x + PREFIX_WIDTH + layout.cursor_col).min(area.x + area.width.saturating_sub(1));
     let y = area.y + (layout.cursor_row - first) as u16;
     f.set_cursor_position((x, y));
@@ -210,9 +185,7 @@ fn draw_completion(f: &mut Frame, s: &Screen, input_area: Rect) {
         return;
     };
     let shown = completion.candidates.len().min(8);
-    // The window follows the selection. `move_selection` walks the whole list,
-    // so drawing only the first screenful leaves the ninth candidate selected
-    // with nothing highlighted -- and Tab still inserts it.
+    // The window follows the selection, or a ninth candidate is highlighted off-screen.
     let start = if shown == 0 {
         0
     } else {
@@ -321,9 +294,7 @@ mod tests {
         }
     }
 
-    /// Whole-path check without a terminal: layout, window, and the rows the
-    /// bottom of the log actually shows. The TUI cannot be run in a test, but
-    /// "the newest line is the one above the footer" can be.
+    /// Layout, window and the rows the bottom of the log shows, without a terminal.
     #[test]
     fn the_log_window_shows_the_newest_rows_above_the_footer() {
         let lines: Vec<String> = (0..10).map(|i| format!("L{i}")).collect();
@@ -340,9 +311,7 @@ mod tests {
         assert_eq!(screen.max_scroll, 4, "10 lines into a 6-row window");
     }
 
-    /// One row up is one row, not one line: the window can start halfway
-    /// through a wrapped line, and the row above the bottom has to be the row
-    /// that was there before.
+    /// One row up is one row, not one line: a window can start mid-line.
     #[test]
     fn scrolling_moves_the_window_by_rows() {
         let mut screen = screen_with(&["aaaaaaa", "bbbbbbb", "ccccccc"]);
@@ -359,9 +328,7 @@ mod tests {
         assert_eq!(row_text(&buf, 2), "bbbb");
     }
 
-    /// A message longer than the line has to wrap inside the box instead of
-    /// disappearing off the right edge: the input is where the text gets
-    /// edited, and text that cannot be seen cannot be edited.
+    /// A long message wraps inside the box: text that cannot be seen cannot be edited.
     #[test]
     fn a_long_input_wraps_into_more_rows_and_takes_them_from_the_log() {
         let mut screen = screen_with(&["L0", "L1", "L2", "L3", "L4"]);
@@ -377,8 +344,7 @@ mod tests {
         assert_eq!(row_text(&buf, 8), "  890");
     }
 
-    /// A typed newline is a hard break: the row after it starts a new line even
-    /// where the width would have kept going.
+    /// A typed newline is a hard break, even where the width would have kept going.
     #[test]
     fn a_typed_newline_starts_a_new_row() {
         let mut screen = screen_with(&[]);
@@ -392,8 +358,7 @@ mod tests {
         assert_eq!(row_text(&buf, 8), "  two");
     }
 
-    /// The box stops growing: past its cap it scrolls, because an input that
-    /// eats the window hides the answer it is replying to.
+    /// Past its cap the box scrolls instead of growing, so the answer stays visible.
     #[test]
     fn the_input_box_stops_growing_and_scrolls_instead() {
         let many = "x\n".repeat(40);

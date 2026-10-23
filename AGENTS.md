@@ -3,7 +3,19 @@
 - setting any limit/budget is forbidden.
 - session turn end should kill all process it spawns so user won't use a process that tied to a session as a long running process.
 - server home for tests should be local to each worktree so worktree's servers won't conflict (otherwise will be locked).
+- track your WIP under (notes)[.agents/notes/].
 
+## Verification
+- tests layout: 
+  ```
+  cargo install --git https://github.com/windwhiterain/test-layout.git test-layout-check --locked
+  test-layout-check --config test-layout.toml
+  ```
+- comments test:
+  ```
+  cargo install --git https://github.com/windwhiterain/comments-test comments-check --locked
+  comments-check --config comments-test.toml
+  ```
 ## 自我进化（改服务端之后怎么让自己用上）
 
 `scripts/evolve.sh` 把「换掉正在跑自己的服务端」按安全顺序做成了几条命令：

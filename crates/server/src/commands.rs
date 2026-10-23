@@ -1,17 +1,5 @@
 //! The command surface: catalog and dispatch.
-//!
-//! The server answers five commands: `send_message`, `set_session`,
-//! `del_session`, `interrupt_session` and `cancel`. Stopping work is a command
-//! and only a command: there is no side-channel that cancels a turn, so a
-//! script and a keystroke reach the same code by the same door. Sticky
-//! arguments are a client-side concern and never appear here.
-//!
-//! There is no "current session". A command either names its session or fails;
-//! the only way to get a default is the client's `persistant_cmd_argument`,
-//! which is filled in before the command ever reaches the wire.
-//!
-//! The catalog is published to clients at connect time, which is what lets the
-//! CLI's completer stay in sync without a second source of truth.
+//! See `docs/notes/server-commands.md`.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -31,8 +19,7 @@ use crate::store::Store;
 /// still reaches whoever asked for it.
 const SHUTDOWN_NOTICE: Duration = Duration::from_millis(250);
 
-/// Default window for `get_messages`. Enough to hold a whole turn (a turn with
-/// 20 tool calls is ~45 rows) without making a caller read the entire history.
+/// Default `get_messages` window: one whole turn, not the entire history.
 const DEFAULT_MESSAGE_LIMIT: usize = 50;
 /// Cap, so a typo cannot pull megabytes of transcript through a UDP channel
 /// that fragments at 1174 bytes a packet.
@@ -43,8 +30,7 @@ pub struct Dispatch {
     pub sessions: SessionManager,
     pub store: Store,
     pub bus: EventBus,
-    /// The machine's LLM roster, which is what `set_session --llm` is checked
-    /// against and where its completion list comes from.
+    /// The machine's LLM roster: what `set_session --llm` is checked against.
     pub providers: &'static crate::providers::Catalog,
     /// Turns currently running. `cancel` waits for this to drain before the
     /// process is allowed to exit.
@@ -53,13 +39,7 @@ pub struct Dispatch {
     pub shutdown: CancellationToken,
 }
 
-/// Owns one running turn's slot in [`Dispatch::active`].
-///
-/// The decrement lives in `Drop` rather than at the end of the spawned task, so
-/// it happens even when the turn panics. That matters now that shutdown waits
-/// on the count with no deadline: a task that died on its last line would leave
-/// the counter at one forever and stop the process from ever exiting -- the
-/// exact failure a deadline used to hide.
+/// Owns one turn's slot in [`Dispatch::active`], releasing it even on a panic.
 struct ActiveGuard(Arc<AtomicUsize>);
 
 impl ActiveGuard {
@@ -308,9 +288,7 @@ async fn send_message(d: &Dispatch, args: &Args) -> Outcome {
     let Some(message) = args.get("message").cloned() else {
         return Outcome::err("send_message requires --message");
     };
-    // No implicit current session: the name is either here or the command is
-    // wrong. A default is the client's business (a sticky `session`), not the
-    // server's hidden state.
+    // No implicit session: a default is the client's business, not hidden state.
     let Some(name) = args.get("session").cloned() else {
         return Outcome::err(
             "send_message requires --session; set a sticky `session` to avoid typing it",
@@ -321,33 +299,10 @@ async fn send_message(d: &Dispatch, args: &Args) -> Outcome {
         Err(e) => return Outcome::err(e.to_string()),
     };
     let label = session.name().to_string();
-    // A message that arrives while this session is working does not start a
-    // second turn: it goes into the inbox and the running turn folds it in at
-    // its next step boundary. Starting a turn would have meant queueing behind
-    // the gate -- the operator's line unread until the agent had finished
-    // everything else and stopped, which is exactly when it is too late to
-    // steer.
-    //
-    // One read of `busy`, and it decides both things: what contract the row
-    // has and whether this call starts a turn. Two reads were a race with a
-    // nasty shape -- the first said "busy" (so the row was written as
-    // "inject", promising the message is not in the transcript yet), then the
-    // turn ended before the second read, which said "idle" and started a turn
-    // that wrote the message *and* left the row behind. A crash after that
-    // made `resume_pending` write the same line a second time, and "the agent
-    // repeated me" is not a symptom anyone can debug from the transcript.
-    //
-    // `kind` records which contract the row has. "turn" means the message is
-    // already in the transcript and the row only proves a turn is owed;
-    // "inject" means the message has not been written yet and whoever consumes
-    // it must write it. A restart has to tell them apart.
+    // One read of `busy` picks the kind and whether a turn starts; see `docs/notes/server-commands.md`.
     let busy = session.busy();
     let kind = if busy { "inject" } else { "turn" };
-    // Remember which row is this message's. Clearing by session used to delete
-    // the rows of messages still waiting their turn: the first turn finished
-    // and took the second one's pending row with it, so a crash before the
-    // second turn ran lost the message entirely -- it was neither in the
-    // transcript nor in the pending list.
+    // Keep this message's own row id; clearing by session would take others with it.
     let task_id =
         match d
             .store
@@ -358,10 +313,7 @@ async fn send_message(d: &Dispatch, args: &Args) -> Outcome {
         };
 
     if busy {
-        // The turn that was running will fold this in at its next step
-        // boundary. If it ends first, the row is not stranded: `nudge_inboxes`
-        // starts a turn for exactly this case, which is the same path a
-        // background job's completion takes.
+        // The running turn folds this in; `nudge_inboxes` covers it ending first.
         return Outcome::ok(format!(
             "message queued for {label}; it will be read at the next step"
         ));
@@ -374,9 +326,7 @@ async fn send_message(d: &Dispatch, args: &Args) -> Outcome {
     tokio::spawn(async move {
         let _active = ActiveGuard::new(active);
         agent.run_turn(&session, &message, Some(task_id)).await;
-        // The turn is done, so it is no longer something the next start owes --
-        // unless a `cancel` interrupted it, in which case staying pending is
-        // exactly what "save what is left undone" promised.
+        // Done means the next start owes nothing, unless a `cancel` kept it pending.
         if !session_resumable.take_resumable() {
             let _ = store.delete_pending_task(task_id);
         }
@@ -386,9 +336,7 @@ async fn send_message(d: &Dispatch, args: &Args) -> Outcome {
 
 async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     let name = args["session"].clone();
-    // `--llm` is resolved here rather than at the next turn: a typo should fail
-    // the command that made it, and the roster can answer with what would have
-    // worked instead of leaving a turn to die later.
+    // Resolve `--llm` now: a typo should fail the command that made it.
     let entry = match args.get("llm") {
         None => None,
         Some(spec) => match resolve_llm(d, spec) {
@@ -403,9 +351,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             Err(e) => return Outcome::err(e),
         },
     };
-    // A percentage is a percentage of something. If the model has no context
-    // window on record, the number has no meaning -- and quietly keeping the
-    // old budget would look like the setting was applied.
+    // A percentage needs a window; silently keeping the old budget would lie.
     let context = entry
         .as_ref()
         .map(|e| e.context)
@@ -420,8 +366,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             }
         ));
     }
-    // `set_session` doubles as creation: naming a session is the only way to
-    // get one, and refusing to create it would make the command useless.
+    // Naming a session creates it: that is the only way to get one.
     let session = match d
         .sessions
         .ensure(&name, args.get("cwd").map(String::as_str))
@@ -433,10 +378,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     let mut tuning = session.tuning();
     let mut changed = false;
     if let Some(level) = args.get("thinking_effort") {
-        // Checked against the model this session will run on: the entry named
-        // here, or the one it already had. A level the model does not take is a
-        // typo in the command that made it, and the roster can say what it does
-        // take while the caller is still looking at what they typed.
+        // Check the level against the model this session will run on, so typos fail now.
         let target = entry.clone().or_else(|| {
             tuning
                 .llm
@@ -448,10 +390,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
                 Ok(level) => level,
                 Err(message) => return Outcome::err(message),
             },
-            // Nothing in the roster describes this model, so there is nothing
-            // to check it against. Passing it through lets the provider answer
-            // for itself instead of the flag being unusable on an unlisted
-            // model.
+            // Not in the roster, so nothing to check against: pass it to the provider.
             None => level.clone(),
         });
         changed = true;
@@ -465,9 +404,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         changed = true;
     }
     if changed {
-        // Written down before it is applied: a restart has to bring the session
-        // back the way it was left, and the in-memory copy is only what turns
-        // read.
+        // Persist before applying: a restart must restore what turns here read.
         if let Err(e) = d.store.set_session_tuning(
             session.id(),
             tuning.llm.as_deref(),
@@ -520,11 +457,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     )
 }
 
-/// Turns `--llm` into a roster entry.
-///
-/// `provider/model` first, then a bare model id: model ids may themselves
-/// contain a slash, so the fallback is what makes `--llm deepseek-flash` work
-/// without making `--llm goat/deepseek/...` ambiguous.
+/// Turns `--llm` into a roster entry, trying `provider/model` then a bare id.
 fn resolve_llm(d: &Dispatch, spec: &str) -> Result<crate::providers::Entry, String> {
     match d.providers.resolve(spec) {
         Ok(choice) => Ok(choice.entry),
@@ -532,10 +465,7 @@ fn resolve_llm(d: &Dispatch, spec: &str) -> Result<crate::providers::Entry, Stri
     }
 }
 
-/// `30%`, `30`, or `0` for "never compact".
-///
-/// Anything else is a typo, and a typo here would silently change how much of
-/// the conversation survives, so it is refused rather than rounded.
+/// `30%`, `30`, or `0` for "never compact"; anything else is refused, not rounded.
 fn parse_percent(raw: &str) -> Result<u8, String> {
     let trimmed = raw.trim().trim_end_matches('%').trim();
     let value: u16 = trimmed
@@ -550,19 +480,12 @@ fn parse_percent(raw: &str) -> Result<u8, String> {
     Ok(value as u8)
 }
 
-/// Reads the transcript back out.
+/// Reads the transcript back out, so a caller need not reassemble deltas.
 ///
-/// `send_message` is fire-and-forget and streaming events are a delta soup:
-/// neither is a good way for a caller that was not watching to learn "what did
-/// it finally say". An IM bridge has exactly that problem -- it must reply with
-/// one message body, minutes after it handed the turn over. So the transcript
-/// itself is queryable, and the bridge reads the answer it is about to relay
-/// rather than reassembling it from `response` deltas (which interleave with
-/// tool calls and would need the same parsing rules as the UI).
+/// # Invariant
 ///
-/// Read-only and cheap: one indexed range scan. It does not claim the session
-/// gate, because reading a transcript while a turn appends to it is exactly
-/// what the TUI's replay does, and neither has anything to write.
+/// Read-only: it takes no session gate, because reading while a turn appends is
+/// what the TUI's replay does.
 async fn get_messages(d: &Dispatch, args: &Args) -> Outcome {
     let name = args["session"].clone();
     let session = match d.sessions.get(&name) {
@@ -607,23 +530,16 @@ async fn get_messages(d: &Dispatch, args: &Args) -> Outcome {
 
 async fn del_session(d: &Dispatch, args: &Args) -> Outcome {
     let name = args["session"].clone();
-    // Delete means "not this session and not what it is doing", so stop the
-    // turn first. Queueing behind it would make the delete wait for the turn
-    // to finish on its own, which is not what anyone asking for a delete
-    // means -- and it is why this does not simply `claim` and wait.
+    // Delete means "not this work either", so interrupt before waiting for the gate.
     let (was_busy, dropped) = interrupt(d, &name);
-    // The turn still has to let go of the transcript before the rows go, so
-    // the gate is taken anyway. After an interrupt it is a wait measured in
-    // milliseconds; without the interrupt it is the length of the turn.
+    // The rows cannot go until the turn lets go, so take the gate after interrupting.
     let _gate = match d.sessions.peek(&name) {
         Some(session) => Some(session.claim().await),
         None => None,
     };
     match d.sessions.delete(&name) {
         Ok(true) => {
-            // Deleting a session is the one thing that means "the work it
-            // started is not wanted either". `cancel` disagrees on purpose:
-            // detached jobs exist to outlive the server's own shutdown.
+            // Delete stops detached jobs too; `cancel` keeps them, by design.
             let stopped = d.sessions.detached().stop_session(&name).await;
             publish_sessions(d);
             let mut message = if stopped.total() == 0 {
@@ -647,24 +563,7 @@ async fn del_session(d: &Dispatch, args: &Args) -> Outcome {
     }
 }
 
-/// Stop one session's turn, and drop what it still owed.
-///
-/// The counterpart to `cancel`, which stops everything but keeps the work: this
-/// one is about a single session and it throws the work away. The difference is
-/// a single pending row, and the distinction is worth a command of its own --
-/// "stop that, I did not mean it" and "stop, I will continue after a restart"
-/// are not the same request.
-///
-/// It used to be Ctrl+X, which meant only the TUI could do it: a script, and so
-/// the model, had no way to stop a turn it had started. As a command it is
-/// reachable by everyone who can reach the server.
-/// Stops what a session is doing and throws the work away.
-///
-/// Shared by `interrupt_session` and `del_session`. Deleting a session means
-/// not wanting what it is doing either, and queueing politely behind a turn
-/// would make the delete wait for however long that turn takes -- twenty
-/// minutes, if that is how long the turn takes. So delete interrupts first and
-/// only then waits, which is a wait measured in milliseconds.
+/// Stops one session's turn and drops its pending rows, unlike `cancel`.
 fn interrupt(d: &Dispatch, name: &str) -> (bool, usize) {
     let Some(session) = d.sessions.peek(name) else {
         return (false, 0);
@@ -672,20 +571,14 @@ fn interrupt(d: &Dispatch, name: &str) -> (bool, usize) {
     // Read before the cancel: afterwards there is nothing left to ask.
     let was_busy = session.busy();
     session.cancel();
-    // Not `cancel_and_preserve`. Aborting is deliberate, so this work is not
-    // what the next start owes -- and clearing the rows is what makes that
-    // true for the turns queued behind the running one as well, since they
-    // give up once they reach the front.
+    // Not `cancel_and_preserve`: aborting is deliberate, so the work is not owed.
     let dropped = d.store.clear_pending_tasks(name).unwrap_or(0);
     (was_busy, dropped)
 }
 
 async fn interrupt_session(d: &Dispatch, args: &Args) -> Outcome {
     let name = args["session"].clone();
-    // `peek`, not `get`: a session with no handle in memory is not running
-    // anything, and materialising it would start its shells just to stop
-    // nothing. Both "idle" and "no such session" are still worth saying out
-    // loud -- a silent success would read as "the turn did stop".
+    // `peek`, not `get`: materialising would start shells just to stop nothing.
     if d.sessions.peek(&name).is_none() {
         return match d.store.get_session(&name) {
             Ok(Some(_)) => Outcome::ok(format!("{name} is not running; nothing to interrupt")),
@@ -705,28 +598,21 @@ async fn interrupt_session(d: &Dispatch, args: &Args) -> Outcome {
     Outcome::ok(message)
 }
 
-/// The SPEC's `cancle`: do not die on the spot. Running turns are cancelled,
-/// whatever they cannot serialise into the database is left as a pending task,
-/// and only then does the process leave.
+/// The SPEC's `cancle`: stop turns and leave their work for the next start.
 ///
-/// Detached jobs are the exception and the point of the whole exercise: they
-/// were started precisely so that they would survive this. Killing them here
-/// would make `detached` indistinguishable from `background`, and would take
-/// away the one thing an agent needs in order to replace the server it is
-/// running on.
+/// # Invariant
+///
+/// Detached jobs keep running: they were started precisely so they would
+/// outlive this.
 async fn cancel(d: &Dispatch) -> Outcome {
     let running = d.sessions.live_sessions();
     for session in &running {
-        // Not `cancel()`: a cancelled turn must still be there for the next
-        // start to pick up, otherwise "cancel, restart, continue" -- the whole
-        // point of shutting down cleanly -- loses the turn it was protecting.
+        // Preserve, not cancel: "cancel, restart, continue" is the point of this.
         session.cancel_and_preserve();
     }
     let detached = d.sessions.detached().count().await;
     let pending = d.store.pending_tasks().map(|t| t.len()).unwrap_or(0);
-    // Not quite yet: the acknowledgement announcing what is being cancelled is
-    // worth more than a fast exit, and the listen loop publishes it only after
-    // this handler returns. A quarter second is well inside one round trip.
+    // Wait before shutting down: the acknowledgement is published after this returns.
     let shutdown = d.shutdown.clone();
     tokio::spawn(async move {
         tokio::time::sleep(SHUTDOWN_NOTICE).await;
@@ -741,17 +627,12 @@ async fn cancel(d: &Dispatch) -> Outcome {
     ))
 }
 
-/// Wakes sessions that are holding a message nobody is left to read.
+/// Wakes sessions holding a message nobody is left to read.
 ///
-/// The normal path needs no help: a message written while a turn is running is
-/// folded into that turn at its next step boundary. This covers the edge --
-/// the turn ended in the same instant the message was written, or a background
-/// job finished while the session was idle -- where the row would otherwise sit
-/// until the next `send_message`. A mailbox nobody checks is not delivery.
+/// # Invariant
 ///
 /// Only "inject" rows are woken: a "turn" row already belongs to a turn that is
-/// starting or queued, and starting a second one for it would ask the model to
-/// continue for no reason.
+/// starting or queued.
 pub fn nudge_inboxes(d: &Dispatch) -> usize {
     let Ok(tasks) = d.store.pending_tasks() else {
         return 0;
@@ -770,8 +651,7 @@ pub fn nudge_inboxes(d: &Dispatch) -> usize {
         }
         let agent = d.agent.clone();
         let active = d.active.clone();
-        // `None` as the owning row: this turn was not started from a message,
-        // so the step-boundary drain may take every queued row it finds.
+        // `None`: this turn owns no row, so the drain may take everything queued.
         tokio::spawn(async move {
             let _active = ActiveGuard::new(active);
             agent.resume_turn(&session, None).await;
@@ -781,10 +661,7 @@ pub fn nudge_inboxes(d: &Dispatch) -> usize {
     started
 }
 
-/// Turns that were interrupted, replayed once the server is back.
-///
-/// A turn is replayed by asking the model to continue: its transcript is
-/// already durable, so this resumes rather than restarts.
+/// Replays interrupted turns once the server is back, from their transcript.
 pub async fn resume_pending(d: &Dispatch) -> usize {
     let Ok(tasks) = d.store.pending_tasks() else {
         return 0;
@@ -796,19 +673,14 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
             let _ = d.store.delete_pending_task(task.id);
             continue;
         };
-        // Kept for the log only: the turn is replayed from the transcript, not
-        // from this payload, so the message must not be appended twice.
+        // Log only: the turn replays from the transcript, so do not append it twice.
         let message = task
             .payload
             .get("message")
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
-        // An "inject" row was never delivered: it was written while a turn was
-        // running, and that turn (or the process) ended before the step
-        // boundary that would have folded it in. Write it now -- the resume
-        // below replays a turn that reads the transcript, and a message that is
-        // not in the transcript would be replayed into nothing.
+        // An "inject" row was never delivered; write it, or the resume replays nothing.
         if task.kind == "inject" {
             if !message.is_empty() {
                 if let Err(e) = d.store.append_message(
@@ -828,8 +700,7 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
         let agent = d.agent.clone();
         let store = d.store.clone();
         let active = d.active.clone();
-        // Only this task is finished. Clearing the whole session would drop
-        // tasks a second, still-pending turn of the same session recorded.
+        // Clear only this task; the session may hold a second pending turn's row.
         let task_id = task.id;
         tokio::spawn(async move {
             let _active = ActiveGuard::new(active);
@@ -863,10 +734,7 @@ pub fn publish_sessions(d: &Dispatch) {
 mod tests {
     use super::*;
 
-    /// Shutdown waits for this count with no deadline, so the only thing that
-    /// can keep the process alive forever is a turn that never releases its
-    /// slot. A panic used to do exactly that, because the decrement was the
-    /// last statement of the task.
+    /// A panicking turn must still release its slot, or shutdown waits forever.
     #[test]
     fn a_panicking_turn_still_releases_its_slot() {
         let active = Arc::new(AtomicUsize::new(0));
@@ -921,9 +789,7 @@ mod tests {
         assert!(spec.args.is_empty(), "cancel is a whole-server stop");
     }
 
-    /// Interrupting is per session, and the session list is what completes it.
-    /// The name is required: guessing which session to stop is exactly the
-    /// hidden state the command surface exists to avoid.
+    /// Interrupting names one session; guessing one is the hidden state we avoid.
     #[test]
     fn interrupt_session_names_one_session() {
         let spec = catalog()
@@ -935,9 +801,7 @@ mod tests {
         assert!(matches!(name.completions, CompletionSource::Sessions));
     }
 
-    /// Every command names its session the same way. Four spellings of the
-    /// same argument is how a sticky `session` ends up filling only three of
-    /// them.
+    /// Every command spells its session the same way, so sticky `session` works.
     #[test]
     fn every_command_takes_a_session_or_a_message() {
         for spec in catalog() {
@@ -964,9 +828,7 @@ mod tests {
         }
     }
 
-    /// The catalog is a wire object read by the client's completer, so every
-    /// source it declares has to survive the trip. A value list that lost its
-    /// variant on the way out would make Tab silently offer nothing.
+    /// Every completion source must survive the wire, or Tab silently offers nothing.
     #[test]
     fn completion_sources_survive_the_wire() {
         let json = serde_json::to_string(&catalog()).unwrap();
@@ -998,8 +860,7 @@ mod tests {
         ));
     }
 
-    /// `set_session` is where a session's model and compaction point are
-    /// chosen, so both flags have to be described well enough to complete.
+    /// `set_session` chooses model and compaction, so both flags must complete.
     #[test]
     fn set_session_offers_the_roster_and_a_percentage() {
         let spec = catalog()
@@ -1043,9 +904,7 @@ mod tests {
         assert!(parse_percent("-5").is_err());
     }
 
-    /// Reading is scoped to a session and paged by sequence number: an IM
-    /// bridge asks "what appeared after the seq I left off at", so a wrong
-    /// default here would make it resend old answers.
+    /// Reading is paged by seq, so a wrong default would make a bridge resend.
     #[test]
     fn get_messages_pages_by_seq() {
         let spec = catalog()

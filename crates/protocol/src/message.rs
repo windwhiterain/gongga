@@ -1,9 +1,6 @@
-//! Message vocabulary exchanged between `gongga-cli` and `gongga-server`.
+//! JSON event vocabulary, shared by the server, the CLI and the TUI.
 //!
-//! Everything on the wire is JSON inside the reliable channel's message frames.
-//! JSON is not the smallest encoding available, but this protocol carries
-//! human-scale events at human speed, and being able to read a datagram in a
-//! packet dump is worth more than the bytes.
+//! See `docs/notes/protocol-message.md`.
 
 use std::collections::BTreeMap;
 
@@ -13,16 +10,13 @@ pub const PROTOCOL_VERSION: u32 = 1;
 
 pub type Args = BTreeMap<String, String>;
 
-// ---------------------------------------------------------------------------
 // Client -> server
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum ClientMessage {
-    /// First message on any connection. The server answers with
-    /// [`ServerMessage::Hello`], or [`ServerMessage::Denied`] when `key` does
-    /// not match the one the server was started with.
+    /// First message on any connection; answered with `Hello` or `Denied`.
+    /// See `docs/notes/protocol-message.md`.
     Hello { client: ClientInfo, key: String },
     /// A command, already parsed and with sticky arguments applied.
     Command { id: u64, name: String, args: Args },
@@ -37,12 +31,9 @@ pub struct ClientInfo {
     pub label: String,
 }
 
-// ---------------------------------------------------------------------------
 // Server -> client
-// ---------------------------------------------------------------------------
 
-/// Adjacently tagged, not internally: `Event` carries its own `t` discriminator,
-/// and flattening one internally-tagged enum into another would emit `t` twice.
+/// Adjacently tagged: `Event` carries its own `t`, so internal tagging would emit `t` twice.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "t", content = "v", rename_all = "snake_case")]
 pub enum ServerMessage {
@@ -100,9 +91,7 @@ pub enum Event {
 }
 
 /// Which sub-stream of an assistant response a chunk belongs to.
-///
-/// The SPEC models a response as `{session, reasoning, toolcall, output}`; the
-/// session name identifies the turn and the other three are interleaved deltas.
+/// See `docs/notes/protocol-message.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResponsePart {
@@ -166,21 +155,15 @@ pub enum LogLevel {
     Error,
 }
 
-/// A sticky command argument: `persistant_cmd_arguments[{name, value}]`.
-///
-/// Sticky arguments are a client-side concern -- the CLI keeps them, fills them
-/// into commands before sending, and never tells the server about them. The type
-/// lives here only so both the CLI's in-memory map and its on-disk state file
-/// agree on one shape.
+/// A sticky command argument; client-side only, never on the wire.
+/// See `docs/notes/protocol-message.md`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CmdArg {
     pub name: String,
     pub value: String,
 }
 
-// ---------------------------------------------------------------------------
 // Command catalog, published by the server and consumed by the CLI completer
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommandSpec {
@@ -212,23 +195,18 @@ pub enum CompletionSource {
     Sessions,
     /// Complete against a fixed set.
     Static(Vec<String>),
-    /// Complete against every argument name in the catalog. This is what a
-    /// command takes when its value *is* an argument name, such as
-    /// `set_persistant_cmd_argument --name`.
+    /// Complete against every argument name; for values that *are* a name.
+    /// See `docs/notes/protocol-message.md`.
     Arguments,
-    /// Complete against the filesystem, relative to the client's working
-    /// directory. For arguments that take a path rather than a word.
+    /// Complete against the filesystem, relative to the client's cwd.
+    /// See `docs/notes/protocol-message.md`.
     Paths,
-    /// Complete this value the way the argument named on the same line under
-    /// `--name` would be completed: `--name session --value <TAB>` offers
-    /// sessions. The client needs this because the shape of the value depends
-    /// on which argument it is going to fill.
+    /// Complete this value the way the argument named by `--name` would be.
+    /// See `docs/notes/protocol-message.md`.
     OfNamedArgument,
 }
 
-// ---------------------------------------------------------------------------
 // Encoding helpers
-// ---------------------------------------------------------------------------
 
 pub fn encode_client(msg: &ClientMessage) -> Result<Vec<u8>, serde_json::Error> {
     serde_json::to_vec(msg)

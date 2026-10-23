@@ -1,9 +1,5 @@
 //! The agent loop: one user message in, a stream of events out.
-//!
-//! A *step* is a single model request plus the tools it called. A *turn* runs
-//! steps until the model stops asking for tools or the user cancels; there is no
-//! step ceiling. After every step the transcript is already durable, so a crash
-//! mid-turn leaves a replayable session rather than a hole.
+//! See `docs/notes/server-agent.md`.
 
 use std::any::Any;
 use std::panic::AssertUnwindSafe;
@@ -24,9 +20,7 @@ use crate::store::{HistoryItem, Store};
 use crate::tools::detached::DetachedRegistry;
 use crate::tools::{ToolContext, ToolRegistry};
 
-/// Share of a model's context window that compaction fills before folding the
-/// transcript. The rest is headroom for what a step adds after the check: the
-/// request's own output, and the tool results it asks for.
+/// Share of the window compaction fills; the rest is headroom for one step's output.
 const DEFAULT_COMPACT_PERCENT: u8 = 70;
 
 pub struct Agent {
@@ -37,14 +31,9 @@ pub struct Agent {
     pub providers: &'static Catalog,
     /// What a session's own entry inherits: timeouts, retries, instructions.
     pub llm_config: LlmConfig,
-    /// Clients built for sessions that named their own entry, by `provider/model`.
-    ///
-    /// A client builds a connection pool, so a turn that used one per step would
-    /// pay for it on every request. Keyed by spec rather than by session
-    /// because sessions that choose the same model should share it.
+    /// Clients for sessions that named their own entry, keyed by `provider/model`.
     pub clients: std::sync::Mutex<std::collections::HashMap<String, Arc<LlmClient>>>,
-    /// Context window of [`Self::llm`]'s model, for a session that asks for a
-    /// percentage without naming a model of its own.
+    /// [`Self::llm`]'s context window, for a percentage set without naming a model.
     pub default_context: Option<u64>,
     pub tools: Arc<ToolRegistry>,
     pub bus: EventBus,
@@ -53,43 +42,30 @@ pub struct Agent {
     pub compress_above_tokens: u64,
     /// Messages a compression leaves alone at the end of the transcript.
     pub keep_recent: usize,
-    /// Where capped tool output is spilled. Comes from the config: an agent
-    /// that cannot write it anywhere can still cap, it just loses the tail.
+    /// Where capped tool output is spilled; without it the tail is lost.
     pub output_dir: PathBuf,
-    /// Detached jobs of every session. Reaches the tools through `ToolContext`,
-    /// which is the only place a tool call gets to start or stop one.
+    /// Detached jobs of every session, reached through `ToolContext`.
     pub detached: DetachedRegistry,
 }
 
 impl Agent {
-    /// Runs one turn, publishing events as it goes. Never returns an error:
-    /// failures are reported on the bus and recorded in the session's status.
+    /// Runs one turn, reporting failures on the bus rather than returning them.
     ///
-    /// `task` is the pending row this turn was started from. Its message is
-    /// already in the transcript, so the step-boundary inbox must not hand it
-    /// back -- that would append the operator's line twice.
+    /// # Invariant
+    ///
+    /// `task` names a pending row whose message is already in the transcript, so
+    /// the step-boundary inbox must not hand it back.
     pub async fn run_turn(&self, session: &SessionHandle, user_text: &str, task: Option<i64>) {
         self.turn(session, Some(user_text), task).await;
     }
 
-    /// Replays a turn that a shutdown interrupted.
-    ///
-    /// The user message is already in the transcript: it is written before the
-    /// turn starts, which is the only reason the turn could be recorded as
-    /// pending at all. Appending it again made every restart show the operator's
-    /// line twice, and added one more copy to the history per resume.
+    /// Replays a turn a shutdown interrupted; its user message is already stored.
     pub async fn resume_turn(&self, session: &SessionHandle, task: Option<i64>) {
         self.turn(session, None, task).await;
     }
 
     async fn turn(&self, session: &SessionHandle, user_text: Option<&str>, task: Option<i64>) {
-        // A panic anywhere in the loop used to be the end of the turn with
-        // nothing left to clean up after it: the session kept the "running"
-        // status it was given on entry, no request was in flight, nothing was
-        // logged, and nothing ever moved again -- which is indistinguishable
-        // from a provider that has stopped answering. Catching it here turns
-        // that silence into an error on screen and leaves the session in a
-        // state the operator can do something about.
+        // A panic must surface as an error status, not a session that looks stuck.
         let outcome = AssertUnwindSafe(self.turn_inner(session, user_text, task))
             .catch_unwind()
             .await;
@@ -118,42 +94,27 @@ impl Agent {
     ) {
         let name = session.name().to_string();
         let id = session.id();
-        // Queue behind whatever is already working on this session. Taking the
-        // gate *before* `new_turn` is the whole point: `new_turn` cancels the
-        // running turn, so a second turn that took it first would kill the turn
-        // it is meant to be waiting behind. Starting a turn used to mean
-        // "interrupt"; now it means "get in line".
+        // Take the gate before `new_turn`: it cancels, so claiming first kills the queue.
         let epoch = session.cancel_epoch();
         let queued = session.busy();
         let _gate = session.claim().await;
         if queued {
-            // Otherwise a queued turn looks like the server froze: nothing
-            // moves until the turn in front of it is done, which for a long
-            // turn is minutes.
+            // A queued turn looks frozen otherwise; say so, since that can last minutes.
             tracing::info!(session = %name, "turn waited for the session to be free");
         }
         if session.cancel_epoch() != epoch {
-            // Cancelled while queued. Running now would look like the
-            // `interrupt_session` did nothing, and the message it was going to
-            // deliver is dropped just like any other interrupted turn: whoever
-            // spawned this clears the pending row unless a shutdown asked to
-            // keep it.
+            // Cancelled while queued: running looks like the interrupt did nothing.
             tracing::info!(session = %name, "turn dropped: cancelled while queued");
             return;
         }
         if session.is_deleted() {
-            // The wait was behind a `del_session`. There is nothing to write
-            // to any more, and writing would resurrect rows the operator asked
-            // to be gone.
+            // Waited behind `del_session`: writing would resurrect deleted rows.
             tracing::info!(session = %name, "turn dropped: session was deleted while queued");
             return;
         }
         let (turn, cancel) = session.new_turn();
         let started = std::time::Instant::now();
-        // Which model this turn talks to, and how much transcript it may carry
-        // before compaction. Resolved once, at the top: a session can be pointed
-        // at a different provider between turns, but every step of one turn has
-        // to agree on where it is sending.
+        // Resolved once: every step of a turn sends to the model it started on.
         let (llm, budget) = match self.route(&name, &session.tuning()) {
             Ok(route) => route,
             Err(e) => {
@@ -161,9 +122,7 @@ impl Agent {
                 return;
             }
         };
-        // Read once, like the route: a `set_session --thinking-effort` between
-        // turns applies to the next turn, and every step of this one sends the
-        // level it started with.
+        // Read once, like the route: every step sends the level this turn began with.
         let effort = session.tuning().thinking_effort;
         tracing::info!(
             session = %name,
@@ -189,35 +148,16 @@ impl Agent {
         });
         let _ = self.store.set_status(id, SessionStatus::Running);
 
-        // No step budget. A turn runs until the model stops asking for tools,
-        // the user cancels, or a request fails.
-        //
-        // There is deliberately no ceiling: a turn that is meant to work for
-        // days has no number of steps that is right in advance. Any number is
-        // either too small -- it stops mid-task and waits for a human to type
-        // "continue", which is not autonomy, it is a babysitter -- or large
-        // enough that it is not a limit at all. What actually keeps a long run
-        // finite is the work itself ending, and what keeps it from spinning is
-        // a request that fails, both of which are reported instead of silently
-        // truncating.
-        // Every exit from this loop carries its own outcome, so the value the
-        // match below sees is always set on the way out; there is no default
-        // and no fall-through.
+        // No step ceiling: it ends on a stop, a cancel or a failure, and every break sets it.
         let mut step: u32 = 0;
 
         let outcome = loop {
             if cancel.is_cancelled() {
                 break TurnOutcome::Cancelled;
             }
-            // Step boundary: everything that arrived while the previous step's
-            // tools were running becomes part of the transcript here, so the
-            // request built by `step` below carries it. Injecting earlier would
-            // put a user line between a tool call and its result, which
-            // providers reject outright.
+            // Step boundary: a user line between a call and its result is rejected, so inject here.
             self.deliver_inbox(id, &name, task);
-            // Before building the request: if the transcript has grown past the
-            // budget, fold its older half into a summary. Doing it here rather
-            // than after a step means the very next request is the small one.
+            // Compress before the request is built, so the very next request is the small one.
             self.maybe_compress(id, &name, &llm, budget, &cancel).await;
             tracing::info!(session = %name, step, "step start");
             let attempt = Attempt {
@@ -227,10 +167,7 @@ impl Agent {
             };
             match self.step(id, &name, turn, &cancel, &attempt).await {
                 Ok(StepResult::Finished) => {
-                    // The model says it is done, but something may have landed
-                    // while it was finishing. Deliver it and go round again
-                    // rather than end the turn with a message unread because it
-                    // arrived one step too late.
+                    // Something may have landed while it finished; deliver it and go round again.
                     if self.deliver_inbox(id, &name, task) > 0 {
                         step = step.wrapping_add(1);
                         continue;
@@ -248,9 +185,7 @@ impl Agent {
                     break TurnOutcome::Failed;
                 }
             }
-            // Wrapping rather than saturating: the counter is only a label in
-            // logs, and a turn long enough to reach the end of u32 has bigger
-            // things to worry about than the number restarting.
+            // Wrapping, not saturating: the counter is only a log label.
             step = step.wrapping_add(1);
         };
 
@@ -269,12 +204,7 @@ impl Agent {
         });
     }
 
-    /// Where this turn sends, and how many input tokens it may carry before
-    /// compacting.
-    ///
-    /// Both come from the session's tuning, falling back to the server's own
-    /// configuration. A percentage only has a size once a context window is
-    /// known, which is why the window travels with the model.
+    /// Where this turn sends, and how many input tokens it may carry before compacting.
     fn route(
         &self,
         name: &str,
@@ -295,15 +225,9 @@ impl Agent {
         Ok((llm, budget))
     }
 
-    /// The compaction threshold in input tokens.
-    ///
-    /// Zero means "off", everywhere and without exception, so a server that
-    /// wants no compaction can say so and be obeyed rather than being second
-    /// guessed by a default percentage.
+    /// The compaction threshold in input tokens; zero means off without exception.
     fn budget(&self, name: &str, context: Option<u64>, percent: Option<u8>) -> u64 {
-        // Without a context window a percentage has no size. Saying so beats
-        // quietly compacting at a different point than the one that was asked
-        // for.
+        // A percentage has no size without a window; warn rather than guess.
         if self.compress_above_tokens != 0 && context.is_none() && percent.is_some() {
             tracing::warn!(
                 session = %name,
@@ -329,9 +253,7 @@ impl Agent {
         if let Some(client) = cached {
             return Ok(client);
         }
-        // Built outside the lock: `LlmClient::new` is the expensive part and two
-        // sessions racing to build the same one is cheaper than serialising
-        // every turn behind a connection pool.
+        // Built outside the lock: a duplicate client is cheaper than serialising turns.
         let client = Arc::new(LlmClient::new(&self.llm_config.for_entry(entry, api_key))?);
         self.clients
             .lock()
@@ -340,8 +262,7 @@ impl Agent {
         Ok(client)
     }
 
-    /// Reports a failure that stops the turn before it starts, and leaves the
-    /// session in a state the operator can act on rather than "running".
+    /// Reports a pre-turn failure and leaves the session in a state to act on.
     fn fail(&self, name: &str, id: i64, what: &str, e: anyhow::Error) {
         self.error(name, what, e);
         let _ = self.store.set_status(id, SessionStatus::Error);
@@ -352,19 +273,12 @@ impl Agent {
         });
     }
 
-    /// Moves everything the session's inbox collected into the transcript and
-    /// returns how many messages it delivered.
+    /// Moves the session's inbox into the transcript, returning how many it delivered.
     ///
-    /// This is the *only* place a mid-turn message enters a running turn, and
-    /// it is called at step boundaries on purpose. A message that arrived while
-    /// tools were running cannot be written the moment it arrives: a user line
-    /// between a `function_call` and its `function_call_output` is a request
-    /// the provider rejects. At a step boundary the previous step is complete,
-    /// so the user line is a legal trailing item and the next request carries it.
+    /// # Invariant
     ///
-    /// The row is deleted in the same breath as the transcript write (see
-    /// `take_pending_tasks`), so a message is delivered exactly once even if the
-    /// process dies in between.
+    /// Called only at step boundaries, and the row is deleted with the transcript
+    /// write, so a message is delivered exactly once.
     fn deliver_inbox(&self, id: i64, name: &str, own: Option<i64>) -> usize {
         let Ok(tasks) = self.store.take_pending_tasks(name, own) else {
             return 0;
@@ -372,9 +286,7 @@ impl Agent {
         let mut delivered = 0;
         for task in tasks {
             let Some(text) = task.payload.get("message").and_then(|v| v.as_str()) else {
-                // A row with no message cannot be delivered; leaving it would
-                // block the queue forever, and its kind is not one this loop
-                // knows how to replay.
+                // No message means it cannot be delivered; dropping it beats blocking the queue.
                 tracing::warn!(session = %name, kind = %task.kind, "dropping an empty pending task");
                 continue;
             };
@@ -395,13 +307,12 @@ impl Agent {
         delivered
     }
 
-    /// Folds the older part of the transcript into one summary when the next
-    /// request would otherwise carry more than the budget allows.
+    /// Folds the older transcript into one summary when the next request exceeds the budget.
     ///
-    /// The rows are not deleted: `summarised_upto` only marks where the summary
-    /// takes over, so the full transcript stays readable while every later
-    /// request starts from the summary plus recent messages. Without this a
-    /// long turn grows without bound until the provider refuses it outright.
+    /// # Invariant
+    ///
+    /// The rows are not deleted; `summarised_upto` only marks where the summary
+    /// takes over, so the full transcript stays readable.
     async fn maybe_compress(
         &self,
         id: i64,
@@ -413,13 +324,7 @@ impl Agent {
         if budget == 0 {
             return;
         }
-        // How full the context is, as the provider last measured it. Not an
-        // estimate and not derived from text length: `usage.input_tokens`
-        // already covers the instructions, the tool schemas, the summary and
-        // the whole transcript, tokenised by the party that will bill for it.
-        // The only thing it misses is what this step adds after the check --
-        // one response plus its tool output -- which is what the budget's
-        // headroom is for.
+        // The size the provider last measured for this session; never an estimate.
         let Ok(tokens) = self.store.context_tokens(id) else {
             return;
         };
@@ -432,16 +337,12 @@ impl Agent {
         let Ok((previous, upto)) = self.store.summary(id) else {
             return;
         };
-        // Only what a request would actually carry is eligible: anything
-        // already behind the last summary is not sent again.
+        // Eligible: only what a request would carry; the last summary's prefix is not resent.
         let live: Vec<&(i64, String)> = index.iter().filter(|(s, _)| *s > upto).collect();
         let Some(cut) = choose_cut(&live, self.keep_recent) else {
             return;
         };
-        // Asked for by sequence rather than cut out of the whole transcript:
-        // the mapping from rows to items is not one-to-one, so counting rows
-        // covered a range that was not the one the cut named -- and a summary
-        // that swallows a message from after the cut loses it.
+        // Ask by sequence: rows and items are not one-to-one, so counting rows misses.
         let Ok(old) = self.store.history_between(id, upto, cut) else {
             return;
         };
@@ -463,10 +364,7 @@ impl Agent {
                     self.error(name, "storing the summary", e);
                     return;
                 }
-                // The last measured size is now history: it described a request
-                // built from the prefix that was just folded away. Clearing it
-                // means "unknown until the next request reports", which stops
-                // the following step from compacting again on a stale number.
+                // It measured the prefix just folded; clear it so the next step cannot reuse it.
                 let _ = self.store.set_context_tokens(id, 0);
                 self.bus.publish(Event::Log {
                     level: LogLevel::Info,
@@ -582,12 +480,7 @@ impl Agent {
                             total = u.total_tokens.unwrap_or(0),
                             "response completed"
                         );
-                        // Recorded, never computed. `input_tokens` is the
-                        // provider's own count of what this request carried --
-                        // instructions, tool schemas, summary and transcript --
-                        // measured by the tokeniser that will also measure the
-                        // next request. No arithmetic over text length lands on
-                        // that number for every provider we speak to.
+                        // The provider's own count, never computed: no arithmetic matches it.
                         if let Some(input) = u.input_tokens {
                             let _ = self.store.set_context_tokens(id, input);
                         }
@@ -597,9 +490,7 @@ impl Agent {
                     failure = Some(message);
                     break;
                 }
-                // A retry is the only news a stalled request ever produces, so
-                // it goes to the operator instead of into the transcript: the
-                // turn looks alive, and the reason it is slow is on screen.
+                // A retry is the only news a stalled request gives; tell the operator, not the model.
                 LlmEvent::Retrying {
                     attempt,
                     max,
@@ -746,10 +637,6 @@ enum StepResult {
 }
 
 /// One model request: which round of the turn it is, and how to make it.
-///
-/// A bundle rather than three more parameters, because the three travel
-/// together and nothing else in the turn needs them: `step` already takes the
-/// session, the turn, the cancellation token.
 #[derive(Clone, Copy)]
 struct Attempt<'a> {
     number: u32,
@@ -777,10 +664,6 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
 }
 
 /// The compaction threshold in input tokens, or 0 for "off".
-///
-/// `configured` is the server's own number, used only when the roster does not
-/// say how big the model's window is. A known window is the better measure: it
-/// makes the threshold follow the model instead of the other way round.
 fn compaction_budget(configured: u64, context: Option<u64>, percent: Option<u8>) -> u64 {
     if configured == 0 {
         return 0;
@@ -791,13 +674,12 @@ fn compaction_budget(configured: u64, context: Option<u64>, percent: Option<u8>)
     providers::tokens_for_percent(window, percent.unwrap_or(DEFAULT_COMPACT_PERCENT))
 }
 
-/// Where a summary may take over: everything up to and including the returned
-/// seq is compressed, everything after it is kept verbatim.
+/// Where a summary may take over: up to and including the seq is compressed.
 ///
-/// The constraint is the API's, not ours: a `function_call_output` with no
-/// `function_call` in front of it is rejected, and a reasoning item whose
-/// predecessor vanished is at best wasted. So the boundary is placed where the
-/// next message can stand on its own -- a user turn or a tool call.
+/// # Invariant
+///
+/// The boundary is followed by a `text` or `tool_call`, never by an orphaned
+/// `tool_result`, which providers reject.
 fn choose_cut(live: &[&(i64, String)], keep_recent: usize) -> Option<i64> {
     if live.len() <= keep_recent {
         return None;
@@ -852,12 +734,10 @@ fn summary_prompt(previous: Option<&str>, old: &[HistoryItem]) -> String {
 
 /// Shortens text to `max` characters, saying how much was dropped.
 ///
-/// Counted and cut in characters, not bytes. The transcript is full of
-/// Chinese, and slicing a `&str` at a byte offset is a panic when that
-/// offset lands inside a character. It used to be, and the panic took the
-/// whole turn down where nothing was left to move it: the session sat at
-/// "running" with no request in flight and no error anywhere, which reads
-/// exactly like a provider that has stopped answering.
+/// # Invariant
+///
+/// Counted and cut in characters, not bytes: a cut inside a character would
+/// panic.
 fn clip(text: &str, max: usize) -> String {
     let total = text.chars().count();
     if total <= max {
@@ -878,9 +758,7 @@ mod tests {
         entries.iter().map(|(s, k)| (*s, k.to_string())).collect()
     }
 
-    /// Cutting a summary prompt used to slice by bytes, which panics the
-    /// moment the cut lands inside a Chinese character -- taking the turn
-    /// down mid-flight with no request in flight and nothing logged.
+    /// A cut inside a Chinese character must not panic the turn.
     #[test]
     fn clip_cuts_between_characters_not_bytes() {
         let text = "文".repeat(500);
@@ -892,8 +770,7 @@ mod tests {
         assert!(clip("中文abc", 3).starts_with("中文a"));
     }
 
-    /// The API rejects a `function_call_output` without its `function_call`, so
-    /// the cut must never leave one of those at the front of what survives.
+    /// The API rejects an orphaned tool result, so the cut must never leave one first.
     #[test]
     fn cut_never_leaves_an_orphaned_tool_result() {
         let rows = live(&[
@@ -905,13 +782,11 @@ mod tests {
             (6, "text"),
         ]);
         let borrow: Vec<&(i64, String)> = rows.iter().collect();
-        // Cutting at 4 would leave 5 (a tool_result) first, and at 5 leaves the
-        // text on its own -- that is as far back as it can safely go.
+        // Cutting at 4 would leave a tool_result first; 5 is as far back as is safe.
         assert_eq!(choose_cut(&borrow, 2), Some(5));
     }
 
-    /// When nothing in the recent window can start a request on its own, leave
-    /// the transcript alone rather than send something the API would reject.
+    /// With nothing that can start a request on its own, leave the transcript alone.
     #[test]
     fn a_recent_window_of_only_tool_results_is_not_compressed() {
         let rows = live(&[
@@ -969,8 +844,7 @@ mod tests {
         assert_eq!(compaction_budget(0, None, None), 0);
     }
 
-    /// A known window decides the threshold, so a model with a bigger window
-    /// gets a bigger budget without anyone retuning the config.
+    /// A known window decides the threshold, so a bigger model needs no retuning.
     #[test]
     fn a_known_window_beats_the_configured_number() {
         assert_eq!(compaction_budget(40_000, Some(1_000_000), None), 700_000);

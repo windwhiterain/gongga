@@ -1,24 +1,6 @@
 //! Commands the server started and is not waiting for.
 //!
-//! `detached` is the strongest of the three ways `bash` can run, and it is
-//! defined by what does *not* happen to it:
-//!
-//! * the call returns at once, so the turn is never blocked;
-//! * nothing is collected -- output goes to a log file, not to the model;
-//! * it outlives the shell it was started from, the session, and the server
-//!   process itself.
-//!
-//! That last point is the reason this module exists. A detached job is how an
-//! agent restarts the server it is running on: launch the replacement
-//! detached, then `cancel`. Anything the server owned would die with it, so a
-//! detached job is deliberately *not* owned -- it is a process the server
-//! knows about, keeps in the database, and can stop later, including after the
-//! server that started it is gone.
-//!
-//! Being killable across restarts is why the pid is recorded rather than the
-//! handle alone: a handle dies with the process holding it, a pid can be
-//! re-adopted. `adopt` is what takes the rows left by a previous run and makes
-//! them manageable again.
+//! See `docs/notes/server-tools-detached.md`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -70,17 +52,12 @@ pub struct DetachedJob {
     /// Where its output is being written.
     pub log: PathBuf,
     pub started_at: i64,
-    /// Present only while the server that started it is still running; a job
-    /// adopted from the database has a pid and nothing else.
+    /// Present only while the server that started it runs; an adopted job has only a pid.
     child: Option<Child>,
 }
 
 impl DetachedJob {
-    /// Starts `cmd` on its own, writing its output to `log`.
-    ///
-    /// The process is put in a group of its own so stopping it takes the whole
-    /// tree, and `kill_on_drop(false)` is what makes "detached" true: dropping
-    /// the handle must not drag the process down with it.
+    /// Starts `cmd` on its own, writing its output to `log`, in a group of its own.
     pub fn launch(
         program: &Path,
         cwd: &Path,
@@ -111,8 +88,6 @@ impl DetachedJob {
             .stderr(err)
             .kill_on_drop(false);
         // Its own process group, so stopping the job can take the whole tree.
-        // tokio's `Command` has these inherently, which is why no
-        // `std::os::*::CommandExt` import is needed.
         #[cfg(unix)]
         {
             command.process_group(0);
@@ -151,15 +126,10 @@ impl DetachedJob {
         }
     }
 
-    /// Stops it, taking the whole tree with it.
-    ///
-    /// Returns true when the process is no longer running, whether because we
-    /// stopped it or because it had already finished.
+    /// Stops it, taking the whole tree with it; true once it is no longer running.
     pub async fn stop(&mut self) -> bool {
         if let Some(child) = &mut self.child {
-            // Already gone: nothing to do, and *do not* go looking for its pid.
-            // A pid is only unique until it is recycled, and signalling
-            // whatever owns it now would be far worse than a stale entry.
+            // Already gone: do not go looking for its pid, which may be someone else's now.
             if matches!(child.try_wait(), Ok(Some(_))) {
                 return true;
             }
@@ -177,9 +147,7 @@ impl DetachedJob {
             return true;
         }
         if is_self_or_ancestor(self.pid) {
-            // A row written before `adopt` learned to refuse ancestors, or one
-            // put there by hand. Killing the tree would kill this process, so
-            // the honest answer is "I did not stop it".
+            // A row from before `adopt` refused ancestors: killing the tree would kill us.
             tracing::warn!(
                 pid = self.pid,
                 "refusing to stop a detached job that is this server's parent"
@@ -189,12 +157,7 @@ impl DetachedJob {
         kill_tree(self.pid).await
     }
 
-    /// This job as a caller sees it.
-    ///
-    /// `live` is the answer one process listing gave for every adopted job at
-    /// once: a job with no handle left can only be asked about by pid, and
-    /// asking per job is a `tasklist` per job -- after a restart, the first
-    /// `list_bash` walked the list by starting a process for each entry.
+    /// This job as a caller sees it, from one listing that answered for every job.
     pub fn view(&mut self, live: &std::collections::HashSet<u32>) -> JobView {
         JobView {
             job: self.job,
@@ -244,11 +207,6 @@ impl std::ops::AddAssign for Stopped {
 }
 
 /// The detached jobs of every session, shared by the tools and the commands.
-///
-/// Held by `SessionManager` so `cancel` and `del_session` can reach it, and
-/// handed to `ToolContext` per call so the bash tools can. Everything mutable
-/// lives behind one async mutex: starting, listing and stopping all touch the
-/// same map, and stopping has to await the kill.
 #[derive(Clone)]
 pub struct DetachedRegistry {
     inner: Arc<AsyncMutex<Registry>>,
@@ -285,11 +243,9 @@ impl DetachedRegistry {
         }
     }
 
-    /// Starts a detached command for `session` from shell `shell`, in `cwd`.
+    /// Starts a detached command for `session`, from `shell`, in `cwd`.
     ///
-    /// The row is written before the job is handed out, so a crash between the
-    /// two leaves a recorded process rather than a forgotten one -- and the
-    /// next start adopts it.
+    /// See `docs/notes/server-tools-detached.md`.
     pub async fn start(
         &self,
         session: &str,
@@ -330,9 +286,7 @@ impl DetachedRegistry {
 
     /// The jobs of one session, with their liveness.
     pub async fn list(&self, session: &str) -> Vec<JobView> {
-        // Asked before taking the registry lock: one listing for every adopted
-        // job, and it is a blocking call, so it must not run while the lock is
-        // held either.
+        // Asked before taking the lock: one blocking listing for every adopted job.
         let pids: Vec<u32> = {
             let registry = self.inner.lock().await;
             match registry.jobs.get(session) {
@@ -354,8 +308,7 @@ impl DetachedRegistry {
 
     /// Stops one job, or every job of one shell when no number is given.
     ///
-    /// Stopped jobs leave the registry either way: what is left is the log
-    /// file on disk, which is the record the model asked for.
+    /// See `docs/notes/server-tools-detached.md`.
     pub async fn stop(&self, session: &str, shell: &str, job: Option<u64>) -> Stopped {
         let mut registry = self.inner.lock().await;
         let (taken, kept): (Vec<DetachedJob>, Vec<DetachedJob>) = registry
@@ -378,10 +331,7 @@ impl DetachedRegistry {
         out
     }
 
-    /// Stops every job of a session that is being deleted.
-    ///
-    /// `cancel` leaves detached work alone on purpose; deleting the session is
-    /// the one place that means "this work is not wanted either".
+    /// Stops every job of a session that is being deleted; `cancel` leaves them alone.
     pub async fn stop_session(&self, session: &str) -> Stopped {
         let mut registry = self.inner.lock().await;
         let jobs = registry.jobs.remove(session).unwrap_or_default();
@@ -400,16 +350,7 @@ impl DetachedRegistry {
 
     /// Takes back the jobs a previous run left in the database.
     ///
-    /// Rows whose process is gone are dropped: that is finished work, and
-    /// keeping it would only make the list lie. Rows naming our own pid are
-    /// dropped too -- that is a server that recorded its own launch, and
-    /// adopting it would let `kill_bash` shut this process down. The same goes
-    /// for any ancestor of ours, which is what a launcher that spawns the
-    /// server instead of `exec`ing it leaves behind (see `is_self_or_ancestor`).
-    ///
-    /// The pid is only checked for liveness, never proven to be the same
-    /// process, so a recycled pid could in principle be adopted. The window is
-    /// narrow and the cost is bounded by `kill_bash`, which is explicit.
+    /// See `docs/notes/server-tools-detached.md`.
     pub async fn adopt(&self) -> usize {
         let rows = {
             let registry = self.inner.lock().await;
@@ -432,8 +373,7 @@ impl DetachedRegistry {
             .max(rows.iter().map(|r| r.job).max().unwrap_or(0));
         for row in rows {
             let pid = row.pid as u32;
-            // Dead rows are the common case and the cheap one to answer: no
-            // walk up the parent chain for a process that is not there.
+            // Dead rows are the cheap case: no walk up the parent chain for a process that is gone.
             if !live.contains(&pid) {
                 let _ = registry.store.delete_detached_job(row.id);
                 continue;
@@ -469,14 +409,7 @@ impl DetachedRegistry {
 
 /// Kills a process tree: the pid and everything it started.
 ///
-/// A detached command is almost always a shell running several processes, so
-/// killing the leader alone would leave the real work behind. On Windows that
-/// means `taskkill /T`, which only understands real Windows pids -- one more
-/// reason the job has to be our own child rather than a shell background job.
-///
-/// The same reasoning applies to a persistent shell being shut down: its
-/// children hold the write end of the pipe we read, so killing only the shell
-/// leaves a reader waiting for a close that never comes.
+/// See `docs/notes/server-tools-detached.md`.
 pub(crate) async fn kill_tree(pid: u32) -> bool {
     #[cfg(windows)]
     {
@@ -506,19 +439,14 @@ pub(crate) async fn kill_tree(pid: u32) -> bool {
     false
 }
 
-/// Whether a pid is currently in use.
-///
-/// Used for jobs adopted across a restart, where there is no handle to ask and
-/// `try_wait` is not available.
+/// Whether a pid is currently in use, for jobs adopted across a restart.
 fn pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }
     #[cfg(windows)]
     {
-        // CSV keeps this locale-independent: the fields are always image, pid,
-        // session, session number, memory -- in that order -- so the pid is
-        // always the second one and no header has to be parsed.
+        // CSV keeps this locale-independent: the pid is always the second field.
         let out = std::process::Command::new("tasklist")
             .args(["/NH", "/FO", "CSV", "/FI", &format!("PID eq {pid}")])
             .output();
@@ -546,22 +474,14 @@ fn pid_alive(pid: u32) -> bool {
 
 /// Whether `pid` is this process or one of its ancestors.
 ///
-/// `adopt` refuses a row naming our own pid, because `kill_bash` kills the
-/// whole tree and a job that is us would let the model shut the server down.
-/// That check only covers a launcher that `exec`s the new server: `exec` keeps
-/// the pid, so the row ends up naming us. A launcher that *spawns* the server
-/// and waits -- `bash --detached "cd . && ./gongga-server"`, which is what a
-/// hand-written launcher looks like -- leaves the row naming our parent, and
-/// the tree under that pid still contains us. Same trap, one level up, which is
-/// why the answer is the whole chain and not just the parent.
+/// See `docs/notes/server-tools-detached.md`.
 fn is_self_or_ancestor(pid: u32) -> bool {
     let me = std::process::id();
     if pid == me {
         return true;
     }
     let mut child = me;
-    // Bounded because a parent chain is a handful of links and a snapshot can
-    // lie: a pid recycled mid-walk must not turn this into a hang at startup.
+    // Bounded: a parent chain is a few links, and a recycled pid must not hang startup.
     for _ in 0..32 {
         match parent_of(child) {
             Some(parent) if parent != 0 && parent != child => {
@@ -585,9 +505,7 @@ fn parent_of(pid: u32) -> Option<u32> {
         TH32CS_SNAPPROCESS,
     };
 
-    // One snapshot per hop rather than one for the whole walk: the walk is a
-    // few links deep and a snapshot is a kernel call -- unlike `tasklist`, which
-    // is a subprocess, and this runs on the startup path where that matters.
+    // One snapshot per hop, not per walk: this runs on the startup path.
     unsafe {
         let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if snapshot == INVALID_HANDLE_VALUE {
@@ -630,10 +548,7 @@ fn parent_of(_pid: u32) -> Option<u32> {
 
 /// `alive_pids` off the runtime's worker threads.
 ///
-/// The listing it runs is a blocking `Command::output()`: on a loaded machine
-/// it takes long enough that calling it inline stalls everything else this
-/// thread was going to do -- at startup, that is the bind every client is
-/// waiting on.
+/// See `docs/notes/server-tools-detached.md`.
 async fn live_batch(pids: Vec<u32>) -> std::collections::HashSet<u32> {
     if pids.is_empty() {
         return Default::default();
@@ -643,17 +558,9 @@ async fn live_batch(pids: Vec<u32>) -> std::collections::HashSet<u32> {
         .unwrap_or_default()
 }
 
-/// Which of `pids` are in use right now, answered for all of them at once.
+/// Which of `pids` are in use now, answered for all of them at once.
 ///
-/// Adoption used to ask one pid at a time, and each question is a `tasklist`
-/// subprocess: a home that had run a few hundred detached jobs spent over a
-/// minute walking rows of finished work before it ever bound the port, so a
-/// client restarting a server saw only a timeout. Nothing about the question
-/// needs to be asked per pid -- one listing answers every row in it.
-///
-/// A listing that cannot be read answers "none are alive", which is what the
-/// per-pid version did when `tasklist` failed: the rows are then dropped as
-/// finished work rather than adopted on a hunch.
+/// See `docs/notes/server-tools-detached.md`.
 fn alive_pids(pids: &[u32]) -> std::collections::HashSet<u32> {
     let wanted: std::collections::HashSet<u32> = pids.iter().copied().filter(|p| *p != 0).collect();
     if wanted.is_empty() {
@@ -661,9 +568,7 @@ fn alive_pids(pids: &[u32]) -> std::collections::HashSet<u32> {
     }
     #[cfg(windows)]
     {
-        // No `/FI`: the point is one call for the whole set. CSV keeps this
-        // locale-independent -- image, pid, session, session number, memory --
-        // so the pid is always the second field of a row.
+        // No `/FI`: one call for the whole set. CSV puts the pid in the second field.
         let out = std::process::Command::new("tasklist")
             .args(["/NH", "/FO", "CSV"])
             .output();
@@ -709,14 +614,19 @@ fn now_millis() -> i64 {
 mod tests {
     use super::*;
     use crate::tools::bash::{BashShell, msys_path};
+    use crate::tools::testbed::wait_until;
+    use std::time::Duration;
+
+    /// Long enough for a shell to start on a loaded machine, short enough that
+    /// a hang is reported instead of inherited.
+    const WAIT: Duration = Duration::from_secs(10);
 
     fn registry(dir: &Path, program: Option<PathBuf>) -> DetachedRegistry {
         let store = Store::open(&dir.join("g.db")).expect("store");
         DetachedRegistry::new(store, program, dir.join("logs"), vec![])
     }
 
-    /// One call answers the whole set: our own pid is in it, a pid nobody can
-    /// be holding is not, and asking about both costs one listing.
+    /// One call answers the whole set: our own pid in it, a bogus pid out of it.
     #[test]
     fn liveness_is_answered_for_many_pids_at_once() {
         let me = std::process::id();
@@ -737,7 +647,7 @@ mod tests {
         };
         let dir = tempfile::tempdir().expect("temp dir");
         let flag = dir.path().join("finished.flag");
-        let script = format!("sleep 1; echo done > '{}'", msys_path(&flag));
+        let script = format!("sleep 0.2; echo done > '{}'", msys_path(&flag));
 
         let shell = match BashShell::spawn(&program, dir.path(), &[]) {
             Ok(s) => s,
@@ -757,12 +667,8 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert!(listed[0].running);
 
-        tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
-        assert!(
-            flag.exists(),
-            "the detached job did not survive the shell; log says: {:?}",
-            std::fs::read_to_string(&listed[0].log).unwrap_or_default()
-        );
+        wait_until("the job to write its flag", WAIT, || flag.exists()).await;
+        wait_until("the job's process to end", WAIT, || !pid_alive(view.pid)).await;
         // Finished, but still listed: the log is why the row is kept.
         let listed = reg.list("main").await;
         assert_eq!(listed.len(), 1);
@@ -777,7 +683,7 @@ mod tests {
         };
         let dir = tempfile::tempdir().expect("temp dir");
         let flag = dir.path().join("finished.flag");
-        let script = format!("sleep 20; echo done > '{}'", msys_path(&flag));
+        let script = format!("sleep 0.5; echo done > '{}'", msys_path(&flag));
         let reg = registry(dir.path(), Some(program));
 
         let view = reg
@@ -790,7 +696,12 @@ mod tests {
             reg.list("main").await.is_empty(),
             "a stopped job is forgotten"
         );
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert!(
+            !pid_alive(view.pid),
+            "the process it named is still running"
+        );
+        // A missed stop shows up as work that finishes: read the absence later.
+        tokio::time::sleep(Duration::from_millis(800)).await;
         assert!(!flag.exists(), "the detached job was not stopped");
     }
 
@@ -804,10 +715,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let store = Store::open(&dir.path().join("g.db")).expect("store");
 
-        // Stdio is closed on purpose: a child holding the test's stdout pipe
-        // open keeps `cargo test` waiting for output long after the test ends.
+        // Stdio closed on purpose: a child holding our stdout keeps `cargo test` waiting.
         let mut held = std::process::Command::new(&program)
-            .args(["-c", "sleep 30"])
+            .args(["-c", "sleep 5"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -820,7 +730,7 @@ mod tests {
                 shell: "default".into(),
                 job: 7,
                 pid: held.id() as i64,
-                cmd: "sleep 30".into(),
+                cmd: "sleep 5".into(),
                 log: dir.path().join("logs/7.log").display().to_string(),
                 started_at: 0,
             })
@@ -852,6 +762,7 @@ mod tests {
         // An adopted job has no handle, only a pid, and can still be stopped.
         let stopped = fresh.stop("main", "default", Some(7)).await;
         assert_eq!(stopped.stopped, 1, "an adopted job is still stoppable");
+        wait_until("the adopted process to end", WAIT, || !pid_alive(held.id())).await;
         let _ = held.kill();
         let _ = held.wait();
     }
@@ -879,9 +790,9 @@ mod tests {
         assert!(store.detached_jobs().expect("rows").is_empty());
     }
 
-    /// Our own pid is the `exec` case; the parent is the spawn-and-wait case,
-    /// which is what a hand-written launcher produces. Adopting it would put
-    /// `taskkill /T` one call away from the server's own process tree.
+    /// Our pid is the `exec` case, the parent the spawn-and-wait case.
+    ///
+    /// See `docs/notes/server-tools-detached.md`.
     #[cfg(any(windows, unix))]
     #[tokio::test]
     async fn a_server_never_adopts_a_job_that_is_its_own_parent() {

@@ -1,9 +1,6 @@
 //! Streaming client for the OpenAI Responses API.
 //!
-//! The wire format is server-sent events over a POST to `{base_url}/responses`.
-//! We parse it by hand rather than pulling in an SSE crate: the event set we
-//! care about is small, and owning the parser means we can surface partial
-//! tool-call arguments to the UI as they arrive.
+//! See `docs/notes/server-llm.md`.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -43,9 +40,7 @@ impl LlmClient {
                 cfg.api_key_env
             );
         }
-        // The timeout lives on the client so every request is covered, the
-        // compression call included. It is what turns "the provider went
-        // quiet" from a turn that hangs forever into a retryable error.
+        // One client-wide timeout covers every request, compression included.
         let http = reqwest::Client::builder()
             .timeout(cfg.request_timeout)
             .build()
@@ -65,23 +60,18 @@ impl LlmClient {
         })
     }
 
-    /// The model this client asks for.
-    ///
-    /// Logged at the start of every turn, so "which model answered this one"
-    /// is a fact rather than something to infer from the transcript.
+    /// The model this client asks for; logged at the start of every turn.
     pub fn model(&self) -> &str {
         &self.model
     }
 
-    /// Streams one model request. `summary`, when present, stands in for the
-    /// part of the transcript that has been compressed away; it is sent as the
-    /// first item so the model reads it before anything else.
+    /// Streams one model request; `summary`, when present, is sent first.
     ///
-    /// A request that fails, times out, or completes with nothing in it is
-    /// retried with a doubling delay, because all three look identical from
-    /// here and all three are the provider's bad minute rather than ours. The
-    /// caller sees one stream either way; a retry that is about to happen is
-    /// announced as [`LlmEvent::Retrying`] so the operator can watch it happen.
+    /// # Invariant
+    ///
+    /// A failed, timed-out, or empty attempt is retried with a doubling delay:
+    /// the caller always sees one stream, and each retry is announced as
+    /// [`LlmEvent::Retrying`]. See `docs/notes/server-llm.md`.
     pub fn stream(
         &self,
         summary: Option<&str>,
@@ -137,10 +127,7 @@ impl LlmClient {
                 if completed && produced {
                     return;
                 }
-                // An empty completion is worth asking for again: the provider
-                // acknowledged the request and then said nothing, which is what
-                // an overloaded or truncated response looks like. So is a
-                // stream that stopped without completing.
+                // Empty completion or cut-short stream: both are retryable.
                 if !retryable(attempt, max_retries, produced) || cancel.is_cancelled() {
                     if let Some(message) = failure {
                         let _ = tx.send(LlmEvent::Failed { message }).await;
@@ -227,9 +214,8 @@ impl LlmClient {
             body["max_output_tokens"] = json!(m);
         }
         if let Some(effort) = effort {
-            // The Responses API's spelling for "how hard to think", which the
-            // roster records per model as `reasoning_field.responses`. It is the
-            // only surface this server speaks, so there is nothing to switch on.
+            // The roster's per-model name for this field is
+            // `reasoning_field.responses`; `effort` is all this server speaks.
             body["reasoning"] = json!({ "effort": effort });
         }
         if !self.store {
@@ -240,15 +226,14 @@ impl LlmClient {
         body
     }
 
-    /// Asks for a plain-text answer: no tools, no streaming. Used only to
-    /// compress old context, which must never itself trigger a tool call.
-    /// One non-streaming request, used for compression.
+    /// Asks for a plain-text answer: no tools, no streaming, compression only.
     ///
-    /// Retried on the same terms as a stream: an empty summary is not a
-    /// summary, and a provider that swallowed the request once often answers
-    /// the second time. `max_retries == 0` is no ceiling, so the turn's
-    /// `cancel` is what stops it -- compression must never outlive the turn
-    /// that asked for it.
+    /// # Invariant
+    ///
+    /// `max_retries == 0` is no ceiling, so the turn's `cancel` is the only stop:
+    /// compression never outlives the turn that asked for it.
+    ///
+    /// See `docs/notes/server-llm.md`.
     pub async fn summarise(
         &self,
         prompt: &str,
@@ -301,12 +286,10 @@ impl LlmClient {
     }
 }
 
-/// Budget for a compression request. The summary stands in for tens of
-/// kilobytes, so it only has to be a page or so itself.
+/// Budget for a compression request: its summary replaces kilobytes of history.
 const SUMMARY_MAX_TOKENS: u32 = 2_000;
 
-/// Pulls the assistant text out of a non-streaming Responses payload, falling
-/// back to a slice of the body so a surprising shape is still diagnosable.
+/// Pulls assistant text out of a non-streaming payload, falling back to the body.
 fn extract_text(body: &str) -> String {
     let Ok(value) = serde_json::from_str::<Value>(body) else {
         return body.chars().take(2_000).collect();
@@ -350,9 +333,10 @@ pub struct ToolDefinition {
 
 /// What the model produced, one chunk at a time.
 ///
-/// `item_id` is carried on every variant because a single response can interleave
-/// several output items; the loop does not need it today but the identity is the
-/// thing that makes the events unambiguous if it ever does.
+/// # Invariant
+///
+/// Every variant carries `item_id`, which is the only thing that keeps
+/// interleaved output items apart. See `docs/notes/server-llm.md`.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum LlmEvent {
@@ -395,9 +379,7 @@ pub enum LlmEvent {
         message: String,
     },
     Cancelled,
-    /// The previous attempt produced nothing usable and another one is coming
-    /// after `delay`. Announced rather than hidden so a stalled turn reads as
-    /// "retrying" instead of "thinking".
+    /// The previous attempt gave nothing usable; another follows after `delay`.
     Retrying {
         attempt: u32,
         max: u32,
@@ -418,26 +400,21 @@ fn backoff(base: Duration, attempt: u32) -> Duration {
     base.saturating_mul(factor).min(MAX_RETRY_DELAY)
 }
 
-/// Whether another attempt is worth making.
+/// Whether another attempt is worth making; only `produced` rules one out.
 ///
-/// `produced` is the only thing that rules one out: once the model has said
-/// anything, asking again would stand a second, different answer behind the
-/// first. Everything else -- an error, a timeout, a completion with nothing in
-/// it -- is the provider's bad minute and deserves another try.
+/// # Invariant
 ///
-/// `max_retries == 0` is *no ceiling*: a long-running turn is not allowed to
-/// die on a transient outage at hour three, so the default retries until the
-/// turn's cancel token fires. The cancel is the only honest stop -- nothing
-/// about a bad provider's recovery time is knowable in advance.
+/// `max_retries == 0` is no ceiling, and a produced answer is never retried:
+/// asking again would stand a second, different answer behind the first.
+///
+/// See `docs/notes/server-llm.md`.
 fn retryable(attempt: u32, max_retries: u32, produced: bool) -> bool {
     (max_retries == 0 || attempt < max_retries) && !produced
 }
 
 /// One attempt at a streaming request, handed back as a channel.
 ///
-/// Split out from [`LlmClient::stream`] so that a retry is just another call:
-/// no attempt carries state into the next one, and the caller drains each the
-/// same way.
+/// See `docs/notes/server-llm.md`.
 async fn stream_once(
     http: &reqwest::Client,
     url: &str,
@@ -495,9 +472,7 @@ async fn stream_once(
         let mut buf = String::new();
         // item_id -> output item metadata, so deltas can be attributed.
         let mut items: HashMap<String, ItemMeta> = HashMap::new();
-        // Silence counts as failure. A connection that is still open but has
-        // stopped sending is exactly the state that used to park a turn
-        // forever: no error, no EOF, nothing to wake up on.
+        // Idle silence is failure: no error, no EOF, nothing else wakes the turn.
         let idle = tokio::time::sleep(idle_timeout);
         tokio::pin!(idle);
 
@@ -537,9 +512,8 @@ async fn stream_once(
                 }
             }
         }
-        // A stream that ends without its trailing blank line still sent a final
-        // event; dropping what is left is how the last `response.completed`
-        // goes missing and the turn looks like the model said nothing.
+        // Flush the tail: a stream may end without its blank line, still holding
+        // a final event.
         let tail = buf.trim_end_matches('\r').trim();
         if !tail.is_empty() {
             if let Some(event) = parse_sse_block(tail) {
@@ -564,9 +538,7 @@ struct ItemMeta {
     kind: ItemKind,
     name: String,
     call_id: String,
-    /// Text accumulated from deltas. Providers do not all return the finished
-    /// text on `output_item.done` (MiniMax sends an empty `summary` array), so
-    /// the deltas are the only place the readable text ever exists.
+    /// Text accumulated from deltas, the only place a readable summary exists.
     text: String,
 }
 
@@ -586,14 +558,11 @@ struct SseEvent {
 
 /// Takes one complete server-sent-event block off the front of `buf`.
 ///
-/// A block ends at a blank line, and providers do not agree on what a blank
-/// line is: `\n\n`, `\r\n\r\n`, and even `\n\r\n` all occur. Knowing only one
-/// of them looks exactly like silence -- no block ever completes, so nothing is
-/// parsed and the turn dies on the idle timeout with "no response data", which
-/// blames the provider for a separator nobody promised to send.
+/// # Invariant
 ///
-/// The block it returns has its trailing `\r` stripped, so the caller only ever
-/// sees `data:` lines.
+/// Any blank-line separator ends a block -- `\n\n`, `\r\n\r\n`, `\n\r\n`; the
+/// returned block never carries its trailing `\r`. Recognising only one of them
+/// reads as silence. See `docs/notes/server-llm.md`.
 fn next_sse_block(buf: &mut String) -> Option<String> {
     let (at, len) = ["\n\n", "\r\n\r\n", "\n\r\n"]
         .iter()
@@ -689,9 +658,7 @@ async fn handle(
         "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
             let item_id = d["item_id"].as_str().unwrap_or_default().to_string();
             let delta = d["delta"].as_str().unwrap_or_default().to_string();
-            // Not every provider emits `output_item.added` before the deltas,
-            // so create the entry if it is missing: `output_item.done` sorts
-            // out the kind from `type` regardless of how we got here.
+            // Deltas can precede `output_item.added`; `done` re-derives the kind.
             items
                 .entry(item_id.clone())
                 .or_default()
@@ -736,11 +703,8 @@ async fn handle(
             };
             match kind {
                 ItemKind::Reasoning => {
-                    // The readable summary is the provider's if it sends one;
-                    // otherwise the deltas we accumulated are all there is.
-                    // MiniMax is in the second camp: its `summary` array on
-                    // `output_item.done` is empty, so without this every stored
-                    // reasoning entry would have a blank summary forever.
+                    // The provider's summary wins when it sends one; the
+                    // accumulated deltas are the fallback when it does not.
                     let mut summary = item["summary"]
                         .as_array()
                         .map(|parts| {
@@ -843,17 +807,14 @@ fn history_item_to_input(item: &HistoryItem) -> Option<Value> {
         HistoryItem::ToolResult { call_id, output } => {
             json!({"type":"function_call_output","call_id":call_id,"output":output})
         }
-        // The stored `summary` is for humans: the UI replays it when a client
-        // reconnects. It is deliberately *not* sent back to the model, which
-        // already has its reasoning state in the encrypted blob -- echoing the
-        // summary too would put every thought into `input[]` a second time.
+        // The summary is for the UI; the model gets only the encrypted blob.
         HistoryItem::Reasoning {
             item_id,
             encrypted,
             summary: _summary,
         } => {
-            // Replaying reasoning requires the encrypted blob; without it the
-            // item is dropped rather than sent in a form the API would reject.
+            // Replay needs the blob; without it drop the item, never send a shape
+            // the API would reject.
             let Some(enc) = encrypted else {
                 return None;
             };
@@ -885,9 +846,8 @@ fn summarise_error(body: &str) -> String {
 mod tests {
     use super::*;
 
-    /// Every separator a provider might use ends a block, and the `\r` does not
-    /// travel into the parser; a block split across two reads is only complete
-    /// once its separator lands.
+    /// Every separator ends a block and `\r` never reaches the parser; a split
+    /// block waits for its separator.
     #[test]
     fn sse_blocks_end_at_any_blank_line() {
         for wire in [
@@ -914,10 +874,8 @@ mod tests {
         );
     }
 
-    /// The tool schema is not part of the transcript, so nothing a compaction
-    /// does can remove it -- but that also means nothing would notice if the
-    /// body stopped carrying it. It is rebuilt from the registry every request,
-    /// and this pins that.
+    /// The tool schema is out of band, so compaction cannot drop it -- and this
+    /// pins that every request still carries it.
     #[test]
     fn every_request_carries_the_tool_schema() {
         let cfg = crate::config::LlmConfig {
@@ -984,10 +942,8 @@ mod tests {
         assert!(history_item_to_input(&item).is_none());
     }
 
-    /// MiniMax streams the readable thinking as deltas and hands back an empty
-    /// `summary` on `output_item.done`. Storing that would mean every reasoning
-    /// entry in the transcript has a blank summary, so the deltas are the
-    /// fallback.
+    /// Some providers send an empty `summary` on `output_item.done`, so the
+    /// streamed deltas must be the fallback.
     #[tokio::test]
     async fn reasoning_summary_falls_back_to_accumulated_deltas() {
         let (tx, mut rx) = mpsc::channel(32);
@@ -1051,8 +1007,7 @@ mod tests {
         assert_eq!(encrypted.as_deref(), Some("blob"));
     }
 
-    /// When the provider does send a summary, it wins: it is the same text the
-    /// deltas carry, and it is the one the API considers canonical.
+    /// When the provider does send a summary, it wins: it is the canonical text.
     #[tokio::test]
     async fn a_supplied_reasoning_summary_is_kept() {
         let (tx, mut rx) = mpsc::channel(32);
@@ -1186,8 +1141,8 @@ mod tests {
         assert_eq!(backoff(base, 64), MAX_RETRY_DELAY);
     }
 
-    /// A request that said nothing is worth asking again; one that said
-    /// something is not, because the retry would answer a second time.
+    /// A silent request is retried; a spoken one is not, since a retry would
+    /// answer twice.
     #[test]
     fn a_silent_response_is_retried_but_a_spoken_one_is_not() {
         assert!(retryable(0, 3, false));
@@ -1196,8 +1151,7 @@ mod tests {
         assert!(!retryable(3, 3, false));
         // Already produced content: another answer would contradict it.
         assert!(!retryable(0, 3, true));
-        // 0 is "no ceiling", not "no retries": a ten-day turn must not die on
-        // a transient outage, and the cancel token is what stops it.
+        // 0 is no ceiling, not no retries: the cancel token is the only stop.
         assert!(retryable(0, 0, false));
         assert!(retryable(10_000, 0, false));
         // Even unlimited retries never ask twice after the model has spoken.
@@ -1215,9 +1169,8 @@ mod tests {
         assert_eq!(v["call_id"], "c1");
     }
 
-    /// `set_session --thinking-effort` reaches the wire as the Responses API
-    /// spells it, and a session that never asked sends nothing at all -- an
-    /// empty `reasoning` object is not the same as no reasoning to a provider.
+    /// `--thinking-effort` rides on the request as the API spells it; unset sends
+    /// no `reasoning` object at all.
     #[test]
     fn a_thinking_level_rides_on_the_request() {
         let cfg = crate::config::LlmConfig {

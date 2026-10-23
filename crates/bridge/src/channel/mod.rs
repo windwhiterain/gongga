@@ -1,15 +1,5 @@
-//! The IM side of the bridge.
-//!
-//! Two traits instead of one struct, mirroring how `protocol` splits a
-//! connection into a sink and a stream: an inbound half that owns the socket it
-//! reads events from, and an outbound half that is just an API client and can
-//! be called from anywhere. Keeping them separate is not cosmetic -- a single
-//! `&mut self` type with both `recv` and `send` cannot be driven from one
-//! `tokio::select!`, because both futures would borrow it at once.
-//!
-//! Everything platform-specific (tokens, websocket framing, how a reply is
-//! attached to its source message, length limits) lives behind these traits, so
-//! `main.rs` and `chat.rs` never learn which IM is on the other end.
+//! The IM side: an inbound socket reader and an outbound HTTP client.
+//! See `docs/notes/bridge-channel-mod.md`.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -26,11 +16,7 @@ pub enum ChatId {
 }
 
 impl ChatId {
-    /// The gongga session this conversation maps to.
-    ///
-    /// Deterministic on purpose: there is no mapping table to lose, and a
-    /// restart picks every conversation up exactly where it left off. The
-    /// platform id is already unique, so the derived name is too.
+    /// The session this conversation maps to; derived, so a restart resumes it.
     pub fn session_name(&self, kind: &str) -> String {
         match self {
             ChatId::Group(id) => format!("{kind}-g-{id}"),
@@ -57,9 +43,7 @@ pub struct Incoming {
     pub user: String,
     /// Body with mentions stripped, ready to become a `send_message`.
     pub text: String,
-    /// The message being answered. Some platforms refuse a reply that does not
-    /// reference it (QQ: five minutes, five replies), so it travels with the
-    /// message rather than being looked up later.
+    /// The message being answered: some platforms refuse a reply without it.
     pub reply: MsgRef,
 }
 
@@ -74,9 +58,7 @@ pub struct MsgRef {
 pub struct Outgoing {
     pub chat: ChatId,
     pub text: String,
-    /// `Some` answers a specific message; `seq` counts the attempts on it,
-    /// because platforms cap how many replies one message may carry (QQ: 5).
-    /// `None` starts a conversation of its own.
+    /// `Some` answers that message, `seq` counting attempts; `None` starts fresh.
     pub reply_to: Option<(MsgRef, u32)>,
 }
 
@@ -84,8 +66,7 @@ pub struct Outgoing {
 pub trait Inbox: Send {
     /// Short platform name, used as the session-name prefix (`qq-g-...`).
     fn kind(&self) -> &'static str;
-    /// Next message, blocking until there is one. Implementations reconnect
-    /// internally; an error means "retry after a pause", not "give up".
+    /// Next message, blocking. An error means "retry after a pause", not "give up".
     async fn recv(&mut self) -> Result<Incoming>;
 }
 

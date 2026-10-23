@@ -39,11 +39,7 @@ struct Args {
     /// UDP address to listen on. Overrides `[server] bind`.
     #[arg(long)]
     bind: Option<String>,
-    /// SQLite database path. Overrides `[server] db`.
-    ///
-    /// Missing directories are created, and `:memory:` gives a throwaway
-    /// database — which is what makes a clean end-to-end run possible without
-    /// touching the operator's real one.
+    /// SQLite path; missing dirs created, `:memory:` throwaway, beats `[server] db`.
     #[arg(long, value_name = "PATH")]
     db: Option<PathBuf>,
     /// Model name. Overrides `[llm] model`.
@@ -52,9 +48,7 @@ struct Args {
     /// Path to bash. Overrides `[tools.bash] program`.
     #[arg(long)]
     bash: Option<PathBuf>,
-    /// Home directory: the database, config, logs, detached-job records and
-    /// the instance lock all live under it. Overrides `[server] home`, which
-    /// overrides `$GONGGA_HOME`.
+    /// Home for the database, config, logs, jobs and lock; beats `[server] home`.
     #[arg(long, value_name = "DIR")]
     home: Option<PathBuf>,
     /// Log filter, e.g. `gongga_server=debug`.
@@ -64,15 +58,11 @@ struct Args {
 
 /// Where the CLI that can talk to this server lives.
 ///
-/// The server and the client ship together, so the usual answer is the sibling
-/// of this executable. That is not the only layout in use, though: `dev.sh`
-/// copies the server into `.dev/` *alone*, so the sibling is missing there and
-/// the agent ends up with a `GONGGA_CLI` that is not on `PATH` -- the one thing
-/// it needs in order to drive (or replace) the server it is running on.
+/// # Invariant
 ///
-/// So: sibling, then the `target/debug` a staged copy sits under, then `PATH`,
-/// and only as a last resort the bare name -- announced, because a bare name
-/// that is not on `PATH` is a dead end the agent cannot diagnose.
+/// The path handed to the agent is one it can actually run: sibling, then the
+/// staged `target/debug`, then `PATH`, and the bare name only as a warned last
+/// resort. See `docs/notes/server-main.md`.
 fn cli_path() -> PathBuf {
     let name = if cfg!(windows) {
         "gongga.exe"
@@ -108,18 +98,8 @@ fn cli_path() -> PathBuf {
 }
 
 fn main() -> anyhow::Result<()> {
-    // The runtime is built here rather than by `#[tokio::main]` so that the
-    // drop happens at a point where `run` has already closed every shell. The
-    // drop still waits, with no deadline -- but it now waits for something that
-    // ends, which is the difference between waiting and hanging.
-    //
-    // The bug this replaces: every blocking task had to drain before the
-    // process could go, one of them was the reaper for a persistent shell, and
-    // a persistent shell never exits on its own. After a session had used
-    // `bash`, the process sat there having already logged `server stopped`.
-    // Putting a 2s deadline on the drain hid that instead of fixing it; what
-    // fixes it is ending the shells in `run`, after which there is nothing left
-    // for the drain to wait on.
+    // Built here, not by `#[tokio::main]`, so the drop runs after `run` closed
+    // every shell. See `docs/notes/server-main.md`.
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -139,11 +119,7 @@ async fn run() -> anyhow::Result<()> {
         )
         .init();
 
-    // Command-line flags win. The simplest way to make that true without
-    // threading overrides through the loader is to promote them to the same
-    // environment variables the loader already consults.
-    // SAFETY: this runs before any thread is spawned, so the process is
-    // effectively single-threaded and no other code can observe these writes.
+    // Flags win; SAFETY: no thread yet, so nothing observes these writes.
     unsafe {
         if let Some(bind) = &args.bind {
             std::env::set_var("GONGGA_BIND", bind);
@@ -157,28 +133,17 @@ async fn run() -> anyhow::Result<()> {
     }
 
     let mut cfg = Config::load_with_home(args.config.as_deref(), args.home.as_deref())?;
-    // The starter config is written from what the *file* said, before the flag
-    // is applied: `--db /tmp/x.db` is this run's database, and baking it into a
-    // config.toml that this run happened to create would quietly move every
-    // later run to that path as well.
+    // Written before `--db` applies: a flag must not be baked into the new config.
     cfg.write_default_if_absent()?;
     if let Some(db) = args.db {
         cfg.db_path = config::expand(db);
     }
-    // Before touching the database: two servers on one home would each resume
-    // the same pending turn and drive the same session twice.
+    // Claim the home before opening the database: one server per home.
     let _instance = instance::InstanceLock::acquire(&cfg.home)?;
 
     let store = store::Store::open(&cfg.db_path)?;
     let llm = Arc::new(LlmClient::new(&cfg.llm)?);
-    // Detached jobs live next to the database: they outlive this process, so
-    // their logs have to outlive it too.
-    // How the model drives itself. `bash` runs inside this process's children,
-    // so the server address and the CLI that speaks to it have to be handed
-    // down rather than discovered: without them an agent that wants to cancel
-    // or restart has no better option than killing its own server from outside.
-    // `GONGGA_HOME` and `GONGGA_SERVER` are exactly the two fallbacks the CLI
-    // reads, so `$GONGGA_CLI '<command>'` works with no flags at all.
+    // Jobs live beside the database; the agent is handed the CLI, not guesses.
     let shell_env = vec![
         ("GONGGA_SERVER".to_string(), cfg.bind.to_string()),
         ("GONGGA_HOME".to_string(), cfg.home.display().to_string()),
@@ -239,27 +204,17 @@ async fn run() -> anyhow::Result<()> {
     if resumed > 0 {
         tracing::info!(resumed, "resuming turns left pending by the last run");
     }
-    // So is whatever the last run detached: those processes are still out
-    // there, and the only way to stop them later is to adopt their pids now.
+    // Whatever the last run detached is still out there; adopt its pids now.
     let adoption_started = std::time::Instant::now();
     let adopted = detached.adopt().await;
-    // The duration is part of the message because adoption has to finish
-    // before the port is bound: a home with thousands of rows looked exactly
-    // like a server that would not start, and there was nothing to point at.
-    // Logged unconditionally, `adopted = 0` included -- the run that took 75
-    // seconds to bind had 156 stale rows and nothing to adopt, so the one line
-    // that would have said so was the one the condition suppressed.
+    // Adoption finishes before the port binds, so the duration is always logged.
     tracing::info!(
         adopted,
         elapsed_ms = adoption_started.elapsed().as_millis() as u64,
         "detached jobs adopted from the previous run"
     );
 
-    // A message that arrived while a turn was running is normally folded into
-    // that turn at its next step boundary. If the turn ends first, nobody is
-    // left to read it -- so a session holding an undelivered message gets a
-    // turn started for it. Checked rather than pushed: the row is durable, so
-    // a miss here costs a couple of seconds, not the message.
+    // A session holding an undelivered message gets a turn started for it.
     let wake = dispatch.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
@@ -302,15 +257,8 @@ async fn run() -> anyhow::Result<()> {
     );
 
     let served = net::serve(Arc::new(cfg), dispatch, bus).await;
-    // Every path out of `serve` ends here, so this is the one place that
-    // guarantees no shell outlives the server's decision to stop.
-    //
-    // It has to happen before the runtime goes: a live persistent shell is a
-    // child that never exits on its own, and the thread reaping it can never
-    // finish while it lives -- which is exactly the state that made the process
-    // sit there after `server stopped`. Ending the shells is what gives those
-    // threads an end, so the runtime's `Drop` can simply wait for them instead
-    // of being given a deadline.
+    // Every exit from `serve` lands here, so no shell outlives the stop decision.
+    // See `docs/notes/server-main.md`.
     sessions.close_shells().await;
     served
 }
@@ -319,9 +267,7 @@ async fn run() -> anyhow::Result<()> {
 mod tests {
     use super::{Args, cli_path};
 
-    /// The CLI is what lets the model cancel, restart or replace this server,
-    /// so the path it is handed has to be runnable -- a bare name is only
-    /// correct if that name is actually on `PATH`.
+    /// The CLI path must be runnable: a bare name is only right if it is on `PATH`.
     #[test]
     fn the_cli_path_is_something_that_can_be_run() {
         let p = cli_path();
@@ -332,9 +278,7 @@ mod tests {
         );
     }
 
-    /// SPEC: "database path can be specified at server start." Checked by
-    /// parsing rather than by reading the source, so that renaming the flag
-    /// breaks a test instead of someone's runbook.
+    /// SPEC: the database path can be given at startup; parsing is the check.
     #[test]
     fn the_database_path_is_a_startup_flag() {
         use clap::Parser;

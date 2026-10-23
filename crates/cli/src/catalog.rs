@@ -1,13 +1,6 @@
 //! The completion source the TUI asks, and nowhere else.
 //!
-//! The TUI supplies the token; this decides what could go there. It merges two
-//! catalogs: the server's, published at connect time, and the client's own
-//! (`set_persistant_cmd_argument` and friends), which never leave the process.
-//!
-//! Both halves complete: the flag *names* come from the spec, and the flag
-//! *values* from whatever the spec says can be enumerated -- the live session
-//! list, a fixed set, every argument name, the filesystem, or another
-//! argument's list when the value is a name that chooses one.
+//! See `docs/notes/cli-catalog.md`.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -23,8 +16,7 @@ struct Inner {
     server: Vec<CommandSpec>,
     client: Vec<CommandSpec>,
     sessions: Vec<String>,
-    /// Where a relative path value is read from: the client's own directory,
-    /// because that is the one the user was looking at when they typed.
+    /// Where a relative path value is read from: the client's own directory.
     cwd: PathBuf,
 }
 
@@ -52,10 +44,8 @@ impl Catalog {
         self.write().sessions = sessions;
     }
 
-    /// Points path completion somewhere other than the process's directory.
-    ///
-    /// Production never moves it: the user's shell is already in the directory
-    /// they mean. Tests need to aim it at a tree they built.
+    /// Points path completion at a directory other than the process's; for
+    /// tests.
     #[cfg(test)]
     pub fn set_cwd(&self, cwd: impl Into<PathBuf>) {
         self.write().cwd = cwd.into();
@@ -91,8 +81,7 @@ impl Catalog {
     }
 }
 
-/// What a value may be completed against, snapshotted out of the catalog so the
-/// lock is not held while the filesystem is read.
+/// What a value may be completed against, snapshotted so no lock is held.
 struct Ctx<'a> {
     sessions: &'a [String],
     cwd: &'a Path,
@@ -101,14 +90,8 @@ struct Ctx<'a> {
 
 impl Completer for Catalog {
     fn complete(&self, line: &str, cursor: usize) -> Vec<Candidate> {
-        // One grammar, decided by the first character: `/` starts a command,
-        // and anything else is a message to the agent. Completion is about
-        // commands, so a message -- free text, in any language, with whatever
-        // punctuation the operator likes -- offers nothing at all.
-        //
-        // That is also what keeps the popup out of the way: without this rule,
-        // every keystroke of an ordinary sentence matched some command name and
-        // opened a list over half the screen, including while clearing the line.
+        // `/` starts a command; anything else is a message, which offers
+        // nothing. See `docs/notes/cli-catalog.md`.
         if !line.trim_start().starts_with('/') {
             return Vec::new();
         }
@@ -130,8 +113,8 @@ impl Completer for Catalog {
             .chain(server.iter().cloned())
             .collect();
         let cmd = words.first().map(|t| t.trim_start_matches('/'));
-        // The word the cursor is in, when it is in one: that word is about to
-        // be replaced, so it does not count as already on the line.
+        // The word the cursor is in is about to be replaced, so it is not
+        // already on the line.
         let word_at_cursor = if token.is_empty() {
             None
         } else {
@@ -146,18 +129,15 @@ impl Completer for Catalog {
             let used = flags_on_line(&words, word_at_cursor);
             return args
                 .iter()
-                // A flag already on the line is not a candidate: the command
-                // would take the second value for the same argument (or refuse
-                // it), and listing it again hides the flags still missing.
+                // A flag already on the line is not a candidate; listing it
+                // again hides the flags still missing.
                 .filter(|a| !used.contains(a.name.as_str()))
                 .filter(|a| a.name.starts_with(prefix))
                 .map(|a| Candidate::word(format!("--{}", a.name), a.summary.clone()))
                 .collect();
         }
 
-        // Command names, while the command has not been written yet. A space
-        // *after* it is not a command name any more: offering the whole list
-        // there reopened the popup over a line whose first word was settled.
+        // Command names, only while the command itself is still unwritten.
         if position == 1 && token.starts_with('/') {
             let prefix = token.trim_start_matches('/');
             return all
@@ -167,10 +147,8 @@ impl Completer for Catalog {
                 .collect();
         }
 
-        // Past the command name: only a flag's value, and only when the spec
-        // says where the candidates come from. The flag sits one word back when
-        // the value has not been started yet, and two when it has: `--session
-        // <TAB>` and `--session sc<TAB>` both complete the same list.
+        // Past the command name: a flag's value, whose flag sits one word back,
+        // or two once the value has started.
         let flag_index = if token.is_empty() {
             position.checked_sub(1)
         } else {
@@ -197,11 +175,8 @@ impl Completer for Catalog {
     }
 }
 
-/// Turns one argument's declared source into candidates.
-///
-/// `depth` exists for the single case that points back into the catalog: a
-/// value completed the way another argument's values are. One hop is enough for
-/// the shape the client actually declares.
+/// Turns one argument's declared source into candidates; `depth` bounds the one
+/// self-referential case.
 fn resolve(
     source: &CompletionSource,
     token: &str,
@@ -258,11 +233,8 @@ fn pick<'a>(values: impl Iterator<Item = &'a str>, prefix: &str, detail: &str) -
         .collect()
 }
 
-/// Flags the line already carries, in either spelling (`--name value` or
-/// `--name=value`).
-///
-/// `skip` is the word the cursor is in: it is the one being completed, so it is
-/// not yet a flag the line has.
+/// Flags the line already carries, in either spelling; `skip` is the word being
+/// completed.
 fn flags_on_line(words: &[String], skip: Option<usize>) -> std::collections::HashSet<&str> {
     words
         .iter()
@@ -287,11 +259,8 @@ fn flag_value<'a>(words: &'a [String], flag: &str) -> Option<&'a str> {
     None
 }
 
-/// Lists the filesystem under `cwd`, keeping the directory part the user
-/// already typed.
-///
-/// Directories come back with a trailing `/` and without the usual trailing
-/// space, so Tab twice walks down a tree instead of starting a new word.
+/// Lists the filesystem under `cwd`, keeping the directory part already typed; a
+/// directory keeps its trailing `/`.
 fn paths(cwd: &Path, token: &str) -> Vec<Candidate> {
     let (typed_dir, prefix) = match token.rfind(['/', '\\']) {
         Some(at) => token.split_at(at + 1),
@@ -327,8 +296,7 @@ fn paths(cwd: &Path, token: &str) -> Vec<Candidate> {
     out
 }
 
-/// The directory `typed` names, read relative to the client's directory. `~` is
-/// expanded because `--cwd ~/work` is how people write it.
+/// The directory `typed` names, relative to the client's, with `~` expanded.
 fn directory(cwd: &Path, typed: &str) -> PathBuf {
     let path = match typed.strip_prefix('~') {
         Some(rest) => match dirs::home_dir() {
@@ -344,8 +312,7 @@ fn directory(cwd: &Path, typed: &str) -> PathBuf {
     }
 }
 
-/// The commands the CLI handles itself. Their arguments complete against the
-/// sticky arguments that exist right now, so the specs are rebuilt on change.
+/// The commands the CLI handles itself; rebuilt whenever the sticky set changes.
 fn client_specs(sticky: &[String]) -> Vec<CommandSpec> {
     vec![
         CommandSpec {
@@ -478,17 +445,16 @@ mod tests {
         assert!(values(&c, "/send_message --session main --message hi --").is_empty());
     }
 
-    /// The word being completed is not "already filled": typing `--sess` must
-    /// still offer `--session`, or the flag could never be completed at all.
+    /// The word being completed is not "already filled", or no flag could ever
+    /// be completed.
     #[test]
     fn the_flag_being_typed_is_still_a_candidate() {
         let c = catalog();
         assert_eq!(values(&c, "/send_message --sess"), vec!["--session"]);
     }
 
-    /// A space after the command name is the start of its flags, not another
-    /// opportunity to pick a command: reopening the whole list there covers the
-    /// line the operator has already decided.
+    /// A space after the command name starts its flags, not a second command
+    /// choice.
     #[test]
     fn a_finished_command_does_not_reopen_the_command_list() {
         let c = catalog();
@@ -529,8 +495,8 @@ mod tests {
         assert_eq!(got, vec!["cwd", "message", "name", "session", "value"]);
     }
 
-    /// The point of the sticky value: it fills `session`, so it should offer
-    /// sessions -- without the user having to remember the names.
+    /// A sticky value completes like the argument it fills: `session` offers
+    /// sessions.
     #[test]
     fn a_sticky_value_completes_like_the_argument_it_fills() {
         let c = catalog();

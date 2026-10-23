@@ -74,7 +74,7 @@ pub enum UiEvent { Submit(String), Quit }
 ```text
  0.. 2  magic    u16  0x4747
  2.. 3  version  u8   1
- 3.. 4  flags    u8   SYN|ACK|FIN|RST|DATA|PING
+ 3.. 4  flags    u8   SYN|ACK|FIN|RST|DATA
  4.. 8  conn_id  u32  服务端分配
  8..12  seq      u32  包序号（ARQ 单位）
 12..16  ack      u32  累积确认

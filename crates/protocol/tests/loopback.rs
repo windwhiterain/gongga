@@ -1,10 +1,6 @@
 //! End-to-end exercise of the reliable channel over a real UDP socket.
 //!
-//! These tests drive the transport the way the server does: one socket, a
-//! demultiplexer that hands frames to per-peer connections, and a client that
-//! opens a connection with SYN. The lossy variant deliberately drops datagrams
-//! to prove the retransmission path actually recovers rather than just working
-//! when the network is perfect.
+//! See `docs/notes/protocol-loopback.md`.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -20,9 +16,13 @@ use protocol::{ChannelConfig, ChannelSink, ChannelStream};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 
-/// Dropping a connection must leave nothing running: a client that reconnects
-/// (the TUI redialing a restarted server) would otherwise leak one reader task
-/// and one socket per attempt.
+/// Dropping a connection releases its reader task and its socket.
+///
+/// # Invariant
+///
+/// Nothing is left running: a client that reconnects -- the TUI redialing a
+/// restarted server -- would otherwise leak one reader task and one socket per
+/// attempt.
 #[tokio::test]
 async fn dropping_a_channel_releases_its_reader_task_and_socket() {
     // A peer that never answers, so the only way the reader task can end is
@@ -142,8 +142,8 @@ async fn pair(loss_every: usize) -> (ChannelSink, ChannelStream, Arc<AtomicUsize
 async fn round_trips_a_message_that_needs_many_fragments() {
     let (sink, mut stream, _dropped, _addr) = pair(0).await;
 
-    // 200 KiB is ~170 fragments at the default 1200-byte MTU, so this covers
-    // fragmentation, windowing and in-order reassembly together.
+    // 200 KiB is ~170 fragments at the default MTU, covering fragmentation, windowing
+    // and in-order reassembly.
     let payload: Vec<u8> = (0..200 * 1024).map(|i| (i % 251) as u8).collect();
     sink.send(payload.clone()).await.unwrap();
 
@@ -178,20 +178,17 @@ async fn recovers_from_dropped_datagrams() {
 }
 
 /// A consumer that stops reading must not stop the link.
+/// See `docs/notes/protocol-loopback.md`.
 ///
-/// Delivery used to be an `await` on a 256-message queue inside the task that
-/// also answers ACKs and retransmits, so a pause on the receiving side stalled
-/// the whole link: the peer saw no acknowledgements, nothing was retransmitted,
-/// and both processes were alive the whole time. The replies below queue up
-/// while nobody reads, and every one of them still has to arrive, in order.
+/// # Invariant
+///
+/// The replies queue up while nobody reads, and every one of them still arrives,
+/// in order.
 #[tokio::test]
 async fn a_paused_consumer_does_not_stall_the_link() {
     let (sink, mut stream, _dropped, _addr) = pair(0).await;
     const TOTAL: usize = 400;
-    // The producer keeps the sink until this test says stop. Dropping a half
-    // closes the channel *by contract*, so a task that returned right after
-    // sending its last message would be closing the link -- the peer hanging
-    // up, not the consumer pausing, which is the thing under test.
+    // The producer holds its sink until released: dropping a half closes the link.
     let (release, held) = tokio::sync::oneshot::channel::<()>();
     let producer = tokio::spawn(async move {
         for i in 0..TOTAL {

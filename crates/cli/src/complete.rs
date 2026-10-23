@@ -1,10 +1,6 @@
 //! The completion vocabulary shared with the front-end.
 //!
-//! These types live here, in the command layer, because completion is about
-//! commands: the catalog decides what a token could become. The front-end
-//! renders the popup and inserts the chosen text, but it supplies no knowledge
-//! of its own -- which is what lets `tui` remain ignorant of commands while
-//! still offering Tab completion.
+//! See `docs/notes/cli-complete.md`.
 
 /// One completion option.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,8 +9,8 @@ pub struct Candidate {
     pub insert: String,
     /// Shown on the right of the popup.
     pub detail: String,
-    /// Whether a space follows the insertion. False for a directory, so that
-    /// Tab again descends into it instead of starting a new word.
+    /// Whether a space follows the insertion; false for a directory, so Tab
+    /// descends into it.
     pub space: bool,
 }
 
@@ -29,13 +25,8 @@ impl Candidate {
     }
 }
 
-/// An open completion popup: which token is being replaced, and what the
-/// options are.
-///
-/// The `selected` index lives here rather than in the front-end because it is
-/// part of the same decision: a popup whose contents and whose current choice
-/// were tracked separately could disagree, and the disagreement would show up
-/// as the wrong text being inserted.
+/// The open completion popup: which token is replaced, and the options.
+/// See `docs/notes/cli-complete.md`.
 #[derive(Debug, Clone)]
 pub struct Completion {
     /// Byte range of the token being replaced.
@@ -60,26 +51,18 @@ impl Completion {
     }
 }
 
-/// Supplies completion candidates for the token under the cursor.
-///
-/// An empty vector means "nothing to offer", which is how the popup stays
-/// closed for free-form values.
+/// Supplies completion candidates for the token under the cursor; empty means
+/// offer nothing.
 pub trait Completer: Send + Sync {
     fn complete(&self, line: &str, cursor: usize) -> Vec<Candidate>;
 }
 
-/// A shared completer: the front-end holds it, the command layer swaps the
-/// catalog inside it whenever the server publishes a new one.
+/// A completer the front-end shares; the command layer swaps the catalog in it.
 pub type SharedCompleter = std::sync::Arc<dyn Completer + Send + Sync>;
 
 /// Byte range of the whitespace-delimited token containing `cursor`.
 ///
-/// Completion is decided by *which token* is under the cursor, and the
-/// candidate source (the catalog) is here, so the split lives here too. The
-/// front-end uses the same split when it applies a candidate, which is why this
-/// is shared rather than duplicated: two answers to "where does this token
-/// start" would drift, and the drift would show up as text inserted in the
-/// wrong place.
+/// See `docs/notes/cli-complete.md`.
 pub fn token_bounds(input: &str, cursor: usize) -> (usize, usize, String) {
     let before = &input[..cursor.min(input.len())];
     let start = before

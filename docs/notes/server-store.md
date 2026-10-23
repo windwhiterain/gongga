@@ -1,0 +1,228 @@
+# server/store.rs
+
+## store.rs
+
+The SPEC asks for data that is "structured for agentic retrieval/mutation", so
+the transcript is not an opaque JSON blob: each session, message, tool call and
+event is an addressable row with typed columns. A future tool can therefore
+`SELECT` a session's tool failures or rewrite one message without parsing and
+re-serialising a whole document.
+
+The connection is behind a mutex and used synchronously. Every statement here is
+a sub-millisecond local write, so the simplification costs nothing in practice;
+if that stops being true the fix is `spawn_blocking`, not a redesign.
+
+## INTERRUPTED_CALL
+
+Written as an observation rather than an error: the command may well have run to
+completion, and the model should verify rather than assume.
+
+## migrate
+
+`CREATE TABLE IF NOT EXISTS` cannot add a column to a table that already exists,
+and a running harness must not lose its transcript just because the schema grew.
+
+## Store::open
+
+`:memory:` is taken literally: it has no directory to create, and creating one
+called `:` would be the wrong answer to `--db :memory:`, which is how a throwaway
+run keeps its hands off the operator's data.
+
+## Store::lock
+
+A poisoned mutex means a prior write panicked mid-transaction; the WAL keeps the
+database itself consistent, so recovering the guard is safe.
+
+## Store::delete_session
+
+`events` carries no foreign key, so its rows would outlive the session. That is
+worse than a leak: SQLite hands a freed id out again, and the dead session's
+events then pose as the new session's history.
+
+## Store::get_session
+
+A `WHERE name = ?` rather than "list every session and look for it":
+`nudge_inboxes` asks this for each pending session on a two-second timer, and the
+list query also runs a `COUNT(*)` per row, so the cost of the wrong shape grows
+with the whole home instead of with the answer.
+
+## Store::set_session_tuning
+
+Both columns at once: they are one decision ("how should this session behave"),
+and `set_session` is the only thing that writes them, so a half-applied tuning is
+not a state anything else has to handle.
+
+`model` is kept in step rather than derived on read: it is what list views show,
+and `llm` being cleared has to put it back to the server's own model, which only
+the caller knows.
+
+## Store::history
+
+This doc comment used to carry three overlapping openings (`Loads the transcript
+in the order the model should see it`, the summary replacement rule, and the
+test-only note). The surviving statements:
+
+A summary, once written, stands in for everything up to its `summarised_upto`, so
+that is all a request needs. The rows themselves are never deleted -- the full
+transcript stays available to `history` and to anything that wants to audit it.
+
+Production code always has a lower bound (a summary) or both (compaction), and a
+method nobody calls is a second way to ask the same question.
+
+## Store::history_between
+
+Compaction needs both bounds, and it needs them as one query: the mapping inside
+is not one-to-one with rows -- a `notice` row is skipped, an unanswered tool call
+gains a placeholder -- so "how many items does the old half hold" cannot be
+answered by counting rows, which is how the summary used to cover a range that
+was not the one it was asked for.
+
+A call whose result never got recorded -- the turn was interrupted between asking
+for the tool and hearing back -- cannot be sent as a bare `function_call`:
+providers reject the whole request ("No tool output found for tool call ..."),
+which makes the session fail the same way on every later turn. The placeholder is
+the honest fix: it says what happened instead of pretending the call is open.
+
+A notice is written for the operator, not for the model: it explains why a turn
+stopped. Feeding it back as history would put our own bookkeeping in the
+transcript the provider sees, and make the model answer questions nobody asked.
+
+## Store::messages_after
+
+`history_since` answers "what should the model see"; this answers "what happened
+while I was waiting", which is what an IM bridge asks after a turn goes idle: it
+knows the seq the turn started at and wants the assistant text that followed.
+`last_seq` comes back with the rows so a caller can advance its cursor without a
+second round trip (and without guessing: a turn whose only output was tool calls
+still moves it).
+
+Newest `limit` first, then flipped, so a long transcript yields its tail rather
+than its head -- a caller that asked for 50 rows wants the 50 that just happened.
+
+## Store::message_index
+
+Compression needs the seqs to decide where a summary may take over, not just the
+contents.
+
+## Store::set_context_tokens
+
+Called with the number from `usage`, never with a computed one: the provider is
+the only party that tokenises with the tokeniser it will actually bill against.
+
+## Store::context
+
+Returns `(None, full history)` when nothing has been compressed.
+
+## Store::add_pending_task
+
+An aborted process is indistinguishable from a deliberate `cancel`: either way,
+whatever is still in this table is what the next start owes.
+
+## Store::take_pending_tasks
+
+The caller is about to write the returned rows into the transcript: a message
+must be either still in the inbox or already in the transcript, never both
+(delivered twice) and never neither (lost).
+
+`except` is the row a turn was started from. That message is already in the
+transcript -- it was written when the turn began -- so handing it back here would
+append the operator's line a second time.
+
+## Store::add_detached_job
+
+Written before the job is handed to the model, so a crash in between leaves a row
+the next start adopts rather than a process nobody knows about.
+
+## SessionRow::llm
+
+`None` means "whatever the server is configured with", which is what most
+sessions are.
+
+## SessionRow::compact_threshold
+
+`None` means the server-wide budget. The original line said "character budget";
+the config field is `compress_above_tokens`, so the wording may be stale.
+
+## MessageRow
+
+Deliberately not [`HistoryItem`]: a caller that only wants "what did it say"
+should not have to know about encrypted reasoning blobs or reassemble the
+Responses API shape. `text` carries whichever field is the human-meaningful one
+for the kind (message body, tool arguments, tool output, reasoning summary), so
+one column is enough to display any row.
+
+## the_database_path_brings_its_directory
+
+`--db <path>` has to bring its directory with it, and `--db :memory:` has to be
+taken literally: that is how a throwaway run keeps its hands off the operator's
+real database, and creating a directory called `:` would be the wrong answer to
+it.
+
+## finishing_one_pending_task_leaves_the_others
+
+Two messages queued on one session used to share a fate: the first turn cleared
+the session's pending rows wholesale and took the second message's row with it,
+so a crash before the second turn ran lost the message from both places at once.
+
+## a_summary_shrinks_the_request_without_touching_the_transcript
+
+The transcript is a record, not a cache, and deleting the rows would lose the
+only copy of what the session actually did.
+
+## session_tuning_round_trips
+
+`set_session --llm` and `--compact_threshold` have to survive a restart like
+everything else. `model` follows the entry, because that is the column list views
+read.
+
+The two halves of a compaction have to add up to the transcript. Splitting by
+sequence does that by construction; counting rows did not, because a `notice` is
+skipped and an unanswered tool call gains a placeholder.
+
+Four rows, four items -- but not four rows' worth: the notice contributes nothing
+and the unanswered call contributes two. That is exactly why a row count is the
+wrong way to find the cut.
+
+Clearing the entry goes back to the server's own, model included: the caller
+passes what that is, because only it knows.
+
+## opening_an_old_database_adds_the_summary_columns
+
+A database written before compression existed has to grow the columns rather than
+fail to open, or every existing session would be stranded.
+
+## the_measured_context_size_survives_a_restart
+
+The context size is the provider's own number, so it has to survive a restart:
+the first request of the next run is compared against it before any new
+measurement exists.
+
+## deleting_a_session_takes_its_events_with_it
+
+Otherwise a deleted session's rows stay behind and, once SQLite reuses the id,
+show up as the next session's history.
+
+## a_call_interrupted_before_its_result_is_closed_for_the_model
+
+A turn interrupted between "call this tool" and "here is what it said" leaves a
+`function_call` with no `function_call_output`. Providers reject that outright
+("No tool output found for tool call ..."), so the session fails the same way on
+every later turn. The transcript closes the call on the way out instead.
+
+## messages_after_returns_a_window_and_the_tail
+
+The read path an IM bridge uses: a window starting after a seq, ending at the
+current tail, with that tail reported so the cursor can advance even when the
+window turns out to be empty.
+
+An empty window still reports the tail: "nothing new, and the transcript has not
+moved" is a different answer from "start over".
+
+The limit counts back from the end, so a long transcript yields the part that
+just happened rather than a re-read of the beginning.
+
+## a_notice_is_readable_but_never_sent_back_to_the_model
+
+A notice explains a stopped turn to the operator. It belongs in the transcript
+they read and must not leak into the request the model sees, or the model ends up
+replying to the harness instead of the user.

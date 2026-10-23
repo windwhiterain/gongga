@@ -1,8 +1,5 @@
-//! Sessions: a row in SQLite plus the named shells that belong to it.
-//!
-//! The SPEC keys a shell by `session_name/bash_name`, so a session owns a *set*
-//! of persistent shells rather than one. `default` always exists; anything else
-//! is created on first use and removed by the `del_bash` tool.
+//! A row in SQLite plus the named shells that belong to it.
+//! See `docs/notes/server-session.md`.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -22,21 +19,13 @@ use crate::tools::detached::DetachedRegistry;
 pub const DEFAULT_BASH: &str = "default";
 
 /// What a session was told to use, as `set_session` left it.
-///
-/// Kept beside the session rather than in the agent because it is per-session
-/// state: two sessions on one server can run different models at different
-/// compaction points, and a turn reads this when it starts so a change applies
-/// to the next turn instead of restarting anything.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Tuning {
     /// A roster entry, `provider/model`. `None` means "the server's own".
     pub llm: Option<String>,
-    /// Compaction point as a percentage of the model's context window. `None`
-    /// means the server-wide token budget.
+    /// Compaction point as a percentage of the window; `None` is the default percent.
     pub compact_threshold: Option<u8>,
-    /// How hard the model should think, in the roster's spelling. `None` means
-    /// the model's own default -- which is not the same as "send nothing" for
-    /// every provider, so it is stored as an absence rather than a value.
+    /// How hard the model should think, in the roster's spelling; `None` is its default.
     pub thinking_effort: Option<String>,
 }
 
@@ -51,34 +40,16 @@ struct SessionInner {
     name: String,
     shells: Arc<Mutex<ShellSet>>,
     cancel: Mutex<CancellationToken>,
-    /// How many times the operator has cancelled. A turn compares this before
-    /// and after waiting its turn: if it moved, an `interrupt_session` arrived
-    /// while the turn was still queued, and running it anyway would look like
-    /// the cancel did nothing.
+    /// How many times the operator has cancelled; a queued turn compares it across the wait.
     cancels: AtomicU64,
-    /// What every operation that reshapes this session queues behind.
-    ///
-    /// Two turns used to run side by side: both measured the transcript, both
-    /// decided it was over budget, and both compressed the same thing -- twice
-    /// the cost for one summary. A turn and `del_session` had the same problem
-    /// from a different angle. Tokio's mutex is first-in-first-out, so this is
-    /// a queue rather than a free-for-all: whoever asks first goes first.
+    /// What every operation that reshapes this session queues behind, FIFO.
     gate: Arc<AsyncMutex<()>>,
     turns: AtomicU64,
-    /// The `--llm` and `--compact_threshold` this session was given.
-    ///
-    /// Behind a lock rather than atomics because it is read as a pair and
-    /// written as a pair: a turn must not see a new model paired with the old
-    /// budget.
+    /// The tuning this session was given, behind a lock because it is read as a pair.
     tuning: Mutex<Tuning>,
-    /// Set once the session's rows are gone. A turn that was queued behind a
-    /// `del_session` finds this when its turn comes and gives up instead of
-    /// writing to a session that no longer exists.
+    /// Set once the rows are gone, so a queued turn gives up instead of writing.
     deleted: AtomicBool,
-    /// Set by a `cancel` that shuts the server down: the turn stops, but its
-    /// pending row stays so the next start picks the turn back up.
-    /// `interrupt_session` leaves this false, because there "stop" means
-    /// "drop it".
+    /// Set by a shutdown's `cancel`: the turn stops but its pending row stays.
     resumable: AtomicBool,
 }
 
@@ -97,11 +68,10 @@ impl SessionHandle {
 
     /// Ends every shell this session owns and waits for each to be reaped.
     ///
-    /// Called once, on the way out. A persistent shell is a child process that
-    /// never exits by itself, so leaving one alive leaves its reaper thread
-    /// alive too, and the process cannot finish shutting down. Nothing is lost
-    /// by ending them: a shell is cheap to start again, and the transcript --
-    /// where the real state lives -- is already written.
+    /// # Invariant
+    ///
+    /// Called once, on the way out: a shell that never exits keeps its reaper
+    /// thread and the process alive.
     pub async fn close_shells(&self) {
         let drained: Vec<Arc<AsyncMutex<BashShell>>> = {
             let mut set = self.inner.shells.lock().unwrap_or_else(|e| e.into_inner());
@@ -131,27 +101,27 @@ impl SessionHandle {
         *self.inner.tuning.lock().unwrap_or_else(|e| e.into_inner()) = tuning;
     }
 
-    /// Whether someone is holding the gate right now. Only worth asking to
-    /// decide whether to log a wait: the answer can change immediately after.
+    /// Whether someone holds the gate right now; only good for deciding to log a wait.
     pub fn busy(&self) -> bool {
         self.inner.gate.clone().try_lock_owned().is_err()
     }
 
-    /// Waits until nothing else is reshaping this session, then holds it.
+    /// Waits until nothing else is reshaping this session, then holds the gate.
     ///
-    /// Turns, `del_session` and anything else that reads the transcript and
-    /// writes back a different version of it have to take this first. The
-    /// guard is the whole point of the return value: dropping it is what lets
-    /// the next one in, including if the holder panics.
+    /// # Invariant
+    ///
+    /// The guard is the point: dropping it lets the next one in, even if the
+    /// holder panics.
     pub async fn claim(&self) -> OwnedMutexGuard<()> {
         self.inner.gate.clone().lock_owned().await
     }
 
     /// Cancels any in-flight turn and returns a fresh token for the next one.
     ///
-    /// Callers must already hold `claim`: this cancels the running turn, so
-    /// calling it from a turn that has not been let in yet would stop the one
-    /// it is supposed to be waiting behind.
+    /// # Invariant
+    ///
+    /// The caller already holds `claim`; otherwise this stops the turn it is
+    /// meant to wait behind.
     pub fn new_turn(&self) -> (u64, CancellationToken) {
         let mut guard = self.inner.cancel.lock().unwrap_or_else(|e| e.into_inner());
         guard.cancel();
@@ -161,10 +131,7 @@ impl SessionHandle {
         (turn, token)
     }
 
-    /// Cancels the current turn without starting a new one.
-    ///
-    /// The turn is dropped, not deferred: whoever cleans up after it clears its
-    /// pending row, so the next start does not owe it anything.
+    /// Cancels the current turn without starting a new one; the turn is dropped.
     pub fn cancel(&self) {
         self.inner.cancels.fetch_add(1, Ordering::SeqCst);
         self.inner
@@ -191,24 +158,20 @@ impl SessionHandle {
         self.inner.cancels.load(Ordering::SeqCst)
     }
 
-    /// Cancels the current turn but keeps its pending row, so the next server
-    /// resumes it. This is what `cancel` (the command) does: it stops work to
-    /// shut down, not to throw the work away.
+    /// Cancels the turn but keeps its pending row for the next start to resume.
     pub fn cancel_and_preserve(&self) {
         self.inner.resumable.store(true, Ordering::SeqCst);
         self.cancel();
     }
 
-    /// Whether a `cancel` asked for this turn to survive the shutdown, and
-    /// clears the flag: it describes one turn only.
+    /// Whether a `cancel` asked this turn to survive the shutdown; clears it, for one turn.
     pub fn take_resumable(&self) -> bool {
         self.inner.resumable.swap(false, Ordering::SeqCst)
     }
 
     /// The working directory the default shell currently reports.
     pub async fn cwd(&self) -> PathBuf {
-        // `std::sync::MutexGuard` is not `Send`, so it has to be gone before
-        // the first await. Scoping the lock to a block is what guarantees that.
+        // The guard is not `Send`, so scope it to a block before the first await.
         let shells = self.shells();
         let handle = {
             let guard = shells.lock().unwrap_or_else(|e| e.into_inner());
@@ -224,11 +187,7 @@ impl SessionHandle {
     }
 }
 
-/// The persistent shells of one session.
-///
-/// Locking is `std::sync` because every operation here is synchronous: spawning
-/// is a process launch and removing is a map delete. The per-shell lock the
-/// tools actually await lives inside, one level down.
+/// The persistent shells of one session, locked synchronously: spawn and remove.
 pub struct ShellSet {
     program: PathBuf,
     cwd: PathBuf,
@@ -247,10 +206,7 @@ impl ShellSet {
         }
     }
 
-    /// The shared handle for `name`, spawning it on first use.
-    ///
-    /// Spawning is what makes `del_bash` meaningful: a shell that was removed
-    /// comes back fresh (in the session directory) the next time it is named.
+    /// The shared handle for `name`, spawning it fresh on first use after a removal.
     pub fn get(&mut self, name: &str) -> anyhow::Result<Arc<AsyncMutex<BashShell>>> {
         if let Some(shell) = self.shells.get(name) {
             return Ok(shell.clone());
@@ -267,9 +223,7 @@ impl ShellSet {
         self.shells.get(name).cloned()
     }
 
-    /// The shells that exist right now, in a stable order.
-    ///
-    /// `list_bash` reports live shells only; naming one is what creates it.
+    /// The shells that exist right now, in a stable order; naming one is what creates it.
     pub fn names(&self) -> Vec<String> {
         let mut names: Vec<String> = self.shells.keys().cloned().collect();
         names.sort();
@@ -280,14 +234,11 @@ impl ShellSet {
         self.shells.remove(name).is_some()
     }
 
-    /// Takes `handle` out of the set if it is still the one filed under
-    /// `name`, and reports whether it was.
+    /// Takes `handle` out of the set if it is still the one filed under `name`.
     ///
-    /// This is what happens when a command outlives its deadline: the shell
-    /// keeps the command, the session gets a fresh shell under the same name,
-    /// and the model can go on working instead of finding a shell that is
-    /// still busy. The pointer comparison matters -- if the entry has already
-    /// been replaced, removing it would take away somebody else's shell.
+    /// # Invariant
+    ///
+    /// Compare by pointer: a replaced entry is not ours to remove.
     pub fn retire(&mut self, name: &str, handle: &Arc<AsyncMutex<BashShell>>) -> bool {
         let mine = self
             .shells
@@ -300,12 +251,7 @@ impl ShellSet {
         mine
     }
 
-    /// Retires `handle` and puts a freshly spawned shell in its place.
-    ///
-    /// Replacing rather than merely removing is what keeps `check_bash` and
-    /// `list_bash` honest: the name has to keep meaning "a shell you can use",
-    /// otherwise the next tool call reports that the shell the model was just
-    /// told about does not exist.
+    /// Retires `handle` and spawns a fresh shell in its place, keeping the name usable.
     pub fn replace(
         &mut self,
         name: &str,
@@ -329,12 +275,9 @@ pub struct SessionManager {
     store: Store,
     bash: BashConfig,
     model: String,
-    /// Detached jobs, which are deliberately *not* owned by a session: they
-    /// outlive shells, sessions and the server. Session-scoped tools still need
-    /// to reach them, so they live here rather than inside a shell.
+    /// Detached jobs, deliberately not owned by a session: they outlive everything.
     detached: DetachedRegistry,
-    /// Variables handed to every session shell, so the model can reach this
-    /// server with the CLI instead of guessing at it.
+    /// Variables for every session shell, so the model can reach this server via the CLI.
     shell_env: Vec<(String, String)>,
     live: Arc<Mutex<HashMap<String, SessionHandle>>>,
 }
@@ -362,8 +305,7 @@ impl SessionManager {
         self.detached.clone()
     }
 
-    /// Ends the shells of every live session. See [`SessionHandle::close_shells`]
-    /// for why the process cannot exit without this.
+    /// Ends the shells of every live session, which the process needs to exit.
     pub async fn close_shells(&self) {
         let handles: Vec<SessionHandle> = self.live().values().cloned().collect();
         for handle in handles {
@@ -390,10 +332,7 @@ impl SessionManager {
         let id = self
             .store
             .create_session(name, &self.model, &cwd.to_string_lossy())?;
-        // Pin the entry the session starts on, when the roster knows that
-        // model. A session is not "whatever the server's default is today": its
-        // reasoning items carry blobs only the producing provider can replay,
-        // so a later change of default must not silently move it.
+        // Pin the model's entry: reasoning blobs replay only on the producing provider.
         let pinned = crate::providers::roster()
             .find_model_entry(&self.model)
             .map(|e| e.spec());
@@ -417,11 +356,7 @@ impl SessionManager {
         })
     }
 
-    /// The handle if the session is already in memory, without creating it.
-    ///
-    /// `del_session` needs this: it only has to wait for a session that has
-    /// work in flight, and materialising one in order to delete it would start
-    /// shells for nothing.
+    /// The handle if the session is already in memory, without spawning anything.
     pub fn peek(&self, name: &str) -> Option<SessionHandle> {
         self.live().get(name).cloned()
     }
@@ -465,10 +400,7 @@ impl SessionManager {
                 gate: Arc::new(AsyncMutex::new(())),
                 turns: AtomicU64::new(0),
                 tuning: Mutex::new(Tuning {
-                    // `llm` is what the session was pinned to; a row that
-                    // predates it still knows its model, and the roster is what
-                    // turns that name back into a provider. Only a model the
-                    // roster has never heard of falls back to the server's own.
+                    // Prefer the pinned entry; a row that predates it is resolved from the roster.
                     llm: row.llm.clone().or_else(|| {
                         crate::providers::roster()
                             .find_model_entry(&row.model)
@@ -486,8 +418,7 @@ impl SessionManager {
     }
 
     pub fn delete(&self, name: &str) -> anyhow::Result<bool> {
-        // Say it before the rows go, so a turn already waiting behind this
-        // deletion sees it and stops instead of writing into the void.
+        // Mark first: a turn already waiting behind this deletion must see it and stop.
         if let Some(handle) = self.live().get(name) {
             handle.mark_deleted();
         }
@@ -500,9 +431,6 @@ impl SessionManager {
     }
 
     /// Every session with a live handle, i.e. one whose shells exist in memory.
-    ///
-    /// Used by `cancel`, which has to stop turns that are actually running
-    /// rather than every row in the database.
     pub fn live_sessions(&self) -> Vec<SessionHandle> {
         self.live().values().cloned().collect()
     }
@@ -545,8 +473,7 @@ mod tests {
         assert!(!h.take_resumable());
     }
 
-    /// `cancel` shuts the server down so the turn can come back, and it says so
-    /// exactly once: the next turn is not preserved by accident.
+    /// `cancel` preserves the turn exactly once, so the next turn is not kept by accident.
     #[test]
     fn cancelling_for_shutdown_preserves_one_turn() {
         let h = handle();
@@ -555,9 +482,7 @@ mod tests {
         assert!(!h.take_resumable());
     }
 
-    /// What queuing means: the second caller does not get in until the first
-    /// one is done. Two turns on one session used to run at once and each
-    /// compressed the same transcript.
+    /// The second claim waits: two turns at once each compressed the same transcript.
     #[tokio::test]
     async fn the_second_claim_waits_for_the_first() {
         let h = handle();
@@ -581,8 +506,7 @@ mod tests {
         assert!(!waiting.load(Ordering::SeqCst));
     }
 
-    /// A turn queued behind a `del_session` has to notice the session is gone
-    /// when its turn comes, instead of writing into a deleted session.
+    /// A turn queued behind `del_session` must notice the session is gone.
     #[test]
     fn deletion_is_visible_to_a_queued_turn() {
         let h = handle();

@@ -1,12 +1,6 @@
-//! The tool set exposed to the model.
+//! Tools the model calls: persistent shells and the jobs they leave behind.
 //!
-//! The SPEC gives the model `bash{name, cmd}` to run a command in a named
-//! persistent shell and `del_bash{name}` to throw one away; `check_bash` and
-//! `list_bash` are the reading half of the same idea, and `kill_bash` exists
-//! because a `detached` job outlives everything else and therefore needs an
-//! explicit way to be stopped. Shells are keyed `session_name/bash_name`, so
-//! two sessions never share one and a single session can keep several
-//! independent ones.
+//! See `docs/notes/server-tools-mod.md`.
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -29,6 +23,8 @@ pub mod bash;
 pub mod detached;
 #[cfg(windows)]
 pub mod job;
+#[cfg(test)]
+pub(crate) mod testbed;
 
 /// Everything a tool invocation needs, supplied per call by the agent loop.
 pub struct ToolContext {
@@ -38,16 +34,12 @@ pub struct ToolContext {
     pub output_dir: PathBuf,
     /// The session's named shells.
     pub shells: Arc<StdMutex<ShellSet>>,
-    /// Detached jobs, keyed by session. Deliberately not part of a shell: a
-    /// detached job outlives its shell, its session and the server.
+    /// Detached jobs, keyed by session; they outlive their shell, their session and the server.
     pub detached: DetachedRegistry,
     /// Streaming sink for `tool_answer` events.
     pub events: Option<mpsc::Sender<ToolAnswerEvent>>,
     pub cancel: CancellationToken,
-    /// Where a command that outlived its deadline reports back to the session
-    /// when it finishes. That report is an inbox row, not a tool result: the
-    /// call it belongs to returned long ago, and the session may be idle by
-    /// the time the command ends.
+    /// Where a command that outlived its deadline reports back: an inbox row, not a result.
     pub store: Store,
 }
 
@@ -104,15 +96,7 @@ impl ToolContext {
             .remove(name)
     }
 
-    /// Retires `handle` and puts a freshly spawned shell under `name`.
-    ///
-    /// Every path that ends a shell for a reason the model did not ask for --
-    /// a command that outlived its wait, output that lost its sentinel, a turn
-    /// cancelled mid-command -- does the same thing afterwards: the name has to
-    /// keep meaning "a shell you can use", because the tool results and
-    /// `list_bash` say it does. The pointer check inside `replace` is what keeps
-    /// this from taking away a shell somebody else already put there; `false`
-    /// means the name now belongs to a different shell.
+    /// Retires `handle` and puts a fresh shell under `name`; false means another shell took it.
     fn replace_shell(&self, name: &str, handle: &Arc<Mutex<BashShell>>) -> bool {
         match self
             .shells
@@ -132,13 +116,7 @@ impl ToolContext {
         }
     }
 
-    /// Caps one command's output, spilling the rest to a file named after
-    /// where it came from: session, shell, `task`, call id.
-    ///
-    /// The `task` is in there because a dump is read later, out of context --
-    /// a dozen `...-default-call_00_abc.out` files say nothing, and the whole
-    /// point of keeping the full output is being able to find the right one
-    /// again. `slug()` in `bash.rs` is what makes it safe for a path.
+    /// Caps one command's output, spilling the rest to a file named after where it came from.
     fn cap(&self, shell: &str, task: Option<&str>, text: String, max: usize) -> String {
         let label = spill_label(&self.session, shell, task, &self.call_id);
         crate::tools::bash::cap_output(&text, max, &self.output_dir, &label)
@@ -168,10 +146,7 @@ impl ToolOutcome {
     }
 }
 
-/// A tool the model can call.
-///
-/// Implemented with a boxed future rather than `async_trait` so the crate keeps
-/// one fewer macro dependency; the signature is the same either way.
+/// A tool the model can call; a boxed future instead of `async_trait`, one macro less.
 pub trait Tool: Send + Sync {
     fn name(&self) -> &'static str;
     fn description(&self) -> &'static str;
@@ -245,18 +220,9 @@ impl ToolRegistry {
     }
 }
 
-/// Why a call does not fit a tool's declared schema, in the schema's own words.
+/// Why a call does not fit the declared schema, in the schema's own words.
 ///
-/// Assembled from [`Tool::parameters`] rather than written per tool, so it
-/// cannot drift from what the model was handed: which arguments exist, their
-/// types, which are required, and which declared name a wrong one was probably
-/// reaching for. A hint that has to be maintained by hand is a hint that goes
-/// stale the first time an argument is renamed.
-///
-/// Only a *missing required* argument rejects the call. A stray key on its own
-/// is passed through, exactly as it was before this existed: a call that would
-/// have run is a call the operator wanted, and failing it over an ignored key
-/// would manufacture the retries this message exists to prevent.
+/// See `docs/notes/server-tools-mod.md`.
 fn argument_error(tool: &dyn Tool, args: &Value) -> Option<String> {
     let schema = tool.parameters();
     let Some(given) = args.as_object() else {
@@ -355,13 +321,7 @@ fn json_type(value: &Value) -> &'static str {
 
 /// Is one of these two names spelled out inside the other, in order?
 ///
-/// `cmd` is inside `command` and `command` is inside `cmdline`, so direction
-/// does not matter: a name the model invents for an argument is nearly always
-/// a shortening or a spelling-out of the declared one, and naming the declared
-/// one back is what turns a rejected call into a corrected one. This is a rule
-/// over the schema, not a list of synonyms, so a renamed argument never needs a
-/// new entry -- and a key unrelated to anything declared gets no guess rather
-/// than a wrong one.
+/// See `docs/notes/server-tools-mod.md`.
 fn is_shorthand_of(declared: &str, given: &str) -> bool {
     let (short, long) = if declared.chars().count() <= given.chars().count() {
         (declared, given)
@@ -375,12 +335,7 @@ fn is_shorthand_of(declared: &str, given: &str) -> bool {
     short.chars().all(|c| spelled.any(|l| l == c))
 }
 
-/// The turn was cancelled while a command was running.
-///
-/// Its own type rather than a string, because the cancel path has work to do
-/// that no other error does: the command has to be stopped, and the shell it
-/// was running in has to be thrown away. A message-shaped error would make
-/// that work a string comparison.
+/// The turn was cancelled while a command was running; its own type, not a message.
 #[derive(Debug)]
 struct Cancelled;
 
@@ -392,9 +347,7 @@ impl std::fmt::Display for Cancelled {
 
 impl std::error::Error for Cancelled {}
 
-// ---------------------------------------------------------------------------
-// bash
-// ---------------------------------------------------------------------------
+// ---------------------------------- bash ----------------------------------
 
 pub struct BashTool {
     pub timeout: Duration,
@@ -483,11 +436,7 @@ impl Tool for BashTool {
         ctx: &'a ToolContext,
     ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
-            // The argument is `command`, not `cmd`: a model reaching for the
-            // word it already knows is right far more often than it is wrong,
-            // and the schema should be the thing that bends. A missing one is
-            // rejected by `argument_error` first, in the schema's own words;
-            // what is left here is a `command` that is not a string.
+            // `command`, not `cmd`: the schema bends to the model, and a missing one is caught first.
             let Some(command) = args.get("command").and_then(|v| v.as_str()) else {
                 return ToolOutcome::err("bash requires a string `command`");
             };
@@ -499,17 +448,13 @@ impl Tool for BashTool {
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .unwrap_or(DEFAULT_BASH);
-            // Only ever a label: it names the spill file and nothing else, so a
-            // missing or nonsensical one costs a less informative path rather
-            // than a failed call.
+            // Only ever a label: a missing or odd one costs a less informative path, not a failed call.
             let task = args
                 .get("task")
                 .and_then(|v| v.as_str())
                 .map(str::trim)
                 .filter(|s| !s.is_empty());
-            // Both flags return at once, which is the point: the turn stays
-            // responsive instead of sitting out a long command. They differ in
-            // what happens to the output, not in whether the call blocks.
+            // Both flags return at once; they differ in what happens to the output, not in blocking.
             let background = args
                 .get("background")
                 .and_then(|v| v.as_bool())
@@ -538,9 +483,7 @@ impl Tool for BashTool {
                         Err(e) => ToolOutcome::err(format!("{e}")),
                     };
                 }
-                // Only the working directory is inherited. Exports and shell
-                // functions are not, because a detached job does not run in the
-                // shell -- it is a process of its own.
+                // Only the cwd is inherited: a detached job is a process of its own, not the shell.
                 let cwd = {
                     let shell = shell.lock().await;
                     shell.cwd().to_path_buf()
@@ -569,14 +512,10 @@ impl Tool for BashTool {
                 Err(e) => return ToolOutcome::err(format!("{e}")),
             };
 
-            // Relay shell output to `tool_answer` events while the command runs.
-            // Draining has to be concurrent with the run itself: if we awaited
-            // the command first, a chatty command would fill the channel and
-            // block the shell.
+            // Relay output as it arrives: draining after the command would block a chatty shell.
             let (tx, mut rx) = mpsc::channel::<BashChunk>(256);
             let mut shell = handle.lock().await;
-            // Scoped so the future borrowing `shell` is dropped before the guard
-            // is, which is what lets the guard go out of scope at all.
+            // Scoped so the future borrowing `shell` drops before the guard does.
             let outcome = {
                 let execute = shell.run(command, timeout, Some(&tx));
                 tokio::pin!(execute);
@@ -596,19 +535,12 @@ impl Tool for BashTool {
                     }
                 }
             };
-            // A cancelled command is stopped, not abandoned. Dropping the
-            // future only stops us reading: the shell keeps the command, and
-            // would answer the *next* call with its leftovers (and with a
-            // success status that belongs to it). Killing the process group is
-            // both the "turn cancel interrupts the foreground command" contract
-            // and the only way to know the shell has no command boundary owed.
+            // A cancelled command is stopped, not abandoned: leftovers would answer the next call.
             let cancelled = matches!(&outcome, Err(e) if e.is::<Cancelled>());
             if cancelled {
                 shell.kill().await;
             }
-            // Read while the guard is still held: a shell that lost its output
-            // stream must not be handed another command, and this is the last
-            // moment its state is visible without taking the lock again.
+            // Read while the guard is held: a shell that lost its stream must not get another command.
             let healthy = shell.usable();
             drop(shell);
             while let Ok(chunk) = rx.try_recv() {
@@ -620,10 +552,7 @@ impl Tool for BashTool {
             }
 
             match outcome {
-                // The deadline was on waiting, not on the command. Nothing was
-                // stopped: the shell still holds it. Give the session a fresh
-                // shell under the same name so work can continue, and have the
-                // old one report the rest of the output into the inbox.
+                // The wait timed out, not the command: give the name a fresh shell, let the old one report.
                 Ok(o) if o.still_running => {
                     let retired = ctx.replace_shell(name, &handle);
                     if !retired {
@@ -636,18 +565,13 @@ impl Tool for BashTool {
                     let store = ctx.store.clone();
                     let session = ctx.session.clone();
                     let output_dir = ctx.output_dir.clone();
-                    // Same naming rule as the foreground path, with `late`
-                    // standing in for the call id: the call it belonged to has
-                    // already returned, so its id is no longer what identifies
-                    // the run.
+                    // Same naming rule, with `late` where the call id goes: that call has already returned.
                     let label = spill_label(&session, name, task, "late");
                     let cap = self.max_output_chars;
                     let waited = timeout;
                     let owned = name.to_string();
                     tokio::spawn(async move {
-                        // Nobody else holds this shell any more, so waiting for
-                        // the lock is waiting for the call that timed out to
-                        // return -- which has already happened.
+                        // Nobody holds this shell now, so the lock is free: the timed-out call has returned.
                         let (stdout, stderr, code) = {
                             let mut shell = handle.lock().await;
                             shell.finish_outstanding().await
@@ -710,11 +634,7 @@ impl Tool for BashTool {
                         text.push_str(&o.stderr);
                     }
                     if !healthy {
-                        // The pipe ended without its sentinel, so this shell
-                        // cannot tell one command's output from another's. It
-                        // is replaced here rather than on the next call, so the
-                        // model never gets to send a command to a shell that
-                        // would answer it with the previous command's text.
+                        // Replace it now, not on the next call, so no command reads the previous one's text.
                         let replaced = ctx.replace_shell(name, &handle);
                         if !text.is_empty() {
                             text.push('\n');
@@ -733,9 +653,7 @@ impl Tool for BashTool {
                             }
                         ));
                     }
-                    // Capped before it is stored: what goes into the transcript
-                    // is replayed on every later step, so the full output of a
-                    // chatty command would be paid for over and over.
+                    // Capped before it is stored: the transcript is replayed on every later step.
                     let text = ctx.cap(name, task, text, self.max_output_chars);
                     let text = if text.is_empty() {
                         "(no output)".to_string()
@@ -749,12 +667,7 @@ impl Tool for BashTool {
                     }
                 }
                 Err(e) if e.is::<Cancelled>() => {
-                    // Same treatment as lost output: the shell may still be
-                    // holding part of a command that was stopped mid-flight, so
-                    // it is never handed another one. The result says what
-                    // happened instead of pretending the command finished --
-                    // the model must not read a cancelled command's silence as
-                    // success, and it must not expect its output.
+                    // Same as lost output: a shell stopped mid-flight is never handed another command.
                     let replaced = ctx.replace_shell(name, &handle);
                     ToolOutcome::err(format!(
                         "cancelled: the turn was interrupted and this command was stopped. \
@@ -775,10 +688,7 @@ impl Tool for BashTool {
                     ))
                 }
                 Err(e) => {
-                    // The write itself failed, which can leave the shell with
-                    // half a command line in its stdin. `healthy` is what says
-                    // so; dropping it here is how the next call ends up reading
-                    // this one's leftovers.
+                    // The write failed, so stdin may hold half a line; `healthy` is what says so.
                     if !healthy {
                         ctx.replace_shell(name, &handle);
                     }
@@ -789,9 +699,7 @@ impl Tool for BashTool {
     }
 }
 
-// ---------------------------------------------------------------------------
-// check_bash
-// ---------------------------------------------------------------------------
+// ------------------------------- check_bash --------------------------------
 
 pub struct CheckBashTool {
     pub max_output_chars: usize,
@@ -848,9 +756,7 @@ impl Tool for CheckBashTool {
     }
 }
 
-// ---------------------------------------------------------------------------
-// list_bash
-// ---------------------------------------------------------------------------
+// -------------------------------- list_bash --------------------------------
 
 pub struct ListBashTool;
 
@@ -893,9 +799,7 @@ impl Tool for ListBashTool {
                     "background_jobs": shell.background_jobs(),
                 }));
             }
-            // Detached jobs belong to the session, not to a shell, so they are
-            // listed on their own -- including ones adopted from a previous run
-            // of the server, whose shell no longer exists.
+            // Detached jobs belong to the session, not a shell, so they are listed on their own.
             let detached: Vec<Value> = ctx
                 .detached
                 .list(&ctx.session)
@@ -914,9 +818,7 @@ impl Tool for ListBashTool {
     }
 }
 
-// ---------------------------------------------------------------------------
-// del_bash
-// ---------------------------------------------------------------------------
+// -------------------------------- del_bash ---------------------------------
 
 pub struct DelBashTool;
 
@@ -954,9 +856,7 @@ impl Tool for DelBashTool {
         ctx: &'a ToolContext,
     ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
-            // Unanchored on purpose: `qa` is how someone actually names a shell
-            // family (`qa`, `qa2`, `qa5`), and requiring `^qa` would make the
-            // cleanup of a long session's leftovers guesswork.
+            // Unanchored on purpose: `qa` is how a shell family is named -- `qa`, `qa2`, `qa5`.
             let pattern = args
                 .get("name_regex")
                 .and_then(|v| v.as_str())
@@ -985,8 +885,7 @@ impl Tool for DelBashTool {
                 }
             }
             let list = discarded.join(", ");
-            // Detached jobs are not the shells', so they keep running; say so,
-            // or the model would assume discarding the shells stopped them.
+            // Detached jobs are not the shells', so say they kept running, or the model assumes.
             if survivors == 0 {
                 ToolOutcome::ok(format!("discarded shell(s) {list}"))
             } else {
@@ -999,9 +898,7 @@ impl Tool for DelBashTool {
     }
 }
 
-// ---------------------------------------------------------------------------
-// kill_bash
-// ---------------------------------------------------------------------------
+// -------------------------------- kill_bash --------------------------------
 
 pub struct KillBashTool;
 
@@ -1066,13 +963,7 @@ impl Tool for KillBashTool {
     }
 }
 
-/// How a spill file is named: `session-shell-task-callid`.
-///
-/// One function rather than two `format!`s because the two paths that spill --
-/// a foreground result, and the late output of a command that outlived its wait
-/// -- must produce names that sort and read the same way. The `task`, when the
-/// model supplied one, is what makes a dump identifiable later; without it the
-/// name is still unique, just less useful.
+/// How a spill file is named: `session-shell-task-callid`, the same for both paths.
 fn spill_label(session: &str, shell: &str, task: Option<&str>, call_id: &str) -> String {
     match task {
         Some(task) => format!("{session}-{shell}-{task}-{call_id}"),
@@ -1103,16 +994,13 @@ mod tests {
         assert!(reg.get("nope").is_none());
     }
 
-    /// A rejected call has to carry enough of the schema for the next attempt to
-    /// be a correction rather than another guess -- and it has to be assembled
-    /// from the schema, not from a list of names somebody remembered to update.
+    /// A rejected call carries enough schema that the next attempt is a correction.
     #[test]
     fn a_call_missing_a_required_argument_is_answered_with_its_own_schema() {
         let reg = ToolRegistry::with_builtins(Duration::from_secs(30), 8_000);
         let bash = reg.get("bash").expect("bash is registered");
 
-        // The argument abbreviated -- the shape of the mistake that used to be
-        // spelled out the other way round, hundreds of times per session.
+        // The argument abbreviated: the mistake that used to be spelled out the other way round.
         let message = argument_error(bash, &json!({"cmd": "ls"})).expect("rejected");
         assert!(message.contains("`command` is required"), "{message}");
         assert!(message.contains("did you mean `command`"), "{message}");
@@ -1140,18 +1028,14 @@ mod tests {
         assert!(message.contains("this was a string"), "{message}");
     }
 
-    /// `task` names the dump a too-long output is spilled to. It must be
-    /// offered to the model, must not become something the call can fail on,
-    /// and must actually reach the file name.
+    /// `task` names the spill file: offered to the model, never something a call fails on.
     #[test]
     fn a_task_names_the_spill_file() {
         let reg = ToolRegistry::with_builtins(Duration::from_secs(30), 8_000);
         let bash = reg.get("bash").expect("bash is registered");
         let params = bash.parameters();
         assert!(params["properties"].get("task").is_some(), "{params}");
-        // Still only `command`: a label drifting into a required argument would
-        // turn a rejected call into a rejected *idea*, and the model would
-        // stop describing what it is doing.
+        // Still only `command`: a required label would turn a rejected call into a rejected idea.
         assert_eq!(
             params["required"],
             serde_json::json!(["command"]),
@@ -1183,11 +1067,9 @@ mod tests {
     fn detached_jobs_have_an_explicit_way_to_end() {
         let reg = ToolRegistry::with_builtins(Duration::from_secs(30), 8_000);
         let kill = reg.get("kill_bash").expect("kill_bash is registered");
-        // Omitting the job number means "every job of that shell", which is
-        // the only shape that makes sense after a restart.
+        // `job` is optional: omitting it means every job of that shell, the shape a restart needs.
         assert!(kill.parameters()["properties"].get("job").is_some());
-        // `job` is optional: omitting it means "every job of that shell", which
-        // is the only shape that makes sense after a restart.
+        // The same omission, checked as the schema states it: `job` must not be required.
         assert!(
             kill.parameters()
                 .get("required")

@@ -1,9 +1,6 @@
 //! UDP listener, connection demultiplexing, and per-client dispatch.
 //!
-//! One socket serves every client. A datagram whose peer is unknown and whose
-//! flags include SYN creates a connection; everything else is routed to the
-//! connection that already owns that address. Each connection then runs two
-//! concurrent loops: inbound commands and outbound event fan-out.
+//! See `docs/notes/server-net.md`.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -27,9 +24,7 @@ const FRAME_QUEUE: usize = 512;
 /// How long a new peer has to present its key before being dropped.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// One connected peer. `conn_id` makes release safe: if a client reconnects
-/// from the same address before the old connection has finished unwinding, the
-/// old task must not delete the new peer's entry.
+/// One connected peer; `conn_id` keeps release from evicting a newer connection.
 struct Peer {
     tx: mpsc::Sender<Frame>,
     conn_id: u32,
@@ -45,8 +40,7 @@ pub async fn serve(cfg: Arc<Config>, d: Arc<Dispatch>, bus: EventBus) -> anyhow:
     let mut buf = vec![0u8; 65507];
 
     loop {
-        // `cancel` stops acceptance; the loop below then waits for the turns
-        // that are already running so nothing is cut off mid-tool-call.
+        // `cancel` stops acceptance; running turns finish before the loop exits.
         let received = tokio::select! {
             _ = d.shutdown.cancelled() => None,
             res = socket.recv_from(&mut buf) => Some(res),
@@ -55,11 +49,8 @@ pub async fn serve(cfg: Arc<Config>, d: Arc<Dispatch>, bus: EventBus) -> anyhow:
         let (n, peer) = match received {
             Ok(v) => v,
             Err(e) => {
-                // Windows reports WSAECONNRESET on a UDP socket when a previous
-                // send reached a port that has since closed. It says nothing about
-                // the socket's health, so it must not be treated as a fault --
-                // otherwise every client that exits without saying goodbye floods
-                // the log.
+                // Windows says WSAECONNRESET when a peer's port has closed; not a
+                // fault here, or every rude exit floods the log.
                 if is_connreset(&e) {
                     tracing::trace!(error = %e, "ignored ICMP port-unreachable");
                 } else {
@@ -76,14 +67,11 @@ pub async fn serve(cfg: Arc<Config>, d: Arc<Dispatch>, bus: EventBus) -> anyhow:
             }
         };
 
-        // Clone the sender out and drop the lock before awaiting: a slow peer
-        // must not stall the loop that every other peer also goes through.
+        // Clone the sender, drop the lock: a slow peer must not stall the loop.
         let known = conns.lock().unwrap().get(&peer).map(|p| p.tx.clone());
         if let Some(tx) = known {
             if tx.send(frame).await.is_err() {
-                // The connection task is on its way out and will release the
-                // entry itself. Only evict if the address still maps to *this*
-                // sender: a reconnect from the same address may have replaced it.
+                // Evict only if the address still maps to this sender, not a reconnect.
                 let mut map = conns.lock().unwrap();
                 let stale = map
                     .get(&peer)
@@ -120,11 +108,8 @@ pub async fn serve(cfg: Arc<Config>, d: Arc<Dispatch>, bus: EventBus) -> anyhow:
         let conns = conns.clone();
         tokio::spawn(async move {
             handle_connection(channel, d, bus, cfg, peer, conn_id).await;
-            // A peer leaves in three ways: `Bye`, a failed send, or the client
-            // vanishing. The first two are noticed elsewhere; the third is not
-            // -- and a client that reconnects from a fresh local port leaves
-            // its old address behind forever. Release it here, unless the same
-            // address has already been re-inserted for a newer connection.
+            // Release the peer here: a client that merely vanishes is noticed
+            // nowhere else. See `docs/notes/server-net.md`.
             let mut map = conns.lock().unwrap();
             let mine = map
                 .get(&peer)
@@ -137,18 +122,7 @@ pub async fn serve(cfg: Arc<Config>, d: Arc<Dispatch>, bus: EventBus) -> anyhow:
         });
     }
 
-    // Cancelled: wait for the turns already running to finish writing, however
-    // long that takes.
-    //
-    // There used to be a 30s deadline here, and it was a budget like any other:
-    // it decided that a turn had had long enough, and a turn still committing a
-    // tool result when it expired lost that work. Nothing needs the deadline
-    // either, because the wait has a real end -- `cancel` hands every running
-    // turn the same token, and a turn checks it at every point where it waits
-    // (model stream, tool call, retry delay) and leaves at its step boundary
-    // with its rows already written. So the loop below spins until the count
-    // reaches zero, and if a turn ever fails to do that, the count is what says
-    // so: it is printed while we wait rather than papered over by an exit.
+    // Cancelled: wait for running turns to finish, with no deadline at all.
     if d.shutdown.is_cancelled() {
         let mut ticks: u64 = 0;
         while d.active.load(Ordering::SeqCst) > 0 {
@@ -169,7 +143,7 @@ pub async fn serve(cfg: Arc<Config>, d: Arc<Dispatch>, bus: EventBus) -> anyhow:
     Ok(())
 }
 
-/// True for `WSAECONNRESET` (10054), the Windows UDP quirk described above.
+/// True for `WSAECONNRESET` (10054); see `docs/notes/server-net.md`.
 fn is_connreset(e: &std::io::Error) -> bool {
     cfg!(windows) && e.raw_os_error() == Some(10054)
 }
@@ -184,8 +158,7 @@ async fn handle_connection(
 ) {
     let (sink, mut stream) = channel.split();
 
-    // Authenticate before revealing anything: an unauthenticated peer must not
-    // even learn the command catalog or the session list.
+    // Authenticate first: an unauthenticated peer must not see the catalog.
     if !authenticate(&sink, &mut stream, &cfg.key, peer, conn_id).await {
         return;
     }
@@ -312,17 +285,12 @@ async fn authenticate(
     false
 }
 
-/// Length-independent comparison over every byte.
-///
-/// The key travels in cleartext over UDP, so comparing with `==` would let an
-/// attacker time the response to learn how much of a guess is correct.
+/// Length-independent comparison over every byte, so timing leaks no prefix.
 fn key_matches(given: &str, expected: &str) -> bool {
     let a = given.as_bytes();
     let b = expected.as_bytes();
     let mut acc = a.len() ^ b.len();
-    // Fold in every byte of both strings so the work does not stop at the
-    // first difference. Short reads are padded with a byte that cannot occur
-    // in a hex key, which keeps a wrong-length guess from matching.
+    // No early exit, and a pad byte no hex key contains: both lengths are folded in.
     for i in 0..a.len().max(b.len()) {
         let x = a.get(i).copied().unwrap_or(0xff);
         let y = b.get(i).copied().unwrap_or(0xff);

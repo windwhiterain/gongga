@@ -1,9 +1,5 @@
-//! Bridge configuration: which IM to speak to, and who may drive the harness.
-//!
-//! The server's own settings are *not* duplicated here -- `bind` and `key` are
-//! read out of `config.toml` the same way the CLI reads them, so one harness
-//! home has one source of truth. This file only adds what the CLI has no
-//! opinion about.
+//! Bridge settings: which IM to speak to, and who may drive the harness.
+//! See `docs/notes/bridge-config.md`.
 
 use std::path::{Path, PathBuf};
 
@@ -19,19 +15,18 @@ pub struct Config {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Bridge {
-    /// Working directory for sessions this bridge creates. Empty means "the
-    /// bridge's own cwd", which is what you want when it runs from the repo.
+    /// Working directory for sessions this bridge creates. Empty means its own cwd.
     pub cwd: String,
     /// Platform user ids allowed to drive the harness.
     ///
+    /// # Invariant
+    ///
     /// Empty means **nobody**: an agent with a real shell behind it is a root
-    /// shell with a chat interface, so this fails closed. The refusal the
-    /// bridge logs names the id to add.
+    /// shell with a chat interface, so this fails closed.
     pub allowed: Vec<String>,
     /// Answer "on it" as soon as the harness accepts the message.
     pub ack: bool,
-    /// Reply length cap in characters (0 disables). QQ drops bodies it thinks
-    /// are too long, so the default sits well under its limit.
+    /// Reply length cap in characters (0 disables); QQ drops oversized bodies.
     pub max_chars: usize,
 }
 
@@ -52,9 +47,6 @@ pub struct Qq {
     pub app_id: String,
     pub app_secret: String,
     /// Talk to `sandbox.api.sgroup.qq.com` instead of the live environment.
-    ///
-    /// Default true: the sandbox needs no review, no published bot and no IP
-    /// allow-list, which is the shape of "I want this working tonight".
     pub sandbox: bool,
 }
 

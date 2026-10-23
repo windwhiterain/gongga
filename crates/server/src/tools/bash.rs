@@ -1,23 +1,6 @@
-//! A long-lived Git Bash process, one per session.
+//! One long-lived Git Bash per session; `cd` and exports survive across calls.
 //!
-//! Keeping a single shell alive is what makes the harness feel like a
-//! terminal: `cd`, exports and shell functions survive across tool calls, so
-//! the model does not have to restate absolute paths forever.
-//!
-//! Three ways to run a command, which the SPEC keeps separate:
-//!
-//! * **foreground** (default): run it in the shell, stream the output, return
-//!   the result. The turn waits.
-//! * `background`: start it in the shell and return at once. Its output is
-//!   tailed into the shell's *unread* buffer, which `check_bash` collects.
-//! * `detached`: start a process of its own and return at once. It is not this
-//!   shell's business -- see [`crate::tools::detached`], which owns it, and
-//!   which is why a detached job outlives this shell, this session and even
-//!   the server.
-//!
-//! A marker makes completion detectable. After each command we print a
-//! sentinel carrying the exit code to *both* stdout and stderr, so each stream
-//! can be drained independently and we still learn the status.
+//! See `docs/notes/server-tools-bash.md`.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -54,9 +37,7 @@ pub struct BashOutcome {
     pub exit_code: Option<i32>,
     pub stdout: String,
     pub stderr: String,
-    /// The command had not finished when its deadline passed. It is *still
-    /// running in this shell* -- nothing was killed -- and the rest of its
-    /// output can be collected with [`BashShell::finish_outstanding`].
+    /// The deadline passed with the command still running in this shell; nothing was killed.
     pub still_running: bool,
 }
 
@@ -76,24 +57,15 @@ pub struct BashShell {
     stderr: BufReader<ChildStderr>,
     marker: String,
     cwd: PathBuf,
-    /// Background output the caller has not collected yet.
-    ///
-    /// Shared rather than owned so the tailing task can append without holding
-    /// the shell, and so a shell thrown away by `del_bash` does not strand the
-    /// task holding a dangling reference.
+    /// Background output the caller has not collected yet, shared so a tail can append.
     pending: Arc<StdMutex<String>>,
     /// Background jobs still writing.
     jobs: Arc<AtomicUsize>,
     /// Numbers the background jobs of this shell.
     next_job: u64,
-    /// One of the pipes ended without its sentinel, so this shell's output is
-    /// no longer aligned with its commands. Sticky: nothing can put the missing
-    /// bytes back, so the shell has to be replaced rather than reused.
+    /// A pipe ended without its sentinel, so output no longer lines up with commands.
     out_of_sync: bool,
-    /// Every process this shell starts, so ending it ends the whole tree.
-    ///
-    /// Kept last on purpose: fields drop in declaration order, and the job's
-    /// `Drop` is what terminates the children still holding our pipes.
+    /// Every process the shell starts, so ending it ends the tree; kept last for `Drop`.
     #[cfg(windows)]
     job: Option<crate::tools::job::ProcessJob>,
 }
@@ -121,12 +93,7 @@ pub(crate) fn msys_path(path: &Path) -> String {
 }
 
 impl BashShell {
-    /// Starts a shell rooted at `cwd`, with `env` layered on top of whatever
-    /// the server inherited.
-    ///
-    /// The extra variables are how the model finds its own server: `bash` is a
-    /// child of the server, so without them it has no way to know where to
-    /// send a `gongga exec` and has to guess or give up.
+    /// Starts a shell rooted at `cwd`, with `env` layered on top of the server's own.
     pub fn spawn(program: &Path, cwd: &Path, env: &[(String, String)]) -> anyhow::Result<Self> {
         let mut cmd = Command::new(program);
         cmd.arg("--norc")
@@ -142,8 +109,7 @@ impl BashShell {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        // Detach the shell into its own process group where the platform allows
-        // it, so a timeout kill takes down the whole command tree.
+        // Its own process group, so a timeout kill takes the whole command tree.
         #[cfg(unix)]
         {
             cmd.process_group(0);
@@ -161,9 +127,7 @@ impl BashShell {
             "__GONGGA_{}__",
             &uuid::Uuid::new_v4().simple().to_string()[..12]
         );
-        // Join the shell to a job before anything is written to its stdin, so
-        // every command it runs is a member. On unix `process_group(0)` above
-        // does the same job.
+        // Join the job before anything reaches stdin, so every command is a member.
         #[cfg(windows)]
         let job = child.id().and_then(crate::tools::job::ProcessJob::adopt);
         Ok(Self {
@@ -186,11 +150,7 @@ impl BashShell {
         &self.cwd
     }
 
-    /// Whether the shell is still aligned with its commands.
-    ///
-    /// False after a pipe ended without its sentinel: the shell holds a command
-    /// boundary it cannot find again, so a command sent to it would be answered
-    /// with somebody else's output. Whoever owns the shell has to replace it.
+    /// Whether the shell is still aligned with its commands; false means replace it.
     pub fn usable(&self) -> bool {
         !self.out_of_sync
     }
@@ -213,15 +173,7 @@ impl BashShell {
             .unwrap_or_default()
     }
 
-    /// Runs one command, streaming output to `sink` as it arrives.
-    ///
-    /// The deadline is a deadline on *waiting*, not on the command. When it
-    /// passes the shell is left exactly as it is -- the command keeps running,
-    /// keeps its place in the shell's own process tree, and its remaining
-    /// output stays in the pipes -- and the outcome says `still_running`. The
-    /// caller is then free to push this shell aside and collect the rest later;
-    /// killing it, which is what used to happen here, threw away work that was
-    /// simply long.
+    /// Runs one command, streaming to `sink`; the deadline covers waiting only.
     pub async fn run(
         &mut self,
         command: &str,
@@ -230,15 +182,11 @@ impl BashShell {
     ) -> anyhow::Result<BashOutcome> {
         self.write_command(command).await?;
 
-        // Bind the result rather than matching on the timeout directly: this
-        // ends the statement that owns the borrow of `self`, so the branch
-        // below is free to mutate the shell.
+        // Bound first, so the statement owning the borrow of `self` has ended.
         let pumped = tokio::time::timeout(timeout, Self::pump_both(self, sink)).await;
         match pumped {
             Ok((stdout, stderr, exit_code)) => {
-                // Asking where the shell is means writing one more command into
-                // the same pipe. A shell that lost its place would answer that
-                // from the leftovers, so it is not asked.
+                // A shell that lost its place is not asked: `pwd` would read the leftovers.
                 if self.usable() {
                     if let Ok(pwd) = self.pwd().await {
                         self.cwd = PathBuf::from(pwd);
@@ -260,11 +208,7 @@ impl BashShell {
         }
     }
 
-    /// Reads until the command that outlived its deadline finishes.
-    ///
-    /// Only meaningful right after [`BashShell::run`] returned `still_running`
-    /// on this shell: the sentinel for that command is the next one the shell
-    /// prints, so this collects exactly its remaining output and exit status.
+    /// Reads until the command that outlived its deadline finishes, as `run` left it.
     pub async fn finish_outstanding(&mut self) -> (String, String, Option<i32>) {
         let (stdout, stderr, code) = Self::pump_both(self, None).await;
         if let Ok(pwd) = self.pwd().await {
@@ -273,12 +217,7 @@ impl BashShell {
         (stdout, stderr, code)
     }
 
-    /// Starts a command without waiting for it.
-    ///
-    /// The shell redirects the job into a scratch file, which a task then tails
-    /// into the unread buffer; `check_bash` is how the model collects it. The
-    /// job keeps the shell's `cd`/exports, so a background command still runs
-    /// where the foreground ones run.
+    /// Starts a command without waiting; its output is tailed into the unread buffer.
     pub async fn run_background(&mut self, command: &str) -> anyhow::Result<u64> {
         self.next_job += 1;
         let job = self.next_job;
@@ -286,8 +225,7 @@ impl BashShell {
         let _ = std::fs::remove_file(&scratch);
         let path = msys_path(&scratch);
         let done_marker = format!("__GONGGA_BG_{job}__");
-        // `printf` takes the marker as an argument, never as a format string,
-        // so a command that prints percent signs cannot corrupt the sentinel.
+        // `printf` takes the marker as an argument, so a `%` in the command cannot corrupt it.
         let script = format!(
             "{{ {command}\nprintf '\\n%s%d\\n' '{done_marker}' \"$?\"; }} > '{path}' 2>&1 &\n"
         );
@@ -325,10 +263,7 @@ impl BashShell {
             Self::drain(&mut self.stderr, marker, sink, BashStream::Stderr)
         );
         let exit_code = stdout_res.code.or(stderr_res.code);
-        // A pipe that ended without its sentinel has been left half-read: the
-        // rest of this command's output is still in it, so the next command
-        // would read that instead of its own. The shell is not repairable from
-        // here -- only replaceable -- so it says so and the caller swaps it out.
+        // Half-read pipe: the rest would be the next command's output, so flag the shell.
         if !stdout_res.settled || !stderr_res.settled {
             self.out_of_sync = true;
         }
@@ -344,17 +279,7 @@ impl BashShell {
     where
         R: tokio::io::AsyncBufRead + Unpin,
     {
-        // Bytes, not a `String`. A command may print anything -- `cat` of a
-        // binary, a program writing in the console code page -- and
-        // `read_line` into a `String` fails at the first byte that is not
-        // UTF-8, discarding the rest of the line *and* leaving the pipe
-        // half-read. The sentinel is then never consumed, and the shell answers
-        // every later command by replaying the leftovers: in one session, after
-        // `cat $(which gongga)`, five calls in a row returned nothing but
-        // `[read error: ...]` (`echo hi` among them), and the call after that
-        // returned the *previous* command's output while reporting success.
-        // Reading bytes and decoding lossily cannot happen: the bad bytes
-        // become U+FFFD and the stream stays where it should be.
+        // Bytes, not `String`: one non-UTF-8 byte loses the sentinel and deafens the shell.
         let mut buf: Vec<u8> = Vec::new();
         let mut text = String::new();
         loop {
@@ -406,24 +331,11 @@ impl BashShell {
         }
     }
 
-    /// Ends the shell, everything it started, and reaps it.
-    ///
-    /// The tree matters as much as the shell. A child of the shell inherits the
-    /// write end of the pipe we read from, and reading that pipe is something
-    /// the runtime is waiting on during shutdown -- so killing the leader alone
-    /// leaves a reader blocked on a close that only the children could have
-    /// given it. The `wait` then reaps the leader, which is what lets the
-    /// reaping thread finish.
+    /// Ends the shell and everything it started, then reaps the leader.
     pub async fn kill(&mut self) {
-        // A killed shell is never handed another command. Whatever the pipes
-        // still hold belongs to a command that is gone, so saying so here is
-        // what keeps a caller that kept the handle from reading it later as if
-        // it were its own output.
+        // Kept-handle callers must not read what is left in the pipes as their own output.
         self.out_of_sync = true;
-        // The tree, not the shell. Children inherit the write end of the pipe
-        // this shell reads from, and reading it is something the runtime is
-        // waiting on during shutdown -- so a surviving grandchild means a
-        // reader blocked on a close that never comes.
+        // The tree, not the shell: a surviving grandchild holds the pipe open at shutdown.
         #[cfg(windows)]
         if let Some(job) = &self.job {
             job.terminate();
@@ -432,8 +344,7 @@ impl BashShell {
         if let Some(pid) = self.child.id() {
             crate::tools::detached::kill_tree(pid).await;
         }
-        // Fallback for the case the job could not be created: the leader still
-        // has to go, and `taskkill /T` may catch some of its children.
+        // Fallback when the job could not be created: the leader still has to go.
         #[cfg(windows)]
         if self.job.is_none() {
             if let Some(pid) = self.child.id() {
@@ -459,10 +370,7 @@ impl BashShell {
         Ok(line)
     }
 
-    /// Changes directory, failing if the path does not exist.
-    ///
-    /// Kept as the primitive behind a `cd`-shaped tool; `bash` itself just
-    /// sends `cd` through, which is why this is currently unused.
+    /// Changes directory, failing if the path does not exist; unused, `bash` sends `cd`.
     #[allow(dead_code)]
     pub async fn cd(&mut self, path: &str) -> anyhow::Result<String> {
         let quoted = path.replace('\'', "'\\''");
@@ -480,10 +388,7 @@ impl BashShell {
 
 /// Follows a background job's scratch file into the shell's unread buffer.
 ///
-/// Polling a file is not elegant, but the job lives inside a persistent shell
-/// we cannot attach a pipe to without disturbing the foreground sentinel
-/// protocol, and 150ms is well below the granularity at which a model asks for
-/// output.
+/// See `docs/notes/server-tools-bash.md`.
 async fn tail_background(
     path: PathBuf,
     done_marker: String,
@@ -522,23 +427,14 @@ async fn tail_background(
     let _ = tokio::fs::remove_file(&path).await;
 }
 
-/// Caps tool output: the head and the tail survive, the middle is dropped and
-/// the whole thing is written to disk so nothing is actually lost.
+/// Caps tool output: the head and the tail survive, the rest is spilled to disk.
 ///
-/// This exists because the transcript is replayed in full on every step. A
-/// 22 KB `cat` is not a one-off cost of 22 KB -- it is 22 KB on every step
-/// after it, forever, which is what drove a single turn to 17 MB of traffic.
-/// Capping is the difference between "the model can see the file" and "the
-/// model can see the file and every later request pays for it".
-///
-/// `dir` is where the full output is spilled; `label` names it. A cap of 0
-/// means no cap, which is what a deliberately unbounded run wants.
+/// See `docs/notes/server-tools-bash.md`.
 pub fn cap_output(text: &str, max: usize, dir: &Path, label: &str) -> String {
     if max == 0 || text.len() <= max {
         return text.to_string();
     }
-    // Slightly more head than tail: the start of an output usually says what
-    // the command was about, the end says how it ended.
+    // More head than tail: the start says what it was, the end says how it went.
     let head = floor_boundary(text, max * 3 / 5);
     let tail = ceil_boundary(text, text.len() - (max - head));
     let omitted = tail.saturating_sub(head);
@@ -572,8 +468,7 @@ fn ceil_boundary(s: &str, mut i: usize) -> usize {
     i
 }
 
-/// Writes the full output under `dir`, returning the path in Git Bash dialect
-/// so the model can feed it straight back to `sed` or `grep`.
+/// Writes the full output under `dir`, returning the path in Git Bash dialect.
 fn spill(dir: &Path, label: &str, text: &str) -> Option<String> {
     if std::fs::create_dir_all(dir).is_err() {
         return None;
@@ -590,26 +485,16 @@ fn spill(dir: &Path, label: &str, text: &str) -> Option<String> {
     Some(msys_path(&path))
 }
 
-/// Turns a label into one path component.
+/// Turns a label into one path component, keeping Unicode alphanumerics.
 ///
-/// ASCII alphanumerics survive, and so does every non-ASCII alphanumeric: a
-/// model writes its `task` in whichever language it is thinking in, and
-/// replacing `中文` with `---` would throw away the only part of the name a
-/// human could have read. Everything else -- spaces, slashes, colons -- becomes
-/// `-`, because those are what make a path either unreadable or plain wrong.
-///
-/// Bounded because this ends up in a *path*, not because the work is bounded:
-/// the label already carries a session name and a call id, and Windows refuses
-/// components over 255 characters. A shorter slug is not a smaller budget.
+/// See `docs/notes/server-tools-bash.md`.
 fn slug(label: &str) -> String {
     const MAX_CHARS: usize = 48;
     let mut out = String::new();
     let mut chars = 0;
     let mut last_was_dash = false;
     for c in label.chars() {
-        // `is_alphanumeric` is Unicode-aware, which is the whole point: it keeps
-        // the CJK and accented text a task is likely written in, while still
-        // rejecting `/`, `:` and spaces.
+        // Unicode-aware on purpose: it keeps CJK and accents and still drops `/`, `:` and spaces.
         let kept = if c.is_alphanumeric() || c == '_' {
             c
         } else {
@@ -647,6 +532,11 @@ impl Drop for BashShell {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::testbed::wait_until;
+
+    /// Long enough for a shell to start on a loaded machine, short enough that
+    /// a hang is reported instead of inherited.
+    const WAIT: Duration = Duration::from_secs(10);
 
     #[test]
     fn short_output_is_returned_untouched() {
@@ -668,8 +558,7 @@ mod tests {
         assert_eq!(slug("a  ..  b"), "a-b");
     }
 
-    /// Every label ends up in a path, so the one thing this must never do is
-    /// produce a name with a separator in it -- whatever the model typed.
+    /// A label ends up in a path, so it must never carry a separator.
     #[test]
     fn a_hostile_task_cannot_escape_the_output_directory() {
         for task in [
@@ -762,8 +651,7 @@ mod tests {
         assert_eq!(msys_path(Path::new("/tmp/x.out")), "/tmp/x.out");
     }
 
-    /// The one thing about background jobs that cannot be tested by reasoning:
-    /// the scratch file has to be writable *and* findable from both sides.
+    /// Only a real run shows it: the scratch file must be writable and findable.
     #[tokio::test]
     async fn background_output_waits_for_check_bash() {
         let Some(program) = crate::config::detect_git_bash() else {
@@ -776,33 +664,24 @@ mod tests {
             Err(e) => panic!("spawning {}: {e}", program.display()),
         };
         shell
-            .run_background("sleep 1; echo from-background")
+            .run_background("sleep 0.2; echo from-background")
             .await
             .expect("starting a background job");
         let mut collected = String::new();
-        for _ in 0..100 {
-            tokio::time::sleep(Duration::from_millis(100)).await;
+        wait_until("output from the background job", WAIT, || {
             collected = shell.take_pending();
-            if !collected.is_empty() {
-                break;
-            }
-        }
+            !collected.is_empty()
+        })
+        .await;
         assert!(collected.contains("from-background"), "got {collected:?}");
         // Reading it clears it, so the same chunk cannot be returned twice.
         assert!(shell.take_pending().is_empty());
+        shell.kill().await;
     }
 
     /// Output that is not text must not cost the shell its life.
     ///
-    /// A command that prints bytes (`cat` of a binary, a program writing in the
-    /// console code page) puts something into the pipe that is not UTF-8. The
-    /// reader used to stop at the first such line with `[read error: ...]`,
-    /// leaving the rest of the output -- including the sentinel -- unread in
-    /// the pipe. Every later command in that shell then read the leftovers,
-    /// failed on the same byte, and reported success with the same one-line
-    /// error: a shell that looks alive and answers nothing. This is what one
-    /// session showed after `cat $(which gongga)`: five calls in a row, `echo
-    /// hi` among them, all returning the read error and nothing else.
+    /// See `docs/notes/server-tools-bash.md`.
     #[tokio::test]
     async fn binary_output_does_not_deafen_the_shell() {
         let Some(program) = crate::config::detect_git_bash() else {
@@ -839,11 +718,6 @@ mod tests {
     }
 
     /// A shell that ended under a command must not be handed the next one.
-    ///
-    /// `exit`, a kill, or a crashed child closes the pipe without a sentinel.
-    /// There is no way to resynchronise from that, so the shell reports itself
-    /// unusable and is replaced, instead of answering the next call with
-    /// whatever was left in the pipe.
     #[tokio::test]
     async fn a_shell_that_ended_is_not_reusable() {
         let Some(program) = crate::config::detect_git_bash() else {
@@ -865,11 +739,6 @@ mod tests {
     }
 
     /// A killed shell is not usable, however long its handle sticks around.
-    ///
-    /// The cancel path stops the command by killing the shell's process tree,
-    /// and then replaces the shell under the same name. Anything still holding
-    /// the old handle must not read what is left in its pipes as the next
-    /// command's output, which is what `usable()` gates.
     #[tokio::test]
     async fn a_killed_shell_reports_itself_unusable() {
         let Some(program) = crate::config::detect_git_bash() else {
@@ -884,8 +753,7 @@ mod tests {
         assert!(!shell.usable(), "a killed shell called itself usable");
     }
 
-    /// The model drives the server through the CLI, which means the shell has
-    /// to know where the server is. Nothing else in the process tree tells it.
+    /// The shell has to know where the server is; nothing else in the tree tells it.
     #[tokio::test]
     async fn spawn_hands_the_shell_its_variables() {
         let Some(program) = crate::config::detect_git_bash() else {

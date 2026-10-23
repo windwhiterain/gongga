@@ -1,30 +1,17 @@
-//! The channel-agnostic half of the bridge: who may talk, which session a chat
-//! maps to, and what to reply once a turn goes idle.
-//!
-//! Nothing here knows about websockets or QQ. The state machine is driven by
-//! two inputs -- a message arrived, an event arrived -- and it produces replies.
-//! Keeping that logic pure is what lets it be tested without a platform account.
+//! The channel-agnostic half: who may talk, which session, and what to reply.
+//! See `docs/notes/bridge-chat.md`.
 
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use crate::channel::{ChatId, MsgRef};
 
-/// How long a delivered message id is remembered.
-///
-/// Platforms retry a delivery they think failed (QQ retries if it did not get a
-/// timely answer), so the same id arrives two or three times. Without this, one
-/// message becomes three turns and the transcript gets three identical prompts.
+/// How long a delivered message id is remembered; platforms retry deliveries.
 const DEDUPE_WINDOW: Duration = Duration::from_secs(300);
 /// Cap, so a long-running bridge cannot grow a set of ids forever.
 const DEDUPE_CAP: usize = 4096;
 
-/// Recently seen message ids.
-///
-/// In memory only: a restart inside the five-minute retry window can re-run one
-/// message. Persisting it would mean a second store next to the harness's, and
-/// the cost of being wrong here is one duplicated turn per restart, not lost
-/// work. 【待确认】
+/// Recently seen message ids; in memory only, so a restart may re-run one.
 pub struct Dedupe {
     window: Duration,
     seen: HashMap<String, Instant>,
@@ -89,14 +76,13 @@ pub struct Pending {
 pub struct ChatState {
     /// Where the transcript stood when the last answer was delivered.
     ///
-    /// `None` until the first message: the bridge asks the server where the
-    /// transcript ends before it writes to it, otherwise the first turn's
-    /// read-back would return the conversation's entire history and the bridge
-    /// would relay an old answer as if it were new.
+    /// # Invariant
+    ///
+    /// `None` until the first message, and the transcript is never written to
+    /// before that read: otherwise the read-back replays the whole history and
+    /// relays an old answer as if it were new.
     pub last_seq: Option<i64>,
-    /// Messages handed to the harness and not answered yet, oldest first --
-    /// the same order the server runs its turns in (it queues, it does not
-    /// interrupt).
+    /// Messages handed over and unanswered, oldest first: the server's order.
     pub waiting: VecDeque<Pending>,
 }
 
@@ -115,14 +101,12 @@ pub struct Row {
 
 /// Picks the sentence a chat user should receive from one turn's rows.
 ///
-/// The last assistant text, not a concatenation: a turn that used tools says
-/// "let me look at that" before the tool call and the actual answer after it,
-/// and pasting both reads like the bot is talking to itself. Rows are already
-/// scoped to one turn by the caller's `after_seq`.
+/// # Invariant
+///
+/// Only the last assistant text is relayed; a turn's earlier "let me look"
+/// lines are never concatenated in, or the bot reads as talking to itself.
 pub fn final_reply(rows: &[Row]) -> String {
-    // Ordered by seq, not by wire order: "the last thing it said" is a claim
-    // about time, and the caller should not have to know which direction the
-    // window came back in.
+    // Sort by seq: "the last thing it said" is a claim about time, not wire order.
     let mut ordered: Vec<&Row> = rows.iter().collect();
     ordered.sort_by_key(|row| row.seq);
 
@@ -143,9 +127,7 @@ pub fn final_reply(rows: &[Row]) -> String {
     if let Some(text) = said.last() {
         return (*text).to_string();
     }
-    // A turn can legitimately end without a word to say -- it ran the tests and
-    // stopped. Silence in the chat would look like the bot crashed, so say what
-    // did happen.
+    // A silent turn still needs a sentence; silence reads as a crash.
     match last_tool {
         Some(tool) => format!("跑完了，但只调用了工具 `{tool}`，没有文字回答。"),
         None => "跑完了，但没有任何输出。".to_string(),
@@ -154,11 +136,10 @@ pub fn final_reply(rows: &[Row]) -> String {
 
 /// Truncates to `max_chars` **characters**, then says so.
 ///
-/// The harness has already been bitten once by `&text[..max]` on a Chinese
-/// string: slicing on a byte index panics when it lands inside a character, and
-/// the panic took a whole turn down with it (DESIGN §5). Same trap here, so cut
-/// on `char_indices` -- and tell the user where the rest is, because a silently
-/// shortened answer reads like the agent stopped mid-sentence.
+/// # Invariant
+///
+/// The cut lands on a character boundary, never a byte index, and a shortened
+/// reply always says so: a silent cut reads like an agent that stopped.
 pub fn clip(text: &str, max_chars: usize) -> String {
     if max_chars == 0 {
         return text.to_string();
@@ -188,9 +169,7 @@ mod tests {
         }
     }
 
-    /// A retried delivery is the normal case, not an error: QQ retries when it
-    /// does not get an answer in time, and every retry would otherwise be a
-    /// second turn on the same prompt.
+    /// A retried delivery is the normal case: each retry would be a new turn.
     #[test]
     fn the_same_message_id_is_only_accepted_once() {
         let mut dedupe = Dedupe::default();

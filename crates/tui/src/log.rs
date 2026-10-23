@@ -1,48 +1,21 @@
-//! The scrollback, and the arithmetic that turns a scroll offset into rows.
+//! The scrollback: row offsets cached per line, so a frame never walks the log.
 //!
-//! Why this is a structure rather than a `Vec<Line>`: a conversation grows
-//! without bound, and everything the renderer does happens once per frame —
-//! which, while a response streams, is many times a second. Wrapping the whole
-//! log on every frame is what made a long conversation unusable: the cost of one
-//! keystroke grew with the number of messages already on screen, because each
-//! frame re-wrapped every line of the history and allocated a string per
-//! *character* of it (the old `wrap` went through `char::to_string` to measure a
-//! char). Five thousand lines meant millions of allocations per frame.
+//! # Invariant
 //!
-//! So nothing on the path a frame takes may walk the log. Three caches make
-//! that true:
-//!
-//! * A line caches the byte offset at which each of its wrapped rows starts
-//!   ([`Entry::starts`]). Drawing a row is then a slice, not a re-wrap, so a
-//!   frame costs what is *visible* and nothing else.
-//! * Appending to a line — what streaming does, over and over — resumes that
-//!   state machine from the last row instead of restarting it, so a delta costs
-//!   what the delta is worth, not what the line is worth. Without this, a long
-//!   streamed answer would be re-wrapped from the top on every token: quadratic
-//!   in the answer's own length.
-//! * A Fenwick tree over the per-line row counts answers "which line holds row
-//!   N" in O(log lines) instead of walking. Scrolling to the top of a long log
-//!   therefore costs the same as scrolling one notch at the bottom.
-//!
-//! The one operation that has to touch everything is a width change, because
-//! every cached offset was measured for the old width. That happens when the
-//! window changes shape and nowhere else.
+//! A frame touches only the visible rows, and an append lands on exactly the
+//! rows a reflow of the whole line would. See `docs/notes/tui-log.md`.
 
 use unicode_width::UnicodeWidthChar;
 
 use crate::LineKind;
 
-/// One line of the log, plus what it takes to draw a row of it without wrapping
-/// the whole line again.
+/// One line, plus what it takes to draw a row of it without re-wrapping the line.
 struct Entry {
     kind: LineKind,
     text: String,
-    /// Byte offset of the first character of each wrapped row. The length of
-    /// this list *is* the row count, which is what the row index sums over.
+    /// Byte offset of each wrapped row's first character; its length is the row count.
     starts: Vec<usize>,
-    /// Display columns used by the last row: where an append resumes. Appending
-    /// can only ever extend the last row or open new ones, so this one number
-    /// plus the last start is the whole wrap state.
+    /// Display columns used by the last row: the whole wrap state an append resumes.
     open: usize,
 }
 
@@ -54,8 +27,7 @@ impl Entry {
             starts: vec![0],
             open: 0,
         };
-        // Width 0 means "not measured yet" — the first draw reflows everything
-        // at the width it actually has.
+        // Width 0 means "not measured yet": the first draw reflows at its own width.
         if width > 0 {
             entry.reflow(width);
         }
@@ -72,8 +44,7 @@ impl Entry {
             text, starts, open, ..
         } = self;
         starts.clear();
-        // A line always has at least one row, even when it is empty: that is
-        // what makes an empty line a blank row rather than nothing at all.
+        // A line always has at least one row, so an empty line is a blank row.
         starts.push(0);
         let mut wrap = Wrap { width, col: 0 };
         wrap.feed(text, 0, starts);
@@ -99,11 +70,11 @@ impl Entry {
 
     /// The text of row `row`, with the newline that ended it removed.
     ///
-    /// The row runs from its own start to the next row's start, which is one
-    /// byte past the newline that forced the break — so trimming a trailing
-    /// newline is exactly the difference between the two offsets. That is also
-    /// why a trailing newline yields a final empty row: it starts at the end of
-    /// the text and has nothing after it.
+    /// # Invariant
+    ///
+    /// A row runs to the next row's start, one byte past the newline that broke
+    /// it, so a trailing newline yields a final empty row. See
+    /// `docs/notes/tui-log.md`.
     fn row(&self, row: usize) -> &str {
         let start = self.starts[row];
         let end = self.starts.get(row + 1).copied().unwrap_or(self.text.len());
@@ -114,19 +85,17 @@ impl Entry {
 
 /// The greedy wrap state machine, movable so an append can pick it up mid-line.
 ///
-/// Greedy wrapping only depends on the current row's column count, which is why
-/// this is one number and why streaming a long line stays linear rather than
-/// quadratic.
+/// # Invariant
+///
+/// Wrapping depends only on the current row's column count, which is why one
+/// number suffices and why streaming a long line stays linear.
 struct Wrap {
     width: usize,
     col: usize,
 }
 
 impl Wrap {
-    /// Feeds `text` through the machine, recording the start of every row it
-    /// opens in `starts`. `base` is where `text` begins inside the line, so the
-    /// offsets land in line coordinates either way — a reflow passes 0, an
-    /// append passes the current length.
+    /// Feeds `text` into the wrapper, recording each row start shifted by `base`.
     fn feed(&mut self, text: &str, base: usize, starts: &mut Vec<usize>) {
         for (i, ch) in text.char_indices() {
             if ch == '\n' {
@@ -134,8 +103,7 @@ impl Wrap {
                 self.col = 0;
                 continue;
             }
-            // A control character has no width but still advances the row by
-            // one, or a row of invisible bytes would never break.
+            // A control character has no width but still advances one column.
             let w = ch.width().unwrap_or(0).max(1);
             if self.col + w > self.width && self.col > 0 {
                 starts.push(base + i);
@@ -146,12 +114,12 @@ impl Wrap {
     }
 }
 
-/// Prefix sums over the per-line row counts.
+/// Prefix sums over the per-line row counts that survive a change in the middle.
 ///
-/// A plain `Vec` of running totals would work for appends and break on streams:
-/// a streamed delta changes a line in the *middle* of the log whenever a tool
-/// output and a response interleave, and every total after it would be wrong.
-/// A tree pays O(log lines) for both the update and the lookup instead.
+/// # Invariant
+///
+/// The totals are current after any update, including one in the middle of the
+/// log, which is what a streamed delta does. See `docs/notes/tui-log.md`.
 #[derive(Default)]
 struct RowIndex {
     /// 1-based Fenwick tree.
@@ -159,12 +127,7 @@ struct RowIndex {
 }
 
 impl RowIndex {
-    /// Adds one line's row count at the end. O(log lines).
-    ///
-    /// The new node has to carry its whole range, not just its own count: a
-    /// Fenwick node covers `[i - lowbit(i) + 1, i]`, and the lines it covers
-    /// were added before it existed. Filling that in from the prefix sums is
-    /// what keeps "which line holds row N" honest after an append.
+    /// Adds one line's row count at the end, carrying its whole range. O(log lines).
     fn push(&mut self, rows: usize) {
         let i = self.tree.len() + 1;
         let floor = i - (i & i.wrapping_neg());
@@ -199,13 +162,11 @@ impl RowIndex {
         sum
     }
 
-    /// The line holding 0-based row `row`: the first line whose running total
-    /// ends past it. Returns the line count when `row` is past the end, so the
-    /// caller bounds it.
+    /// The line holding 0-based row `row`; the line count when row is past the end.
     fn line_at(&self, row: usize) -> usize {
         let mut line = 0;
         let mut acc = 0;
-        // The largest power of two that fits: the classic binary lifting start.
+        // The largest power of two that fits, for the binary lifting walk.
         let mut step = if self.tree.is_empty() {
             0
         } else {
@@ -223,12 +184,10 @@ impl RowIndex {
     }
 }
 
-/// What one frame needs: the rows that fit, borrowed from the log, and how far
-/// the log can be scrolled.
+/// What one frame needs: the rows that fit, borrowed from the log, and the bound.
 pub struct Viewport<'a> {
     pub rows: Vec<(LineKind, &'a str)>,
-    /// Rows hidden above the window when it is pinned to the newest line. The
-    /// key handler clamps against this, and only the renderer can work it out.
+    /// Rows hidden above the window; only the renderer can work this out.
     pub max_scroll: usize,
 }
 
@@ -237,8 +196,7 @@ pub struct Viewport<'a> {
 pub struct Log {
     entries: Vec<Entry>,
     index: RowIndex,
-    /// The width the cached row offsets were measured at. 0 until a frame has
-    /// been drawn, because until then nobody knows how wide the terminal is.
+    /// The width the cached row offsets were measured at; 0 until a frame is drawn.
     width: usize,
 }
 
@@ -262,12 +220,7 @@ impl Log {
         self.entries.push(entry);
     }
 
-    /// Appends to line `line`, which is what a streaming response and a
-    /// streaming tool output do for every chunk.
-    ///
-    /// A missing line is ignored rather than panicked on: a stream key outlives
-    /// its line only if the caller cleared the log underneath it, and losing a
-    /// chunk is a better failure than taking the window down.
+    /// Appends to line `line`; a missing line is ignored rather than panicked on.
     pub fn append(&mut self, line: usize, text: &str) {
         let width = self.width;
         let Some(entry) = self.entries.get_mut(line) else {
@@ -279,8 +232,7 @@ impl Log {
         self.index.add(line, after.saturating_sub(before));
     }
 
-    /// How many rows the log wraps into at `width`, reflowing first if the
-    /// width moved since the offsets were measured.
+    /// How many rows the log wraps into at `width`, reflowing first if it moved.
     pub fn rows(&mut self, width: usize) -> usize {
         self.reflow(width);
         self.index.total()
@@ -288,9 +240,11 @@ impl Log {
 
     /// The rows for one frame: everything visible, nothing more.
     ///
-    /// `scroll` counts rows up from the newest line, already what the key
-    /// handler meant; it is clamped here because lines can be added or the
-    /// window can grow between the key and the frame.
+    /// # Invariant
+    ///
+    /// `scroll` counts rows up from the newest line; the caller already clamped
+    /// it, and it is clamped again here because lines can be added or the window
+    /// can grow between the key and the frame. See `docs/notes/tui-log.md`.
     pub fn window(&mut self, width: usize, height: usize, scroll: usize) -> Viewport<'_> {
         self.reflow(width);
         let total = self.index.total();
@@ -301,8 +255,7 @@ impl Log {
         let mut rows = Vec::with_capacity(end - start);
         if start < end {
             let mut line = self.index.line_at(start).min(self.entries.len() - 1);
-            // The row index of this line's first row; carried forward instead
-            // of asked for again, so the walk is one pass over the window.
+            // This line's first row index, carried forward so the walk is one pass.
             let mut first = self.index.prefix(line);
             loop {
                 let entry = &self.entries[line];
@@ -320,8 +273,7 @@ impl Log {
         Viewport { rows, max_scroll }
     }
 
-    /// Recomputes every row offset when the width changed. The only whole-log
-    /// walk left: a resize is a shape change, not something a frame does.
+    /// Recomputes every row offset when the width changed: the only whole-log walk.
     fn reflow(&mut self, width: usize) {
         let width = width.max(1);
         if width == self.width {
@@ -373,8 +325,7 @@ mod tests {
     #[test]
     fn embedded_newlines_force_breaks() {
         assert_eq!(shown(&mut log_of(&["a\nb"], 10), 10, 2, 0), vec!["a", "b"]);
-        // A trailing newline is an empty row, not a dropped one: that is how a
-        // blank line between two paragraphs survives the round trip.
+        // A trailing newline is an empty row, so a blank line survives the round trip.
         assert_eq!(shown(&mut log_of(&["a\n"], 10), 10, 2, 0), vec!["a", ""]);
     }
 
@@ -385,12 +336,12 @@ mod tests {
         assert_eq!(shown(&mut log, 10, 1, 0), vec![""]);
     }
 
-    /// The invariant the streaming path depends on: appending chunk by chunk
-    /// must land on exactly the rows a single reflow of the whole line would.
+    /// The streaming invariant: chunked appends land where one reflow would.
     ///
-    /// This is the bug that would otherwise come back as text jumping around
-    /// mid-answer, and it is invisible in a screenshot because it only shows up
-    /// on lines that wrap.
+    /// # Invariant
+    ///
+    /// Row count *and* text must match a reflow of the whole line, at every
+    /// width; a mismatch shows up as text jumping around mid-answer.
     #[test]
     fn appending_equals_rewrapping_from_the_top() {
         let cases: &[(&str, &[&str])] = &[
@@ -436,8 +387,7 @@ mod tests {
         }
     }
 
-    /// A window can start in the middle of a line, which is the case a naive
-    /// "count lines, not rows" renderer gets wrong.
+    /// A window can start mid-line, which a "count lines, not rows" renderer gets wrong.
     #[test]
     fn scrolling_moves_one_row_at_a_time() {
         // Five lines that each take two rows at width 4: "aaaa"/"aaa".
@@ -448,8 +398,7 @@ mod tests {
         assert_eq!(shown(&mut log, 4, 3, 2), vec!["ccc", "dddd", "ddd"]);
     }
 
-    /// A page up from the bottom must show the rows just above the window, and
-    /// scrolling past the top must stop at the first row — not wrap around.
+    /// Both ends stop the scroll: past the top and past the bottom, never wrap around.
     #[test]
     fn scroll_clamps_at_both_ends() {
         let mut log = log_of(&["aaaaaaa", "bbbbbbb"], 4);
@@ -461,8 +410,7 @@ mod tests {
         assert_eq!(log.window(4, 2, 99).max_scroll, 2);
     }
 
-    /// A frame must not depend on how long the log is: this is the assertion
-    /// that catches a return to wrapping everything per frame.
+    /// A frame must not depend on how long the log is, or wrapping per frame returns.
     #[test]
     fn a_frame_touches_only_a_screenful() {
         let mut log = Log::new();
@@ -488,8 +436,7 @@ mod tests {
         assert_eq!(shown(&mut log, 10, 1, 0), vec!["abcdefghij"]);
     }
 
-    /// The row index's binary search has to agree with a plain walk, or
-    /// scrolling lands on the wrong line while everything else looks fine.
+    /// The binary search must agree with a plain walk, or scrolling lands wrong.
     #[test]
     fn the_row_index_agrees_with_a_walk() {
         let mut log = Log::new();
