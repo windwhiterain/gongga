@@ -78,11 +78,20 @@ case "${1:-help}" in
     exe="$(ls -t "$RUN"/client-*.exe | head -1)"
     start_window client "$exe" "${@:2}"
     ;;
+  bridge)
+    # Long-lived like the server, so it gets the same treatment: a copy under
+    # .dev/ that target/ can never lock.
+    cargo build -p gongga-bridge || die "build failed"
+    stage "$ROOT/target/debug/gongga-bridge.exe" bridge >/dev/null
+    exe="$(ls -t "$RUN"/bridge-*.exe | head -1)"
+    start_bg bridge "$exe" "${@:2}"
+    ;;
   stop)
+    stop_one bridge
     stop_one server
     ;;
   status)
-    for name in server client; do
+    for name in server bridge client; do
       if [ -f "$RUN/$name.pid" ]; then
         echo "$name: pid $(cat "$RUN/$name.pid"), exe $(cat "$RUN/$name.exe" 2>/dev/null)"
       fi
@@ -98,6 +107,6 @@ case "${1:-help}" in
     ;;
   *)
     sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
-    echo "usage: dev.sh {build|server|client|stop|status|clean}"
+    echo "usage: dev.sh {build|server|bridge|client|stop|status|clean}"
     ;;
 esac

@@ -48,10 +48,6 @@ impl Sticky {
         Self { path, args }
     }
 
-    pub fn get(&self, name: &str) -> Option<&String> {
-        self.args.get(name)
-    }
-
     pub fn names(&self) -> Vec<String> {
         self.args.keys().cloned().collect()
     }
@@ -156,7 +152,7 @@ mod tests {
         let mut s = Sticky::load(d.path());
         s.set("session", "main").unwrap();
         let again = Sticky::load(d.path());
-        assert_eq!(again.get("session").map(String::as_str), Some("main"));
+        assert_eq!(again.pairs(), vec![("session".to_string(), "main".to_string())]);
         assert_eq!(again.names(), vec!["session".to_string()]);
     }
 

@@ -16,7 +16,9 @@ use serde_json::json;
 use tokio::sync::mpsc;
 
 use crate::bus::EventBus;
+use crate::config::LlmConfig;
 use crate::llm::{LlmClient, LlmEvent};
+use crate::providers::{self, Catalog};
 use crate::session::SessionHandle;
 use crate::store::{HistoryItem, Store};
 use crate::tools::detached::DetachedRegistry;
@@ -24,10 +26,23 @@ use crate::tools::{ToolContext, ToolRegistry};
 
 pub struct Agent {
     pub store: Store,
+    /// What a session talks to unless it named its own `--llm`.
     pub llm: Arc<LlmClient>,
+    /// The machine's roster, which is what `--llm` names are resolved against.
+    pub providers: &'static Catalog,
+    /// What a session's own entry inherits: timeouts, retries, instructions.
+    pub llm_config: LlmConfig,
+    /// Clients built for sessions that named their own entry, by `provider/model`.
+    ///
+    /// A client builds a connection pool, so a turn that used one per step would
+    /// pay for it on every request. Keyed by spec rather than by session
+    /// because sessions that choose the same model should share it.
+    pub clients: std::sync::Mutex<std::collections::HashMap<String, Arc<LlmClient>>>,
+    /// Context window of [`Self::llm`]'s model, for a session that asks for a
+    /// percentage without naming a model of its own.
+    pub default_context: Option<u64>,
     pub tools: Arc<ToolRegistry>,
     pub bus: EventBus,
-    pub max_steps: u32,
     /// Compress once a request would carry more than this. 0 disables it.
     pub compress_above_chars: usize,
     /// Messages a compression leaves alone at the end of the transcript.
@@ -43,8 +58,12 @@ pub struct Agent {
 impl Agent {
     /// Runs one turn, publishing events as it goes. Never returns an error:
     /// failures are reported on the bus and recorded in the session's status.
-    pub async fn run_turn(&self, session: &SessionHandle, user_text: &str) {
-        self.turn(session, Some(user_text)).await;
+    ///
+    /// `task` is the pending row this turn was started from. Its message is
+    /// already in the transcript, so the step-boundary inbox must not hand it
+    /// back -- that would append the operator's line twice.
+    pub async fn run_turn(&self, session: &SessionHandle, user_text: &str, task: Option<i64>) {
+        self.turn(session, Some(user_text), task).await;
     }
 
     /// Replays a turn that a shutdown interrupted.
@@ -53,11 +72,11 @@ impl Agent {
     /// turn starts, which is the only reason the turn could be recorded as
     /// pending at all. Appending it again made every restart show the operator's
     /// line twice, and added one more copy to the history per resume.
-    pub async fn resume_turn(&self, session: &SessionHandle) {
-        self.turn(session, None).await;
+    pub async fn resume_turn(&self, session: &SessionHandle, task: Option<i64>) {
+        self.turn(session, None, task).await;
     }
 
-    async fn turn(&self, session: &SessionHandle, user_text: Option<&str>) {
+    async fn turn(&self, session: &SessionHandle, user_text: Option<&str>, task: Option<i64>) {
         // A panic anywhere in the loop used to be the end of the turn with
         // nothing left to clean up after it: the session kept the "running"
         // status it was given on entry, no request was in flight, nothing was
@@ -65,7 +84,7 @@ impl Agent {
         // from a provider that has stopped answering. Catching it here turns
         // that silence into an error on screen and leaves the session in a
         // state the operator can do something about.
-        let outcome = AssertUnwindSafe(self.turn_inner(session, user_text))
+        let outcome = AssertUnwindSafe(self.turn_inner(session, user_text, task))
             .catch_unwind()
             .await;
         if let Err(payload) = outcome {
@@ -85,7 +104,7 @@ impl Agent {
         }
     }
 
-    async fn turn_inner(&self, session: &SessionHandle, user_text: Option<&str>) {
+    async fn turn_inner(&self, session: &SessionHandle, user_text: Option<&str>, task: Option<i64>) {
         let name = session.name().to_string();
         let id = session.id();
         // Queue behind whatever is already working on this session. Taking the
@@ -103,10 +122,11 @@ impl Agent {
             tracing::info!(session = %name, "turn waited for the session to be free");
         }
         if session.cancel_epoch() != epoch {
-            // Cancelled while queued. Running now would look like Ctrl+X did
-            // nothing, and the message it was going to deliver is dropped just
-            // like any other cancelled turn: whoever spawned this clears the
-            // pending row unless a shutdown asked to keep it.
+            // Cancelled while queued. Running now would look like the
+            // `interrupt_session` did nothing, and the message it was going to
+            // deliver is dropped just like any other interrupted turn: whoever
+            // spawned this clears the pending row unless a shutdown asked to
+            // keep it.
             tracing::info!(session = %name, "turn dropped: cancelled while queued");
             return;
         }
@@ -119,7 +139,24 @@ impl Agent {
         }
         let (turn, cancel) = session.new_turn();
         let started = std::time::Instant::now();
-        tracing::info!(session = %name, resumed = user_text.is_none(), "turn start");
+        // Which model this turn talks to, and how much transcript it may carry
+        // before compaction. Resolved once, at the top: a session can be pointed
+        // at a different provider between turns, but every step of one turn has
+        // to agree on where it is sending.
+        let (llm, budget) = match self.route(&name, &session.tuning()) {
+            Ok(route) => route,
+            Err(e) => {
+                self.fail(&name, id, "resolving the session's llm", e);
+                return;
+            }
+        };
+        tracing::info!(
+            session = %name,
+            resumed = user_text.is_none(),
+            model = %llm.model(),
+            budget,
+            "turn start"
+        );
 
         if let Some(text) = user_text {
             if let Err(e) = self
@@ -137,40 +174,65 @@ impl Agent {
         });
         let _ = self.store.set_status(id, SessionStatus::Running);
 
-        let mut outcome = TurnOutcome::Done;
+        // No step budget. A turn runs until the model stops asking for tools,
+        // the user cancels, or a request fails.
+        //
+        // There is deliberately no ceiling: a turn that is meant to work for
+        // days has no number of steps that is right in advance. Any number is
+        // either too small -- it stops mid-task and waits for a human to type
+        // "continue", which is not autonomy, it is a babysitter -- or large
+        // enough that it is not a limit at all. What actually keeps a long run
+        // finite is the work itself ending, and what keeps it from spinning is
+        // a request that fails, both of which are reported instead of silently
+        // truncating.
+        // Every exit from this loop carries its own outcome, so the value the
+        // match below sees is always set on the way out; there is no default
+        // and no fall-through.
+        let mut step: u32 = 0;
 
-        for step in 0..self.max_steps {
+        let outcome = loop {
             if cancel.is_cancelled() {
-                outcome = TurnOutcome::Cancelled;
-                break;
+                break TurnOutcome::Cancelled;
             }
+            // Step boundary: everything that arrived while the previous step's
+            // tools were running becomes part of the transcript here, so the
+            // request built by `step` below carries it. Injecting earlier would
+            // put a user line between a tool call and its result, which
+            // providers reject outright.
+            self.deliver_inbox(id, &name, task);
             // Before building the request: if the transcript has grown past the
             // budget, fold its older half into a summary. Doing it here rather
             // than after a step means the very next request is the small one.
-            self.maybe_compress(id, &name).await;
+            self.maybe_compress(id, &name, &llm, budget, &cancel).await;
             tracing::info!(session = %name, step, "step start");
-            match self.step(id, &name, turn, &cancel, step).await {
+            match self.step(id, &name, turn, &cancel, step, &llm).await {
                 Ok(StepResult::Finished) => {
-                    outcome = TurnOutcome::Done;
-                    break;
+                    // The model says it is done, but something may have landed
+                    // while it was finishing. Deliver it and go round again
+                    // rather than end the turn with a message unread because it
+                    // arrived one step too late.
+                    if self.deliver_inbox(id, &name, task) > 0 {
+                        step = step.wrapping_add(1);
+                        continue;
+                    }
+                    break TurnOutcome::Done;
                 }
                 Ok(StepResult::NeedsTools(calls)) => {
                     if self.run_tools(session, id, &name, &cancel, calls).await {
-                        outcome = TurnOutcome::Cancelled;
-                        break;
+                        break TurnOutcome::Cancelled;
                     }
                 }
-                Ok(StepResult::Stopped) => {
-                    outcome = TurnOutcome::Cancelled;
-                    break;
-                }
+                Ok(StepResult::Stopped) => break TurnOutcome::Cancelled,
                 Err(e) => {
                     self.error(&name, "model request", e);
-                    outcome = TurnOutcome::Failed;
-                    break;
+                    break TurnOutcome::Failed;
                 }
             }
-        }
+            // Wrapping rather than saturating: the counter is only a label in
+            // logs, and a turn long enough to reach the end of u32 has bigger
+            // things to worry about than the number restarting.
+            step = step.wrapping_add(1);
+        };
 
         let (status, detail) = match outcome {
             TurnOutcome::Done => (SessionStatus::Idle, None),
@@ -187,6 +249,134 @@ impl Agent {
         });
     }
 
+    /// Where this turn sends, and how much it may carry before compacting.
+    ///
+    /// Both come from the session's tuning, falling back to the server's own
+    /// configuration. Resolving the model also decides the budget's unit: a
+    /// percentage only has a size once a context window is known.
+    fn route(
+        &self,
+        name: &str,
+        tuning: &crate::session::Tuning,
+    ) -> anyhow::Result<(Arc<LlmClient>, usize)> {
+        // The common case: nothing of the session's own, so nothing to resolve.
+        if tuning.is_default() {
+            return Ok((self.llm.clone(), self.compress_above_chars));
+        }
+        let (llm, context) = match &tuning.llm {
+            None => (self.llm.clone(), self.default_context),
+            Some(spec) => {
+                let choice = self
+                    .providers
+                    .resolve(spec)
+                    .map_err(|e| anyhow::anyhow!("--llm {spec}: {e}"))?;
+                let client = self.client_for(&choice.entry, choice.api_key)?;
+                (client, choice.entry.context)
+            }
+        };
+        let budget = match tuning.compact_threshold {
+            None => self.compress_above_chars,
+            Some(percent) => match context {
+                Some(context) => providers::chars_for_percent(context, percent),
+                None => {
+                    // Without a context window a percentage has no size. Saying
+                    // so beats quietly compacting at a different point than the
+                    // one that was asked for.
+                    tracing::warn!(
+                        session = %name,
+                        percent,
+                        "no context window is known for this model; keeping the configured budget"
+                    );
+                    self.compress_above_chars
+                }
+            },
+        };
+        Ok((llm, budget))
+    }
+
+    /// The client for one roster entry, built once and shared.
+    fn client_for(
+        &self,
+        entry: &providers::Entry,
+        api_key: String,
+    ) -> anyhow::Result<Arc<LlmClient>> {
+        let spec = entry.spec();
+        let cached = self
+            .clients
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&spec)
+            .cloned();
+        if let Some(client) = cached {
+            return Ok(client);
+        }
+        // Built outside the lock: `LlmClient::new` is the expensive part and two
+        // sessions racing to build the same one is cheaper than serialising
+        // every turn behind a connection pool.
+        let client = Arc::new(LlmClient::new(&self.llm_config.for_entry(entry, api_key))?);
+        self.clients
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(spec, client.clone());
+        Ok(client)
+    }
+
+    /// Reports a failure that stops the turn before it starts, and leaves the
+    /// session in a state the operator can act on rather than "running".
+    fn fail(&self, name: &str, id: i64, what: &str, e: anyhow::Error) {
+        self.error(name, what, e);
+        let _ = self.store.set_status(id, SessionStatus::Error);
+        self.bus.publish(Event::Status {
+            session: name.to_string(),
+            status: SessionStatus::Error,
+            detail: Some("see log".to_string()),
+        });
+    }
+
+    /// Moves everything the session's inbox collected into the transcript and
+    /// returns how many messages it delivered.
+    ///
+    /// This is the *only* place a mid-turn message enters a running turn, and
+    /// it is called at step boundaries on purpose. A message that arrived while
+    /// tools were running cannot be written the moment it arrives: a user line
+    /// between a `function_call` and its `function_call_output` is a request
+    /// the provider rejects. At a step boundary the previous step is complete,
+    /// so the user line is a legal trailing item and the next request carries it.
+    ///
+    /// The row is deleted in the same breath as the transcript write (see
+    /// `take_pending_tasks`), so a message is delivered exactly once even if the
+    /// process dies in between.
+    fn deliver_inbox(&self, id: i64, name: &str, own: Option<i64>) -> usize {
+        let Ok(tasks) = self.store.take_pending_tasks(name, own) else {
+            return 0;
+        };
+        let mut delivered = 0;
+        for task in tasks {
+            let Some(text) = task.payload.get("message").and_then(|v| v.as_str()) else {
+                // A row with no message cannot be delivered; leaving it would
+                // block the queue forever, and its kind is not one this loop
+                // knows how to replay.
+                tracing::warn!(session = %name, kind = %task.kind, "dropping an empty pending task");
+                continue;
+            };
+            if let Err(e) = self.store.append_message(
+                id,
+                "text",
+                &json!({"role": "user", "text": text}),
+            ) {
+                tracing::warn!(session = %name, error = %e, "could not deliver a queued message");
+                continue;
+            }
+            delivered += 1;
+            tracing::info!(session = %name, chars = text.len(), "delivered queued message at a step boundary");
+            self.bus.publish(Event::Log {
+                level: LogLevel::Info,
+                message: format!("{name}: delivered a message that arrived while working"),
+            });
+        }
+        delivered
+    }
+
     /// Folds the older part of the transcript into one summary when the next
     /// request would otherwise carry more than the budget allows.
     ///
@@ -194,8 +384,15 @@ impl Agent {
     /// takes over, so the full transcript stays readable while every later
     /// request starts from the summary plus recent messages. Without this a
     /// long turn grows without bound until the provider refuses it outright.
-    async fn maybe_compress(&self, id: i64, name: &str) {
-        if self.compress_above_chars == 0 {
+    async fn maybe_compress(
+        &self,
+        id: i64,
+        name: &str,
+        llm: &LlmClient,
+        budget: usize,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) {
+        if budget == 0 {
             return;
         }
         let Ok(index) = self.store.message_index(id) else {
@@ -206,7 +403,7 @@ impl Agent {
         };
         // Only what a request would actually carry counts: anything already
         // behind the last summary is not sent again.
-        if live_items.iter().map(weight).sum::<usize>() <= self.compress_above_chars {
+        if live_items.iter().map(weight).sum::<usize>() <= budget {
             return;
         }
         let Ok((previous, upto)) = self.store.summary(id) else {
@@ -234,7 +431,7 @@ impl Agent {
         });
         let started = std::time::Instant::now();
         let prompt = summary_prompt(previous.as_deref(), &old);
-        match self.llm.summarise(&prompt).await {
+        match llm.summarise(&prompt, cancel).await {
             Ok(text) if !text.trim().is_empty() => {
                 tracing::info!(session = %name, chars = text.len(), elapsed = ?started.elapsed(), "compression done");
                 if let Err(e) = self.store.set_summary(id, &text, cut) {
@@ -263,12 +460,11 @@ impl Agent {
         turn: u64,
         cancel: &tokio_util::sync::CancellationToken,
         step: u32,
+        llm: &LlmClient,
     ) -> anyhow::Result<StepResult> {
         let (summary, history) = self.store.context(id)?;
         let definitions = self.tools.definitions();
-        let mut rx = self
-            .llm
-            .stream(summary.as_deref(), &history, &definitions, cancel.clone());
+        let mut rx = llm.stream(summary.as_deref(), &history, &definitions, cancel.clone());
 
         let mut calls: Vec<ToolCall> = Vec::new();
         let mut failure: Option<String> = None;
@@ -348,11 +544,18 @@ impl Agent {
                 // it goes to the operator instead of into the transcript: the
                 // turn looks alive, and the reason it is slow is on screen.
                 LlmEvent::Retrying { attempt, max, delay } => {
+                    // `max == 0` is "no ceiling", not "zero allowed": printing
+                    // `1/0` read like the opposite of what it meant.
+                    let of = if max == 0 {
+                        "until cancelled".to_string()
+                    } else {
+                        format!("of {max}")
+                    };
                     self.bus.publish(Event::Log {
                         level: LogLevel::Warn,
                         message: format!(
                             "{name}: model request failed or came back empty; \
-                             retry {attempt}/{max} in {delay:?}"
+                             retry {attempt} {of} in {delay:?}"
                         ),
                     });
                 }

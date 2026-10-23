@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
@@ -29,12 +29,20 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long `cancel` waits for running turns to settle before exiting anyway.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(30);
 
+/// One connected peer. `conn_id` makes release safe: if a client reconnects
+/// from the same address before the old connection has finished unwinding, the
+/// old task must not delete the new peer's entry.
+struct Peer {
+    tx: mpsc::Sender<Frame>,
+    conn_id: u32,
+}
+
 pub async fn serve(cfg: Arc<Config>, d: Arc<Dispatch>, bus: EventBus) -> anyhow::Result<()> {
     let socket = Arc::new(UdpSocket::bind(cfg.bind).await?);
     let local = socket.local_addr()?;
     tracing::info!(%local, "gongga server listening (UDP)");
 
-    let mut conns: HashMap<SocketAddr, mpsc::Sender<Frame>> = HashMap::new();
+    let conns: Arc<Mutex<HashMap<SocketAddr, Peer>>> = Arc::new(Mutex::new(HashMap::new()));
     let next_id = AtomicU32::new(1);
     let mut buf = vec![0u8; 65507];
 
@@ -70,10 +78,22 @@ pub async fn serve(cfg: Arc<Config>, d: Arc<Dispatch>, bus: EventBus) -> anyhow:
             }
         };
 
-        let known = conns.contains_key(&peer);
-        if known {
-            if conns.get(&peer).unwrap().send(frame).await.is_err() {
-                conns.remove(&peer);
+        // Clone the sender out and drop the lock before awaiting: a slow peer
+        // must not stall the loop that every other peer also goes through.
+        let known = conns.lock().unwrap().get(&peer).map(|p| p.tx.clone());
+        if let Some(tx) = known {
+            if tx.send(frame).await.is_err() {
+                // The connection task is on its way out and will release the
+                // entry itself. Only evict if the address still maps to *this*
+                // sender: a reconnect from the same address may have replaced it.
+                let mut map = conns.lock().unwrap();
+                let stale = map
+                    .get(&peer)
+                    .map(|p| p.tx.same_channel(&tx))
+                    .unwrap_or(false);
+                if stale {
+                    map.remove(&peer);
+                }
             }
             continue;
         }
@@ -85,8 +105,8 @@ pub async fn serve(cfg: Arc<Config>, d: Arc<Dispatch>, bus: EventBus) -> anyhow:
         }
 
         let (tx, rx) = mpsc::channel::<Frame>(FRAME_QUEUE);
-        conns.insert(peer, tx);
         let conn_id = next_id.fetch_add(1, Ordering::Relaxed);
+        conns.lock().unwrap().insert(peer, Peer { tx, conn_id });
         let channel = protocol::accept(
             socket.clone(),
             peer,
@@ -99,8 +119,20 @@ pub async fn serve(cfg: Arc<Config>, d: Arc<Dispatch>, bus: EventBus) -> anyhow:
         let d = d.clone();
         let bus = bus.clone();
         let cfg = cfg.clone();
+        let conns = conns.clone();
         tokio::spawn(async move {
             handle_connection(channel, d, bus, cfg, peer, conn_id).await;
+            // A peer leaves in three ways: `Bye`, a failed send, or the client
+            // vanishing. The first two are noticed elsewhere; the third is not
+            // -- and a client that reconnects from a fresh local port leaves
+            // its old address behind forever. Release it here, unless the same
+            // address has already been re-inserted for a newer connection.
+            let mut map = conns.lock().unwrap();
+            let mine = map.get(&peer).map(|p| p.conn_id == conn_id).unwrap_or(false);
+            if mine {
+                map.remove(&peer);
+                tracing::debug!(%peer, conn_id, "released peer entry");
+            }
         });
     }
 
@@ -199,16 +231,6 @@ async fn handle_connection(
                             message: outcome.message,
                             data: outcome.data,
                         });
-                    }
-                    Ok(ClientMessage::Cancel { session }) => {
-                        if let Ok(s) = d.sessions.get(&session) {
-                            s.cancel();
-                            // Aborting a turn is deliberate, so it is not work
-                            // the next start has to pick up. It covers what is
-                            // queued behind the running turn as well: those
-                            // turns give up once they reach the front.
-                            let _ = d.store.clear_pending_tasks(&session);
-                        }
                     }
                     Ok(ClientMessage::Bye) => break,
                     Err(e) => {

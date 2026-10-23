@@ -266,7 +266,7 @@ impl Tool for BashTool {
     ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
             let Some(command) = args.get("cmd").and_then(|v| v.as_str()) else {
-                return ToolOutcome::err("bash requires a string `cmd`");
+                return ToolOutcome::err(missing_command_hint(&args));
             };
             if command.trim().is_empty() {
                 return ToolOutcome::err("bash received an empty command");
@@ -671,6 +671,24 @@ fn shell_name(args: &Value) -> &str {
         .unwrap_or(DEFAULT_BASH)
 }
 
+/// Why a `bash` call arrived without `cmd`.
+///
+/// A bare "requires a string `cmd`" is true and useless: a model that reached
+/// for `command` reads it as "the command was wrong", tries a different
+/// command, and burns the step budget one rejected call at a time -- observed
+/// as six identical failures in a row in one real turn. Naming the argument it
+/// actually sent turns that into a one-retry correction.
+fn missing_command_hint(args: &Value) -> String {
+    const LIKELY: [&str; 5] = ["command", "script", "cmdline", "command_line", "shell"];
+    match LIKELY.iter().find(|k| args.get(**k).is_some()) {
+        Some(wrong) => format!(
+            "bash takes its command as `cmd`, not `{wrong}`. \
+             Resend the same call as {{\"cmd\": \"<command>\"}}."
+        ),
+        None => "bash requires a string `cmd`".to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -686,9 +704,29 @@ mod tests {
         assert!(reg.get("nope").is_none());
     }
 
+    /// A rejected `bash` call has to say which argument was wrong, or the model
+    /// keeps guessing and spends the turn's step budget on rejections.
     #[test]
-    fn detached_jobs_have_an_explicit_way_to_end() {
-        let reg = ToolRegistry::with_builtins(Duration::from_secs(30), 8_000);
+    fn a_misnamed_command_argument_is_named_back_to_the_model() {
+        let hint = missing_command_hint(&serde_json::json!({"command": "ls"}));
+        assert!(hint.contains("`cmd`"), "{hint}");
+        assert!(hint.contains("`command`"), "{hint}");
+
+        // Nothing to point at when the call is simply empty: say what is needed.
+        assert_eq!(
+            missing_command_hint(&serde_json::json!({})),
+            "bash requires a string `cmd`"
+        );
+        // `name` is a real argument of bash, so it must never be mistaken for a
+        // misspelled `cmd`.
+        assert_eq!(
+            missing_command_hint(&serde_json::json!({"name": "s3"})),
+            "bash requires a string `cmd`"
+        );
+    }
+
+    #[test]
+    fn detached_jobs_have_an_explicit_way_to_end() {        let reg = ToolRegistry::with_builtins(Duration::from_secs(30), 8_000);
         let kill = reg.get("kill_bash").expect("kill_bash is registered");
         // Omitting the job number means "every job of that shell", which is
         // the only shape that makes sense after a restart.
@@ -706,8 +744,7 @@ mod tests {
     }
 
     #[test]
-    fn bash_takes_name_cmd_and_the_two_detach_flags() {
-        let reg = ToolRegistry::with_builtins(Duration::from_secs(30), 8_000);
+    fn bash_takes_name_cmd_and_the_two_detach_flags() {        let reg = ToolRegistry::with_builtins(Duration::from_secs(30), 8_000);
         let defs = reg.definitions();
         let bash = &defs[0];
         assert_eq!(bash.name, "bash");

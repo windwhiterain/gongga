@@ -30,8 +30,6 @@ pub enum ClientMessage {
         name: String,
         args: Args,
     },
-    /// Ask the server to stop the current turn for a session.
-    Cancel { session: String },
     /// Polite disconnect.
     Bye,
 }
@@ -222,6 +220,18 @@ pub enum CompletionSource {
     Sessions,
     /// Complete against a fixed set.
     Static(Vec<String>),
+    /// Complete against every argument name in the catalog. This is what a
+    /// command takes when its value *is* an argument name, such as
+    /// `set_persistant_cmd_argument --name`.
+    Arguments,
+    /// Complete against the filesystem, relative to the client's working
+    /// directory. For arguments that take a path rather than a word.
+    Paths,
+    /// Complete this value the way the argument named on the same line under
+    /// `--name` would be completed: `--name session --value <TAB>` offers
+    /// sessions. The client needs this because the shape of the value depends
+    /// on which argument it is going to fill.
+    OfNamedArgument,
 }
 
 // ---------------------------------------------------------------------------

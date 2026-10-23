@@ -7,6 +7,7 @@ mod config;
 mod instance;
 mod llm;
 mod net;
+mod providers;
 mod session;
 mod store;
 mod tools;
@@ -153,9 +154,12 @@ async fn main() -> anyhow::Result<()> {
     let agent = Arc::new(Agent {
         store: store.clone(),
         llm: llm.clone(),
+        providers: providers::roster(),
+        llm_config: cfg.llm.clone(),
+        clients: std::sync::Mutex::new(std::collections::HashMap::new()),
+        default_context: cfg.llm.context,
         tools: tools.clone(),
         bus: bus.clone(),
-        max_steps: cfg.agent.max_steps,
         compress_above_chars: cfg.agent.compress_above_chars,
         keep_recent: cfg.agent.keep_recent,
         output_dir,
@@ -167,6 +171,7 @@ async fn main() -> anyhow::Result<()> {
         sessions: sessions.clone(),
         store: store.clone(),
         bus: bus.clone(),
+        providers: providers::roster(),
         active: Arc::new(AtomicUsize::new(0)),
         shutdown: CancellationToken::new(),
     });
@@ -186,7 +191,32 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    // A message that arrived while a turn was running is normally folded into
+    // that turn at its next step boundary. If the turn ends first, nobody is
+    // left to read it -- so a session holding an undelivered message gets a
+    // turn started for it. Checked rather than pushed: the row is durable, so
+    // a miss here costs a couple of seconds, not the message.
+    let wake = dispatch.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+        loop {
+            tick.tick().await;
+            let started = commands::nudge_inboxes(&wake);
+            if started > 0 {
+                tracing::info!(started, "woke sessions holding an undelivered message");
+            }
+        }
+    });
+
     tracing::info!(tools = ?tools.names().join(", "), "tool registry ready");
+    // Which roster was read, and whether it was readable at all: "no --llm
+    // worked" is nearly always this line.
+    tracing::info!(
+        roster = ?providers::roster().path(),
+        providers = providers::roster().providers().len(),
+        problem = providers::roster().problem(),
+        "llm roster imported"
+    );
     tracing::info!(
         key = %cfg.home.join("config.toml").display(),
         "clients must present the [server] key from this file (or pass --key)"
@@ -194,8 +224,10 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(
         home = %cfg.home.display(),
         db = %cfg.db_path.display(),
+        provider = ?cfg.llm.provider,
         model = %cfg.llm.model,
         base_url = %cfg.llm.base_url,
+        context = ?cfg.llm.context,
         bash = ?cfg.bash.program,
         proxy = ?std::env::var("HTTPS_PROXY")
             .or_else(|_| std::env::var("https_proxy"))

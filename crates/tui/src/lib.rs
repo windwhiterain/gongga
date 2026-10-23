@@ -64,13 +64,16 @@ pub struct Line {
 }
 
 /// Something the operator did.
+///
+/// There is deliberately no "cancel" here. Stopping work is a command like any
+/// other (`interrupt_session`, `cancel`), so it reaches the server by the same
+/// path as everything else and can be typed by a script that has no keyboard.
+/// The only thing left to the keyboard is leaving.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiEvent {
     /// A finished input line.
     Submit(String),
-    /// Ctrl+X: stop whatever is running.
-    Cancel,
-    /// Ctrl+C: leave.
+    /// Ctrl+Q: leave.
     Quit,
 }
 
@@ -166,6 +169,18 @@ impl Tui {
         });
     }
 
+    /// Puts a line back into the prompt, cursor at the end.
+    ///
+    /// The counterpart of Enter: a line that could not be sent is not swallowed
+    /// by a log entry. It goes back where it was typed, because the operator
+    /// already knows how to press Enter again and does not want to retype it.
+    pub fn restore_input(&mut self, text: &str) {
+        self.screen.completion = None;
+        self.screen.input.clear();
+        self.screen.input.insert_str(text);
+        self.screen.input.end();
+    }
+
     /// Appends to an open stream, creating the line on first use.
     ///
     /// `key` identifies the stream (a response part, a tool's stdout) and
@@ -241,11 +256,33 @@ impl Tui {
         !matches!(key.kind, KeyEventKind::Release)
     }
 
+    /// The keys that are not editing at all: only leaving, which is the one
+    /// action this window owns rather than asks the server for.
+    ///
+    /// Pure and separate from [`Self::handle_key`] because it is the part worth
+    /// testing without a terminal: what a key means must not depend on whether
+    /// a TTY exists. It also collects both spellings of Ctrl+Q -- a terminal
+    /// that reports no modifiers sends `DC1` (`\u{11}`) instead of `'q'`+Ctrl,
+    /// and the two have to mean the same thing.
+    fn shortcut(key: &KeyEvent) -> Option<UiEvent> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            // A terminal that reports no modifiers sends DC1 for Ctrl+Q, so
+            // this spelling does not need the flag to be set.
+            KeyCode::Char('\u{11}') => Some(UiEvent::Quit),
+            // Case-insensitive: Shift+Ctrl+Q arrives as 'Q'.
+            KeyCode::Char('q' | 'Q') if ctrl => Some(UiEvent::Quit),
+            _ => None,
+        }
+    }
+
     fn handle_key(&mut self, key: KeyEvent) -> Option<UiEvent> {
+        if let Some(action) = Self::shortcut(&key) {
+            return Some(action);
+        }
+
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
-                KeyCode::Char('c') => return Some(UiEvent::Quit),
-                KeyCode::Char('x') => return Some(UiEvent::Cancel),
                 KeyCode::Char('k') => self.screen.input.kill_to_end(),
                 KeyCode::Left => self.screen.input.word_left(),
                 // Paging on the same arrows that already mean "history" and
@@ -543,6 +580,47 @@ mod tests {
         assert!(Tui::actionable(&press));
     }
 
+    /// Leaving is the one thing the keyboard still does on its own, and Ctrl+Q
+    /// is the only key that does it.
+    ///
+    /// Pinned down here rather than in prose because the TUI needs a real
+    /// terminal to run: without a test like this, "Ctrl+Q quits" is only a
+    /// claim, and the two bindings that were removed could come back unnoticed.
+    #[test]
+    fn ctrl_q_is_the_only_way_out() {
+        let quit = Some(UiEvent::Quit);
+        // The plain case, and the shifted one, which arrives as 'Q'.
+        assert_eq!(
+            Tui::shortcut(&KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)),
+            quit
+        );
+        assert_eq!(
+            Tui::shortcut(&KeyEvent::new(
+                KeyCode::Char('Q'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT
+            )),
+            quit
+        );
+        // A terminal that sends the control code instead of 'q'+Ctrl.
+        assert_eq!(
+            Tui::shortcut(&KeyEvent::new(KeyCode::Char('\u{11}'), KeyModifiers::NONE)),
+            quit
+        );
+        // A bare q is a letter to type, not an exit.
+        assert_eq!(
+            Tui::shortcut(&KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+            None
+        );
+        // The old bindings are gone: Ctrl+X and Ctrl+C mean nothing now.
+        for code in [KeyCode::Char('x'), KeyCode::Char('X'), KeyCode::Char('c')] {
+            assert_eq!(
+                Tui::shortcut(&KeyEvent::new(code, KeyModifiers::CONTROL)),
+                None,
+                "{code:?} must not do anything"
+            );
+        }
+    }
+
     /// The wheel is the scroll control everybody reaches for first, so what one
     /// notch means is worth pinning down.
     #[test]
@@ -591,10 +669,10 @@ mod tests {
 
     #[test]
     fn completer_drives_the_popup() {
-        let c: SharedCompleter = Arc::new(StaticCompleter(vec![Candidate {
-            insert: "send_message".into(),
-            detail: "Send".into(),
-        }]));
+        let c: SharedCompleter = Arc::new(StaticCompleter(vec![Candidate::word(
+            "send_message",
+            "Send",
+        )]));
         let mut h = Headless::new();
         h.screen.input.insert_str("send");
         let candidates = c.complete(h.screen.input.text(), 4);

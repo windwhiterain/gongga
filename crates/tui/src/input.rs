@@ -100,6 +100,16 @@ pub struct Candidate {
     pub insert: String,
     /// Shown on the right of the popup.
     pub detail: String,
+    /// Whether a space follows the insertion. False for a directory, so that
+    /// Tab again descends into it instead of starting a new word.
+    pub space: bool,
+}
+
+impl Candidate {
+    /// The ordinary case: a word, with a space after it.
+    pub fn word(insert: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self { insert: insert.into(), detail: detail.into(), space: true }
+    }
 }
 
 /// An open completion popup.
@@ -136,7 +146,7 @@ pub fn apply_completion(line: &mut InputLine, completion: &Completion) {
         .replace_range(completion.start..completion.end, &candidate.insert);
     line.cursor = completion.start + candidate.insert.len();
     // Flags need a space before their value; command names before their flags.
-    if !line.text[line.cursor..].starts_with(' ') {
+    if candidate.space && !line.text[line.cursor..].starts_with(' ') {
         line.insert(' ');
     }
 }
@@ -169,8 +179,8 @@ mod tests {
             start: 0,
             end: 4,
             candidates: vec![
-                Candidate { insert: "a".into(), detail: "".into() },
-                Candidate { insert: "b".into(), detail: "".into() },
+                Candidate::word("a", ""),
+                Candidate::word("b", ""),
             ],
             selected: 0,
         }
@@ -194,11 +204,30 @@ mod tests {
             &Completion {
                 start: 0,
                 end: 4,
-                candidates: vec![Candidate { insert: "send_message".into(), detail: "".into() }],
+                candidates: vec![Candidate::word("send_message", "")],
                 selected: 0,
             },
         );
         assert_eq!(line.text(), "send_message ");
+    }
+
+    /// Tab on a directory has to leave the cursor against it, or the next Tab
+    /// has nothing to descend into.
+    #[test]
+    fn applying_a_directory_leaves_no_space() {
+        let mut line = InputLine::default();
+        line.insert_str("src");
+        apply_completion(
+            &mut line,
+            &Completion {
+                start: 0,
+                end: 3,
+                candidates: vec![Candidate { insert: "src/".into(), detail: "dir".into(), space: false }],
+                selected: 0,
+            },
+        );
+        assert_eq!(line.text(), "src/");
+        assert_eq!(line.cursor, 4);
     }
 
     #[test]

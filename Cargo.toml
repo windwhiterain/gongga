@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/protocol", "crates/server", "crates/cli", "crates/tui"]
+members = ["crates/protocol", "crates/server", "crates/cli", "crates/tui", "crates/bridge"]
 
 [workspace.package]
 version = "0.1.0"
@@ -15,6 +15,7 @@ protocol = { path = "crates/protocol", package = "gongga-protocol" }
 server = { path = "crates/server", package = "gongga-server" }
 cli = { path = "crates/cli", package = "gongga-cli" }
 tui = { path = "crates/tui", package = "gongga-tui" }
+bridge = { path = "crates/bridge", package = "gongga-bridge" }
 
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

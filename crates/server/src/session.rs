@@ -21,6 +21,30 @@ use crate::tools::detached::DetachedRegistry;
 /// The name of the shell every session starts with.
 pub const DEFAULT_BASH: &str = "default";
 
+/// What a session was told to use, as `set_session` left it.
+///
+/// Kept beside the session rather than in the agent because it is per-session
+/// state: two sessions on one server can run different models at different
+/// compaction points, and a turn reads this when it starts so a change applies
+/// to the next turn instead of restarting anything.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Tuning {
+    /// A roster entry, `provider/model`. `None` means "the server's own".
+    pub llm: Option<String>,
+    /// Compaction point as a percentage of the model's context window. `None`
+    /// means the server-wide character budget.
+    pub compact_threshold: Option<u8>,
+}
+
+impl Tuning {
+    /// Whether this session was given anything of its own, i.e. whether it
+    /// differs from what the server is configured with. A turn with nothing of
+    /// its own goes straight to the server's client and budget.
+    pub fn is_default(&self) -> bool {
+        self.llm.is_none() && self.compact_threshold.is_none()
+    }
+}
+
 /// A live session. Cheap to clone; the heavy parts are shared.
 #[derive(Clone)]
 pub struct SessionHandle {
@@ -33,9 +57,9 @@ struct SessionInner {
     shells: Arc<Mutex<ShellSet>>,
     cancel: Mutex<CancellationToken>,
     /// How many times the operator has cancelled. A turn compares this before
-    /// and after waiting its turn: if it moved, someone pressed Ctrl+X while
-    /// the turn was still queued, and running it anyway would look like the
-    /// cancel did nothing.
+    /// and after waiting its turn: if it moved, an `interrupt_session` arrived
+    /// while the turn was still queued, and running it anyway would look like
+    /// the cancel did nothing.
     cancels: AtomicU64,
     /// What every operation that reshapes this session queues behind.
     ///
@@ -46,13 +70,20 @@ struct SessionInner {
     /// a queue rather than a free-for-all: whoever asks first goes first.
     gate: Arc<AsyncMutex<()>>,
     turns: AtomicU64,
+    /// The `--llm` and `--compact_threshold` this session was given.
+    ///
+    /// Behind a lock rather than atomics because it is read as a pair and
+    /// written as a pair: a turn must not see a new model paired with the old
+    /// budget.
+    tuning: Mutex<Tuning>,
     /// Set once the session's rows are gone. A turn that was queued behind a
     /// `del_session` finds this when its turn comes and gives up instead of
     /// writing to a session that no longer exists.
     deleted: AtomicBool,
     /// Set by a `cancel` that shuts the server down: the turn stops, but its
-    /// pending row stays so the next start picks the turn back up. A Ctrl+X
-    /// cancel leaves this false, because there "stop" means "drop it".
+    /// pending row stays so the next start picks the turn back up.
+    /// `interrupt_session` leaves this false, because there "stop" means
+    /// "drop it".
     resumable: AtomicBool,
 }
 
@@ -67,6 +98,21 @@ impl SessionHandle {
 
     pub fn shells(&self) -> Arc<Mutex<ShellSet>> {
         self.inner.shells.clone()
+    }
+
+    /// What this session was told to use. Read at the start of every turn.
+    pub fn tuning(&self) -> Tuning {
+        self.inner
+            .tuning
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Replaces the tuning. The caller has already written it down; this is the
+    /// copy turns read.
+    pub fn set_tuning(&self, tuning: Tuning) {
+        *self.inner.tuning.lock().unwrap_or_else(|e| e.into_inner()) = tuning;
     }
 
     /// Whether someone is holding the gate right now. Only worth asking to
@@ -278,11 +324,25 @@ impl SessionManager {
             None => std::env::current_dir()?,
         };
         let id = self.store.create_session(name, &self.model, &cwd.to_string_lossy())?;
+        // Pin the entry the session starts on, when the roster knows that
+        // model. A session is not "whatever the server's default is today": its
+        // reasoning items carry blobs only the producing provider can replay,
+        // so a later change of default must not silently move it.
+        let pinned = crate::providers::roster()
+            .find_model_entry(&self.model)
+            .map(|e| e.spec());
+        if let Some(spec) = &pinned {
+            let _ = self
+                .store
+                .set_session_tuning(id, Some(spec), None, &self.model);
+        }
         self.materialise(SessionRow {
             id,
             name: name.to_string(),
             status: protocol::SessionStatus::Idle,
             model: self.model.clone(),
+            llm: pinned,
+            compact_threshold: None,
             cwd: cwd.to_string_lossy().to_string(),
             created_at: 0,
             updated_at: 0,
@@ -333,6 +393,18 @@ impl SessionManager {
                 cancels: AtomicU64::new(0),
                 gate: Arc::new(AsyncMutex::new(())),
                 turns: AtomicU64::new(0),
+                tuning: Mutex::new(Tuning {
+                    // `llm` is what the session was pinned to; a row that
+                    // predates it still knows its model, and the roster is what
+                    // turns that name back into a provider. Only a model the
+                    // roster has never heard of falls back to the server's own.
+                    llm: row.llm.clone().or_else(|| {
+                        crate::providers::roster()
+                            .find_model_entry(&row.model)
+                            .map(|e| e.spec())
+                    }),
+                    compact_threshold: row.compact_threshold,
+                }),
                 deleted: AtomicBool::new(false),
                 resumable: AtomicBool::new(false),
             }),
@@ -385,13 +457,15 @@ mod tests {
                 cancels: AtomicU64::new(0),
                 gate: Arc::new(AsyncMutex::new(())),
                 turns: AtomicU64::new(0),
+                tuning: Mutex::new(Tuning::default()),
                 deleted: AtomicBool::new(false),
                 resumable: AtomicBool::new(false),
             }),
         }
     }
 
-    /// Ctrl+X means "stop and drop it": nothing asks for the turn to resume.
+    /// `interrupt_session` means "stop and drop it": nothing asks for the turn
+    /// to resume.
     #[test]
     fn a_plain_cancel_does_not_preserve_the_turn() {
         let h = handle();

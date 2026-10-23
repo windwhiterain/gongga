@@ -42,9 +42,16 @@ pub struct Config {
 
 #[derive(Debug, Clone)]
 pub struct LlmConfig {
+    /// Roster id of the provider this configuration points at, when it points
+    /// at one. `None` means the built-in default was used because the machine
+    /// has no roster, and it is only used in messages.
+    pub provider: Option<String>,
     /// Base URL of an OpenAI-compatible Responses API. Defaults to MiniMax CN.
     pub base_url: String,
     pub model: String,
+    /// Context window of `model`, when something told us. `--compact_threshold`
+    /// is a percentage of this, so without it a percentage has no meaning.
+    pub context: Option<u64>,
     /// Name of the environment variable holding the API key.
     pub api_key_env: String,
     /// Resolved key. Empty when the variable is unset.
@@ -88,8 +95,6 @@ pub struct BashConfig {
 
 #[derive(Debug, Clone)]
 pub struct AgentConfig {
-    /// Safety valve on the number of model requests in a single turn.
-    pub max_steps: u32,
     /// Fold the older transcript into a summary once a request would carry more
     /// than this many characters. 0 disables compression, which will eventually
     /// hit the provider's context limit.
@@ -118,6 +123,9 @@ struct FileServer {
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct FileLlm {
+    /// Roster provider id, e.g. `deepseek-official`. Optional: naming only a
+    /// model finds the provider that has it.
+    provider: Option<String>,
     base_url: Option<String>,
     model: Option<String>,
     api_key_env: Option<String>,
@@ -145,7 +153,6 @@ struct FileBash {
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct FileAgent {
-    max_steps: Option<u32>,
     compress_above_chars: Option<usize>,
     keep_recent: Option<usize>,
 }
@@ -206,23 +213,42 @@ impl Config {
             });
 
         let llm_file = file.llm.unwrap_or_default();
+        // The roster (`~/.agents/llm.toml`) is the machine's own list of
+        // providers, endpoints and model context windows. Consulting it means
+        // the common case needs no configuration at all, and it is the same
+        // list `--llm` accepts, so there is one answer to "what models exist".
+        let roster = crate::providers::roster();
+        let entry = pick_entry(
+            roster,
+            env_or("GONGGA_PROVIDER").or(llm_file.provider.clone()),
+            env_or("GONGGA_MODEL").or(llm_file.model.clone()),
+        );
         let api_key_env = env_or("GONGGA_API_KEY_ENV")
-            .or(llm_file.api_key_env)
+            .or_else(|| llm_file.api_key_env.clone())
+            .or_else(|| entry.as_ref().and_then(|e| e.api_key_env.clone()))
             .unwrap_or_else(|| DEFAULT_API_KEY_ENV.to_string());
         let api_key = env_or("GONGGA_API_KEY")
             .or_else(|| std::env::var(&api_key_env).ok())
+            // The roster is the machine's own answer, so it is consulted before
+            // the DSH credential store rather than after: a file that names the
+            // key is more specific than one that only names a variable.
+            .or_else(|| entry.as_ref().and_then(|e| e.key.clone()).filter(|k| !k.is_empty()))
             // Last resort: the credential store DSH keeps on this machine, so a
             // provider key does not have to be exported by hand.
             .or_else(|| dsh_credential(&api_key_env))
             .unwrap_or_default();
 
         let llm = LlmConfig {
+            provider: entry.as_ref().map(|e| e.provider.clone()),
             base_url: env_or("GONGGA_BASE_URL")
                 .or(llm_file.base_url)
+                .or_else(|| entry.as_ref().map(|e| e.base_url.clone()))
                 .unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
             model: env_or("GONGGA_MODEL")
                 .or(llm_file.model)
+                .or_else(|| entry.as_ref().map(|e| e.model.clone()))
                 .unwrap_or_else(|| DEFAULT_MODEL.to_string()),
+            context: entry.as_ref().and_then(|e| e.context),
             api_key_env,
             api_key,
             instructions: llm_file.instructions.unwrap_or_else(default_instructions),
@@ -244,7 +270,11 @@ impl Config {
             max_retries: llm_file
                 .max_retries
                 .or_else(|| env_or("GONGGA_LLM_MAX_RETRIES").and_then(|v| v.parse().ok()))
-                .unwrap_or(3),
+                // 0 is no ceiling: retry until the turn is cancelled. A long
+                // run must not die because a provider had a bad minute at hour
+                // three, and nothing about a provider's recovery time is
+                // knowable in advance.
+                .unwrap_or(0),
             retry_base: Duration::from_millis(
                 llm_file
                     .retry_base_ms
@@ -269,12 +299,6 @@ impl Config {
         };
 
         let agent = AgentConfig {
-            max_steps: file
-                .agent
-                .as_ref()
-                .and_then(|a| a.max_steps)
-                .or_else(|| env_or("GONGGA_MAX_STEPS").and_then(|v| v.parse().ok()))
-                .unwrap_or(64),
             compress_above_chars: file
                 .agent
                 .as_ref()
@@ -333,9 +357,14 @@ impl Config {
              key = \"{key}\"\n\
              \n\
              [llm]\n\
-             base_url = \"{base_url}\"\n\
-             model = \"{model}\"\n\
-             api_key_env = \"{api_key_env}\"\n\
+             # Which provider to talk to. These are left commented out on purpose:\n\
+             # the roster at ~/.agents/llm.toml already says what this machine can\n\
+             # reach, and the first entry that works is a better default than a\n\
+             # name frozen into this file. Uncomment to override it.\n\
+             # provider = \"{provider}\"\n\
+             # model = \"{model}\"\n\
+             # base_url = \"{base_url}\"\n\
+             # api_key_env = \"{api_key_env}\"\n\
              store = {store}\n\
              # A request that never answers used to park a turn forever. These\n\
              # bound it: one request may take this long overall, and this long\n\
@@ -343,7 +372,8 @@ impl Config {
              request_timeout_ms = {request_timeout}\n\
              idle_timeout_ms = {idle_timeout}\n\
              # Retries after a failure, a timeout, or a response with nothing in\n\
-             # it. The delay doubles each time: {retry_base}ms, then twice that.\n\
+             # it. 0 = no ceiling: retry until the turn is cancelled. The delay\n\
+             # doubles each time up to 30s: {retry_base}ms, then twice that.\n\
              max_retries = {max_retries}\n\
              retry_base_ms = {retry_base}\n\
              \n\
@@ -354,7 +384,9 @@ impl Config {
              max_output_chars = {max_output_chars}\n\
              \n\
              [agent]\n\
-             max_steps = {max_steps}\n\
+             # No step limit: a turn runs until the work is done. Only the\n\
+             # transcript size is managed, so a long turn stays inside the\n\
+             # model's context window.\n\
              # Fold the transcript into a summary once a request would carry more\n\
              # than this many characters. 0 disables it.\n\
              compress_above_chars = {compress_above_chars}\n\
@@ -367,6 +399,7 @@ impl Config {
             bind = self.bind,
             db = toml_path(&self.db_path),
             key = self.key,
+            provider = self.llm.provider.clone().unwrap_or_default(),
             base_url = self.llm.base_url,
             model = self.llm.model,
             api_key_env = self.llm.api_key_env,
@@ -377,7 +410,6 @@ impl Config {
             retry_base = self.llm.retry_base.as_millis(),
             timeout = self.bash.timeout.as_millis(),
             max_output_chars = self.bash.max_output_chars,
-            max_steps = self.agent.max_steps,
             compress_above_chars = self.agent.compress_above_chars,
             keep_recent = self.agent.keep_recent,
             mtu = self.transport.mtu,
@@ -385,6 +417,67 @@ impl Config {
         );
         std::fs::write(path, text)?;
         Ok(())
+    }
+}
+
+/// Picks the roster entry the server should talk to.
+///
+/// Precedence is "the more specific word wins": a provider and a model name an
+/// exact entry; a model alone finds the provider that carries it; nothing at
+/// all takes the roster's first usable entry. A configuration that names
+/// something the roster cannot place is a warning rather than a failure -- the
+/// built-in default still gets the server up, and the line says what was
+/// actually used, which is how a typo is found.
+fn pick_entry(
+    roster: &crate::providers::Catalog,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Option<crate::providers::Entry> {
+    match (provider, model) {
+        (Some(p), Some(m)) => {
+            let spec = format!("{p}/{m}");
+            match roster.entry(&spec) {
+                Ok(entry) => Some(entry),
+                Err(e) => {
+                    tracing::warn!(spec = %spec, error = %e, "llm: the roster cannot place this; using the built-in default");
+                    None
+                }
+            }
+        }
+        (Some(p), None) => match roster.first_entry_of(&p) {
+            Some(entry) => Some(entry),
+            None => {
+                tracing::warn!(provider = %p, "llm: no such provider in the roster; using the built-in default");
+                None
+            }
+        },
+        (None, Some(m)) => match roster.find_model_entry(&m) {
+            Some(entry) => Some(entry),
+            None => {
+                tracing::warn!(model = %m, "llm: no provider in the roster has this model; using the built-in default");
+                None
+            }
+        },
+        (None, None) => roster.default_entry(),
+    }
+}
+
+impl LlmConfig {
+    /// The same transport, retries and instructions, pointed at another roster
+    /// entry.
+    ///
+    /// A session that names its own `--llm` is choosing a different brain, not
+    /// a different protocol: timeouts, retry policy and the shell instructions
+    /// stay exactly as configured.
+    pub fn for_entry(&self, entry: &crate::providers::Entry, api_key: String) -> Self {
+        let mut cfg = self.clone();
+        cfg.provider = Some(entry.provider.clone());
+        cfg.base_url = entry.base_url.clone();
+        cfg.model = entry.model.clone();
+        cfg.context = entry.context;
+        cfg.api_key_env = entry.api_key_env.clone().unwrap_or_default();
+        cfg.api_key = api_key;
+        cfg
     }
 }
 
@@ -586,6 +679,70 @@ mod tests {
         assert!(text.contains("model = \"keep\""), "{text}");
         let cfg = read_file(&path).unwrap();
         assert_eq!(cfg.server.unwrap().key.as_deref(), Some("abc"));
+    }
+
+    /// The roster is what makes "no [llm] section" work. These are the four
+    /// ways a configuration can name something, and the one way it can be
+    /// wrong: a typo must not stop the server from starting.
+    #[test]
+    fn the_roster_answers_what_the_config_does_not_say() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("llm.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[provider]]
+id = "p1"
+key = "k1"
+  [[provider.endpoint]]
+  api = "openai-responses"
+  base_url = "https://one.example/v1"
+  [[provider.model]]
+  id = "m1"
+  context = 1000
+
+[[provider]]
+id = "p2"
+key = "k2"
+  [[provider.endpoint]]
+  api = "openai-completions"
+  base_url = "https://two.example/v1"
+  [[provider.model]]
+  id = "m2"
+  context = 2000
+  endpoints = ["/responses"]
+"#,
+        )
+        .unwrap();
+        let roster = crate::providers::Catalog::load(&path);
+
+        // Nothing said: the first entry that works.
+        let entry = pick_entry(&roster, None, None).expect("a default exists");
+        assert_eq!(entry.spec(), "p1/m1");
+        assert_eq!(entry.base_url, "https://one.example/v1");
+
+        // A model alone finds the provider that carries it.
+        assert_eq!(
+            pick_entry(&roster, None, Some("m2".into())).unwrap().spec(),
+            "p2/m2"
+        );
+        // A provider alone takes its first model.
+        assert_eq!(
+            pick_entry(&roster, Some("p2".into()), None).unwrap().spec(),
+            "p2/m2"
+        );
+        // Both is exact.
+        assert_eq!(
+            pick_entry(&roster, Some("p2".into()), Some("m2".into()))
+                .unwrap()
+                .spec(),
+            "p2/m2"
+        );
+        // A typo is a warning and a fallback, not a refusal to start.
+        assert!(pick_entry(&roster, Some("nope".into()), Some("m2".into())).is_none());
+        assert!(pick_entry(&roster, None, Some("nope".into())).is_none());
+        // An empty roster is simply no opinion.
+        assert!(pick_entry(&crate::providers::Catalog::empty(), None, None).is_none());
     }
 
     #[test]

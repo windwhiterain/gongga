@@ -3,7 +3,13 @@
 //! The TUI supplies the token; this decides what could go there. It merges two
 //! catalogs: the server's, published at connect time, and the client's own
 //! (`set_persistant_cmd_argument` and friends), which never leave the process.
+//!
+//! Both halves complete: the flag *names* come from the spec, and the flag
+//! *values* from whatever the spec says can be enumerated -- the live session
+//! list, a fixed set, every argument name, the filesystem, or another
+//! argument's list when the value is a name that chooses one.
 
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use protocol::{ArgSpec, CommandSpec, CompletionSource};
@@ -13,11 +19,24 @@ use tui::{Candidate, Completer};
 #[derive(Clone, Default)]
 pub struct Catalog(Arc<RwLock<Inner>>);
 
-#[derive(Default)]
 struct Inner {
     server: Vec<CommandSpec>,
     client: Vec<CommandSpec>,
     sessions: Vec<String>,
+    /// Where a relative path value is read from: the client's own directory,
+    /// because that is the one the user was looking at when they typed.
+    cwd: PathBuf,
+}
+
+impl Default for Inner {
+    fn default() -> Self {
+        Self {
+            server: Vec::new(),
+            client: Vec::new(),
+            sessions: Vec::new(),
+            cwd: std::env::current_dir().unwrap_or_default(),
+        }
+    }
 }
 
 impl Catalog {
@@ -31,6 +50,15 @@ impl Catalog {
 
     pub fn set_sessions(&self, sessions: Vec<String>) {
         self.write().sessions = sessions;
+    }
+
+    /// Points path completion somewhere other than the process's directory.
+    ///
+    /// Production never moves it: the user's shell is already in the directory
+    /// they mean. Tests need to aim it at a tree they built.
+    #[cfg(test)]
+    pub fn set_cwd(&self, cwd: impl Into<PathBuf>) {
+        self.write().cwd = cwd.into();
     }
 
     /// Rebuilds the client-side specs, whose `--name` completion depends on the
@@ -63,23 +91,32 @@ impl Catalog {
     }
 }
 
+/// What a value may be completed against, snapshotted out of the catalog so the
+/// lock is not held while the filesystem is read.
+struct Ctx<'a> {
+    sessions: &'a [String],
+    cwd: &'a Path,
+    all: &'a [CommandSpec],
+}
+
 impl Completer for Catalog {
     fn complete(&self, line: &str, cursor: usize) -> Vec<Candidate> {
         let (_, _, token) = tui::token_bounds(line, cursor);
         let words = shell_words::split(line).unwrap_or_default();
         let position = line[..cursor.min(line.len())].split_whitespace().count();
-        let (server, client, sessions) = {
+        let (server, client, sessions, cwd) = {
             let inner = self.read();
             (
                 inner.server.clone(),
                 inner.client.clone(),
                 inner.sessions.clone(),
+                inner.cwd.clone(),
             )
         };
         let all: Vec<CommandSpec> = client.iter().cloned().chain(server.iter().cloned()).collect();
+        let cmd = words.first().map(|t| t.trim_start_matches('/'));
 
         if let Some(prefix) = token.strip_prefix("--") {
-            let cmd = words.first().map(|t| t.trim_start_matches('/'));
             let args: &[ArgSpec] = cmd
                 .and_then(|c| all.iter().find(|s| s.name == c))
                 .map(|c| c.args.as_slice())
@@ -87,10 +124,7 @@ impl Completer for Catalog {
             return args
                 .iter()
                 .filter(|a| a.name.starts_with(prefix))
-                .map(|a| Candidate {
-                    insert: format!("--{}", a.name),
-                    detail: a.summary.clone(),
-                })
+                .map(|a| Candidate::word(format!("--{}", a.name), a.summary.clone()))
                 .collect();
         }
 
@@ -99,42 +133,164 @@ impl Completer for Catalog {
             return all
                 .iter()
                 .filter(|c| c.name.starts_with(prefix))
-                .map(|c| Candidate {
-                    insert: c.name.clone(),
-                    detail: c.summary.clone(),
-                })
+                .map(|c| Candidate::word(c.name.clone(), c.summary.clone()))
                 .collect();
         }
 
         // Past the command name: only a flag's value, and only when the spec
-        // says where the candidates come from.
-        let Some(prev) = words.get(position.wrapping_sub(1)) else {
+        // says where the candidates come from. The flag sits one word back when
+        // the value has not been started yet, and two when it has: `--session
+        // <TAB>` and `--session sc<TAB>` both complete the same list.
+        let flag_index = if token.is_empty() {
+            position.checked_sub(1)
+        } else {
+            position.checked_sub(2)
+        };
+        let Some(flag) = flag_index
+            .and_then(|i| words.get(i))
+            .and_then(|w| w.strip_prefix("--"))
+        else {
             return Vec::new();
         };
-        let Some(flag) = prev.strip_prefix("--") else {
-            return Vec::new();
-        };
-        let cmd = words.first().map(|t| t.trim_start_matches('/'));
         let Some(spec) = cmd
             .and_then(|c| all.iter().find(|s| s.name == c))
             .and_then(|c| c.args.iter().find(|a| a.name == flag))
         else {
             return Vec::new();
         };
-        match &spec.completions {
-            CompletionSource::None => Vec::new(),
-            CompletionSource::Sessions => sessions
+        let ctx = Ctx { sessions: &sessions, cwd: &cwd, all: &all };
+        resolve(&spec.completions, &token, &ctx, &words, 0)
+    }
+}
+
+/// Turns one argument's declared source into candidates.
+///
+/// `depth` exists for the single case that points back into the catalog: a
+/// value completed the way another argument's values are. One hop is enough for
+/// the shape the client actually declares.
+fn resolve(
+    source: &CompletionSource,
+    token: &str,
+    ctx: &Ctx,
+    words: &[String],
+    depth: u8,
+) -> Vec<Candidate> {
+    match source {
+        CompletionSource::None => Vec::new(),
+        CompletionSource::Sessions => {
+            pick(ctx.sessions.iter().map(String::as_str), token, "session")
+        }
+        CompletionSource::Static(values) => {
+            pick(values.iter().map(String::as_str), token, "value")
+        }
+        CompletionSource::Arguments => {
+            let mut names: Vec<&str> = ctx
+                .all
                 .iter()
-                .filter(|s| s.starts_with(token.as_str()))
-                .map(|s| Candidate { insert: s.clone(), detail: "session".into() })
-                .collect(),
-            CompletionSource::Static(values) => values
+                .flat_map(|c| c.args.iter().map(|a| a.name.as_str()))
+                .collect();
+            names.sort_unstable();
+            names.dedup();
+            pick(names.into_iter(), token, "argument")
+        }
+        CompletionSource::Paths => paths(ctx.cwd, token),
+        CompletionSource::OfNamedArgument if depth < 2 => {
+            let Some(named) = flag_value(words, "name") else {
+                return Vec::new();
+            };
+            let found = ctx
+                .all
                 .iter()
-                .filter(|v| v.starts_with(token.as_str()))
-                .map(|v| Candidate { insert: v.clone(), detail: "value".into() })
-                .collect(),
+                .flat_map(|c| c.args.iter())
+                .find(|a| {
+                    a.name == named
+                        && !matches!(
+                            a.completions,
+                            CompletionSource::None | CompletionSource::OfNamedArgument
+                        )
+                })
+                .map(|a| a.completions.clone());
+            match found {
+                Some(source) => resolve(&source, token, ctx, words, depth + 1),
+                None => Vec::new(),
+            }
+        }
+        CompletionSource::OfNamedArgument => Vec::new(),
+    }
+}
+
+fn pick<'a>(values: impl Iterator<Item = &'a str>, prefix: &str, detail: &str) -> Vec<Candidate> {
+    values
+        .filter(|v| v.starts_with(prefix))
+        .map(|v| Candidate::word(v, detail))
+        .collect()
+}
+
+/// The value written after `--flag` on this line, in either spelling.
+fn flag_value<'a>(words: &'a [String], flag: &str) -> Option<&'a str> {
+    let dashed = format!("--{flag}");
+    for (i, word) in words.iter().enumerate() {
+        if let Some(value) = word.strip_prefix(&dashed).and_then(|r| r.strip_prefix('=')) {
+            return Some(value);
+        }
+        if *word == dashed {
+            return words.get(i + 1).map(String::as_str);
         }
     }
+    None
+}
+
+/// Lists the filesystem under `cwd`, keeping the directory part the user
+/// already typed.
+///
+/// Directories come back with a trailing `/` and without the usual trailing
+/// space, so Tab twice walks down a tree instead of starting a new word.
+fn paths(cwd: &Path, token: &str) -> Vec<Candidate> {
+    let (typed_dir, prefix) = match token.rfind(['/', '\\']) {
+        Some(at) => token.split_at(at + 1),
+        None => ("", token),
+    };
+    let Ok(entries) = std::fs::read_dir(directory(cwd, typed_dir)) else {
+        return Vec::new();
+    };
+    let mut out: Vec<Candidate> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            // Dotfiles stay out of the way until the user asks for them, the
+            // way a shell behaves.
+            if name.starts_with('.') && !prefix.starts_with('.') {
+                return None;
+            }
+            if !name.starts_with(prefix) {
+                return None;
+            }
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                Some(Candidate {
+                    insert: format!("{typed_dir}{name}/"),
+                    detail: "dir".into(),
+                    space: false,
+                })
+            } else {
+                Some(Candidate::word(format!("{typed_dir}{name}"), "file"))
+            }
+        })
+        .collect();
+    out.sort_by(|a, b| a.insert.cmp(&b.insert));
+    out
+}
+
+/// The directory `typed` names, read relative to the client's directory. `~` is
+/// expanded because `--cwd ~/work` is how people write it.
+fn directory(cwd: &Path, typed: &str) -> PathBuf {
+    let path = match typed.strip_prefix('~') {
+        Some(rest) => match dirs::home_dir() {
+            Some(home) => home.join(rest.trim_start_matches(['/', '\\'])),
+            None => PathBuf::from(typed),
+        },
+        None => PathBuf::from(typed),
+    };
+    if path.is_absolute() { path } else { cwd.join(path) }
 }
 
 /// The commands the CLI handles itself. Their arguments complete against the
@@ -145,8 +301,21 @@ fn client_specs(sticky: &[String]) -> Vec<CommandSpec> {
             name: "set_persistant_cmd_argument".into(),
             summary: "Set a sticky argument applied to every later command.".into(),
             args: vec![
-                arg("name", "Argument name, e.g. `session`.", true, Some("name"), CompletionSource::None),
-                arg("value", "Value to apply when the flag is omitted.", true, Some("value"), CompletionSource::None),
+                arg(
+                    "name",
+                    "Argument name, e.g. `session`.",
+                    true,
+                    Some("name"),
+                    CompletionSource::Arguments,
+                ),
+                arg(
+                    "value",
+                    "Value to apply when the flag is omitted. Completes the way the named \
+                     argument does.",
+                    true,
+                    Some("value"),
+                    CompletionSource::OfNamedArgument,
+                ),
             ],
         },
         CommandSpec {
@@ -186,68 +355,129 @@ mod tests {
     fn catalog() -> Catalog {
         let c = Catalog::new();
         c.set_sticky_names(&["session".to_string()]);
-        c.set_server_commands(vec![CommandSpec {
-            name: "send_message".into(),
-            summary: "Send a message.".into(),
-            args: vec![
-                arg("message", "The text.", true, None, CompletionSource::None),
-                arg("session", "Target.", false, None, CompletionSource::Sessions),
-            ],
-        }]);
+        c.set_server_commands(vec![
+            CommandSpec {
+                name: "send_message".into(),
+                summary: "Send a message.".into(),
+                args: vec![
+                    arg("message", "The text.", true, None, CompletionSource::None),
+                    arg("session", "Target.", false, None, CompletionSource::Sessions),
+                ],
+            },
+            CommandSpec {
+                name: "set_session".into(),
+                summary: "Create or configure.".into(),
+                args: vec![
+                    arg("session", "Target.", true, None, CompletionSource::Sessions),
+                    arg("cwd", "Directory.", false, None, CompletionSource::Paths),
+                ],
+            },
+        ]);
         c.set_sessions(vec!["main".into(), "scratch".into()]);
         c
+    }
+
+    fn values(c: &Catalog, line: &str) -> Vec<String> {
+        c.complete(line, line.len())
+            .into_iter()
+            .map(|x| x.insert)
+            .collect()
     }
 
     #[test]
     fn completes_command_names_from_both_catalogs() {
         let c = catalog();
-        let names: Vec<String> = c.complete("set", 3).into_iter().map(|x| x.insert).collect();
-        assert_eq!(names, vec!["set_persistant_cmd_argument"]);
-        let names: Vec<String> = c.complete("send", 4).into_iter().map(|x| x.insert).collect();
-        assert_eq!(names, vec!["send_message"]);
+        assert_eq!(values(&c, "set_pers"), vec!["set_persistant_cmd_argument"]);
+        assert_eq!(values(&c, "send"), vec!["send_message"]);
     }
 
     #[test]
     fn completes_flag_names() {
         let c = catalog();
-        let line = "send_message --s";
-        let got: Vec<String> = c
-            .complete(line, line.len())
-            .into_iter()
-            .map(|x| x.insert)
-            .collect();
-        assert_eq!(got, vec!["--session"]);
+        assert_eq!(values(&c, "send_message --s"), vec!["--session"]);
     }
 
     #[test]
     fn completes_flag_values_from_sessions() {
         let c = catalog();
-        let line = "send_message --session ";
-        let got: Vec<String> = c
-            .complete(line, line.len())
-            .into_iter()
-            .map(|x| x.insert)
-            .collect();
-        assert_eq!(got, vec!["main", "scratch"]);
+        assert_eq!(values(&c, "send_message --session "), vec!["main", "scratch"]);
+        assert_eq!(values(&c, "send_message --session sc"), vec!["scratch"]);
     }
 
     #[test]
     fn free_form_values_yield_nothing() {
         let c = catalog();
-        let line = "send_message --message ";
-        assert!(c.complete(line, line.len()).is_empty());
+        assert!(values(&c, "send_message --message ").is_empty());
     }
 
     #[test]
     fn sticky_names_complete_against_state() {
         let c = catalog();
-        let line = "del_persistant_cmd_argument --name ";
-        let got: Vec<String> = c
-            .complete(line, line.len())
-            .into_iter()
-            .map(|x| x.insert)
-            .collect();
-        assert_eq!(got, vec!["session"]);
+        assert_eq!(values(&c, "del_persistant_cmd_argument --name "), vec!["session"]);
+    }
+
+    /// `--name` takes an argument name, so it offers the catalog's, once each,
+    /// whichever command declared them.
+    #[test]
+    fn argument_names_complete_from_the_whole_catalog() {
+        let c = catalog();
+        let got = values(&c, "set_persistant_cmd_argument --name ");
+        assert_eq!(got, vec!["cwd", "message", "name", "session", "value"]);
+    }
+
+    /// The point of the sticky value: it fills `session`, so it should offer
+    /// sessions -- without the user having to remember the names.
+    #[test]
+    fn a_sticky_value_completes_like_the_argument_it_fills() {
+        let c = catalog();
+        assert_eq!(
+            values(&c, "set_persistant_cmd_argument --name session --value "),
+            vec!["main", "scratch"]
+        );
+        assert_eq!(
+            values(&c, "set_persistant_cmd_argument --name=session --value ma"),
+            vec!["main"]
+        );
+    }
+
+    /// A free-form argument stays free-form, and so does anything the catalog
+    /// does not know.
+    #[test]
+    fn a_sticky_value_for_a_free_form_argument_offers_nothing() {
+        let c = catalog();
+        assert!(values(&c, "set_persistant_cmd_argument --name message --value ").is_empty());
+        assert!(values(&c, "set_persistant_cmd_argument --value main").is_empty());
+    }
+
+    /// A path value lists the directory it names, and a directory is inserted
+    /// without a space so the next Tab can descend.
+    #[test]
+    fn paths_complete_from_the_working_directory() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join("sub")).unwrap();
+        std::fs::create_dir(d.path().join("dup")).unwrap();
+        std::fs::write(d.path().join("solo.txt"), "x").unwrap();
+        std::fs::write(d.path().join(".hidden"), "x").unwrap();
+        std::fs::write(d.path().join("sub").join("inner.txt"), "x").unwrap();
+        let c = catalog();
+        c.set_cwd(d.path());
+
+        let line = "set_session --session s --cwd s";
+        let got = c.complete(line, line.len());
+        let dir = got.iter().find(|x| x.insert == "sub/").expect("the directory");
+        assert!(!dir.space, "a directory must not be followed by a space");
+        let file = got.iter().find(|x| x.insert == "solo.txt").expect("the file");
+        assert!(file.space, "a file ends the word");
+
+        // Descending: the trailing `/` keeps the token inside the directory.
+        assert_eq!(values(&c, "set_session --cwd sub/"), vec!["sub/inner.txt"]);
+        // Dotfiles only when asked for.
+        assert!(values(&c, "set_session --cwd ")
+            .iter()
+            .all(|v| !v.starts_with('.')));
+        assert_eq!(values(&c, "set_session --cwd .h"), vec![".hidden"]);
+        // A prefix that names nothing is not an error, just no candidates.
+        assert!(values(&c, "set_session --cwd nowhere/").is_empty());
     }
 
     #[test]

@@ -9,7 +9,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::{LineKind, Screen};
 
-pub const HELP: &str = "↑↓ history · Ctrl+↑↓ or PgUp/PgDn page · Shift+↑↓ row · wheel scroll · Tab complete · Ctrl+X cancel · Ctrl+C quit";
+pub const HELP: &str = "↑↓ history · Ctrl+↑↓ or PgUp/PgDn page · Shift+↑↓ row · wheel scroll · Tab complete · Ctrl+Q quit";
 
 /// Rows the layout spends on everything that is not the log: header, footer,
 /// input and help. The log takes what is left, so scrolling needs this to know

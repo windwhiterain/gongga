@@ -25,18 +25,18 @@ all in database (sqlite), structured for agentic retrieval/mutation.
     - cmd
     - cmd_result
     - response{session, reasoning, toolcall, output}: streaming.
-    - tool_result{session, ...}: 
+    - tool_result{session, toocall, ...}: 
         - bash's output streaming.
 - cmd_input: perfix select, auto complete.
     ""
-- persistant_cmd_arguments[{name, value}]: auto fill in cmd argument if not provided.
+- sticky_cmd_arguments[{name, value}]: auto fill in cmd argument if not provided.
 ## Cmd
-server:
-- `set_session --name <name> [--cwd <cwd>]`
-- `del_session --name <name>`
-- `send_message --message <message> --session <session>`
-- `interrupt_session --name <name>`
-- `cancle`: not instantly, but finish every task that can't be serialized to data, then store the pending tasks into data, the exit. next start will auto pick up those tasks.
-client:
-- `set_persistant_cmd_argument --name <name> --value <value>`
-- `del_persistant_cmd_argument --name <name>`
+- server:
+    - `set_session --session <name> [--cwd <path>] [--llm <provider/model>] [--compact_threshold <n%>]`
+    - `del_session --session <name>`
+    - `send_message --session <name> --message <string>`
+    - `interrupt_session --session <name>`
+    - `cancle`: not instantly, but finish every task that can't be serialized to data, then store the pending tasks into data, the exit. next start will auto pick up those tasks.
+- client:
+    - `set_sticky_cmd_argument --name <name> --value <value>`
+    - `del_sticky_cmd_argument --name <name>`

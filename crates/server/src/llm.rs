@@ -65,6 +65,14 @@ impl LlmClient {
         })
     }
 
+    /// The model this client asks for.
+    ///
+    /// Logged at the start of every turn, so "which model answered this one"
+    /// is a fact rather than something to infer from the transcript.
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
     /// Streams one model request. `summary`, when present, stands in for the
     /// part of the transcript that has been compressed away; it is sent as the
     /// first item so the model reads it before anything else.
@@ -156,8 +164,9 @@ impl LlmClient {
                         delay,
                     })
                     .await;
-                // Waiting out the delay, but not past a cancel: Ctrl+X has to
-                // stay responsive while a retry is pending.
+                // Waiting out the delay, but not past a cancel: an
+                // `interrupt_session` has to stay responsive while a retry is
+                // pending.
                 tokio::select! {
                     _ = cancel.cancelled() => {
                         let _ = tx.send(LlmEvent::Cancelled).await;
@@ -231,15 +240,26 @@ impl LlmClient {
     ///
     /// Retried on the same terms as a stream: an empty summary is not a
     /// summary, and a provider that swallowed the request once often answers
-    /// the second time.
-    pub async fn summarise(&self, prompt: &str) -> anyhow::Result<String> {
+    /// the second time. `max_retries == 0` is no ceiling, so the turn's
+    /// `cancel` is what stops it -- compression must never outlive the turn
+    /// that asked for it.
+    pub async fn summarise(
+        &self,
+        prompt: &str,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<String> {
         let mut attempt: u32 = 0;
         loop {
+            if cancel.is_cancelled() {
+                anyhow::bail!("cancelled while summarising");
+            }
             match self.summarise_once(prompt).await {
                 Ok(text) if !text.trim().is_empty() => return Ok(text),
-                Ok(empty) if attempt >= self.max_retries => return Ok(empty),
+                Ok(empty) if self.max_retries != 0 && attempt >= self.max_retries => {
+                    return Ok(empty)
+                }
                 Ok(_) => tracing::warn!(attempt, "compression came back empty; retrying"),
-                Err(e) if attempt >= self.max_retries => return Err(e),
+                Err(e) if self.max_retries != 0 && attempt >= self.max_retries => return Err(e),
                 Err(e) => tracing::warn!(attempt, error = %e, "compression request failed; retrying"),
             }
             attempt += 1;
@@ -390,8 +410,13 @@ fn backoff(base: Duration, attempt: u32) -> Duration {
 /// anything, asking again would stand a second, different answer behind the
 /// first. Everything else -- an error, a timeout, a completion with nothing in
 /// it -- is the provider's bad minute and deserves another try.
+///
+/// `max_retries == 0` is *no ceiling*: a long-running turn is not allowed to
+/// die on a transient outage at hour three, so the default retries until the
+/// turn's cancel token fires. The cancel is the only honest stop -- nothing
+/// about a bad provider's recovery time is knowable in advance.
 fn retryable(attempt: u32, max_retries: u32, produced: bool) -> bool {
-    attempt < max_retries && !produced
+    (max_retries == 0 || attempt < max_retries) && !produced
 }
 
 /// One attempt at a streaming request, handed back as a channel.
@@ -1015,12 +1040,16 @@ mod tests {
     fn a_silent_response_is_retried_but_a_spoken_one_is_not() {
         assert!(retryable(0, 3, false));
         assert!(retryable(2, 3, false));
-        // Out of attempts.
+        // Out of attempts under an explicit ceiling.
         assert!(!retryable(3, 3, false));
         // Already produced content: another answer would contradict it.
         assert!(!retryable(0, 3, true));
-        // Retries off entirely.
-        assert!(!retryable(0, 0, false));
+        // 0 is "no ceiling", not "no retries": a ten-day turn must not die on
+        // a transient outage, and the cancel token is what stops it.
+        assert!(retryable(0, 0, false));
+        assert!(retryable(10_000, 0, false));
+        // Even unlimited retries never ask twice after the model has spoken.
+        assert!(!retryable(0, 0, true));
     }
 
     #[test]
