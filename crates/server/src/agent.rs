@@ -432,19 +432,21 @@ impl Agent {
         let Some(cut) = choose_cut(&live, self.keep_recent) else {
             return;
         };
-        let Ok(history) = self.store.history(id) else {
+        // Asked for by sequence rather than cut out of the whole transcript:
+        // the mapping from rows to items is not one-to-one, so counting rows
+        // covered a range that was not the one the cut named -- and a summary
+        // that swallows a message from after the cut loses it.
+        let Ok(old) = self.store.history_between(id, upto, cut) else {
             return;
         };
-        let covered = index.iter().take_while(|(s, _)| *s <= cut).count();
-        if covered == 0 {
+        if old.is_empty() {
             return;
         }
-        let mut old: Vec<HistoryItem> = history;
-        old.truncate(covered);
+        let covered = old.len();
 
         self.bus.publish(Event::Log {
             level: LogLevel::Info,
-            message: format!("{name}: compressing {covered} message(s) into a summary"),
+            message: format!("{name}: compressing {covered} item(s) into a summary"),
         });
         let started = std::time::Instant::now();
         let prompt = summary_prompt(previous.as_deref(), &old);

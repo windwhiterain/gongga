@@ -358,26 +358,50 @@ impl Store {
     }
 
     /// Loads the transcript in the order the model should see it.
-    pub fn history(&self, session_id: i64) -> anyhow::Result<Vec<HistoryItem>> {
-        self.history_since(session_id, 0)
-    }
-
     /// The part of the transcript after `seq`. A summary, once written, stands
     /// in for everything up to its `summarised_upto`, so that is all a request
     /// needs. The rows themselves are never deleted -- the full transcript
     /// stays available to `history` and to anything that wants to audit it.
+    /// The whole transcript, as a request would see it.
+    ///
+    /// Test-only: production code always has a lower bound (a summary) or both
+    /// (compaction), and a method nobody calls is a second way to ask the same
+    /// question.
+    #[cfg(test)]
+    pub fn history(&self, session_id: i64) -> anyhow::Result<Vec<HistoryItem>> {
+        self.history_between(session_id, 0, i64::MAX)
+    }
+
     pub fn history_since(
         &self,
         session_id: i64,
         after_seq: i64,
     ) -> anyhow::Result<Vec<HistoryItem>> {
+        self.history_between(session_id, after_seq, i64::MAX)
+    }
+
+    /// The rows in `(after_seq, upto_seq]`, mapped exactly like
+    /// [`Self::history_since`].
+    ///
+    /// Compaction needs both bounds, and it needs them as one query: the
+    /// mapping below is not one-to-one with rows -- a `notice` row is skipped,
+    /// an unanswered tool call gains a placeholder -- so "how many items does
+    /// the old half hold" cannot be answered by counting rows, which is how the
+    /// summary used to cover a range that was not the one it was asked for.
+    pub fn history_between(
+        &self,
+        session_id: i64,
+        after_seq: i64,
+        upto_seq: i64,
+    ) -> anyhow::Result<Vec<HistoryItem>> {
         let rows = {
             let conn = self.lock();
             let mut stmt = conn.prepare(
-                "SELECT kind, content FROM messages WHERE session_id = ?1 AND seq > ?2
-                 ORDER BY seq",
+                "SELECT kind, content FROM messages
+                  WHERE session_id = ?1 AND seq > ?2 AND seq <= ?3
+                  ORDER BY seq",
             )?;
-            stmt.query_map(params![session_id, after_seq], |r| {
+            stmt.query_map(params![session_id, after_seq, upto_seq], |r| {
                 let kind: String = r.get(0)?;
                 let content: String = r.get(1)?;
                 Ok((kind, content))
@@ -1125,6 +1149,41 @@ mod tests {
         assert_eq!(row.compact_threshold, Some(30));
         assert_eq!(row.thinking_effort.as_deref(), Some("high"));
         assert_eq!(row.model, "deepseek-flash");
+
+        // The two halves of a compaction have to add up to the transcript.
+        // Splitting by sequence does that by construction; counting rows did
+        // not, because a `notice` is skipped and an unanswered tool call gains
+        // a placeholder.
+        store
+            .append_message(id, "text", &serde_json::json!({"role":"user","text":"a"}))
+            .unwrap();
+        store
+            .append_message(id, "notice", &serde_json::json!({"text":"note"}))
+            .unwrap();
+        store
+            .append_message(
+                id,
+                "tool_call",
+                &serde_json::json!({"call_id":"c1","name":"bash","arguments":"{}"}),
+            )
+            .unwrap();
+        store
+            .append_message(id, "text", &serde_json::json!({"role":"assistant","text":"b"}))
+            .unwrap();
+        let all = store.history_between(id, 0, i64::MAX).unwrap();
+        // Four rows, four items -- but not four rows' worth: the notice
+        // contributes nothing and the unanswered call contributes two. That is
+        // exactly why a row count is the wrong way to find the cut.
+        assert_eq!(all.len(), 4);
+        for (seq, _) in store.message_index(id).unwrap() {
+            let old = store.history_between(id, 0, seq).unwrap();
+            let new = store.history_between(id, seq, i64::MAX).unwrap();
+            assert_eq!(
+                old.len() + new.len(),
+                all.len(),
+                "splitting at seq {seq} lost or duplicated an item"
+            );
+        }
 
         // Clearing the entry goes back to the server's own, model included:
         // the caller passes what that is, because only it knows.
