@@ -805,6 +805,7 @@ dependencies = [
  "futures-util",
  "gongga-cli",
  "ratatui",
+ "shell-words",
  "tempfile",
  "tokio",
  "unicode-width",

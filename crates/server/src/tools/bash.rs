@@ -60,6 +60,15 @@ pub struct BashOutcome {
     pub still_running: bool,
 }
 
+/// What one pipe produced, up to its sentinel.
+struct Drained {
+    text: String,
+    /// The exit status the sentinel carried.
+    code: Option<i32>,
+    /// The sentinel was seen, so the pipe is exactly at a command boundary.
+    settled: bool,
+}
+
 pub struct BashShell {
     child: Child,
     stdin: ChildStdin,
@@ -77,6 +86,10 @@ pub struct BashShell {
     jobs: Arc<AtomicUsize>,
     /// Numbers the background jobs of this shell.
     next_job: u64,
+    /// One of the pipes ended without its sentinel, so this shell's output is
+    /// no longer aligned with its commands. Sticky: nothing can put the missing
+    /// bytes back, so the shell has to be replaced rather than reused.
+    out_of_sync: bool,
     /// Every process this shell starts, so ending it ends the whole tree.
     ///
     /// Kept last on purpose: fields drop in declaration order, and the job's
@@ -162,6 +175,7 @@ impl BashShell {
             pending: Arc::new(StdMutex::new(String::new())),
             jobs: Arc::new(AtomicUsize::new(0)),
             next_job: 0,
+            out_of_sync: false,
             #[cfg(windows)]
             job,
         })
@@ -169,6 +183,15 @@ impl BashShell {
 
     pub fn cwd(&self) -> &Path {
         &self.cwd
+    }
+
+    /// Whether the shell is still aligned with its commands.
+    ///
+    /// False after a pipe ended without its sentinel: the shell holds a command
+    /// boundary it cannot find again, so a command sent to it would be answered
+    /// with somebody else's output. Whoever owns the shell has to replace it.
+    pub fn usable(&self) -> bool {
+        !self.out_of_sync
     }
 
     /// Bytes of background output waiting to be read.
@@ -212,16 +235,20 @@ impl BashShell {
         let pumped = tokio::time::timeout(timeout, Self::pump_both(self, sink)).await;
         match pumped {
             Ok((stdout, stderr, exit_code)) => {
-                let outcome = BashOutcome {
+                // Asking where the shell is means writing one more command into
+                // the same pipe. A shell that lost its place would answer that
+                // from the leftovers, so it is not asked.
+                if self.usable() {
+                    if let Ok(pwd) = self.pwd().await {
+                        self.cwd = PathBuf::from(pwd);
+                    }
+                }
+                Ok(BashOutcome {
                     exit_code,
                     stdout,
                     stderr,
                     still_running: false,
-                };
-                if let Ok(pwd) = self.pwd().await {
-                    self.cwd = PathBuf::from(pwd);
-                }
-                Ok(outcome)
+                })
             }
             Err(_) => Ok(BashOutcome {
                 exit_code: None,
@@ -296,8 +323,15 @@ impl BashShell {
             Self::drain(&mut self.stdout, marker, sink, BashStream::Stdout),
             Self::drain(&mut self.stderr, marker, sink, BashStream::Stderr)
         );
-        let exit_code = stdout_res.1.or(stderr_res.1);
-        (stdout_res.0, stderr_res.0, exit_code)
+        let exit_code = stdout_res.code.or(stderr_res.code);
+        // A pipe that ended without its sentinel has been left half-read: the
+        // rest of this command's output is still in it, so the next command
+        // would read that instead of its own. The shell is not repairable from
+        // here -- only replaceable -- so it says so and the caller swaps it out.
+        if !stdout_res.settled || !stderr_res.settled {
+            self.out_of_sync = true;
+        }
+        (stdout_res.text, stderr_res.text, exit_code)
     }
 
     async fn drain<R>(
@@ -305,30 +339,49 @@ impl BashShell {
         marker: &str,
         sink: Option<&mpsc::Sender<BashChunk>>,
         stream: BashStream,
-    ) -> (String, Option<i32>)
+    ) -> Drained
     where
         R: tokio::io::AsyncBufRead + Unpin,
     {
-        let mut buf = String::new();
-        let mut collected = String::new();
+        // Bytes, not a `String`. A command may print anything -- `cat` of a
+        // binary, a program writing in the console code page -- and
+        // `read_line` into a `String` fails at the first byte that is not
+        // UTF-8, discarding the rest of the line *and* leaving the pipe
+        // half-read. The sentinel is then never consumed, and the shell answers
+        // every later command by replaying the leftovers: in one session, after
+        // `cat $(which gongga)`, five calls in a row returned nothing but
+        // `[read error: ...]` (`echo hi` among them), and the call after that
+        // returned the *previous* command's output while reporting success.
+        // Reading bytes and decoding lossily cannot happen: the bad bytes
+        // become U+FFFD and the stream stays where it should be.
+        let mut buf: Vec<u8> = Vec::new();
+        let mut text = String::new();
         loop {
             buf.clear();
-            match reader.read_line(&mut buf).await {
+            match reader.read_until(b'\n', &mut buf).await {
                 Ok(0) => break, // EOF: the shell died
                 Ok(_) => {}
                 Err(e) => {
-                    collected.push_str(&format!("\n[read error: {e}]"));
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(&format!("[read error: {e}]"));
                     break;
                 }
             }
-            let line = buf.trim_end_matches('\n').trim_end_matches('\r');
+            let line = String::from_utf8_lossy(&buf);
+            let line = line.trim_end_matches('\n').trim_end_matches('\r');
             if let Some(rest) = line.strip_prefix(marker) {
-                return (collected, rest.trim().parse::<i32>().ok());
+                return Drained {
+                    text,
+                    code: rest.trim().parse::<i32>().ok(),
+                    settled: true,
+                };
             }
-            if !collected.is_empty() {
-                collected.push('\n');
+            if !text.is_empty() {
+                text.push('\n');
             }
-            collected.push_str(line);
+            text.push_str(line);
             if let Some(sink) = sink {
                 let mut chunk = String::from(line);
                 chunk.push('\n');
@@ -342,7 +395,11 @@ impl BashShell {
                 }
             }
         }
-        (collected, None)
+        Drained {
+            text,
+            code: None,
+            settled: false,
+        }
     }
 
     /// Ends the shell, everything it started, and reaps it.
@@ -701,6 +758,71 @@ mod tests {
         assert!(collected.contains("from-background"), "got {collected:?}");
         // Reading it clears it, so the same chunk cannot be returned twice.
         assert!(shell.take_pending().is_empty());
+    }
+
+    /// Output that is not text must not cost the shell its life.
+    ///
+    /// A command that prints bytes (`cat` of a binary, a program writing in the
+    /// console code page) puts something into the pipe that is not UTF-8. The
+    /// reader used to stop at the first such line with `[read error: ...]`,
+    /// leaving the rest of the output -- including the sentinel -- unread in
+    /// the pipe. Every later command in that shell then read the leftovers,
+    /// failed on the same byte, and reported success with the same one-line
+    /// error: a shell that looks alive and answers nothing. This is what one
+    /// session showed after `cat $(which gongga)`: five calls in a row, `echo
+    /// hi` among them, all returning the read error and nothing else.
+    #[tokio::test]
+    async fn binary_output_does_not_deafen_the_shell() {
+        let Some(program) = crate::config::detect_git_bash() else {
+            return;
+        };
+        let mut shell = match BashShell::spawn(&program, &std::env::temp_dir(), &[]) {
+            Ok(s) => s,
+            Err(e) => panic!("spawning {}: {e}", program.display()),
+        };
+        let noisy = shell
+            .run(r"printf 'before\377\376after\n'", Duration::from_secs(10), None)
+            .await
+            .expect("running printf with raw bytes");
+        let after = shell
+            .run("echo still-alive", Duration::from_secs(10), None)
+            .await
+            .expect("running echo after binary output");
+        shell.kill().await;
+
+        assert!(
+            after.stdout.contains("still-alive"),
+            "the shell went deaf after binary output: {:?}",
+            after.stdout
+        );
+        assert!(!after.stdout.contains("read error"), "{:?}", after.stdout);
+        // The command that printed the bytes still reports, and its text
+        // survives around the bytes that could not be decoded.
+        assert!(noisy.stdout.contains("before"), "{:?}", noisy.stdout);
+        assert!(noisy.stdout.contains("after"), "{:?}", noisy.stdout);
+    }
+
+    /// A shell that ended under a command must not be handed the next one.
+    ///
+    /// `exit`, a kill, or a crashed child closes the pipe without a sentinel.
+    /// There is no way to resynchronise from that, so the shell reports itself
+    /// unusable and is replaced, instead of answering the next call with
+    /// whatever was left in the pipe.
+    #[tokio::test]
+    async fn a_shell_that_ended_is_not_reusable() {
+        let Some(program) = crate::config::detect_git_bash() else {
+            return;
+        };
+        let mut shell = match BashShell::spawn(&program, &std::env::temp_dir(), &[]) {
+            Ok(s) => s,
+            Err(e) => panic!("spawning {}: {e}", program.display()),
+        };
+        let out = shell
+            .run("exit 3", Duration::from_secs(10), None)
+            .await
+            .expect("running exit");
+        assert!(out.exit_code.is_none(), "the shell died before the sentinel");
+        assert!(!shell.usable(), "a dead shell called itself usable");
     }
 
     /// The model drives the server through the CLI, which means the shell has

@@ -13,11 +13,11 @@ all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, l
 standard OpenAI Response API.
 ## Tool
 use GitBash as bash on windows.
-- bash{cmd, name = "default", task = "default", background = false, detached = false}: detached process does not return, so server can cancle while it is running.
+- bash{command, name = "default", task = "default", background = false, detached = false}: detached process does not return, so server can cancle while it is running.
     - key = {session_name, bash_name}.
-- list_bash: return all bash with the caller session's name key.
+- list_bash: return all bash with the caller session's name in key.
 - check_bash{name = "default"}: return bash's output that hasn't been read by the caller session.
-- del_bash{name_regex}
+- del_bash{name_regex}: only mactch bash with the caller sessions' name in key.
 ## State
 - everything in database (sqlite), structured for agentic retrieval/mutation.
 - database path can be specified at server start. 
@@ -33,6 +33,8 @@ use GitBash as bash on windows.
     - `<pure text>` expand to `/send_message --message "<pure text>"`: need escape.
 - sticky_cmd_arguments[{name, value}]: auto fill in cmd argument if not provided.
 ## Cmd
+- invocation: `gongga <cmd> [--arg <v> ...]` -- argv is already tokens, so a command line
+  carries no `/` and no prose form. `/` belongs to `cmd_input` only.
 - server:
     - `set_session --session <name> [--cwd <path>] [--llm <provider/model>] [--compact_threshold <n%>] [--thinking-effort <level>]`
     - `del_session --session <name>`

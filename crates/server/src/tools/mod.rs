@@ -141,6 +141,7 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &'static str;
     fn description(&self) -> &'static str;
     fn parameters(&self) -> Value;
+
     fn run<'a>(
         &'a self,
         args: Value,
@@ -186,7 +187,10 @@ impl ToolRegistry {
 
     pub async fn run(&self, name: &str, args: Value, ctx: &ToolContext) -> ToolOutcome {
         match self.get(name) {
-            Some(tool) => tool.run(args, ctx).await,
+            Some(tool) => match argument_error(tool, &args) {
+                Some(message) => ToolOutcome::err(message),
+                None => tool.run(args, ctx).await,
+            },
             None => ToolOutcome::err(format!(
                 "unknown tool {name:?}; available: {}",
                 self.tools
@@ -201,6 +205,134 @@ impl ToolRegistry {
     pub fn names(&self) -> Vec<&'static str> {
         self.tools.iter().map(|t| t.name()).collect()
     }
+}
+
+/// Why a call does not fit a tool's declared schema, in the schema's own words.
+///
+/// Assembled from [`Tool::parameters`] rather than written per tool, so it
+/// cannot drift from what the model was handed: which arguments exist, their
+/// types, which are required, and which declared name a wrong one was probably
+/// reaching for. A hint that has to be maintained by hand is a hint that goes
+/// stale the first time an argument is renamed.
+///
+/// Only a *missing required* argument rejects the call. A stray key on its own
+/// is passed through, exactly as it was before this existed: a call that would
+/// have run is a call the operator wanted, and failing it over an ignored key
+/// would manufacture the retries this message exists to prevent.
+fn argument_error(tool: &dyn Tool, args: &Value) -> Option<String> {
+    let schema = tool.parameters();
+    let Some(given) = args.as_object() else {
+        return Some(format!(
+            "`{name}` did not run: its arguments must be a JSON object, and this was {kind}.\n  \
+             `{name}` takes: {signature}",
+            name = tool.name(),
+            kind = json_type(args),
+            signature = signature(&schema),
+        ));
+    };
+
+    let required = string_list(&schema["required"]);
+    let missing: Vec<&str> = required
+        .iter()
+        .copied()
+        .filter(|k| given.get(*k).is_none_or(Value::is_null))
+        .collect();
+    if missing.is_empty() {
+        return None;
+    }
+
+    let mut message = format!(
+        "`{}` did not run: {} {} required.\n",
+        tool.name(),
+        missing
+            .iter()
+            .map(|k| format!("`{k}`"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        if missing.len() == 1 { "is" } else { "are" },
+    );
+
+    let declared = string_list(&schema["properties"]);
+    let unexpected: Vec<String> = given
+        .keys()
+        .filter(|k| !declared.contains(&k.as_str()))
+        .map(|wrong| match declared.iter().find(|d| is_shorthand_of(d, wrong)) {
+            Some(right) => format!("`{wrong}` (did you mean `{right}`?)"),
+            None => format!("`{wrong}`"),
+        })
+        .collect();
+    if !unexpected.is_empty() {
+        message.push_str(&format!("  unexpected: {}\n", unexpected.join(", ")));
+    }
+    message.push_str(&format!(
+        "  `{}` takes: {}",
+        tool.name(),
+        signature(&schema)
+    ));
+    Some(message)
+}
+
+/// The tool's whole argument list, one line: name, type, required or not.
+fn signature(schema: &Value) -> String {
+    let required = string_list(&schema["required"]);
+    let Some(properties) = schema["properties"].as_object() else {
+        return "no arguments".to_string();
+    };
+    properties
+        .iter()
+        .map(|(name, spec)| {
+            let kind = spec["type"].as_str().unwrap_or("any");
+            let needed = if required.contains(&name.as_str()) {
+                "required"
+            } else {
+                "optional"
+            };
+            format!("{name}: {kind} ({needed})")
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The strings of a JSON array, or the keys of an object, in document order.
+fn string_list(value: &Value) -> Vec<&str> {
+    match value {
+        Value::Array(items) => items.iter().filter_map(|v| v.as_str()).collect(),
+        Value::Object(map) => map.keys().map(String::as_str).collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn json_type(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "an array",
+        Value::Object(_) => "an object",
+    }
+}
+
+/// Is one of these two names spelled out inside the other, in order?
+///
+/// `cmd` is inside `command` and `command` is inside `cmdline`, so direction
+/// does not matter: a name the model invents for an argument is nearly always
+/// a shortening or a spelling-out of the declared one, and naming the declared
+/// one back is what turns a rejected call into a corrected one. This is a rule
+/// over the schema, not a list of synonyms, so a renamed argument never needs a
+/// new entry -- and a key unrelated to anything declared gets no guess rather
+/// than a wrong one.
+fn is_shorthand_of(declared: &str, given: &str) -> bool {
+    let (short, long) = if declared.chars().count() <= given.chars().count() {
+        (declared, given)
+    } else {
+        (given, declared)
+    };
+    if short.chars().count() < 2 || short == long {
+        return false;
+    }
+    let mut spelled = long.chars();
+    short.chars().all(|c| spelled.any(|l| l == c))
 }
 
 // ---------------------------------------------------------------------------
@@ -247,7 +379,7 @@ impl Tool for BashTool {
                                      use one name throughout and put what the call is for in \
                                      `task`."
                 },
-                "cmd": {
+                "command": {
                     "type": "string",
                     "description": "The command line to execute."
                 },
@@ -283,7 +415,7 @@ impl Tool for BashTool {
                                      finishes. Ignored for background commands."
                 }
             },
-            "required": ["cmd"],
+            "required": ["command"],
             "additionalProperties": false
         })
     }
@@ -294,8 +426,13 @@ impl Tool for BashTool {
         ctx: &'a ToolContext,
     ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
-            let Some(command) = args.get("cmd").and_then(|v| v.as_str()) else {
-                return ToolOutcome::err(missing_command_hint(&args));
+            // The argument is `command`, not `cmd`: a model reaching for the
+            // word it already knows is right far more often than it is wrong,
+            // and the schema should be the thing that bends. A missing one is
+            // rejected by `argument_error` first, in the schema's own words;
+            // what is left here is a `command` that is not a string.
+            let Some(command) = args.get("command").and_then(|v| v.as_str()) else {
+                return ToolOutcome::err("bash requires a string `command`");
             };
             if command.trim().is_empty() {
                 return ToolOutcome::err("bash received an empty command");
@@ -396,6 +533,10 @@ impl Tool for BashTool {
                     }
                 }
             };
+            // Read while the guard is still held: a shell that lost its output
+            // stream must not be handed another command, and this is the last
+            // moment its state is visible without taking the lock again.
+            let healthy = shell.usable();
             drop(shell);
             while let Ok(chunk) = rx.try_recv() {
                 let stream = match chunk.stream {
@@ -515,6 +656,44 @@ impl Tool for BashTool {
                             text.push('\n');
                         }
                         text.push_str(&o.stderr);
+                    }
+                    if !healthy {
+                        // The pipe ended without its sentinel, so this shell
+                        // cannot tell one command's output from another's. It
+                        // is replaced here rather than on the next call, so the
+                        // model never gets to send a command to a shell that
+                        // would answer it with the previous command's text.
+                        let replaced = {
+                            let mut set =
+                                ctx.shells.lock().unwrap_or_else(|e| e.into_inner());
+                            match set.replace(name, &handle) {
+                                Ok(ok) => ok,
+                                Err(e) => {
+                                    tracing::warn!(
+                                        session = %ctx.session,
+                                        shell = %name,
+                                        "could not put a fresh shell in place: {e}"
+                                    );
+                                    false
+                                }
+                            }
+                        };
+                        if !text.is_empty() {
+                            text.push('\n');
+                        }
+                        text.push_str(&format!(
+                            "[shell `{name}` lost the end of this command's output: a stream \
+                             closed without its sentinel, which `exit`, a kill, or a crashed \
+                             child can cause. {}. Anything above may be truncated.]",
+                            if replaced {
+                                "It has been replaced with a fresh shell in the session's \
+                                 working directory, so `cd` and exports from earlier calls are \
+                                 gone"
+                            } else {
+                                "A fresh shell could not be put in place, so use another name \
+                                 or `del_bash` it"
+                            }
+                        ));
                     }
                     // Capped before it is stored: what goes into the transcript
                     // is replayed on every later step, so the full output of a
@@ -822,24 +1001,6 @@ fn shell_name(args: &Value) -> &str {
         .unwrap_or(DEFAULT_BASH)
 }
 
-/// Why a `bash` call arrived without `cmd`.
-///
-/// A bare "requires a string `cmd`" is true and useless: a model that reached
-/// for `command` reads it as "the command was wrong", tries a different
-/// command, and burns the step budget one rejected call at a time -- observed
-/// as six identical failures in a row in one real turn. Naming the argument it
-/// actually sent turns that into a one-retry correction.
-fn missing_command_hint(args: &Value) -> String {
-    const LIKELY: [&str; 5] = ["command", "script", "cmdline", "command_line", "shell"];
-    match LIKELY.iter().find(|k| args.get(**k).is_some()) {
-        Some(wrong) => format!(
-            "bash takes its command as `cmd`, not `{wrong}`. \
-             Resend the same call as {{\"cmd\": \"<command>\"}}."
-        ),
-        None => "bash requires a string `cmd`".to_string(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -855,25 +1016,41 @@ mod tests {
         assert!(reg.get("nope").is_none());
     }
 
-    /// A rejected `bash` call has to say which argument was wrong, or the model
-    /// keeps guessing and spends the turn's step budget on rejections.
+    /// A rejected call has to carry enough of the schema for the next attempt to
+    /// be a correction rather than another guess -- and it has to be assembled
+    /// from the schema, not from a list of names somebody remembered to update.
     #[test]
-    fn a_misnamed_command_argument_is_named_back_to_the_model() {
-        let hint = missing_command_hint(&serde_json::json!({"command": "ls"}));
-        assert!(hint.contains("`cmd`"), "{hint}");
-        assert!(hint.contains("`command`"), "{hint}");
+    fn a_call_missing_a_required_argument_is_answered_with_its_own_schema() {
+        let reg = ToolRegistry::with_builtins(Duration::from_secs(30), 8_000);
+        let bash = reg.get("bash").expect("bash is registered");
 
-        // Nothing to point at when the call is simply empty: say what is needed.
-        assert_eq!(
-            missing_command_hint(&serde_json::json!({})),
-            "bash requires a string `cmd`"
-        );
-        // `name` is a real argument of bash, so it must never be mistaken for a
-        // misspelled `cmd`.
-        assert_eq!(
-            missing_command_hint(&serde_json::json!({"name": "s3"})),
-            "bash requires a string `cmd`"
-        );
+        // The argument abbreviated -- the shape of the mistake that used to be
+        // spelled out the other way round, hundreds of times per session.
+        let message = argument_error(bash, &json!({"cmd": "ls"})).expect("rejected");
+        assert!(message.contains("`command` is required"), "{message}");
+        assert!(message.contains("did you mean `command`"), "{message}");
+        // The whole argument list, so the next attempt cannot be a guess.
+        for arg in [
+            "name: string",
+            "command: string",
+            "task: string",
+            "timeout_ms: integer",
+            "background: boolean",
+            "detached: boolean",
+        ] {
+            assert!(message.contains(arg), "{arg} missing from: {message}");
+        }
+
+        // A call with what it needs is not rejected...
+        assert!(argument_error(bash, &json!({"command": "ls"})).is_none());
+        // ...and neither is one carrying a key nothing declares: it would have
+        // run, and refusing it buys a retry for nothing.
+        assert!(argument_error(bash, &json!({"command": "ls", "cwd": "/tmp"})).is_none());
+
+        // Arguments that are not an object say what shape was expected.
+        let message = argument_error(bash, &json!("ls")).expect("rejected");
+        assert!(message.contains("must be a JSON object"), "{message}");
+        assert!(message.contains("this was a string"), "{message}");
     }
 
     /// `task` names the dump a too-long output is spilled to. It must be
@@ -885,10 +1062,10 @@ mod tests {
         let bash = reg.get("bash").expect("bash is registered");
         let params = bash.parameters();
         assert!(params["properties"].get("task").is_some(), "{params}");
-        // Still only `cmd`: a label drifting into a required argument would
+        // Still only `command`: a label drifting into a required argument would
         // turn a rejected call into a rejected *idea*, and the model would
         // stop describing what it is doing.
-        assert_eq!(params["required"], serde_json::json!(["cmd"]), "{params}");
+        assert_eq!(params["required"], serde_json::json!(["command"]), "{params}");
     }
 
 
@@ -931,14 +1108,15 @@ mod tests {
     }
 
     #[test]
-    fn bash_takes_name_cmd_and_the_two_detach_flags() {        let reg = ToolRegistry::with_builtins(Duration::from_secs(30), 8_000);
+    fn bash_takes_name_command_and_the_two_detach_flags() {
+        let reg = ToolRegistry::with_builtins(Duration::from_secs(30), 8_000);
         let defs = reg.definitions();
         let bash = &defs[0];
         assert_eq!(bash.name, "bash");
-        assert_eq!(bash.parameters["required"][0], "cmd");
+        assert_eq!(bash.parameters["required"][0], "command");
         let props = &bash.parameters["properties"];
         assert!(props.get("name").is_some(), "bash is nameable");
-        assert!(props.get("cmd").is_some());
+        assert!(props.get("command").is_some());
         assert!(props.get("background").is_some(), "bash can run in the background");
         assert!(props.get("detached").is_some(), "bash can run detached");
     }

@@ -48,6 +48,39 @@ impl Sink for TuiSink<'_> {
     }
 }
 
+/// What one input line asks for, which is the whole of the input syntax.
+///
+/// The grammar is decided by the first character -- the one piece of syntax an
+/// operator has to know:
+///
+/// * `/` begins a command: `/send_message --session main --message hi`.
+/// * Anything else is a message to the agent.
+///
+/// It lives here, not in the command layer, because it is a property of the one
+/// input box: an input line has to mean *something* when the operator types
+/// prose into it, so it needs a way to say "and now a command". A command line
+/// has no such problem -- its argv is already tokens, and the process was started
+/// with the command's name -- so `gongga send_message ...` takes no `/`. Carrying
+/// the prefix over was not harmless: on Windows Git Bash rewrites a leading
+/// `/word` into a `C:/.../` path before it is even an argument, and the whole line
+/// then became a chat message to the agent.
+fn submission(client: &mut cli::Client, line: &str, sink: &mut dyn Sink) -> cli::Submission {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return cli::Submission::Rejected;
+    }
+    match trimmed.strip_prefix('/') {
+        Some(command) => match shell_words::split(command) {
+            Ok(tokens) => client.command(tokens, sink),
+            Err(e) => {
+                sink.line(LineKind::Error, &format!("unparsable input: {e}"));
+                cli::Submission::Rejected
+            }
+        },
+        None => client.message(trimmed, sink),
+    }
+}
+
 /// What the loop is waiting for this time round.
 enum Step {
     /// The operator did something (or the terminal went away: `None`).
@@ -117,7 +150,7 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
             Step::Input(None) => break Ok(()),
             Step::Input(Some(UiEvent::Quit)) => break Ok(()),
             Step::Input(Some(UiEvent::Submit(line))) => {
-                match client.submit(&line, &mut TuiSink(&mut ui)) {
+                match submission(&mut client, &line, &mut TuiSink(&mut ui)) {
                     cli::Submission::Local | cli::Submission::Rejected => {}
                     // Nothing left this process, so the text is still the
                     // operator's. Put it back rather than log it away.

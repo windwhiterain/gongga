@@ -1,8 +1,14 @@
 //! `gongga-cli`: the command layer.
 //!
 //! This crate owns the command surface: it knows the catalog the server
-//! publishes, keeps the sticky arguments, and turns an input line into either a
-//! local action or a message on the wire.
+//! publishes, keeps the sticky arguments, and turns one command's tokens into
+//! either a local action or a message on the wire.
+//!
+//! It does not own the *input line*. Whether a line is a `/command` or prose for
+//! the agent is the interactive front-end's decision ([`Client::command`] and
+//! [`Client::message`] are the two things that decision can ask for), so the
+//! one-shot path -- `gongga send_message --message hi` -- never has to guess: its
+//! argv is already tokens.
 //!
 //! It knows nothing about terminals. That is the point of the split: anything
 //! that can present [`Sink`] events can drive it, and the interactive client is
@@ -432,54 +438,46 @@ impl Client {
         self.refresh(sink);
     }
 
-    /// Turns one prompt line into either a local action or a message to send.
+    /// Runs one command, from argv that is already split into tokens.
     ///
-    /// The grammar is decided by the first character -- the one piece of syntax
-    /// an operator has to know:
-    ///
-    /// * `/` begins a command: `/send_message --session main --message hi`.
-    /// * Anything else is a message to the agent. It is *expanded* to
-    ///   `send_message --message <the line>` and then goes down the ordinary
-    ///   command path, so `--session` is filled by the sticky argument exactly
-    ///   as it is for a typed command. Nothing else about it is special.
-    ///
-    /// Talking to the agent therefore needs no syntax, and command completion
-    /// appears only when a command was actually asked for. The older rule --
-    /// every line is a command -- made ordinary prose look like a typo: a popup
-    /// over the screen at every keystroke, and "unknown command" for a
-    /// sentence.
-    pub fn submit(&mut self, raw: &str, sink: &mut dyn Sink) -> Submission {
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            return Submission::Rejected;
-        }
-        match trimmed.strip_prefix('/') {
-            Some(command) => match shell_words::split(command) {
-                Ok(tokens) => self.submit_tokens(tokens, sink, Echo::Command),
-                Err(e) => {
-                    sink.line(LineKind::Error, &format!("unparsable input: {e}"));
-                    Submission::Rejected
-                }
-            },
-            // Assembled as tokens, never as a line: whatever the operator typed
-            // -- quotes, `--`, backslashes, a whole paragraph -- is one
-            // argument, and no parsing rule can turn part of it into a flag.
-            None => {
-                let tokens = vec![
-                    "send_message".to_string(),
-                    "--message".to_string(),
-                    trimmed.to_string(),
-                ];
-                self.submit_tokens(tokens, sink, Echo::Message(trimmed))
-            }
-        }
+    /// This is the whole interface of the one-shot path
+    /// (`gongga send_message --message hi`). There is no grammar here on
+    /// purpose: a command line arrives tokenised by the shell that started the
+    /// process, so there is nothing left to decide. `/name` is the *interactive*
+    /// input line's syntax and prose is not a command; splitting a string back
+    /// into tokens only to re-derive an intention would let the two paths
+    /// disagree, and that disagreement is exactly what made `$GONGGA_CLI cancel`
+    /// -- the form the agent is told to use -- send the word "cancel" to the
+    /// model as a chat message.
+    pub fn command(&mut self, tokens: Vec<String>, sink: &mut dyn Sink) -> Submission {
+        self.submit_tokens(tokens, sink, Echo::Command)
     }
 
-    /// The command path, shared by both halves of the grammar.
+    /// Sends one line of prose to the agent as a message.
     ///
-    /// `echo` is only about what the operator sees: a command is echoed as it
-    /// was typed, a message as the prose it was. What goes on the wire has the
-    /// same shape either way.
+    /// The interactive input line decides that a line without `/` is prose; this
+    /// is what it asks for then. Assembled as tokens, never as a line: whatever
+    /// the operator typed -- quotes, `--`, backslashes, a whole paragraph -- is
+    /// one argument, and no parsing rule can turn part of it into a flag.
+    pub fn message(&mut self, text: &str, sink: &mut dyn Sink) -> Submission {
+        let tokens = vec![
+            "send_message".to_string(),
+            "--message".to_string(),
+            text.to_string(),
+        ];
+        self.submit_tokens(tokens, sink, Echo::Message(text))
+    }
+
+    /// The one path both entries take, once the caller has decided what the
+    /// line meant.
+    ///
+    /// `echo` is only about what the operator sees: a command is echoed as the
+    /// input line showed it, a message as the prose it was. What goes on the
+    /// wire has the same shape either way.
+    ///
+    /// Everything below is about *commands*: the catalog, sticky arguments,
+    /// required arguments, the wire. That a line without `/` is prose was
+    /// decided before this, by whoever had an input box.
     fn submit_tokens(
         &mut self,
         tokens: Vec<String>,
@@ -504,12 +502,68 @@ impl Client {
         }
 
         let Some(spec) = self.catalog.command(&head) else {
+            // A command line is not an input line: here a command is just its
+            // name. Two shapes still arrive as something else --
+            //
+            //   `/name ...`          the interactive input line's syntax, carried
+            //                        onto a command line by a script or a model
+            //   `C:/.../Git/name ...` the same thing after Git Bash rewrote the
+            //                        leading `/` into a path, which happens
+            //                        before this program is even started
+            //
+            // -- and both are best answered with the line that was meant.
+            // "unknown command" over a path nobody typed says nothing about the
+            // mistake, and that mistake is easy to make: the agent is told to
+            // drive the harness with `$GONGGA_CLI <command>`.
+            //
+            // The last separator is what finds the name in both shapes. Split by
+            // hand rather than with `Path`, which does not call `\\` a separator
+            // on every platform.
+            if head.contains('/') || head.contains('\\') {
+                let tail = match head.rfind(['/', '\\']) {
+                    Some(at) => &head[at + 1..],
+                    None => head.as_str(),
+                };
+                let name = tail.split_whitespace().next().unwrap_or_default();
+                // Whatever followed the name, in either shape: inside the one
+                // argument when the whole line was quoted, or in the remaining
+                // tokens when it was real argv.
+                let mut rest = tail[name.len()..].trim().to_string();
+                if tokens.len() > 1 {
+                    if !rest.is_empty() {
+                        rest.push(' ');
+                    }
+                    rest.push_str(&tokens[1..].join(" "));
+                }
+                if self.catalog.command(name).is_some() {
+                    sink.line(
+                        LineKind::Error,
+                        &format!(
+                            "`{head}` is not a command name: it ends in `{name}`, and a `/` \
+                             line is the interactive input line's syntax (on Windows, Git Bash \
+                             also rewrites a leading `/` into a path before this program runs). \
+                             From a command line, say the command outright: `gongga {name}{rest}`",
+                            rest = if rest.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" {rest}")
+                            }
+                        ),
+                    );
+                    return Submission::Rejected;
+                }
+            }
+            let known: Vec<String> = self
+                .catalog
+                .commands()
+                .iter()
+                .map(|c| c.name.clone())
+                .collect();
             sink.line(
                 LineKind::Error,
                 &format!(
-                    "unknown command {head:?}: a `/` line is a command, so name a real \
-                     one (Tab completes them). Without the `/`, the whole line goes to \
-                     the agent as a message."
+                    "unknown command {head:?}; this client knows: {}",
+                    known.join(", ")
                 ),
             );
             return Submission::Rejected;
@@ -660,30 +714,21 @@ impl Link {
 }
 
 /// Headless: one command in, its result out.
-/// Turns the argv of one command into the line the client parses.
 ///
-/// A single argument is already a whole line -- `exec "send_message ..."`, the
-/// shape scripts have always used -- so it passes through verbatim. Anything
-/// else is argv, and joining it under quoting rules is what keeps an argument
-/// containing a space from arriving as two.
-fn command_line(command: &[String]) -> String {
-    match command {
-        [one] => one.clone(),
-        many => shell_words::join(many),
-    }
-}
-
 /// Runs one command against the server, prints the events, exits.
 ///
-/// `gongga send_message --message hi --session main`, or the same line quoted
-/// as one argument. One command per process is the whole interface: there is no
-/// `exec` to wrap it in, and nothing to configure about the wait — the command
-/// returns when the server answers, which for `send_message` is the moment the
-/// message is accepted, not the moment the turn finishes.
+/// `gongga send_message --message hi --session main`. One command per process is
+/// the whole interface: there is no `exec` to wrap it in, and nothing to
+/// configure about the wait — the command returns when the server answers, which
+/// for `send_message` is the moment the message is accepted, not the moment the
+/// turn finishes.
+///
+/// The argv is taken as it arrived. It is not turned back into a line first,
+/// because the line grammar is the interactive front-end's: here a command is
+/// just its name and its arguments, and there is no second meaning to fall into.
 pub async fn run(args: &Args, command: &[String]) -> anyhow::Result<()> {
-    let line = command_line(command);
     let (mut client, mut link) = connect(args).await?;
-    let result = run_once(&mut client, &mut link, &line).await;
+    let result = run_once(&mut client, &mut link, command).await;
     // A best-effort goodbye lets the server tear the connection down now
     // instead of waiting out the idle timeout.
     link.goodbye().await;
@@ -693,10 +738,10 @@ pub async fn run(args: &Args, command: &[String]) -> anyhow::Result<()> {
 async fn run_once(
     client: &mut Client,
     link: &mut Link,
-    command: &str,
+    command: &[String],
 ) -> anyhow::Result<()> {
     let mut printer = NullSink::default();
-    let msg = match client.submit(command, &mut printer) {
+    let msg = match client.command(command.to_vec(), &mut printer) {
         // A client-side command already did its work; nothing goes on the wire.
         Submission::Local => return Ok(()),
         // Rejected before it reached the server, so there is no event to print.
@@ -993,25 +1038,77 @@ mod tests {
         d
     }
 
-    /// `gongga send_message --message "two words" --session main` has to reach
-    /// the parser as two arguments, not three.
-    #[test]
-    fn argv_keeps_an_argument_that_contains_a_space() {
-        let argv: Vec<String> = ["send_message", "--message", "two words", "--session", "main"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let line = command_line(&argv);
-        let back = shell_words::split(&line).expect("the line parses");
-        assert_eq!(back, argv);
+    /// A command as argv, the way the one-shot path receives it.
+    ///
+    /// The command layer takes tokens, not a line, so this is what the tests
+    /// below hand it -- splitting here would be the thing being avoided.
+    fn argv(line: &str) -> Vec<String> {
+        shell_words::split(line).expect("test argv parses")
     }
 
-    /// One argument is already a line. Quoting it would make the parser see a
-    /// single token called `send_message --message hi`, which is not a command.
+    /// `gongga send_message --message "two words"` has to reach the server as
+    /// one argument, not two. Nothing splits or rejoins the argv, so the only
+    /// thing that could go wrong is the tokenizer inside the command layer.
     #[test]
-    fn a_single_argument_is_passed_through_verbatim() {
-        let line = command_line(&["send_message --message hi".to_string()]);
-        assert_eq!(line, "send_message --message hi");
+    fn an_argument_that_contains_a_space_stays_one_argument() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(send_message_catalog(), Sticky::load(d.path()), vec!["main"]);
+        let mut s = VecSink(Vec::new());
+        match c.command(argv("send_message --message 'two words'"), &mut s) {
+            Submission::Send(ClientMessage::Command { args, .. }) => {
+                assert_eq!(args["message"], "two words");
+            }
+            _ => panic!("expected a message to send"),
+        }
+    }
+
+    /// `/` is the interactive input line's syntax. On a command line it is not
+    /// a command name, and answering "unknown command `"/send_message"`" would
+    /// hide the one fact worth knowing -- so the rejection spells the line out.
+    ///
+    /// This is not hypothetical: the agent is told to drive the harness with
+    /// `$GONGGA_CLI <command>`, carried the TUI's `/` onto it, and on Windows
+    /// Git Bash turned the `/word` into a `C:/.../` path before the client ever
+    /// saw it, so the command quietly became a chat message.
+    #[test]
+    fn a_leading_slash_is_refused_with_the_command_line_it_meant() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(send_message_catalog(), Sticky::load(d.path()), vec!["main"]);
+        let mut s = VecSink(Vec::new());
+        assert!(matches!(
+            c.command(argv("/send_message --message hi"), &mut s),
+            Submission::Rejected
+        ));
+        let said = s.0.join("\n");
+        assert!(said.contains("interactive"), "{said}");
+        assert!(said.contains("gongga send_message --message hi"), "{said}");
+    }
+
+    /// The same mistake *after* the shell has rewritten it.
+    ///
+    /// Git Bash turns `/get_messages` into a path before the program is even
+    /// started, so what arrives is a path ending in the command's name -- with
+    /// the rest of the line attached when it was quoted as one argument. Both
+    /// shapes have to come back as the command line that was meant, or the
+    /// operator is left with "unknown command" over a path they never typed.
+    #[test]
+    fn a_shell_rewritten_slash_is_recognised() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(send_message_catalog(), Sticky::load(d.path()), vec!["main"]);
+        for arg in [
+            r"C:\Program Files\Git\send_message",
+            r"C:\Program Files\Git\send_message --message hi",
+            "/usr/bin/send_message --message hi",
+        ] {
+            let mut s = VecSink(Vec::new());
+            assert!(
+                matches!(c.command(vec![arg.to_string()], &mut s), Submission::Rejected),
+                "{arg} was accepted"
+            );
+            let said = s.0.join("\n");
+            assert!(said.contains("gongga send_message"), "{arg}: {said}");
+            assert!(said.contains("interactive"), "{arg}: {said}");
+        }
     }
 
     /// The layering this crate exists for. A command layer that pulled in the
@@ -1129,12 +1226,12 @@ mod tests {
         assert!(resolve_key_with(&args, &no_env).is_none());
     }
 
-    /// Drives `submit` without a terminal or a socket.
+    /// Drives a command without a terminal or a socket.
     ///
-    /// The client is marked connected: these tests are about what a line means,
-    /// and an offline client refuses every server command before it gets that
-    /// far (see `submit`), which would make every one of them test the same
-    /// thing.
+    /// The client is marked connected: these tests are about what a command
+    /// means, and an offline client refuses every server command before it gets
+    /// that far (see `submit_tokens`), which would make every one of them test
+    /// the same thing.
     fn client_with(catalog: Catalog, sticky: Sticky, sessions: Vec<&str>) -> Client {
         let mut c = Client::new(catalog, sticky);
         c.connected = true;
@@ -1150,6 +1247,33 @@ mod tests {
             })
             .collect();
         c
+    }
+
+    /// The smallest catalog that can take a message: one command, one required
+    /// argument, one sticky one.
+    fn send_message_catalog() -> Catalog {
+        let cat = Catalog::new();
+        cat.set_server_commands(vec![protocol::CommandSpec {
+            name: "send_message".into(),
+            summary: "s".into(),
+            args: vec![
+                protocol::ArgSpec {
+                    name: "message".into(),
+                    summary: "s".into(),
+                    required: true,
+                    value_hint: None,
+                    completions: protocol::CompletionSource::None,
+                },
+                protocol::ArgSpec {
+                    name: "session".into(),
+                    summary: "s".into(),
+                    required: false,
+                    value_hint: None,
+                    completions: protocol::CompletionSource::None,
+                },
+            ],
+        }]);
+        cat
     }
 
     struct VecSink(Vec<String>);
@@ -1245,7 +1369,7 @@ mod tests {
         }]);
         let mut c = client_with(cat, sticky, vec!["main", "scratch"]);
         let mut s = VecSink(Vec::new());
-        match c.submit("/send_message --message hi", &mut s) {
+        match c.command(argv("send_message --message hi"), &mut s) {
             Submission::Send(ClientMessage::Command { args, .. }) => {
                 assert_eq!(args["session"], "scratch");
             }
@@ -1261,12 +1385,12 @@ mod tests {
         let mut c = client_with(cat, Sticky::load(d.path()), vec!["main"]);
         let mut s = VecSink(Vec::new());
         assert!(matches!(
-            c.submit("/set_persistant_cmd_argument --name session --value main", &mut s),
+            c.command(argv("set_persistant_cmd_argument --name session --value main"), &mut s),
             Submission::Local
         ));
         assert_eq!(c.sticky.pairs(), vec![("session".to_string(), "main".to_string())]);
         assert!(matches!(
-            c.submit("/del_persistant_cmd_argument --name session", &mut s),
+            c.command(argv("del_persistant_cmd_argument --name session"), &mut s),
             Submission::Local
         ));
         assert!(c.sticky.pairs().is_empty());
@@ -1295,7 +1419,7 @@ mod tests {
         // The pre-rename spelling is exactly the case that bit: it used to be
         // passed through, and a sticky `session` made it look like it worked.
         assert!(matches!(
-            c.submit("/del_session --name main", &mut s),
+            c.command(argv("del_session --name main"), &mut s),
             Submission::Rejected
         ));
         let said = s.0.join("\n");
@@ -1320,7 +1444,7 @@ mod tests {
         }]);
         let mut c = client_with(cat, Sticky::load(d.path()), vec!["main"]);
         let mut s = VecSink(Vec::new());
-        assert!(matches!(c.submit("/del_session", &mut s), Submission::Rejected));
+        assert!(matches!(c.command(argv("del_session"), &mut s), Submission::Rejected));
         assert!(s.0.iter().any(|l| l.contains("missing required")));
     }
 

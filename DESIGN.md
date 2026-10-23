@@ -461,7 +461,7 @@ Shell **按 `session_name/bash_name` 建键**，所以一个会话持有的是�
   三个变量正好是 CLI 的两个 fallback 加一个可执行文件路径，所以 `$GONGGA_CLI cancel`、
   `$GONGGA_CLI send_message --message hi --session main` 都不需要任何额外参数。
 
-`bash{cmd, name, background, detached}` 的三种跑法：
+`bash{command, name, background, detached}` 的三种跑法：
 
 | 模式 | 是否等待 | 输出去哪 | 谁结束它 |
 |---|---|---|---|
@@ -472,6 +472,44 @@ Shell **按 `session_name/bash_name` 建键**，所以一个会话持有的是�
 - `background` 的实现：shell 把作业重定向到一个 scratch 文件（路径按 MSYS 写法转换，
   `C:\Temp\x` → `/c/Temp/x`），服务端任务每 150ms 读一次增量，追加进未读缓冲，
   看到结束哨兵就收尾删文件。`check_bash` 取走即清空，同一段输出不会返回两次。
+### 一个参数名的代价：`cmd` → `command`
+
+先说结论：**`bash` 的第一个参数现在叫 `command`，不叫 `cmd`。**
+
+起因是一次"harness 有严重 bug"的报告。会话库（`~/.gongga/gongga.db`，1305 次 `bash` 调用）
+里的真实数字：
+
+| 观察 | 数据 |
+|---|---|
+| `{"command": …}` | 582 次，**582 次全部被拒** |
+| `{"cmd": …}` | 723 次，66 次失败（真错误） |
+| 参数平均长度 | 336 vs 357 字节 —— **与长短完全无关** |
+| 错键占比 | 前 100 次 32% → 后 100 次 **68%** |
+
+所以那轮"长命令被丢弃、短命令能落地"的自述是误判：真正相关的只有键名，长度是零相关的。
+另一个容易误判的点：**拒绝是有答复的**，582 条 tool result 全都带着提示，`store.context()`
+也把 `function_call_output` 回放给了模型（`store.rs` 里还专门给没等到结果的调用补占位符）。
+也就是说模型是**看着**那句「用 `cmd` 不要用 `command`」硬生生又错了 582 次，而且比率
+随着上下文里自己的错例变多而上升 —— 提示不但没教会它，还给它更多可以模仿的例子。
+
+于是做了两件事，都不依赖"模型下次会听话"：
+
+1. **参数名改成模型本来就想写的那个**。名字是给人用的，模型绝大多数情况下喊 `command`
+   是对的，该让 schema 弯一下。
+2. **拒绝信息由 schema 自动生成**（`argument_error`，挂在 `ToolRegistry::run` 上，所有工具共用）。
+   它从 `Tool::parameters()` 里读出属性、类型、required，输出：
+
+   ```
+   `bash` did not run: `command` is required.
+     unexpected: `cmd` (did you mean `command`?)
+     `bash` takes: background: boolean (optional), command: string (required), detached: boolean (optional), name: string (optional), task: string (optional), timeout_ms: integer (optional)
+   ```
+
+   "did you mean" 不是同义词表，是一条规则：两个名字是否一个"按序拼在"另一个里
+   （`cmd` ⊂ `command`，`command` ⊂ `cmdline`）。改名不用维护任何表，无关的键也不会被瞎猜。
+   只有**缺 required** 才拒；多出来的键照旧忽略 —— 本来能跑通的调用因为一个废键被拒，
+   正好是在制造这条信息本来要消灭的那种重试。
+
 - `detached` 的实现**不在常驻 shell 里跑**：服务端直接 spawn 一个 `bash -c "<cmd>"`，
   继承 shell 的 cwd（但不继承 export / shell 函数），自己的进程组，
   `kill_on_drop(false)`。
@@ -486,7 +524,7 @@ Shell **按 `session_name/bash_name` 建键**，所以一个会话持有的是�
 `detached` 不是「后台跑」，是**服务端放弃所有权**。典型用法就是你说的那个：
 一个 agent 想重启它正跑在上面的服务端 ——
 
-1. `bash{cmd:"gongga-server --bind ... ", detached:true}` 拉起替身；
+1. `bash{command:"gongga-server --bind ... ", detached:true}` 拉起替身；
 2. 然后 `cancel` 自己；
 3. 替身活下来接管，客户端改连新端口即可。
 
@@ -513,6 +551,73 @@ detached 作业归**会话**所有、不归 shell：它们活在一个 `Detached
 
 按你的选择**不做人工审批**。**【待确认】** 完全没有护栏，是否需要至少一份危险命令黑名单
 （如 `rm -rf /`、写系统目录）？
+
+### 一条二进制输出怎么让 shell 变哑
+
+一个 shell 是**常驻进程**：命令写进它的 stdin，输出从它的 stdout 读，直到读出哨兵行
+（`__GONGGA_<uuid>__<exit>`）算是这一次调用结束。哨兵就是「一条命令的输出在这里结束」这个
+唯一可依赖的边界。读取用 `read_line(&mut String)`，于是有了这次的事故：
+
+```
+bash{command: "cat $(which gongga) | head -20"}       -> [read error: invalid utf-8 ... index 2]
+bash{command: "$GONGGA_CLI --help"}                   -> [read error: invalid utf-8 ... index 1]
+bash{command: "cat config.toml"}                      -> [read error: invalid utf-8 ... index 2]
+bash{command: "echo hi"}                              -> [read error: invalid utf-8 ... index 0]
+```
+
+`cat` 一个可执行文件，把非 UTF-8 字节送进了这个 shell 的管道。`read_line` 遇到非法字节返回
+错误 —— 而**这一行已经被从管道里读走了**，剩下的（包括哨兵）还在管道里。`drain` 于是 `break`，
+哨兵从来没被消费。后果是这条 shell 从此**错位一格**：
+
+- 下一次调用读到的仍是上次的残留，先撞上同一个非法字节，立刻返回同一句 `[read error]`，
+  于是 `echo hi` 也成了「读错误」；
+- 残留被一点点吃掉之后，读到的就是**上一次调用的完整输出**，并且**报告成功**。实测中
+  `echo still-alive` 返回的是上一条 `pwd` 的输出。这比报错更坏：模型会以为命令跑过、看见了结果。
+
+整个过程 `status` 都是 `ok`，所以从记录上看不出来 —— 只有真的去读那五次调用的 `output`
+才能发现一个 shell 已经哑了，而模型当时的应对是 `del_bash{name:"cli"}` 换一个。
+
+两处都改了（`crates/server/src/tools/bash.rs`）：
+
+1. **按字节读**（`read_until(b'\n')` + `from_utf8_lossy`）。非法字节变成 `U+FFFD`，
+   行还在、哨兵还在、管道停在命令边界上。命令想打印什么都可以，shell 不再因此失聪。
+2. **丢了哨兵就不许再用**。`Drained::settled` 为假（EOF、读错误）时给 shell 打上
+   `out_of_sync`，`usable()` 变假；`bash` 在返回结果的同时把它换掉（`ShellSet::replace`），
+   并在 tool result 里明说「shell 已被替换，之前的 `cd` 和 export 没了」。宁可让模型知道
+   环境变了，也不能让它对着一条会答错话的 shell 继续下命令。
+
+单测 `binary_output_does_not_deafen_the_shell` 就是这次事故的原样复现（先 `printf` 出 `\377\376`
+再 `echo`），`a_shell_that_ended_is_not_reusable` 管住 EOF 那一半。
+
+### `/` 只在输入行里存在
+
+`/cmd` 是**输入行**的语法，不是命令层的。它本来被写在 `Client::submit(&str)` 里，而一次性
+路径（`gongga <cmd> ...`）为了复用它，先把 argv 拼成一行字符串再交给 `submit` —— 于是命令
+行也必须带 `/`，不带 `/` 的一律被当成说话：
+
+```
+$GONGGA_CLI cancel                        -> send_message --message "cancel"   （发了一条聊天）
+$GONGGA_CLI /cancel                       -> Git Bash 把它改成 C:/.../Git/cancel
+$GONGGA_CLI MSYS_NO_PATHCONV=1 /cancel    -> 这才是 cancel
+```
+
+这是 SPEC 里「`cli: cmd fully documented and diagnosed`」的反面：系统提示明明写着
+`$GONGGA_CLI <command>`，照做却得到沉默的错误行为。而一次 `get_messages` 要三次调用才摸对。
+
+根子在**层次**：argv 已经是 token 了，谁启动这个进程就是谁写下了命令名，没有任何歧义需要
+再解一遍。歧义只存在于**输入框**里 —— 那里一行字既可能是命令也可能是要说的话，才需要一个
+`/` 来区分。所以现在的分工是：
+
+- `cli`：`Client::command(tokens)` 和 `Client::message(text)`，两个「已经决定好了」的入口。
+  不解析任何一行文本，一次性路径把 argv 原样递进来。
+- `tui`：`submission()` 拿着输入行，决定它是哪一种。`/` 的去处、代词的展开、Tab 补全都
+  留在这一层，因为它们是「输入框」的性质，不是「命令」的性质。
+
+顺带把错法的回答做成诊断：带 `/` 或带路径分隔符的第一个 token，取出最后一段当命令名去目录
+里查，命中就回一句「`/x` 是输入行语法，命令行直接写 `gongga x ...`」，并补齐剩下的参数。
+Windows 上 Git Bash 会**在程序启动之前**把 `/x` 改写成 `C:/.../Git/x`，所以这条规则认的是
+「以已知命令名结尾的路径」，而不只是开头的 `/` —— 否则模型看到的仍是一句无用的
+`unknown command "C:/SoftWare/git/Git/get_messages"`。
 
 ### 命令（SPEC 的 5 条服务端命令 + `get_messages` + 2 条客户端命令）
 
@@ -785,7 +890,7 @@ Git Bash 自动探测常见安装路径，找不到再退回 PATH 上的 `bash`�
 |---|---|
 | `cargo build --workspace` | 通过 |
 | `cargo clippy --workspace --all-targets` | 无警告 |
-| 单元 + 集成测试（179 个） | 通过 |
+| 单元 + 集成测试（190 个） | 通过 |
 | 真实 UDP：200KB 分片往返 / 25% 丢包恢复 / 顺序性 | 通过 |
 | 端到端冒烟（**真实 MiniMax-M3.1-Flash** + 真 Git Bash） | 通过 |
 | 端到端冒烟（假 LLM + 真 Git Bash，`detached` 工具调用） | 通过 |
@@ -796,6 +901,10 @@ Git Bash 自动探测常见安装路径，找不到再退回 PATH 上的 `bash`�
 | sticky 参数客户端持久化 + 自动补齐 | 通过 |
 | `send_message` 缺 `--session` 被拒 / 有 sticky 才补齐 | 通过 |
 | 裸文本不再被当成消息：输入行只有命令一种语法 | 通过 |
+| `/` 只在输入行里：命令行是 argv，不带 `/`、不做纯文本展开 | 通过（`a_leading_slash_is_refused_with_the_command_line_it_meant`、`a_shell_rewritten_slash_is_recognised`）|
+| 非 UTF-8 输出不会让 shell 变哑：读字节、丢哨兵即换 shell | 通过（`binary_output_does_not_deafen_the_shell` 原样复现 `cat` 二进制后 `echo`；`a_shell_that_ended_is_not_reusable` 管 EOF）|
+| 拒绝信息由 schema 生成（`argument_error`）：列出全部参数/类型/required，缺 required 才拒 | 通过（单测 `a_call_missing_a_required_argument_is_answered_with_its_own_schema`）|
+| `bash` 参数为 `command`；`cmd` 这类缩写会被指回 `command` | 通过（同上，及 `bash_takes_name_command_and_the_two_detach_flags`）|
 | 状态条不含「当前 session」 | 通过 |
 | `cancel`：回执发出 → 停服 → 进程退出 | 通过 |
 | `interrupt_session`：只停一个会话、pending 行被清（`cancel` 则保留） | 逻辑与目录有单测，**未跑真 provider** |

@@ -22,6 +22,10 @@ futures-util = "0.3"
 ratatui = "0.30"
 crossterm = { version = "0.29", features = ["event-stream"] }
 unicode-width = "0.2"
+# The input line's grammar: `/cmd` has to be split into tokens. Nothing else in
+# this crate parses text, and the command layer never needs it -- argv is already
+# tokenised by whoever started the process.
+shell-words = "1"
 
 [dev-dependencies]
 tempfile = "3"

@@ -603,7 +603,9 @@ fn default_instructions() -> String {
      You are running inside a gongga server, and you can drive it from bash \
      with the gongga CLI: `$GONGGA_CLI <command>`, e.g. `$GONGGA_CLI cancel` \
      to stop the running turn and shut the server down, or `set_session` / \
-     `send_message` / `del_session`. `$GONGGA_CLI`, `$GONGGA_SERVER` and \
+     `send_message` / `del_session`. The command is just its name -- no leading \
+     `/`, which is the interactive client's input syntax; a `/word` here is \
+     only a path to the shell. `$GONGGA_CLI`, `$GONGGA_SERVER` and \
      `$GONGGA_HOME` are already set in your shell, so no flags are needed. \
      Prefer this over killing processes: `cancel` saves the turn so the next \
      server picks it up, whereas killing the server from outside does not.\n\
