@@ -295,6 +295,15 @@ async fn send_message(d: &Dispatch, args: &Args) -> Outcome {
     // everything else and stopped, which is exactly when it is too late to
     // steer.
     //
+    // One read of `busy`, and it decides both things: what contract the row
+    // has and whether this call starts a turn. Two reads were a race with a
+    // nasty shape -- the first said "busy" (so the row was written as
+    // "inject", promising the message is not in the transcript yet), then the
+    // turn ended before the second read, which said "idle" and started a turn
+    // that wrote the message *and* left the row behind. A crash after that
+    // made `resume_pending` write the same line a second time, and "the agent
+    // repeated me" is not a symptom anyone can debug from the transcript.
+    //
     // `kind` records which contract the row has. "turn" means the message is
     // already in the transcript and the row only proves a turn is owed;
     // "inject" means the message has not been written yet and whoever consumes
@@ -314,13 +323,11 @@ async fn send_message(d: &Dispatch, args: &Args) -> Outcome {
         Err(e) => return Outcome::err(format!("could not record the pending turn: {e}")),
     };
 
-    // Checked after the write, not before: if the turn ended in between, the
-    // row is already there and this will start the turn that consumes it.
-    if session.busy() {
-        // No turn will be started for this row, so its contract changes: the
-        // message is not in the transcript and must be written by whoever
-        // consumes it, including a restart.
-        let _ = d.store.set_pending_kind(task_id, "inject");
+    if busy {
+        // The turn that was running will fold this in at its next step
+        // boundary. If it ends first, the row is not stranded: `nudge_inboxes`
+        // starts a turn for exactly this case, which is the same path a
+        // background job's completion takes.
         return Outcome::ok(format!(
             "message queued for {label}; it will be read at the next step"
         ));

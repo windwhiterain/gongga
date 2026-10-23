@@ -411,6 +411,11 @@ impl BashShell {
     /// given it. The `wait` then reaps the leader, which is what lets the
     /// reaping thread finish.
     pub async fn kill(&mut self) {
+        // A killed shell is never handed another command. Whatever the pipes
+        // still hold belongs to a command that is gone, so saying so here is
+        // what keeps a caller that kept the handle from reading it later as if
+        // it were its own output.
+        self.out_of_sync = true;
         // The tree, not the shell. Children inherit the write end of the pipe
         // this shell reads from, and reading it is something the runtime is
         // waiting on during shutdown -- so a surviving grandchild means a
@@ -823,6 +828,26 @@ mod tests {
             .expect("running exit");
         assert!(out.exit_code.is_none(), "the shell died before the sentinel");
         assert!(!shell.usable(), "a dead shell called itself usable");
+    }
+
+    /// A killed shell is not usable, however long its handle sticks around.
+    ///
+    /// The cancel path stops the command by killing the shell's process tree,
+    /// and then replaces the shell under the same name. Anything still holding
+    /// the old handle must not read what is left in its pipes as the next
+    /// command's output, which is what `usable()` gates.
+    #[tokio::test]
+    async fn a_killed_shell_reports_itself_unusable() {
+        let Some(program) = crate::config::detect_git_bash() else {
+            return;
+        };
+        let mut shell = match BashShell::spawn(&program, &std::env::temp_dir(), &[]) {
+            Ok(s) => s,
+            Err(e) => panic!("spawning {}: {e}", program.display()),
+        };
+        assert!(shell.usable());
+        shell.kill().await;
+        assert!(!shell.usable(), "a killed shell called itself usable");
     }
 
     /// The model drives the server through the CLI, which means the shell has

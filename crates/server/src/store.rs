@@ -689,18 +689,6 @@ impl Store {
         Ok(())
     }
 
-    /// Rewrites a row's contract when the caller learns it cannot keep the
-    /// original one -- a message written as "a turn is owed" that no turn was
-    /// actually started for must become "not yet delivered", or a restart
-    /// would replay a turn for a message that is not in the transcript.
-    pub fn set_pending_kind(&self, id: i64, kind: &str) -> anyhow::Result<()> {
-        self.lock().execute(
-            "UPDATE pending_tasks SET kind = ?1 WHERE id = ?2",
-            params![kind, id],
-        )?;
-        Ok(())
-    }
-
     /// Takes everything this session's inbox holds, except the row the running
     /// turn already owns, and deletes what it returns.
     ///

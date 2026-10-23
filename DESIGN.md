@@ -96,9 +96,17 @@ pub enum UiEvent { Submit(String), Quit }
 - **按序交付**：接收端缓冲乱序包，只有连续了才往上交；因此同一消息的分片必然连续到达，
   重组就是简单 append，不需要按 msg_id 做乱序重组表。
 - 心跳 2s（保 NAT 映射），空闲 60s 判定连接死亡。
+- **入站投递不阻塞链路**：交给调用方的消息走无界队列，I/O task 不会因为消费端慢而停下 ——
+  同一个 task 还负责 ACK 和重传，停在投递上会让**两端都活着、链路却像挂了**。背压改用接收
+  窗口表达：通告窗口 = `cfg.window` 减去调用方还没取走的消息数（最少 1），消费端一慢，对端
+  就少发。消息不丢、顺序不变。
+- **读 socket 的 task 与连接同生共死**：`Channel` / 两个半边的最后一个被 drop 时 abort reader。
+  它平时阻塞在 `recv_from` 上，对端不再发包就永远醒不过来 —— 每次重连都会留下一个 task 和
+  一个 `Arc<UdpSocket>`。
 
 `tests/loopback.rs` 用真实 UDP socket 验证：200KB 消息分片往返、25% 丢包下恢复、
-多条消息保持顺序。丢包恢复从最初的 25s 优化到 <0.4s。
+多条消息保持顺序、消费端暂停时链路不停、连接 drop 后 reader task 释放 socket。
+丢包恢复从最初的 25s 优化到 <0.4s。
 
 ### 服务端多路复用
 
@@ -170,6 +178,15 @@ home C:\Users\17124\.gongga); stop it first, or delete ...\server.lock ...
 
 被强杀的进程来不及删锁，所以锁里存 pid：启动时问一次它还活着吗（Windows 用 `tasklist`，
 Unix 用 `kill -0`），死了就当垃圾接管。优雅退出（`cancel` 命令）走 `Drop` 正常删锁。
+
+pid 是**通过 `create_new` 返回的那个句柄**写进去的（`write_all` + `sync_all`），不是事后再
+`fs::write` 一次：文件在 `create_new` 返回的瞬间就对别人可见，先建后写会给第二个服务端一个
+空文件的窗口，而空文件会被当成「陈旧」接管 —— 两个服务端于是共用一份 home。同理：
+
+- 读不出 pid 的锁**不算陈旧**，等 250ms 再拒绝启动（「另一个服务端正在启动」），不接管；
+- 陈旧锁用 `rename` 挪开再由 `create_new` 决定归属：两个服务端同时判定陈旧时，`rename`
+  只有一个能成功，接下来的 `create_new` 也只有一个能赢；
+- `Drop` 只删写着自己 pid 的那份锁。
 
 ### 冲突的操作排队，不抢
 
@@ -305,6 +322,9 @@ model 流、工具调用、重试退避、压缩上都 select 它，在 step 边
   时就写过了，再投一次就是用户的每句话出现两遍。
 - `kind` 区分契约：`turn` = 「消息已在 transcript，这行只证明还欠一个 turn」；`inject` =
   「消息还没落库，谁消费谁负责写」。重启时 `resume_pending` 按这个区别对待。
+- **`busy()` 只读一次**，同一个快照决定 `kind` 和「要不要起 turn」。读两次的窗口很窄但后果
+  很难查：第一次说忙（写 `inject`），第二次说闲（起 turn 并把它写进 transcript），行却没删，
+  崩溃后 `resume_pending` 再写一遍 —— 用户的每句话会重放两次。
 
 #### 上下文体积：两道闸
 
@@ -588,6 +608,12 @@ bash{command: "echo hi"}                              -> [read error: invalid ut
 
 单测 `binary_output_does_not_deafen_the_shell` 就是这次事故的原样复现（先 `printf` 出 `\377\376`
 再 `echo`），`a_shell_that_ended_is_not_reusable` 管住 EOF 那一半。
+
+3. **取消即中断**（`interrupt_session` / `cancel`）。此前取消只是丢掉等待的 future：命令还在
+   那条 shell 里跑，`out_of_sync` 永远走不到置位，于是下一条 `bash` 读到上一条的输出、还报
+   `ok` —— 和上面「错位一格」是同一个故障，只是入口换成了官方推荐的停止方式。现在取消分支
+   会把前台命令连同进程组一起杀掉（`BashShell::kill`，同时置 `out_of_sync`），换一条新 shell，
+   并在 tool result 里明说「已取消、退出码未知」。写失败（`Err`）分支也一样消费 `healthy`。
 
 ### `/` 只在输入行里存在
 

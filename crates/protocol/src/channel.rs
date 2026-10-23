@@ -21,11 +21,13 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tokio::time::interval;
 
 use crate::frame::{Frame, FrameError, Flags, HEADER_LEN, DEFAULT_MTU};
@@ -113,13 +115,74 @@ pub enum ChannelError {
     MessageTooLarge { len: usize, limit: usize },
 }
 
+/// What one channel's receive side shares with its handles.
+///
+/// Two things that must not live in the I/O task: how far behind the caller is,
+/// and the reader task that feeds the socket.
+struct Inbound {
+    /// Messages handed to the caller but not taken yet.
+    ///
+    /// This is what the peer is told the receive window is. A consumer that
+    /// stops reading therefore slows the sender down instead of filling memory,
+    /// and -- because nothing here is ever awaited by the I/O task -- without
+    /// stopping it from answering ACKs or retransmitting.
+    pending: AtomicUsize,
+    /// Aborts the socket reader when the last handle is dropped. `None` on the
+    /// server side, where one demultiplexer reads the shared socket.
+    _reader: Option<ReaderAbort>,
+}
+
+impl Inbound {
+    fn new(reader: Option<ReaderAbort>) -> Arc<Self> {
+        Arc::new(Self {
+            pending: AtomicUsize::new(0),
+            _reader: reader,
+        })
+    }
+
+    /// How many delivered messages the caller has not collected.
+    fn backlog(&self) -> usize {
+        self.pending.load(Ordering::Relaxed)
+    }
+
+    /// Awaits the next message and accounts for it.
+    async fn recv(&self, inbound: &mut mpsc::UnboundedReceiver<Vec<u8>>) -> Option<Vec<u8>> {
+        let message = inbound.recv().await?;
+        // Saturating, because the receiver being cancelled between the arrival
+        // and this point is not a reason to wrap around to `usize::MAX`.
+        let _ = self
+            .pending
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1));
+        Some(message)
+    }
+}
+
+/// Stops a channel's reader task when the last handle goes away.
+///
+/// The reader spends its life blocked in `recv_from`, and nothing wakes it when
+/// its connection is replaced: the peer stops sending, so its only exit -- a
+/// failed `send` on a closed queue -- never happens. A client that reconnects
+/// would leave one task and one `Arc<UdpSocket>` behind per attempt, which is
+/// exactly what a TUI redialing a restarted server does.
+struct ReaderAbort(JoinHandle<()>);
+
+impl Drop for ReaderAbort {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// A handle to a running channel.
 ///
 /// The channel owns its socket-side task. When that task exits, `send` fails and
 /// `recv` yields `None`, so callers do not need a separate liveness check.
+///
+/// Dropping every handle (both halves, after [`Channel::split`]) also stops the
+/// reader task, so a replaced connection leaves nothing running.
 pub struct Channel {
     outbound: mpsc::Sender<Vec<u8>>,
-    inbound: mpsc::Receiver<Vec<u8>>,
+    inbound: mpsc::UnboundedReceiver<Vec<u8>>,
+    shared: Arc<Inbound>,
     peer: SocketAddr,
     conn_id: Arc<std::sync::Mutex<u32>>,
 }
@@ -143,22 +206,25 @@ impl Channel {
 
     /// Awaits the next complete message, or `None` once the channel is finished.
     pub async fn recv(&mut self) -> Option<Vec<u8>> {
-        self.inbound.recv().await
+        self.shared.recv(&mut self.inbound).await
     }
 
     /// Splits the handle so one task can send while another receives.
     ///
     /// Both halves can be driven concurrently by a `select!` loop, and dropping
-    /// either ends the channel.
+    /// either ends the channel. The reader task lives until the last half is
+    /// dropped, so a half that is still in use keeps the socket open.
     pub fn split(self) -> (ChannelSink, ChannelStream) {
         (
             ChannelSink {
                 outbound: self.outbound,
                 peer: self.peer,
                 conn_id: self.conn_id,
+                _shared: self.shared.clone(),
             },
             ChannelStream {
                 inbound: self.inbound,
+                shared: self.shared,
             },
         )
     }
@@ -170,6 +236,9 @@ pub struct ChannelSink {
     outbound: mpsc::Sender<Vec<u8>>,
     peer: SocketAddr,
     conn_id: Arc<std::sync::Mutex<u32>>,
+    /// Kept only to keep the reader task alive while this half is: a sink with
+    /// nobody receiving beside it is still a link somebody may come back to.
+    _shared: Arc<Inbound>,
 }
 
 impl ChannelSink {
@@ -191,12 +260,13 @@ impl ChannelSink {
 
 /// The receiving half of a [`Channel`].
 pub struct ChannelStream {
-    inbound: mpsc::Receiver<Vec<u8>>,
+    inbound: mpsc::UnboundedReceiver<Vec<u8>>,
+    shared: Arc<Inbound>,
 }
 
 impl ChannelStream {
     pub async fn recv(&mut self) -> Option<Vec<u8>> {
-        self.inbound.recv().await
+        self.shared.recv(&mut self.inbound).await
     }
 }
 
@@ -253,6 +323,9 @@ struct ChannelCore {
     last_recv: Instant,
     last_send: Instant,
     peer_window: u16,
+    /// The receive window to advertise: `cfg.window` minus what the caller has
+    /// not collected yet. Recomputed at the top of every loop iteration.
+    recv_window: u16,
     /// Set by ACK processing when three duplicate ACKs warrant a fast retransmit.
     fast_retransmit: bool,
     /// Set when a bare SYN arrives and we owe the peer a SYN-ACK.
@@ -262,6 +335,7 @@ struct ChannelCore {
 impl ChannelCore {
     fn new(cfg: ChannelConfig, role: Role, conn_id: u32) -> Self {
         let rto = cfg.initial_rto;
+        let window = cfg.window;
         Self {
             cfg,
             conn_id,
@@ -287,6 +361,7 @@ impl ChannelCore {
             last_recv: Instant::now(),
             last_send: Instant::now(),
             peer_window: u16::MAX,
+            recv_window: window,
             fast_retransmit: false,
             pending_syn_ack: false,
         }
@@ -294,6 +369,18 @@ impl ChannelCore {
 
     fn window(&self) -> usize {
         self.cfg.window.min(self.peer_window).max(1) as usize
+    }
+
+    /// What to tell the peer our receive window is, given a delivery backlog.
+    ///
+    /// Never zero: a zero window is a deadlock signal that a peer may honour
+    /// forever, and the point here is to slow a producer down while the I/O
+    /// task keeps running, not to stop it. One packet of room still lets the
+    /// link make progress, and every message the caller takes back gives the
+    /// full window back.
+    fn advertised_window(&self, backlog: usize) -> u16 {
+        let backlog = u16::try_from(backlog).unwrap_or(u16::MAX);
+        self.cfg.window.saturating_sub(backlog).max(1)
     }
 
     /// Splits a message into queued fragments.
@@ -338,7 +425,7 @@ impl ChannelCore {
             q.msg_id,
             q.frag_idx,
             q.frag_cnt,
-            self.cfg.window,
+            self.recv_window,
             q.payload.clone(),
         )
     }
@@ -375,7 +462,7 @@ impl ChannelCore {
     }
 
     async fn send_ack(&mut self, io: &Sender) -> Result<(), ChannelError> {
-        let mut frame = Frame::ack(self.conn_id, self.recv_expected, self.cfg.window);
+        let mut frame = Frame::ack(self.conn_id, self.recv_expected, self.recv_window);
         if self.state == ConnState::Handshaking {
             frame.flags = frame.flags.union(Flags::SYN);
         }
@@ -596,7 +683,7 @@ pub async fn connect(
 ) -> Result<Channel, ChannelError> {
     let (tx, rx) = mpsc::channel::<Frame>(512);
     let reader = socket.clone();
-    tokio::spawn(async move {
+    let reader_task = tokio::spawn(async move {
         let mut buf = vec![0u8; 65507];
         loop {
             match reader.recv_from(&mut buf).await {
@@ -618,7 +705,15 @@ pub async fn connect(
             }
         }
     });
-    spawn_inner(socket, peer, rx, cfg, 0, Role::Client)
+    spawn_inner(
+        socket,
+        peer,
+        rx,
+        cfg,
+        0,
+        Role::Client,
+        Some(ReaderAbort(reader_task)),
+    )
 }
 
 /// Spawns a server-side channel for an already-allocated connection id.
@@ -631,7 +726,7 @@ pub fn accept(
     cfg: ChannelConfig,
     conn_id: u32,
 ) -> Channel {
-    spawn_inner(socket, peer, inbox, cfg, conn_id, Role::Server)
+    spawn_inner(socket, peer, inbox, cfg, conn_id, Role::Server, None)
         .expect("spawn_inner is infallible")
 }
 
@@ -642,9 +737,20 @@ fn spawn_inner(
     cfg: ChannelConfig,
     conn_id: u32,
     role: Role,
+    reader: Option<ReaderAbort>,
 ) -> Result<Channel, ChannelError> {
     let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(256);
-    let (in_tx, in_rx) = mpsc::channel::<Vec<u8>>(256);
+    let shared = Inbound::new(reader);
+    // Held by the I/O task as well: the receive window is recomputed from it
+    // every pass.
+    let window_source = shared.clone();
+    // Delivery to the caller never goes through a queue that can block: the
+    // task below also drives ACKs and retransmission, and waiting on a slow
+    // consumer there stops both -- the link looks hung while both ends are
+    // alive. Ordering and reliability are preserved instead by *advertising* a
+    // smaller receive window as the backlog grows, so the peer stops sending
+    // rather than our memory or our timer loop growing.
+    let (in_tx, in_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let conn_id_shared = Arc::new(std::sync::Mutex::new(conn_id));
     let conn_id_task = conn_id_shared.clone();
 
@@ -666,6 +772,12 @@ fn spawn_inner(
         }
 
         'outer: while result.is_ok() {
+            // What the peer is told about our receive buffer, recomputed every
+            // pass: it is `cfg.window` minus the messages the caller has not
+            // taken yet, so a consumer that stops reading makes the sender
+            // slow down instead of stalling ACKs and retransmits here.
+            let window = core.advertised_window(window_source.backlog());
+            core.recv_window = window;
             tokio::select! {
                 incoming = inbox.recv() => {
                     match incoming {
@@ -676,7 +788,7 @@ fn spawn_inner(
                                 break 'outer;
                             }
                             for msg in out.drain(..) {
-                                if in_tx.send(msg).await.is_err() {
+                                if deliver(&in_tx, &window_source, msg).is_err() {
                                     result = Err(ChannelError::Closed);
                                     break 'outer;
                                 }
@@ -703,7 +815,7 @@ fn spawn_inner(
                         break 'outer;
                     }
                     for msg in out.drain(..) {
-                        if in_tx.send(msg).await.is_err() {
+                        if deliver(&in_tx, &window_source, msg).is_err() {
                             result = Err(ChannelError::Closed);
                             break 'outer;
                         }
@@ -720,7 +832,12 @@ fn spawn_inner(
         }
 
         if core.state != ConnState::Closing {
-            let fin = Frame::fin(core.conn_id, core.next_seq, core.recv_expected, core.cfg.window);
+            let fin = Frame::fin(
+                core.conn_id,
+                core.next_seq,
+                core.recv_expected,
+                core.recv_window,
+            );
             let _ = io.send(&fin).await;
         }
         *conn_id_task.lock().unwrap_or_else(|e| e.into_inner()) = core.conn_id;
@@ -732,9 +849,30 @@ fn spawn_inner(
     Ok(Channel {
         outbound: out_tx,
         inbound: in_rx,
+        shared,
         peer,
         conn_id: conn_id_shared,
     })
+}
+
+/// Hands one delivered message to the caller without ever waiting for it.
+///
+/// The message is counted before it is queued and uncounted when the caller
+/// takes it, and that count is what the receive window is computed from.
+fn deliver(
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    backlog: &Arc<Inbound>,
+    message: Vec<u8>,
+) -> Result<(), ()> {
+    backlog.pending.fetch_add(1, Ordering::Relaxed);
+    if tx.send(message).is_err() {
+        // Nobody is left to take it; the caller of the channel is gone.
+        let _ = backlog
+            .pending
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1));
+        return Err(());
+    }
+    Ok(())
 }
 
 async fn on_tick(
@@ -810,7 +948,7 @@ async fn on_tick(
             pkt.msg_id,
             pkt.frag_idx,
             pkt.frag_cnt,
-            core.cfg.window,
+            core.recv_window,
             pkt.payload.clone(),
         );
         io.send(&frame).await?;
@@ -832,7 +970,7 @@ async fn on_tick(
                 pkt.msg_id,
                 pkt.frag_idx,
                 pkt.frag_cnt,
-                core.cfg.window,
+                core.recv_window,
                 pkt.payload.clone(),
             );
             io.send(&frame).await?;
@@ -907,6 +1045,23 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out, vec![b"abcd".to_vec()]);
+    }
+
+    /// The window we advertise is the room the caller has left, never zero.
+    ///
+    /// Zero would be a stall the peer may honour forever; the point is to slow
+    /// a producer down while this side keeps acknowledging and retransmitting.
+    #[test]
+    fn the_advertised_window_shrinks_with_the_backlog_but_never_closes() {
+        let cfg = ChannelConfig {
+            window: 16,
+            ..ChannelConfig::default()
+        };
+        let core = ChannelCore::new(cfg, Role::Server, 1);
+        assert_eq!(core.advertised_window(0), 16);
+        assert_eq!(core.advertised_window(4), 12);
+        assert_eq!(core.advertised_window(16), 1);
+        assert_eq!(core.advertised_window(1_000_000), 1);
     }
 
     #[test]
