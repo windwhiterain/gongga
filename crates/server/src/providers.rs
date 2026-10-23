@@ -56,6 +56,15 @@ pub struct Model {
     /// treated as "assume the provider's OpenAI endpoint works" -- the roster
     /// predates this server and most entries never filled the field in.
     pub endpoints: Vec<String>,
+    /// Reasoning levels this model accepts, as the roster spells them
+    /// (`low`, `xhigh`, `on`/`off`, ...). Empty means "not stated", and a level
+    /// is then passed through untranslated: letting the provider answer for
+    /// itself is better than this server inventing a mapping.
+    pub reasoning_levels: Vec<String>,
+    /// The level the roster says to use when nobody asked for one.
+    pub reasoning_default: Option<String>,
+    /// How a level spelled by a caller maps onto one this model accepts.
+    pub reasoning_mapping: HashMap<String, String>,
 }
 
 impl Model {
@@ -88,9 +97,39 @@ pub struct Entry {
     /// normal: a roster that names a variable does not have to carry a secret.
     pub key: Option<String>,
     pub context: Option<u64>,
+    /// What the roster says the model's reasoning levels are, in the roster's
+    /// own spelling. Copied onto the entry so a command can validate a level
+    /// without going back to the model list.
+    pub reasoning_levels: Vec<String>,
+    pub reasoning_default: Option<String>,
+    pub reasoning_mapping: HashMap<String, String>,
 }
 
 impl Entry {
+    /// The level to send for `requested`, or why there is none.
+    ///
+    /// Resolved at `set_session` time rather than per request: a level the
+    /// model does not take is a typo in the command that made it, and the
+    /// roster can say what it does take while the caller is still looking at
+    /// what they typed.
+    pub fn reasoning_effort(&self, requested: &str) -> Result<String, String> {
+        if self.reasoning_levels.is_empty() {
+            return Ok(requested.to_string());
+        }
+        let mapped = self
+            .reasoning_mapping
+            .get(requested)
+            .cloned()
+            .unwrap_or_else(|| requested.to_string());
+        if self.reasoning_levels.iter().any(|l| *l == mapped) {
+            return Ok(mapped);
+        }
+        Err(format!(
+            "`{requested}` is not a level this model takes; it accepts {}",
+            self.reasoning_levels.join(", ")
+        ))
+    }
+
     /// The `provider/model` spelling, which is what `--llm` takes and what the
     /// session records.
     pub fn spec(&self) -> String {
@@ -308,6 +347,9 @@ impl Catalog {
             api_key_env: provider.key_env.clone(),
             key: provider.key.clone(),
             context: model.context,
+            reasoning_levels: model.reasoning_levels.clone(),
+            reasoning_default: model.reasoning_default.clone(),
+            reasoning_mapping: model.reasoning_mapping.clone(),
         })
     }
 }
@@ -405,6 +447,17 @@ struct FileModel {
     context: Option<u64>,
     #[serde(default)]
     endpoints: Vec<String>,
+    /// Levels this model accepts, as the roster spells them. Empty means the
+    /// roster does not say, which is the common case for anything older than
+    /// the field.
+    #[serde(default)]
+    reasoning_levels: Vec<String>,
+    #[serde(default)]
+    reasoning_default: Option<String>,
+    /// How a level this machine's callers spell maps onto what the model takes
+    /// (`medium` -> `high`, `minimal` -> `low`, ...).
+    #[serde(default)]
+    reasoning_mapping: HashMap<String, String>,
 }
 
 fn parse(text: &str) -> Result<Vec<Provider>, toml::de::Error> {
@@ -444,6 +497,9 @@ fn parse(text: &str) -> Result<Vec<Provider>, toml::de::Error> {
                         id: m.id,
                         context: m.context,
                         endpoints: m.endpoints,
+                        reasoning_levels: m.reasoning_levels,
+                        reasoning_default: m.reasoning_default,
+                        reasoning_mapping: m.reasoning_mapping,
                     })
                     .collect(),
                 id: p.id,
@@ -706,5 +762,78 @@ key = "second"
         let providers = parse(text).unwrap();
         assert_eq!(providers.len(), 1);
         assert_eq!(providers[0].endpoints[0].base_url, "https://one.example/v1");
+    }
+
+    /// The roster's reasoning fields are what `--thinking-effort` is checked
+    /// against, and the mapping is what turns a level a caller knows
+    /// (`medium`) into one the model actually takes (`high`).
+    #[test]
+    fn reasoning_levels_are_read_and_mapped() {
+        let text = r#"
+[[provider]]
+id = "p"
+key = "k"
+  [[provider.endpoint]]
+  api = "openai-responses"
+  base_url = "https://p.example/v1"
+  [[provider.model]]
+  id = "m"
+  name = "M"
+  context = 100000
+  reasoning_levels = ["low", "high", "max"]
+  reasoning_default = "high"
+  [provider.model.reasoning_mapping]
+  medium = "high"
+  xhigh = "max"
+"#;
+        let providers = parse(text).unwrap();
+        let model = &providers[0].models[0];
+        assert_eq!(model.reasoning_levels, ["low", "high", "max"]);
+        assert_eq!(model.reasoning_default.as_deref(), Some("high"));
+        assert_eq!(
+            model.reasoning_mapping.get("medium").map(String::as_str),
+            Some("high")
+        );
+    }
+
+    /// A level is mapped first, then checked: what the model is told is always
+    /// one of the levels the roster says it takes, and a level it does not take
+    /// is refused with the ones it does.
+    #[test]
+    fn a_level_is_mapped_then_checked() {
+        let entry = Entry {
+            provider: "p".into(),
+            provider_name: "P".into(),
+            model: "m".into(),
+            model_name: "M".into(),
+            base_url: String::new(),
+            api_key_env: None,
+            key: None,
+            context: None,
+            reasoning_levels: vec!["low".into(), "high".into(), "max".into()],
+            reasoning_default: Some("high".into()),
+            reasoning_mapping: [
+                ("medium".to_string(), "high".to_string()),
+                ("xhigh".to_string(), "max".to_string()),
+            ]
+            .into(),
+        };
+        assert_eq!(entry.reasoning_effort("medium").unwrap(), "high");
+        assert_eq!(entry.reasoning_effort("xhigh").unwrap(), "max");
+        assert_eq!(entry.reasoning_effort("low").unwrap(), "low");
+        let refused = entry.reasoning_effort("ultra").unwrap_err();
+        assert!(
+            refused.contains("low, high, max"),
+            "the refusal has to say what would work: {refused}"
+        );
+
+        // A roster that says nothing about levels cannot refuse one: the
+        // provider is the only party that knows, so the level goes through.
+        let silent = Entry {
+            reasoning_levels: Vec::new(),
+            reasoning_mapping: Default::default(),
+            ..entry
+        };
+        assert_eq!(silent.reasoning_effort("ultra").unwrap(), "ultra");
     }
 }

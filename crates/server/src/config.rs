@@ -172,10 +172,23 @@ struct FileTransport {
 
 impl Config {
     /// Loads the config, creating the home directory if it does not exist.
-    pub fn load(config_path: Option<&Path>) -> anyhow::Result<Self> {
+    ///
+    /// A flag beats the file, which beats the environment: `--home` is the most
+    /// specific thing the operator typed, and it also decides where the config
+    /// is looked for when `--config` is not given. Everything downstream --
+    /// database, logs, detached-job records, the instance lock -- already keys
+    /// off this one field, which is why there is nothing else to override.
+    pub fn load_with_home(
+        config_path: Option<&Path>,
+        home_override: Option<&Path>,
+    ) -> anyhow::Result<Self> {
+        let home_override = home_override.map(Path::to_path_buf);
         let config_path = match config_path {
             Some(p) => p.to_path_buf(),
-            None => home_dir().join("config.toml"),
+            None => home_override
+                .clone()
+                .unwrap_or_else(home_dir)
+                .join("config.toml"),
         };
         let file = if config_path.exists() {
             read_file(&config_path)?
@@ -183,12 +196,13 @@ impl Config {
             FileConfig::default()
         };
 
-        let home = file
-            .server
-            .as_ref()
-            .and_then(|s| s.home.clone())
-            .map(expand)
-            .unwrap_or_else(home_dir);
+        let home = home_override.unwrap_or_else(|| {
+            file.server
+                .as_ref()
+                .and_then(|s| s.home.clone())
+                .map(expand)
+                .unwrap_or_else(home_dir)
+        });
         std::fs::create_dir_all(&home)?;
 
         let db_path = file

@@ -779,6 +779,7 @@ dependencies = [
  "dirs",
  "futures-util",
  "gongga-protocol",
+ "regex",
  "reqwest",
  "rusqlite",
  "serde",

@@ -920,20 +920,22 @@ impl Tool for DelBashTool {
     }
 
     fn description(&self) -> &'static str {
-        "Discard a persistent shell. Its working directory, exports and shell \
-         functions are lost; naming it again in `bash` starts a fresh shell in \
-         the session's directory. Background jobs go with it; detached jobs do \
-         not, because they were never the shell's. Use this when a shell is \
-         wedged or polluted."
+        "Discard persistent shells whose name matches a regex. Their working \
+         directories, exports and shell functions are lost; naming one again in \
+         `bash` starts a fresh shell in the session's directory. Background jobs \
+         go with them; detached jobs do not, because they were never the \
+         shells'. Use this when a shell is wedged or polluted, and to clean up \
+         the names a long session invented."
     }
 
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "name": {
+                "name_regex": {
                     "type": "string",
-                    "description": "Shell to discard. Defaults to `default`."
+                    "description": "Pattern matched against shell names, unanchored: \
+                                    `qa` also takes `qa2`. Defaults to `^default$`."
                 }
             },
             "additionalProperties": false
@@ -946,26 +948,45 @@ impl Tool for DelBashTool {
         ctx: &'a ToolContext,
     ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
-            let name = shell_name(&args);
-            let survivors = ctx
-                .detached
-                .list(&ctx.session)
-                .await
-                .iter()
-                .filter(|j| j.shell == name && j.running)
-                .count();
-            let discarded = ctx.forget(name);
-            if !discarded {
-                return ToolOutcome::ok(format!("no live shell named {name}"));
+            // Unanchored on purpose: `qa` is how someone actually names a shell
+            // family (`qa`, `qa2`, `qa5`), and requiring `^qa` would make the
+            // cleanup of a long session's leftovers guesswork.
+            let pattern = args
+                .get("name_regex")
+                .and_then(|v| v.as_str())
+                .unwrap_or("^default$");
+            let Ok(regex) = regex::Regex::new(pattern) else {
+                return ToolOutcome::err(format!("name_regex {pattern:?} is not a valid regex"));
+            };
+            let names: Vec<String> = ctx
+                .shell_names()
+                .into_iter()
+                .filter(|name| regex.is_match(name))
+                .collect();
+            if names.is_empty() {
+                return ToolOutcome::ok(format!("no live shell matches {pattern:?}"));
             }
-            // Detached jobs are not the shell's, so they keep running; say so,
-            // or the model would assume discarding the shell stopped them.
+            let jobs = ctx.detached.list(&ctx.session).await;
+            let mut survivors = 0;
+            let mut discarded = Vec::new();
+            for name in &names {
+                survivors += jobs
+                    .iter()
+                    .filter(|j| j.shell == *name && j.running)
+                    .count();
+                if ctx.forget(name) {
+                    discarded.push(name.clone());
+                }
+            }
+            let list = discarded.join(", ");
+            // Detached jobs are not the shells', so they keep running; say so,
+            // or the model would assume discarding the shells stopped them.
             if survivors == 0 {
-                ToolOutcome::ok(format!("discarded shell {name}"))
+                ToolOutcome::ok(format!("discarded shell(s) {list}"))
             } else {
                 ToolOutcome::ok(format!(
-                    "discarded shell {name}; {survivors} detached job(s) from it are still \
-                     running and were not stopped -- `kill_bash` stops them"
+                    "discarded shell(s) {list}; {survivors} detached job(s) from them are \
+                     still running and were not stopped -- `kill_bash` stops them"
                 ))
             }
         })

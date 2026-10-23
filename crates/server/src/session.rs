@@ -34,6 +34,10 @@ pub struct Tuning {
     /// Compaction point as a percentage of the model's context window. `None`
     /// means the server-wide token budget.
     pub compact_threshold: Option<u8>,
+    /// How hard the model should think, in the roster's spelling. `None` means
+    /// the model's own default -- which is not the same as "send nothing" for
+    /// every provider, so it is stored as an absence rather than a value.
+    pub thinking_effort: Option<String>,
 }
 
 /// A live session. Cheap to clone; the heavy parts are shared.
@@ -398,7 +402,7 @@ impl SessionManager {
         if let Some(spec) = &pinned {
             let _ = self
                 .store
-                .set_session_tuning(id, Some(spec), None, &self.model);
+                .set_session_tuning(id, Some(spec), None, None, &self.model);
         }
         self.materialise(SessionRow {
             id,
@@ -407,6 +411,7 @@ impl SessionManager {
             model: self.model.clone(),
             llm: pinned,
             compact_threshold: None,
+            thinking_effort: None,
             cwd: cwd.to_string_lossy().to_string(),
             created_at: 0,
             updated_at: 0,
@@ -468,6 +473,7 @@ impl SessionManager {
                             .map(|e| e.spec())
                     }),
                     compact_threshold: row.compact_threshold,
+                    thinking_effort: row.thinking_effort,
                 }),
                 deleted: AtomicBool::new(false),
                 resumable: AtomicBool::new(false),

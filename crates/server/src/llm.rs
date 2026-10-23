@@ -87,10 +87,11 @@ impl LlmClient {
         summary: Option<&str>,
         history: &[HistoryItem],
         tools: &[ToolDefinition],
+        effort: Option<&str>,
         cancel: CancellationToken,
     ) -> mpsc::Receiver<LlmEvent> {
         let (tx, rx) = mpsc::channel(256);
-        let body = self.build_body(summary, history, tools);
+        let body = self.build_body(summary, history, tools, effort);
         let url = format!("{}/responses", self.base_url);
         let api_key = self.api_key.clone();
         let http = self.http.clone();
@@ -185,6 +186,7 @@ impl LlmClient {
         summary: Option<&str>,
         history: &[HistoryItem],
         tools: &[ToolDefinition],
+        effort: Option<&str>,
     ) -> Value {
         let mut input: Vec<Value> = Vec::with_capacity(history.len() + 1);
         if let Some(s) = summary {
@@ -225,6 +227,12 @@ impl LlmClient {
         }
         if let Some(m) = self.max_output_tokens {
             body["max_output_tokens"] = json!(m);
+        }
+        if let Some(effort) = effort {
+            // The Responses API's spelling for "how hard to think", which the
+            // roster records per model as `reasoning_field.responses`. It is the
+            // only surface this server speaks, so there is nothing to switch on.
+            body["reasoning"] = json!({ "effort": effort });
         }
         if !self.store {
             // Without server-side storage, reasoning can only be replayed from
@@ -897,7 +905,7 @@ mod tests {
         // A compacted prefix must not change what the model is offered: the
         // schema is out of band, not part of the history.
         for summary in [None, Some("earlier work, compressed")] {
-            let body = client.build_body(summary, &[], &tools);
+            let body = client.build_body(summary, &[], &tools, None);
             let sent = &body["tools"][0];
             assert_eq!(sent["name"], "bash");
             assert_eq!(sent["parameters"]["required"][0], "cmd");
@@ -906,7 +914,7 @@ mod tests {
 
         // An empty registry means no `tools` key at all, rather than an empty
         // array that some providers reject.
-        let body = client.build_body(None, &[], &[]);
+        let body = client.build_body(None, &[], &[], None);
         assert!(body.get("tools").is_none(), "{body}");
     }
 
@@ -1163,5 +1171,36 @@ mod tests {
         let v = history_item_to_input(&item).unwrap();
         assert_eq!(v["type"], "function_call_output");
         assert_eq!(v["call_id"], "c1");
+    }
+
+    /// `set_session --thinking-effort` reaches the wire as the Responses API
+    /// spells it, and a session that never asked sends nothing at all -- an
+    /// empty `reasoning` object is not the same as no reasoning to a provider.
+    #[test]
+    fn a_thinking_level_rides_on_the_request() {
+        let cfg = crate::config::LlmConfig {
+            provider: None,
+            base_url: "http://127.0.0.1:1/v1".to_string(),
+            model: "m".to_string(),
+            context: None,
+            api_key_env: String::new(),
+            api_key: "k".to_string(),
+            instructions: String::new(),
+            temperature: None,
+            max_output_tokens: None,
+            store: false,
+            request_timeout: Duration::from_secs(1),
+            idle_timeout: Duration::from_secs(1),
+            max_retries: 0,
+            retry_base: Duration::from_millis(1),
+        };
+        let client = LlmClient::new(&cfg).unwrap();
+        let body = client.build_body(None, &[], &[], Some("high"));
+        assert_eq!(body["reasoning"]["effort"], "high");
+        let body = client.build_body(None, &[], &[], None);
+        assert!(
+            body.get("reasoning").is_none(),
+            "an unset level must not become an empty reasoning object"
+        );
     }
 }

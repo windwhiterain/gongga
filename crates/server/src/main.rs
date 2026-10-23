@@ -52,6 +52,11 @@ struct Args {
     /// Path to bash. Overrides `[tools.bash] program`.
     #[arg(long)]
     bash: Option<PathBuf>,
+    /// Home directory: the database, config, logs, detached-job records and
+    /// the instance lock all live under it. Overrides `[server] home`, which
+    /// overrides `$GONGGA_HOME`.
+    #[arg(long, value_name = "DIR")]
+    home: Option<PathBuf>,
     /// Log filter, e.g. `gongga_server=debug`.
     #[arg(long, default_value = "info")]
     log: String,
@@ -147,7 +152,7 @@ async fn run() -> anyhow::Result<()> {
         }
     }
 
-    let mut cfg = Config::load(args.config.as_deref())?;
+    let mut cfg = Config::load_with_home(args.config.as_deref(), args.home.as_deref())?;
     // The starter config is written from what the *file* said, before the flag
     // is applied: `--db /tmp/x.db` is this run's database, and baking it into a
     // config.toml that this run happened to create would quietly move every

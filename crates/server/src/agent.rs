@@ -156,6 +156,10 @@ impl Agent {
                 return;
             }
         };
+        // Read once, like the route: a `set_session --thinking-effort` between
+        // turns applies to the next turn, and every step of this one sends the
+        // level it started with.
+        let effort = session.tuning().thinking_effort;
         tracing::info!(
             session = %name,
             resumed = user_text.is_none(),
@@ -211,7 +215,10 @@ impl Agent {
             // than after a step means the very next request is the small one.
             self.maybe_compress(id, &name, &llm, budget, &cancel).await;
             tracing::info!(session = %name, step, "step start");
-            match self.step(id, &name, turn, &cancel, step, &llm).await {
+            match self
+                .step(id, &name, turn, &cancel, step, &llm, effort.as_deref())
+                .await
+            {
                 Ok(StepResult::Finished) => {
                     // The model says it is done, but something may have landed
                     // while it was finishing. Deliver it and go round again
@@ -476,10 +483,17 @@ impl Agent {
         cancel: &tokio_util::sync::CancellationToken,
         step: u32,
         llm: &LlmClient,
+        effort: Option<&str>,
     ) -> anyhow::Result<StepResult> {
         let (summary, history) = self.store.context(id)?;
         let definitions = self.tools.definitions();
-        let mut rx = llm.stream(summary.as_deref(), &history, &definitions, cancel.clone());
+        let mut rx = llm.stream(
+            summary.as_deref(),
+            &history,
+            &definitions,
+            effort,
+            cancel.clone(),
+        );
 
         let mut calls: Vec<ToolCall> = Vec::new();
         let mut failure: Option<String> = None;

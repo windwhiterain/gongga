@@ -161,6 +161,21 @@ pub fn catalog() -> Vec<CommandSpec> {
                             .collect(),
                     ),
                 ),
+                arg(
+                    "thinking_effort",
+                    "How hard the model should think, in the roster's spelling (`low`, `high`, \
+                     `xhigh`, ...). Mapped onto what the model actually accepts and checked \
+                     against it, so a level it does not take fails here. Defaults to the \
+                     model's own.",
+                    false,
+                    Some("level"),
+                    CompletionSource::Static(
+                        ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+                            .iter()
+                            .map(|s| s.to_string())
+                            .collect(),
+                    ),
+                ),
             ],
         },
         CommandSpec {
@@ -392,6 +407,30 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
 
     let mut tuning = session.tuning();
     let mut changed = false;
+    if let Some(level) = args.get("thinking_effort") {
+        // Checked against the model this session will run on: the entry named
+        // here, or the one it already had. A level the model does not take is a
+        // typo in the command that made it, and the roster can say what it does
+        // take while the caller is still looking at what they typed.
+        let target = entry.clone().or_else(|| {
+            tuning
+                .llm
+                .as_deref()
+                .and_then(|spec| d.providers.entry(spec).ok())
+        });
+        tuning.thinking_effort = Some(match &target {
+            Some(e) => match e.reasoning_effort(level) {
+                Ok(level) => level,
+                Err(message) => return Outcome::err(message),
+            },
+            // Nothing in the roster describes this model, so there is nothing
+            // to check it against. Passing it through lets the provider answer
+            // for itself instead of the flag being unusable on an unlisted
+            // model.
+            None => level.clone(),
+        });
+        changed = true;
+    }
     if let Some(entry) = &entry {
         tuning.llm = Some(entry.spec());
         changed = true;
@@ -408,6 +447,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             session.id(),
             tuning.llm.as_deref(),
             tuning.compact_threshold,
+            tuning.thinking_effort.as_deref(),
             // The model the session will actually run on: the entry's, or the
             // server's own when it has none of its own.
             entry
@@ -426,6 +466,9 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     let mut notes: Vec<String> = Vec::new();
     if let Some(llm) = &tuning.llm {
         notes.push(format!("llm {llm}"));
+    }
+    if let Some(level) = &tuning.thinking_effort {
+        notes.push(format!("thinking {level}"));
     }
     if let Some(percent) = tuning.compact_threshold {
         let budget = context.map(|c| crate::providers::tokens_for_percent(c, percent));
@@ -447,6 +490,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             "cwd": cwd,
             "llm": tuning.llm,
             "compact_threshold": tuning.compact_threshold,
+            "thinking_effort": tuning.thinking_effort,
         }),
     )
 }

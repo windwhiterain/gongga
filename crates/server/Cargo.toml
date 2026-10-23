@@ -32,6 +32,9 @@ uuid = { version = "1", features = ["v4"] }
 which = "8"
 shell-words = "1"
 futures-util = "0.3"
+# `del_bash` takes a pattern rather than a name: a long session invents shell
+# names faster than anything can clean them up one at a time.
+regex = "1"
 tokio-util = "0.7"
 tempfile = "3"
 

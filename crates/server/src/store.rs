@@ -43,6 +43,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- one created before these columns existed.
     llm TEXT,
     compact_threshold INTEGER,
+    -- How hard the model should think, in the roster's spelling. NULL means the
+    -- model's own default, which is what a session that never asked should get.
+    thinking_effort TEXT,
     -- Input tokens the provider reported for the last request this session
     -- made. Not an estimate: it is the number the provider billed, which is the
     -- only honest answer to "how full is the context". Surviving a restart is
@@ -132,6 +135,10 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (
             "context_tokens",
             "ALTER TABLE sessions ADD COLUMN context_tokens INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "thinking_effort",
+            "ALTER TABLE sessions ADD COLUMN thinking_effort TEXT",
         ),
     ] {
         let exists = conn
@@ -234,7 +241,7 @@ impl Store {
     const SESSION_SELECT: &'static str = "SELECT s.id, s.name, s.status, s.model, s.cwd,
                     s.created_at, s.updated_at,
                     (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS messages,
-                    s.llm, s.compact_threshold
+                    s.llm, s.compact_threshold, s.thinking_effort
              FROM sessions s";
 
     /// One session, in the same shape the list returns.
@@ -262,6 +269,7 @@ impl Store {
             messages: r.get::<_, i64>(7)? as u64,
             llm: r.get(8)?,
             compact_threshold: r.get::<_, Option<i64>>(9)?.map(|v| v as u8),
+            thinking_effort: r.get(10)?,
         })
     }
 
@@ -287,18 +295,21 @@ impl Store {
         id: i64,
         llm: Option<&str>,
         compact_threshold: Option<u8>,
+        thinking_effort: Option<&str>,
         model: &str,
     ) -> anyhow::Result<()> {
         self.lock().execute(
             "UPDATE sessions
                 SET llm = ?1,
                     compact_threshold = ?2,
-                    model = ?3,
-                    updated_at = ?4
-              WHERE id = ?5",
+                    thinking_effort = ?3,
+                    model = ?4,
+                    updated_at = ?5
+              WHERE id = ?6",
             params![
                 llm,
                 compact_threshold.map(|v| v as i64),
+                thinking_effort,
                 model,
                 now_millis(),
                 id
@@ -841,6 +852,9 @@ pub struct SessionRow {
     /// Compaction point as a percentage of the model's context window, when the
     /// session was given one. `None` means the server-wide character budget.
     pub compact_threshold: Option<u8>,
+    /// Reasoning level in the roster's spelling, when the session was given
+    /// one. `None` means the model's own default.
+    pub thinking_effort: Option<String>,
     pub cwd: String,
     pub created_at: i64,
     pub updated_at: i64,
@@ -1095,18 +1109,28 @@ mod tests {
         let row = store.get_session("s").unwrap().unwrap();
         assert_eq!(row.llm, None, "a session starts on the server's own entry");
         assert_eq!(row.compact_threshold, None);
+        assert_eq!(row.thinking_effort, None, "no level means the model's own");
 
         store
-            .set_session_tuning(id, Some("deepseek-official/deepseek-flash"), Some(30), "deepseek-flash")
+            .set_session_tuning(
+                id,
+                Some("deepseek-official/deepseek-flash"),
+                Some(30),
+                Some("high"),
+                "deepseek-flash",
+            )
             .unwrap();
         let row = store.get_session("s").unwrap().unwrap();
         assert_eq!(row.llm.as_deref(), Some("deepseek-official/deepseek-flash"));
         assert_eq!(row.compact_threshold, Some(30));
+        assert_eq!(row.thinking_effort.as_deref(), Some("high"));
         assert_eq!(row.model, "deepseek-flash");
 
         // Clearing the entry goes back to the server's own, model included:
         // the caller passes what that is, because only it knows.
-        store.set_session_tuning(id, None, None, "MiniMax-M3.1-Flash").unwrap();
+        store
+            .set_session_tuning(id, None, None, None, "MiniMax-M3.1-Flash")
+            .unwrap();
         let row = store.get_session("s").unwrap().unwrap();
         assert_eq!(row.llm, None);
         assert_eq!(row.compact_threshold, None);
