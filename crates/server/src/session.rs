@@ -32,17 +32,8 @@ pub struct Tuning {
     /// A roster entry, `provider/model`. `None` means "the server's own".
     pub llm: Option<String>,
     /// Compaction point as a percentage of the model's context window. `None`
-    /// means the server-wide character budget.
+    /// means the server-wide token budget.
     pub compact_threshold: Option<u8>,
-}
-
-impl Tuning {
-    /// Whether this session was given anything of its own, i.e. whether it
-    /// differs from what the server is configured with. A turn with nothing of
-    /// its own goes straight to the server's client and budget.
-    pub fn is_default(&self) -> bool {
-        self.llm.is_none() && self.compact_threshold.is_none()
-    }
 }
 
 /// A live session. Cheap to clone; the heavy parts are shared.
@@ -98,6 +89,27 @@ impl SessionHandle {
 
     pub fn shells(&self) -> Arc<Mutex<ShellSet>> {
         self.inner.shells.clone()
+    }
+
+    /// Ends every shell this session owns and waits for each to be reaped.
+    ///
+    /// Called once, on the way out. A persistent shell is a child process that
+    /// never exits by itself, so leaving one alive leaves its reaper thread
+    /// alive too, and the process cannot finish shutting down. Nothing is lost
+    /// by ending them: a shell is cheap to start again, and the transcript --
+    /// where the real state lives -- is already written.
+    pub async fn close_shells(&self) {
+        let drained: Vec<Arc<AsyncMutex<BashShell>>> = {
+            let mut set = self.inner.shells.lock().unwrap_or_else(|e| e.into_inner());
+            set.drain()
+        };
+        tracing::info!(count = drained.len(), "closing shells");
+        for handle in drained {
+            // Turns are all finished by the time this runs, so this waits for a
+            // lock nobody holds rather than for work.
+            let mut shell = handle.lock().await;
+            shell.kill().await;
+        }
     }
 
     /// What this session was told to use. Read at the start of every turn.
@@ -267,6 +279,49 @@ impl ShellSet {
     pub fn remove(&mut self, name: &str) -> bool {
         self.shells.remove(name).is_some()
     }
+
+    /// Takes `handle` out of the set if it is still the one filed under
+    /// `name`, and reports whether it was.
+    ///
+    /// This is what happens when a command outlives its deadline: the shell
+    /// keeps the command, the session gets a fresh shell under the same name,
+    /// and the model can go on working instead of finding a shell that is
+    /// still busy. The pointer comparison matters -- if the entry has already
+    /// been replaced, removing it would take away somebody else's shell.
+    pub fn retire(&mut self, name: &str, handle: &Arc<AsyncMutex<BashShell>>) -> bool {
+        let mine = self
+            .shells
+            .get(name)
+            .map(|h| Arc::ptr_eq(h, handle))
+            .unwrap_or(false);
+        if mine {
+            self.shells.remove(name);
+        }
+        mine
+    }
+
+    /// Retires `handle` and puts a freshly spawned shell in its place.
+    ///
+    /// Replacing rather than merely removing is what keeps `check_bash` and
+    /// `list_bash` honest: the name has to keep meaning "a shell you can use",
+    /// otherwise the next tool call reports that the shell the model was just
+    /// told about does not exist.
+    pub fn replace(
+        &mut self,
+        name: &str,
+        handle: &Arc<AsyncMutex<BashShell>>,
+    ) -> anyhow::Result<bool> {
+        if !self.retire(name, handle) {
+            return Ok(false);
+        }
+        self.get(name)?;
+        Ok(true)
+    }
+
+    /// Takes every shell, leaving the set empty.
+    pub fn drain(&mut self) -> Vec<Arc<AsyncMutex<BashShell>>> {
+        self.shells.drain().map(|(_, handle)| handle).collect()
+    }
 }
 
 #[derive(Clone)]
@@ -305,6 +360,15 @@ impl SessionManager {
     /// The detached jobs of every session.
     pub fn detached(&self) -> DetachedRegistry {
         self.detached.clone()
+    }
+
+    /// Ends the shells of every live session. See [`SessionHandle::close_shells`]
+    /// for why the process cannot exit without this.
+    pub async fn close_shells(&self) {
+        let handles: Vec<SessionHandle> = self.live().values().cloned().collect();
+        for handle in handles {
+            handle.close_shells().await;
+        }
     }
 
     fn live(&self) -> MutexGuard<'_, HashMap<String, SessionHandle>> {

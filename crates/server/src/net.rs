@@ -26,8 +26,6 @@ use crate::config::Config;
 const FRAME_QUEUE: usize = 512;
 /// How long a new peer has to present its key before being dropped.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
-/// How long `cancel` waits for running turns to settle before exiting anyway.
-const SHUTDOWN_GRACE: Duration = Duration::from_secs(30);
 
 /// One connected peer. `conn_id` makes release safe: if a client reconnects
 /// from the same address before the old connection has finished unwinding, the
@@ -136,15 +134,31 @@ pub async fn serve(cfg: Arc<Config>, d: Arc<Dispatch>, bus: EventBus) -> anyhow:
         });
     }
 
-    // Cancelled: give the turns already running a bounded chance to write
-    // their results down before the process disappears.
+    // Cancelled: wait for the turns already running to finish writing, however
+    // long that takes.
+    //
+    // There used to be a 30s deadline here, and it was a budget like any other:
+    // it decided that a turn had had long enough, and a turn still committing a
+    // tool result when it expired lost that work. Nothing needs the deadline
+    // either, because the wait has a real end -- `cancel` hands every running
+    // turn the same token, and a turn checks it at every point where it waits
+    // (model stream, tool call, retry delay) and leaves at its step boundary
+    // with its rows already written. So the loop below spins until the count
+    // reaches zero, and if a turn ever fails to do that, the count is what says
+    // so: it is printed while we wait rather than papered over by an exit.
     if d.shutdown.is_cancelled() {
-        let deadline = tokio::time::sleep(SHUTDOWN_GRACE);
-        tokio::pin!(deadline);
+        let mut ticks: u64 = 0;
         while d.active.load(Ordering::SeqCst) > 0 {
-            tokio::select! {
-                _ = &mut deadline => break,
-                _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            ticks += 1;
+            // Every ten seconds, name the fact that something is still holding
+            // the process open. Observability, not a cutoff.
+            if ticks % 200 == 0 {
+                tracing::warn!(
+                    active = d.active.load(Ordering::SeqCst),
+                    waited = ?Duration::from_millis(ticks * 50),
+                    "still waiting for running turn(s) to stop"
+                );
             }
         }
         tracing::info!("server stopped");

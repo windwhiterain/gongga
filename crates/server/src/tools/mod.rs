@@ -21,11 +21,14 @@ use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::session::{DEFAULT_BASH, ShellSet};
+use crate::store::Store;
 use crate::tools::bash::{BashChunk, BashShell, BashStream};
 use crate::tools::detached::DetachedRegistry;
 
 pub mod bash;
 pub mod detached;
+#[cfg(windows)]
+pub mod job;
 
 /// Everything a tool invocation needs, supplied per call by the agent loop.
 pub struct ToolContext {
@@ -41,6 +44,11 @@ pub struct ToolContext {
     /// Streaming sink for `tool_answer` events.
     pub events: Option<mpsc::Sender<ToolAnswerEvent>>,
     pub cancel: CancellationToken,
+    /// Where a command that outlived its deadline reports back to the session
+    /// when it finishes. That report is an inbox row, not a tool result: the
+    /// call it belongs to returned long ago, and the session may be idle by
+    /// the time the command ends.
+    pub store: Store,
 }
 
 impl ToolContext {
@@ -250,8 +258,11 @@ impl Tool for BashTool {
                 },
                 "timeout_ms": {
                     "type": "integer",
-                    "description": "Override the default wall-clock budget for this command. \
-                                     Ignored for background commands."
+                    "description": "How long to wait for the command before returning. \
+                                     This is a limit on waiting, not on the command: when \
+                                     it passes, the command keeps running in the background \
+                                     and its output is posted to this session when it \
+                                     finishes. Ignored for background commands."
                 }
             },
             "required": ["cmd"],
@@ -327,7 +338,7 @@ impl Tool for BashTool {
                 .unwrap_or(self.timeout)
                 .max(Duration::from_millis(100));
 
-            let shell = match ctx.shell(name) {
+            let handle = match ctx.shell(name) {
                 Ok(s) => s,
                 Err(e) => return ToolOutcome::err(format!("{e}")),
             };
@@ -337,7 +348,7 @@ impl Tool for BashTool {
             // the command first, a chatty command would fill the channel and
             // block the shell.
             let (tx, mut rx) = mpsc::channel::<BashChunk>(256);
-            let mut shell = shell.lock().await;
+            let mut shell = handle.lock().await;
             // Scoped so the future borrowing `shell` is dropped before the guard
             // is, which is what lets the guard go out of scope at all.
             let outcome = {
@@ -369,6 +380,101 @@ impl Tool for BashTool {
             }
 
             match outcome {
+                // The deadline was on waiting, not on the command. Nothing was
+                // stopped: the shell still holds it. Give the session a fresh
+                // shell under the same name so work can continue, and have the
+                // old one report the rest of the output into the inbox.
+                Ok(o) if o.still_running => {
+                    let swapped = {
+                        let mut set =
+                            ctx.shells.lock().unwrap_or_else(|e| e.into_inner());
+                        set.replace(name, &handle)
+                    };
+                    let retired = match swapped {
+                        Ok(ok) => ok,
+                        Err(e) => {
+                            tracing::warn!(
+                                session = %ctx.session,
+                                shell = %name,
+                                "could not put a fresh shell in place: {e}"
+                            );
+                            false
+                        }
+                    };
+                    if !retired {
+                        tracing::warn!(
+                            session = %ctx.session,
+                            shell = %name,
+                            "shell was replaced while its command was still running"
+                        );
+                    }
+                    let store = ctx.store.clone();
+                    let session = ctx.session.clone();
+                    let output_dir = ctx.output_dir.clone();
+                    let label = format!("{session}-{name}-late");
+                    let cap = self.max_output_chars;
+                    let waited = timeout;
+                    let owned = name.to_string();
+                    tokio::spawn(async move {
+                        // Nobody else holds this shell any more, so waiting for
+                        // the lock is waiting for the call that timed out to
+                        // return -- which has already happened.
+                        let (stdout, stderr, code) = {
+                            let mut shell = handle.lock().await;
+                            shell.finish_outstanding().await
+                        };
+                        let mut text = stdout;
+                        if !stderr.is_empty() {
+                            if !text.is_empty() {
+                                text.push('\n');
+                            }
+                            text.push_str(&stderr);
+                        }
+                        let text = crate::tools::bash::cap_output(
+                            &text,
+                            cap,
+                            &output_dir,
+                            &label,
+                        );
+                        let text = if text.is_empty() {
+                            "(no output)".to_string()
+                        } else {
+                            text
+                        };
+                        let status = match code {
+                            Some(0) => "finished successfully".to_string(),
+                            Some(c) => format!("finished with exit status {c}"),
+                            None => "finished, though the exit status could not be read"
+                                .to_string(),
+                        };
+                        let message = format!(
+                            "The command you started in shell `{owned}`, which outlived its \
+                             {secs}s wait and was left running, has now {status}.\n\n{text}",
+                            secs = waited.as_secs()
+                        );
+                        if let Err(e) = store.add_pending_task(
+                            &session,
+                            "inject",
+                            &json!({"message": message}),
+                        ) {
+                            tracing::warn!(session = %session, "could not queue a finished command: {e}");
+                        }
+                    });
+                    ToolOutcome::ok(format!(
+                        "still running after {}s, so the wait ended -- the command was not \
+                         stopped. It continues in the old shell `{name}`, which is now detached \
+                         from this session; its output will be posted to this session when it \
+                         finishes. `{name}` is a fresh shell now, in the session's working \
+                         directory.{}",
+                        timeout.as_secs(),
+                        if retired {
+                            ""
+                        } else {
+                            " (Another shell had already taken that name, so the old one is \
+                              only reachable through its completion message.)"
+                        }
+                    ))
+                }
                 Ok(o) => {
                     let mut text = String::new();
                     if !o.stdout.is_empty() {
@@ -394,11 +500,12 @@ impl Tool for BashTool {
                         Some(code) => {
                             ToolOutcome::err(format!("{text}\n[exit status {code}]"))
                         }
-                        None if o.timed_out => ToolOutcome::err(text),
                         None => ToolOutcome::err(format!("{text}\n[shell exited]")),
                     }
                 }
-                Err(e) => ToolOutcome::err(format!("{e}")),
+                Err(e) => {
+                    ToolOutcome::err(format!("{e}"))
+                }
             }
         })
     }

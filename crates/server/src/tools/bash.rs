@@ -54,7 +54,10 @@ pub struct BashOutcome {
     pub exit_code: Option<i32>,
     pub stdout: String,
     pub stderr: String,
-    pub timed_out: bool,
+    /// The command had not finished when its deadline passed. It is *still
+    /// running in this shell* -- nothing was killed -- and the rest of its
+    /// output can be collected with [`BashShell::finish_outstanding`].
+    pub still_running: bool,
 }
 
 pub struct BashShell {
@@ -63,10 +66,7 @@ pub struct BashShell {
     stdout: BufReader<ChildStdout>,
     stderr: BufReader<ChildStderr>,
     marker: String,
-    program: PathBuf,
     cwd: PathBuf,
-    /// Variables this shell started with, so a recycled shell keeps them.
-    env: Vec<(String, String)>,
     /// Background output the caller has not collected yet.
     ///
     /// Shared rather than owned so the tailing task can append without holding
@@ -77,6 +77,12 @@ pub struct BashShell {
     jobs: Arc<AtomicUsize>,
     /// Numbers the background jobs of this shell.
     next_job: u64,
+    /// Every process this shell starts, so ending it ends the whole tree.
+    ///
+    /// Kept last on purpose: fields drop in declaration order, and the job's
+    /// `Drop` is what terminates the children still holding our pipes.
+    #[cfg(windows)]
+    job: Option<crate::tools::job::ProcessJob>,
 }
 
 /// Hands a piece of background output to whoever eventually asks for it.
@@ -139,18 +145,25 @@ impl BashShell {
         let stderr = BufReader::new(child.stderr.take().expect("stderr piped"));
 
         let marker = format!("__GONGGA_{}__", &uuid::Uuid::new_v4().simple().to_string()[..12]);
+        // Join the shell to a job before anything is written to its stdin, so
+        // every command it runs is a member. On unix `process_group(0)` above
+        // does the same job.
+        #[cfg(windows)]
+        let job = child
+            .id()
+            .and_then(crate::tools::job::ProcessJob::adopt);
         Ok(Self {
             child,
             stdin,
             stdout,
             stderr,
             marker,
-            program: program.to_path_buf(),
             cwd: cwd.to_path_buf(),
-            env: env.to_vec(),
             pending: Arc::new(StdMutex::new(String::new())),
             jobs: Arc::new(AtomicUsize::new(0)),
             next_job: 0,
+            #[cfg(windows)]
+            job,
         })
     }
 
@@ -178,9 +191,13 @@ impl BashShell {
 
     /// Runs one command, streaming output to `sink` as it arrives.
     ///
-    /// On timeout the shell is killed and restarted at the last known directory;
-    /// a half-dead shell whose stdout we stopped reading would corrupt every
-    /// later command, so recycling is the only safe recovery.
+    /// The deadline is a deadline on *waiting*, not on the command. When it
+    /// passes the shell is left exactly as it is -- the command keeps running,
+    /// keeps its place in the shell's own process tree, and its remaining
+    /// output stays in the pipes -- and the outcome says `still_running`. The
+    /// caller is then free to push this shell aside and collect the rest later;
+    /// killing it, which is what used to happen here, threw away work that was
+    /// simply long.
     pub async fn run(
         &mut self,
         command: &str,
@@ -190,8 +207,8 @@ impl BashShell {
         self.write_command(command).await?;
 
         // Bind the result rather than matching on the timeout directly: this
-        // ends the statement that owns the borrow of `self`, so the recovery
-        // path below is free to mutate the shell.
+        // ends the statement that owns the borrow of `self`, so the branch
+        // below is free to mutate the shell.
         let pumped = tokio::time::timeout(timeout, Self::pump_both(self, sink)).await;
         match pumped {
             Ok((stdout, stderr, exit_code)) => {
@@ -199,28 +216,33 @@ impl BashShell {
                     exit_code,
                     stdout,
                     stderr,
-                    timed_out: false,
+                    still_running: false,
                 };
                 if let Ok(pwd) = self.pwd().await {
                     self.cwd = PathBuf::from(pwd);
                 }
                 Ok(outcome)
             }
-            Err(_) => {
-                let cwd = self.cwd.clone();
-                self.recycle(&cwd).await?;
-                Ok(BashOutcome {
-                    exit_code: None,
-                    stdout: String::new(),
-                    stderr: format!(
-                        "command exceeded the {}s timeout; shell restarted in {}",
-                        timeout.as_secs(),
-                        cwd.display()
-                    ),
-                    timed_out: true,
-                })
-            }
+            Err(_) => Ok(BashOutcome {
+                exit_code: None,
+                stdout: String::new(),
+                stderr: String::new(),
+                still_running: true,
+            }),
         }
+    }
+
+    /// Reads until the command that outlived its deadline finishes.
+    ///
+    /// Only meaningful right after [`BashShell::run`] returned `still_running`
+    /// on this shell: the sentinel for that command is the next one the shell
+    /// prints, so this collects exactly its remaining output and exit status.
+    pub async fn finish_outstanding(&mut self) -> (String, String, Option<i32>) {
+        let (stdout, stderr, code) = Self::pump_both(self, None).await;
+        if let Ok(pwd) = self.pwd().await {
+            self.cwd = PathBuf::from(pwd);
+        }
+        (stdout, stderr, code)
     }
 
     /// Starts a command without waiting for it.
@@ -323,18 +345,37 @@ impl BashShell {
         (collected, None)
     }
 
-    /// Kills the shell and starts a fresh one in `cwd`.
+    /// Ends the shell, everything it started, and reaps it.
     ///
-    /// Anything the shell owned goes with it. Detached jobs were never the
-    /// shell's, so they are untouched -- they live in the detached registry.
-    pub async fn recycle(&mut self, cwd: &Path) -> anyhow::Result<()> {
+    /// The tree matters as much as the shell. A child of the shell inherits the
+    /// write end of the pipe we read from, and reading that pipe is something
+    /// the runtime is waiting on during shutdown -- so killing the leader alone
+    /// leaves a reader blocked on a close that only the children could have
+    /// given it. The `wait` then reaps the leader, which is what lets the
+    /// reaping thread finish.
+    pub async fn kill(&mut self) {
+        // The tree, not the shell. Children inherit the write end of the pipe
+        // this shell reads from, and reading it is something the runtime is
+        // waiting on during shutdown -- so a surviving grandchild means a
+        // reader blocked on a close that never comes.
+        #[cfg(windows)]
+        if let Some(job) = &self.job {
+            job.terminate();
+        }
+        #[cfg(unix)]
+        if let Some(pid) = self.child.id() {
+            crate::tools::detached::kill_tree(pid).await;
+        }
+        // Fallback for the case the job could not be created: the leader still
+        // has to go, and `taskkill /T` may catch some of its children.
+        #[cfg(windows)]
+        if self.job.is_none() {
+            if let Some(pid) = self.child.id() {
+                crate::tools::detached::kill_tree(pid).await;
+            }
+        }
         let _ = self.child.start_kill();
         let _ = self.child.wait().await;
-        let fresh = Self::spawn(&self.program, cwd, &self.env)?;
-        // The background buffer belongs to the shell, so it goes with it; an
-        // unread chunk from a dead shell would be confusing at best.
-        *self = fresh;
-        Ok(())
     }
 
     /// Resolves the shell's current directory to a native path.
@@ -607,15 +648,6 @@ mod tests {
             .run("echo $GONGGA_SERVER", Duration::from_secs(10), None)
             .await
             .expect("running echo")
-            .stdout;
-        assert_eq!(out.trim(), "127.0.0.1:9711");
-        // A recycled shell is a new process, so it has to be told again.
-        let dir = std::env::temp_dir();
-        shell.recycle(&dir).await.expect("recycling");
-        let out = shell
-            .run("echo $GONGGA_SERVER", Duration::from_secs(10), None)
-            .await
-            .expect("running echo after recycle")
             .stdout;
         assert_eq!(out.trim(), "127.0.0.1:9711");
     }

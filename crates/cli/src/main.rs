@@ -929,12 +929,29 @@ fn home_dir(explicit: Option<&Path>) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".gongga"))
 }
 
+/// The process environment, as far as these lookups are concerned.
+///
+/// Injected rather than read directly so the precedence rules can be tested
+/// without mutating global state. That is not tidiness: the harness exports
+/// `GONGGA_SERVER` into every tool call's shell (it is how the agent reaches
+/// its own server), so a test that reads the real environment passes or fails
+/// depending on who launched it.
+type Env = dyn Fn(&str) -> Option<String>;
+
+fn process_env(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|v| !v.is_empty())
+}
+
 /// `--server`, then `GONGGA_SERVER`, then `[server] bind` in config.toml.
 fn resolve_server(args: &Args) -> anyhow::Result<SocketAddr> {
+    resolve_server_with(args, &process_env)
+}
+
+fn resolve_server_with(args: &Args, env: &Env) -> anyhow::Result<SocketAddr> {
     if let Some(s) = &args.server {
         return s.parse().with_context(|| format!("parsing --server {s:?}"));
     }
-    if let Some(s) = std::env::var("GONGGA_SERVER").ok().filter(|v| !v.is_empty()) {
+    if let Some(s) = env("GONGGA_SERVER") {
         return s.parse().with_context(|| format!("parsing GONGGA_SERVER {s:?}"));
     }
     if let Some(bind) = config_value(args, |c| c.server.as_ref().and_then(|s| s.bind.clone())) {
@@ -945,10 +962,14 @@ fn resolve_server(args: &Args) -> anyhow::Result<SocketAddr> {
 
 /// `--key`, then `GONGGA_KEY`, then `[server] key` in config.toml.
 fn resolve_key(args: &Args) -> Option<String> {
+    resolve_key_with(args, &process_env)
+}
+
+fn resolve_key_with(args: &Args, env: &Env) -> Option<String> {
     if let Some(k) = &args.key {
         return Some(k.clone());
     }
-    if let Some(k) = std::env::var("GONGGA_KEY").ok().filter(|v| !v.is_empty()) {
+    if let Some(k) = env("GONGGA_KEY") {
         return Some(k);
     }
     config_value(args, |c| c.server.as_ref().and_then(|s| s.key.clone()))
@@ -1003,6 +1024,13 @@ mod tests {
         assert_eq!(line, "send_message --message hi");
     }
 
+    /// A shell with nothing set. The real one is not empty -- the harness
+    /// exports GONGGA_SERVER/GONGGA_KEY so the agent can drive itself -- so
+    /// every precedence test states its environment explicitly.
+    fn no_env(_: &str) -> Option<String> {
+        None
+    }
+
     #[test]
     fn explicit_flag_wins() {
         let d = home_with("[server]\nbind = \"127.0.0.1:9999\"\nkey = \"abc\"\n");
@@ -1012,7 +1040,14 @@ mod tests {
             key: None,
             command: None,
         };
-        assert_eq!(resolve_server(&args).unwrap().to_string(), "10.0.0.5:1234");
+        let env = |k: &str| match k {
+            "GONGGA_SERVER" => Some("127.0.0.1:8888".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            resolve_server_with(&args, &env).unwrap().to_string(),
+            "10.0.0.5:1234"
+        );
     }
 
     #[test]
@@ -1024,8 +1059,37 @@ mod tests {
             key: None,
             command: None,
         };
-        assert_eq!(resolve_server(&args).unwrap().to_string(), "127.0.0.1:9999");
-        assert_eq!(resolve_key(&args).as_deref(), Some("abc"));
+        assert_eq!(
+            resolve_server_with(&args, &no_env).unwrap().to_string(),
+            "127.0.0.1:9999"
+        );
+        assert_eq!(resolve_key_with(&args, &no_env).as_deref(), Some("abc"));
+    }
+
+    /// The harness sets both of these for every tool call, so this is the
+    /// ordinary case, not an exotic one: the shell beats the config file.
+    #[test]
+    fn the_environment_beats_the_config_file() {
+        let d = home_with("[server]\nbind = \"127.0.0.1:9999\"\nkey = \"abc\"\n");
+        let args = Args {
+            server: None,
+            home: Some(d.path().to_path_buf()),
+            key: None,
+            command: None,
+        };
+        let env = |k: &str| match k {
+            "GONGGA_SERVER" => Some("127.0.0.1:9700".to_string()),
+            "GONGGA_KEY" => Some("from-shell".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            resolve_server_with(&args, &env).unwrap().to_string(),
+            "127.0.0.1:9700"
+        );
+        assert_eq!(
+            resolve_key_with(&args, &env).as_deref(),
+            Some("from-shell")
+        );
     }
 
     #[test]
@@ -1037,7 +1101,7 @@ mod tests {
             key: Some("zzz".into()),
             command: None,
         };
-        assert_eq!(resolve_key(&args).as_deref(), Some("zzz"));
+        assert_eq!(resolve_key_with(&args, &no_env).as_deref(), Some("zzz"));
     }
 
     #[test]
@@ -1049,7 +1113,7 @@ mod tests {
             key: None,
             command: None,
         };
-        assert!(resolve_key(&args).is_none());
+        assert!(resolve_key_with(&args, &no_env).is_none());
     }
 
     /// Drives `submit` without a terminal or a socket.

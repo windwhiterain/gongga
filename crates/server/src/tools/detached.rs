@@ -424,7 +424,11 @@ impl DetachedRegistry {
 /// killing the leader alone would leave the real work behind. On Windows that
 /// means `taskkill /T`, which only understands real Windows pids -- one more
 /// reason the job has to be our own child rather than a shell background job.
-async fn kill_tree(pid: u32) -> bool {
+///
+/// The same reasoning applies to a persistent shell being shut down: its
+/// children hold the write end of the pipe we read, so killing only the shell
+/// leaves a reader waiting for a close that never comes.
+pub(crate) async fn kill_tree(pid: u32) -> bool {
     #[cfg(windows)]
     {
         let out = Command::new("taskkill")

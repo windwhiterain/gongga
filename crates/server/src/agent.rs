@@ -1,9 +1,9 @@
 //! The agent loop: one user message in, a stream of events out.
 //!
 //! A *step* is a single model request plus the tools it called. A *turn* runs
-//! steps until the model stops asking for tools, the step budget is spent, or
-//! the user cancels. After every step the transcript is already durable, so a
-//! crash mid-turn leaves a replayable session rather than a hole.
+//! steps until the model stops asking for tools or the user cancels; there is no
+//! step ceiling. After every step the transcript is already durable, so a crash
+//! mid-turn leaves a replayable session rather than a hole.
 
 use std::any::Any;
 use std::panic::AssertUnwindSafe;
@@ -24,6 +24,11 @@ use crate::store::{HistoryItem, Store};
 use crate::tools::detached::DetachedRegistry;
 use crate::tools::{ToolContext, ToolRegistry};
 
+/// Share of a model's context window that compaction fills before folding the
+/// transcript. The rest is headroom for what a step adds after the check: the
+/// request's own output, and the tool results it asks for.
+const DEFAULT_COMPACT_PERCENT: u8 = 70;
+
 pub struct Agent {
     pub store: Store,
     /// What a session talks to unless it named its own `--llm`.
@@ -43,8 +48,9 @@ pub struct Agent {
     pub default_context: Option<u64>,
     pub tools: Arc<ToolRegistry>,
     pub bus: EventBus,
-    /// Compress once a request would carry more than this. 0 disables it.
-    pub compress_above_chars: usize,
+    /// Compress once a request would carry more than this many input tokens.
+    /// 0 disables it.
+    pub compress_above_tokens: u64,
     /// Messages a compression leaves alone at the end of the transcript.
     pub keep_recent: usize,
     /// Where capped tool output is spilled. Comes from the config: an agent
@@ -249,20 +255,17 @@ impl Agent {
         });
     }
 
-    /// Where this turn sends, and how much it may carry before compacting.
+    /// Where this turn sends, and how many input tokens it may carry before
+    /// compacting.
     ///
     /// Both come from the session's tuning, falling back to the server's own
-    /// configuration. Resolving the model also decides the budget's unit: a
-    /// percentage only has a size once a context window is known.
+    /// configuration. A percentage only has a size once a context window is
+    /// known, which is why the window travels with the model.
     fn route(
         &self,
         name: &str,
         tuning: &crate::session::Tuning,
-    ) -> anyhow::Result<(Arc<LlmClient>, usize)> {
-        // The common case: nothing of the session's own, so nothing to resolve.
-        if tuning.is_default() {
-            return Ok((self.llm.clone(), self.compress_above_chars));
-        }
+    ) -> anyhow::Result<(Arc<LlmClient>, u64)> {
         let (llm, context) = match &tuning.llm {
             None => (self.llm.clone(), self.default_context),
             Some(spec) => {
@@ -274,24 +277,26 @@ impl Agent {
                 (client, choice.entry.context)
             }
         };
-        let budget = match tuning.compact_threshold {
-            None => self.compress_above_chars,
-            Some(percent) => match context {
-                Some(context) => providers::chars_for_percent(context, percent),
-                None => {
-                    // Without a context window a percentage has no size. Saying
-                    // so beats quietly compacting at a different point than the
-                    // one that was asked for.
-                    tracing::warn!(
-                        session = %name,
-                        percent,
-                        "no context window is known for this model; keeping the configured budget"
-                    );
-                    self.compress_above_chars
-                }
-            },
-        };
+        let budget = self.budget(name, context, tuning.compact_threshold);
         Ok((llm, budget))
+    }
+
+    /// The compaction threshold in input tokens.
+    ///
+    /// Zero means "off", everywhere and without exception, so a server that
+    /// wants no compaction can say so and be obeyed rather than being second
+    /// guessed by a default percentage.
+    fn budget(&self, name: &str, context: Option<u64>, percent: Option<u8>) -> u64 {
+        // Without a context window a percentage has no size. Saying so beats
+        // quietly compacting at a different point than the one that was asked
+        // for.
+        if self.compress_above_tokens != 0 && context.is_none() && percent.is_some() {
+            tracing::warn!(
+                session = %name,
+                "no context window is known for this model; using the configured token budget"
+            );
+        }
+        compaction_budget(self.compress_above_tokens, context, percent)
     }
 
     /// The client for one roster entry, built once and shared.
@@ -389,28 +394,33 @@ impl Agent {
         id: i64,
         name: &str,
         llm: &LlmClient,
-        budget: usize,
+        budget: u64,
         cancel: &tokio_util::sync::CancellationToken,
     ) {
         if budget == 0 {
             return;
         }
+        // How full the context is, as the provider last measured it. Not an
+        // estimate and not derived from text length: `usage.input_tokens`
+        // already covers the instructions, the tool schemas, the summary and
+        // the whole transcript, tokenised by the party that will bill for it.
+        // The only thing it misses is what this step adds after the check --
+        // one response plus its tool output -- which is what the budget's
+        // headroom is for.
+        let Ok(tokens) = self.store.context_tokens(id) else {
+            return;
+        };
+        if tokens < budget {
+            return;
+        }
         let Ok(index) = self.store.message_index(id) else {
             return;
         };
-        let Ok((_previous_summary, live_items)) = self.store.context(id) else {
-            return;
-        };
-        // Only what a request would actually carry counts: anything already
-        // behind the last summary is not sent again.
-        if live_items.iter().map(weight).sum::<usize>() <= budget {
-            return;
-        }
         let Ok((previous, upto)) = self.store.summary(id) else {
             return;
         };
-        // Only what a request would actually carry counts: anything already
-        // behind the last summary is not sent again.
+        // Only what a request would actually carry is eligible: anything
+        // already behind the last summary is not sent again.
         let live: Vec<&(i64, String)> = index.iter().filter(|(s, _)| *s > upto).collect();
         let Some(cut) = choose_cut(&live, self.keep_recent) else {
             return;
@@ -438,6 +448,11 @@ impl Agent {
                     self.error(name, "storing the summary", e);
                     return;
                 }
+                // The last measured size is now history: it described a request
+                // built from the prefix that was just folded away. Clearing it
+                // means "unknown until the next request reports", which stops
+                // the following step from compacting again on a stale number.
+                let _ = self.store.set_context_tokens(id, 0);
                 self.bus.publish(Event::Log {
                     level: LogLevel::Info,
                     message: format!("{name}: compressed up to message {cut}"),
@@ -534,6 +549,15 @@ impl Agent {
                             total = u.total_tokens.unwrap_or(0),
                             "response completed"
                         );
+                        // Recorded, never computed. `input_tokens` is the
+                        // provider's own count of what this request carried --
+                        // instructions, tool schemas, summary and transcript --
+                        // measured by the tokeniser that will also measure the
+                        // next request. No arithmetic over text length lands on
+                        // that number for every provider we speak to.
+                        if let Some(input) = u.input_tokens {
+                            let _ = self.store.set_context_tokens(id, input);
+                        }
                     }
                 }
                 LlmEvent::Failed { message } => {
@@ -617,6 +641,7 @@ impl Agent {
                 detached: self.detached.clone(),
                 events: Some(tx),
                 cancel: cancel.clone(),
+                store: self.store.clone(),
             };
             let started = std::time::Instant::now();
             tracing::info!(session = %name, tool = %call.tool, "tool start");
@@ -701,17 +726,19 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
     }
 }
 
-/// How much of a request one history item takes up, which is what the
-/// compression budget is measured in.
-fn weight(item: &HistoryItem) -> usize {
-    match item {
-        HistoryItem::Text { text, .. } => text.len(),
-        HistoryItem::Reasoning { encrypted, summary, .. } => {
-            summary.len() + encrypted.as_ref().map_or(0, String::len)
-        }
-        HistoryItem::ToolCall { name, arguments, .. } => name.len() + arguments.len(),
-        HistoryItem::ToolResult { output, .. } => output.len(),
+/// The compaction threshold in input tokens, or 0 for "off".
+///
+/// `configured` is the server's own number, used only when the roster does not
+/// say how big the model's window is. A known window is the better measure: it
+/// makes the threshold follow the model instead of the other way round.
+fn compaction_budget(configured: u64, context: Option<u64>, percent: Option<u8>) -> u64 {
+    if configured == 0 {
+        return 0;
     }
+    let Some(window) = context.filter(|w| *w > 0) else {
+        return configured;
+    };
+    providers::tokens_for_percent(window, percent.unwrap_or(DEFAULT_COMPACT_PERCENT))
 }
 
 /// Where a summary may take over: everything up to and including the returned
@@ -881,6 +908,26 @@ mod tests {
         let prompt = summary_prompt(Some("we already tried X"), &items);
         assert!(prompt.contains("we already tried X"));
         assert!(prompt.contains("do the thing"));
+    }
+
+    /// Off stays off: a server that asked for no compaction is not overruled by
+    /// a default share of the model's window.
+    #[test]
+    fn a_zero_config_turns_compaction_off_whatever_the_window_is() {
+        assert_eq!(compaction_budget(0, Some(1_000_000), Some(50)), 0);
+        assert_eq!(compaction_budget(0, Some(1_000_000), None), 0);
+        assert_eq!(compaction_budget(0, None, None), 0);
+    }
+
+    /// A known window decides the threshold, so a model with a bigger window
+    /// gets a bigger budget without anyone retuning the config.
+    #[test]
+    fn a_known_window_beats_the_configured_number() {
+        assert_eq!(compaction_budget(40_000, Some(1_000_000), None), 700_000);
+        assert_eq!(compaction_budget(40_000, Some(200_000), Some(50)), 100_000);
+        // No window in the roster: the configured number is all there is.
+        assert_eq!(compaction_budget(40_000, None, Some(50)), 40_000);
+        assert_eq!(compaction_budget(40_000, None, None), 40_000);
     }
 
     #[test]

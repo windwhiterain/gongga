@@ -53,6 +53,28 @@ pub struct Dispatch {
     pub shutdown: CancellationToken,
 }
 
+/// Owns one running turn's slot in [`Dispatch::active`].
+///
+/// The decrement lives in `Drop` rather than at the end of the spawned task, so
+/// it happens even when the turn panics. That matters now that shutdown waits
+/// on the count with no deadline: a task that died on its last line would leave
+/// the counter at one forever and stop the process from ever exiting -- the
+/// exact failure a deadline used to hide.
+struct ActiveGuard(Arc<AtomicUsize>);
+
+impl ActiveGuard {
+    fn new(active: Arc<AtomicUsize>) -> Self {
+        active.fetch_add(1, Ordering::SeqCst);
+        Self(active)
+    }
+}
+
+impl Drop for ActiveGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// The result of one command, sent back as a `cmd_result` event.
 pub struct Outcome {
     pub ok: bool,
@@ -125,7 +147,9 @@ pub fn catalog() -> Vec<CommandSpec> {
                 arg(
                     "compact_threshold",
                     "Compact the transcript once it fills this much of the model's context, e.g. \
-                     `30%`. 0 turns compaction off. Defaults to the server's character budget.",
+                     `30%`. 0 turns compaction off. Defaults to a share of the \
+                     model's context window, or the server's token budget when the \
+                     window is unknown.",
                     false,
                     Some("n%"),
                     // Any 0-100 is accepted; the list is the points worth
@@ -306,8 +330,8 @@ async fn send_message(d: &Dispatch, args: &Args) -> Outcome {
     let store = d.store.clone();
     let active = d.active.clone();
     let session_resumable = session.clone();
-    active.fetch_add(1, Ordering::SeqCst);
     tokio::spawn(async move {
+        let _active = ActiveGuard::new(active);
         agent.run_turn(&session, &message, Some(task_id)).await;
         // The turn is done, so it is no longer something the next start owes --
         // unless a `cancel` interrupted it, in which case staying pending is
@@ -315,7 +339,6 @@ async fn send_message(d: &Dispatch, args: &Args) -> Outcome {
         if !session_resumable.take_resumable() {
             let _ = store.delete_pending_task(task_id);
         }
-        active.fetch_sub(1, Ordering::SeqCst);
     });
     Outcome::ok(format!("message accepted by {label}"))
 }
@@ -398,12 +421,12 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         notes.push(format!("llm {llm}"));
     }
     if let Some(percent) = tuning.compact_threshold {
-        let budget = context.map(|c| crate::providers::chars_for_percent(c, percent));
+        let budget = context.map(|c| crate::providers::tokens_for_percent(c, percent));
         notes.push(match (percent, budget) {
-            // 0 is how the agent spells "never compact"; saying "0 chars"
+            // 0 is how the agent spells "never compact"; saying "0 tokens"
             // would read as the opposite.
             (0, _) => "compaction off".to_string(),
-            (percent, Some(chars)) => format!("compacting at {percent}% ({chars} chars)"),
+            (percent, Some(tokens)) => format!("compacting at {percent}% ({tokens} tokens)"),
             (percent, None) => format!("compacting at {percent}%"),
         });
     }
@@ -668,12 +691,11 @@ pub fn nudge_inboxes(d: &Dispatch) -> usize {
         }
         let agent = d.agent.clone();
         let active = d.active.clone();
-        active.fetch_add(1, Ordering::SeqCst);
         // `None` as the owning row: this turn was not started from a message,
         // so the step-boundary drain may take every queued row it finds.
         tokio::spawn(async move {
+            let _active = ActiveGuard::new(active);
             agent.resume_turn(&session, None).await;
-            active.fetch_sub(1, Ordering::SeqCst);
         });
         started += 1;
     }
@@ -730,11 +752,10 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
         // Only this task is finished. Clearing the whole session would drop
         // tasks a second, still-pending turn of the same session recorded.
         let task_id = task.id;
-        active.fetch_add(1, Ordering::SeqCst);
         tokio::spawn(async move {
+            let _active = ActiveGuard::new(active);
             agent.resume_turn(&session, Some(task_id)).await;
             let _ = store.delete_pending_task(task_id);
-            active.fetch_sub(1, Ordering::SeqCst);
         });
         resumed += 1;
     }
@@ -762,6 +783,27 @@ pub fn publish_sessions(d: &Dispatch) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Shutdown waits for this count with no deadline, so the only thing that
+    /// can keep the process alive forever is a turn that never releases its
+    /// slot. A panic used to do exactly that, because the decrement was the
+    /// last statement of the task.
+    #[test]
+    fn a_panicking_turn_still_releases_its_slot() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let counted = active.clone();
+        let died = std::thread::spawn(move || {
+            let _slot = ActiveGuard::new(counted);
+            panic!("a turn blowing up");
+        })
+        .join();
+        assert!(died.is_err(), "the turn did panic");
+        assert_eq!(
+            active.load(Ordering::SeqCst),
+            0,
+            "shutdown would never see the count drain"
+        );
+    }
 
     #[test]
     fn catalog_is_exactly_the_known_commands() {

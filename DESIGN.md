@@ -207,6 +207,35 @@ turn 结束时会把还在排队的第二条消息的 pending 一起删掉 —�
 「N pending task(s) will be picked up」是句空话 —— 只有被 `taskkill` 硬杀才真的留得下。
 现在 `cancel` 走 `cancel_and_preserve()`，turn 收尾前先看这个标志。
 
+**`cancel` 之后进程退不掉（已修）**：日志已经打出 `server stopped`、UDP 端口已经放掉、home
+的锁已经删掉，进程却一直留在任务管理器里，只有在**用过 `bash`** 的服务端上出现。根因不在关闭
+流程 —— 在它之后的 `#[tokio::main]`：那个宏展开出的 `Runtime` 在 `Drop` 时无限期等待所有
+blocking 任务结束，而 tokio 在 Windows 上正是用 blocking 任务实现 `Child::wait`；持久 shell
+是一个**设计上就不退出**的子进程，于是这个等待永远不返回。空载的实例 100ms 就退，跑过一条
+命令的实例永远不退 —— 这解释了为什么以前只见过「`taskkill` 才管用」。
+
+现在 `main` 自己建 runtime，`run()` 返回后先 `close_shells()`（把每个会话的 shell 连同它启动
+的整棵进程树结束掉），再 `drop(runtime)`，全程没有 deadline。`main: dropping runtime` /
+`main: runtime dropped` 两行之间的时间就是真正的排空时间。
+
+为什么必须先结束 shell：tokio 在 Windows 上把子进程的管道读放在 blocking 线程上，一次读要等
+**所有写端关闭**才返回。`sleep 240` 这样的命令是 shell 的子进程，继承了管道的写端 —— 只杀
+shell 不管它，读线程就永远等下去。而 `taskkill /T` 收不干净：它从根往下扫，扫描和根死亡之间
+新 fork 出来的进程会变成孤儿，照样握着管道。所以 Windows 上每个 shell 建一个 **Job Object**
+（`KILL_ON_JOB_CLOSE`），启动命令前先入 job，关闭句柄时整棵树一起结束；unix 用 `process_group(0)`
++ `kill -TERM -pid`，本来就是树。
+
+`cancel` 的等待也去掉了上限：`cancel` 把同一个 token 交给每个运行中的 turn，turn 在
+model 流、工具调用、重试退避、压缩上都 select 它，在 step 边界退出且结果已提交，所以
+`active` 一定能归零。`active` 的加减改成 `ActiveGuard`（`Drop` 里减），turn panic 也会释放。
+真出现不退的 turn，每 10 秒打一条 warn 说明还剩几个 —— 是观测，不是砍断。实测：
+
+| 场景 | 修复前 | 修复后 |
+|---|---|---|
+| 空载 | 100ms | 260ms（含 250ms 回执让路） |
+| 跑过命令、shell 还开着（`active=0`） | >2 分钟仍在 | <1s |
+| turn 正卡在 `sleep 240`（`active=1`） | >2 分钟仍在 | 0.5s |
+
 `detached_jobs` 是**跨服务端存活的进程**：`bash --detached` 启动一个就写一行
 （session / shell / job / pid / cmd / log），停掉才删。它是 detached 语义的地基：
 进程不归服务端所有，所以「谁还活着」这件事只能靠数据库交接给下一次启动。
@@ -265,10 +294,23 @@ UI 上流式看到的仍是完整输出，但进 transcript 的不会反复计�
 之所以不是「截断丢弃」而是「落盘 + 指路」：信息没丢，模型想看哪一段还能看，
 只是不再把整段塞进每个后续请求。设为 0 可关掉。
 
-**闸二：摘要式压缩（默认超过 12 万字符触发，`agent.compress_above_chars`）**
+**闸二：摘要式压缩（默认填到模型窗口的 70% 触发）**
 
-每个 step **之前**检查一次：若本次请求要带的字符数超阈值，就把较早的部分交给模型压成
-一条 handover note。
+每个 step **之前**检查一次：若上一次请求实际带进去的 input tokens 超过阈值，就把较早的部分
+交给模型压成一条 handover note。
+
+- **阈值是 token，不是字符，也不是算出来的**。provider 每条响应都返回
+  `usage.input_tokens` —— 那是它自己按自己的 tokenizer 数出来的、即将对它收费的数字，覆盖了
+  instructions、工具 schema、摘要和整段 transcript。把它存进 `sessions.context_tokens`，下一步
+  拿它和阈值比。**没有任何换算**：本地算字符/token 比率对 15 家 provider 就是猜（tiktoken 只对
+  OpenAI 准），而真值一直免费随响应回来。
+  - 存盘而不是只放内存，是为了让重启后的第一个请求也有尺寸可比；那一刻还没有新的测量值。
+  - 压缩成功后把这个数清零：它描述的是刚被折掉的旧请求，留着会让下一步拿过期数字再压一次。
+  - 兼容层不返回 `usage` 时，这个数一直是 0，压缩不会触发 —— 这是唯一诚实的失败方式，
+    总比用一个假比率把上下文撑爆、然后被 provider 400 强。
+- **阈值从哪来**：模型有 `context`（`~/.agents/llm.toml`）时就是它的 70%
+  （`compact_threshold` 可改百分比）；没有 `context` 时退回 `agent.compress_above_tokens`
+  （默认 40000）。0 一律表示关闭，包括全局配置和百分比两条路。
 
 - **非破坏性**：`sessions.summary` + `sessions.summarised_upto` 只标记「摘要覆盖到哪里」，
   一行消息都不删 —— transcript 是记录不是缓存，删了就没了，且 UI 仍能回放全部历史。
@@ -352,9 +394,8 @@ UI 上流式看到的仍是完整输出，但进 transcript 的不会反复计�
 
 `--llm <provider/model>`（也接受裸 model id）就是在这份名单里点名：
 在 `set_session` 时解析，**错了当场报错并列出可选项**，而不是留到下一轮才失败。
-`--compact_threshold 30%` 是 `context` 的百分比，换算成字符预算的系数是 3 字符/token
-（和内置默认 120k 字符 ≈ 40k token 是同一个口径）。模型没有 `context` 时这个百分比没有大小，
-所以命令会直接拒绝，而不是悄悄退回旧预算。
+`--compact_threshold 30%` 就是 `context` 的 30%，直接是一个 token 数，没有任何换算。
+模型没有 `context` 时这个百分比没有大小，所以命令会直接拒绝，而不是悄悄退回旧预算。
 
 **会话有自己的模型，不跟服务端的默认走**：reasoning 项里那份加密块只有产出它的 provider
 能解开（见上一节），把会话悄悄换到另一个模型等于把它的上下文作废。所以
@@ -379,8 +420,12 @@ Shell **按 `session_name/bash_name` 建键**，所以一个会话持有的是�
   shell 函数跨调用保持。
 - 命令结束后向 **stdout 和 stderr 各打一个带退出码的哨兵**，两个流可以独立收尾又都能拿到状态码。
   哨兵是每 shell 随机的，避免输出里恰好出现相同文本导致截断。
-- 超时（默认 120s）后 **杀掉并重建该 shell**，回到上一个已知目录 —— 半死的 shell 会污染之后
-  所有命令，所以重建是唯一安全的选择。detached 作业不属于这个 shell，不受影响。
+- 超时（默认 120s）**只结束等待，不结束命令**：shell 留着继续跑，会话里同名 shell 换成新
+  spawn 的一个（cwd 回到会话目录），旧 shell 的后台读取任务在命令结束时把剩余输出和退出码
+  作为一条 inbox 消息投回会话（`kind=inject`），空闲会话由 nudge 唤醒。detached 作业不属于
+  这个 shell，不受影响。
+  这样超时不再是「活儿最多干多久」的预算 —— 长构建、长测试只是换了个地方继续跑，模型拿到
+  新 shell 立刻可以干别的。
 - 每个 shell 启动时注入 `GONGGA_SERVER` / `GONGGA_HOME` / `GONGGA_CLI`（重建时同样注入）。
   这是**模型驱动自己的唯一通道**：`bash` 跑在服务端的子进程里，不告诉它这些，它就既不知道
   服务端的地址、也不知道客户端在哪，想取消或重启只剩从外面 `taskkill` 这一条路。
@@ -640,14 +685,14 @@ TUI 输入行**同一套** `submit()` 解析 —— 否则补全、sticky 补齐
          base_url = "https://api.deepseek.com/v1"
          api_key_env = "MINIMAX_CN_API_KEY"
 [tools.bash] timeout_ms = 120000  max_output_chars = 8000
-[agent]  compress_above_chars = 120000  keep_recent = 30   # 无步数上限
+[agent]  compress_above_tokens = 40000  keep_recent = 30   # 无步数上限
 [transport] mtu = 1200  window = 64
 ```
 
 `[llm]` 这一段**基本不用写**：provider / base_url / key / 上下文都来自 `~/.agents/llm.toml`
 （见 §4「名单」），这里只用来**覆盖**它。`GONGGA_LLM_CATALOG` 可以把名单指到别的路径。
 
-`max_output_chars = 0` 关掉输出上限，`compress_above_chars = 0` 关掉压缩。
+`max_output_chars = 0` 关掉输出上限，`compress_above_tokens = 0` 关掉压缩。
 
 CLI 的 sticky 参数单独放 `~/.gongga/cli.toml`，和服务端配置分开 —— 它们是客户端状态，
 服务端不该看见。
@@ -684,7 +729,7 @@ Git Bash 自动探测常见安装路径，找不到再退回 PATH 上的 `bash`�
 | 名单自动导入：`~/.agents/llm.toml` 15 个 provider，启动即用 | 通过（`llm roster imported ... providers=15`）|
 | 无配置时按名单选默认条目：`deepseek-official/deepseek-flash`，`/v1/responses` 可用 | 通过（真实 DeepSeek，609ms 一轮）|
 | `set_session --llm`：`deepseek-official/deepseek-v4-pro` 一轮答对；`minimax-cn/MiniMax-M3.1-Flash` 一轮答对 | 通过（两条都真跑，密钥链各自命中）|
-| `set_session --compact_threshold 30%`：日志 `budget=900000`（1M × 30% × 3 字符/token） | 通过 |
+| `set_session --compact_threshold 30%`：日志 `budget=300000`（1M × 30%，单位是 token） | 通过 |
 | `--llm` 打错：列出 15 个可用 provider | 通过 |
 | 老会话不被默认值带走：`test1` 仍按 `minimax-cn/MiniMax-M3.1-Flash` 路由 | 通过（`llm` 列为空时用 `model` 反查名单）|
 | 中断在工具调用中间的 transcript 能继续用：造一条无结果的 `tool_call` 再追问 | 通过（真实 DeepSeek 答「结果未知，本轮被中断」；修复前同一份历史整条 400）|
@@ -777,15 +822,21 @@ job(s) keep running -- they outlive the server, stop them with kill_bash`）→ 
     `minimax-cn` 都能用（真的跑通了），但一个只支持 `/chat/completions` 的模型会在请求时
     拿到 404，而不是在 `set_session --llm` 时被挡住。要不要改成「只有明确列了 `/responses`
     的才允许 `--llm`」？
-22. **`--compact_threshold` 的百分比按 3 字符/token 换算**：和内置默认同一口径，但不同
-    provider 的分词器密度明显不同（中文尤其）。真正准确的做法是按 provider 的 tokenizer
-    估，代价是要为每个 provider 带一份词表。
+22. **provider 不返回 `usage` 时压缩不会触发**：兼容层若省掉这个字段，`context_tokens`
+    永远停在 0，上下文只增不减，直到某次请求被 provider 以超长拒绝。这是刻意的取舍 ——
+    宁可暴露在 400 上，也不用一个假比率把上下文撑爆。要覆盖它，得让名册声明「这家报不报
+    usage」，再把按字符估降级成显式的兜底。
 23. **`--cwd` 的补全是客户端的目录，执行却是服务端的目录**：两边是同一台机器，但
     `gongga-server` 可能从别处启动，于是 Tab 出来的相对路径服务端可能找不到。写绝对路径
     就没有歧义；要不要让补全直接把相对前缀展开成绝对路径（更安全，但输入行会变长）？
 24. **补全候选没有分页**：`Static` 的 `--llm` 已经是一份 44 项的名单，`--cwd` 更是整个
     目录。弹窗现在是「列全部、靠前缀收窄」，没有翻页/分栏，输入行为空时确实会顶掉大半个
     屏幕。要不要给候选加上限（比如 20 项 + `…`），或者按 usage 排序？
+25. **`keep_recent` 在极端情况下会让压缩失效**：`choose_cut` 要求至少留下 30 条（可配），
+    当活着的消息**本身**就不足 30 条却已经超预算（几条巨大的工具输出），它会返回 `None`，
+    于是既不压也不再有机会压，下一步的请求就有可能被 provider 以超长拒掉。改成「超预算时
+    压掉一半」是对的，但那会动到一个已经通过的行为（短 transcript 不压），需要连带改测试和
+    语义，所以先记在这里。
 
 ## 9. IM 桥接（`crates/bridge`，二进制 `gongga-bridge`）
 
@@ -881,3 +932,65 @@ assistant text」没有歧义 —— 这也正是 `get_messages` 存在的理由
 - **【待确认】** `on_idle` 拿到 Idle 就去回读，如果这期间用户又发了一条，回读窗口会把新的
   用户消息也包含进去 —— `final_reply` 只取最后一条 assistant text，所以不会串话，但那条
   新消息的回答会留到下一个 Idle 才发。要不要用 `after_seq = 发消息前的 last_seq` 锁死窗口？
+
+## 10. 自我进化（agent 换掉正在跑它的那个服务端）
+
+目标：agent 改了 `crates/server` 之后，能让**正在跑自己的那个进程**退场，由新构建接上，
+并且这个回合不丢。三件事拼起来就是通道，它们都是既有的：
+
+| 部件 | 位置 | 在进化里扮演什么 |
+|---|---|---|
+| `cancel` 留活 | `commands.rs::cancel` → `cancel_and_preserve()` | 停服但把本回合留在 `pending_tasks` |
+| 启动时拾起 | `commands.rs::resume_pending` | 新服务端起 bind 后把该回合接着跑 |
+| `bash --detached` | `tools/detached.rs` | 继任者必须活在旧进程之外，否则一起死 |
+| `server.lock` | `instance.rs` | home 是**交接**不是抢占；旧 pid 还在就拒绝启动 |
+| `$GONGGA_CLI` | `main.rs::cli_path` | agent 从 bash 里给自己发 `cancel` |
+
+顺序是有原因的，`scripts/evolve.sh` 把它固化成两条命令：
+
+```
+scripts/evolve.sh stage          # 测试 → 构建 → 复制 → 写 launcher（不重启任何东西）
+bash --detached: <launcher>      # 继任者在旧进程之外等端口
+scripts/evolve.sh swap <stamp>   # 确认继任者真的在等，然后 cancel
+```
+
+**为什么先起继任者再 cancel**：反过来（先 cancel、再起新进程）一旦新二进制起不来，
+home 就空着，没有进程去 resume 这个回合 ���— 一次失败的进化会吃掉用户的活。现在失败模式是
+「继任者起不来 → swap 检查到 launcher 不在 → 拒绝 cancel → 旧服务端照常活着」。
+
+**为什么 `stage` 用 `.dev/target` 而不是 `target/`**：Windows 锁住正在运行的 `.exe`，
+而要被替换的那个服务端常常就是 `target\debug\gongga-server.exe` —— 在 `target/` 里构建会
+以 `拒绝访问 (os error 5)` 失败，恰好卡在「想自我进化」这个动作上。私有 target 目录让
+构建与 `target/` 的占用状态无关，也让 `dev.sh` 那套「用副本跑」的纪律继续成立。
+
+**launcher 的两个条件缺一不可**：旧 pid 消失 **且** 端口空出来。少了后者，新进程会抢在
+旧 socket 释放前 bind 失败；少了前者，`server.lock` 会认出旧 pid 还活着而拒绝启动（这是
+`instance.rs` 的正确行为，不该为进化放宽）。
+
+验证过的部分：`stage` 在本机跑通（含 162 个测试）；launcher 的两个分支分别用「活 pid」
+「死 pid」+ 独立端口验过（该等的时候等，该死的时候 exec）；新二进制在独立 home/端口上
+真的接得住客户端（`set_session` / `get_messages` 回执正常）。
+
+### 顺带修掉的两处
+
+1. **`conns` 只增不减**（§8.19）：`serve` 给每个 peer 留一条 `Sender`，只在「往旧地址发包
+   失败」时才删，而客户端重连后换了本地端口，旧地址再也不会来包。现在 `handle_connection`
+   结束时自己释放那一项，并用 `conn_id` 保护 —— 同一地址已被新连接占用时，旧任务不得删掉
+   新 peer 的条目。
+2. **`GONGGA_CLI` 可能是条敲不通的命令**：`cli_path()` 只找「本进程的同级目录」，
+   而 `dev.sh server` 只把服务端复制进 `.dev/`，同级就没有 `gongga`，于是回退成裸名
+   `gongga.exe` —— 不在 `PATH` 上，agent 拿到的是一条必死的命令。现在依次尝试
+   同级 → `../target/debug/` → `PATH`，都没有才用裸名并 **warn**（否则这个死胡同无人可诊断）。
+
+### 仍然存在的风险（**未做**，需要你定）
+
+1. **进化会把 detached 作业表搅混**：launcher 由旧服务端以 detached 启动、pid 记录在库，
+   `exec` 之后那个 pid 就是新服务端自己。`adopt()` 已经丢弃「pid 是自己」的行，所以
+   `kill_bash` 不会自杀 —— 但这依赖 `exec` 保 pid。若哪天 launcher 改成 `spawn` 子进程，
+   这条保护就落空了。
+2. **没有回滚**：新二进制起来了但行为是坏的（比如 LLM 配置读错），`swap` 无从知道。
+   要不要让 `swap` 等新服务端 hello 之后再删旧 launcher，或保留「上一版 exe」一个指针，
+   让下一回合的 agent 能一键退回？
+3. **`swap` 之后本回合的叙事会被打断**：`cancel` 让当前 turn 以 `Cancelled` 收尾，新服务端
+   是**再发一次请求继续**，不是无缝续写。用户会看到一段输出缺口，且这一次续写要重新付一次
+   上下文费用。要不要把「进化」做成只在两个 turn 之间发生（比如排队到 idle 再换）？

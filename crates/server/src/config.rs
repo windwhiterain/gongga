@@ -19,9 +19,10 @@ pub const DEFAULT_API_KEY_ENV: &str = "MINIMAX_CN_API_KEY";
 /// ordinary command still comes back whole while a `cat` of a source file does
 /// not smuggle the whole file into every later request.
 pub const DEFAULT_MAX_OUTPUT_CHARS: usize = 8_000;
-/// Compress once a single request would carry more than this. Roughly 40k
-/// tokens, comfortably inside a 200k window even with room for tool output.
-pub const DEFAULT_COMPRESS_ABOVE_CHARS: usize = 120_000;
+/// Compress once a single request would carry more than this many input tokens.
+/// Only a fallback for a model whose context window the roster does not state;
+/// otherwise the threshold is a share of the window itself.
+pub const DEFAULT_COMPRESS_ABOVE_TOKENS: u64 = 40_000;
 /// Messages kept verbatim after a compression: enough that the model still has
 /// the last few steps in full, not just a paraphrase of them.
 pub const DEFAULT_KEEP_RECENT: usize = 30;
@@ -84,7 +85,11 @@ pub struct LlmConfig {
 pub struct BashConfig {
     /// Explicit shell path. `None` means auto-detect Git Bash.
     pub program: Option<PathBuf>,
-    /// Per-command wall-clock budget before the shell is recycled.
+    /// How long a `bash` call waits before returning.
+    ///
+    /// Not a budget on the command: a command still running when this passes is
+    /// left alone, keeps running, and posts its output to the session when it
+    /// finishes. The number decides when the model stops waiting, nothing else.
     pub timeout: Duration,
     /// Tool output longer than this is capped: only the head and the tail come
     /// back to the model, the whole thing is written to disk. Without this a
@@ -96,9 +101,9 @@ pub struct BashConfig {
 #[derive(Debug, Clone)]
 pub struct AgentConfig {
     /// Fold the older transcript into a summary once a request would carry more
-    /// than this many characters. 0 disables compression, which will eventually
-    /// hit the provider's context limit.
-    pub compress_above_chars: usize,
+    /// than this many input tokens. 0 disables compression, which will
+    /// eventually hit the provider's context limit.
+    pub compress_above_tokens: u64,
     /// How many of the most recent messages a compression keeps verbatim.
     pub keep_recent: usize,
 }
@@ -153,7 +158,7 @@ struct FileBash {
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct FileAgent {
-    compress_above_chars: Option<usize>,
+    compress_above_tokens: Option<u64>,
     keep_recent: Option<usize>,
 }
 
@@ -299,14 +304,14 @@ impl Config {
         };
 
         let agent = AgentConfig {
-            compress_above_chars: file
+            compress_above_tokens: file
                 .agent
                 .as_ref()
-                .and_then(|a| a.compress_above_chars)
+                .and_then(|a| a.compress_above_tokens)
                 .or_else(|| {
-                    env_or("GONGGA_COMPRESS_ABOVE_CHARS").and_then(|v| v.parse().ok())
+                    env_or("GONGGA_COMPRESS_ABOVE_TOKENS").and_then(|v| v.parse().ok())
                 })
-                .unwrap_or(DEFAULT_COMPRESS_ABOVE_CHARS),
+                .unwrap_or(DEFAULT_COMPRESS_ABOVE_TOKENS),
             keep_recent: file
                 .agent
                 .as_ref()
@@ -388,8 +393,10 @@ impl Config {
              # transcript size is managed, so a long turn stays inside the\n\
              # model's context window.\n\
              # Fold the transcript into a summary once a request would carry more\n\
-             # than this many characters. 0 disables it.\n\
-             compress_above_chars = {compress_above_chars}\n\
+             # than this many input tokens, as the provider counts them. 0\n\
+             # disables it. Only used when the model's context window is not in\n\
+             # the roster; otherwise the threshold is a share of the window.\n\
+             compress_above_tokens = {compress_above_tokens}\n\
              keep_recent = {keep_recent}\n\
              \n\
              [transport]\n\
@@ -410,7 +417,7 @@ impl Config {
             retry_base = self.llm.retry_base.as_millis(),
             timeout = self.bash.timeout.as_millis(),
             max_output_chars = self.bash.max_output_chars,
-            compress_above_chars = self.agent.compress_above_chars,
+            compress_above_tokens = self.agent.compress_above_tokens,
             keep_recent = self.agent.keep_recent,
             mtu = self.transport.mtu,
             window = self.transport.window,
@@ -599,7 +606,18 @@ fn default_instructions() -> String {
      `send_message` / `del_session`. `$GONGGA_CLI`, `$GONGGA_SERVER` and \
      `$GONGGA_HOME` are already set in your shell, so no flags are needed. \
      Prefer this over killing processes: `cancel` saves the turn so the next \
-     server picks it up, whereas killing the server from outside does not.\n"
+     server picks it up, whereas killing the server from outside does not.\n\
+     \n\
+     You can also replace the server you are running on. `cancel` keeps the \
+     current turn as a pending task and the next server resumes it, so a swap \
+     only has to put a new process in place before the old one leaves. In the \
+     harness repo, `scripts/evolve.sh stage` runs the tests, builds a \
+     successor and prints a launcher; run that launcher with `bash \
+     --detached`, then `scripts/evolve.sh swap <stamp>` checks that the \
+     successor is really waiting and sends `cancel`. Do this only after \
+     changing the server itself, and let the script decide when it is safe: it \
+     refuses to cancel when no successor is waiting, because then nothing \
+     would resume the turn.\n"
         .to_string()
 }
 
@@ -625,6 +643,19 @@ pub(crate) fn detect_git_bash() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The instructions are assembled by line continuation, where a stray
+    /// escape or a missing space is invisible until a model reads the prompt
+    /// as one run-on line.
+    #[test]
+    fn the_instructions_are_well_formed() {
+        let text = default_instructions();
+        assert!(!text.contains("\\n"), "literal backslash-n leaked: {text}");
+        assert!(text.contains("\n\nYou can also replace the server"));
+        assert!(text.contains("scripts/evolve.sh stage"));
+        assert!(text.ends_with("would resume the turn.\n"));
+        assert!(!text.contains("  "), "double space: {text}");
+    }
 
     #[test]
     fn parses_a_minimal_config() {

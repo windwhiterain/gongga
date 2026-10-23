@@ -55,28 +55,69 @@ struct Args {
 
 /// Where the CLI that can talk to this server lives.
 ///
-/// The server and the client ship together, so the client is the sibling of
-/// this executable -- `gongga-server` next to `gongga`. Falling back to the
-/// bare name still gives the model something to type; if it is on `PATH` that
-/// works too.
+/// The server and the client ship together, so the usual answer is the sibling
+/// of this executable. That is not the only layout in use, though: `dev.sh`
+/// copies the server into `.dev/` *alone*, so the sibling is missing there and
+/// the agent ends up with a `GONGGA_CLI` that is not on `PATH` -- the one thing
+/// it needs in order to drive (or replace) the server it is running on.
+///
+/// So: sibling, then the `target/debug` a staged copy sits under, then `PATH`,
+/// and only as a last resort the bare name -- announced, because a bare name
+/// that is not on `PATH` is a dead end the agent cannot diagnose.
 fn cli_path() -> PathBuf {
     let name = if cfg!(windows) { "gongga.exe" } else { "gongga" };
-    let Ok(exe) = std::env::current_exe() else {
-        return PathBuf::from(name);
-    };
-    let Some(dir) = exe.parent() else {
-        return PathBuf::from(name);
-    };
-    let sibling = dir.join(name);
-    if sibling.exists() {
-        sibling
-    } else {
-        PathBuf::from(name)
+    let mut tried = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            // Sibling: a release install, or target/debug.
+            let sibling = dir.join(name);
+            if sibling.is_file() {
+                return sibling;
+            }
+            tried.push(sibling);
+            // A staged copy in `.dev/` has the real build two levels down.
+            let staged = dir.join("..").join("target").join("debug").join(name);
+            if staged.is_file() {
+                return staged;
+            }
+            tried.push(staged);
+        }
     }
+    if let Ok(found) = which::which(name) {
+        return found;
+    }
+    tracing::warn!(
+        ?tried,
+        "cannot find the gongga CLI; the model will not be able to drive this server \
+         with $GONGGA_CLI. Build it (cargo build -p gongga-cli) or put it on PATH."
+    );
+    PathBuf::from(name)
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    // The runtime is built here rather than by `#[tokio::main]` so that the
+    // drop happens at a point where `run` has already closed every shell. The
+    // drop still waits, with no deadline -- but it now waits for something that
+    // ends, which is the difference between waiting and hanging.
+    //
+    // The bug this replaces: every blocking task had to drain before the
+    // process could go, one of them was the reaper for a persistent shell, and
+    // a persistent shell never exits on its own. After a session had used
+    // `bash`, the process sat there having already logged `server stopped`.
+    // Putting a 2s deadline on the drain hid that instead of fixing it; what
+    // fixes it is ending the shells in `run`, after which there is nothing left
+    // for the drain to wait on.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let result = runtime.block_on(run());
+    tracing::info!("main: dropping runtime");
+    drop(runtime);
+    tracing::info!("main: runtime dropped");
+    result
+}
+
+async fn run() -> anyhow::Result<()> {
     let args = Args::parse();
 
     tracing_subscriber::fmt()
@@ -160,7 +201,7 @@ async fn main() -> anyhow::Result<()> {
         default_context: cfg.llm.context,
         tools: tools.clone(),
         bus: bus.clone(),
-        compress_above_chars: cfg.agent.compress_above_chars,
+        compress_above_tokens: cfg.agent.compress_above_tokens,
         keep_recent: cfg.agent.keep_recent,
         output_dir,
         detached: detached.clone(),
@@ -237,5 +278,34 @@ async fn main() -> anyhow::Result<()> {
         "gongga server starting"
     );
 
-    net::serve(Arc::new(cfg), dispatch, bus).await
+    let served = net::serve(Arc::new(cfg), dispatch, bus).await;
+    // Every path out of `serve` ends here, so this is the one place that
+    // guarantees no shell outlives the server's decision to stop.
+    //
+    // It has to happen before the runtime goes: a live persistent shell is a
+    // child that never exits on its own, and the thread reaping it can never
+    // finish while it lives -- which is exactly the state that made the process
+    // sit there after `server stopped`. Ending the shells is what gives those
+    // threads an end, so the runtime's `Drop` can simply wait for them instead
+    // of being given a deadline.
+    sessions.close_shells().await;
+    served
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cli_path;
+
+    /// The CLI is what lets the model cancel, restart or replace this server,
+    /// so the path it is handed has to be runnable -- a bare name is only
+    /// correct if that name is actually on `PATH`.
+    #[test]
+    fn the_cli_path_is_something_that_can_be_run() {
+        let p = cli_path();
+        assert!(
+            p.is_file() || which::which(&p).is_ok(),
+            "cli_path gave {} which is neither a file nor on PATH",
+            p.display()
+        );
+    }
 }

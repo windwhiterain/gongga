@@ -42,7 +42,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- configuration", so a session that never asked is indistinguishable from
     -- one created before these columns existed.
     llm TEXT,
-    compact_threshold INTEGER
+    compact_threshold INTEGER,
+    -- Input tokens the provider reported for the last request this session
+    -- made. Not an estimate: it is the number the provider billed, which is the
+    -- only honest answer to "how full is the context". Surviving a restart is
+    -- the point -- the first request of the next run needs a size to compare
+    -- against, and no amount of character counting would give a better one.
+    context_tokens INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -122,6 +128,10 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (
             "compact_threshold",
             "ALTER TABLE sessions ADD COLUMN compact_threshold INTEGER",
+        ),
+        (
+            "context_tokens",
+            "ALTER TABLE sessions ADD COLUMN context_tokens INTEGER NOT NULL DEFAULT 0",
         ),
     ] {
         let exists = conn
@@ -518,6 +528,31 @@ impl Store {
         self.lock().execute(
             "UPDATE sessions SET summary = ?1, summarised_upto = ?2 WHERE id = ?3",
             params![summary, upto, session_id],
+        )?;
+        Ok(())
+    }
+
+    /// Input tokens the provider reported for the last request, or 0 if this
+    /// session has not made one yet.
+    pub fn context_tokens(&self, session_id: i64) -> anyhow::Result<u64> {
+        let conn = self.lock();
+        let n: i64 = conn.query_row(
+            "SELECT context_tokens FROM sessions WHERE id = ?1",
+            params![session_id],
+            |r| r.get(0),
+        )?;
+        Ok(n.max(0) as u64)
+    }
+
+    /// Records what the provider said the last request cost in input tokens.
+    ///
+    /// Called with the number from `usage`, never with a computed one: the
+    /// provider is the only party that tokenises with the tokeniser it will
+    /// actually bill against.
+    pub fn set_context_tokens(&self, session_id: i64, tokens: u64) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE sessions SET context_tokens = ?1 WHERE id = ?2",
+            params![tokens as i64, session_id],
         )?;
         Ok(())
     }
@@ -1099,6 +1134,25 @@ mod tests {
         assert_eq!(rows[0].log, "C:/tmp/main-1.log");
         store.delete_detached_job(id).unwrap();
         assert!(store.detached_jobs().unwrap().is_empty());
+    }
+
+    /// The context size is the provider's own number, so it has to survive a
+    /// restart: the first request of the next run is compared against it
+    /// before any new measurement exists.
+    #[test]
+    fn the_measured_context_size_survives_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("g.db");
+        let id = {
+            let store = Store::open(&path).unwrap();
+            let id = store.create_session("main", "m", "C:/x").unwrap();
+            // Never measured: zero, which the agent reads as "small enough".
+            assert_eq!(store.context_tokens(id).unwrap(), 0);
+            store.set_context_tokens(id, 12_345).unwrap();
+            id
+        };
+        let reopened = Store::open(&path).unwrap();
+        assert_eq!(reopened.context_tokens(id).unwrap(), 12_345);
     }
 
     #[test]

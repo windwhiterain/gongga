@@ -24,13 +24,6 @@ use serde::Deserialize;
 /// path, which is the point: one file describes this machine.
 pub const DEFAULT_PATH: &str = ".agents/llm.toml";
 
-/// Rough characters per token, used to turn a percentage of a model's context
-/// window into the character budget the transcript is measured in. The measure
-/// is already an approximation (see `weight` in the agent), so this only has to
-/// be in the right ballpark: three characters per token is the same ratio the
-/// built-in default assumes (120k chars ~ 40k tokens).
-pub const CHARS_PER_TOKEN: usize = 3;
-
 /// Everything `llm.toml` says about one provider.
 #[derive(Debug, Clone)]
 pub struct Provider {
@@ -358,11 +351,18 @@ fn credential(
     None
 }
 
-/// Turns `n%` of a context window into the character budget the transcript is
-/// measured in. Saturating, because a typo is not a reason to panic.
-pub fn chars_for_percent(context: u64, percent: u8) -> usize {
-    let tokens = context.saturating_mul(percent as u64) / 100;
-    (tokens as usize).saturating_mul(CHARS_PER_TOKEN).max(if percent == 0 { 0 } else { 1 })
+/// How many tokens `n%` of a context window is.
+///
+/// This is exact arithmetic on a number the roster states: no character-to-token
+/// guesswork belongs here. Converting the transcript into tokens is the agent's
+/// job, and it does that by measurement rather than by a constant (see `Meter`).
+pub fn tokens_for_percent(context: u64, percent: u8) -> u64 {
+    if percent == 0 {
+        return 0;
+    }
+    // Rounding down to zero would read as "compression is off", which is the
+    // opposite of what a real percentage asked for.
+    (context.saturating_mul(percent as u64) / 100).max(1)
 }
 
 // -- parsing ---------------------------------------------------------------
@@ -655,12 +655,12 @@ key = "k"
     }
 
     #[test]
-    fn a_percentage_becomes_a_character_budget() {
-        assert_eq!(chars_for_percent(1_000_000, 10), 300_000);
-        assert_eq!(chars_for_percent(1_000_000, 0), 0);
-        // Never zero for a real percentage: zero would read as "compression
-        // is off" in the agent, which is the opposite of what was asked.
-        assert_eq!(chars_for_percent(10, 1), 1);
+    fn a_percentage_becomes_a_token_budget() {
+        assert_eq!(tokens_for_percent(1_000_000, 10), 100_000);
+        assert_eq!(tokens_for_percent(1_000_000, 0), 0);
+        // Never zero for a real percentage: zero reads as "compression is off"
+        // in the agent, which is the opposite of what was asked.
+        assert_eq!(tokens_for_percent(10, 1), 1);
     }
 
     #[test]
