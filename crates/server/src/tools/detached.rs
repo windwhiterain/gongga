@@ -390,13 +390,15 @@ impl DetachedRegistry {
             }
         };
         let me = std::process::id();
+        let pids: Vec<u32> = rows.iter().map(|r| r.pid as u32).collect();
+        let live = alive_pids(&pids);
         let mut adopted = 0;
         let mut registry = self.inner.lock().await;
         // Job numbers must not be reused: a job adopted from the database has
         // to keep the number the previous run gave it.
         registry.next_job = registry.next_job.max(rows.iter().map(|r| r.job).max().unwrap_or(0));
         for row in rows {
-            if row.pid as u32 == me || !pid_alive(row.pid as u32) {
+            if row.pid as u32 == me || !live.contains(&(row.pid as u32)) {
                 let _ = registry.store.delete_detached_job(row.id);
                 continue;
             }
@@ -495,6 +497,62 @@ fn pid_alive(pid: u32) -> bool {
     }
 }
 
+/// Which of `pids` are in use right now, answered for all of them at once.
+///
+/// Adoption used to ask one pid at a time, and each question is a `tasklist`
+/// subprocess: a home that had run a few hundred detached jobs spent over a
+/// minute walking rows of finished work before it ever bound the port, so a
+/// client restarting a server saw only a timeout. Nothing about the question
+/// needs to be asked per pid -- one listing answers every row in it.
+///
+/// A listing that cannot be read answers "none are alive", which is what the
+/// per-pid version did when `tasklist` failed: the rows are then dropped as
+/// finished work rather than adopted on a hunch.
+fn alive_pids(pids: &[u32]) -> std::collections::HashSet<u32> {
+    let wanted: std::collections::HashSet<u32> =
+        pids.iter().copied().filter(|p| *p != 0).collect();
+    if wanted.is_empty() {
+        return wanted;
+    }
+    #[cfg(windows)]
+    {
+        // No `/FI`: the point is one call for the whole set. CSV keeps this
+        // locale-independent -- image, pid, session, session number, memory --
+        // so the pid is always the second field of a row.
+        let out = std::process::Command::new("tasklist")
+            .args(["/NH", "/FO", "CSV"])
+            .output();
+        let Ok(out) = out else {
+            return std::collections::HashSet::new();
+        };
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|line| line.split(',').nth(1))
+            .filter_map(|f| f.trim().trim_matches('"').parse::<u32>().ok())
+            .filter(|pid| wanted.contains(pid))
+            .collect()
+    }
+    #[cfg(unix)]
+    {
+        // `ps` prints every pid at once; the trailing `=` drops the header.
+        let out = std::process::Command::new("ps")
+            .args(["-e", "-o", "pid="])
+            .output();
+        let Ok(out) = out else {
+            return std::collections::HashSet::new();
+        };
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| l.trim().parse::<u32>().ok())
+            .filter(|pid| wanted.contains(pid))
+            .collect()
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        std::collections::HashSet::new()
+    }
+}
+
 fn now_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -510,6 +568,19 @@ mod tests {
     fn registry(dir: &Path, program: Option<PathBuf>) -> DetachedRegistry {
         let store = Store::open(&dir.join("g.db")).expect("store");
         DetachedRegistry::new(store, program, dir.join("logs"), vec![])
+    }
+
+    /// One call answers the whole set: our own pid is in it, a pid nobody can
+    /// be holding is not, and asking about both costs one listing.
+    #[test]
+    fn liveness_is_answered_for_many_pids_at_once() {
+        let me = std::process::id();
+        let absent = 4_000_000u32; // above any pid a run of this suite reaches
+        let live = alive_pids(&[me, absent, 0]);
+        assert!(live.contains(&me), "own pid must be reported alive");
+        assert!(!live.contains(&absent), "a bogus pid must not be");
+        assert!(!live.contains(&0), "pid 0 is not a process");
+        assert!(alive_pids(&[]).is_empty());
     }
 
     /// The defining property: a detached job is not the shell's, so losing the

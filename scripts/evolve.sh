@@ -66,7 +66,17 @@ set -u
 # The pid alone is not proof of life: a stale pid file plus a recycled pid
 # would look exactly like a waiting successor. The heartbeat is written by the
 # loop below, so only a process actually sitting in that loop keeps it fresh.
-echo \$\$ > '$pidfile'
+# The pid file has to hold the *Windows* pid: every check downstream is a
+# `tasklist` query, and under Git Bash `$$` is an MSYS pid that `tasklist`
+# never reports -- so a waiting successor would look dead and `swap` would
+# refuse to cancel, which is the whole handover failing. `/proc/$$/winpid` is
+# the same process in the other numbering; `$$` is only a fallback for a bash
+# that has no /proc (where pids already are what `tasklist`/`ps` see).
+if [ -r /proc/\$\$/winpid ]; then
+  cat /proc/\$\$/winpid > '$pidfile'
+else
+  echo \$\$ > '$pidfile'
+fi
 date +%s > '$beatfile'
 NEW='$exe'
 OLD_PID='$old_pid'
@@ -159,7 +169,9 @@ cmd_swap() {
   launch_pid="$(cat "$RUN/evolve-$stamp-launch.pid" 2>/dev/null || true)"
   [ -n "$launch_pid" ] || die "successor was never launched; not cancelling"
   tasklist //FI "PID eq $launch_pid" //NH 2>/dev/null | grep -q "$launch_pid" \
-    || die "successor pid $launch_pid is gone; not cancelling"
+    || die "successor pid $launch_pid is gone; not cancelling \
+(if the pid looks like a small MSYS number, the launcher was written before \
+`/proc/\$\$/winpid` was recorded: re-run `stage` and launch the new one)"
   # A live pid is not necessarily *our* launcher: pids get reused, and a pid
   # file left by an earlier attempt would then look like a successor waiting.
   # Only the waiting loop writes the heartbeat, so a fresh one means something

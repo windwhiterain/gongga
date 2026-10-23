@@ -913,6 +913,7 @@ Git Bash 自动探测常见安装路径，找不到再退回 PATH 上的 `bash`�
 | 断线时打的服务端命令被放回输入行（不发、不算错） | 逻辑完整，**真 TTY 未验证** |
 | detached 作业**跨服务端退出存活** | 通过 |
 | detached 作业被下一个服务端 `adopt()` 接管并仍可杀 | 通过 |
+| `adopt()` 的开销与行数无关：一次 `tasklist` 回答全部 pid | 通过（156 行陈旧记录：修复前 75.4s 才 bind，修复后 1.4–1.9s；20/50/156 行基本持平） |
 | reasoning `summary` 从 delta 累积（真实 provider：0 → 395 字符） | 通过 |
 | 回传的 `encrypted_content` 被 provider 消费（真 blob 答对 / 垃圾 blob 答不出） | 通过 |
 | 名单自动导入：`~/.agents/llm.toml` 15 个 provider，启动即用 | 通过（`llm roster imported ... providers=15`）|

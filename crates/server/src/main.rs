@@ -232,10 +232,15 @@ async fn run() -> anyhow::Result<()> {
     }
     // So is whatever the last run detached: those processes are still out
     // there, and the only way to stop them later is to adopt their pids now.
+    let adoption_started = std::time::Instant::now();
     let adopted = detached.adopt().await;
+    // The duration is part of the message because adoption has to finish
+    // before the port is bound: a home with thousands of rows looked exactly
+    // like a server that would not start, and there was nothing to point at.
     if adopted > 0 {
         tracing::info!(
             adopted,
+            elapsed_ms = adoption_started.elapsed().as_millis() as u64,
             "detached jobs from the previous run are still running and can be killed"
         );
     }

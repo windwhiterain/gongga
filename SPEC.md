@@ -19,8 +19,8 @@ use GitBash as bash on windows.
 - check_bash{name = "default"}: return bash's output that hasn't been read by the caller session.
 - del_bash{name_regex}: only mactch bash with the caller sessions' name in key.
 ## State
-- everything in database (sqlite), structured for agentic retrieval/mutation.
-- database path can be specified at server start. 
+- everything in database (sqlite) under a home directory, structured for agentic retrieval/mutation.
+- home directory path can be specified at server start. 
 ## UI
 - events[]:
     - cmd
