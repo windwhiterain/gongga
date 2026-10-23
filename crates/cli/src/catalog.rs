@@ -101,6 +101,17 @@ struct Ctx<'a> {
 
 impl Completer for Catalog {
     fn complete(&self, line: &str, cursor: usize) -> Vec<Candidate> {
+        // One grammar, decided by the first character: `/` starts a command,
+        // and anything else is a message to the agent. Completion is about
+        // commands, so a message -- free text, in any language, with whatever
+        // punctuation the operator likes -- offers nothing at all.
+        //
+        // That is also what keeps the popup out of the way: without this rule,
+        // every keystroke of an ordinary sentence matched some command name and
+        // opened a list over half the screen, including while clearing the line.
+        if !line.trim_start().starts_with('/') {
+            return Vec::new();
+        }
         let (_, _, token) = token_bounds(line, cursor);
         let words = shell_words::split(line).unwrap_or_default();
         let position = line[..cursor.min(line.len())].split_whitespace().count();
@@ -133,7 +144,7 @@ impl Completer for Catalog {
             return all
                 .iter()
                 .filter(|c| c.name.starts_with(prefix))
-                .map(|c| Candidate::word(c.name.clone(), c.summary.clone()))
+                .map(|c| Candidate::word(format!("/{}", c.name), c.summary.clone()))
                 .collect();
         }
 
@@ -387,33 +398,33 @@ mod tests {
     #[test]
     fn completes_command_names_from_both_catalogs() {
         let c = catalog();
-        assert_eq!(values(&c, "set_pers"), vec!["set_persistant_cmd_argument"]);
-        assert_eq!(values(&c, "send"), vec!["send_message"]);
+        assert_eq!(values(&c, "/set_pers"), vec!["/set_persistant_cmd_argument"]);
+        assert_eq!(values(&c, "/send"), vec!["/send_message"]);
     }
 
     #[test]
     fn completes_flag_names() {
         let c = catalog();
-        assert_eq!(values(&c, "send_message --s"), vec!["--session"]);
+        assert_eq!(values(&c, "/send_message --s"), vec!["--session"]);
     }
 
     #[test]
     fn completes_flag_values_from_sessions() {
         let c = catalog();
-        assert_eq!(values(&c, "send_message --session "), vec!["main", "scratch"]);
-        assert_eq!(values(&c, "send_message --session sc"), vec!["scratch"]);
+        assert_eq!(values(&c, "/send_message --session "), vec!["main", "scratch"]);
+        assert_eq!(values(&c, "/send_message --session sc"), vec!["scratch"]);
     }
 
     #[test]
     fn free_form_values_yield_nothing() {
         let c = catalog();
-        assert!(values(&c, "send_message --message ").is_empty());
+        assert!(values(&c, "/send_message --message ").is_empty());
     }
 
     #[test]
     fn sticky_names_complete_against_state() {
         let c = catalog();
-        assert_eq!(values(&c, "del_persistant_cmd_argument --name "), vec!["session"]);
+        assert_eq!(values(&c, "/del_persistant_cmd_argument --name "), vec!["session"]);
     }
 
     /// `--name` takes an argument name, so it offers the catalog's, once each,
@@ -421,7 +432,7 @@ mod tests {
     #[test]
     fn argument_names_complete_from_the_whole_catalog() {
         let c = catalog();
-        let got = values(&c, "set_persistant_cmd_argument --name ");
+        let got = values(&c, "/set_persistant_cmd_argument --name ");
         assert_eq!(got, vec!["cwd", "message", "name", "session", "value"]);
     }
 
@@ -431,11 +442,11 @@ mod tests {
     fn a_sticky_value_completes_like_the_argument_it_fills() {
         let c = catalog();
         assert_eq!(
-            values(&c, "set_persistant_cmd_argument --name session --value "),
+            values(&c, "/set_persistant_cmd_argument --name session --value "),
             vec!["main", "scratch"]
         );
         assert_eq!(
-            values(&c, "set_persistant_cmd_argument --name=session --value ma"),
+            values(&c, "/set_persistant_cmd_argument --name=session --value ma"),
             vec!["main"]
         );
     }
@@ -445,8 +456,8 @@ mod tests {
     #[test]
     fn a_sticky_value_for_a_free_form_argument_offers_nothing() {
         let c = catalog();
-        assert!(values(&c, "set_persistant_cmd_argument --name message --value ").is_empty());
-        assert!(values(&c, "set_persistant_cmd_argument --value main").is_empty());
+        assert!(values(&c, "/set_persistant_cmd_argument --name message --value ").is_empty());
+        assert!(values(&c, "/set_persistant_cmd_argument --value main").is_empty());
     }
 
     /// A path value lists the directory it names, and a directory is inserted
@@ -462,7 +473,7 @@ mod tests {
         let c = catalog();
         c.set_cwd(d.path());
 
-        let line = "set_session --session s --cwd s";
+        let line = "/set_session --session s --cwd s";
         let got = c.complete(line, line.len());
         let dir = got.iter().find(|x| x.insert == "sub/").expect("the directory");
         assert!(!dir.space, "a directory must not be followed by a space");
@@ -470,14 +481,14 @@ mod tests {
         assert!(file.space, "a file ends the word");
 
         // Descending: the trailing `/` keeps the token inside the directory.
-        assert_eq!(values(&c, "set_session --cwd sub/"), vec!["sub/inner.txt"]);
+        assert_eq!(values(&c, "/set_session --cwd sub/"), vec!["sub/inner.txt"]);
         // Dotfiles only when asked for.
-        assert!(values(&c, "set_session --cwd ")
+        assert!(values(&c, "/set_session --cwd ")
             .iter()
             .all(|v| !v.starts_with('.')));
-        assert_eq!(values(&c, "set_session --cwd .h"), vec![".hidden"]);
+        assert_eq!(values(&c, "/set_session --cwd .h"), vec![".hidden"]);
         // A prefix that names nothing is not an error, just no candidates.
-        assert!(values(&c, "set_session --cwd nowhere/").is_empty());
+        assert!(values(&c, "/set_session --cwd nowhere/").is_empty());
     }
 
     #[test]

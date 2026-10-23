@@ -103,15 +103,16 @@ impl ToolContext {
             .unwrap_or_else(|e| e.into_inner())
             .remove(name)
     }
-    /// Keeps `shell_name` out of the spill file's name too: a shell called
-    /// `restart server` would otherwise put a space in a path.
-    fn cap(&self, label: &str, text: String, max: usize) -> String {
-        crate::tools::bash::cap_output(
-            &text,
-            max,
-            &self.output_dir,
-            &format!("{}-{}-{}", self.session, label, self.call_id),
-        )
+    /// Caps one command's output, spilling the rest to a file named after
+    /// where it came from: session, shell, `task`, call id.
+    ///
+    /// The `task` is in there because a dump is read later, out of context --
+    /// a dozen `...-default-call_00_abc.out` files say nothing, and the whole
+    /// point of keeping the full output is being able to find the right one
+    /// again. `slug()` in `bash.rs` is what makes it safe for a path.
+    fn cap(&self, shell: &str, task: Option<&str>, text: String, max: usize) -> String {
+        let label = spill_label(&self.session, shell, task, &self.call_id);
+        crate::tools::bash::cap_output(&text, max, &self.output_dir, &label)
     }
 }
 
@@ -220,11 +221,13 @@ impl Tool for BashTool {
     fn description(&self) -> &'static str {
         "Run a shell command in a persistent Git Bash. Each `name` is a \
          separate shell that keeps its own working directory, exports and shell \
-         functions between calls; omit `name` to use `default`. Output is \
-         streamed as it is produced. Use `cd` to move around instead of passing \
-         absolute paths every time. Very long output is capped: you get the \
-         beginning and the end, and the full text is written to a file named in \
-         the result -- read that file with `sed -n` or `grep`, do not cat it. \
+         functions between calls, and stays alive until you `del_bash` it; omit \
+         `name` to use `default`. So reusing one name is how state accumulates -- \
+         inventing a name per command leaves one idle process behind per command. \
+         Output is streamed as it is produced. Use `cd` to move around instead of \
+         passing absolute paths every time. Very long output is capped: you get \
+         the beginning and the end, and the full text is written to a file named \
+         in the result -- read that file with `sed -n` or `grep`, do not cat it. \
          With `background`, the command is started and the call returns \
          immediately; collect what it printed later with `check_bash`."
     }
@@ -235,11 +238,26 @@ impl Tool for BashTool {
             "properties": {
                 "name": {
                     "type": "string",
-                    "description": "Which persistent shell to use. Defaults to `default`."
+                    "description": "Which persistent shell to use. Defaults to `default`. \
+                                     One name is one live process that stays alive until \
+                                     `del_bash`: reusing a name is what carries `cd`, \
+                                     exports and shell functions from one call to the next, \
+                                     and a fresh name for every call starts a fresh process \
+                                     every call. Unless you need two shells side by side, \
+                                     use one name throughout and put what the call is for in \
+                                     `task`."
                 },
                 "cmd": {
                     "type": "string",
                     "description": "The command line to execute."
+                },
+                "task": {
+                    "type": "string",
+                    "description": "What this call is for, in a few words. Optional, and \
+                                     never executed: it only names the file that a too-long \
+                                     output is spilled to, so that later you (and whoever \
+                                     reads the dumps) can tell one run from another. \
+                                     Example: `run the server tests`."
                 },
                 "background": {
                     "type": "boolean",
@@ -287,6 +305,14 @@ impl Tool for BashTool {
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .unwrap_or(DEFAULT_BASH);
+            // Only ever a label: it names the spill file and nothing else, so a
+            // missing or nonsensical one costs a less informative path rather
+            // than a failed call.
+            let task = args
+                .get("task")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
             // Both flags return at once, which is the point: the turn stays
             // responsive instead of sitting out a long command. They differ in
             // what happens to the output, not in whether the call blocks.
@@ -411,7 +437,11 @@ impl Tool for BashTool {
                     let store = ctx.store.clone();
                     let session = ctx.session.clone();
                     let output_dir = ctx.output_dir.clone();
-                    let label = format!("{session}-{name}-late");
+                    // Same naming rule as the foreground path, with `late`
+                    // standing in for the call id: the call it belonged to has
+                    // already returned, so its id is no longer what identifies
+                    // the run.
+                    let label = spill_label(&session, name, task, "late");
                     let cap = self.max_output_chars;
                     let waited = timeout;
                     let owned = name.to_string();
@@ -489,7 +519,7 @@ impl Tool for BashTool {
                     // Capped before it is stored: what goes into the transcript
                     // is replayed on every later step, so the full output of a
                     // chatty command would be paid for over and over.
-                    let text = ctx.cap(name, text, self.max_output_chars);
+                    let text = ctx.cap(name, task, text, self.max_output_chars);
                     let text = if text.is_empty() {
                         "(no output)".to_string()
                     } else {
@@ -556,7 +586,7 @@ impl Tool for CheckBashTool {
                 return ToolOutcome::err(format!("no live shell named {name}"));
             };
             let mut shell = handle.lock().await;
-            let text = ctx.cap(name, shell.take_pending(), self.max_output_chars);
+            let text = ctx.cap(name, None, shell.take_pending(), self.max_output_chars);
             let jobs = shell.background_jobs();
             if text.is_empty() {
                 return ToolOutcome::ok(if jobs == 0 {
@@ -770,6 +800,20 @@ impl Tool for KillBashTool {
     }
 }
 
+/// How a spill file is named: `session-shell-task-callid`.
+///
+/// One function rather than two `format!`s because the two paths that spill --
+/// a foreground result, and the late output of a command that outlived its wait
+/// -- must produce names that sort and read the same way. The `task`, when the
+/// model supplied one, is what makes a dump identifiable later; without it the
+/// name is still unique, just less useful.
+fn spill_label(session: &str, shell: &str, task: Option<&str>, call_id: &str) -> String {
+    match task {
+        Some(task) => format!("{session}-{shell}-{task}-{call_id}"),
+        None => format!("{session}-{shell}-{call_id}"),
+    }
+}
+
 /// The shell a tool call is about, or `default`.
 fn shell_name(args: &Value) -> &str {
     args.get("name")
@@ -829,6 +873,42 @@ mod tests {
         assert_eq!(
             missing_command_hint(&serde_json::json!({"name": "s3"})),
             "bash requires a string `cmd`"
+        );
+    }
+
+    /// `task` names the dump a too-long output is spilled to. It must be
+    /// offered to the model, must not become something the call can fail on,
+    /// and must actually reach the file name.
+    #[test]
+    fn a_task_names_the_spill_file() {
+        let reg = ToolRegistry::with_builtins(Duration::from_secs(30), 8_000);
+        let bash = reg.get("bash").expect("bash is registered");
+        let params = bash.parameters();
+        assert!(params["properties"].get("task").is_some(), "{params}");
+        // Still only `cmd`: a label drifting into a required argument would
+        // turn a rejected call into a rejected *idea*, and the model would
+        // stop describing what it is doing.
+        assert_eq!(params["required"], serde_json::json!(["cmd"]), "{params}");
+    }
+
+
+    /// Both spill paths name files the same way, so a dump can be found again
+    /// by the thing it was for.
+    #[test]
+    fn a_spill_file_is_named_after_what_the_call_was_for() {
+        assert_eq!(
+            spill_label("main", "default", Some("run the tests"), "call_1"),
+            "main-default-run the tests-call_1"
+        );
+        // No task is not an error: the name stays unique, just less legible.
+        assert_eq!(
+            spill_label("main", "default", None, "call_1"),
+            "main-default-call_1"
+        );
+        // The late path shares the rule, which is the point of having one.
+        assert_eq!(
+            spill_label("main", "default", Some("cargo build"), "late"),
+            "main-default-cargo build-late"
         );
     }
 

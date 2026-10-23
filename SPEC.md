@@ -13,13 +13,13 @@ all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, l
 standard OpenAI Response API.
 ## Tool
 use GitBash as bash on windows.
-- bash{cmd, name = "default", background = false, detached = false}: detached process does not return, so server can cancle while it is running.
+- bash{cmd, name = "default", task = "default", background = false, detached = false}: detached process does not return, so server can cancle while it is running.
     - key = {session_name, bash_name}.
 - list_bash: return all bash with the caller session's name key.
 - check_bash{name = "default"}: return bash's output that hasn't been read by the caller session.
-- del_bash{name}
-## Data
-- all in database (sqlite), structured for agentic retrieval/mutation.
+- del_bash{name_regex}
+## State
+- everything in database (sqlite), structured for agentic retrieval/mutation.
 - database path can be specified at server start. 
 ## UI
 - events[]:
@@ -29,7 +29,8 @@ use GitBash as bash on windows.
     - tool_result{session, toocall, ...}: 
         - bash's output streaming.
 - cmd_input: perfix select, auto complete.
-    ""
+    - `/<cmd>`
+    - `<pure text>` expand to `/send_message --message "<pure text>"`: need escape.
 - sticky_cmd_arguments[{name, value}]: auto fill in cmd argument if not provided.
 ## Cmd
 - server:

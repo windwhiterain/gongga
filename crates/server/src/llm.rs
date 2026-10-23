@@ -808,6 +808,52 @@ fn summarise_error(body: &str) -> String {
 mod tests {
     use super::*;
 
+    /// The tool schema is not part of the transcript, so nothing a compaction
+    /// does can remove it -- but that also means nothing would notice if the
+    /// body stopped carrying it. It is rebuilt from the registry every request,
+    /// and this pins that.
+    #[test]
+    fn every_request_carries_the_tool_schema() {
+        let cfg = crate::config::LlmConfig {
+            provider: None,
+            base_url: "http://127.0.0.1:1/v1".to_string(),
+            model: "m".to_string(),
+            context: None,
+            api_key_env: String::new(),
+            api_key: "k".to_string(),
+            instructions: String::new(),
+            temperature: None,
+            max_output_tokens: None,
+            store: false,
+            request_timeout: Duration::from_secs(1),
+            idle_timeout: Duration::from_secs(1),
+            max_retries: 0,
+            retry_base: Duration::from_millis(1),
+        };
+        let client = LlmClient::new(&cfg).unwrap();
+        let params = serde_json::json!({"type": "object", "properties": {"task": {"type": "string"}}, "required": ["cmd"]});
+        let tools = vec![ToolDefinition {
+            name: "bash".into(),
+            description: "run".into(),
+            parameters: params,
+        }];
+
+        // A compacted prefix must not change what the model is offered: the
+        // schema is out of band, not part of the history.
+        for summary in [None, Some("earlier work, compressed")] {
+            let body = client.build_body(summary, &[], &tools);
+            let sent = &body["tools"][0];
+            assert_eq!(sent["name"], "bash");
+            assert_eq!(sent["parameters"]["required"][0], "cmd");
+            assert!(sent["parameters"]["properties"].get("task").is_some());
+        }
+
+        // An empty registry means no `tools` key at all, rather than an empty
+        // array that some providers reject.
+        let body = client.build_body(None, &[], &[]);
+        assert!(body.get("tools").is_none(), "{body}");
+    }
+
     #[test]
     fn parses_sse_blocks() {
         let block = "event: response.output_text.delta\ndata: {\"delta\":\"hi\"}";

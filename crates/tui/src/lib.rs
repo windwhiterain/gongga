@@ -127,7 +127,7 @@ impl Tui {
                 input: InputLine::default(),
                 status: "connecting".to_string(),
                 footer: String::new(),
-                placeholder: "type a command (Tab completes)".to_string(),
+                placeholder: "message the agent, or / for a command (Tab completes)".to_string(),
                 scroll: 0,
                 max_scroll: 0,
             },

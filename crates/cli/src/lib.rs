@@ -232,6 +232,30 @@ pub struct Client {
     attempts: u32,
 }
 
+/// What the operator typed, for the purpose of echoing it back into the log.
+///
+/// Both halves of the grammar reach the same code; the only difference the
+/// operator should see is that a command looks like a command (`/set_session
+/// --session main`) and a message looks like what they wrote. The wire never
+/// sees this distinction: a message is `send_message --message <text>`.
+#[derive(Clone, Copy)]
+enum Echo<'a> {
+    /// A `/command`, echoed as typed.
+    Command,
+    /// Prose, echoed as prose -- and coloured as the user's turn, so a reply
+    /// has the question above it.
+    Message(&'a str),
+}
+
+impl Echo<'_> {
+    fn show(&self, sink: &mut dyn Sink, tokens: &[String]) {
+        match self {
+            Echo::Command => sink.line(LineKind::System, &format!("/{}", tokens.join(" "))),
+            Echo::Message(text) => sink.line(LineKind::User, text),
+        }
+    }
+}
+
 impl Client {
     fn new(catalog: Catalog, sticky: Sticky) -> Self {
         Self {
@@ -408,22 +432,60 @@ impl Client {
         self.refresh(sink);
     }
 
-    /// Turns one input line into either a local action or a message to send.
+    /// Turns one prompt line into either a local action or a message to send.
     ///
-    /// Command-only, in both front-ends. There used to be a shorthand where
-    /// bare text meant `send_message` to the sticky session; that made the
-    /// input line mean two different things depending on invisible state, and
-    /// it is the reason the UI appeared to have a current session at all. One
-    /// grammar now: every line is a command, and a command names its session
-    /// (directly, or through a persistant argument the user set explicitly).
+    /// The grammar is decided by the first character -- the one piece of syntax
+    /// an operator has to know:
+    ///
+    /// * `/` begins a command: `/send_message --session main --message hi`.
+    /// * Anything else is a message to the agent. It is *expanded* to
+    ///   `send_message --message <the line>` and then goes down the ordinary
+    ///   command path, so `--session` is filled by the sticky argument exactly
+    ///   as it is for a typed command. Nothing else about it is special.
+    ///
+    /// Talking to the agent therefore needs no syntax, and command completion
+    /// appears only when a command was actually asked for. The older rule --
+    /// every line is a command -- made ordinary prose look like a typo: a popup
+    /// over the screen at every keystroke, and "unknown command" for a
+    /// sentence.
     pub fn submit(&mut self, raw: &str, sink: &mut dyn Sink) -> Submission {
-        let tokens = match shell_words::split(raw) {
-            Ok(t) => t,
-            Err(e) => {
-                sink.line(LineKind::Error, &format!("unparsable input: {e}"));
-                return Submission::Rejected;
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Submission::Rejected;
+        }
+        match trimmed.strip_prefix('/') {
+            Some(command) => match shell_words::split(command) {
+                Ok(tokens) => self.submit_tokens(tokens, sink, Echo::Command),
+                Err(e) => {
+                    sink.line(LineKind::Error, &format!("unparsable input: {e}"));
+                    Submission::Rejected
+                }
+            },
+            // Assembled as tokens, never as a line: whatever the operator typed
+            // -- quotes, `--`, backslashes, a whole paragraph -- is one
+            // argument, and no parsing rule can turn part of it into a flag.
+            None => {
+                let tokens = vec![
+                    "send_message".to_string(),
+                    "--message".to_string(),
+                    trimmed.to_string(),
+                ];
+                self.submit_tokens(tokens, sink, Echo::Message(trimmed))
             }
-        };
+        }
+    }
+
+    /// The command path, shared by both halves of the grammar.
+    ///
+    /// `echo` is only about what the operator sees: a command is echoed as it
+    /// was typed, a message as the prose it was. What goes on the wire has the
+    /// same shape either way.
+    fn submit_tokens(
+        &mut self,
+        tokens: Vec<String>,
+        sink: &mut dyn Sink,
+        echo: Echo<'_>,
+    ) -> Submission {
         let Some(head) = tokens.first().cloned() else {
             return Submission::Rejected;
         };
@@ -445,20 +507,21 @@ impl Client {
             sink.line(
                 LineKind::Error,
                 &format!(
-                    "unknown command {head:?}: every line is a command; to talk, \
-                     `send_message --message <text> --session <name>`"
+                    "unknown command {head:?}: a `/` line is a command, so name a real \
+                     one (Tab completes them). Without the `/`, the whole line goes to \
+                     the agent as a message."
                 ),
             );
             return Submission::Rejected;
         };
 
         if self.catalog.is_client_command(&head) {
-            sink.line(LineKind::System, &format!("$ {raw}"));
+            echo.show(sink, &tokens);
             self.run_client_command(&head, &tokens[1..], sink);
             return Submission::Local;
         }
 
-        sink.line(LineKind::System, &format!("$ {raw}"));
+        echo.show(sink, &tokens);
         let mut args = match parse_args(&tokens[1..]) {
             Ok(a) => a,
             Err(e) => {
@@ -1139,51 +1202,6 @@ mod tests {
 
     /// The input line is a command, always.
     ///
-    /// Bare text used to be shorthand for `send_message` to the sticky
-    /// session, which is what made the UI look like it had a current session.
-    /// A sticky `session` still fills in an omitted flag, but it no longer
-    /// changes what a line *means*.
-    #[test]
-    fn bare_text_is_not_a_command() {
-        let d = tempfile::tempdir().unwrap();
-        let mut sticky = Sticky::load(d.path());
-        sticky.set("session", "main").unwrap();
-        let cat = Catalog::new();
-        cat.set_server_commands(vec![protocol::CommandSpec {
-            name: "send_message".into(),
-            summary: "s".into(),
-            args: vec![
-                protocol::ArgSpec {
-                    name: "message".into(),
-                    summary: "s".into(),
-                    required: true,
-                    value_hint: None,
-                    completions: protocol::CompletionSource::None,
-                },
-                protocol::ArgSpec {
-                    name: "session".into(),
-                    summary: "s".into(),
-                    required: true,
-                    value_hint: None,
-                    completions: protocol::CompletionSource::None,
-                },
-            ],
-        }]);
-        let mut c = client_with(cat, sticky, vec!["main"]);
-        let mut s = VecSink(Vec::new());
-        assert!(matches!(c.submit("hello there", &mut s), Submission::Rejected));
-        assert!(s.0.iter().any(|l| l.contains("unknown command")));
-        // The same words, spelled as a command, still go through.
-        match c.submit("send_message --message hello --session main", &mut s) {
-            Submission::Send(ClientMessage::Command { name, args, .. }) => {
-                assert_eq!(name, "send_message");
-                assert_eq!(args["message"], "hello");
-                assert_eq!(args["session"], "main");
-            }
-            _ => panic!("expected a command to send"),
-        }
-    }
-
     /// The status line states facts about the server, not which session the
     /// front-end considers itself to be in.
     #[test]
@@ -1227,7 +1245,7 @@ mod tests {
         }]);
         let mut c = client_with(cat, sticky, vec!["main", "scratch"]);
         let mut s = VecSink(Vec::new());
-        match c.submit("send_message --message hi", &mut s) {
+        match c.submit("/send_message --message hi", &mut s) {
             Submission::Send(ClientMessage::Command { args, .. }) => {
                 assert_eq!(args["session"], "scratch");
             }
@@ -1243,12 +1261,12 @@ mod tests {
         let mut c = client_with(cat, Sticky::load(d.path()), vec!["main"]);
         let mut s = VecSink(Vec::new());
         assert!(matches!(
-            c.submit("set_persistant_cmd_argument --name session --value main", &mut s),
+            c.submit("/set_persistant_cmd_argument --name session --value main", &mut s),
             Submission::Local
         ));
         assert_eq!(c.sticky.pairs(), vec![("session".to_string(), "main".to_string())]);
         assert!(matches!(
-            c.submit("del_persistant_cmd_argument --name session", &mut s),
+            c.submit("/del_persistant_cmd_argument --name session", &mut s),
             Submission::Local
         ));
         assert!(c.sticky.pairs().is_empty());
@@ -1277,7 +1295,7 @@ mod tests {
         // The pre-rename spelling is exactly the case that bit: it used to be
         // passed through, and a sticky `session` made it look like it worked.
         assert!(matches!(
-            c.submit("del_session --name main", &mut s),
+            c.submit("/del_session --name main", &mut s),
             Submission::Rejected
         ));
         let said = s.0.join("\n");
@@ -1302,7 +1320,7 @@ mod tests {
         }]);
         let mut c = client_with(cat, Sticky::load(d.path()), vec!["main"]);
         let mut s = VecSink(Vec::new());
-        assert!(matches!(c.submit("del_session", &mut s), Submission::Rejected));
+        assert!(matches!(c.submit("/del_session", &mut s), Submission::Rejected));
         assert!(s.0.iter().any(|l| l.contains("missing required")));
     }
 

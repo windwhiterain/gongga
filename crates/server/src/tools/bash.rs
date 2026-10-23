@@ -512,10 +512,7 @@ fn spill(dir: &Path, label: &str, text: &str) -> Option<String> {
     if std::fs::create_dir_all(dir).is_err() {
         return None;
     }
-    let safe: String = label
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
+    let safe = slug(label);
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
@@ -525,6 +522,46 @@ fn spill(dir: &Path, label: &str, text: &str) -> Option<String> {
         return None;
     }
     Some(msys_path(&path))
+}
+
+/// Turns a label into one path component.
+///
+/// ASCII alphanumerics survive, and so does every non-ASCII alphanumeric: a
+/// model writes its `task` in whichever language it is thinking in, and
+/// replacing `中文` with `---` would throw away the only part of the name a
+/// human could have read. Everything else -- spaces, slashes, colons -- becomes
+/// `-`, because those are what make a path either unreadable or plain wrong.
+///
+/// Bounded because this ends up in a *path*, not because the work is bounded:
+/// the label already carries a session name and a call id, and Windows refuses
+/// components over 255 characters. A shorter slug is not a smaller budget.
+fn slug(label: &str) -> String {
+    const MAX_CHARS: usize = 48;
+    let mut out = String::new();
+    let mut chars = 0;
+    let mut last_was_dash = false;
+    for c in label.chars() {
+        // `is_alphanumeric` is Unicode-aware, which is the whole point: it keeps
+        // the CJK and accented text a task is likely written in, while still
+        // rejecting `/`, `:` and spaces.
+        let kept = if c.is_alphanumeric() || c == '_' { c } else { '-' };
+        if kept == '-' {
+            // Collapse runs, and never start a name with one.
+            if last_was_dash || out.is_empty() {
+                continue;
+            }
+            last_was_dash = true;
+        } else {
+            last_was_dash = false;
+        }
+        if chars >= MAX_CHARS {
+            break;
+        }
+        chars += 1;
+        out.push(kept);
+    }
+    let out = out.trim_end_matches('-').to_string();
+    if out.is_empty() { "output".to_string() } else { out }
 }
 
 impl Drop for BashShell {
@@ -542,6 +579,40 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let out = cap_output("hello", 8_000, dir.path(), "s-call");
         assert_eq!(out, "hello");
+    }
+
+    /// The name has to survive a real `task`: paths and punctuation become
+    /// dashes, but a Chinese description stays readable.
+    #[test]
+    fn a_task_becomes_a_readable_file_name() {
+        assert_eq!(slug("cargo build"), "cargo-build");
+        assert_eq!(slug("跑测试 验证中文"), "跑测试-验证中文");
+        assert_eq!(slug("../etc/passwd"), "etc-passwd");
+        assert_eq!(slug("   "), "output");
+        assert_eq!(slug(""), "output");
+        // Runs collapse rather than turning into `a----b`.
+        assert_eq!(slug("a  ..  b"), "a-b");
+    }
+
+    /// Every label ends up in a path, so the one thing this must never do is
+    /// produce a name with a separator in it -- whatever the model typed.
+    #[test]
+    fn a_hostile_task_cannot_escape_the_output_directory() {
+        for task in ["../../etc/passwd", "a/b", "x\\y", "..", " ", "..\\..\\windows"] {
+            let safe = slug(task);
+            assert!(!safe.contains('/'), "{task} -> {safe}");
+            assert!(!safe.contains('\\'), "{task} -> {safe}");
+            assert!(!safe.contains(':'), "{task} -> {safe}");
+            assert!(!safe.is_empty(), "{task} produced nothing");
+        }
+    }
+
+    #[test]
+    fn a_long_task_is_bounded_and_still_valid() {
+        let out = slug(&"步骤".repeat(100));
+        assert!(out.chars().count() <= 48, "{out}");
+        // Still usable as a path component: no separators, no spaces.
+        assert!(!out.contains('/') && !out.contains(' ') && !out.contains('\\'), "{out}");
     }
 
     #[test]
@@ -651,4 +722,4 @@ mod tests {
             .stdout;
         assert_eq!(out.trim(), "127.0.0.1:9711");
     }
-}
+    }

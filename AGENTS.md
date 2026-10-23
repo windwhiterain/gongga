@@ -1,6 +1,7 @@
+- SPEC is the only source of truth.
 - when designing new feature, search any existing wheels. 
 - setting any limit/budget is forbidden.
-- server database for tests should be local to each workspace so two workspace's server won't conflict (otherwise will be locked).
+- server database for tests should be local to each worktree so worktree's servers won't conflict (otherwise will be locked).
 
 ## 自我进化（改服务端之后怎么让自己用上）
 
