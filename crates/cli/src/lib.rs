@@ -310,12 +310,14 @@ impl Client {
 
     fn handle_response(&self, e: ResponseEvent, sink: &mut dyn Sink) {
         let key = format!("r:{}:{}:{:?}", e.session, e.turn, e.part);
-        let (kind, prefix) = match e.part {
+        let (kind, label) = match e.part {
             ResponsePart::Reasoning => (LineKind::Reasoning, "thinking: "),
             ResponsePart::ToolCall => (LineKind::ToolCall, "tool: "),
             ResponsePart::Output => (LineKind::Assistant, ""),
         };
-        sink.stream(&key, kind, prefix, &e.text, e.done);
+        // The tag rides on the prefix: a prefix is printed once per key.
+        let prefix = format!("[{}] {label}", e.session);
+        sink.stream(&key, kind, &prefix, &e.text, e.done);
     }
 
     fn handle_tool_answer(&self, e: ToolAnswerEvent, sink: &mut dyn Sink) {
@@ -324,7 +326,9 @@ impl Client {
             ToolStream::Stdout => LineKind::ToolOutput,
             ToolStream::Stderr => LineKind::ToolError,
         };
-        sink.stream(&key, kind, "", &e.text, e.done);
+        // Same shape as a `Status` line: who is speaking, then the output.
+        let prefix = format!("[{}] ", e.session);
+        sink.stream(&key, kind, &prefix, &e.text, e.done);
     }
 
     fn session_names(&self) -> Vec<String> {
@@ -1100,6 +1104,110 @@ mod tests {
         }
         fn status(&mut self, _t: &str) {}
         fn footer(&mut self, _t: &str) {}
+    }
+
+    /// Keeps the prefix, which `VecSink` drops: it reads the text alone.
+    #[derive(Default)]
+    struct StreamSink {
+        keys: Vec<String>,
+        lines: Vec<String>,
+    }
+
+    impl Sink for StreamSink {
+        fn line(&mut self, _kind: LineKind, _text: &str) {}
+        fn stream(&mut self, key: &str, _kind: LineKind, prefix: &str, text: &str, _done: bool) {
+            self.keys.push(key.to_string());
+            self.lines.push(format!("{prefix}{text}"));
+        }
+        fn status(&mut self, _t: &str) {}
+        fn footer(&mut self, _t: &str) {}
+    }
+
+    /// One response event, as the server sends it.
+    fn response(session: &str, part: ResponsePart, text: &str) -> ResponseEvent {
+        ResponseEvent {
+            session: session.into(),
+            turn: 1,
+            part,
+            text: text.into(),
+            done: false,
+        }
+    }
+
+    /// Every part of a response says who is speaking, before its own label.
+    #[test]
+    fn a_response_line_names_its_session() {
+        let d = tempfile::tempdir().unwrap();
+        let c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["peer"]);
+        let mut s = StreamSink::default();
+        c.handle_response(response("peer", ResponsePart::Reasoning, "hmm"), &mut s);
+        c.handle_response(response("peer", ResponsePart::ToolCall, "bash"), &mut s);
+        c.handle_response(response("peer", ResponsePart::Output, "hi there"), &mut s);
+        assert_eq!(
+            s.lines,
+            vec![
+                "[peer] thinking: hmm",
+                "[peer] tool: bash",
+                "[peer] hi there"
+            ]
+        );
+    }
+
+    /// The key stays what it was: the session there is for routing, not display.
+    #[test]
+    fn a_response_key_is_unchanged_by_the_tag() {
+        let d = tempfile::tempdir().unwrap();
+        let c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["peer"]);
+        let mut s = StreamSink::default();
+        c.handle_response(response("peer", ResponsePart::Output, "x"), &mut s);
+        assert_eq!(s.keys, vec!["r:peer:1:Output"]);
+    }
+
+    /// stdout and stderr both carry the tag, and stay separate streams.
+    #[test]
+    fn a_tool_answer_line_names_its_session() {
+        let d = tempfile::tempdir().unwrap();
+        let c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["peer"]);
+        let mut s = StreamSink::default();
+        for (stream, text) in [(ToolStream::Stdout, "out"), (ToolStream::Stderr, "err")] {
+            c.handle_tool_answer(
+                ToolAnswerEvent {
+                    session: "peer".into(),
+                    call_id: "c1".into(),
+                    tool: "bash".into(),
+                    stream,
+                    text: text.into(),
+                    done: false,
+                },
+                &mut s,
+            );
+        }
+        assert_eq!(s.lines, vec!["[peer] out", "[peer] err"]);
+        assert_eq!(s.keys, vec!["t:c1:Stdout", "t:c1:Stderr"]);
+    }
+
+    /// A log already names itself; a command belongs to the operator.
+    #[test]
+    fn logs_and_commands_are_not_tagged() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["peer"]);
+        let mut s = VecSink(Vec::new());
+        c.handle_event(
+            Event::Log {
+                level: LogLevel::Info,
+                message: "peer: delivered a message".into(),
+            },
+            &mut s,
+        );
+        c.handle_event(
+            Event::Cmd {
+                id: 1,
+                name: "send_message".into(),
+                args: protocol::Args::default(),
+            },
+            &mut s,
+        );
+        assert_eq!(s.0, vec!["peer: delivered a message", "$ send_message"]);
     }
 
     /// Captures the status line and footer, which the other sinks throw away.

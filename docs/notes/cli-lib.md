@@ -69,6 +69,41 @@ The interactive client (`crates/tui`) implements it with styled lines; one-shot
 mode emits the events themselves as JSON and renders nothing. Neither
 implementation knows what produced the text.
 
+`stream` takes a `prefix` next to the text, and the front-end prints that prefix
+**once per stream key**: `stream_into` in `crates/tui` writes it when a key
+first opens a line, then appends later chunks of the same key bare. So anything
+that belongs at the start of a line -- and nothing that belongs in its body --
+is a prefix.
+
+## Client::handle_response
+
+Who is speaking belongs on that prefix, not in the text: a session tag in the
+text would be repeated by every delta. The prefix is `[<session>] ` followed by
+the part's own label (`thinking: `, `tool: `, or nothing for output), which is
+the same shape `Event::Status` already uses for `[<session>] idle`. The stream
+key keeps the session for routing (`r:<session>:<turn>:<part>`) and does not
+depend on the tag being shown.
+
+Shown for a single session too. The tag costs one line start per stream, while
+turning it on by session count would change how the lines of a session already
+on screen look the moment another session is created -- and a prefix must stay
+fixed for the life of its key.
+
+## Client::handle_tool_answer
+
+Same rule, same shape: `[<session>] ` opens the line, and the tool's stdout and
+stderr stay separate streams (`t:<call_id>:<stream>`) that each carry it. The
+tool name is not in the prefix today; the answer arrives after the `tool: <name>`
+line that the call itself rendered.
+
+## Event::Log — no tag
+
+A server log message carries its own name already (`agent.rs` formats
+`"{name}: delivered a message ..."`), so prefixing the session would render as
+`[peer] peer: ...`. Nothing is added here. `Event::Cmd` and `Event::CmdResult`
+are left alone for the same reason in the other direction: they echo what this
+client typed, not something a session said.
+
 ## NullSink
 
 What a script gets is the event stream itself, one JSON object per line, emitted
@@ -379,3 +414,25 @@ argument: the old spelling must not be accepted and silently ignored.
 
 The pre-rename spelling is exactly the case that bit: it used to be passed
 through, and a sticky `session` made it look like it worked.
+
+## a_response_line_names_its_session
+
+Every part shows the tag, and the label follows it, so a reader scanning the log
+can tell whose thinking, tool call, or answer a line is without the server's
+session appearing anywhere else on the line.
+
+## a_tool_answer_line_names_its_session
+
+Both stdout and stderr carry the tag and stay separate streams, so a tool's
+error output is attributable without being merged into its output.
+
+## a_response_key_is_unchanged_by_the_tag
+
+Same guard on the response side: routing is not derived from the rendered
+prefix.
+
+## logs_and_commands_are_not_tagged
+
+The negative of the rule, and the one that bites silently: a server log already
+begins with `{name}: `, so tagging it would read as `[peer] peer: ...`. A
+command is this client's own input and belongs to no session.

@@ -632,12 +632,56 @@ mod tests {
         assert_eq!(h.rows(), vec!["hello"]);
     }
 
+    /// The prefix opens the line once, so a delta can append bare.
+    #[test]
+    fn a_prefix_is_written_once_per_stream() {
+        let mut h = Headless::new();
+        let key = "r:peer:1:Reasoning";
+        h.stream(key, LineKind::Reasoning, "[peer] thinking: ", "he", false);
+        h.stream(key, LineKind::Reasoning, "[peer] thinking: ", "llo", false);
+        h.stream(key, LineKind::Reasoning, "[peer] thinking: ", "!", true);
+        assert_eq!(h.rows(), vec!["[peer] thinking: hello!"]);
+    }
+
     #[test]
     fn done_closes_the_stream() {
         let mut h = Headless::new();
         h.stream("r:1", LineKind::Assistant, "", "a", true);
         h.stream("r:1", LineKind::Assistant, "", "b", true);
         assert_eq!(h.rows(), vec!["a", "b"]);
+    }
+
+    /// Two sessions, keys shaped as the client builds them: no row loses its tag.
+    #[test]
+    fn interleaved_sessions_keep_their_own_tag() {
+        let peer = "r:peer:1:Reasoning";
+        let peer_tag = "[peer] thinking: ";
+        let test1 = "r:test1:1:Reasoning";
+        let test1_tag = "[test1] thinking: ";
+        let answer = "r:test1:1:Output";
+        let script: &[(&str, LineKind, &str, &str, bool)] = &[
+            (peer, LineKind::Reasoning, peer_tag, "我先", false),
+            (test1, LineKind::Reasoning, test1_tag, "确认", false),
+            (peer, LineKind::Reasoning, peer_tag, "看一下", false),
+            ("t:c1:Stdout", LineKind::ToolOutput, "[peer] ", "ok", true),
+            (test1, LineKind::Reasoning, test1_tag, "完毕", false),
+            (peer, LineKind::Reasoning, peer_tag, "。", true),
+            (answer, LineKind::Assistant, "[test1] ", "这", false),
+            (answer, LineKind::Assistant, "[test1] ", "是我的", true),
+        ];
+        let mut h = Headless::new();
+        for (key, kind, prefix, text, done) in script {
+            h.stream(key, *kind, prefix, text, *done);
+        }
+        assert_eq!(
+            h.rows(),
+            vec![
+                "[peer] thinking: 我先看一下。",
+                "[test1] thinking: 确认完毕",
+                "[peer] ok",
+                "[test1] 这是我的",
+            ]
+        );
     }
 
     /// Two streams open at once stay separate: a tool's output never joins a response.

@@ -14,7 +14,7 @@
 - comments test:
   ```
   cargo install --git https://github.com/windwhiterain/comments-test comments-check --locked
-  comments-check --config comments-test.toml
+  comments-check --config comments-check.toml
   ```
 ## 自我进化（改服务端之后怎么让自己用上）
 
@@ -42,3 +42,7 @@ scripts/evolve.sh clean        # 收掉没人会 swap 的旧继任者（--artifa
 
 `cancel` 之后本回合被取消并保留，新服务端启动时会重放它 —— 所以「进化」不会吃掉正在进行的活。
 代价见 `DESIGN.md` §10「仍然存在的风险」。
+
+## 技能
+- `.agents/skills/self-control/SKILL.md`：控制自己的回合 / 进程 / 上下文 / 服务端。
+  要停或续自己的回合、起长跑作业、跨重启保留意图、改服务端并换上新的自己时先读它。
