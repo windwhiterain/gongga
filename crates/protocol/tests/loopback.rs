@@ -193,12 +193,18 @@ async fn recovers_from_dropped_datagrams() {
 async fn a_paused_consumer_does_not_stall_the_link() {
     let (sink, mut stream, _dropped, _addr) = pair(0).await;
     const TOTAL: usize = 400;
+    // The producer keeps the sink until this test says stop. Dropping a half
+    // closes the channel *by contract*, so a task that returned right after
+    // sending its last message would be closing the link -- the peer hanging
+    // up, not the consumer pausing, which is the thing under test.
+    let (release, held) = tokio::sync::oneshot::channel::<()>();
     let producer = tokio::spawn(async move {
         for i in 0..TOTAL {
             if sink.send(format!("message-{i}").into_bytes()).await.is_err() {
                 return i;
             }
         }
+        let _ = held.await;
         TOTAL
     });
 
@@ -215,6 +221,7 @@ async fn a_paused_consumer_does_not_stall_the_link() {
         expected.reverse();
         assert_eq!(echoed, expected, "message {i} arrived out of order");
     }
+    let _ = release.send(());
     assert_eq!(producer.await.unwrap(), TOTAL, "the producer gave up early");
 }
 
