@@ -103,6 +103,35 @@ impl ToolContext {
             .unwrap_or_else(|e| e.into_inner())
             .remove(name)
     }
+
+    /// Retires `handle` and puts a freshly spawned shell under `name`.
+    ///
+    /// Every path that ends a shell for a reason the model did not ask for --
+    /// a command that outlived its wait, output that lost its sentinel, a turn
+    /// cancelled mid-command -- does the same thing afterwards: the name has to
+    /// keep meaning "a shell you can use", because the tool results and
+    /// `list_bash` say it does. The pointer check inside `replace` is what keeps
+    /// this from taking away a shell somebody else already put there; `false`
+    /// means the name now belongs to a different shell.
+    fn replace_shell(&self, name: &str, handle: &Arc<Mutex<BashShell>>) -> bool {
+        match self
+            .shells
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .replace(name, handle)
+        {
+            Ok(replaced) => replaced,
+            Err(e) => {
+                tracing::warn!(
+                    session = %self.session,
+                    shell = %name,
+                    "could not put a fresh shell in place: {e}"
+                );
+                false
+            }
+        }
+    }
+
     /// Caps one command's output, spilling the rest to a file named after
     /// where it came from: session, shell, `task`, call id.
     ///
@@ -335,6 +364,23 @@ fn is_shorthand_of(declared: &str, given: &str) -> bool {
     short.chars().all(|c| spelled.any(|l| l == c))
 }
 
+/// The turn was cancelled while a command was running.
+///
+/// Its own type rather than a string, because the cancel path has work to do
+/// that no other error does: the command has to be stopped, and the shell it
+/// was running in has to be thrown away. A message-shaped error would make
+/// that work a string comparison.
+#[derive(Debug)]
+struct Cancelled;
+
+impl std::fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("cancelled")
+    }
+}
+
+impl std::error::Error for Cancelled {}
+
 // ---------------------------------------------------------------------------
 // bash
 // ---------------------------------------------------------------------------
@@ -520,7 +566,7 @@ impl Tool for BashTool {
                 loop {
                     tokio::select! {
                         res = &mut execute => break res,
-                        _ = ctx.cancel.cancelled() => break Err(anyhow::anyhow!("cancelled")),
+                        _ = ctx.cancel.cancelled() => break Err(anyhow::Error::new(Cancelled)),
                         maybe = rx.recv() => {
                             if let Some(chunk) = maybe {
                                 let stream = match chunk.stream {
@@ -533,6 +579,16 @@ impl Tool for BashTool {
                     }
                 }
             };
+            // A cancelled command is stopped, not abandoned. Dropping the
+            // future only stops us reading: the shell keeps the command, and
+            // would answer the *next* call with its leftovers (and with a
+            // success status that belongs to it). Killing the process group is
+            // both the "turn cancel interrupts the foreground command" contract
+            // and the only way to know the shell has no command boundary owed.
+            let cancelled = matches!(&outcome, Err(e) if e.is::<Cancelled>());
+            if cancelled {
+                shell.kill().await;
+            }
             // Read while the guard is still held: a shell that lost its output
             // stream must not be handed another command, and this is the last
             // moment its state is visible without taking the lock again.
@@ -552,22 +608,7 @@ impl Tool for BashTool {
                 // shell under the same name so work can continue, and have the
                 // old one report the rest of the output into the inbox.
                 Ok(o) if o.still_running => {
-                    let swapped = {
-                        let mut set =
-                            ctx.shells.lock().unwrap_or_else(|e| e.into_inner());
-                        set.replace(name, &handle)
-                    };
-                    let retired = match swapped {
-                        Ok(ok) => ok,
-                        Err(e) => {
-                            tracing::warn!(
-                                session = %ctx.session,
-                                shell = %name,
-                                "could not put a fresh shell in place: {e}"
-                            );
-                            false
-                        }
-                    };
+                    let retired = ctx.replace_shell(name, &handle);
                     if !retired {
                         tracing::warn!(
                             session = %ctx.session,
@@ -663,21 +704,7 @@ impl Tool for BashTool {
                         // is replaced here rather than on the next call, so the
                         // model never gets to send a command to a shell that
                         // would answer it with the previous command's text.
-                        let replaced = {
-                            let mut set =
-                                ctx.shells.lock().unwrap_or_else(|e| e.into_inner());
-                            match set.replace(name, &handle) {
-                                Ok(ok) => ok,
-                                Err(e) => {
-                                    tracing::warn!(
-                                        session = %ctx.session,
-                                        shell = %name,
-                                        "could not put a fresh shell in place: {e}"
-                                    );
-                                    false
-                                }
-                            }
-                        };
+                        let replaced = ctx.replace_shell(name, &handle);
                         if !text.is_empty() {
                             text.push('\n');
                         }
@@ -712,7 +739,40 @@ impl Tool for BashTool {
                         None => ToolOutcome::err(format!("{text}\n[shell exited]")),
                     }
                 }
+                Err(e) if e.is::<Cancelled>() => {
+                    // Same treatment as lost output: the shell may still be
+                    // holding part of a command that was stopped mid-flight, so
+                    // it is never handed another one. The result says what
+                    // happened instead of pretending the command finished --
+                    // the model must not read a cancelled command's silence as
+                    // success, and it must not expect its output.
+                    let replaced = ctx.replace_shell(name, &handle);
+                    ToolOutcome::err(format!(
+                        "cancelled: the turn was interrupted and this command was stopped. \
+                         What it printed above (if anything) is all there is, and its exit \
+                         status is unknown. {}",
+                        if replaced {
+                            format!(
+                                "Shell `{name}` was replaced with a fresh one in the session's \
+                                 working directory, so `cd` and exports from earlier calls are \
+                                 gone."
+                            )
+                        } else {
+                            format!(
+                                "A fresh shell could not be put in place under `{name}`, so use \
+                                 another name or `del_bash` it."
+                            )
+                        }
+                    ))
+                }
                 Err(e) => {
+                    // The write itself failed, which can leave the shell with
+                    // half a command line in its stdin. `healthy` is what says
+                    // so; dropping it here is how the next call ends up reading
+                    // this one's leftovers.
+                    if !healthy {
+                        ctx.replace_shell(name, &handle);
+                    }
                     ToolOutcome::err(format!("{e}"))
                 }
             }
