@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use protocol::{ArgSpec, CommandSpec, CompletionSource};
-use tui::{Candidate, Completer};
+use crate::complete::{Candidate, Completer, token_bounds};
 
 /// A catalog that can be swapped while the TUI holds a reference to it.
 #[derive(Clone, Default)]
@@ -101,7 +101,7 @@ struct Ctx<'a> {
 
 impl Completer for Catalog {
     fn complete(&self, line: &str, cursor: usize) -> Vec<Candidate> {
-        let (_, _, token) = tui::token_bounds(line, cursor);
+        let (_, _, token) = token_bounds(line, cursor);
         let words = shell_words::split(line).unwrap_or_default();
         let position = line[..cursor.min(line.len())].split_whitespace().count();
         let (server, client, sessions, cwd) = {

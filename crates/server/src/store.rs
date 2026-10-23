@@ -145,9 +145,16 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 impl Store {
+    /// Opens (and creates) the database at `path`.
+    ///
+    /// `:memory:` is taken literally: it has no directory to create, and
+    /// creating one called `:` would be the wrong answer to `--db :memory:`,
+    /// which is how a throwaway run keeps its hands off the operator's data.
     pub fn open(path: &Path) -> anyhow::Result<Self> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+        if path != Path::new(":memory:") {
+            if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                std::fs::create_dir_all(parent)?;
+            }
         }
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -968,6 +975,21 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&dir.path().join("g.db")).unwrap();
         (dir, store)
+    }
+
+    /// `--db <path>` has to bring its directory with it, and `--db :memory:`
+    /// has to be taken literally: that is how a throwaway run keeps its hands
+    /// off the operator's real database, and creating a directory called `:`
+    /// would be the wrong answer to it.
+    #[test]
+    fn the_database_path_brings_its_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("a").join("b").join("g.db");
+        Store::open(&nested).unwrap();
+        assert!(nested.is_file(), "the parent directories must be created");
+
+        let store = Store::open(Path::new(":memory:")).unwrap();
+        store.create_session("main", "m", "C:/x").unwrap();
     }
 
     /// Two messages queued on one session used to share a fate: the first turn

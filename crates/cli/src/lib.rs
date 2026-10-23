@@ -1,17 +1,29 @@
-//! `gongga`: the terminal client.
+//! `gongga-cli`: the command layer.
 //!
-//! The client owns the command surface — it knows the catalog the server
+//! This crate owns the command surface: it knows the catalog the server
 //! publishes, keeps the sticky arguments, and turns an input line into either a
-//! local action or a message on the wire. The TUI is driven through [`Sink`] and
-//! never learns what a command is.
+//! local action or a message on the wire.
+//!
+//! It knows nothing about terminals. That is the point of the split: anything
+//! that can present [`Sink`] events can drive it, and the interactive client is
+//! one such thing (the `gongga` binary in `crates/tui`). Nothing here names a
+//! rendering crate, so the command layer builds into a script, a test, or a UI
+//! without dragging a terminal along.
+//!
+//! Wire encoding stays here too: [`Link`] is the only thing that speaks the
+//! protocol, which is what lets a front-end hold a link without learning what a
+//! frame is.
 
-mod catalog;
-mod commands;
+pub mod catalog;
+pub mod commands;
+pub mod complete;
 
-use std::future::Future;
+pub use crate::catalog::Catalog;
+pub use crate::commands::Sticky;
+pub use crate::complete::{Candidate, Completer, Completion, SharedCompleter, token_bounds};
+
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -23,37 +35,87 @@ use protocol::{
     encode_client,
 };
 use tokio::net::UdpSocket;
-use tui::LineKind;
 
-use crate::catalog::Catalog;
-use crate::commands::{Sticky, parse_args, render_args};
+use crate::commands::{parse_args, render_args};
 
 const DEFAULT_SERVER: &str = "127.0.0.1:9700";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
-/// How long the interactive client waits before redialling, doubling up to the
-/// cap. The first retry is fast enough to be invisible across a `dev.sh restart`
-/// and the cap keeps a server that is down for an hour from spinning.
-const RECONNECT_MIN: Duration = Duration::from_millis(250);
-const RECONNECT_MAX: Duration = Duration::from_secs(5);
+
+// The parts of the command line that say *where* to connect.
+//
+// Separate from `Args` because a front-end has the same three flags but no
+// commands: it flattens this in and gets the resolution rules (flag, then
+// environment, then config.toml) from one definition.
+//
+// Deliberately *not* a doc comment: clap folds a flattened struct's `///` text
+// into the parent command's about line, which would replace the program's own
+// description with this paragraph.
+#[derive(Debug, Clone, clap::Args)]
+pub struct Connection {
+    /// Server address, e.g. `127.0.0.1:9700`.
+    #[arg(long, global = true)]
+    pub server: Option<String>,
+    /// Harness home holding config.toml and cli.toml. Defaults to `~/.gongga`.
+    #[arg(long, global = true)]
+    pub home: Option<PathBuf>,
+    /// Connection key. Defaults to `[server] key` in ~/.gongga/config.toml.
+    #[arg(long, global = true)]
+    pub key: Option<String>,
+}
+
+impl Connection {
+    /// Where to dial and with which key.
+    ///
+    /// Resolved once per process: a running client does not re-read
+    /// config.toml between retries, because a file edited mid-outage would make
+    /// two attempts of the same reconnect mean two different servers.
+    pub fn endpoint(&self) -> anyhow::Result<Endpoint> {
+        let addr = resolve_server(self)?;
+        let key = resolve_key(self).ok_or_else(|| {
+            anyhow!(
+                "no connection key: pass --key, set GONGGA_KEY, or start the server \
+                 once to generate one"
+            )
+        })?;
+        Ok(Endpoint { addr, key })
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "gongga", about = "Gongga harness terminal client", version)]
-struct Args {
-    /// Server address, e.g. `127.0.0.1:9700`.
-    #[arg(long, global = true)]
-    server: Option<String>,
-    /// Harness home holding config.toml and cli.toml. Defaults to `~/.gongga`.
-    #[arg(long, global = true)]
-    home: Option<PathBuf>,
-    /// Connection key. Defaults to `[server] key` in ~/.gongga/config.toml.
-    #[arg(long, global = true)]
-    key: Option<String>,
+pub struct Args {
+    #[command(flatten)]
+    pub conn: Connection,
     #[command(subcommand)]
-    command: Option<Sub>,
+    pub command: Option<Sub>,
+}
+
+impl Args {
+    /// Rejects a global flag written after the command name.
+    ///
+    /// clap hands an external subcommand every token after it, so `gongga
+    /// send_message --server 1.2.3.4:1` would take `--server` as one of the
+    /// command's own arguments and then quietly dial the default server.
+    pub fn check_flag_order(&self) -> anyhow::Result<()> {
+        let Some(Sub::Cmd(command)) = &self.command else {
+            return Ok(());
+        };
+        if let Some(flag) = command.iter().find(|t| {
+            ["--server", "--home", "--key"]
+                .iter()
+                .any(|f| *t == f || t.starts_with(&format!("{f}=")))
+        }) {
+            anyhow::bail!(
+                "{flag} has to come before the command: `gongga {flag} <value> {} ...`",
+                command[0]
+            );
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, clap::Subcommand)]
-enum Sub {
+pub enum Sub {
     /// Anything but a flag is the command itself, because what the client can
     /// run is decided by the server and only known after the handshake: there
     /// is no fixed list of subcommands to declare here.
@@ -65,68 +127,44 @@ enum Sub {
     Cmd(Vec<String>),
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
-    match &args.command {
-        None => interactive(&args).await,
-        // `gongga set_session --name main`, i.e. the command *is* the
-        // subcommand.
-        Some(Sub::Cmd(command)) => {
-            // clap hands an external subcommand every token after it, so a
-            // global flag written there would be taken as one of the command's
-            // own arguments and the client would quietly dial the default
-            // server. Refuse it instead of connecting somewhere else than asked.
-            if let Some(flag) = command.iter().find(|t| {
-                ["--server", "--home", "--key"]
-                    .iter()
-                    .any(|f| *t == f || t.starts_with(&format!("{f}=")))
-            }) {
-                anyhow::bail!(
-                    "{flag} has to come before the command: \
-                     `gongga {flag} <value> {} ...`",
-                    command[0]
-                );
-            }
-            run(&args, command).await
-        }
-    }
+/// Parses the command line, the one way both binaries do it.
+pub fn parse_argv() -> Args {
+    Args::parse()
 }
 
 // ---------------------------------------------------------------------------
 // Where rendered output goes
 // ---------------------------------------------------------------------------
 
+/// What a rendered line is, which decides how it is presented.
+///
+/// This is the command layer's own vocabulary: the layer that reads events is
+/// the one that knows a line came from a tool call or a failure, so it says so.
+/// A front-end turns that into a colour; it does not decide what it is looking
+/// at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineKind {
+    System,
+    User,
+    Assistant,
+    Reasoning,
+    ToolCall,
+    ToolOutput,
+    ToolError,
+    Result,
+    Error,
+}
+
 /// Everything the client can ask a front-end to show.
 ///
-/// The TUI implements it with styled lines; one-shot mode emits the events
-/// themselves as JSON and renders nothing. Neither implementation knows what
-/// produced the text.
-trait Sink {
+/// The interactive client (`crates/tui`) implements it with styled lines;
+/// one-shot mode emits the events themselves as JSON and renders nothing.
+/// Neither implementation knows what produced the text.
+pub trait Sink {
     fn line(&mut self, kind: LineKind, text: &str);
     fn stream(&mut self, key: &str, kind: LineKind, prefix: &str, text: &str, done: bool);
     fn status(&mut self, text: &str);
     fn footer(&mut self, text: &str);
-}
-
-struct TuiSink<'a>(&'a mut tui::Tui);
-
-impl Sink for TuiSink<'_> {
-    fn line(&mut self, kind: LineKind, text: &str) {
-        self.0.push(kind, text);
-    }
-
-    fn stream(&mut self, key: &str, kind: LineKind, prefix: &str, text: &str, done: bool) {
-        self.0.stream(key, kind, prefix, text, done);
-    }
-
-    fn status(&mut self, text: &str) {
-        self.0.set_status(text);
-    }
-
-    fn footer(&mut self, text: &str) {
-        self.0.set_footer(text);
-    }
 }
 
 /// The one-shot mode's sink: it prints nothing, but it remembers what went
@@ -160,7 +198,7 @@ impl Sink for NullSink {
 }
 
 /// What an input line turned into.
-enum Submission {
+pub enum Submission {
     /// Goes to the server.
     Send(ClientMessage),
     /// Handled locally: done, nothing to send.
@@ -177,7 +215,7 @@ enum Submission {
 // Client state
 // ---------------------------------------------------------------------------
 
-struct Client {
+pub struct Client {
     catalog: Catalog,
     sticky: Sticky,
     sessions: Vec<SessionSummary>,
@@ -211,6 +249,26 @@ impl Client {
         let id = self.next_id;
         self.next_id += 1;
         id
+    }
+
+    /// Feeds one datagram from the link into the client.
+    ///
+    /// Decoding lives here so a front-end never has to name a `ServerMessage`:
+    /// it passes the bytes it got from [`Link::recv`] and reads the result off
+    /// the screen.
+    pub fn handle_bytes(&mut self, bytes: &[u8], sink: &mut dyn Sink) -> anyhow::Result<()> {
+        let msg = decode_server(bytes)?;
+        self.handle(msg, sink);
+        Ok(())
+    }
+
+    /// The completion source for the input line.
+    ///
+    /// The catalog is the same object, shared rather than copied: when a
+    /// greeting replaces the server's half, the popup sees it without the
+    /// front-end being told anything.
+    pub fn completer(&self) -> crate::SharedCompleter {
+        Arc::new(self.catalog.clone())
     }
 
     fn handle(&mut self, msg: ServerMessage, sink: &mut dyn Sink) {
@@ -307,7 +365,7 @@ impl Client {
     }
 
     /// Keeps the completer's `--name` candidates in step with the sticky set.
-    fn sync_sticky(&self) {
+    pub fn sync_sticky(&self) {
         self.catalog.set_sticky_names(&self.sticky.names());
     }
 
@@ -320,7 +378,7 @@ impl Client {
     /// sessions exist — and, when there is no link, that there is no link,
     /// because a model name with no server behind it is a lie the operator
     /// cannot see through.
-    fn refresh(&self, sink: &mut dyn Sink) {
+    pub fn refresh(&self, sink: &mut dyn Sink) {
         let facts = if self.connected {
             format!("model {} | {} session(s)", self.model, self.sessions.len())
         } else if self.attempts == 0 {
@@ -344,7 +402,7 @@ impl Client {
     }
 
     /// Records that there is no link, and how many dials have failed since.
-    fn set_offline(&mut self, attempts: u32, sink: &mut dyn Sink) {
+    pub fn set_offline(&mut self, attempts: u32, sink: &mut dyn Sink) {
         self.connected = false;
         self.attempts = attempts;
         self.refresh(sink);
@@ -358,7 +416,7 @@ impl Client {
     /// it is the reason the UI appeared to have a current session at all. One
     /// grammar now: every line is a command, and a command names its session
     /// (directly, or through a persistant argument the user set explicitly).
-    fn submit(&mut self, raw: &str, sink: &mut dyn Sink) -> Submission {
+    pub fn submit(&mut self, raw: &str, sink: &mut dyn Sink) -> Submission {
         let tokens = match shell_words::split(raw) {
             Ok(t) => t,
             Err(e) => {
@@ -509,179 +567,33 @@ impl Client {
 
 /// One open link: the two halves of the channel, kept together because a link
 /// is either wholly there or wholly gone.
-struct Link {
+///
+/// A front-end holds one of these but never sees a frame. Encoding and decoding
+/// stay behind these methods, so "what does the wire look like" remains a
+/// question only this crate answers.
+pub struct Link {
     sink: protocol::ChannelSink,
     stream: protocol::ChannelStream,
 }
 
-/// What the loop is waiting for this time round.
-enum Step {
-    /// The operator did something (or the terminal went away: `None`).
-    Input(Option<tui::UiEvent>),
-    /// A message arrived, or `None` when the link ended.
-    Wire(Option<Vec<u8>>),
-    /// The retry backoff expired: start dialling.
-    Dial,
-    /// A dial in flight finished.
-    Dialed(Result<(Link, ServerMessage), DialFailure>),
-}
-
-/// A dial kept alive between loop iterations.
-///
-/// Boxed rather than awaited inside the branch: an unreachable server takes the
-/// whole handshake timeout to give up, and waiting for it inside the loop would
-/// freeze the keyboard for five seconds at a stretch — the TUI would be
-/// unresponsive exactly while the server is down, which is when the operator is
-/// most likely to be pressing Ctrl+Q.
-type Dialing = Pin<Box<dyn Future<Output = Result<(Link, ServerMessage), DialFailure>>>>;
-
-/// The interactive front-end.
-///
-/// The window and the link are separate things. Nothing here makes the server's
-/// presence a condition for the client to exist: the TUI opens first, dials from
-/// inside the loop, and when the link dies it goes back to dialling instead of
-/// taking the window down with it. A restart therefore looks like two lines in
-/// the log — `connection lost`, then `connected` — with the input line, the
-/// history and the scroll position exactly where they were.
-async fn interactive(args: &Args) -> anyhow::Result<()> {
-    // Resolved before the terminal is taken over: a bad address or a missing
-    // key is not fixed by retrying, and an error is far easier to read on the
-    // normal screen than after `restore()` flashed the alternate screen away.
-    let endpoint = endpoint(args)?;
-
-    let mut client = build_client(args);
-    let mut ui = tui::Tui::new(Arc::new(client.catalog.clone()))?;
-    client.set_offline(0, &mut TuiSink(&mut ui));
-
-    let mut link: Option<Link> = None;
-    let mut dialing: Option<Dialing> = None;
-    let mut next_try = tokio::time::Instant::now();
-    let mut backoff = RECONNECT_MIN;
-    let mut attempts: u32 = 0;
-
-    let result = loop {
-        // Every arm keeps the keyboard branch, so no state — connected, waiting,
-        // or mid-handshake — can make the window stop answering keys.
-        let step = if let Some(open) = link.as_mut() {
-            tokio::select! {
-                event = ui.next_event() => Step::Input(event),
-                bytes = open.stream.recv() => Step::Wire(bytes),
-            }
-        } else if let Some(pending) = dialing.as_mut() {
-            tokio::select! {
-                event = ui.next_event() => Step::Input(event),
-                outcome = pending.as_mut() => Step::Dialed(outcome),
-            }
-        } else {
-            tokio::select! {
-                event = ui.next_event() => Step::Input(event),
-                _ = tokio::time::sleep_until(next_try) => Step::Dial,
-            }
-        };
-
-        match step {
-            Step::Input(None) => break Ok(()),
-            Step::Input(Some(tui::UiEvent::Quit)) => break Ok(()),
-            Step::Input(Some(tui::UiEvent::Submit(line))) => {
-                match client.submit(&line, &mut TuiSink(&mut ui)) {
-                    Submission::Local | Submission::Rejected => {}
-                    // Nothing left this process, so the text is still the
-                    // operator's. Put it back rather than log it away.
-                    Submission::Offline => ui.restore_input(&line),
-                    Submission::Send(msg) => match link.as_ref() {
-                        Some(open) => match encode_client(&msg) {
-                            Ok(bytes) => {
-                                if let Err(e) = open.sink.send(bytes).await {
-                                    // The channel task is gone but its
-                                    // half-open end had not been noticed yet.
-                                    // This message may or may not have arrived,
-                                    // so it is reported, not silently re-queued.
-                                    TuiSink(&mut ui).line(
-                                        LineKind::Error,
-                                        &format!(
-                                            "connection dropped while sending ({e}); \
-                                             that line may not have arrived"
-                                        ),
-                                    );
-                                    link = None;
-                                    backoff = RECONNECT_MIN;
-                                    attempts = 0;
-                                    next_try = tokio::time::Instant::now();
-                                    client.set_offline(0, &mut TuiSink(&mut ui));
-                                }
-                            }
-                            Err(e) => {
-                                TuiSink(&mut ui)
-                                    .line(LineKind::Error, &format!("encoding failed: {e}"));
-                            }
-                        },
-                        // Raced with the link going down between `submit` and
-                        // here. Nothing was sent, so the line goes back.
-                        None => ui.restore_input(&line),
-                    },
-                }
-            }
-            Step::Wire(Some(bytes)) => match decode_server(&bytes) {
-                Ok(msg) => client.handle(msg, &mut TuiSink(&mut ui)),
-                Err(e) => TuiSink(&mut ui).line(LineKind::Error, &format!("bad message: {e}")),
-            },
-            Step::Wire(None) => {
-                link = None;
-                backoff = RECONNECT_MIN;
-                attempts = 0;
-                next_try = tokio::time::Instant::now();
-                client.set_offline(0, &mut TuiSink(&mut ui));
-                TuiSink(&mut ui).line(LineKind::System, "server connection lost — reconnecting");
-            }
-            Step::Dial => {
-                attempts += 1;
-                dialing = Some(Box::pin(dial(endpoint.clone())));
-            }
-            Step::Dialed(outcome) => {
-                // Finished either way: clear it so a later outage cannot poll a
-                // dead future, which would panic.
-                drop(dialing.take());
-                match outcome {
-                    Ok((open, greeting)) => {
-                        link = Some(open);
-                        backoff = RECONNECT_MIN;
-                        // The greeting is the resync: catalog, sessions, model.
-                        client.handle(greeting, &mut TuiSink(&mut ui));
-                    }
-                    Err(failure) if failure.is_fatal() => break Err(failure.into_error()),
-                    Err(failure) => {
-                        client.set_offline(attempts, &mut TuiSink(&mut ui));
-                        // Once per outage: the status line carries "attempt N",
-                        // so repeating this every few hundred milliseconds
-                        // would bury the log without adding information.
-                        if attempts == 1 {
-                            TuiSink(&mut ui).line(
-                                LineKind::Error,
-                                &format!(
-                                    "{} — retrying in the background, Ctrl+Q still leaves",
-                                    failure.message()
-                                ),
-                            );
-                        }
-                        backoff = (backoff * 2).min(RECONNECT_MAX);
-                        next_try = tokio::time::Instant::now() + backoff;
-                    }
-                }
-            }
-        }
-    };
-
-    // Best-effort goodbye: the server drops this connection now instead of
-    // waiting out its idle timeout. Worth nothing if it fails — the window is
-    // already closing.
-    if let Some(open) = link.take() {
-        if let Ok(bytes) = encode_client(&ClientMessage::Bye) {
-            let _ = open.sink.send(bytes).await;
-        }
+impl Link {
+    /// Hands one message to the channel task.
+    pub async fn send(&self, msg: ClientMessage) -> anyhow::Result<()> {
+        let bytes = encode_client(&msg)?;
+        self.sink.send(bytes).await.map_err(|e| anyhow!("{e}"))
     }
 
-    ui.restore()?;
-    result
+    /// Next datagram, or `None` when the link ended.
+    pub async fn recv(&mut self) -> Option<Vec<u8>> {
+        self.stream.recv().await
+    }
+
+    /// Best-effort goodbye, so the server can drop this connection now instead
+    /// of waiting out its idle timeout. Worth nothing if it fails: the caller is
+    /// already closing.
+    pub async fn goodbye(&self) {
+        let _ = self.send(ClientMessage::Bye).await;
+    }
 }
 
 /// Headless: one command in, its result out.
@@ -705,20 +617,19 @@ fn command_line(command: &[String]) -> String {
 /// `exec` to wrap it in, and nothing to configure about the wait — the command
 /// returns when the server answers, which for `send_message` is the moment the
 /// message is accepted, not the moment the turn finishes.
-async fn run(args: &Args, command: &[String]) -> anyhow::Result<()> {
+pub async fn run(args: &Args, command: &[String]) -> anyhow::Result<()> {
     let line = command_line(command);
-    let (mut client, sink, mut stream) = connect(args).await?;
-    let result = run_once(&mut client, &sink, &mut stream, &line).await;
+    let (mut client, mut link) = connect(args).await?;
+    let result = run_once(&mut client, &mut link, &line).await;
     // A best-effort goodbye lets the server tear the connection down now
     // instead of waiting out the idle timeout.
-    let _ = sink.send(encode_client(&ClientMessage::Bye)?).await;
+    link.goodbye().await;
     result
 }
 
 async fn run_once(
     client: &mut Client,
-    sink: &protocol::ChannelSink,
-    stream: &mut protocol::ChannelStream,
+    link: &mut Link,
     command: &str,
 ) -> anyhow::Result<()> {
     let mut printer = NullSink::default();
@@ -743,9 +654,7 @@ async fn run_once(
         ClientMessage::Command { id, .. } => *id,
         other => anyhow::bail!("{command:?} produced {other:?}, expected a command"),
     };
-    sink.send(encode_client(&msg)?)
-        .await
-        .map_err(|e| anyhow!("send failed: {e}"))?;
+    link.send(msg).await.map_err(|e| anyhow!("send failed: {e}"))?;
 
     // No deadline: what is being waited for is one command's acknowledgement,
     // not the work it may start. `send_message` returns as soon as the server
@@ -753,7 +662,7 @@ async fn run_once(
     // answering drops the connection at its own idle timeout, which ends this
     // wait with an error of its own.
     loop {
-        let Some(bytes) = stream.recv().await else {
+        let Some(bytes) = link.recv().await else {
             anyhow::bail!("server disconnected");
         };
         let ServerMessage::Event(event) = decode_server(&bytes)? else {
@@ -784,12 +693,12 @@ async fn run_once(
 /// between retries, because a file edited mid-outage would make two attempts of
 /// the same reconnect mean two different servers.
 #[derive(Clone)]
-struct Endpoint {
+pub struct Endpoint {
     addr: SocketAddr,
     key: String,
 }
 
-fn endpoint(args: &Args) -> anyhow::Result<Endpoint> {
+pub fn endpoint(args: &Connection) -> anyhow::Result<Endpoint> {
     let addr = resolve_server(args)?;
     let key = resolve_key(args).ok_or_else(|| {
         anyhow!("no connection key: pass --key, set GONGGA_KEY, or start the server once to generate one")
@@ -798,7 +707,7 @@ fn endpoint(args: &Args) -> anyhow::Result<Endpoint> {
 }
 
 /// Why a dial did not produce a link.
-enum DialFailure {
+pub enum DialFailure {
     /// Asking again cannot help: the key is wrong, the address is malformed.
     /// Retrying would only hide the reason behind an endless "reconnecting".
     Fatal(anyhow::Error),
@@ -807,17 +716,17 @@ enum DialFailure {
 }
 
 impl DialFailure {
-    fn message(&self) -> String {
+    pub fn message(&self) -> String {
         match self {
             DialFailure::Fatal(e) | DialFailure::Temporary(e) => e.to_string(),
         }
     }
 
-    fn is_fatal(&self) -> bool {
+    pub fn is_fatal(&self) -> bool {
         matches!(self, DialFailure::Fatal(_))
     }
 
-    fn into_error(self) -> anyhow::Error {
+    pub fn into_error(self) -> anyhow::Error {
         match self {
             DialFailure::Fatal(e) | DialFailure::Temporary(e) => e,
         }
@@ -831,7 +740,7 @@ impl DialFailure {
 /// handed to the connection the server still remembers — the dead one. A fresh
 /// port makes the SYN unambiguously a new connection, which is also what the
 /// server's own demultiplexer expects.
-async fn dial(endpoint: Endpoint) -> Result<(Link, ServerMessage), DialFailure> {
+pub async fn dial(endpoint: Endpoint) -> Result<(Link, Greeting), DialFailure> {
     let socket = Arc::new(
         UdpSocket::bind("0.0.0.0:0")
             .await
@@ -840,14 +749,14 @@ async fn dial(endpoint: Endpoint) -> Result<(Link, ServerMessage), DialFailure> 
     let channel = protocol::connect(socket, endpoint.addr, ChannelConfig::default())
         .await
         .map_err(|e| DialFailure::Temporary(anyhow!("{e}")))?;
-    let (sink, mut stream) = channel.split();
+    let (wire, mut stream) = channel.split();
 
     let hello = encode_client(&ClientMessage::Hello {
         client: client_info(),
         key: endpoint.key.clone(),
     })
     .map_err(|e| DialFailure::Fatal(e.into()))?;
-    sink.send(hello)
+    wire.send(hello)
         .await
         .map_err(|e| DialFailure::Temporary(anyhow!("handshake failed: {e}")))?;
 
@@ -876,15 +785,35 @@ async fn dial(endpoint: Endpoint) -> Result<(Link, ServerMessage), DialFailure> 
             "server refused the connection: {reason}"
         )));
     }
-    Ok((Link { sink, stream }, msg))
+    Ok((Link { sink: wire, stream }, Greeting(msg)))
+}
+
+/// The server's greeting, already decoded.
+///
+/// Opaque on purpose: the greeting *is* a `ServerMessage`, and keeping it out of
+/// the signature is what lets a front-end dial without linking against the
+/// protocol. It is applied later rather than inside [`dial`] so that dialling
+/// borrows nothing but its endpoint -- which is what lets the interactive loop
+/// keep dialling while it still owns the screen.
+pub struct Greeting(ServerMessage);
+
+impl Greeting {
+    /// Brings a client up to date: catalog, session list, model.
+    ///
+    /// This *is* the resync, and there is no separate path -- the same message
+    /// that starts a session also hands back everything a fresh client needs,
+    /// which is the whole reason reconnecting is cheap.
+    pub fn apply(self, client: &mut Client, sink: &mut dyn Sink) {
+        client.handle(self.0, sink);
+    }
 }
 
 /// The client's own state, built without touching the network.
 ///
 /// The catalog starts with only the client's half; the server's half arrives
 /// with the greeting, which is why a client can exist before its server does.
-fn build_client(args: &Args) -> Client {
-    let home = home_dir(args.home.as_deref());
+pub fn build_client(args: &Args) -> Client {
+    let home = home_dir(args.conn.home.as_deref());
     let catalog = Catalog::new();
     let sticky = Sticky::load(&home);
     catalog.set_sticky_names(&sticky.names());
@@ -896,21 +825,19 @@ fn build_client(args: &Args) -> Client {
 /// One-shot mode only: there is no reconnect here, because one command that
 /// cannot reach a server has nothing to wait for. An interactive client dials
 /// from inside its own loop instead, so it can outlive any number of restarts.
-async fn connect(
-    args: &Args,
-) -> anyhow::Result<(Client, protocol::ChannelSink, protocol::ChannelStream)> {
-    let (link, greeting) = match dial(endpoint(args)?).await {
+async fn connect(args: &Args) -> anyhow::Result<(Client, Link)> {
+    // One-shot mode's caller is usually a script or the model, so the one thing
+    // worth adding to the transport's own words is the usual cause.
+    let (link, greeting) = match dial(endpoint(&args.conn)?).await {
         Ok(pair) => pair,
         Err(failure) if failure.is_fatal() => return Err(failure.into_error()),
-        // One-shot mode's caller is usually a script or the model, so the one
-        // thing worth adding to the transport's own words is the usual cause.
         Err(failure) => {
             return Err(anyhow!("{}; is `gongga-server` running?", failure.message()));
         }
     };
     let mut client = build_client(args);
-    client.handle(greeting, &mut NullSink::default());
-    Ok((client, link.sink, link.stream))
+    greeting.apply(&mut client, &mut NullSink::default());
+    Ok((client, link))
 }
 
 /// Identifies this client to the server.
@@ -943,11 +870,11 @@ fn process_env(key: &str) -> Option<String> {
 }
 
 /// `--server`, then `GONGGA_SERVER`, then `[server] bind` in config.toml.
-fn resolve_server(args: &Args) -> anyhow::Result<SocketAddr> {
+fn resolve_server(args: &Connection) -> anyhow::Result<SocketAddr> {
     resolve_server_with(args, &process_env)
 }
 
-fn resolve_server_with(args: &Args, env: &Env) -> anyhow::Result<SocketAddr> {
+fn resolve_server_with(args: &Connection, env: &Env) -> anyhow::Result<SocketAddr> {
     if let Some(s) = &args.server {
         return s.parse().with_context(|| format!("parsing --server {s:?}"));
     }
@@ -961,11 +888,11 @@ fn resolve_server_with(args: &Args, env: &Env) -> anyhow::Result<SocketAddr> {
 }
 
 /// `--key`, then `GONGGA_KEY`, then `[server] key` in config.toml.
-fn resolve_key(args: &Args) -> Option<String> {
+fn resolve_key(args: &Connection) -> Option<String> {
     resolve_key_with(args, &process_env)
 }
 
-fn resolve_key_with(args: &Args, env: &Env) -> Option<String> {
+fn resolve_key_with(args: &Connection, env: &Env) -> Option<String> {
     if let Some(k) = &args.key {
         return Some(k.clone());
     }
@@ -986,7 +913,7 @@ struct FileServer {
     key: Option<String>,
 }
 
-fn config_value(args: &Args, pick: impl Fn(&FileConfig) -> Option<String>) -> Option<String> {
+fn config_value(args: &Connection, pick: impl Fn(&FileConfig) -> Option<String>) -> Option<String> {
     let path = home_dir(args.home.as_deref()).join("config.toml");
     let text = std::fs::read_to_string(path).ok()?;
     let cfg: FileConfig = toml::from_str(&text).ok()?;
@@ -1024,6 +951,34 @@ mod tests {
         assert_eq!(line, "send_message --message hi");
     }
 
+    /// The layering this crate exists for. A command layer that pulled in the
+    /// front-end would drag a terminal into every script and every test that
+    /// only wants to send a command, and the cycle would come back the moment
+    /// the front-end needed a command name.
+    #[test]
+    fn the_command_layer_does_not_depend_on_a_front_end() {
+        let manifest = include_str!("../Cargo.toml");
+        let deps = manifest
+            .split("[dependencies]")
+            .nth(1)
+            .and_then(|rest| rest.split("\n[").next())
+            .unwrap_or_default();
+        for forbidden in ["tui =", "ratatui", "crossterm", "futures-util"] {
+            assert!(
+                !deps.contains(forbidden),
+                "the command layer must not depend on {forbidden}:\n{deps}"
+            );
+        }
+        // And it ships no program of its own: the binary is the composition
+        // root, which lives where both halves are available.
+        // The *comment* in the manifest says the same thing, so match a real
+        // section header rather than the substring.
+        assert!(
+            !manifest.lines().any(|l| l.trim() == "[[bin]]"),
+            "{manifest}"
+        );
+    }
+
     /// A shell with nothing set. The real one is not empty -- the harness
     /// exports GONGGA_SERVER/GONGGA_KEY so the agent can drive itself -- so
     /// every precedence test states its environment explicitly.
@@ -1034,11 +989,10 @@ mod tests {
     #[test]
     fn explicit_flag_wins() {
         let d = home_with("[server]\nbind = \"127.0.0.1:9999\"\nkey = \"abc\"\n");
-        let args = Args {
+        let args = Connection {
             server: Some("10.0.0.5:1234".into()),
             home: Some(d.path().to_path_buf()),
             key: None,
-            command: None,
         };
         let env = |k: &str| match k {
             "GONGGA_SERVER" => Some("127.0.0.1:8888".to_string()),
@@ -1053,11 +1007,10 @@ mod tests {
     #[test]
     fn config_file_is_the_last_resort() {
         let d = home_with("[server]\nbind = \"127.0.0.1:9999\"\nkey = \"abc\"\n");
-        let args = Args {
+        let args = Connection {
             server: None,
             home: Some(d.path().to_path_buf()),
             key: None,
-            command: None,
         };
         assert_eq!(
             resolve_server_with(&args, &no_env).unwrap().to_string(),
@@ -1071,11 +1024,10 @@ mod tests {
     #[test]
     fn the_environment_beats_the_config_file() {
         let d = home_with("[server]\nbind = \"127.0.0.1:9999\"\nkey = \"abc\"\n");
-        let args = Args {
+        let args = Connection {
             server: None,
             home: Some(d.path().to_path_buf()),
             key: None,
-            command: None,
         };
         let env = |k: &str| match k {
             "GONGGA_SERVER" => Some("127.0.0.1:9700".to_string()),
@@ -1095,11 +1047,10 @@ mod tests {
     #[test]
     fn key_flag_beats_config() {
         let d = home_with("[server]\nkey = \"abc\"\n");
-        let args = Args {
+        let args = Connection {
             server: None,
             home: Some(d.path().to_path_buf()),
             key: Some("zzz".into()),
-            command: None,
         };
         assert_eq!(resolve_key_with(&args, &no_env).as_deref(), Some("zzz"));
     }
@@ -1107,11 +1058,10 @@ mod tests {
     #[test]
     fn missing_key_yields_nothing() {
         let d = home_with("[server]\nbind = \"127.0.0.1:9999\"\n");
-        let args = Args {
+        let args = Connection {
             server: None,
             home: Some(d.path().to_path_buf()),
             key: None,
-            command: None,
         };
         assert!(resolve_key_with(&args, &no_env).is_none());
     }

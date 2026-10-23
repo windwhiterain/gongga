@@ -5,15 +5,14 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Gongga harness terminal client: command surface, sticky arguments, TUI driver"
+description = "Gongga harness command layer: catalog, sticky arguments, wire client"
 
-[[bin]]
-name = "gongga"
-path = "src/main.rs"
+# Deliberately no [[bin]] and no rendering crate: this is the layer, not a
+# program. The `gongga` binary is the composition root and lives in
+# `crates/tui`, which depends on this crate -- not the other way round.
 
 [dependencies]
 protocol = { workspace = true }
-tui = { workspace = true }
 
 tokio = { workspace = true }
 serde = { workspace = true }

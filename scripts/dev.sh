@@ -73,7 +73,10 @@ case "${1:-help}" in
     start_bg server "$exe" "${@:2}"
     ;;
   client)
-    cargo build -p gongga-cli || die "build failed"
+    # The `gongga` binary is the composition root (command layer + terminal), so
+    # it is built by the tui crate. `-p gongga-cli` no longer produces a binary
+    # on purpose: that crate is the command layer, not a program.
+    cargo build -p gongga-tui || die "build failed"
     stage "$ROOT/target/debug/gongga.exe" client >/dev/null
     exe="$(ls -t "$RUN"/client-*.exe | head -1)"
     start_window client "$exe" "${@:2}"

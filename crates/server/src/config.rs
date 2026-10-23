@@ -578,7 +578,7 @@ fn env_path(key: &str) -> Option<PathBuf> {
 }
 
 /// Expands a leading `~` and normalises separators.
-fn expand(path: PathBuf) -> PathBuf {
+pub(crate) fn expand(path: PathBuf) -> PathBuf {
     let s = path.to_string_lossy().to_string();
     if let Some(rest) = s.strip_prefix("~/") {
         if let Some(home) = dirs::home_dir() {

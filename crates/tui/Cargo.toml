@@ -5,10 +5,19 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Gongga harness terminal UI: an event log plus an input line, with no knowledge of commands"
+description = "Gongga harness terminal front-end: an event log plus an input line, with no knowledge of commands"
+
+# The `gongga` binary lives here because it is the composition root: it is the
+# only program that needs both the command layer and a terminal. The library
+# below is still the ignorant part -- it paints what it is told to paint.
+[[bin]]
+name = "gongga"
+path = "src/main.rs"
 
 [dependencies]
+cli = { workspace = true }
 anyhow = { workspace = true }
+tokio = { workspace = true }
 futures-util = "0.3"
 ratatui = "0.30"
 crossterm = { version = "0.29", features = ["event-stream"] }

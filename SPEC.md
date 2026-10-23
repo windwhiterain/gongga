@@ -19,7 +19,8 @@ use GitBash as bash on windows.
 - check_bash{name = "default"}: return bash's output that hasn't been read by the caller session.
 - del_bash{name}
 ## Data
-all in database (sqlite), structured for agentic retrieval/mutation.
+- all in database (sqlite), structured for agentic retrieval/mutation.
+- database path can be specified at server start. 
 ## UI
 - events[]:
     - cmd
@@ -32,7 +33,7 @@ all in database (sqlite), structured for agentic retrieval/mutation.
 - sticky_cmd_arguments[{name, value}]: auto fill in cmd argument if not provided.
 ## Cmd
 - server:
-    - `set_session --session <name> [--cwd <path>] [--llm <provider/model>] [--compact_threshold <n%>]`
+    - `set_session --session <name> [--cwd <path>] [--llm <provider/model>] [--compact_threshold <n%>] [--thinking-effort <level>]`
     - `del_session --session <name>`
     - `send_message --session <name> --message <string>`
     - `interrupt_session --session <name>`

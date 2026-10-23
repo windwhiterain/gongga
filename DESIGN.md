@@ -8,23 +8,52 @@
 Cargo.toml                  workspace，resolver 3，edition 2024
 crates/protocol/  gongga-protocol   别名 protocol —— 帧、可靠 UDP 通道、消息词汇
 crates/server/    gongga-server     别名 server
-crates/cli/       gongga-cli        别名 cli（二进制名 gongga）—— 命令层
-crates/tui/       gongga-tui        别名 tui —— 纯终端 UI，不认识命令
+crates/cli/       gongga-cli        别名 cli —— 命令层（库，无二进制）
+crates/tui/       gongga-tui        别名 tui —— 终端前端 + `gongga` 二进制
 crates/bridge/    gongga-bridge     别名 bridge —— IM 桥接器，见 §9
 ```
 
 命名沿用你 `whiting` 项目的约定：目录不带前缀，`[workspace.dependencies]` 里用
 `package = "gongga-xxx"` 做别名。
 
-依赖方向是单向的：`tui` 不依赖 `protocol`，`cli` 同时依赖两者。
+**依赖方向只有一条：`tui → cli`，反向不存在。** 早先是反的（`cli` 依赖 `tui`），因为交互模式
+当初写在 `gongga` 二进制里，而那个二进制归 `cli`。这看上去只是 Cargo.toml 里一行，实则把
+ratatui 与 crossterm 拖进了**每一个**只想发一条命令的调用：脚本、测试、桥接器、模型手里的
+`$GONGGA_CLI`，全都要为一个它们不用的终端付出依赖与编译代价。命令层一旦认识终端，「同一条命令
+也能从没有键盘的地方发出」这个性质就守不住了。
+
+现在的分工：
+
+| crate | 是 | 不是 |
+|---|---|---|
+| `cli` | 命令目录、sticky、参数解析/渲染、`Client` 状态机、链路 `Link`、`LineKind` | 任何终端、任何二进制 |
+| `tui` | 终端渲染、输入行、补全弹窗、交互循环、`gongga` 二进制 | 命令是什么、协议长什么样 |
+
+`gongga` 二进制因此落在 `tui` 里：它是**组装点**，也是唯一同时需要两半的程序。它只做三件事
+—— 按 `cli` 的定义解析命令行、把「没有命令」交给交互循环、把有命令的交给 `cli::run`。
+它不认识任何命令名，所以「加一条命令要改 tui」这件事不成立（SPEC 的
+「tui: transparent cli wrapper, do not know cmd」就是这条）。
+
+**为什么 `tui` 连协议也不认识**：交互循环要收包发包，但它拿到的是 `Link::recv()` 给的字节和
+`Client::handle_bytes()` 的结果；问候语是一个不透明的 `Greeting`，应用它的是 `cli`。所以 `tui`
+的依赖里没有 `protocol` ——「线长什么样」仍然只有命令层知道。代价是 `cli` 多了三个薄封装
+（`Link::send/recv/goodbye`、`Client::handle_bytes`、`Greeting::apply`）。
+
+**方向有测试钉着**：`cli` 里断言「依赖里不得出现 tui/ratatui/crossterm，且自己不产二进制」，
+`tui` 里断言「必须依赖 cli」。两者都读 `include_str!("../Cargo.toml")`，谁把箭头调回去，
+测试会先红。
 
 **`tui` 的边界**：SPEC 说「tui: transparent cli wrapper, do not know cmd」。所以 tui 只认识
-「行」「候选词」「按键」，不认识命令、不认识协议：
+「行」「候选词」「按键」，不认识命令、不认识协议。词汇本身由命令层定义、tui 拿来用
+（`pub use cli::{Candidate, Completer, Completion, LineKind, SharedCompleter}`，所以
+`crate::LineKind` 在 `render.rs` / `log.rs` 里照旧可读）：
 
 ```rust
+// cli（命令层）定义：
 pub trait Completer { fn complete(&self, line: &str, cursor: usize) -> Vec<Candidate>; }
-pub enum UiEvent { Submit(String), Quit }
 pub enum LineKind { System, User, Assistant, Reasoning, ToolCall, ToolOutput, ToolError, Result, Error }
+// tui（前端）自己定义：
+pub enum UiEvent { Submit(String), Quit }
 ```
 
 补全候选由 `cli` 注入（它持有服务端下发的命令目录），tui 只负责弹窗和插入。
@@ -673,6 +702,47 @@ TUI 输入行**同一套** `submit()` 解析 —— 否则补全、sticky 补齐
 非交互模式**没有等待时限**：等的是一条命令的回执，不是它启动的活。服务端不回就会被自己的
 `idle_timeout` 断连，那也是一个错误出口，不需要客户端再猜一个数字。
 
+### TUI 的滚动缓冲：一帧只碰一屏
+
+症状：对话一长，TUI 卡的要死 —— 不是「有点顿」，是打字都跟不上。
+
+原因在渲染路径上，和网络、和模型都无关。旧的 `draw_log` **每帧把整个日志重新折行**：
+
+- `wrap()` 用 `ch.to_string().width()` 量一个字符的宽度 —— **每个字符一次 `String` 分配**，
+  5000 行正常长度的日志约 40 万个字符，即每帧 40 万次分配；
+- 折完再 `text.clone()` 出可见行，又是一次全量复制；
+- 而流式回答每来一个 chunk 就是一次 `Step::Wire` → `next_event` → 一帧。
+
+于是成本是 O(对话长度) × O(chunk 频率)：对话越长帧越贵，而长对话恰恰是 chunk 最密的时候。
+这就是「长了之后卡」的完整解释。
+
+现在一帧只碰一屏（`crates/tui/src/log.rs`），四件事各管一段：
+
+1. **每行缓存折行起点**（`Entry::starts`，每行一个 `Vec<usize>`）：画一行是切一段 `&str`，
+   既不重新折行，也不复制文本 —— `Span::styled(&'a str)` 直接借用日志里的字节。
+2. **追加接着折**：流式 delta 从最后一行的列号继续那台状态机（`Entry::open`），所以一个 chunk
+   的成本是 chunk 的长度，不是这一行的长度。没有这一步，一条长回答就是 O(长度²)。
+3. **行号 → 行索引用 Fenwick 树**（`RowIndex`）：`window()` 要知道「第 N 个折行落在哪一行」。
+   前缀和数组在纯追加下是对的，但流式中途会改**中间**那一行的行数（工具输出和回答交错），
+   它之后的所有前缀和全部失效；树把改和查都做成 O(log 行数)，滚到顶和滚一格一样快。
+4. **帧有脏标记**：什么都没变就不写终端。流式比终端刷新快的时候，这挡掉的正是最贵的那部分。
+
+唯一要走全表的是**宽度变化**（resize）：每个缓存偏移都是按旧宽度量的，只能重排一遍
+（O(总字节)，不分配字符串）。拖动窗口时会有几次，平常滚动一次也没有。
+
+实测（`crates/tui/examples/frame_cost.rs`，release，80 列 × 24 行，每帧取 200 次平均）：
+
+| 日志行数 | 旧 | 新 | 新（滚动到中部） |
+|---|---|---|---|
+| 100 | 140µs | 204ns | 156ns |
+| 1,000 | 345µs | 149ns | 143ns |
+| 5,000 | 1.9ms | 169ns | 166ns |
+| 20,000 | 8.1ms | 156ns | 168ns |
+
+新路径与日志长度无关（滚到中部多出来的只是 O(log n) 的树查找），旧路径线性增长 —— 20k 行时
+一帧 8ms，配上每秒几十个 chunk，就是「卡的要死」。单测 `a_frame_touches_only_a_screenful`
+守着这条不变量：5 万行时一帧也只能产出 24 行。
+
 ## 6. 配置
 
 `~/.gongga/config.toml`（`--home` / `GONGGA_HOME` 可改），首次启动自动写一份带注释的模板。
@@ -692,6 +762,16 @@ TUI 输入行**同一套** `submit()` 解析 —— 否则补全、sticky 补齐
 `[llm]` 这一段**基本不用写**：provider / base_url / key / 上下文都来自 `~/.agents/llm.toml`
 （见 §4「名单」），这里只用来**覆盖**它。`GONGGA_LLM_CATALOG` 可以把名单指到别的路径。
 
+库路径也能在启动时直接给（SPEC「database path can be specified at server start」）：
+
+```sh
+gongga-server --db /tmp/scratch/gongga.db   # 覆盖 [server] db；目录不存在会建
+gongga-server --db :memory:                 # 一次性库，碰不到真实数据
+```
+
+`--db` 在**写完默认 config 之后**才生效：这次顺手生成的 `config.toml` 记的是 home 下的默认路径，
+不会被一次性的 `--db` 烤进去、再让以后每次启动都跑去那个路径。
+
 `max_output_chars = 0` 关掉输出上限，`compress_above_tokens = 0` 关掉压缩。
 
 CLI 的 sticky 参数单独放 `~/.gongga/cli.toml`，和服务端配置分开 —— 它们是客户端状态，
@@ -705,7 +785,7 @@ Git Bash 自动探测常见安装路径，找不到再退回 PATH 上的 `bash`�
 |---|---|
 | `cargo build --workspace` | 通过 |
 | `cargo clippy --workspace --all-targets` | 无警告 |
-| 单元 + 集成测试（159 个） | 通过 |
+| 单元 + 集成测试（179 个） | 通过 |
 | 真实 UDP：200KB 分片往返 / 25% 丢包恢复 / 顺序性 | 通过 |
 | 端到端冒烟（**真实 MiniMax-M3.1-Flash** + 真 Git Bash） | 通过 |
 | 端到端冒烟（假 LLM + 真 Git Bash，`detached` 工具调用） | 通过 |
@@ -751,6 +831,10 @@ Git Bash 自动探测常见安装路径，找不到再退回 PATH 上的 `bash`�
 | `bridge` 端到端（真 QQ 沙箱收发） | **未验证**（需要 AppID/AppSecret 与沙箱群） |
 | TUI 交互输入、补全弹窗 | **未验证**（需要真 TTY，只能人工开一次） |
 | 滚动：滚轮 / Ctrl+↑↓ / Shift+↑↓ / PgUp/PgDn，两端 clamp | 逻辑有单测，**手感未验证** |
+| TUI 渲染整链路（`TestBackend`，不需要 TTY）：布局、窗口、最新行在 footer 上方、按**行**滚动 | 通过（2 个单测） |
+| 长日志的一帧成本与日志长度无关（20k 行 156ns / 旧 8.1ms）| 通过（`examples/frame_cost`）+ 单测 `a_frame_touches_only_a_screenful` |
+| 流式追加 = 整行重排（折行偏移一致）| 通过（单测 `appending_equals_rewrapping_from_the_top`，9 组 × 6 种宽度）|
+| `--db <path>`：覆盖 `[server] db`、自动建目录、`:memory:`、不写回 config.toml | 通过（单测 + 真启动两次：`db=:memory:`、嵌套新目录被创建）|
 
 端到端实录（真实 provider，会话 `demo`）：reasoning 流式 → tool-call 参数流式 →
 `bash` 真实执行 `echo hello-from-gongga && pwd` 返回

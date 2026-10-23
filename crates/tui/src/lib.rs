@@ -1,20 +1,26 @@
-//! `gongga-tui`: the terminal front-end, and nothing else.
+//! `gongga-tui`: the terminal front-end.
 //!
-//! The crate is deliberately ignorant. It renders lines, keeps an input line,
+//! This crate is deliberately ignorant. It renders lines, keeps an input line,
 //! and shows a completion popup whose contents somebody else supplies. It has
-//! no dependency on the wire protocol and no idea what a command is: the CLI
-//! owns the command catalog and hands completion candidates over through
-//! [`Completer`].
+//! no dependency on the wire protocol and no idea what a command is: the
+//! command layer (`gongga-cli`) owns the catalog, the wire, and the meaning of
+//! every line, and hands both completion candidates and typed lines over.
 //!
-//! That split is what keeps the UI reusable — anything that can produce lines
-//! and candidates can drive it.
+//! That is why the dependency runs this way -- `tui` depends on `cli`, never
+//! the reverse. A command layer that knew about terminals could not be used
+//! from a script; a front-end that knew about commands would have to change
+//! every time one is added.
+//!
+//! The `gongga` binary lives here because it is the composition root: the only
+//! program that needs both halves, and linking them is what a binary is for.
 
 mod input;
+mod log;
 mod render;
+pub mod run;
 
 use std::collections::HashMap;
 use std::io::{Stdout, stdout};
-use std::sync::Arc;
 
 use anyhow::Context;
 use crossterm::event::{
@@ -29,39 +35,15 @@ use futures_util::StreamExt;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
-pub use crate::input::{Candidate, Completion, InputLine, apply_completion, token_bounds};
+pub use crate::input::{InputLine, apply_completion};
+pub use crate::log::Log;
+pub use crate::run::interactive;
 
-/// Supplies completion candidates for the token under the cursor.
-///
-/// Returns an empty vector when there is nothing to show, which is how the
-/// popup stays closed for free-form values.
-pub trait Completer: Send + Sync {
-    fn complete(&self, line: &str, cursor: usize) -> Vec<Candidate>;
-}
-
-/// A shared completer. The CLI keeps one half and can swap the catalog inside
-/// it whenever the server publishes a new one.
-pub type SharedCompleter = Arc<dyn Completer + Send + Sync>;
-
-/// What a log line is, which decides its colour.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LineKind {
-    System,
-    User,
-    Assistant,
-    Reasoning,
-    ToolCall,
-    ToolOutput,
-    ToolError,
-    Result,
-    Error,
-}
-
-#[derive(Debug, Clone)]
-pub struct Line {
-    pub kind: LineKind,
-    pub text: String,
-}
+// The vocabulary belongs to the command layer: this crate paints whatever it is
+// told to paint. Re-exported so `crate::LineKind` and friends keep reading the
+// same from inside this crate -- the renderer and the log never have to know
+// where the words came from.
+pub use cli::{Candidate, Completer, Completion, LineKind, SharedCompleter, token_bounds};
 
 /// Something the operator did.
 ///
@@ -79,9 +61,11 @@ pub enum UiEvent {
 
 /// Everything the renderer reads. Kept separate so drawing never borrows the
 /// terminal while the caller is mutating state.
-#[derive(Debug, Clone)]
 pub struct Screen {
-    pub lines: Vec<Line>,
+    /// The scrollback. Its own type because a frame must not be allowed to walk
+    /// it: see [`crate::log`] for why that is the difference between a usable
+    /// window and a frozen one.
+    pub log: Log,
     pub completion: Option<Completion>,
     pub input: InputLine,
     pub status: String,
@@ -111,12 +95,19 @@ pub struct Tui {
     terminal: Terminal<CrosstermBackend<Stdout>>,
     screen: Screen,
     completer: SharedCompleter,
-    /// Open stream key -> index into `screen.lines`, so deltas append in place.
+    /// Open stream key -> index into `screen.log`, so deltas append in place.
     streams: HashMap<String, usize>,
     history: Vec<String>,
     history_pos: Option<usize>,
     events: EventStream,
     restored: bool,
+    /// Whether anything on screen changed since the last frame.
+    ///
+    /// A redraw is a terminal write, and while a response streams the loop gets
+    /// an event for every chunk. Painting a frame nothing has changed is pure
+    /// cost, so the frame is skipped instead — the flag is what keeps that from
+    /// freezing the display: every mutation and every key sets it.
+    dirty: bool,
 }
 
 impl Tui {
@@ -131,7 +122,7 @@ impl Tui {
         Ok(Self {
             terminal,
             screen: Screen {
-                lines: Vec::new(),
+                log: Log::new(),
                 completion: None,
                 input: InputLine::default(),
                 status: "connecting".to_string(),
@@ -146,6 +137,8 @@ impl Tui {
             history_pos: None,
             events: EventStream::new(),
             restored: false,
+            // The first frame has to happen even though nothing has changed.
+            dirty: true,
         })
     }
 
@@ -153,20 +146,29 @@ impl Tui {
         &self.screen
     }
 
+    /// Both of these only ask for a frame when the text actually changed: the
+    /// caller recomputes the status from the session list as events arrive, and
+    /// most of those recomputations say the same thing as the last one.
     pub fn set_status(&mut self, status: impl Into<String>) {
-        self.screen.status = status.into();
+        let status = status.into();
+        if status != self.screen.status {
+            self.screen.status = status;
+            self.dirty = true;
+        }
     }
 
     pub fn set_footer(&mut self, footer: impl Into<String>) {
-        self.screen.footer = footer.into();
+        let footer = footer.into();
+        if footer != self.screen.footer {
+            self.screen.footer = footer;
+            self.dirty = true;
+        }
     }
 
     /// Adds a finished line.
     pub fn push(&mut self, kind: LineKind, text: impl Into<String>) {
-        self.screen.lines.push(Line {
-            kind,
-            text: text.into(),
-        });
+        self.screen.log.push(kind, text);
+        self.dirty = true;
     }
 
     /// Puts a line back into the prompt, cursor at the end.
@@ -179,6 +181,7 @@ impl Tui {
         self.screen.input.clear();
         self.screen.input.insert_str(text);
         self.screen.input.end();
+        self.dirty = true;
     }
 
     /// Appends to an open stream, creating the line on first use.
@@ -193,31 +196,37 @@ impl Tui {
         text: &str,
         done: bool,
     ) {
-        if let Some(&idx) = self.streams.get(key) {
-            if !text.is_empty() {
-                self.screen.lines[idx].text.push_str(text);
-            }
-        } else if !text.is_empty() || !done {
-            self.screen.lines.push(Line {
-                kind,
-                text: format!("{prefix}{text}"),
-            });
-            self.streams.insert(key.to_string(), self.screen.lines.len() - 1);
-        }
-        if done {
-            self.streams.remove(key);
-        }
+        stream_into(
+            &mut self.screen.log,
+            &mut self.streams,
+            key,
+            kind,
+            prefix,
+            text,
+            done,
+        );
+        self.dirty = true;
     }
 
     pub fn draw(&mut self) -> anyhow::Result<()> {
+        // Nothing changed, so nothing is written. This is what keeps a stream
+        // that arrives faster than the terminal can paint from spending the
+        // whole loop in the renderer.
+        if !self.dirty {
+            return Ok(());
+        }
         // The renderer writes the scroll bound back into the screen, which is
-        // why it takes it mutably even though it only reads the lines.
+        // why it takes it mutably even though it only reads the log.
         self.terminal.draw(|f| render::draw(f, &mut self.screen))?;
+        // Cleared only after the frame landed: a failed paint must be retried
+        // by the next call rather than counted as done.
+        self.dirty = false;
         Ok(())
     }
 
-    /// Waits for the operator. Redraws on every key and before every wait, so
-    /// lines pushed by the caller show up even with nobody at the keyboard.
+    /// Waits for the operator. Paints a frame before every wait, so lines
+    /// pushed by the caller show up even with nobody at the keyboard, and after
+    /// any event that could have changed what is on screen.
     pub async fn next_event(&mut self) -> Option<UiEvent> {
         loop {
             if self.draw().is_err() {
@@ -226,8 +235,9 @@ impl Tui {
             let next = self.events.next().await?;
             // Only key events used to be looked at, which is why the wheel did
             // nothing: it arrives as a mouse event and was dropped here. A
-            // resize needs no handling of its own -- the redraw at the top of
-            // the loop picks up the new size.
+            // resize needs no handling of its own beyond the redraw it asks
+            // for -- the layout is worked out from the area every frame, and
+            // the log reflows to the new width when it is asked for rows.
             match next {
                 Ok(TermEvent::Key(key)) => {
                     // Windows reports a Release in addition to every Press, and
@@ -240,8 +250,10 @@ impl Tui {
                     if let Some(action) = self.handle_key(key) {
                         return Some(action);
                     }
+                    self.dirty = true;
                 }
                 Ok(TermEvent::Mouse(mouse)) => self.handle_mouse(mouse),
+                Ok(TermEvent::Resize(..)) => self.dirty = true,
                 _ => {}
             }
         }
@@ -373,6 +385,7 @@ impl Tui {
     fn handle_mouse(&mut self, mouse: MouseEvent) {
         if let Some(rows) = Self::wheel_rows(&mouse) {
             self.screen.scroll_by(rows);
+            self.dirty = true;
         }
     }
 
@@ -490,6 +503,50 @@ impl Completer for NoCompleter {
     }
 }
 
+/// The stream bookkeeping, kept out of [`Tui`] so a test can drive it without a
+/// terminal — and so the test drives *this* code rather than a copy of it.
+///
+/// A closed stream must not append to a line that has since moved: `done`
+/// removes the key before the next chunk looks it up, which is what makes two
+/// consecutive responses end up as two lines rather than one.
+fn stream_into(
+    log: &mut Log,
+    streams: &mut HashMap<String, usize>,
+    key: &str,
+    kind: LineKind,
+    prefix: &str,
+    text: &str,
+    done: bool,
+) {
+    match streams.get(key) {
+        // In place, and only the new bytes are wrapped: a delta must cost what
+        // the delta is worth, not what the line has grown to.
+        Some(&idx) => log.append(idx, text),
+        // An empty first chunk still opens the line when the stream is not
+        // finished, so a slow first token does not lose its `prefix`.
+        None if !text.is_empty() || !done => {
+            log.push(kind, format!("{prefix}{text}"));
+            streams.insert(key.to_string(), log.len() - 1);
+        }
+        None => {}
+    }
+    if done {
+        streams.remove(key);
+    }
+}
+
+#[cfg(test)]
+mod layering {
+    /// The arrow this crate exists to point: the front-end depends on the
+    /// command layer, never the other way round. A comment cannot enforce that;
+    /// a manifest can be read.
+    #[test]
+    fn the_front_end_depends_on_the_command_layer() {
+        let manifest = include_str!("../Cargo.toml");
+        assert!(manifest.contains("cli = { workspace = true }"), "{manifest}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -505,7 +562,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 screen: Screen {
-                    lines: Vec::new(),
+                    log: Log::new(),
                     completion: None,
                     input: InputLine::default(),
                     status: String::new(),
@@ -519,18 +576,27 @@ mod tests {
         }
 
         fn stream(&mut self, key: &str, kind: LineKind, prefix: &str, text: &str, done: bool) {
-            if let Some(&idx) = self.streams.get(key) {
-                self.screen.lines[idx].text.push_str(text);
-            } else {
-                self.screen.lines.push(Line {
-                    kind,
-                    text: format!("{prefix}{text}"),
-                });
-                self.streams.insert(key.to_string(), self.screen.lines.len() - 1);
-            }
-            if done {
-                self.streams.remove(key);
-            }
+            stream_into(
+                &mut self.screen.log,
+                &mut self.streams,
+                key,
+                kind,
+                prefix,
+                text,
+                done,
+            );
+        }
+
+        /// Every row the log holds, unwrapped at a width none of these cases
+        /// reach — which is what the assertions are about.
+        fn rows(&mut self) -> Vec<String> {
+            self.screen
+                .log
+                .window(200, 100, 0)
+                .rows
+                .iter()
+                .map(|(_, text)| text.to_string())
+                .collect()
         }
     }
 
@@ -557,8 +623,7 @@ mod tests {
         let mut h = Headless::new();
         h.stream("r:1", LineKind::Assistant, "", "he", false);
         h.stream("r:1", LineKind::Assistant, "", "llo", false);
-        assert_eq!(h.screen.lines.len(), 1);
-        assert_eq!(h.screen.lines[0].text, "hello");
+        assert_eq!(h.rows(), vec!["hello"]);
     }
 
     #[test]
@@ -566,7 +631,19 @@ mod tests {
         let mut h = Headless::new();
         h.stream("r:1", LineKind::Assistant, "", "a", true);
         h.stream("r:1", LineKind::Assistant, "", "b", true);
-        assert_eq!(h.screen.lines.len(), 2);
+        assert_eq!(h.rows(), vec!["a", "b"]);
+    }
+
+    /// Two streams open at once have to stay separate: the index map is what
+    /// lets a tool's output and a response interleave without either one
+    /// appending to the other's line.
+    #[test]
+    fn two_open_streams_do_not_mix() {
+        let mut h = Headless::new();
+        h.stream("r:1", LineKind::Assistant, "", "answer", false);
+        h.stream("t:1", LineKind::ToolOutput, "$ ", "stdout", false);
+        h.stream("r:1", LineKind::Assistant, "", " more", false);
+        assert_eq!(h.rows(), vec!["answer more", "$ stdout"]);
     }
 
     #[test]
@@ -669,7 +746,7 @@ mod tests {
 
     #[test]
     fn completer_drives_the_popup() {
-        let c: SharedCompleter = Arc::new(StaticCompleter(vec![Candidate::word(
+        let c: SharedCompleter = std::sync::Arc::new(StaticCompleter(vec![Candidate::word(
             "send_message",
             "Send",
         )]));

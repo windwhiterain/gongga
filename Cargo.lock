@@ -749,7 +749,6 @@ dependencies = [
  "clap",
  "dirs",
  "gongga-protocol",
- "gongga-tui",
  "serde",
  "serde_json",
  "shell-words",
@@ -804,8 +803,10 @@ dependencies = [
  "anyhow",
  "crossterm",
  "futures-util",
+ "gongga-cli",
  "ratatui",
  "tempfile",
+ "tokio",
  "unicode-width",
 ]
 

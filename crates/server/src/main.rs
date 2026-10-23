@@ -39,8 +39,12 @@ struct Args {
     /// UDP address to listen on. Overrides `[server] bind`.
     #[arg(long)]
     bind: Option<String>,
-    /// SQLite database path.
-    #[arg(long)]
+    /// SQLite database path. Overrides `[server] db`.
+    ///
+    /// Missing directories are created, and `:memory:` gives a throwaway
+    /// database — which is what makes a clean end-to-end run possible without
+    /// touching the operator's real one.
+    #[arg(long, value_name = "PATH")]
     db: Option<PathBuf>,
     /// Model name. Overrides `[llm] model`.
     #[arg(long)]
@@ -144,10 +148,14 @@ async fn run() -> anyhow::Result<()> {
     }
 
     let mut cfg = Config::load(args.config.as_deref())?;
-    if let Some(db) = args.db {
-        cfg.db_path = db;
-    }
+    // The starter config is written from what the *file* said, before the flag
+    // is applied: `--db /tmp/x.db` is this run's database, and baking it into a
+    // config.toml that this run happened to create would quietly move every
+    // later run to that path as well.
     cfg.write_default_if_absent()?;
+    if let Some(db) = args.db {
+        cfg.db_path = config::expand(db);
+    }
     // Before touching the database: two servers on one home would each resume
     // the same pending turn and drive the same session twice.
     let _instance = instance::InstanceLock::acquire(&cfg.home)?;
@@ -294,7 +302,7 @@ async fn run() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::cli_path;
+    use super::{Args, cli_path};
 
     /// The CLI is what lets the model cancel, restart or replace this server,
     /// so the path it is handed has to be runnable -- a bare name is only
@@ -307,5 +315,20 @@ mod tests {
             "cli_path gave {} which is neither a file nor on PATH",
             p.display()
         );
+    }
+
+    /// SPEC: "database path can be specified at server start." Checked by
+    /// parsing rather than by reading the source, so that renaming the flag
+    /// breaks a test instead of someone's runbook.
+    #[test]
+    fn the_database_path_is_a_startup_flag() {
+        use clap::Parser;
+        let args = Args::parse_from(["gongga-server", "--db", "/tmp/other.db"]);
+        assert_eq!(
+            args.db.as_deref(),
+            Some(std::path::Path::new("/tmp/other.db"))
+        );
+        // Without it the configured path stands, which is the default case.
+        assert!(Args::parse_from(["gongga-server"]).db.is_none());
     }
 }

@@ -2,8 +2,13 @@
 //!
 //! Nothing here knows what a command is. The caller hands this module an
 //! arbitrary list of candidates for the token under the cursor and it renders
-//! the popup; deciding *what* completes is [`crate::Completer`]'s job, and that
-//! lives outside this crate.
+//! the popup; deciding *what* completes is the command layer's job, and both
+//! the candidates and the token split come from there.
+//!
+//! What stays here is the part that is genuinely the editor's: what a keystroke
+//! does to the text, and how a chosen candidate is spliced back in.
+
+use crate::Completion;
 
 /// A single-line editor with a byte cursor.
 #[derive(Debug, Clone, Default)]
@@ -93,50 +98,6 @@ impl InputLine {
     }
 }
 
-/// One completion option.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Candidate {
-    /// Text that replaces the token being completed.
-    pub insert: String,
-    /// Shown on the right of the popup.
-    pub detail: String,
-    /// Whether a space follows the insertion. False for a directory, so that
-    /// Tab again descends into it instead of starting a new word.
-    pub space: bool,
-}
-
-impl Candidate {
-    /// The ordinary case: a word, with a space after it.
-    pub fn word(insert: impl Into<String>, detail: impl Into<String>) -> Self {
-        Self { insert: insert.into(), detail: detail.into(), space: true }
-    }
-}
-
-/// An open completion popup.
-#[derive(Debug, Clone)]
-pub struct Completion {
-    /// Byte range of the token being replaced.
-    pub start: usize,
-    pub end: usize,
-    pub candidates: Vec<Candidate>,
-    pub selected: usize,
-}
-
-impl Completion {
-    pub fn move_selection(&mut self, delta: isize) {
-        if self.candidates.is_empty() {
-            return;
-        }
-        let len = self.candidates.len() as isize;
-        let current = self.selected as isize;
-        self.selected = (((current + delta) % len + len) % len) as usize;
-    }
-
-    pub fn current(&self) -> Option<&Candidate> {
-        self.candidates.get(self.selected)
-    }
-}
-
 /// Applies the selected candidate to the input line.
 pub fn apply_completion(line: &mut InputLine, completion: &Completion) {
     let Some(candidate) = completion.current() else {
@@ -151,28 +112,10 @@ pub fn apply_completion(line: &mut InputLine, completion: &Completion) {
     }
 }
 
-/// Byte range of the whitespace-delimited token containing `cursor`.
-pub fn token_bounds(input: &str, cursor: usize) -> (usize, usize, String) {
-    let before = &input[..cursor.min(input.len())];
-    let start = before
-        .char_indices()
-        .rev()
-        .find(|(_, c)| c.is_whitespace())
-        .map(|(i, c)| i + c.len_utf8())
-        .unwrap_or(0);
-    let after = &input[cursor.min(input.len())..];
-    let end = after
-        .char_indices()
-        .find(|(_, c)| c.is_whitespace())
-        .map(|(i, _)| cursor + i)
-        .unwrap_or(input.len());
-    let start = start.min(end);
-    (start, end, input[start..end].to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Candidate;
 
     fn completion() -> Completion {
         Completion {
@@ -243,13 +186,5 @@ mod tests {
         line.end();
         line.kill_to_end();
         assert_eq!(line.text(), "xac");
-    }
-
-    #[test]
-    fn token_bounds_respects_utf8() {
-        // Byte 8 sits inside the CJK run, so it must stay a boundary.
-        let (s, e, t) = token_bounds("echo 中文 x", 8);
-        assert_eq!(&"echo 中文 x"[s..e], t);
-        assert_eq!(t, "中文");
     }
 }
