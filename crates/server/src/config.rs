@@ -251,7 +251,12 @@ impl Config {
             // The roster is the machine's own answer, so it is consulted before
             // the DSH credential store rather than after: a file that names the
             // key is more specific than one that only names a variable.
-            .or_else(|| entry.as_ref().and_then(|e| e.key.clone()).filter(|k| !k.is_empty()))
+            .or_else(|| {
+                entry
+                    .as_ref()
+                    .and_then(|e| e.key.clone())
+                    .filter(|k| !k.is_empty())
+            })
             // Last resort: the credential store DSH keeps on this machine, so a
             // provider key does not have to be exported by hand.
             .or_else(|| dsh_credential(&api_key_env))
@@ -304,7 +309,9 @@ impl Config {
 
         let bash_file = file.tools.and_then(|t| t.bash).unwrap_or_default();
         let bash = BashConfig {
-            program: env_path("GONGGA_BASH").or(bash_file.program).or_else(detect_git_bash),
+            program: env_path("GONGGA_BASH")
+                .or(bash_file.program)
+                .or_else(detect_git_bash),
             timeout: Duration::from_millis(
                 bash_file
                     .timeout_ms
@@ -322,9 +329,7 @@ impl Config {
                 .agent
                 .as_ref()
                 .and_then(|a| a.compress_above_tokens)
-                .or_else(|| {
-                    env_or("GONGGA_COMPRESS_ABOVE_TOKENS").and_then(|v| v.parse().ok())
-                })
+                .or_else(|| env_or("GONGGA_COMPRESS_ABOVE_TOKENS").and_then(|v| v.parse().ok()))
                 .unwrap_or(DEFAULT_COMPRESS_ABOVE_TOKENS),
             keep_recent: file
                 .agent
@@ -507,7 +512,9 @@ impl LlmConfig {
 /// Windows separators are normalised to `/`: TOML would read `\` as an escape,
 /// and every Windows API accepts forward slashes anyway.
 fn toml_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/").replace('"', "\\\"")
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .replace('"', "\\\"")
 }
 
 /// A 128-bit random key, hex encoded.
@@ -680,7 +687,8 @@ mod tests {
         assert!(cfg.server.is_none());
     }
 
-    const DSH_FIXTURE: &str = "version: 1\nrecords: {}\nrefs:\n  MINIMAX_CN_API_KEY: 'sk-abc123'\n  OTHER: 'no'\n";
+    const DSH_FIXTURE: &str =
+        "version: 1\nrecords: {}\nrefs:\n  MINIMAX_CN_API_KEY: 'sk-abc123'\n  OTHER: 'no'\n";
 
     #[test]
     fn reads_a_key_out_of_the_dsh_credential_store() {
@@ -696,7 +704,10 @@ mod tests {
     fn dsh_refs_stay_inside_their_block() {
         // The same name appears outside `refs:`; only the block counts.
         let text = "MINIMAX_CN_API_KEY: 'outside'\nrefs:\n  MINIMAX_CN_API_KEY: 'inside'\n";
-        assert_eq!(dsh_ref(text, "MINIMAX_CN_API_KEY").as_deref(), Some("inside"));
+        assert_eq!(
+            dsh_ref(text, "MINIMAX_CN_API_KEY").as_deref(),
+            Some("inside")
+        );
     }
 
     #[test]

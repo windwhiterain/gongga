@@ -21,7 +21,11 @@ pub struct Candidate {
 impl Candidate {
     /// The ordinary case: a word, with a space after it.
     pub fn word(insert: impl Into<String>, detail: impl Into<String>) -> Self {
-        Self { insert: insert.into(), detail: detail.into(), space: true }
+        Self {
+            insert: insert.into(),
+            detail: detail.into(),
+            space: true,
+        }
     }
 }
 

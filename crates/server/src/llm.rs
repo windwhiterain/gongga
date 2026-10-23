@@ -141,9 +141,7 @@ impl LlmClient {
                 // acknowledged the request and then said nothing, which is what
                 // an overloaded or truncated response looks like. So is a
                 // stream that stopped without completing.
-                if !retryable(attempt, max_retries, produced)
-                    || cancel.is_cancelled()
-                {
+                if !retryable(attempt, max_retries, produced) || cancel.is_cancelled() {
                     if let Some(message) = failure {
                         let _ = tx.send(LlmEvent::Failed { message }).await;
                     }
@@ -264,11 +262,13 @@ impl LlmClient {
             match self.summarise_once(prompt).await {
                 Ok(text) if !text.trim().is_empty() => return Ok(text),
                 Ok(empty) if self.max_retries != 0 && attempt >= self.max_retries => {
-                    return Ok(empty)
+                    return Ok(empty);
                 }
                 Ok(_) => tracing::warn!(attempt, "compression came back empty; retrying"),
                 Err(e) if self.max_retries != 0 && attempt >= self.max_retries => return Err(e),
-                Err(e) => tracing::warn!(attempt, error = %e, "compression request failed; retrying"),
+                Err(e) => {
+                    tracing::warn!(attempt, error = %e, "compression request failed; retrying")
+                }
             }
             attempt += 1;
             tokio::time::sleep(backoff(self.retry_base, attempt)).await;
@@ -315,12 +315,18 @@ fn extract_text(body: &str) -> String {
         return text.to_string();
     }
     let mut out = String::new();
-    let items = value["output"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
+    let items = value["output"]
+        .as_array()
+        .map(|a| a.as_slice())
+        .unwrap_or(&[]);
     for item in items {
         if item["type"] != "message" {
             continue;
         }
-        let parts = item["content"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
+        let parts = item["content"]
+            .as_array()
+            .map(|a| a.as_slice())
+            .unwrap_or(&[]);
         for part in parts {
             if let Some(t) = part["text"].as_str() {
                 out.push_str(t);
@@ -460,7 +466,11 @@ async fn stream_once(
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(error = %e, elapsed = ?started.elapsed(), "model request: send failed");
-                let _ = tx.send(LlmEvent::Failed { message: format!("{e}") }).await;
+                let _ = tx
+                    .send(LlmEvent::Failed {
+                        message: format!("{e}"),
+                    })
+                    .await;
                 return;
             }
         };
@@ -642,10 +652,18 @@ async fn handle(
             );
             match kind {
                 ItemKind::Reasoning => {
-                    tx.send(LlmEvent::PartStart { part: ResponsePart::Reasoning, item_id: id }).await?;
+                    tx.send(LlmEvent::PartStart {
+                        part: ResponsePart::Reasoning,
+                        item_id: id,
+                    })
+                    .await?;
                 }
                 ItemKind::Message => {
-                    tx.send(LlmEvent::PartStart { part: ResponsePart::Output, item_id: id }).await?;
+                    tx.send(LlmEvent::PartStart {
+                        part: ResponsePart::Output,
+                        item_id: id,
+                    })
+                    .await?;
                 }
                 ItemKind::FunctionCall => {
                     tx.send(LlmEvent::PartStart {
@@ -674,7 +692,11 @@ async fn handle(
             // Not every provider emits `output_item.added` before the deltas,
             // so create the entry if it is missing: `output_item.done` sorts
             // out the kind from `type` regardless of how we got here.
-            items.entry(item_id.clone()).or_default().text.push_str(&delta);
+            items
+                .entry(item_id.clone())
+                .or_default()
+                .text
+                .push_str(&delta);
             tx.send(LlmEvent::Delta {
                 part: ResponsePart::Reasoning,
                 item_id,
@@ -739,7 +761,11 @@ async fn handle(
                         encrypted: item["encrypted_content"].as_str().map(str::to_string),
                     })
                     .await?;
-                    tx.send(LlmEvent::PartDone { part: ResponsePart::Reasoning, item_id: id }).await?;
+                    tx.send(LlmEvent::PartDone {
+                        part: ResponsePart::Reasoning,
+                        item_id: id,
+                    })
+                    .await?;
                 }
                 ItemKind::Message => {
                     let text = item["content"]
@@ -752,8 +778,16 @@ async fn handle(
                                 .join("")
                         })
                         .unwrap_or_default();
-                    tx.send(LlmEvent::Output { item_id: id.clone(), text }).await?;
-                    tx.send(LlmEvent::PartDone { part: ResponsePart::Output, item_id: id }).await?;
+                    tx.send(LlmEvent::Output {
+                        item_id: id.clone(),
+                        text,
+                    })
+                    .await?;
+                    tx.send(LlmEvent::PartDone {
+                        part: ResponsePart::Output,
+                        item_id: id,
+                    })
+                    .await?;
                 }
                 ItemKind::FunctionCall => {
                     tx.send(LlmEvent::ToolCall {
@@ -763,7 +797,11 @@ async fn handle(
                         arguments: item["arguments"].as_str().unwrap_or("{}").to_string(),
                     })
                     .await?;
-                    tx.send(LlmEvent::PartDone { part: ResponsePart::ToolCall, item_id: id }).await?;
+                    tx.send(LlmEvent::PartDone {
+                        part: ResponsePart::ToolCall,
+                        item_id: id,
+                    })
+                    .await?;
                 }
                 ItemKind::Unknown => {}
             }
@@ -795,7 +833,11 @@ fn history_item_to_input(item: &HistoryItem) -> Option<Value> {
             }),
             _ => json!({"role": role, "content": text}),
         },
-        HistoryItem::ToolCall { call_id, name, arguments } => {
+        HistoryItem::ToolCall {
+            call_id,
+            name,
+            arguments,
+        } => {
             json!({"type":"function_call","call_id":call_id,"name":name,"arguments":arguments})
         }
         HistoryItem::ToolResult { call_id, output } => {

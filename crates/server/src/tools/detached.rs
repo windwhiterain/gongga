@@ -320,7 +320,11 @@ impl DetachedRegistry {
         launched.shell = shell.to_string();
         // A just-launched job has its handle, so no listing is needed.
         let view = launched.view(&Default::default());
-        registry.jobs.entry(session.to_string()).or_default().push(launched);
+        registry
+            .jobs
+            .entry(session.to_string())
+            .or_default()
+            .push(launched);
         Ok(view)
     }
 
@@ -423,7 +427,9 @@ impl DetachedRegistry {
         let mut registry = self.inner.lock().await;
         // Job numbers must not be reused: a job adopted from the database has
         // to keep the number the previous run gave it.
-        registry.next_job = registry.next_job.max(rows.iter().map(|r| r.job).max().unwrap_or(0));
+        registry.next_job = registry
+            .next_job
+            .max(rows.iter().map(|r| r.job).max().unwrap_or(0));
         for row in rows {
             let pid = row.pid as u32;
             // Dead rows are the common case and the cheap one to answer: no
@@ -649,8 +655,7 @@ async fn live_batch(pids: Vec<u32>) -> std::collections::HashSet<u32> {
 /// per-pid version did when `tasklist` failed: the rows are then dropped as
 /// finished work rather than adopted on a hunch.
 fn alive_pids(pids: &[u32]) -> std::collections::HashSet<u32> {
-    let wanted: std::collections::HashSet<u32> =
-        pids.iter().copied().filter(|p| *p != 0).collect();
+    let wanted: std::collections::HashSet<u32> = pids.iter().copied().filter(|p| *p != 0).collect();
     if wanted.is_empty() {
         return wanted;
     }
@@ -740,7 +745,10 @@ mod tests {
         };
         let cwd = shell.cwd().to_path_buf();
         let reg = registry(dir.path(), Some(program.clone()));
-        let view = reg.start("main", "default", &script, &cwd).await.expect("start");
+        let view = reg
+            .start("main", "default", &script, &cwd)
+            .await
+            .expect("start");
         assert!(view.running, "it is alive the moment it is started");
 
         // The shell it was started from is gone; the job does not notice.
@@ -772,10 +780,16 @@ mod tests {
         let script = format!("sleep 20; echo done > '{}'", msys_path(&flag));
         let reg = registry(dir.path(), Some(program));
 
-        let view = reg.start("main", "build", &script, dir.path()).await.expect("start");
+        let view = reg
+            .start("main", "build", &script, dir.path())
+            .await
+            .expect("start");
         let stopped = reg.stop("main", "build", Some(view.job)).await;
         assert_eq!(stopped.stopped, 1, "the job should have been stopped");
-        assert!(reg.list("main").await.is_empty(), "a stopped job is forgotten");
+        assert!(
+            reg.list("main").await.is_empty(),
+            "a stopped job is forgotten"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         assert!(!flag.exists(), "the detached job was not stopped");
     }
@@ -829,7 +843,10 @@ mod tests {
         assert_eq!(fresh.adopt().await, 1, "only the live job is adopted");
         let listed = fresh.list("main").await;
         assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].job, 7, "it keeps the number the previous run gave it");
+        assert_eq!(
+            listed[0].job, 7,
+            "it keeps the number the previous run gave it"
+        );
         assert!(listed[0].running);
 
         // An adopted job has no handle, only a pid, and can still be stopped.
@@ -885,7 +902,11 @@ mod tests {
             .expect("recording our parent");
 
         let fresh = DetachedRegistry::new(store.clone(), None, dir.path().join("logs"), vec![]);
-        assert_eq!(fresh.adopt().await, 0, "a parent is not a job we may manage");
+        assert_eq!(
+            fresh.adopt().await,
+            0,
+            "a parent is not a job we may manage"
+        );
         assert!(
             store.detached_jobs().expect("rows").is_empty(),
             "the row must go, so nothing lists a job that would kill us"

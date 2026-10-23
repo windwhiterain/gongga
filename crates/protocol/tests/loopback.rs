@@ -98,13 +98,8 @@ impl Demux {
             if let std::collections::hash_map::Entry::Vacant(e) = self.conns.entry(peer) {
                 let (tx, rx) = mpsc::channel::<Frame>(1024);
                 e.insert(tx);
-                let channel = protocol::accept(
-                    self.socket.clone(),
-                    peer,
-                    rx,
-                    ChannelConfig::default(),
-                    1,
-                );
+                let channel =
+                    protocol::accept(self.socket.clone(), peer, rx, ChannelConfig::default(), 1);
                 tokio::spawn(echo(channel));
             }
             let tx = self.conns.get(&peer).unwrap().clone();
@@ -200,7 +195,11 @@ async fn a_paused_consumer_does_not_stall_the_link() {
     let (release, held) = tokio::sync::oneshot::channel::<()>();
     let producer = tokio::spawn(async move {
         for i in 0..TOTAL {
-            if sink.send(format!("message-{i}").into_bytes()).await.is_err() {
+            if sink
+                .send(format!("message-{i}").into_bytes())
+                .await
+                .is_err()
+            {
                 return i;
             }
         }

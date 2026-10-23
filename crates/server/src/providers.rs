@@ -121,7 +121,7 @@ impl Entry {
             .get(requested)
             .cloned()
             .unwrap_or_else(|| requested.to_string());
-        if self.reasoning_levels.iter().any(|l| *l == mapped) {
+        if self.reasoning_levels.contains(&mapped) {
             return Ok(mapped);
         }
         Err(format!(
@@ -246,7 +246,8 @@ impl Catalog {
     pub fn first_entry_of(&self, provider_id: &str) -> Option<Entry> {
         let provider = self.providers.iter().find(|p| p.id == provider_id)?;
         let model = provider.models.first()?;
-        self.entry_with(&format!("{}/{}", provider.id, model.id)).ok()
+        self.entry_with(&format!("{}/{}", provider.id, model.id))
+            .ok()
     }
 
     /// The entry a server with nothing configured should use: the first one
@@ -280,8 +281,8 @@ impl Catalog {
             .iter()
             .find(|p| p.id == entry.provider)
             .ok_or_else(|| format!("no provider {:?}", entry.provider))?;
-        let (api_key, api_key_env) = credential(provider, lookup).ok_or_else(|| {
-            match &provider.key_env {
+        let (api_key, api_key_env) =
+            credential(provider, lookup).ok_or_else(|| match &provider.key_env {
                 Some(env) => format!(
                     "no key for provider {}: set {env} (the roster has no literal key either)",
                     provider.id
@@ -290,8 +291,7 @@ impl Catalog {
                     "no key for provider {}: the roster names no key and no key_env",
                     provider.id
                 ),
-            }
-        })?;
+            })?;
         Ok(Choice {
             entry,
             api_key,
@@ -302,9 +302,9 @@ impl Catalog {
     /// Splits at the first `/`: provider ids never contain one, model ids
     /// sometimes do (`goat/deepseek/deepseek-v4.1-flash`).
     fn entry_with(&self, spec: &str) -> Result<Entry, String> {
-        let (provider_id, model_id) = spec.split_once('/').ok_or_else(|| {
-            format!("expected <provider>/<model>, got {spec:?}")
-        })?;
+        let (provider_id, model_id) = spec
+            .split_once('/')
+            .ok_or_else(|| format!("expected <provider>/<model>, got {spec:?}"))?;
         let provider = self
             .providers
             .iter()
@@ -323,8 +323,7 @@ impl Catalog {
             .iter()
             .find(|m| m.id == model_id)
             .ok_or_else(|| {
-                let mut known: Vec<&str> =
-                    provider.models.iter().map(|m| m.id.as_str()).collect();
+                let mut known: Vec<&str> = provider.models.iter().map(|m| m.id.as_str()).collect();
                 known.sort_unstable();
                 format!(
                     "provider {} has no model {model_id:?}; known: {}",
@@ -332,12 +331,8 @@ impl Catalog {
                     known.join(", ")
                 )
             })?;
-        let endpoint = openai_endpoint(provider).ok_or_else(|| {
-            format!(
-                "provider {} has no OpenAI-compatible endpoint",
-                provider.id
-            )
-        })?;
+        let endpoint = openai_endpoint(provider)
+            .ok_or_else(|| format!("provider {} has no OpenAI-compatible endpoint", provider.id))?;
         Ok(Entry {
             provider: provider.id.clone(),
             provider_name: provider.name.clone(),
@@ -615,7 +610,9 @@ key = "x"
     #[test]
     fn resolves_a_provider_model_pair() {
         let c = catalog();
-        let choice = c.resolve_with("deepseek-official/deepseek-flash", &no_env).unwrap();
+        let choice = c
+            .resolve_with("deepseek-official/deepseek-flash", &no_env)
+            .unwrap();
         assert_eq!(choice.entry.spec(), "deepseek-official/deepseek-flash");
         // The trailing slash in the file must not become a double slash in the
         // URL the request is built from.
@@ -638,7 +635,9 @@ key = "x"
     fn the_environment_beats_the_literal_key() {
         let c = catalog();
         let env = |name: &str| (name == "DEEPSEEK_API_KEY").then(|| "sk-from-env".to_string());
-        let choice = c.resolve_with("deepseek-official/deepseek-flash", &env).unwrap();
+        let choice = c
+            .resolve_with("deepseek-official/deepseek-flash", &env)
+            .unwrap();
         assert_eq!(choice.api_key, "sk-from-env");
         assert_eq!(choice.api_key_env.as_deref(), Some("DEEPSEEK_API_KEY"));
     }
@@ -648,7 +647,10 @@ key = "x"
     fn an_unknown_provider_lists_the_known_ones() {
         let c = catalog();
         let err = c.resolve_with("nope/model", &no_env).unwrap_err();
-        assert!(err.contains("known: anthropic-only, deepseek-official, goat"), "{err}");
+        assert!(
+            err.contains("known: anthropic-only, deepseek-official, goat"),
+            "{err}"
+        );
         let err = c.resolve_with("goat/missing-model", &no_env).unwrap_err();
         assert!(err.contains("has no model"), "{err}");
     }
@@ -661,7 +663,9 @@ key = "x"
 
         let mut c = catalog();
         c.providers[0].key = None;
-        let err = c.resolve_with("deepseek-official/deepseek-flash", &no_env).unwrap_err();
+        let err = c
+            .resolve_with("deepseek-official/deepseek-flash", &no_env)
+            .unwrap_err();
         assert!(err.contains("DEEPSEEK_API_KEY"), "{err}");
     }
 
@@ -670,7 +674,10 @@ key = "x"
     #[test]
     fn a_bare_model_id_finds_its_provider() {
         let c = catalog();
-        assert_eq!(c.find_model("deepseek-flash").unwrap().entry.provider, "deepseek-official");
+        assert_eq!(
+            c.find_model("deepseek-flash").unwrap().entry.provider,
+            "deepseek-official"
+        );
         // Only an Anthropic endpoint: not usable through the Responses API.
         assert!(c.find_model("opus").is_none());
         assert!(c.find_model("nope").is_none());

@@ -30,7 +30,9 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message as Ws;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-use super::{Channels, ChatId, Inbox as InboxTrait, Incoming, MsgRef, Outbox as OutboxTrait, Outgoing};
+use super::{
+    Channels, ChatId, Inbox as InboxTrait, Incoming, MsgRef, Outbox as OutboxTrait, Outgoing,
+};
 use crate::config::Qq as Config;
 
 /// 群与单聊的 @ 消息。`1 << 25` covers `GROUP_AT_MESSAGE_CREATE` and
@@ -69,7 +71,11 @@ pub async fn open(cfg: &Config) -> anyhow::Result<Channels> {
         last_s: None,
         backoff: Duration::from_secs(1),
     });
-    let outbox = Arc::new(Outbox { cfg: cfg.clone(), http, token });
+    let outbox = Arc::new(Outbox {
+        cfg: cfg.clone(),
+        http,
+        token,
+    });
     Ok(Channels { inbox, outbox })
 }
 
@@ -87,7 +93,11 @@ struct Token {
 
 impl Token {
     fn new(cfg: Config, http: reqwest::Client) -> Self {
-        Self { cfg, http, cache: Mutex::new(None) }
+        Self {
+            cfg,
+            http,
+            cache: Mutex::new(None),
+        }
     }
 
     async fn get(&self) -> anyhow::Result<String> {
@@ -123,8 +133,10 @@ impl Token {
         let ttl = loose_u64(&body["expires_in"]).unwrap_or(7200);
         // A minute early: a token that expires mid-request is a 401 for no
         // reason anyone can debug later.
-        *self.cache.lock().unwrap() =
-            Some((token.clone(), Instant::now() + Duration::from_secs(ttl.saturating_sub(60))));
+        *self.cache.lock().unwrap() = Some((
+            token.clone(),
+            Instant::now() + Duration::from_secs(ttl.saturating_sub(60)),
+        ));
         Ok(token)
     }
 }
@@ -154,7 +166,11 @@ enum Step {
 
 impl Inbox {
     fn api(&self) -> &'static str {
-        if self.cfg.sandbox { SANDBOX_API } else { LIVE_API }
+        if self.cfg.sandbox {
+            SANDBOX_API
+        } else {
+            LIVE_API
+        }
     }
 
     /// Connects, says hello, and identifies. Errors here are retried by
@@ -232,7 +248,9 @@ impl Inbox {
         let Some((sink, _)) = self.socket.as_mut() else {
             return Err(anyhow!("not connected"));
         };
-        sink.send(frame).await.map_err(|e| anyhow!("gateway write failed: {e}"))
+        sink.send(frame)
+            .await
+            .map_err(|e| anyhow!("gateway write failed: {e}"))
     }
 
     /// One cycle: either the heartbeat is due, or a frame arrives.
@@ -334,7 +352,11 @@ pub struct Outbox {
 
 impl Outbox {
     fn api(&self) -> &'static str {
-        if self.cfg.sandbox { SANDBOX_API } else { LIVE_API }
+        if self.cfg.sandbox {
+            SANDBOX_API
+        } else {
+            LIVE_API
+        }
     }
 
     async fn post(&self, token: &str, path: &str, body: Value) -> anyhow::Result<()> {
@@ -396,7 +418,10 @@ fn parse_dispatch(kind: &str, d: &Value) -> Option<Incoming> {
     let (chat, user) = match kind {
         "GROUP_AT_MESSAGE_CREATE" => (
             ChatId::Group(d["group_openid"].as_str()?.to_string()),
-            d["author"]["member_openid"].as_str().unwrap_or_default().to_string(),
+            d["author"]["member_openid"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
         ),
         "C2C_MESSAGE_CREATE" => {
             let openid = d["author"]["user_openid"].as_str()?.to_string();
@@ -435,7 +460,9 @@ fn strip_mentions(content: &str) -> String {
 }
 
 fn loose_u64(value: &Value) -> Option<u64> {
-    value.as_u64().or_else(|| value.as_str().and_then(|s| s.parse().ok()))
+    value
+        .as_u64()
+        .or_else(|| value.as_str().and_then(|s| s.parse().ok()))
 }
 
 #[cfg(test)]

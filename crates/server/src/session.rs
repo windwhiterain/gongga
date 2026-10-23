@@ -153,11 +153,7 @@ impl SessionHandle {
     /// calling it from a turn that has not been let in yet would stop the one
     /// it is supposed to be waiting behind.
     pub fn new_turn(&self) -> (u64, CancellationToken) {
-        let mut guard = self
-            .inner
-            .cancel
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.inner.cancel.lock().unwrap_or_else(|e| e.into_inner());
         guard.cancel();
         let token = CancellationToken::new();
         *guard = token.clone();
@@ -391,7 +387,9 @@ impl SessionManager {
             Some(p) => PathBuf::from(p),
             None => std::env::current_dir()?,
         };
-        let id = self.store.create_session(name, &self.model, &cwd.to_string_lossy())?;
+        let id = self
+            .store
+            .create_session(name, &self.model, &cwd.to_string_lossy())?;
         // Pin the entry the session starts on, when the roster knows that
         // model. A session is not "whatever the server's default is today": its
         // reasoning items carry blobs only the producing provider can replay,
@@ -447,7 +445,11 @@ impl SessionManager {
             .clone()
             .ok_or_else(|| anyhow::anyhow!("no bash available; set [tools.bash] program"))?;
         let cwd = PathBuf::from(&row.cwd);
-        let cwd = if cwd.exists() { cwd } else { std::env::current_dir()? };
+        let cwd = if cwd.exists() {
+            cwd
+        } else {
+            std::env::current_dir()?
+        };
         let mut shells = ShellSet::new(program, cwd.clone(), self.shell_env.clone());
         // The default shell is part of the session's identity, so it exists
         // before anything asks for it.

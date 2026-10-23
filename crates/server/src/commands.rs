@@ -84,15 +84,27 @@ pub struct Outcome {
 
 impl Outcome {
     fn ok(message: impl Into<String>) -> Self {
-        Self { ok: true, message: message.into(), data: None }
+        Self {
+            ok: true,
+            message: message.into(),
+            data: None,
+        }
     }
 
     fn ok_with(message: impl Into<String>, data: serde_json::Value) -> Self {
-        Self { ok: true, message: message.into(), data: Some(data) }
+        Self {
+            ok: true,
+            message: message.into(),
+            data: Some(data),
+        }
     }
 
     fn err(message: impl Into<String>) -> Self {
-        Self { ok: false, message: message.into(), data: None }
+        Self {
+            ok: false,
+            message: message.into(),
+            data: None,
+        }
     }
 }
 
@@ -102,7 +114,13 @@ pub fn catalog() -> Vec<CommandSpec> {
             name: "send_message".into(),
             summary: "Send a message to a session and run a turn.".into(),
             args: vec![
-                arg("message", "The message text.", true, Some("text"), CompletionSource::None),
+                arg(
+                    "message",
+                    "The message text.",
+                    true,
+                    Some("text"),
+                    CompletionSource::None,
+                ),
                 arg(
                     "session",
                     "Target session. Required: there is no implicit default.",
@@ -140,9 +158,7 @@ pub fn catalog() -> Vec<CommandSpec> {
                      bare model id). Defaults to the model the session was created with.",
                     false,
                     Some("provider/model"),
-                    CompletionSource::Static(
-                        crate::providers::roster().specs(),
-                    ),
+                    CompletionSource::Static(crate::providers::roster().specs()),
                 ),
                 arg(
                     "compact_threshold",
@@ -155,10 +171,12 @@ pub fn catalog() -> Vec<CommandSpec> {
                     // Any 0-100 is accepted; the list is the points worth
                     // offering, not the ones allowed.
                     CompletionSource::Static(
-                        ["0", "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%"]
-                            .iter()
-                            .map(|s| s.to_string())
-                            .collect(),
+                        [
+                            "0", "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%",
+                        ]
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect(),
                     ),
                 ),
                 arg(
@@ -330,13 +348,14 @@ async fn send_message(d: &Dispatch, args: &Args) -> Outcome {
     // and took the second one's pending row with it, so a crash before the
     // second turn ran lost the message entirely -- it was neither in the
     // transcript nor in the pending list.
-    let task_id = match d
-        .store
-        .add_pending_task(&label, kind, &json!({"session": label, "message": message}))
-    {
-        Ok(id) => id,
-        Err(e) => return Outcome::err(format!("could not record the pending turn: {e}")),
-    };
+    let task_id =
+        match d
+            .store
+            .add_pending_task(&label, kind, &json!({"session": label, "message": message}))
+        {
+            Ok(id) => id,
+            Err(e) => return Outcome::err(format!("could not record the pending turn: {e}")),
+        };
 
     if busy {
         // The turn that was running will fold this in at its next step
@@ -387,7 +406,10 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     // A percentage is a percentage of something. If the model has no context
     // window on record, the number has no meaning -- and quietly keeping the
     // old budget would look like the setting was applied.
-    let context = entry.as_ref().map(|e| e.context).unwrap_or(d.agent.default_context);
+    let context = entry
+        .as_ref()
+        .map(|e| e.context)
+        .unwrap_or(d.agent.default_context);
     if let (Some(percent), None) = (threshold, context) {
         return Outcome::err(format!(
             "--compact_threshold {percent}% needs a context window to be a percentage of, and \
@@ -400,7 +422,10 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     }
     // `set_session` doubles as creation: naming a session is the only way to
     // get one, and refusing to create it would make the command useless.
-    let session = match d.sessions.ensure(&name, args.get("cwd").map(String::as_str)) {
+    let session = match d
+        .sessions
+        .ensure(&name, args.get("cwd").map(String::as_str))
+    {
         Ok(session) => session,
         Err(e) => return Outcome::err(e.to_string()),
     };
@@ -513,9 +538,9 @@ fn resolve_llm(d: &Dispatch, spec: &str) -> Result<crate::providers::Entry, Stri
 /// the conversation survives, so it is refused rather than rounded.
 fn parse_percent(raw: &str) -> Result<u8, String> {
     let trimmed = raw.trim().trim_end_matches('%').trim();
-    let value: u16 = trimmed.parse().map_err(|_| {
-        format!("--compact_threshold takes a percentage like `30%`, got {raw:?}")
-    })?;
+    let value: u16 = trimmed
+        .parse()
+        .map_err(|_| format!("--compact_threshold takes a percentage like `30%`, got {raw:?}"))?;
     if value > 100 {
         return Err(format!(
             "--compact_threshold is a percentage of the context window, so it cannot exceed 100%; \
@@ -604,7 +629,10 @@ async fn del_session(d: &Dispatch, args: &Args) -> Outcome {
             let mut message = if stopped.total() == 0 {
                 format!("deleted session {name}")
             } else {
-                format!("deleted session {name} and stopped {} detached job(s)", stopped.stopped)
+                format!(
+                    "deleted session {name} and stopped {} detached job(s)",
+                    stopped.stopped
+                )
             };
             if was_busy {
                 message.push_str(" (interrupted the running turn)");
@@ -950,15 +978,24 @@ mod tests {
                 .map(|a| a.completions.clone())
                 .unwrap_or(CompletionSource::None)
         };
-        assert!(matches!(source("send_message", "session"), CompletionSource::Sessions));
-        assert!(matches!(source("set_session", "cwd"), CompletionSource::Paths));
+        assert!(matches!(
+            source("send_message", "session"),
+            CompletionSource::Sessions
+        ));
+        assert!(matches!(
+            source("set_session", "cwd"),
+            CompletionSource::Paths
+        ));
         assert!(matches!(
             source("set_session", "compact_threshold"),
             CompletionSource::Static(_)
         ));
         // Free-form text stays free-form: the catalogue says nothing, and the
         // client must not invent a list for it.
-        assert!(matches!(source("send_message", "message"), CompletionSource::None));
+        assert!(matches!(
+            source("send_message", "message"),
+            CompletionSource::None
+        ));
     }
 
     /// `set_session` is where a session's model and compaction point are

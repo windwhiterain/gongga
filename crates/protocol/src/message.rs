@@ -25,11 +25,7 @@ pub enum ClientMessage {
     /// not match the one the server was started with.
     Hello { client: ClientInfo, key: String },
     /// A command, already parsed and with sticky arguments applied.
-    Command {
-        id: u64,
-        name: String,
-        args: Args,
-    },
+    Command { id: u64, name: String, args: Args },
     /// Polite disconnect.
     Bye,
 }
@@ -77,11 +73,7 @@ pub struct ServerInfo {
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum Event {
     /// Echo of a command the server accepted for execution.
-    Cmd {
-        id: u64,
-        name: String,
-        args: Args,
-    },
+    Cmd { id: u64, name: String, args: Args },
     /// Terminal outcome of a command.
     CmdResult {
         id: u64,

@@ -27,8 +27,8 @@ use crate::commands::Dispatch;
 use crate::config::Config;
 use crate::llm::LlmClient;
 use crate::session::SessionManager;
-use crate::tools::detached::DetachedRegistry;
 use crate::tools::ToolRegistry;
+use crate::tools::detached::DetachedRegistry;
 
 #[derive(Debug, Parser)]
 #[command(name = "gongga-server", about = "Gongga harness server", version)]
@@ -74,7 +74,11 @@ struct Args {
 /// and only as a last resort the bare name -- announced, because a bare name
 /// that is not on `PATH` is a dead end the agent cannot diagnose.
 fn cli_path() -> PathBuf {
-    let name = if cfg!(windows) { "gongga.exe" } else { "gongga" };
+    let name = if cfg!(windows) {
+        "gongga.exe"
+    } else {
+        "gongga"
+    };
     let mut tried = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {

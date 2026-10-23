@@ -30,7 +30,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::interval;
 
-use crate::frame::{Frame, FrameError, Flags, HEADER_LEN, DEFAULT_MTU};
+use crate::frame::{DEFAULT_MTU, Flags, Frame, FrameError, HEADER_LEN};
 
 /// Channel tuning. The defaults are sized for a LAN/Internet link between a
 /// single CLI and a single server, where round trips are a few milliseconds and
@@ -526,7 +526,9 @@ impl ChannelCore {
         };
         self.srtt = Some(Duration::from_secs_f64(srtt_ms / 1000.0));
         self.rttvar = Duration::from_secs_f64(rttvar_ms / 1000.0);
-        self.set_rto(Duration::from_secs_f64((srtt_ms + 4.0 * rttvar_ms) / 1000.0));
+        self.set_rto(Duration::from_secs_f64(
+            (srtt_ms + 4.0 * rttvar_ms) / 1000.0,
+        ));
     }
 
     fn set_rto(&mut self, rto: Duration) {
@@ -596,11 +598,7 @@ impl ChannelCore {
         Ok(())
     }
 
-    fn on_frame(
-        &mut self,
-        frame: Frame,
-        out: &mut Vec<Vec<u8>>,
-    ) -> Result<(), ChannelError> {
+    fn on_frame(&mut self, frame: Frame, out: &mut Vec<Vec<u8>>) -> Result<(), ChannelError> {
         self.last_recv = Instant::now();
         if frame.flags.contains(Flags::RST) {
             self.state = ConnState::Closing;
@@ -611,12 +609,14 @@ impl ChannelCore {
             // Answer any SYN, including repeats of one we already answered.
             self.pending_syn_ack = true;
         }
-        if frame.flags.contains(Flags::SYN) && frame.flags.contains(Flags::ACK)
-            && self.state == ConnState::Handshaking {
-                self.conn_id = frame.conn_id;
-                self.state = ConnState::Established;
-                self.backoff = 0;
-            }
+        if frame.flags.contains(Flags::SYN)
+            && frame.flags.contains(Flags::ACK)
+            && self.state == ConnState::Handshaking
+        {
+            self.conn_id = frame.conn_id;
+            self.state = ConnState::Established;
+            self.backoff = 0;
+        }
         if frame.window > 0 {
             self.peer_window = frame.window;
         }
@@ -900,7 +900,8 @@ async fn on_tick(
     // A (possibly repeated) SYN from the client always gets a SYN-ACK.
     if core.pending_syn_ack {
         core.pending_syn_ack = false;
-        io.send(&Frame::syn_ack(core.conn_id, core.cfg.window)).await?;
+        io.send(&Frame::syn_ack(core.conn_id, core.cfg.window))
+            .await?;
         core.last_send = now;
     }
 

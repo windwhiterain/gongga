@@ -154,11 +154,17 @@ pub struct ToolOutcome {
 
 impl ToolOutcome {
     pub fn ok(output: impl Into<String>) -> Self {
-        Self { output: output.into(), ok: true }
+        Self {
+            output: output.into(),
+            ok: true,
+        }
     }
 
     pub fn err(output: impl Into<String>) -> Self {
-        Self { output: output.into(), ok: false }
+        Self {
+            output: output.into(),
+            ok: false,
+        }
     }
 }
 
@@ -199,7 +205,10 @@ impl ToolRegistry {
     }
 
     pub fn get(&self, name: &str) -> Option<&dyn Tool> {
-        self.tools.iter().find(|t| t.name() == name).map(|t| t.as_ref())
+        self.tools
+            .iter()
+            .find(|t| t.name() == name)
+            .map(|t| t.as_ref())
     }
 
     /// Tool schemas in the shape the Responses API expects.
@@ -285,10 +294,12 @@ fn argument_error(tool: &dyn Tool, args: &Value) -> Option<String> {
     let unexpected: Vec<String> = given
         .keys()
         .filter(|k| !declared.contains(&k.as_str()))
-        .map(|wrong| match declared.iter().find(|d| is_shorthand_of(d, wrong)) {
-            Some(right) => format!("`{wrong}` (did you mean `{right}`?)"),
-            None => format!("`{wrong}`"),
-        })
+        .map(
+            |wrong| match declared.iter().find(|d| is_shorthand_of(d, wrong)) {
+                Some(right) => format!("`{wrong}` (did you mean `{right}`?)"),
+                None => format!("`{wrong}`"),
+            },
+        )
         .collect();
     if !unexpected.is_empty() {
         message.push_str(&format!("  unexpected: {}\n", unexpected.join(", ")));
@@ -499,8 +510,14 @@ impl Tool for BashTool {
             // Both flags return at once, which is the point: the turn stays
             // responsive instead of sitting out a long command. They differ in
             // what happens to the output, not in whether the call blocks.
-            let background = args.get("background").and_then(|v| v.as_bool()).unwrap_or(false);
-            let detached = args.get("detached").and_then(|v| v.as_bool()).unwrap_or(false);
+            let background = args
+                .get("background")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let detached = args
+                .get("detached")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             if background && detached {
                 return ToolOutcome::err(
                     "pick one: `background` collects the output, `detached` does not",
@@ -642,12 +659,7 @@ impl Tool for BashTool {
                             }
                             text.push_str(&stderr);
                         }
-                        let text = crate::tools::bash::cap_output(
-                            &text,
-                            cap,
-                            &output_dir,
-                            &label,
-                        );
+                        let text = crate::tools::bash::cap_output(&text, cap, &output_dir, &label);
                         let text = if text.is_empty() {
                             "(no output)".to_string()
                         } else {
@@ -656,19 +668,18 @@ impl Tool for BashTool {
                         let status = match code {
                             Some(0) => "finished successfully".to_string(),
                             Some(c) => format!("finished with exit status {c}"),
-                            None => "finished, though the exit status could not be read"
-                                .to_string(),
+                            None => {
+                                "finished, though the exit status could not be read".to_string()
+                            }
                         };
                         let message = format!(
                             "The command you started in shell `{owned}`, which outlived its \
                              {secs}s wait and was left running, has now {status}.\n\n{text}",
                             secs = waited.as_secs()
                         );
-                        if let Err(e) = store.add_pending_task(
-                            &session,
-                            "inject",
-                            &json!({"message": message}),
-                        ) {
+                        if let Err(e) =
+                            store.add_pending_task(&session, "inject", &json!({"message": message}))
+                        {
                             tracing::warn!(session = %session, "could not queue a finished command: {e}");
                         }
                     });
@@ -733,9 +744,7 @@ impl Tool for BashTool {
                     };
                     match o.exit_code {
                         Some(0) => ToolOutcome::ok(text),
-                        Some(code) => {
-                            ToolOutcome::err(format!("{text}\n[exit status {code}]"))
-                        }
+                        Some(code) => ToolOutcome::err(format!("{text}\n[exit status {code}]")),
                         None => ToolOutcome::err(format!("{text}\n[shell exited]")),
                     }
                 }
@@ -834,10 +843,7 @@ impl Tool for CheckBashTool {
                     format!("{name}: {jobs} job(s) still running, no output yet")
                 });
             }
-            ToolOutcome::ok(format!(
-                "{text}\n[{name}: {} job(s) still running]",
-                jobs
-            ))
+            ToolOutcome::ok(format!("{text}\n[{name}: {} job(s) still running]", jobs))
         })
     }
 }
@@ -1146,9 +1152,12 @@ mod tests {
         // Still only `command`: a label drifting into a required argument would
         // turn a rejected call into a rejected *idea*, and the model would
         // stop describing what it is doing.
-        assert_eq!(params["required"], serde_json::json!(["command"]), "{params}");
+        assert_eq!(
+            params["required"],
+            serde_json::json!(["command"]),
+            "{params}"
+        );
     }
-
 
     /// Both spill paths name files the same way, so a dump can be found again
     /// by the thing it was for.
@@ -1171,7 +1180,8 @@ mod tests {
     }
 
     #[test]
-    fn detached_jobs_have_an_explicit_way_to_end() {        let reg = ToolRegistry::with_builtins(Duration::from_secs(30), 8_000);
+    fn detached_jobs_have_an_explicit_way_to_end() {
+        let reg = ToolRegistry::with_builtins(Duration::from_secs(30), 8_000);
         let kill = reg.get("kill_bash").expect("kill_bash is registered");
         // Omitting the job number means "every job of that shell", which is
         // the only shape that makes sense after a restart.
@@ -1198,7 +1208,10 @@ mod tests {
         let props = &bash.parameters["properties"];
         assert!(props.get("name").is_some(), "bash is nameable");
         assert!(props.get("command").is_some());
-        assert!(props.get("background").is_some(), "bash can run in the background");
+        assert!(
+            props.get("background").is_some(),
+            "bash can run in the background"
+        );
         assert!(props.get("detached").is_some(), "bash can run detached");
     }
 
@@ -1206,7 +1219,9 @@ mod tests {
     fn reading_tools_default_to_the_default_shell() {
         let reg = ToolRegistry::with_builtins(Duration::from_secs(30), 8_000);
         for name in ["check_bash", "list_bash"] {
-            let tool = reg.get(name).unwrap_or_else(|| panic!("{name} is registered"));
+            let tool = reg
+                .get(name)
+                .unwrap_or_else(|| panic!("{name} is registered"));
             let params = tool.parameters();
             if name == "check_bash" {
                 assert!(params["properties"].get("name").is_some());

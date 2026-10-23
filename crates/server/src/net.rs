@@ -7,14 +7,14 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
 use protocol::{
     self, ClientMessage, Event, ServerInfo, ServerMessage, decode_client, encode_server,
-    frame::{Frame, Flags},
+    frame::{Flags, Frame},
 };
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
@@ -126,7 +126,10 @@ pub async fn serve(cfg: Arc<Config>, d: Arc<Dispatch>, bus: EventBus) -> anyhow:
             // its old address behind forever. Release it here, unless the same
             // address has already been re-inserted for a newer connection.
             let mut map = conns.lock().unwrap();
-            let mine = map.get(&peer).map(|p| p.conn_id == conn_id).unwrap_or(false);
+            let mine = map
+                .get(&peer)
+                .map(|p| p.conn_id == conn_id)
+                .unwrap_or(false);
             if mine {
                 map.remove(&peer);
                 tracing::debug!(%peer, conn_id, "released peer entry");
@@ -301,7 +304,9 @@ async fn authenticate(
     };
     let _ = send_server(
         sink,
-        &ServerMessage::Denied { reason: outcome.to_string() },
+        &ServerMessage::Denied {
+            reason: outcome.to_string(),
+        },
     )
     .await;
     false
@@ -326,10 +331,7 @@ fn key_matches(given: &str, expected: &str) -> bool {
     acc == 0
 }
 
-async fn send_server(
-    sink: &protocol::ChannelSink,
-    msg: &ServerMessage,
-) -> anyhow::Result<()> {
+async fn send_server(sink: &protocol::ChannelSink, msg: &ServerMessage) -> anyhow::Result<()> {
     let bytes = encode_server(msg)?;
     sink.send(bytes).await.map_err(|e| anyhow::anyhow!("{e}"))
 }

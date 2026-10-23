@@ -303,7 +303,12 @@ impl Client {
 
     fn handle(&mut self, msg: ServerMessage, sink: &mut dyn Sink) {
         match msg {
-            ServerMessage::Hello { server, commands, sessions, .. } => {
+            ServerMessage::Hello {
+                server,
+                commands,
+                sessions,
+                ..
+            } => {
                 self.model = server.model.clone();
                 self.sessions = sessions;
                 self.catalog.set_server_commands(commands);
@@ -339,7 +344,14 @@ impl Client {
                 if message.is_empty() {
                     return;
                 }
-                sink.line(if ok { LineKind::Result } else { LineKind::Error }, &message);
+                sink.line(
+                    if ok {
+                        LineKind::Result
+                    } else {
+                        LineKind::Error
+                    },
+                    &message,
+                );
             }
             Event::Response(e) => self.handle_response(e, sink),
             Event::ToolAnswer(e) => self.handle_tool_answer(e, sink),
@@ -348,7 +360,11 @@ impl Client {
                 self.catalog.set_sessions(self.session_names());
                 self.refresh(sink);
             }
-            Event::Status { session, status, detail } => {
+            Event::Status {
+                session,
+                status,
+                detail,
+            } => {
                 let label = match status {
                     SessionStatus::Idle => "idle",
                     SessionStatus::Running => "running",
@@ -646,7 +662,10 @@ impl Client {
         match name {
             "set_persistant_cmd_argument" => {
                 let Some(value) = args.get("value").cloned() else {
-                    sink.line(LineKind::Error, "set_persistant_cmd_argument requires --value");
+                    sink.line(
+                        LineKind::Error,
+                        "set_persistant_cmd_argument requires --value",
+                    );
                     return;
                 };
                 match self.sticky.set(&arg_name, &value) {
@@ -668,7 +687,10 @@ impl Client {
                 ),
                 Err(e) => sink.line(LineKind::Error, &format!("could not save: {e}")),
             },
-            other => sink.line(LineKind::Error, &format!("unknown client command {other:?}")),
+            other => sink.line(
+                LineKind::Error,
+                &format!("unknown client command {other:?}"),
+            ),
         }
     }
 
@@ -735,11 +757,7 @@ pub async fn run(args: &Args, command: &[String]) -> anyhow::Result<()> {
     result
 }
 
-async fn run_once(
-    client: &mut Client,
-    link: &mut Link,
-    command: &[String],
-) -> anyhow::Result<()> {
+async fn run_once(client: &mut Client, link: &mut Link, command: &[String]) -> anyhow::Result<()> {
     let mut printer = NullSink::default();
     let msg = match client.command(command.to_vec(), &mut printer) {
         // A client-side command already did its work; nothing goes on the wire.
@@ -762,7 +780,9 @@ async fn run_once(
         ClientMessage::Command { id, .. } => *id,
         other => anyhow::bail!("{command:?} produced {other:?}, expected a command"),
     };
-    link.send(msg).await.map_err(|e| anyhow!("send failed: {e}"))?;
+    link.send(msg)
+        .await
+        .map_err(|e| anyhow!("send failed: {e}"))?;
 
     // No deadline: what is being waited for is one command's acknowledgement,
     // not the work it may start. `send_message` returns as soon as the server
@@ -779,7 +799,13 @@ async fn run_once(
         // The event *is* the output. JSON lines survive `jq`, a model reading
         // them, and a pipe; rendered text survives none of those.
         println!("{}", serde_json::to_string(&event)?);
-        if let Event::CmdResult { id: rid, ok, message, .. } = &event {
+        if let Event::CmdResult {
+            id: rid,
+            ok,
+            message,
+            ..
+        } = &event
+        {
             if *rid == id {
                 return if *ok {
                     Ok(())
@@ -940,7 +966,10 @@ async fn connect(args: &Args) -> anyhow::Result<(Client, Link)> {
         Ok(pair) => pair,
         Err(failure) if failure.is_fatal() => return Err(failure.into_error()),
         Err(failure) => {
-            return Err(anyhow!("{}; is `gongga-server` running?", failure.message()));
+            return Err(anyhow!(
+                "{}; is `gongga-server` running?",
+                failure.message()
+            ));
         }
     };
     let mut client = build_client(args);
@@ -987,10 +1016,14 @@ fn resolve_server_with(args: &Connection, env: &Env) -> anyhow::Result<SocketAdd
         return s.parse().with_context(|| format!("parsing --server {s:?}"));
     }
     if let Some(s) = env("GONGGA_SERVER") {
-        return s.parse().with_context(|| format!("parsing GONGGA_SERVER {s:?}"));
+        return s
+            .parse()
+            .with_context(|| format!("parsing GONGGA_SERVER {s:?}"));
     }
     if let Some(bind) = config_value(args, |c| c.server.as_ref().and_then(|s| s.bind.clone())) {
-        return bind.parse().with_context(|| format!("parsing bind {bind:?}"));
+        return bind
+            .parse()
+            .with_context(|| format!("parsing bind {bind:?}"));
     }
     Ok(DEFAULT_SERVER.parse().unwrap())
 }
@@ -1102,7 +1135,10 @@ mod tests {
         ] {
             let mut s = VecSink(Vec::new());
             assert!(
-                matches!(c.command(vec![arg.to_string()], &mut s), Submission::Rejected),
+                matches!(
+                    c.command(vec![arg.to_string()], &mut s),
+                    Submission::Rejected
+                ),
                 "{arg} was accepted"
             );
             let said = s.0.join("\n");
@@ -1198,10 +1234,7 @@ mod tests {
             resolve_server_with(&args, &env).unwrap().to_string(),
             "127.0.0.1:9700"
         );
-        assert_eq!(
-            resolve_key_with(&args, &env).as_deref(),
-            Some("from-shell")
-        );
+        assert_eq!(resolve_key_with(&args, &env).as_deref(), Some("from-shell"));
     }
 
     #[test]
@@ -1313,7 +1346,10 @@ mod tests {
     fn one_shot_sink_keeps_errors_and_nothing_else() {
         let mut s = NullSink::default();
         s.line(LineKind::System, "connected to gongga-server");
-        s.line(LineKind::Error, "send_message is missing required argument(s): session");
+        s.line(
+            LineKind::Error,
+            "send_message is missing required argument(s): session",
+        );
         s.stream("k", LineKind::Assistant, "", "hello", true);
         s.status("model x | 1 session(s)");
         s.footer("Tab completes");
@@ -1385,10 +1421,16 @@ mod tests {
         let mut c = client_with(cat, Sticky::load(d.path()), vec!["main"]);
         let mut s = VecSink(Vec::new());
         assert!(matches!(
-            c.command(argv("set_persistant_cmd_argument --name session --value main"), &mut s),
+            c.command(
+                argv("set_persistant_cmd_argument --name session --value main"),
+                &mut s
+            ),
             Submission::Local
         ));
-        assert_eq!(c.sticky.pairs(), vec![("session".to_string(), "main".to_string())]);
+        assert_eq!(
+            c.sticky.pairs(),
+            vec![("session".to_string(), "main".to_string())]
+        );
         assert!(matches!(
             c.command(argv("del_persistant_cmd_argument --name session"), &mut s),
             Submission::Local
@@ -1444,8 +1486,10 @@ mod tests {
         }]);
         let mut c = client_with(cat, Sticky::load(d.path()), vec!["main"]);
         let mut s = VecSink(Vec::new());
-        assert!(matches!(c.command(argv("del_session"), &mut s), Submission::Rejected));
+        assert!(matches!(
+            c.command(argv("del_session"), &mut s),
+            Submission::Rejected
+        ));
         assert!(s.0.iter().any(|l| l.contains("missing required")));
     }
-
 }

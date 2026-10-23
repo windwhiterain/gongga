@@ -20,8 +20,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 ///
 /// Written as an observation rather than an error: the command may well have
 /// run to completion, and the model should verify rather than assume.
-const INTERRUPTED_CALL: &str =
-    "No result was recorded: the turn was interrupted before this call returned. \
+const INTERRUPTED_CALL: &str = "No result was recorded: the turn was interrupted before this call returned. \
      Its outcome is unknown -- re-check before relying on it.";
 
 const SCHEMA: &str = r#"
@@ -179,12 +178,7 @@ impl Store {
 
     // -- sessions ----------------------------------------------------------
 
-    pub fn create_session(
-        &self,
-        name: &str,
-        model: &str,
-        cwd: &str,
-    ) -> anyhow::Result<i64> {
+    pub fn create_session(&self, name: &str, model: &str, cwd: &str) -> anyhow::Result<i64> {
         if name.trim().is_empty() {
             anyhow::bail!("session name must not be empty");
         }
@@ -422,12 +416,16 @@ impl Store {
             .filter_map(|(_, content)| {
                 serde_json::from_str::<serde_json::Value>(content)
                     .ok()
-                    .and_then(|v| v.get("call_id").and_then(|c| c.as_str()).map(str::to_string))
+                    .and_then(|v| {
+                        v.get("call_id")
+                            .and_then(|c| c.as_str())
+                            .map(str::to_string)
+                    })
             })
             .collect();
         for (kind, content) in rows {
-            let value: serde_json::Value = serde_json::from_str(&content)
-                .unwrap_or(serde_json::Value::Null);
+            let value: serde_json::Value =
+                serde_json::from_str(&content).unwrap_or(serde_json::Value::Null);
             match kind.as_str() {
                 "text" => out.push(HistoryItem::Text {
                     role: value
@@ -442,7 +440,10 @@ impl Store {
                         .to_string(),
                 }),
                 "reasoning" => out.push(HistoryItem::Reasoning {
-                    item_id: value.get("item_id").and_then(|v| v.as_str()).map(str::to_string),
+                    item_id: value
+                        .get("item_id")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
                     encrypted: value
                         .get("encrypted")
                         .and_then(|v| v.as_str())
@@ -553,9 +554,8 @@ impl Store {
     /// to decide where a summary may take over, not just the contents.
     pub fn message_index(&self, session_id: i64) -> anyhow::Result<Vec<(i64, String)>> {
         let conn = self.lock();
-        let mut stmt = conn.prepare(
-            "SELECT seq, kind FROM messages WHERE session_id = ?1 ORDER BY seq",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT seq, kind FROM messages WHERE session_id = ?1 ORDER BY seq")?;
         let rows = stmt
             .query_map(params![session_id], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<Result<Vec<_>, _>>()?;
@@ -574,12 +574,7 @@ impl Store {
     }
 
     /// Records a summary of everything up to and including `upto`.
-    pub fn set_summary(
-        &self,
-        session_id: i64,
-        summary: &str,
-        upto: i64,
-    ) -> anyhow::Result<()> {
+    pub fn set_summary(&self, session_id: i64, summary: &str, upto: i64) -> anyhow::Result<()> {
         self.lock().execute(
             "UPDATE sessions SET summary = ?1, summarised_upto = ?2 WHERE id = ?3",
             params![summary, upto, session_id],
@@ -662,7 +657,9 @@ impl Store {
     ) -> anyhow::Result<()> {
         let conn = self.lock();
         let seq: i64 = conn
-            .query_row("SELECT COALESCE(MAX(seq), 0) + 1 FROM events", [], |r| r.get(0))
+            .query_row("SELECT COALESCE(MAX(seq), 0) + 1 FROM events", [], |r| {
+                r.get(0)
+            })
             .unwrap_or(1);
         conn.execute(
             "INSERT INTO events (session_id, seq, kind, payload, created_at)
@@ -707,9 +704,8 @@ impl Store {
     /// Everything left undone, oldest first.
     pub fn pending_tasks(&self) -> anyhow::Result<Vec<PendingTask>> {
         let conn = self.lock();
-        let mut stmt = conn.prepare(
-            "SELECT id, session, kind, payload FROM pending_tasks ORDER BY id",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT id, session, kind, payload FROM pending_tasks ORDER BY id")?;
         let rows = stmt
             .query_map([], |r| {
                 let payload: String = r.get(3)?;
@@ -726,9 +722,10 @@ impl Store {
 
     /// Drops the pending work of one session, i.e. the turn finished.
     pub fn clear_pending_tasks(&self, session: &str) -> anyhow::Result<usize> {
-        Ok(self
-            .lock()
-            .execute("DELETE FROM pending_tasks WHERE session = ?1", params![session])?)
+        Ok(self.lock().execute(
+            "DELETE FROM pending_tasks WHERE session = ?1",
+            params![session],
+        )?)
     }
 
     pub fn delete_pending_task(&self, id: i64) -> anyhow::Result<()> {
@@ -916,12 +913,7 @@ impl MessageRow {
     fn parse(seq: i64, kind: &str, content: &str) -> Self {
         let value: serde_json::Value =
             serde_json::from_str(content).unwrap_or(serde_json::Value::Null);
-        let str_of = |key: &str| {
-            value
-                .get(key)
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-        };
+        let str_of = |key: &str| value.get(key).and_then(|v| v.as_str()).map(str::to_string);
         let mut row = MessageRow {
             seq,
             kind: kind.to_string(),
@@ -957,7 +949,10 @@ impl MessageRow {
 /// A transcript entry, already decoded into the shape the LLM adapter wants.
 #[derive(Debug, Clone)]
 pub enum HistoryItem {
-    Text { role: String, text: String },
+    Text {
+        role: String,
+        text: String,
+    },
     Reasoning {
         item_id: Option<String>,
         encrypted: Option<String>,
@@ -1108,7 +1103,11 @@ mod tests {
         let id = store.create_session("s", "m", "C:/x").unwrap();
         for i in 0..5 {
             store
-                .append_message(id, "text", &serde_json::json!({"role":"user","text":format!("m{i}")}))
+                .append_message(
+                    id,
+                    "text",
+                    &serde_json::json!({"role":"user","text":format!("m{i}")}),
+                )
                 .unwrap();
         }
         assert_eq!(store.summary(id).unwrap(), (None, 0));
@@ -1129,7 +1128,9 @@ mod tests {
     #[test]
     fn session_tuning_round_trips() {
         let (_d, store) = temp_store();
-        let id = store.create_session("s", "MiniMax-M3.1-Flash", "/tmp").unwrap();
+        let id = store
+            .create_session("s", "MiniMax-M3.1-Flash", "/tmp")
+            .unwrap();
         let row = store.get_session("s").unwrap().unwrap();
         assert_eq!(row.llm, None, "a session starts on the server's own entry");
         assert_eq!(row.compact_threshold, None);
@@ -1168,7 +1169,11 @@ mod tests {
             )
             .unwrap();
         store
-            .append_message(id, "text", &serde_json::json!({"role":"assistant","text":"b"}))
+            .append_message(
+                id,
+                "text",
+                &serde_json::json!({"role":"assistant","text":"b"}),
+            )
             .unwrap();
         let all = store.history_between(id, 0, i64::MAX).unwrap();
         // Four rows, four items -- but not four rows' worth: the notice
@@ -1300,9 +1305,11 @@ mod tests {
         assert!(store.delete_session("s").unwrap());
         let n: i64 = store
             .lock()
-            .query_row("SELECT COUNT(*) FROM events WHERE session_id = ?1", params![id], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE session_id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(n, 0);
     }
@@ -1317,14 +1324,26 @@ mod tests {
         let (_d, store) = temp_store();
         let id = store.create_session("main", "m", "C:/x").unwrap();
         store
-            .append_message(id, "tool_call", &serde_json::json!({"call_id": "c1", "name": "bash", "arguments": "{}"}))
+            .append_message(
+                id,
+                "tool_call",
+                &serde_json::json!({"call_id": "c1", "name": "bash", "arguments": "{}"}),
+            )
             .unwrap();
         // A second call that did come back must not be closed twice.
         store
-            .append_message(id, "tool_call", &serde_json::json!({"call_id": "c2", "name": "bash", "arguments": "{}"}))
+            .append_message(
+                id,
+                "tool_call",
+                &serde_json::json!({"call_id": "c2", "name": "bash", "arguments": "{}"}),
+            )
             .unwrap();
         store
-            .append_message(id, "tool_result", &serde_json::json!({"call_id": "c2", "output": "ok"}))
+            .append_message(
+                id,
+                "tool_result",
+                &serde_json::json!({"call_id": "c2", "output": "ok"}),
+            )
             .unwrap();
 
         let history = store.history(id).unwrap();
@@ -1354,7 +1373,10 @@ mod tests {
         let id = store.create_session("main", "m", "C:/x").unwrap();
         for (kind, body) in [
             ("text", serde_json::json!({"role": "user", "text": "hi"})),
-            ("text", serde_json::json!({"role": "assistant", "text": "hello"})),
+            (
+                "text",
+                serde_json::json!({"role": "assistant", "text": "hello"}),
+            ),
             (
                 "tool_call",
                 serde_json::json!({"call_id": "c1", "name": "bash", "arguments": "{}"}),
@@ -1374,7 +1396,10 @@ mod tests {
         assert_eq!(t.messages[2].text, "{}");
 
         let t = store.messages_after(id, 1, 50).unwrap();
-        assert_eq!(t.messages.iter().map(|m| m.seq).collect::<Vec<_>>(), vec![2, 3]);
+        assert_eq!(
+            t.messages.iter().map(|m| m.seq).collect::<Vec<_>>(),
+            vec![2, 3]
+        );
         assert_eq!(t.last_seq, 3);
 
         // An empty window still reports the tail: "nothing new, and the
@@ -1386,7 +1411,10 @@ mod tests {
         // The limit counts back from the end, so a long transcript yields the
         // part that just happened rather than a re-read of the beginning.
         let t = store.messages_after(id, 0, 2).unwrap();
-        assert_eq!(t.messages.iter().map(|m| m.seq).collect::<Vec<_>>(), vec![2, 3]);
+        assert_eq!(
+            t.messages.iter().map(|m| m.seq).collect::<Vec<_>>(),
+            vec![2, 3]
+        );
     }
 
     /// A notice explains a stopped turn to the operator. It belongs in the

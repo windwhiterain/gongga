@@ -39,7 +39,11 @@ impl Default for Dedupe {
 
 impl Dedupe {
     pub fn with_window(window: Duration) -> Self {
-        Self { window, seen: HashMap::new(), order: VecDeque::new() }
+        Self {
+            window,
+            seen: HashMap::new(),
+            order: VecDeque::new(),
+        }
     }
 
     /// True the first time an id is offered, false on every retry.
@@ -191,7 +195,10 @@ mod tests {
     fn the_same_message_id_is_only_accepted_once() {
         let mut dedupe = Dedupe::default();
         assert!(dedupe.first_time("m1"));
-        assert!(!dedupe.first_time("m1"), "second delivery is the same message");
+        assert!(
+            !dedupe.first_time("m1"),
+            "second delivery is the same message"
+        );
         assert!(dedupe.first_time("m2"));
     }
 
@@ -200,7 +207,10 @@ mod tests {
         let mut dedupe = Dedupe::with_window(Duration::from_millis(20));
         assert!(dedupe.first_time("m1"));
         std::thread::sleep(Duration::from_millis(30));
-        assert!(dedupe.first_time("m1"), "a reused id is a new message after the window");
+        assert!(
+            dedupe.first_time("m1"),
+            "a reused id is a new message after the window"
+        );
     }
 
     #[test]
@@ -210,7 +220,10 @@ mod tests {
             dedupe.first_time(&format!("m{i}"));
         }
         assert!(dedupe.seen.len() <= DEDUPE_CAP);
-        assert!(!dedupe.seen.contains_key("m0"), "oldest ids are evicted first");
+        assert!(
+            !dedupe.seen.contains_key("m0"),
+            "oldest ids are evicted first"
+        );
     }
 
     #[test]
@@ -219,9 +232,21 @@ mod tests {
             row(1, "text", Some("user"), None, "run the tests"),
             row(2, "reasoning", None, None, "thinking about it"),
             row(3, "text", Some("assistant"), None, "let me run them"),
-            row(4, "tool_call", None, Some("bash"), r#"{"cmd":"cargo test"}"#),
+            row(
+                4,
+                "tool_call",
+                None,
+                Some("bash"),
+                r#"{"cmd":"cargo test"}"#,
+            ),
             row(5, "tool_result", None, None, "ok. 65 passed"),
-            row(6, "text", Some("assistant"), None, "65 passed, nothing broken."),
+            row(
+                6,
+                "text",
+                Some("assistant"),
+                None,
+                "65 passed, nothing broken.",
+            ),
         ];
         assert_eq!(final_reply(&rows), "65 passed, nothing broken.");
     }
@@ -232,7 +257,13 @@ mod tests {
     fn a_silent_turn_explains_itself() {
         let rows = vec![
             row(1, "text", Some("user"), None, "build it"),
-            row(2, "tool_call", None, Some("bash"), r#"{"cmd":"cargo build"}"#),
+            row(
+                2,
+                "tool_call",
+                None,
+                Some("bash"),
+                r#"{"cmd":"cargo build"}"#,
+            ),
             row(3, "tool_result", None, None, "ok"),
         ];
         let reply = final_reply(&rows);

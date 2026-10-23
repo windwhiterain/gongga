@@ -37,7 +37,12 @@ pub struct Bridge {
 
 impl Default for Bridge {
     fn default() -> Self {
-        Self { cwd: String::new(), allowed: Vec::new(), ack: true, max_chars: 1800 }
+        Self {
+            cwd: String::new(),
+            allowed: Vec::new(),
+            ack: true,
+            max_chars: 1800,
+        }
     }
 }
 
@@ -55,7 +60,11 @@ pub struct Qq {
 
 impl Default for Qq {
     fn default() -> Self {
-        Self { app_id: String::new(), app_secret: String::new(), sandbox: true }
+        Self {
+            app_id: String::new(),
+            app_secret: String::new(),
+            sandbox: true,
+        }
     }
 }
 

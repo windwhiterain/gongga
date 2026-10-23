@@ -110,7 +110,12 @@ impl Agent {
         }
     }
 
-    async fn turn_inner(&self, session: &SessionHandle, user_text: Option<&str>, task: Option<i64>) {
+    async fn turn_inner(
+        &self,
+        session: &SessionHandle,
+        user_text: Option<&str>,
+        task: Option<i64>,
+    ) {
         let name = session.name().to_string();
         let id = session.id();
         // Queue behind whatever is already working on this session. Taking the
@@ -169,9 +174,9 @@ impl Agent {
         );
 
         if let Some(text) = user_text {
-            if let Err(e) = self
-                .store
-                .append_message(id, "text", &json!({"role": "user", "text": text}))
+            if let Err(e) =
+                self.store
+                    .append_message(id, "text", &json!({"role": "user", "text": text}))
             {
                 self.error(&name, "storing user message", e);
                 return;
@@ -215,10 +220,12 @@ impl Agent {
             // than after a step means the very next request is the small one.
             self.maybe_compress(id, &name, &llm, budget, &cancel).await;
             tracing::info!(session = %name, step, "step start");
-            match self
-                .step(id, &name, turn, &cancel, step, &llm, effort.as_deref())
-                .await
-            {
+            let attempt = Attempt {
+                number: step,
+                llm: &llm,
+                effort: effort.as_deref(),
+            };
+            match self.step(id, &name, turn, &cancel, &attempt).await {
                 Ok(StepResult::Finished) => {
                     // The model says it is done, but something may have landed
                     // while it was finishing. Deliver it and go round again
@@ -371,11 +378,10 @@ impl Agent {
                 tracing::warn!(session = %name, kind = %task.kind, "dropping an empty pending task");
                 continue;
             };
-            if let Err(e) = self.store.append_message(
-                id,
-                "text",
-                &json!({"role": "user", "text": text}),
-            ) {
+            if let Err(e) =
+                self.store
+                    .append_message(id, "text", &json!({"role": "user", "text": text}))
+            {
                 tracing::warn!(session = %name, error = %e, "could not deliver a queued message");
                 continue;
             }
@@ -467,7 +473,9 @@ impl Agent {
                     message: format!("{name}: compressed up to message {cut}"),
                 });
             }
-            Ok(_) => tracing::warn!("compression returned an empty summary; keeping the context as is"),
+            Ok(_) => {
+                tracing::warn!("compression returned an empty summary; keeping the context as is")
+            }
             Err(e) => {
                 // Not fatal: the turn continues with the context it has. It will
                 // try again on the next step.
@@ -483,10 +491,13 @@ impl Agent {
         name: &str,
         turn: u64,
         cancel: &tokio_util::sync::CancellationToken,
-        step: u32,
-        llm: &LlmClient,
-        effort: Option<&str>,
+        attempt: &Attempt<'_>,
     ) -> anyhow::Result<StepResult> {
+        let Attempt {
+            number: step,
+            llm,
+            effort,
+        } = *attempt;
         let (summary, history) = self.store.context(id)?;
         let definitions = self.tools.definitions();
         let mut rx = llm.stream(
@@ -536,9 +547,11 @@ impl Agent {
                 }
                 LlmEvent::Output { text, .. } => {
                     if !text.trim().is_empty() {
-                        let _ = self
-                            .store
-                            .append_message(id, "text", &json!({"role":"assistant","text":text}));
+                        let _ = self.store.append_message(
+                            id,
+                            "text",
+                            &json!({"role":"assistant","text":text}),
+                        );
                     }
                 }
                 LlmEvent::ToolCall {
@@ -553,7 +566,11 @@ impl Agent {
                         &json!({"call_id": call_id, "name": tool, "arguments": arguments}),
                     );
                     let _ = self.store.start_tool_call(id, &call_id, &tool, &arguments);
-                    calls.push(ToolCall { call_id, tool, arguments });
+                    calls.push(ToolCall {
+                        call_id,
+                        tool,
+                        arguments,
+                    });
                 }
                 LlmEvent::Completed { usage } => {
                     saw_completion = true;
@@ -583,7 +600,11 @@ impl Agent {
                 // A retry is the only news a stalled request ever produces, so
                 // it goes to the operator instead of into the transcript: the
                 // turn looks alive, and the reason it is slow is on screen.
-                LlmEvent::Retrying { attempt, max, delay } => {
+                LlmEvent::Retrying {
+                    attempt,
+                    max,
+                    delay,
+                } => {
                     // `max == 0` is "no ceiling", not "zero allowed": printing
                     // `1/0` read like the opposite of what it meant.
                     let of = if max == 0 {
@@ -634,8 +655,8 @@ impl Agent {
             if cancel.is_cancelled() {
                 return true;
             }
-            let arguments: serde_json::Value = serde_json::from_str(&call.arguments)
-                .unwrap_or_else(|_| json!({}));
+            let arguments: serde_json::Value =
+                serde_json::from_str(&call.arguments).unwrap_or_else(|_| json!({}));
 
             // Forward streamed tool output onto the bus, tagging each chunk with
             // the tool name the context does not know.
@@ -724,6 +745,19 @@ enum StepResult {
     Stopped,
 }
 
+/// One model request: which round of the turn it is, and how to make it.
+///
+/// A bundle rather than three more parameters, because the three travel
+/// together and nothing else in the turn needs them: `step` already takes the
+/// session, the turn, the cancellation token.
+#[derive(Clone, Copy)]
+struct Attempt<'a> {
+    number: u32,
+    llm: &'a LlmClient,
+    /// How hard the model should think, when the session asked for a level.
+    effort: Option<&'a str>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TurnOutcome {
     Done,
@@ -802,9 +836,9 @@ fn summary_prompt(previous: Option<&str>, old: &[HistoryItem]) -> String {
             HistoryItem::Reasoning { summary, .. } if !summary.is_empty() => {
                 p.push_str(&format!("(thought: {})\n", clip(summary, 600)))
             }
-            HistoryItem::ToolCall { name, arguments, .. } => {
-                p.push_str(&format!("called {name} {}\n", clip(arguments, 800)))
-            }
+            HistoryItem::ToolCall {
+                name, arguments, ..
+            } => p.push_str(&format!("called {name} {}\n", clip(arguments, 800))),
             HistoryItem::ToolResult { output, .. } => {
                 p.push_str(&format!("=> {}\n", clip(output, 800)))
             }

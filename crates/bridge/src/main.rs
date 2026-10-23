@@ -127,7 +127,11 @@ impl Bridge {
             } else {
                 format!("你没有权限使用这个 bot（你的 id：{}）。", incoming.user)
             };
-            return Some(Refusal { chat: incoming.chat, reply: incoming.reply, text });
+            return Some(Refusal {
+                chat: incoming.chat,
+                reply: incoming.reply,
+                text,
+            });
         }
         self.queue.push_back(incoming);
         None
@@ -163,8 +167,14 @@ impl Bridge {
                     args_of(&[("session", session.as_str())]),
                 )
                 .await?;
-                deliver(out, &incoming.chat, &incoming.reply, 1, "已停止这个会话正在跑的任务。")
-                    .await;
+                deliver(
+                    out,
+                    &incoming.chat,
+                    &incoming.reply,
+                    1,
+                    "已停止这个会话正在跑的任务。",
+                )
+                .await;
                 continue;
             }
             let known = self
@@ -196,7 +206,10 @@ impl Bridge {
             self.command(
                 sink,
                 "send_message",
-                args_of(&[("message", incoming.text.as_str()), ("session", session.as_str())]),
+                args_of(&[
+                    ("message", incoming.text.as_str()),
+                    ("session", session.as_str()),
+                ]),
             )
             .await?;
 
@@ -223,10 +236,17 @@ impl Bridge {
             return Ok(());
         };
         match event {
-            Event::CmdResult { id, ok, message, data } => {
-                self.on_result(id, ok, message, data, sink, out).await
-            }
-            Event::Status { session, status, detail } => match status {
+            Event::CmdResult {
+                id,
+                ok,
+                message,
+                data,
+            } => self.on_result(id, ok, message, data, sink, out).await,
+            Event::Status {
+                session,
+                status,
+                detail,
+            } => match status {
                 SessionStatus::Idle => self.on_idle(&session, sink).await,
                 SessionStatus::Error => self.on_error(&session, detail, out).await,
                 SessionStatus::Running => Ok(()),
@@ -256,8 +276,14 @@ impl Bridge {
                 }
                 None => {
                     let text = format!("读不到会话 transcript，没有执行：{message}");
-                    deliver(out, &incoming.chat, &incoming.reply, 2, &clip(&text, self.max_chars))
-                        .await;
+                    deliver(
+                        out,
+                        &incoming.chat,
+                        &incoming.reply,
+                        2,
+                        &clip(&text, self.max_chars),
+                    )
+                    .await;
                     return Ok(());
                 }
             }
@@ -305,11 +331,7 @@ impl Bridge {
         Ok(())
     }
 
-    async fn on_idle(
-        &mut self,
-        session: &str,
-        sink: &protocol::ChannelSink,
-    ) -> anyhow::Result<()> {
+    async fn on_idle(&mut self, session: &str, sink: &protocol::ChannelSink) -> anyhow::Result<()> {
         let Some(state) = self.chats.get(session) else {
             return Ok(());
         };
@@ -361,7 +383,11 @@ impl Bridge {
     ) -> anyhow::Result<u64> {
         let id = self.next_id;
         self.next_id += 1;
-        let message = ClientMessage::Command { id, name: name.to_string(), args };
+        let message = ClientMessage::Command {
+            id,
+            name: name.to_string(),
+            args,
+        };
         sink.send(encode_client(&message)?)
             .await
             .map_err(|e| anyhow!("sending {name} to the server: {e}"))?;
@@ -397,7 +423,8 @@ fn is_stop(text: &str) -> bool {
     matches!(text.trim(), "/stop" | "/cancel")
 }
 
-fn args_of(pairs: &[(&str, &str)]) -> CommandArgs {    pairs
+fn args_of(pairs: &[(&str, &str)]) -> CommandArgs {
+    pairs
         .iter()
         .map(|(key, value)| (key.to_string(), value.to_string()))
         .collect::<BTreeMap<_, _>>()
@@ -558,14 +585,16 @@ async fn dial(
     let greeting = tokio::time::timeout(HANDSHAKE_TIMEOUT, stream.recv())
         .await
         .map_err(|_| {
-            anyhow!("no answer from {addr} within {HANDSHAKE_TIMEOUT:?}; is `gongga-server` running?")
+            anyhow!(
+                "no answer from {addr} within {HANDSHAKE_TIMEOUT:?}; is `gongga-server` running?"
+            )
         })?
         .ok_or_else(|| anyhow!("the server closed the connection during the handshake"))?;
     match decode_server(&greeting).context("decoding the greeting")? {
-        ServerMessage::Denied { reason } => {
-            return Err(anyhow::Error::new(Refused(reason)))
-        }
-        ServerMessage::Hello { server, sessions, .. } => {
+        ServerMessage::Denied { reason } => return Err(anyhow::Error::new(Refused(reason))),
+        ServerMessage::Hello {
+            server, sessions, ..
+        } => {
             tracing::info!(%addr, model = %server.model, sessions = sessions.len(), "connected to the harness");
         }
         other => tracing::warn!(?other, "unexpected greeting"),
@@ -602,7 +631,9 @@ fn file_config(home: &Path) -> FileConfig {
 
 fn resolve_server(args: &Args, home: &Path) -> anyhow::Result<SocketAddr> {
     if let Some(server) = &args.server {
-        return server.parse().with_context(|| format!("parsing --server {server:?}"));
+        return server
+            .parse()
+            .with_context(|| format!("parsing --server {server:?}"));
     }
     if let Ok(server) = std::env::var("GONGGA_SERVER") {
         if !server.is_empty() {
@@ -612,7 +643,9 @@ fn resolve_server(args: &Args, home: &Path) -> anyhow::Result<SocketAddr> {
         }
     }
     if let Some(bind) = file_config(home).server.bind {
-        return bind.parse().with_context(|| format!("parsing bind {bind:?}"));
+        return bind
+            .parse()
+            .with_context(|| format!("parsing bind {bind:?}"));
     }
     Ok(DEFAULT_SERVER.parse().unwrap())
 }

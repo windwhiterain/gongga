@@ -149,22 +149,23 @@ impl BashShell {
             cmd.process_group(0);
         }
 
-        let mut child = cmd.spawn().map_err(|e| {
-            anyhow::anyhow!("spawning shell {}: {e}", program.display())
-        })?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("spawning shell {}: {e}", program.display()))?;
 
         let stdin = child.stdin.take().expect("stdin piped");
         let stdout = BufReader::new(child.stdout.take().expect("stdout piped"));
         let stderr = BufReader::new(child.stderr.take().expect("stderr piped"));
 
-        let marker = format!("__GONGGA_{}__", &uuid::Uuid::new_v4().simple().to_string()[..12]);
+        let marker = format!(
+            "__GONGGA_{}__",
+            &uuid::Uuid::new_v4().simple().to_string()[..12]
+        );
         // Join the shell to a job before anything is written to its stdin, so
         // every command it runs is a member. On unix `process_group(0)` above
         // does the same job.
         #[cfg(windows)]
-        let job = child
-            .id()
-            .and_then(crate::tools::job::ProcessJob::adopt);
+        let job = child.id().and_then(crate::tools::job::ProcessJob::adopt);
         Ok(Self {
             child,
             stdin,
@@ -386,7 +387,10 @@ impl BashShell {
                 let mut chunk = String::from(line);
                 chunk.push('\n');
                 if sink
-                    .send(BashChunk { stream, text: chunk })
+                    .send(BashChunk {
+                        stream,
+                        text: chunk,
+                    })
                     .await
                     .is_err()
                 {
@@ -606,7 +610,11 @@ fn slug(label: &str) -> String {
         // `is_alphanumeric` is Unicode-aware, which is the whole point: it keeps
         // the CJK and accented text a task is likely written in, while still
         // rejecting `/`, `:` and spaces.
-        let kept = if c.is_alphanumeric() || c == '_' { c } else { '-' };
+        let kept = if c.is_alphanumeric() || c == '_' {
+            c
+        } else {
+            '-'
+        };
         if kept == '-' {
             // Collapse runs, and never start a name with one.
             if last_was_dash || out.is_empty() {
@@ -623,7 +631,11 @@ fn slug(label: &str) -> String {
         out.push(kept);
     }
     let out = out.trim_end_matches('-').to_string();
-    if out.is_empty() { "output".to_string() } else { out }
+    if out.is_empty() {
+        "output".to_string()
+    } else {
+        out
+    }
 }
 
 impl Drop for BashShell {
@@ -660,7 +672,14 @@ mod tests {
     /// produce a name with a separator in it -- whatever the model typed.
     #[test]
     fn a_hostile_task_cannot_escape_the_output_directory() {
-        for task in ["../../etc/passwd", "a/b", "x\\y", "..", " ", "..\\..\\windows"] {
+        for task in [
+            "../../etc/passwd",
+            "a/b",
+            "x\\y",
+            "..",
+            " ",
+            "..\\..\\windows",
+        ] {
             let safe = slug(task);
             assert!(!safe.contains('/'), "{task} -> {safe}");
             assert!(!safe.contains('\\'), "{task} -> {safe}");
@@ -674,7 +693,10 @@ mod tests {
         let out = slug(&"步骤".repeat(100));
         assert!(out.chars().count() <= 48, "{out}");
         // Still usable as a path component: no separators, no spaces.
-        assert!(!out.contains('/') && !out.contains(' ') && !out.contains('\\'), "{out}");
+        assert!(
+            !out.contains('/') && !out.contains(' ') && !out.contains('\\'),
+            "{out}"
+        );
     }
 
     #[test]
@@ -687,12 +709,17 @@ mod tests {
     #[test]
     fn long_output_is_capped_and_spilled() {
         let dir = tempfile::tempdir().unwrap();
-        let text: String = (0..2000).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
+        let text: String = (0..2000)
+            .map(|i| char::from(b'a' + (i % 26) as u8))
+            .collect();
         let out = cap_output(&text, 500, dir.path(), "sess-call1");
 
         assert!(out.len() < text.len(), "expected the output to be capped");
         assert!(out.starts_with(&text[..300]), "head must be kept");
-        assert!(out.ends_with(&text[text.len() - 200..]), "tail must be kept");
+        assert!(
+            out.ends_with(&text[text.len() - 200..]),
+            "tail must be kept"
+        );
         assert!(out.contains("characters omitted"));
 
         // The full output is on disk, in a path the model can use directly.
@@ -786,7 +813,11 @@ mod tests {
             Err(e) => panic!("spawning {}: {e}", program.display()),
         };
         let noisy = shell
-            .run(r"printf 'before\377\376after\n'", Duration::from_secs(10), None)
+            .run(
+                r"printf 'before\377\376after\n'",
+                Duration::from_secs(10),
+                None,
+            )
             .await
             .expect("running printf with raw bytes");
         let after = shell
@@ -826,7 +857,10 @@ mod tests {
             .run("exit 3", Duration::from_secs(10), None)
             .await
             .expect("running exit");
-        assert!(out.exit_code.is_none(), "the shell died before the sentinel");
+        assert!(
+            out.exit_code.is_none(),
+            "the shell died before the sentinel"
+        );
         assert!(!shell.usable(), "a dead shell called itself usable");
     }
 
@@ -869,4 +903,4 @@ mod tests {
             .stdout;
         assert_eq!(out.trim(), "127.0.0.1:9711");
     }
-    }
+}

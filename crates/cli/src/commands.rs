@@ -54,7 +54,10 @@ impl Sticky {
 
     /// `name` -> `value` pairs, for the status bar.
     pub fn pairs(&self) -> Vec<(String, String)> {
-        self.args.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        self.args
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
     }
 
     pub fn set(&mut self, name: &str, value: &str) -> anyhow::Result<()> {
@@ -78,7 +81,10 @@ impl Sticky {
             persistant_cmd_arguments: self
                 .args
                 .iter()
-                .map(|(name, value)| Entry { name: name.clone(), value: value.clone() })
+                .map(|(name, value)| Entry {
+                    name: name.clone(),
+                    value: value.clone(),
+                })
                 .collect(),
         };
         let text = toml::to_string_pretty(&file)?;
@@ -158,7 +164,10 @@ mod tests {
         let mut s = Sticky::load(d.path());
         s.set("session", "main").unwrap();
         let again = Sticky::load(d.path());
-        assert_eq!(again.pairs(), vec![("session".to_string(), "main".to_string())]);
+        assert_eq!(
+            again.pairs(),
+            vec![("session".to_string(), "main".to_string())]
+        );
         assert_eq!(again.names(), vec!["session".to_string()]);
     }
 
@@ -197,8 +206,14 @@ mod tests {
 
     #[test]
     fn both_flag_forms_parse() {
-        assert_eq!(parse_args(&["--session".into(), "main".into()]).unwrap()["session"], "main");
-        assert_eq!(parse_args(&["--session=main".into()]).unwrap()["session"], "main");
+        assert_eq!(
+            parse_args(&["--session".into(), "main".into()]).unwrap()["session"],
+            "main"
+        );
+        assert_eq!(
+            parse_args(&["--session=main".into()]).unwrap()["session"],
+            "main"
+        );
     }
 
     /// A value that looks like a flag is still a value: `send_message` exists to
