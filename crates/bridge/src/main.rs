@@ -448,28 +448,82 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let (sink, mut stream) = dial(&args, &home).await?;
     let mut bridge = Bridge::new(kind, cfg.bridge);
-
+    // Reconnecting is the bridge's job, not the platform's calling loop's: the
+    // harness is replaced on purpose (`scripts/evolve.sh swap`), while the
+    // platform connection is meant to stay up for days. A bridge that exited
+    // with the old server took the whole chat integration down and needed a
+    // human to start it again.
+    let mut backoff = REDIAL_MIN;
     loop {
-        tokio::select! {
-            Some(message) = incoming.recv() => {
-                match bridge.accept(message) {
-                    None => bridge.pump(&sink, &outbox).await?,
-                    Some(refusal) => {
-                        deliver(&outbox, &refusal.chat, &refusal.reply, 1, &refusal.text).await;
+        let (sink, mut stream) = match dial(&args, &home).await {
+            Ok(pair) => pair,
+            // A refusal is an answer: the server is up and does not want this
+            // bridge, so retrying would be refused again.
+            Err(e) if e.downcast_ref::<Refused>().is_some() => return Err(e),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    retry_in = ?backoff,
+                    "could not reach the harness; the platform connection stays up"
+                );
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(REDIAL_MAX);
+                continue;
+            }
+        };
+        backoff = REDIAL_MIN;
+        let link = loop {
+            tokio::select! {
+                Some(message) = incoming.recv() => {
+                    match bridge.accept(message) {
+                        None => {
+                            if let Err(e) = bridge.pump(&sink, &outbox).await {
+                                break e;
+                            }
+                        }
+                        Some(refusal) => {
+                            deliver(&outbox, &refusal.chat, &refusal.reply, 1, &refusal.text).await;
+                        }
+                    }
+                }
+                frame = stream.recv() => {
+                    let Some(bytes) = frame else {
+                        break anyhow!("the server closed the connection");
+                    };
+                    if let Err(e) = bridge.on_event(decode_server(&bytes)?, &sink, &outbox).await {
+                        break e;
                     }
                 }
             }
-            frame = stream.recv() => {
-                let Some(bytes) = frame else {
-                    anyhow::bail!("the server closed the connection");
-                };
-                bridge.on_event(decode_server(&bytes)?, &sink, &outbox).await?;
-            }
-        }
+        };
+        // Both halves go with the link; the next dial makes new ones.
+        drop((sink, stream));
+        tracing::warn!(error = %link, retry_in = ?backoff, "lost the harness; redialing");
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(REDIAL_MAX);
     }
 }
+
+/// How long to wait before the first redial, and the ceiling it backs off to.
+///
+/// Not a budget on how long the bridge keeps trying -- it keeps trying for as
+/// long as the process lives, because the harness may be down for a rebuild --
+/// but a ceiling on how often it hammers a harness that is not there.
+const REDIAL_MIN: Duration = Duration::from_secs(1);
+const REDIAL_MAX: Duration = Duration::from_secs(30);
+
+/// The harness answered, and the answer was no.
+#[derive(Debug)]
+struct Refused(String);
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the server refused the bridge: {}", self.0)
+    }
+}
+
+impl std::error::Error for Refused {}
 
 // ---------------------------------------------------------------------------
 // Connection to the harness
@@ -508,7 +562,9 @@ async fn dial(
         })?
         .ok_or_else(|| anyhow!("the server closed the connection during the handshake"))?;
     match decode_server(&greeting).context("decoding the greeting")? {
-        ServerMessage::Denied { reason } => anyhow::bail!("the server refused the bridge: {reason}"),
+        ServerMessage::Denied { reason } => {
+            return Err(anyhow::Error::new(Refused(reason)))
+        }
         ServerMessage::Hello { server, sessions, .. } => {
             tracing::info!(%addr, model = %server.model, sessions = sessions.len(), "connected to the harness");
         }
