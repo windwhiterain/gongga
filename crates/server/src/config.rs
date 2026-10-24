@@ -70,6 +70,32 @@ pub struct LlmConfig {
     pub max_retries: u32,
     /// First retry delay; doubles per attempt up to the [`MAX_RETRY_DELAY`] cap.
     pub retry_base: Duration,
+    /// Provider-side tools, in the provider's spelling; sent verbatim. Empty is none.
+    pub builtin_tools: Vec<String>,
+    /// What the roster says this model takes in; empty means unstated.
+    pub modalities: Vec<String>,
+}
+
+/// Whether a roster `modalities` list admits pictures.
+///
+/// # Invariant
+///
+/// Unstated (`[]`) admits everything: the roster having no opinion is not the
+/// roster saying no. See `docs/notes/server-providers.md`.
+pub fn accepts_image(modalities: &[String]) -> bool {
+    modalities.is_empty() || modalities.iter().any(|m| m == "image")
+}
+
+/// Why an image cannot be sent to `model`, in the roster's own words.
+pub fn image_refusal(model: &str, modalities: &[String]) -> String {
+    let listed = modalities
+        .iter()
+        .map(|m| format!("\"{m}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "this model cannot look at images: the roster lists modalities = [{listed}] for {model}, with no \"image\" in it. Use a model whose roster entry includes \"image\" (set_session --llm <provider>/<model>), or leave the image out."
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -284,6 +310,14 @@ impl Config {
                     .or_else(|| env_or("GONGGA_LLM_RETRY_BASE_MS").and_then(|v| v.parse().ok()))
                     .unwrap_or(1_000),
             ),
+            builtin_tools: entry
+                .as_ref()
+                .map(|e| e.builtin_tools.clone())
+                .unwrap_or_default(),
+            modalities: entry
+                .as_ref()
+                .map(|e| e.modalities.clone())
+                .unwrap_or_default(),
         };
 
         let bash_file = file.tools.and_then(|t| t.bash).unwrap_or_default();
@@ -346,9 +380,16 @@ impl Config {
     }
 
     /// Writes a commented starter config if none exists yet.
+    ///
+    /// # Invariant
+    ///
+    /// A file the reader has touched is never rewritten: "untouched" means the
+    /// key and nothing else, which is all a first start leaves behind. Anything
+    /// else in the file is the reader's, and the template is not worth an edit.
+    /// See `docs/notes/server-config.md`.
     pub fn write_default_if_absent(&self) -> anyhow::Result<()> {
         let path = self.home.join("config.toml");
-        if path.exists() {
+        if path.exists() && !is_key_only(&path)? {
             return Ok(());
         }
         let text = format!(
@@ -369,6 +410,22 @@ impl Config {
              # model = \"{model}\"\n\
              # base_url = \"{base_url}\"\n\
              # api_key_env = \"{api_key_env}\"\n\
+             # Capabilities are NOT configured here: they belong to the model, so\n\
+             # they come from its entry in the roster (~/.agents/llm.toml):\n\
+             #\n\
+             #   [[provider.model]]\n\
+             #   id = \"some-model\"\n\
+             #   # What it takes in and gives back. A list without \"image\" makes\n\
+             #   # read_image refuse with this entry's name instead of letting the\n\
+             #   # provider answer with an opaque 400. Omit the list and nothing is\n\
+             #   # refused: unstated is not a no.\n\
+             #   modalities = [\"text\", \"image\"]\n\
+             #   # Tools the provider runs on its own side, spelled the way that\n\
+             #   # provider spells them -- \"web_search\", \"web_search_preview\",\n\
+             #   # \"web_fetch\", ... Sent verbatim, so no mapping table is needed.\n\
+             #   # Omit it and none are offered: offering one a provider does not\n\
+             #   # know fails every request of every turn.\n\
+             #   builtin_tools = [\"web_search\"]\n\
              store = {store}\n\
              # A request that never answers used to park a turn forever. These\n\
              # bound it: one request may take this long overall, and this long\n\
@@ -426,6 +483,16 @@ impl Config {
     }
 }
 
+/// Whether a config file holds only the key minted at first start.
+fn is_key_only(path: &Path) -> anyhow::Result<bool> {
+    let file = read_file(path)?;
+    let key_only = file
+        .server
+        .as_ref()
+        .is_some_and(|s| s.key.is_some() && s.home.is_none() && s.db.is_none() && s.bind.is_none());
+    Ok(key_only && file.llm.is_none() && file.tools.is_none() && file.agent.is_none())
+}
+
 /// Picks the roster entry the server should talk to.
 ///
 /// # Invariant
@@ -479,6 +546,9 @@ impl LlmConfig {
         cfg.context = entry.context;
         cfg.api_key_env = entry.api_key_env.clone().unwrap_or_default();
         cfg.api_key = api_key;
+        // Capabilities follow the model: another entry keeps its own tools and eyes.
+        cfg.builtin_tools = entry.builtin_tools.clone();
+        cfg.modalities = entry.modalities.clone();
         cfg
     }
 }
@@ -610,7 +680,15 @@ fn default_instructions() -> String {
      successor is really waiting and sends `cancel`. Do this only after \
      changing the server itself, and let the script decide when it is safe: it \
      refuses to cancel when no successor is waiting, because then nothing \
-     would resume the turn.\n"
+     would resume the turn.\n\nSkills are prose that teaches a procedure this server does not encode as a \
+     tool, and they live in .agents/skills/<name>/SKILL.md, relative to the \
+     repo. Do not read them all. Each file opens with frontmatter holding a \
+     name and a one-line description, so one command lists every skill for two \
+     lines each -- cheap enough to run whenever a task feels like it might have \
+     a skill:\n\ngrep -H -m3 -E '^(name|description):' .agents/skills/*/SKILL.md\n\nRead a body only when its description matches the task in front of you. A \
+     skill may ship a script next to it; run that instead of retyping the \
+     commands it already encodes. A session whose working directory is not the \
+     repo has no skills -- check before assuming, and do not invent one.\n"
         .to_string()
 }
 
@@ -662,7 +740,8 @@ mod tests {
         assert!(!text.contains("\\n"), "literal backslash-n leaked: {text}");
         assert!(text.contains("\n\nYou can also replace the server"));
         assert!(text.contains("scripts/evolve.sh stage"));
-        assert!(text.ends_with("would resume the turn.\n"));
+        assert!(text.contains("grep -H -m3 -E '^(name|description):'"));
+        assert!(text.ends_with("do not invent one.\n"));
         assert!(!text.contains("  "), "double space: {text}");
     }
 
@@ -722,6 +801,36 @@ mod tests {
         assert!(text.contains("model = \"keep\""), "{text}");
         let cfg = read_file(&path).unwrap();
         assert_eq!(cfg.server.unwrap().key.as_deref(), Some("abc"));
+    }
+
+    /// The template replaces a first start's key-only file; the fields it teaches matter.
+    #[test]
+    fn the_template_replaces_a_file_holding_only_the_generated_key() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("config.toml");
+        std::fs::write(&path, "[server]\nkey = \"abc\"\n").unwrap();
+        let cfg = Config::load_with_home(Some(&path), Some(d.path())).unwrap();
+        cfg.write_default_if_absent().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("key = \"abc\""), "the key is kept: {text}");
+        assert!(
+            text.contains("builtin_tools"),
+            "the roster fields are taught: {text}"
+        );
+        assert!(text.contains("modalities"), "{text}");
+        assert!(text.contains("[agent]"), "{text}");
+    }
+
+    /// A file the reader has edited is left alone, even if it says very little.
+    #[test]
+    fn the_template_never_rewrites_a_file_someone_edited() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("config.toml");
+        let written = "[server]\nkey = \"abc\"\nbind = \"127.0.0.1:9999\"\n";
+        std::fs::write(&path, written).unwrap();
+        let cfg = Config::load_with_home(Some(&path), Some(d.path())).unwrap();
+        cfg.write_default_if_absent().unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), written);
     }
 
     /// The four ways a config names a provider, and a typo that must not stop

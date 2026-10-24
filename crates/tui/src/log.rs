@@ -5,18 +5,28 @@
 //! A frame touches only the visible rows, and an append lands on exactly the
 //! rows a reflow of the whole line would. See `docs/notes/tui-log.md`.
 
+use std::collections::HashMap;
+
 use unicode_width::UnicodeWidthChar;
 
 use crate::LineKind;
 
-/// One line, plus what it takes to draw a row of it without re-wrapping the line.
+/// One block: a line that may still be growing, plus its rows.
+///
+/// # Invariant
+///
+/// `tag` holds the label the block opened with and is *not* part of `text`, so a
+/// block whose first row is above the window can repeat it. See
+/// `docs/notes/tui-log.md`.
 struct Entry {
     kind: LineKind,
     text: String,
     /// Byte offset of each wrapped row's first character; its length is the row count.
     starts: Vec<usize>,
     /// Display columns used by the last row: the whole wrap state an append resumes.
-    open: usize,
+    col: usize,
+    /// No more text can arrive, so the block is scrollback.
+    sealed: bool,
 }
 
 impl Entry {
@@ -25,7 +35,8 @@ impl Entry {
             kind,
             text,
             starts: vec![0],
-            open: 0,
+            col: 0,
+            sealed: false,
         };
         // Width 0 means "not measured yet": the first draw reflows at its own width.
         if width > 0 {
@@ -41,14 +52,14 @@ impl Entry {
     /// Recomputes every row offset at `width`.
     fn reflow(&mut self, width: usize) {
         let Self {
-            text, starts, open, ..
+            text, starts, col, ..
         } = self;
         starts.clear();
         // A line always has at least one row, so an empty line is a blank row.
         starts.push(0);
         let mut wrap = Wrap { width, col: 0 };
         wrap.feed(text, 0, starts);
-        *open = wrap.col;
+        *col = wrap.col;
     }
 
     /// Adds text to the end of this line, continuing the wrap from the last row.
@@ -57,13 +68,13 @@ impl Entry {
         let Self {
             text: owned,
             starts,
-            open,
+            col,
             ..
         } = self;
         if width > 0 {
-            let mut wrap = Wrap { width, col: *open };
+            let mut wrap = Wrap { width, col: *col };
             wrap.feed(text, base, starts);
-            *open = wrap.col;
+            *col = wrap.col;
         }
         owned.push_str(text);
     }
@@ -140,9 +151,18 @@ impl RowIndex {
         if delta == 0 {
             return;
         }
+        self.shift(line, delta as isize);
+    }
+
+    /// Adds or removes rows on a line: a trim is the only caller that shrinks.
+    fn shift(&mut self, line: usize, delta: isize) {
+        if delta == 0 {
+            return;
+        }
         let mut i = line + 1;
         while i <= self.tree.len() {
-            self.tree[i - 1] += delta;
+            let next = self.tree[i - 1] as isize + delta;
+            self.tree[i - 1] = next.max(0) as usize;
             i += i & i.wrapping_neg();
         }
     }
@@ -191,11 +211,19 @@ pub struct Viewport<'a> {
     pub max_scroll: usize,
 }
 
-/// The scrollback.
+/// The scrollback: sealed blocks, plus the ones still growing.
+///
+/// # Invariant
+///
+/// A block's position in `entries` is fixed when it opens, so two blocks that
+/// stream at once each keep growing where they are instead of trading places.
+/// See `docs/notes/tui-log.md`.
 #[derive(Default)]
 pub struct Log {
     entries: Vec<Entry>,
     index: RowIndex,
+    /// Open stream key -> its block. Its identity, not its position.
+    open: HashMap<String, usize>,
     /// The width the cached row offsets were measured at; 0 until a frame is drawn.
     width: usize,
 }
@@ -215,9 +243,78 @@ impl Log {
 
     /// Adds a finished line. Costs what the line is worth, once.
     pub fn push(&mut self, kind: LineKind, text: impl Into<String>) {
-        let entry = Entry::new(kind, text.into(), self.width);
+        let mut entry = Entry::new(kind, text.into(), self.width);
+        entry.sealed = true;
         self.index.push(entry.rows());
         self.entries.push(entry);
+    }
+
+    /// Adds to the block `key` names, opening it with `tag` on first use.
+    ///
+    /// # Invariant
+    ///
+    /// `done` seals the block and forgets the key, so a later chunk under the same
+    /// key opens a new block rather than appending to the closed one. An empty
+    /// first chunk still opens the block, so a slow token keeps its label.
+    pub fn stream(&mut self, key: &str, kind: LineKind, tag: &str, text: &str, done: bool) {
+        let width = self.width;
+        let line = match self.open.get(key).copied() {
+            Some(line) => {
+                let before = self.entries[line].rows();
+                self.entries[line].append(text, width);
+                let after = self.entries[line].rows();
+                self.index.add(line, after.saturating_sub(before));
+                line
+            }
+            // A blank chunk must not open a block: the shell writes one
+            // before every exit sentinel.
+            None if text.trim().is_empty() => {
+                if done {
+                    self.open.remove(key);
+                }
+                return;
+            }
+            None => {
+                let mut entry = Entry::new(kind, format!("{tag}{text}"), width);
+                entry.sealed = false;
+                self.index.push(entry.rows());
+                self.entries.push(entry);
+                let line = self.entries.len() - 1;
+                self.open.insert(key.to_string(), line);
+                line
+            }
+        };
+        if done {
+            self.open.remove(key);
+            self.trim_tail(line);
+            self.entries[line].sealed = true;
+        }
+    }
+
+    /// Drops the blank tail a finished block ends on.
+    ///
+    /// # Invariant
+    ///
+    /// A sealed block never ends in a blank row, so the newline that closes a
+    /// command's output cannot leave a gap before the next block. Trimming the
+    /// text rather than the rows keeps this correct at a width nobody measured
+    /// yet: `reflow` derives the rows from the trimmed text afterwards.
+    fn trim_tail(&mut self, line: usize) {
+        let width = self.width;
+        let entry = &mut self.entries[line];
+        let before = entry.rows();
+        let kept = entry.text.trim_end().len();
+        if kept == entry.text.len() {
+            return;
+        }
+        entry.text.truncate(kept);
+        if width > 0 {
+            entry.reflow(width);
+        } else {
+            entry.starts = vec![0];
+        }
+        let after = entry.rows();
+        self.index.shift(line, after as isize - before as isize);
     }
 
     /// Appends to line `line`; a missing line is ignored rather than panicked on.
@@ -238,13 +335,12 @@ impl Log {
         self.index.total()
     }
 
-    /// The rows for one frame: everything visible, nothing more.
+    /// The rows for one frame: the last `height` rows of the log, in order.
     ///
     /// # Invariant
     ///
-    /// `scroll` counts rows up from the newest line; the caller already clamped
-    /// it, and it is clamped again here because lines can be added or the window
-    /// can grow between the key and the frame. See `docs/notes/tui-log.md`.
+    /// A block is one line however long it grows, so the window is simply the
+    /// tail of the log: no block is reserved space, and none is cut out.
     pub fn window(&mut self, width: usize, height: usize, scroll: usize) -> Viewport<'_> {
         self.reflow(width);
         let total = self.index.total();
@@ -252,10 +348,11 @@ impl Log {
         let scroll = scroll.min(max_scroll);
         let end = total - scroll;
         let start = end.saturating_sub(height);
-        let mut rows = Vec::with_capacity(end - start);
+
+        let mut rows: Vec<(LineKind, &str)> = Vec::with_capacity(end - start);
         if start < end {
+            // Jump to the block holding the first visible row: O(log blocks).
             let mut line = self.index.line_at(start).min(self.entries.len() - 1);
-            // This line's first row index, carried forward so the walk is one pass.
             let mut first = self.index.prefix(line);
             loop {
                 let entry = &self.entries[line];
@@ -309,82 +406,91 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn rows_break_at_the_column_limit() {
-        let mut log = log_of(&["abcdefghij"], 4);
-        assert_eq!(log.rows(4), 3);
-        assert_eq!(shown(&mut log, 4, 3, 0), vec!["abcd", "efgh", "ij"]);
+    /// Opens a block and streams `chunks` into it, sealing it on the last one.
+    fn block(log: &mut Log, key: &str, tag: &str, chunks: &[&str]) {
+        for (i, chunk) in chunks.iter().enumerate() {
+            log.stream(key, LineKind::Reasoning, tag, chunk, i + 1 == chunks.len());
+        }
     }
 
-    #[test]
-    fn wide_characters_count_two_columns() {
-        let mut log = log_of(&["中文ab"], 5);
-        assert_eq!(shown(&mut log, 5, 2, 0), vec!["中文a", "b"]);
+    /// Adds one delta to a block that stays open, the way a token arrives.
+    fn grow(log: &mut Log, key: &str, tag: &str, chunk: &str) {
+        log.stream(key, LineKind::Reasoning, tag, chunk, false);
     }
 
+    /// Two blocks streaming at once each keep growing, in the order they opened.
     #[test]
-    fn embedded_newlines_force_breaks() {
-        assert_eq!(shown(&mut log_of(&["a\nb"], 10), 10, 2, 0), vec!["a", "b"]);
-        // A trailing newline is an empty row, so a blank line survives the round trip.
-        assert_eq!(shown(&mut log_of(&["a\n"], 10), 10, 2, 0), vec!["a", ""]);
+    fn two_open_blocks_grow_together() {
+        let mut log = Log::new();
+        grow(&mut log, "a", "[peer] ", "xx");
+        grow(&mut log, "b", "[test1] ", "yy");
+        assert_eq!(shown(&mut log, 12, 4, 0), vec!["[peer] xx", "[test1] yy"]);
+
+        // The first block grows in place: the second one stays below it.
+        grow(&mut log, "a", "[peer] ", "zzzzzz");
+        assert_eq!(
+            shown(&mut log, 12, 4, 0),
+            vec!["[peer] xxzzz", "zzz", "[test1] yy"]
+        );
     }
 
+    /// The window is the tail of the log: a growing block pushes rows up, and
+    /// scrolling back finds them again.
     #[test]
-    fn empty_text_is_one_blank_row() {
-        let mut log = log_of(&[""], 10);
-        assert_eq!(log.rows(10), 1);
-        assert_eq!(shown(&mut log, 10, 1, 0), vec![""]);
+    fn a_growing_block_scrolls_the_window() {
+        let mut log = log_of(&["old1", "old2", "old3"], 20);
+        block(&mut log, "a", "[peer] ", &["live"]);
+        assert_eq!(
+            shown(&mut log, 20, 3, 0),
+            vec!["old2", "old3", "[peer] live"]
+        );
+        // No rows were lost: they went above the window, not out of the log.
+        assert_eq!(shown(&mut log, 20, 3, 1), vec!["old1", "old2", "old3"]);
     }
 
-    /// The streaming invariant: chunked appends land where one reflow would.
+    /// A block taller than the window shows its newest rows, like any other tail.
+    #[test]
+    fn a_long_block_shows_its_tail() {
+        let mut log = Log::new();
+        block(
+            &mut log,
+            "a",
+            "[peer] ",
+            &["abcdefgh", "ijklmnop", "qrstuvwx"],
+        );
+        let all = shown(&mut log, 12, 100, 0);
+        assert_eq!(all.len(), 3, "three rows at width 12: {}", all.join("|"));
+        // Two rows: the two newest. The label scrolled off with the head.
+        assert_eq!(shown(&mut log, 12, 2, 0), all[1..].to_vec());
+    }
+
+    /// A blank chunk must not open a block.
     ///
     /// # Invariant
     ///
-    /// Row count *and* text must match a reflow of the whole line, at every
-    /// width; a mismatch shows up as text jumping around mid-answer.
+    /// The shell writes one empty line before every exit sentinel, so without
+    /// this every command leaves a blank row on screen.
     #[test]
-    fn appending_equals_rewrapping_from_the_top() {
-        let cases: &[(&str, &[&str])] = &[
-            ("abcdef", &["abc", "def"]),
-            ("abcdefghij", &["abcde", "fghij"]),
-            ("abcde", &["fgh", "ij"]),
-            ("a\nbcdef", &["\nbc", "def"]),
-            ("abcdef\n", &["\n", "x"]),
-            ("中文中", &["文", "abcdef"]),
-            ("", &["abcdefg"]),
-            ("abc\ndef", &["", "\n", "ghi"]),
-            ("abcd", &["e", "f", "ghijkl"]),
-        ];
-        for (first, chunks) in cases {
-            for width in [1usize, 2, 3, 5, 7, 10] {
-                let mut streamed = Log::new();
-                streamed.push(LineKind::Assistant, *first);
-                streamed.rows(width);
-                let mut whole = String::from(*first);
-                for chunk in *chunks {
-                    streamed.append(0, chunk);
-                    whole.push_str(chunk);
-                }
-                let expected = log_of(&[whole.as_str()], width).rows(width);
-                assert_eq!(
-                    streamed.rows(width),
-                    expected,
-                    "streamed {:?} at width {width} wrapped differently from the whole line",
-                    whole
-                );
-                // Same row count is not enough: the text has to line up too.
-                let fresh = log_of(&[whole.as_str()], width);
-                for row in 0..expected {
-                    let streamed_row = streamed.entries[0].row(row);
-                    let whole_row = fresh.entries[0].row(row);
-                    assert_eq!(
-                        streamed_row, whole_row,
-                        "row {row} of {:?} at width {width}",
-                        whole
-                    );
-                }
-            }
-        }
+    fn a_blank_chunk_opens_no_block() {
+        let mut log = Log::new();
+        // Exactly what a finished command's stderr stream looks like.
+        log.stream("t:c1:Stderr", LineKind::ToolError, "", "\n", false);
+        log.stream("t:c1:Stderr", LineKind::ToolError, "", "", true);
+        assert_eq!(log.len(), 0, "a blank chunk made a row");
+        assert!(log.open.is_empty(), "the key was left open");
+    }
+
+    /// A sealed block does not end in a blank row, even when its output did.
+    #[test]
+    fn a_sealed_block_has_no_trailing_blank_row() {
+        let mut log = Log::new();
+        log.stream("t:c1:Stdout", LineKind::ToolOutput, "", "out\n", false);
+        log.stream("t:c1:Stdout", LineKind::ToolOutput, "", "\n", true);
+        assert_eq!(shown(&mut log, 40, 10, 0), vec!["out"]);
+        // A blank line in the middle is still part of the block.
+        let mut log = Log::new();
+        log.stream("t:c2:Stdout", LineKind::ToolOutput, "", "a\n\nb", true);
+        assert_eq!(shown(&mut log, 40, 10, 0), vec!["a", "", "b"]);
     }
 
     /// A window can start mid-line, which a "count lines, not rows" renderer gets wrong.

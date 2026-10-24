@@ -70,6 +70,27 @@ the schema, not a list of synonyms, so a renamed argument never needs a new
 entry -- and a key unrelated to anything declared gets no guess rather than a
 wrong one.
 
+## WaitingMessage
+
+Its own type for the same reason `Cancelled` is: the two say opposite things
+about the same shell. A cancelled command is killed; a backgrounded one keeps
+running and owes its output later. Told apart by string, that distinction is a
+bug waiting for someone to reword a message.
+
+## INBOX_POLL
+
+A tick rather than a notification. Notifying every waiter needs somewhere to
+keep them, and the number that matters is not "did one arrive" but "did one
+arrive for *this* call", which is a per-call question: the call answered it by
+comparing a copy of the count it took when it started. A quarter of a second is
+well below anything a reader notices, and the cost of the tick is one load.
+
+## ToolContext::inbox
+
+Where the signal comes from: the session owns the counter, and every tool call
+in a turn takes a fresh copy, so a message wakes exactly one wait instead of
+every call that follows it.
+
 ## Cancelled
 
 Its own type rather than a string, because the cancel path has work to do that
@@ -130,6 +151,33 @@ visible without taking the lock again.
 The deadline was on waiting, not on the command. Nothing was stopped: the shell
 still holds it. Give the session a fresh shell under the same name so work can
 continue, and have the old one report the rest of the output into the inbox.
+
+## BashTool::run (a message arriving mid-command)
+
+This is the fix for "the session went quiet for five minutes while I was talking
+to it". A step is one model request *plus* every tool call it asked for, and the
+inbox is read only between steps, so a command that sleeps for its whole
+`timeout_ms` -- 300 seconds, the way it was configured that one time -- holds
+whatever the operator said until the deadline arrives. The turn was not stuck;
+it was in the middle of a step that nobody could shorten.
+
+Ending the wait early does not touch the command. It keeps running in the old
+shell, which goes through the same hands as a command that outlived its
+deadline, so there is one story for "this call returned without its output" and
+not two. What the model hears differs only in the reason, and the reason is the
+part worth knowing: nobody told it to stop, somebody wanted to talk to it.
+
+Only this tool waits long enough for it to matter. A `read_image` call is a file
+read; nothing is gained by interrupting that.
+
+## leave_running
+
+Both ways of losing a command's output -- its deadline passed, or somebody spoke
+-- leave the same state behind: a fresh shell under a name that has to keep
+meaning "a shell you can use", and an old one whose output arrives later. Having
+them share one path is what keeps those two promises from drifting apart, and
+the messages differ only in `because`, since that is the only thing the model
+needs to know that the two paths do not share.
 
 ## BashTool::run (the late spill label)
 
@@ -211,6 +259,17 @@ fail on, and must actually reach the file name.
 Still only `command`: a label drifting into a required argument would turn a
 rejected call into a rejected *idea*, and the model would stop describing what
 it is doing.
+
+## tests::a_message_arriving_mid_command_hands_it_to_the_background
+
+A real shell and a real `sleep`, because the thing being tested is that the wait
+ends while the command does not: anything mocked out would have passed before
+this existed too. It asserts on the elapsed time rather than on how many ticks
+happened, which is the number that made this worth writing.
+
+The second call takes a fresh signal, the way a turn does. Reusing the old one
+would report the same message again and hand every later command straight to the
+background -- the failure mode this whole design exists to avoid.
 
 ## tests::detached_jobs_have_an_explicit_way_to_end
 

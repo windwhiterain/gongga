@@ -72,6 +72,20 @@ The turn is done, so it is no longer something the next start owes -- unless a
 `cancel` interrupted it, in which case staying pending is exactly what "save
 what is left undone" promised.
 
+## send_message (marking the inbox)
+
+`note_message` is what makes "next step boundary" soon rather than eventual.
+Waiting for that boundary used to mean waiting for whatever command this turn
+happened to be running: a `bash` call asleep for its whole `timeout_ms` held
+what the operator said hostage for the entire wait, because one step is the
+model's request *plus* every tool call it asked for. Marking the inbox lets
+whoever is waiting inside the turn stop waiting -- see `BashTool::run (a message
+arriving mid-command)` in `server-tools-mod.md`.
+
+The message itself is delivered by the same code at the same boundary as before;
+what changed is how long that boundary is. The row keeps its "inject" contract,
+so nothing downstream has to know any of this happened.
+
 ## set_session
 
 `--llm` is resolved here rather than at the next turn: a typo should fail the
@@ -96,6 +110,11 @@ flag being unusable on an unlisted model.
 
 Written down before it is applied: a restart has to bring the session back the
 way it was left, and the in-memory copy is only what turns read.
+
+The `cwd` it answers with is read without taking the default shell's lock
+([`SessionHandle::cwd`]): this is the one command every operator types at a session,
+and a session whose shell is mid-command was enough to leave the answer -- and the
+`$GONGGA_CLI` call waiting for it -- hanging until that command finished.
 
 ## resolve_llm
 

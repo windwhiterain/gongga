@@ -34,6 +34,18 @@ A turn compares this before and after waiting its turn: if it moved, an
 `interrupt_session` arrived while the turn was still queued, and running it
 anyway would look like the cancel did nothing.
 
+## SessionInner::inbox
+
+A count, not a queue, because nobody cares how many messages are waiting -- only
+that one arrived while this turn was doing something it could not interrupt. A
+tool call takes `inbox_signal` (a copy of the count) when it starts waiting, so
+"did one arrive since I began" is one load and no bookkeeping: whatever was
+already queued when this call started belongs to some earlier call.
+
+Shared rather than embedded so a call can hold a copy across an await; keeping
+it per session rather than per call is what stops every call in a turn from
+reacting to the same message again.
+
 ## SessionInner::gate
 
 Two turns used to run side by side: both measured the transcript, both decided it
@@ -89,8 +101,23 @@ throw the work away.
 
 ## SessionHandle::cwd
 
-`std::sync::MutexGuard` is not `Send`, so it has to be gone before the first
-await. Scoping the lock to a block is what guarantees that.
+It used to take the shell's own lock to read `cwd`, which meant that asking where
+a session was waited for whatever command was running in that shell -- `set_session`
+answers with this, so creating a session B whose default shell happened to be busy
+could hang for minutes in A's `$GONGGA_CLI` call. Now it reads the cell the shell
+mirrors its directory into, which needs no lock at all.
+
+Staleness is not the cost of a race: the mirror is written by the same statement
+that sets `cwd`, from code that already holds the shell's lock, so a reader sees
+the last *reported* directory -- the newest value that exists.
+
+## ShellSet::reported
+
+The cell belongs to whichever shell is currently named `default`, which is what
+[`ShellSet::get`] arranges. A replacement therefore brings a new cell rather than
+letting the retired shell keep writing into the session's answer: once the name
+points at a fresh shell, its directory is the truth, even while the old one is
+still finishing the command it was left behind with.
 
 ## ShellSet
 
@@ -101,7 +128,13 @@ actually await lives inside, one level down.
 ## ShellSet::get
 
 Spawning is what makes `del_bash` meaningful: a shell that was removed comes back
-fresh (in the session directory) the next time it is named.
+fresh (in the session directory) the next time it is named. Naming it also hands
+the session this shell's `cwd_cell` when the name is `default`, which is how
+[`ShellSet::reported`] stays pointed at a live shell.
+
+## ShellSet::reported_cwd
+
+Empty only if the cell was poisoned by a panic someone else already reported.
 
 ## ShellSet::names
 
@@ -173,3 +206,15 @@ transcript.
 
 A turn queued behind a `del_session` has to notice the session is gone when its
 turn comes, instead of writing into a deleted session.
+
+## tests::the_session_cwd_does_not_wait_for_a_running_command
+
+The regression this whole change exists for. Holding the shell's lock is exactly
+what a long command does, and a read that waits there is a `set_session` that does
+not come back. The clock is asserted rather than assumed: a slower read would
+still pass if it were merely bounded.
+
+## tests::a_cd_in_the_default_shell_reaches_the_session_cwd
+
+A mirror nobody writes to would answer with where the session started, which is
+quietly wrong for the lifetime of the session. Only a real shell proves it moves.

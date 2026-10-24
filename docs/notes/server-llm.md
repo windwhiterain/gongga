@@ -108,6 +108,105 @@ A stream that ends without its trailing blank line still sent a final event;
 dropping what is left is how the last `response.completed` goes missing and the
 turn looks like the model said nothing.
 
+## LlmClient::builtin_tools
+
+Provider-side tools, taken from the roster's `builtin_tools` for the model the
+session is on and sent **verbatim** as `{"type": "<name>"}`.
+
+No mapping table lives here on purpose. OpenAI calls it `web_search` in the
+Responses API and `web_search_preview` elsewhere, and a provider may have its own
+`web_fetch`; a table would freeze "what a provider can do" into this server,
+which cannot know what a provider it has never talked to accepts. The roster is
+where that vocabulary belongs, because the roster is the file a human edits when
+a provider changes.
+
+Undeclared means unsent. Offering a tool a provider does not recognise is a
+plain 400 on every request of every turn, so the default has to be silence.
+
+## LlmClient::build_body — one `tools` array
+
+Local functions and provider tools share a single array: the API has one
+`tools` field, and splitting it would mean inventing a second key no provider
+reads. Nothing distinguishes them there except their own `type` -- `function`
+for ours, the tool's own name for the provider's.
+
+The key is omitted entirely when both are empty, because an empty array is not
+the same as no `tools` key to some providers.
+
+## handle — provider-side tool items
+
+`web_search_call`, `web_fetch_call`, and whatever a provider invents next
+(`*_call`) used to fall into `ItemKind::Unknown` and be dropped: the operator saw
+a turn that went quiet while the model was reading the web.
+
+The rule is the suffix, not a list of names -- a name this server has never heard
+of must still be visible. `function_call` is matched first, because it is ours
+and needs an output; a provider item was already executed where it ran and owes
+nothing.
+
+Each one becomes an `Activity` response part: the line opens with the tool's name
+(`web_search`, `web_fetch`) and gains a tail from the item itself -- the query,
+the URL, the generation prompt -- plus the provider's own progress beats
+(`searching`, `in_progress`, `generating`) as they arrive, on the same stream
+key. The front-end renders it as `[session] provider: ...`, distinct from
+`[session] tool: ...`, because the two mean different things: one this harness
+ran, one it did not.
+
+## LlmEvent::Citation
+
+`response.output_text.annotation.added` carries a `url_citation`: the source
+behind a sentence. It becomes its own `Activity` line and an operator-only
+`notice` row. A search whose citations nobody can see is unverifiable -- the
+answer looks the same whether the source exists or the model invented it.
+
+## LlmEvent::BuiltinCall
+
+The provider's own item, kept verbatim (minus any binary payload) so the next
+request can send it back.
+
+This is the part that is easy to get wrong. A `function_call` is paired with a
+`function_call_output` we produce; a `web_search_call` has no local output,
+because the provider already ran it. Replaying it means putting *its own item*
+back in `input[]`, exactly as it came. Dropping it rejects the transcript -- the
+API sees a turn that mentions a search nobody performed -- and so does replaying
+one that lost its payload.
+
+`image_generation_call` carries a base64 `result`. That payload is removed before
+the item reaches sqlite (the transcript stays text and small), and the item is
+marked non-replayable, because an item with the payload cut out is not a shape
+the API takes back. It is visible while it happens and dropped when it would be
+sent again; the alternative -- storing megabytes of base64 per generated picture
+in every row of every request -- is worse than the warning the drop produces.
+
+## 待确认：does every provider take its own `*_call` item back?
+
+Open risk, not verified against a real provider. Replaying an activity item
+verbatim assumes the provider accepts an item **it produced** appearing in
+`input[]`. OpenAI's Responses API does, when the transcript is self-contained.
+A provider that keeps the state on its side instead -- the ones that expect
+`store: true` and a `previous_response_id` to continue a conversation -- may
+reject it: most likely one HTTP 400 with an `invalid_request_error` naming the
+item or the missing `previous_response_id`, on **every** request of a session
+whose transcript holds one such item, which would look like a permanently broken
+session rather than a bad item.
+
+If that shows up: `[llm] store = true` is already a knob here, and the shape to
+send becomes `previous_response_id` plus only the new items, which is a change to
+`build_body` and to what `store` is allowed to hold. See
+`docs/notes/server-store.md` for why the item is stored verbatim in the first
+place.
+
+## image_content
+
+The one place a stored picture becomes bytes. A row keeps a path and a media
+type; the file is read when the request is built, and encoded as a data URL in an
+`input_image` part inside the `function_call_output`'s content array.
+
+When the file is gone, the part degrades to an `input_text` saying which path is
+missing and that what it showed cannot be recovered. A turn that has lost a
+screenshot is still a turn; failing the whole request over one deleted temp file
+would make the session unusable until someone recreated it.
+
 ## ItemMeta::text
 
 Text accumulated from deltas. Providers do not all return the finished text on
@@ -167,6 +266,56 @@ of band, not part of the history.
 
 An empty registry means no `tools` key at all, rather than an empty array that
 some providers reject.
+
+## tests::an_activity_item_with_a_binary_payload_is_kept_but_not_replayed
+
+The payload leaves the item before it reaches sqlite, and the item is then
+refused for replay -- with its `type` and `id` in the log line, because "an item
+was dropped" is not something anyone can act on.
+
+## tests::builtin_tools_share_the_array_with_functions
+
+The two kinds of tool land in one `tools` array, in the roster's own spelling,
+with the local ones first. This is the shape a provider reads, so it is the shape
+the test pins.
+
+## tests::a_model_that_declares_no_builtin_tools_sends_none
+
+Undeclared is unsent, and no tools at all is no `tools` key rather than an empty
+array.
+
+## tests::a_provider_tool_item_is_parsed_not_swallowed
+
+The regression this whole section exists for: a `web_search_call` used to end in
+`ItemKind::Unknown`. The test drives the three SSE events a real one sends and
+asserts the activity line, the query in it, and the replayable item behind it.
+
+## tests::the_suffix_not_a_list_of_names_decides_what_is_a_provider_tool
+
+A provider this server has never heard of still gets a visible line.
+
+## tests::an_activity_item_replays_exactly_as_it_came
+
+Verbatim replay, and a payload-stripped item refused rather than sent.
+
+## tests::a_picture_rides_in_the_tool_result_as_input_image
+
+The content array shape: `input_text` first, `input_image` second, a data URL --
+not a base64 sentence for the model to parse.
+
+## tests::a_missing_picture_degrades_to_a_sentence
+
+The degradation path, named path and all.
+
+## tests::base64_matches_the_standard_alphabet
+
+Standard alphabet, padded, including the byte values a hand-rolled table usually
+gets wrong. A data URL with the wrong encoding is a 400 nobody can read.
+
+## tests::a_text_only_model_reports_why_it_cannot_look
+
+The roster's `modalities` decides, and the refusal names the entry and the
+missing modality; unstated means nothing is refused on the roster's behalf.
 
 ## tests::reasoning_summary_falls_back_to_accumulated_deltas
 

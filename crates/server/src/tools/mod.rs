@@ -18,11 +18,13 @@ use crate::session::{DEFAULT_BASH, ShellSet};
 use crate::store::Store;
 use crate::tools::bash::{BashChunk, BashShell, BashStream};
 use crate::tools::detached::DetachedRegistry;
+use crate::tools::read_image::ReadImageTool;
 
 pub mod bash;
 pub mod detached;
 #[cfg(windows)]
 pub mod job;
+pub mod read_image;
 #[cfg(test)]
 pub(crate) mod testbed;
 
@@ -41,6 +43,12 @@ pub struct ToolContext {
     pub cancel: CancellationToken,
     /// Where a command that outlived its deadline reports back: an inbox row, not a result.
     pub store: Store,
+    /// The session's working directory, for tools that take a relative path.
+    pub cwd: PathBuf,
+    /// What this turn's model can take in; a picture tool asks before sending one.
+    pub vision: crate::llm::Vision,
+    /// Whether a message arrived for this session that its turn cannot read yet.
+    pub inbox: crate::session::InboxSignal,
 }
 
 impl ToolContext {
@@ -128,6 +136,14 @@ pub struct ToolOutcome {
     /// Text handed back to the model as the function call output.
     pub output: String,
     pub ok: bool,
+    /// Pictures handed back alongside the text, by path rather than inline.
+    ///
+    /// # Invariant
+    ///
+    /// Only a path and a media type: the bytes are read when the request is
+    /// built, so no base64 ever reaches the transcript.
+    /// See `docs/notes/server-tools-read-image.md`.
+    pub images: Vec<crate::store::ImageRef>,
 }
 
 impl ToolOutcome {
@@ -135,6 +151,7 @@ impl ToolOutcome {
         Self {
             output: output.into(),
             ok: true,
+            images: Vec::new(),
         }
     }
 
@@ -142,7 +159,17 @@ impl ToolOutcome {
         Self {
             output: output.into(),
             ok: false,
+            images: Vec::new(),
         }
+    }
+
+    /// The same outcome, carrying one picture for the model to look at.
+    pub fn with_image(mut self, path: impl Into<String>, media_type: impl Into<String>) -> Self {
+        self.images.push(crate::store::ImageRef {
+            path: path.into(),
+            media_type: media_type.into(),
+        });
+        self
     }
 }
 
@@ -175,6 +202,7 @@ impl ToolRegistry {
                 Box::new(DelBashTool),
                 Box::new(ListBashTool),
                 Box::new(KillBashTool),
+                Box::new(ReadImageTool),
             ],
         }
     }
@@ -319,6 +347,86 @@ fn json_type(value: &Value) -> &'static str {
     }
 }
 
+/// Leaves a command that outlived its call behind: fresh shell, old one reports later.
+///
+/// # Invariant
+///
+/// Callable only once the future borrowing the shell has been dropped, because the
+/// task it spawns takes that shell's lock to finish reading it.
+///
+/// See `docs/notes/server-tools-mod.md`.
+async fn leave_running(
+    ctx: &ToolContext,
+    name: &str,
+    handle: &Arc<Mutex<BashShell>>,
+    task: Option<&str>,
+    cap: usize,
+    waited: Duration,
+    because: &str,
+) -> ToolOutcome {
+    let retired = ctx.replace_shell(name, handle);
+    if !retired {
+        tracing::warn!(
+            session = %ctx.session,
+            shell = %name,
+            "shell was replaced while its command was still running"
+        );
+    }
+    let store = ctx.store.clone();
+    let session = ctx.session.clone();
+    let output_dir = ctx.output_dir.clone();
+    // Same naming rule, with `late` where the call id goes: that call has already returned.
+    let label = spill_label(&session, name, task, "late");
+    let owned = name.to_string();
+    let secs = waited.as_secs();
+    let handle = handle.clone();
+    tokio::spawn(async move {
+        // Nobody holds this shell now, so the lock is free: the call that waited has returned.
+        let (stdout, stderr, code) = {
+            let mut shell = handle.lock().await;
+            shell.finish_outstanding().await
+        };
+        let mut text = stdout;
+        if !stderr.is_empty() {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(&stderr);
+        }
+        let text = crate::tools::bash::cap_output(&text, cap, &output_dir, &label);
+        let text = if text.is_empty() {
+            "(no output)".to_string()
+        } else {
+            text
+        };
+        let status = match code {
+            Some(0) => "finished successfully".to_string(),
+            Some(c) => format!("finished with exit status {c}"),
+            None => "finished, though the exit status could not be read".to_string(),
+        };
+        let message = format!(
+            "The command you started in shell `{owned}`, which outlived its \
+             {secs}s wait and was left running, has now {status}.\n\n{text}"
+        );
+        if let Err(e) = store.add_pending_task(&session, "inject", &json!({"message": message})) {
+            tracing::warn!(session = %session, "could not queue a finished command: {e}");
+        }
+    });
+    ToolOutcome::ok(format!(
+        "still running after {secs}s: {because}, so the wait ended and it was handed to the \
+         background. The command itself was not stopped -- it continues in the old shell \
+         `{name}`, which is now detached from this session, and its output will be posted \
+         to this session when it finishes. `{name}` is a fresh shell now, in the session's \
+         working directory.{}",
+        if retired {
+            ""
+        } else {
+            " (Another shell had already taken that name, so the old one is only reachable \
+              through its completion message.)"
+        }
+    ))
+}
+
 /// Is one of these two names spelled out inside the other, in order?
 ///
 /// See `docs/notes/server-tools-mod.md`.
@@ -346,6 +454,23 @@ impl std::fmt::Display for Cancelled {
 }
 
 impl std::error::Error for Cancelled {}
+
+/// A message arrived for the session while this command ran: its own type because the shell lives on.
+#[derive(Debug)]
+struct WaitingMessage;
+
+impl std::fmt::Display for WaitingMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a message arrived while the command was running")
+    }
+}
+
+impl std::error::Error for WaitingMessage {}
+
+/// How often a long wait checks for somebody trying to say something.
+///
+/// See `docs/notes/server-tools-mod.md`.
+const INBOX_POLL: Duration = Duration::from_millis(250);
 
 // ---------------------------------- bash ----------------------------------
 
@@ -516,13 +641,25 @@ impl Tool for BashTool {
             let (tx, mut rx) = mpsc::channel::<BashChunk>(256);
             let mut shell = handle.lock().await;
             // Scoped so the future borrowing `shell` drops before the guard does.
+            let started = std::time::Instant::now();
             let outcome = {
                 let execute = shell.run(command, timeout, Some(&tx));
                 tokio::pin!(execute);
+                let mut punctual = tokio::time::interval(INBOX_POLL);
                 loop {
                     tokio::select! {
                         res = &mut execute => break res,
                         _ = ctx.cancel.cancelled() => break Err(anyhow::Error::new(Cancelled)),
+                        // Somebody is talking, and one command is not worth their wait. See the notes.
+                        _ = punctual.tick() => {
+                            if ctx.inbox.arrived() {
+                                tracing::info!(
+                                    session = %ctx.session, shell = %name, elapsed = ?started.elapsed(),
+                                    "handed a command to the background: a message is waiting"
+                                );
+                                break Err(anyhow::Error::new(WaitingMessage));
+                            }
+                        }
                         maybe = rx.recv() => {
                             if let Some(chunk) = maybe {
                                 let stream = match chunk.stream {
@@ -552,75 +689,31 @@ impl Tool for BashTool {
             }
 
             match outcome {
-                // The wait timed out, not the command: give the name a fresh shell, let the old one report.
+                // Either the wait ran out or somebody spoke: nothing was stopped either way.
                 Ok(o) if o.still_running => {
-                    let retired = ctx.replace_shell(name, &handle);
-                    if !retired {
-                        tracing::warn!(
-                            session = %ctx.session,
-                            shell = %name,
-                            "shell was replaced while its command was still running"
-                        );
-                    }
-                    let store = ctx.store.clone();
-                    let session = ctx.session.clone();
-                    let output_dir = ctx.output_dir.clone();
-                    // Same naming rule, with `late` where the call id goes: that call has already returned.
-                    let label = spill_label(&session, name, task, "late");
-                    let cap = self.max_output_chars;
-                    let waited = timeout;
-                    let owned = name.to_string();
-                    tokio::spawn(async move {
-                        // Nobody holds this shell now, so the lock is free: the timed-out call has returned.
-                        let (stdout, stderr, code) = {
-                            let mut shell = handle.lock().await;
-                            shell.finish_outstanding().await
-                        };
-                        let mut text = stdout;
-                        if !stderr.is_empty() {
-                            if !text.is_empty() {
-                                text.push('\n');
-                            }
-                            text.push_str(&stderr);
-                        }
-                        let text = crate::tools::bash::cap_output(&text, cap, &output_dir, &label);
-                        let text = if text.is_empty() {
-                            "(no output)".to_string()
-                        } else {
-                            text
-                        };
-                        let status = match code {
-                            Some(0) => "finished successfully".to_string(),
-                            Some(c) => format!("finished with exit status {c}"),
-                            None => {
-                                "finished, though the exit status could not be read".to_string()
-                            }
-                        };
-                        let message = format!(
-                            "The command you started in shell `{owned}`, which outlived its \
-                             {secs}s wait and was left running, has now {status}.\n\n{text}",
-                            secs = waited.as_secs()
-                        );
-                        if let Err(e) =
-                            store.add_pending_task(&session, "inject", &json!({"message": message}))
-                        {
-                            tracing::warn!(session = %session, "could not queue a finished command: {e}");
-                        }
-                    });
-                    ToolOutcome::ok(format!(
-                        "still running after {}s, so the wait ended -- the command was not \
-                         stopped. It continues in the old shell `{name}`, which is now detached \
-                         from this session; its output will be posted to this session when it \
-                         finishes. `{name}` is a fresh shell now, in the session's working \
-                         directory.{}",
-                        timeout.as_secs(),
-                        if retired {
-                            ""
-                        } else {
-                            " (Another shell had already taken that name, so the old one is \
-                              only reachable through its completion message.)"
-                        }
-                    ))
+                    leave_running(
+                        ctx,
+                        name,
+                        &handle,
+                        task,
+                        self.max_output_chars,
+                        timeout,
+                        "its deadline passed",
+                    )
+                    .await
+                }
+                Err(e) if e.is::<WaitingMessage>() => {
+                    let waited = started.elapsed();
+                    leave_running(
+                        ctx,
+                        name,
+                        &handle,
+                        task,
+                        self.max_output_chars,
+                        waited,
+                        "a message arrived for this session",
+                    )
+                    .await
                 }
                 Ok(o) => {
                     let mut text = String::new();
@@ -982,13 +1075,111 @@ fn shell_name(args: &Value) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::InboxSignal;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// A context wired to a throwaway store and one real shell, so a call can end to end.
+    fn context_for(program: &Path, root: &Path, inbox: InboxSignal) -> ToolContext {
+        let store = Store::open(&root.join("g.db")).expect("a throwaway store");
+        let detached = DetachedRegistry::new(
+            store.clone(),
+            Some(program.to_path_buf()),
+            root.join("detached"),
+            Vec::new(),
+        );
+        let mut set = ShellSet::new(program.to_path_buf(), root.to_path_buf(), Vec::new());
+        set.get(DEFAULT_BASH).expect("the default shell starts");
+        ToolContext {
+            session: "main".to_string(),
+            call_id: "call_1".to_string(),
+            output_dir: root.join("outputs"),
+            shells: Arc::new(StdMutex::new(set)),
+            detached,
+            events: None,
+            cancel: CancellationToken::new(),
+            store,
+            cwd: root.to_path_buf(),
+            vision: crate::llm::Vision {
+                accepts_image: false,
+                refusal: String::new(),
+            },
+            inbox,
+        }
+    }
+
+    /// The symptom that started this: a command sitting between you and an answer.
+    #[tokio::test]
+    async fn a_message_arriving_mid_command_hands_it_to_the_background() {
+        let Some(program) = crate::config::detect_git_bash() else {
+            return;
+        };
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let epoch = Arc::new(AtomicU64::new(0));
+        let mut ctx = context_for(&program, dir.path(), InboxSignal::around(epoch.clone()));
+        let tool = BashTool {
+            timeout: Duration::from_secs(120),
+            max_output_chars: 0,
+        };
+
+        // Somebody speaks a moment into a command that would run for two minutes.
+        let a_message = epoch.clone();
+        let speaker = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            a_message.fetch_add(1, Ordering::SeqCst);
+        });
+        let started = std::time::Instant::now();
+        let outcome = tool
+            .run(
+                json!({"command": "sleep 20", "task": "hold the line"}),
+                &ctx,
+            )
+            .await;
+        let elapsed = started.elapsed();
+        let _ = speaker.await;
+
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "the wait did not end early: {elapsed:?}\n{}",
+            outcome.output
+        );
+        assert!(
+            outcome.output.contains("handed to the background"),
+            "the model was not told what happened: {}",
+            outcome.output
+        );
+        assert!(
+            outcome.output.contains("a message arrived"),
+            "the reason was not named: {}",
+            outcome.output
+        );
+
+        // The next call takes a fresh signal, as a real turn does, and the name
+        // still means a shell it can use.
+        ctx.inbox = InboxSignal::around(epoch.clone());
+        let after = tool
+            .run(json!({"command": "echo back in business"}), &ctx)
+            .await;
+        assert!(
+            after.output.contains("back in business"),
+            "the session could not go on working: {}",
+            after.output
+        );
+    }
 
     #[test]
     fn registry_exposes_the_spec_tools() {
         let reg = ToolRegistry::with_builtins(Duration::from_secs(30), 8_000);
         assert_eq!(
             reg.names(),
-            vec!["bash", "check_bash", "del_bash", "list_bash", "kill_bash"]
+            vec![
+                "bash",
+                "check_bash",
+                "del_bash",
+                "list_bash",
+                "kill_bash",
+                "read_image"
+            ]
         );
         assert!(reg.get("bash").is_some());
         assert!(reg.get("nope").is_none());

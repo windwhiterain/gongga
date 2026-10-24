@@ -42,7 +42,7 @@ use GitBash as bash on windows.
 - server:
     - `set_session --session <name> [--cwd <path>] [--llm <provider/model>] [--compact_threshold <n%>] [--thinking-effort <level>]`
     - `del_session --session <name>`
-    - `send_message --session <name> --message <string>`
+    - `send_message --session <name> --message <string>`: inject message instantly, turn waiting bash to backgound.
     - `interrupt_session --session <name>`
     - `get_messages --session <name> [--after_seq <n>] [--limit <n>]`: read the transcript back,
       oldest first; `--limit` counts back from the end.

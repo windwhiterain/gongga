@@ -6,8 +6,9 @@ UDP listener, connection demultiplexing, and per-client dispatch.
 
 One socket serves every client. A datagram whose peer is unknown and whose flags
 include SYN creates a connection; everything else is routed to the connection
-that already owns that address. Each connection then runs two concurrent loops:
-inbound commands and outbound event fan-out.
+that already owns that address. From then on a connection is three things at once:
+it reads commands, it forwards events, and it runs the commands it has accepted --
+the last of those off to the side, so that neither of the other two waits for it.
 
 ## Peer
 
@@ -59,6 +60,37 @@ than papered over by an exit.
 
 Every ten seconds the wait names the fact that something is still holding the
 process open. Observability, not a cutoff.
+
+## handle_connection (commands run elsewhere)
+
+`dispatch` used to be awaited inside the `select!` that also reads this socket and
+forwards events, so for as long as one command was busy the connection answered
+neither: a pipelined command waited, and so did every event this client was owed,
+including the streaming output of a turn it was watching. The read loop now hands
+each command to [`run_commands`] and goes straight back to the select.
+
+Unbounded, because there is nowhere to put an excess command. The transport's own
+window is what limits how many can be in flight from one peer, and dropping one
+would turn into a client waiting on a reply that will never come.
+
+## run_commands
+
+One at a time, in the order they were read. That is not leftover caution: two
+commands of one connection are allowed to depend on each other -- `set_session`
+then a `send_message` for the session it just configured -- and nothing in
+`dispatch` orders them otherwise. Running them side by side would be a change of
+meaning, not of speed, so the fix stops at "must not block the other two".
+
+Results carry their own `id`, which is what the client matches on, so a slow
+command costs nobody else anything but time.
+
+A client that hangs up mid-command is not cut off: dropping the sender only closes
+the queue for new ones, so the command already running finishes and publishes its
+result before this task ends.
+
+## Queued
+
+Named for what it is at the moment it is created, not for what it is doing.
 
 ## handle_connection
 

@@ -160,6 +160,13 @@ process dies in between.
 A row with no message cannot be delivered; leaving it would block the queue
 forever, and its kind is not one this loop knows how to replay.
 
+How long a boundary takes to arrive is not up to this loop. `run_tools` hands
+each call a fresh `inbox_signal`, so whichever call is waiting when the operator
+speaks can end its wait instead of sitting out the command -- see
+`BashTool::run (a message arriving mid-command)` in `server-tools-mod.md`. One
+fresh copy per call is what keeps the same message from waking every call after
+it.
+
 ## Agent::maybe_compress
 
 Without this a long turn grows without bound until the provider refuses it

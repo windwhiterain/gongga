@@ -52,6 +52,48 @@ wants a key. Startup must not: the server's own key comes from a longer chain
 (an exported `GONGGA_API_KEY`, the DSH credential store), and refusing to boot
 because `llm.toml` did not hold one would be a step backwards.
 
+## Model::modalities
+
+What the roster says this model takes in and gives back: `["text", "image"]`,
+`["text"]`, sometimes `["text", "image", "video", "audio"]`.
+
+Treated as the whole of the image question. A model whose list is present and
+lacks `image` is refused an image **by us**, naming the roster entry and the
+missing modality -- the alternative is sending it and getting an opaque 400 from
+a provider that never says which field it disliked.
+
+Empty is not "nothing": unstated means the roster has no opinion, and no opinion
+must not become a refusal. Roster files in the wild often omit the field.
+
+## Model::builtin_tools
+
+Tools the provider runs on its own side, in **the provider's own spelling**:
+`web_search`, `web_search_preview`, a provider's own `web_fetch`, and so on.
+
+Sent verbatim, with no mapping table. The names differ per provider because what
+providers offer genuinely differs, and a table here would encode a vocabulary
+this server cannot keep current. The roster is the right place because it is
+edited by whoever knows the provider.
+
+Absent means none are offered, and that default is load-bearing -- but not for
+the reason first written here. A provider that does not recognise a tool may
+fail every request, and may equally **silently ignore it**:
+
+| Declared | Provider | What happens |
+|---|---|---|
+| `web_search` | `deepseek-v4-pro` | real searches; answers with `web_search_call` items |
+| `web_search` | `deepseek-flash` | ignored, HTTP 200, no `*_call` item, model says it has no web access |
+
+The second row is the dangerous one: nothing errors, the transcript looks
+healthy, and the model simply answers from memory. So declaring a capability is
+a claim that must be verified against the model it is declared for, not against
+the provider. A roster entry asserting what a model cannot do is worse than an
+absent entry, because it produces confidence instead of an error.
+
+DeepSeek's own Responses guide states the general rule: unsupported parameters
+are silently ignored so that existing clients can connect unmodified. That is a
+compatibility feature for them and a trap for a roster.
+
 ## Entry::key
 
 The key as written in the file, when it was written there. `None` is normal: a
@@ -158,3 +200,10 @@ with the ones it does.
 
 A roster that says nothing about levels cannot refuse one: the provider is the
 only party that knows, so the level goes through.
+
+## tests::modalities_and_builtin_tools_reach_the_entry
+
+Both fields are read off the roster and carried on the entry, and a model that
+declares neither ends up with empty lists rather than with defaults: the server
+must not offer a tool, or refuse an image, on a model whose roster entry said
+nothing about either.

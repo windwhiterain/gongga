@@ -7,7 +7,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use futures_util::FutureExt;
-use protocol::{Event, LogLevel, ResponseEvent, SessionStatus, ToolAnswerEvent, ToolStream};
+use protocol::{
+    Event, LogLevel, ResponseEvent, ResponsePart, SessionStatus, ToolAnswerEvent, ToolStream,
+};
 use serde_json::json;
 use tokio::sync::mpsc;
 
@@ -175,7 +177,10 @@ impl Agent {
                     break TurnOutcome::Done;
                 }
                 Ok(StepResult::NeedsTools(calls)) => {
-                    if self.run_tools(session, id, &name, &cancel, calls).await {
+                    if self
+                        .run_tools(session, id, &name, &cancel, &llm, calls)
+                        .await
+                    {
                         break TurnOutcome::Cancelled;
                     }
                 }
@@ -443,6 +448,32 @@ impl Agent {
                     payload["item_id"] = json!(item_id);
                     let _ = self.store.append_message(id, "reasoning", &payload);
                 }
+                // The provider executed this one; keeping the item verbatim is
+                // what lets the next request carry the same transcript.
+                LlmEvent::BuiltinCall {
+                    item, replayable, ..
+                } => {
+                    let _ = self.store.append_message(
+                        id,
+                        "builtin_call",
+                        &json!({"item": item, "replayable": replayable}),
+                    );
+                }
+                LlmEvent::Citation { title, url, .. } => {
+                    // One line per source: a search without its sources is unverifiable.
+                    let text = format!("cited {title:?} — {url}");
+                    self.bus.publish(Event::Response(ResponseEvent {
+                        session: name.to_string(),
+                        turn,
+                        part: ResponsePart::Activity,
+                        text: text.clone(),
+                        done: true,
+                    }));
+                    // Operator-only: the model keeps its text, not the annotation.
+                    let _ = self
+                        .store
+                        .append_message(id, "notice", &json!({"text": text}));
+                }
                 LlmEvent::Output { text, .. } => {
                     if !text.trim().is_empty() {
                         let _ = self.store.append_message(
@@ -540,6 +571,7 @@ impl Agent {
         id: i64,
         name: &str,
         cancel: &tokio_util::sync::CancellationToken,
+        llm: &LlmClient,
         calls: Vec<ToolCall>,
     ) -> bool {
         for call in calls {
@@ -570,6 +602,9 @@ impl Agent {
                 events: Some(tx),
                 cancel: cancel.clone(),
                 store: self.store.clone(),
+                cwd: session.cwd(),
+                vision: llm.vision(),
+                inbox: session.inbox_signal(),
             };
             let started = std::time::Instant::now();
             tracing::info!(session = %name, tool = %call.tool, "tool start");
@@ -594,10 +629,15 @@ impl Agent {
             }));
 
             let status = if outcome.ok { "ok" } else { "error" };
+            let images: Vec<_> = outcome
+                .images
+                .iter()
+                .map(|i| json!({"path": i.path, "media_type": i.media_type}))
+                .collect();
             let _ = self.store.append_message(
                 id,
                 "tool_result",
-                &json!({"call_id": call.call_id, "output": outcome.output}),
+                &json!({"call_id": call.call_id, "output": outcome.output, "images": images}),
             );
             let _ = self
                 .store
@@ -721,8 +761,16 @@ fn summary_prompt(previous: Option<&str>, old: &[HistoryItem]) -> String {
             HistoryItem::ToolCall {
                 name, arguments, ..
             } => p.push_str(&format!("called {name} {}\n", clip(arguments, 800))),
-            HistoryItem::ToolResult { output, .. } => {
-                p.push_str(&format!("=> {}\n", clip(output, 800)))
+            HistoryItem::ToolResult { output, images, .. } => {
+                p.push_str(&format!("=> {}\n", clip(output, 800)));
+                // A summary cannot fold a picture in, so it says one was there.
+                for image in images {
+                    p.push_str(&format!("   (an image was shown here: {})\n", image.path));
+                }
+            }
+            HistoryItem::BuiltinCall { item, .. } => {
+                let kind = item["type"].as_str().unwrap_or("provider tool");
+                p.push_str(&format!("({kind} ran at the provider)\n"));
             }
             // A reasoning item with no readable summary adds nothing here.
             HistoryItem::Reasoning { .. } => {}
@@ -854,7 +902,34 @@ mod tests {
         assert_eq!(compaction_budget(40_000, None, None), 40_000);
     }
 
+    /// The summary says a picture was there, so nothing is reasoned on silently.
     #[test]
+    fn the_summary_says_a_picture_was_there() {
+        let items = vec![
+            HistoryItem::ToolResult {
+                call_id: "c1".into(),
+                output: "the model is looking at shot.png".into(),
+                images: vec![crate::store::ImageRef {
+                    path: "C:/w/shot.png".into(),
+                    media_type: "image/png".into(),
+                }],
+            },
+            HistoryItem::BuiltinCall {
+                item: json!({"type": "web_search_call"}),
+                replayable: true,
+            },
+        ];
+        let prompt = summary_prompt(None, &items);
+        assert!(
+            prompt.contains("an image was shown here: C:/w/shot.png"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("web_search_call ran at the provider"),
+            "{prompt}"
+        );
+    }
+
     fn long_output_is_clipped_in_the_summary_prompt() {
         let long = "x".repeat(5_000);
         let clipped = clip(&long, 800);

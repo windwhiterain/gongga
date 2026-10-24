@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::store::HistoryItem;
+use crate::store::{HistoryItem, ImageRef, activity_detail, activity_name};
 
 #[derive(Debug, Clone)]
 pub struct LlmClient {
@@ -30,6 +30,10 @@ pub struct LlmClient {
     max_retries: u32,
     /// First retry delay; doubled per attempt up to [`MAX_RETRY_DELAY`].
     retry_base: Duration,
+    /// Provider-side tools, in the provider's own spelling; sent verbatim.
+    builtin_tools: Vec<String>,
+    /// What the roster says this model takes in; empty is "unstated".
+    modalities: Vec<String>,
 }
 
 impl LlmClient {
@@ -57,12 +61,32 @@ impl LlmClient {
             idle_timeout: cfg.idle_timeout,
             max_retries: cfg.max_retries,
             retry_base: cfg.retry_base,
+            builtin_tools: cfg.builtin_tools.clone(),
+            modalities: cfg.modalities.clone(),
         })
     }
 
     /// The model this client asks for; logged at the start of every turn.
     pub fn model(&self) -> &str {
         &self.model
+    }
+
+    /// Whether the roster says this model can look at a picture.
+    pub fn accepts_image(&self) -> bool {
+        crate::config::accepts_image(&self.modalities)
+    }
+
+    /// Why it cannot, naming the roster entry that says so.
+    pub fn image_refusal(&self) -> String {
+        crate::config::image_refusal(&self.model, &self.modalities)
+    }
+
+    /// The same facts, for a tool that is about to send a picture.
+    pub fn vision(&self) -> Vision {
+        Vision {
+            accepts_image: self.accepts_image(),
+            refusal: self.image_refusal(),
+        }
     }
 
     /// Streams one model request; `summary`, when present, is sent first.
@@ -193,19 +217,26 @@ impl LlmClient {
         if !self.instructions.is_empty() {
             body["instructions"] = json!(self.instructions);
         }
-        if !tools.is_empty() {
-            body["tools"] = tools
-                .iter()
-                .map(|t| {
-                    json!({
-                        "type": "function",
-                        "name": t.name,
-                        "description": t.description,
-                        "parameters": t.parameters,
-                    })
+        // One array holds both kinds of tool; empty sends no key at all.
+        let mut offered: Vec<Value> = tools
+            .iter()
+            .map(|t| {
+                json!({
+                    "type": "function",
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.parameters,
                 })
-                .collect::<Vec<_>>()
-                .into();
+            })
+            .collect();
+        // Verbatim: the roster knows each provider's spelling, not this server.
+        offered.extend(
+            self.builtin_tools
+                .iter()
+                .map(|name| json!({ "type": name })),
+        );
+        if !offered.is_empty() {
+            body["tools"] = offered.into();
         }
         if let Some(t) = self.temperature {
             body["temperature"] = json!(t);
@@ -323,6 +354,14 @@ fn extract_text(body: &str) -> String {
     }
 }
 
+/// What the turn's model can take in, fixed when the turn starts.
+#[derive(Debug, Clone)]
+pub struct Vision {
+    pub accepts_image: bool,
+    /// Why not, in the roster's words; empty when it can.
+    pub refusal: String,
+}
+
 /// A tool exposed to the model, in Responses-API shape.
 #[derive(Debug, Clone)]
 pub struct ToolDefinition {
@@ -371,6 +410,18 @@ pub enum LlmEvent {
     Output {
         item_id: String,
         text: String,
+    },
+    /// A provider-side tool item, kept for replay. See `docs/notes/server-llm.md`.
+    BuiltinCall {
+        item_id: String,
+        item: Value,
+        replayable: bool,
+    },
+    /// Where a sentence came from: the URL a response text was annotated with.
+    Citation {
+        item_id: String,
+        title: String,
+        url: String,
     },
     Completed {
         usage: Option<Usage>,
@@ -549,6 +600,37 @@ enum ItemKind {
     Reasoning,
     Message,
     FunctionCall,
+    /// A tool the provider executed: `web_search_call`, `web_fetch_call`, ...
+    ProviderCall,
+}
+
+/// Whether an item type names a tool the provider runs on its own side.
+///
+/// # Invariant
+///
+/// The rule is the `_call` suffix, not a list of names: providers add their own
+/// (`web_fetch_call`, `mcp_call`, ...), and a name this server has not heard of
+/// must still be visible. `function_call` is ours and is matched first.
+fn is_provider_call(item_type: &str) -> bool {
+    item_type.ends_with("_call") && item_type != "function_call"
+}
+
+/// A provider activity item, made safe to keep and to replay.
+///
+/// # Invariant
+///
+/// A binary payload is dropped and the item marked non-replayable: base64 does
+/// not belong in the transcript, and an item without its payload is not a shape
+/// the API takes back. See `docs/notes/server-llm.md`.
+fn storable_activity(item: &Value) -> (Value, bool) {
+    let mut item = item.clone();
+    // Removed, not blanked: a `null` left in its place is still a payload field
+    // the provider would read.
+    let had_binary = item
+        .as_object_mut()
+        .and_then(|o| o.remove("result"))
+        .is_some_and(|v| !v.is_null());
+    (item, !had_binary)
 }
 
 struct SseEvent {
@@ -594,12 +676,38 @@ fn parse_sse_block(block: &str) -> Option<SseEvent> {
     Some(SseEvent { name, data: parsed })
 }
 
+/// `response.<type>.<phase>` for a provider tool's own progress beats.
+fn provider_phase(event_name: &str) -> Option<(&str, &str)> {
+    let rest = event_name.strip_prefix("response.")?;
+    let (item_type, phase) = rest.split_once('.')?;
+    is_provider_call(item_type).then_some((item_type, phase))
+}
+
 async fn handle(
     event: SseEvent,
     items: &mut HashMap<String, ItemMeta>,
     tx: &mpsc::Sender<LlmEvent>,
 ) -> Result<(), mpsc::error::SendError<LlmEvent>> {
     let d = &event.data;
+    // The provider's own beats land on the line its item already opened.
+    if let Some((_, phase)) = provider_phase(&event.name) {
+        let text = match phase {
+            "in_progress" => " (started)",
+            "searching" => " (searching)",
+            "generating" => " (generating)",
+            "interpreting" => " (reading)",
+            _ => "",
+        };
+        if !text.is_empty() {
+            tx.send(LlmEvent::Delta {
+                part: ResponsePart::Activity,
+                item_id: d["item_id"].as_str().unwrap_or_default().to_string(),
+                text: text.to_string(),
+            })
+            .await?;
+        }
+        return Ok(());
+    }
     match event.name.as_str() {
         "response.output_item.added" => {
             let item = &d["item"];
@@ -608,6 +716,7 @@ async fn handle(
                 "reasoning" => ItemKind::Reasoning,
                 "message" => ItemKind::Message,
                 "function_call" => ItemKind::FunctionCall,
+                other if is_provider_call(other) => ItemKind::ProviderCall,
                 _ => ItemKind::Unknown,
             };
             items.insert(
@@ -649,6 +758,20 @@ async fn handle(
                         part: ResponsePart::ToolCall,
                         item_id: id,
                         text: shown,
+                    })
+                    .await?;
+                }
+                ItemKind::ProviderCall => {
+                    let shown = activity_name(item["type"].as_str().unwrap_or("call"));
+                    tx.send(LlmEvent::PartStart {
+                        part: ResponsePart::Activity,
+                        item_id: id.clone(),
+                    })
+                    .await?;
+                    tx.send(LlmEvent::Delta {
+                        part: ResponsePart::Activity,
+                        item_id: id,
+                        text: shown.to_string(),
                     })
                     .await?;
                 }
@@ -696,6 +819,7 @@ async fn handle(
                     "reasoning" => ItemKind::Reasoning,
                     "message" => ItemKind::Message,
                     "function_call" => ItemKind::FunctionCall,
+                    other if is_provider_call(other) => ItemKind::ProviderCall,
                     _ => ItemKind::Unknown,
                 }
             } else {
@@ -767,7 +891,39 @@ async fn handle(
                     })
                     .await?;
                 }
+                ItemKind::ProviderCall => {
+                    let (stored, replayable) = storable_activity(item);
+                    tx.send(LlmEvent::Delta {
+                        part: ResponsePart::Activity,
+                        item_id: id.clone(),
+                        text: activity_detail(item),
+                    })
+                    .await?;
+                    tx.send(LlmEvent::BuiltinCall {
+                        item_id: id.clone(),
+                        item: stored,
+                        replayable,
+                    })
+                    .await?;
+                    tx.send(LlmEvent::PartDone {
+                        part: ResponsePart::Activity,
+                        item_id: id,
+                    })
+                    .await?;
+                }
                 ItemKind::Unknown => {}
+            }
+        }
+        // Where a sentence came from: a line of its own, or a search has no sources.
+        "response.output_text.annotation.added" => {
+            let annotation = &d["annotation"];
+            if let Some(url) = annotation["url"].as_str() {
+                tx.send(LlmEvent::Citation {
+                    item_id: d["item_id"].as_str().unwrap_or_default().to_string(),
+                    title: annotation["title"].as_str().unwrap_or_default().to_string(),
+                    url: url.to_string(),
+                })
+                .await?;
             }
         }
         "response.completed" => {
@@ -804,8 +960,33 @@ fn history_item_to_input(item: &HistoryItem) -> Option<Value> {
         } => {
             json!({"type":"function_call","call_id":call_id,"name":name,"arguments":arguments})
         }
-        HistoryItem::ToolResult { call_id, output } => {
-            json!({"type":"function_call_output","call_id":call_id,"output":output})
+        // Back exactly as it came: it ran at the provider, so no output pairs it.
+        HistoryItem::BuiltinCall { item, replayable } => {
+            if !replayable {
+                tracing::warn!(
+                    item_type = item["type"].as_str().unwrap_or("?"),
+                    item_id = item["id"].as_str().unwrap_or("?"),
+                    "this provider tool item lost its binary payload when it was stored, \
+                     so it cannot be replayed; leaving it out of this request"
+                );
+                return None;
+            }
+            item.clone()
+        }
+        HistoryItem::ToolResult {
+            call_id,
+            output,
+            images,
+        } => {
+            // A plain string is the shape every provider takes; the content
+            // array is only needed when there is a picture in it.
+            if images.is_empty() {
+                json!({"type":"function_call_output","call_id":call_id,"output":output})
+            } else {
+                let mut content = vec![json!({"type": "input_text", "text": output})];
+                content.extend(images.iter().map(image_content));
+                json!({"type":"function_call_output","call_id":call_id,"output":content})
+            }
         }
         // The summary is for the UI; the model gets only the encrypted blob.
         HistoryItem::Reasoning {
@@ -828,6 +1009,58 @@ fn history_item_to_input(item: &HistoryItem) -> Option<Value> {
     })
 }
 
+/// One stored picture as an `input_image` part, read from disk now.
+///
+/// # Invariant
+///
+/// The transcript holds a path, never the bytes; this is the only place a file
+/// is read. A picture that is gone degrades to a sentence naming it, because a
+/// turn that cannot see one image is still a turn. See
+/// `docs/notes/server-llm.md`.
+fn image_content(image: &ImageRef) -> Value {
+    match std::fs::read(&image.path) {
+        Ok(bytes) => json!({
+            "type": "input_image",
+            "image_url": format!("data:{};base64,{}", image.media_type, base64(&bytes)),
+        }),
+        Err(e) => json!({
+            "type": "input_text",
+            "text": format!(
+                "[the image at {} is no longer readable ({e}); it was here when this \
+                 tool call ran, and whatever it showed cannot be recovered]",
+                image.path
+            ),
+        }),
+    }
+}
+
+/// Standard base64, padded: the only encoding `image_url` accepts for a data URL.
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            chunk.get(1).copied().unwrap_or(0),
+            chunk.get(2).copied().unwrap_or(0),
+        ];
+        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
+        out.push(ALPHABET[(n >> 18) as usize & 63] as char);
+        out.push(ALPHABET[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 {
+            ALPHABET[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
 /// Pulls a readable message out of an error body, tolerating plain text.
 fn summarise_error(body: &str) -> String {
     match serde_json::from_str::<Value>(body) {
@@ -845,6 +1078,29 @@ fn summarise_error(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A client with no roster behind it: what a test drives is the body it builds.
+    fn client_with(model: &str, builtin_tools: &[&str], modalities: &[&str]) -> LlmClient {
+        let cfg = crate::config::LlmConfig {
+            provider: None,
+            base_url: "http://127.0.0.1:1/v1".to_string(),
+            model: model.to_string(),
+            context: None,
+            api_key_env: String::new(),
+            api_key: "k".to_string(),
+            instructions: String::new(),
+            temperature: None,
+            max_output_tokens: None,
+            store: false,
+            request_timeout: Duration::from_secs(1),
+            idle_timeout: Duration::from_secs(1),
+            max_retries: 0,
+            retry_base: Duration::from_millis(1),
+            builtin_tools: builtin_tools.iter().map(|t| t.to_string()).collect(),
+            modalities: modalities.iter().map(|m| m.to_string()).collect(),
+        };
+        LlmClient::new(&cfg).unwrap()
+    }
 
     /// Every separator ends a block and `\r` never reaches the parser; a split
     /// block waits for its separator.
@@ -878,23 +1134,7 @@ mod tests {
     /// pins that every request still carries it.
     #[test]
     fn every_request_carries_the_tool_schema() {
-        let cfg = crate::config::LlmConfig {
-            provider: None,
-            base_url: "http://127.0.0.1:1/v1".to_string(),
-            model: "m".to_string(),
-            context: None,
-            api_key_env: String::new(),
-            api_key: "k".to_string(),
-            instructions: String::new(),
-            temperature: None,
-            max_output_tokens: None,
-            store: false,
-            request_timeout: Duration::from_secs(1),
-            idle_timeout: Duration::from_secs(1),
-            max_retries: 0,
-            retry_base: Duration::from_millis(1),
-        };
-        let client = LlmClient::new(&cfg).unwrap();
+        let client = client_with("m", &[], &[]);
         let params = serde_json::json!({"type": "object", "properties": {"task": {"type": "string"}}, "required": ["cmd"]});
         let tools = vec![ToolDefinition {
             name: "bash".into(),
@@ -1163,6 +1403,7 @@ mod tests {
         let item = HistoryItem::ToolResult {
             call_id: "c1".into(),
             output: "ok".into(),
+            images: Vec::new(),
         };
         let v = history_item_to_input(&item).unwrap();
         assert_eq!(v["type"], "function_call_output");
@@ -1173,23 +1414,7 @@ mod tests {
     /// no `reasoning` object at all.
     #[test]
     fn a_thinking_level_rides_on_the_request() {
-        let cfg = crate::config::LlmConfig {
-            provider: None,
-            base_url: "http://127.0.0.1:1/v1".to_string(),
-            model: "m".to_string(),
-            context: None,
-            api_key_env: String::new(),
-            api_key: "k".to_string(),
-            instructions: String::new(),
-            temperature: None,
-            max_output_tokens: None,
-            store: false,
-            request_timeout: Duration::from_secs(1),
-            idle_timeout: Duration::from_secs(1),
-            max_retries: 0,
-            retry_base: Duration::from_millis(1),
-        };
-        let client = LlmClient::new(&cfg).unwrap();
+        let client = client_with("m", &[], &[]);
         let body = client.build_body(None, &[], &[], Some("high"));
         assert_eq!(body["reasoning"]["effort"], "high");
         let body = client.build_body(None, &[], &[], None);
@@ -1197,5 +1422,285 @@ mod tests {
             body.get("reasoning").is_none(),
             "an unset level must not become an empty reasoning object"
         );
+    }
+
+    /// What this harness can run and what the provider runs share one array, in
+    /// the roster's own spelling for the latter.
+    #[test]
+    fn builtin_tools_share_the_array_with_functions() {
+        let client = client_with("m", &["web_search", "web_fetch"], &[]);
+        let tools = vec![ToolDefinition {
+            name: "bash".into(),
+            description: "run".into(),
+            parameters: json!({"type": "object"}),
+        }];
+        let body = client.build_body(None, &[], &tools, None);
+        let offered = body["tools"].as_array().expect("tools");
+        assert_eq!(offered.len(), 3, "{body}");
+        assert_eq!(offered[0]["type"], "function");
+        assert_eq!(offered[0]["name"], "bash");
+        assert_eq!(offered[1], json!({"type": "web_search"}));
+        assert_eq!(offered[2], json!({"type": "web_fetch"}));
+    }
+
+    /// Undeclared means unsent: offering a tool a provider does not know is a 400.
+    #[test]
+    fn a_model_that_declares_no_builtin_tools_sends_none() {
+        let client = client_with("m", &[], &[]);
+        let body = client.build_body(None, &[], &[], None);
+        assert!(
+            body.get("tools").is_none(),
+            "an empty tools array is not the same as no tools key: {body}"
+        );
+        // Only a builtin tool, no local ones, still sends the key.
+        let client = client_with("m", &["web_search"], &[]);
+        let body = client.build_body(None, &[], &[], None);
+        assert_eq!(body["tools"], json!([{"type": "web_search"}]));
+    }
+
+    /// A provider tool item is visible, and replayable behind the line it drew.
+    #[tokio::test]
+    async fn a_provider_tool_item_is_parsed_not_swallowed() {
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut items = HashMap::new();
+        let ev = |name: &str, data: Value| SseEvent {
+            name: name.to_string(),
+            data,
+        };
+        handle(
+            ev(
+                "response.output_item.added",
+                json!({"item": {"id": "ws_1", "type": "web_search_call", "status": "in_progress"}}),
+            ),
+            &mut items,
+            &tx,
+        )
+        .await
+        .unwrap();
+        handle(
+            ev(
+                "response.web_search_call.searching",
+                json!({"item_id": "ws_1"}),
+            ),
+            &mut items,
+            &tx,
+        )
+        .await
+        .unwrap();
+        handle(
+            ev(
+                "response.output_item.done",
+                json!({"item": {
+                    "id": "ws_1",
+                    "type": "web_search_call",
+                    "status": "completed",
+                    "action": {"type": "search", "query": "rust async book"}
+                }}),
+            ),
+            &mut items,
+            &tx,
+        )
+        .await
+        .unwrap();
+
+        let mut line = String::new();
+        let mut parts = Vec::new();
+        let mut replay = None;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                LlmEvent::PartStart { part, .. } => parts.push(part),
+                LlmEvent::Delta { part, text, .. } => {
+                    assert_eq!(part, ResponsePart::Activity);
+                    line.push_str(&text);
+                }
+                LlmEvent::BuiltinCall {
+                    item, replayable, ..
+                } => replay = Some((item, replayable)),
+                LlmEvent::PartDone { part, .. } => parts.push(part),
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert_eq!(parts, vec![ResponsePart::Activity, ResponsePart::Activity]);
+        assert!(
+            line.contains("web_search") && line.contains("rust async book"),
+            "the line has to say what happened: {line:?}"
+        );
+        let (item, replayable) = replay.expect("the item is kept for the next request");
+        assert!(replayable);
+        assert_eq!(item["type"], "web_search_call");
+        assert_eq!(item["action"]["query"], "rust async book");
+    }
+
+    /// A provider-named tool nobody has heard of is still an activity.
+    #[test]
+    fn the_suffix_not_a_list_of_names_decides_what_is_a_provider_tool() {
+        assert!(is_provider_call("web_search_call"));
+        assert!(is_provider_call("web_fetch_call"));
+        assert!(is_provider_call("some_vendors_own_call"));
+        assert!(!is_provider_call("function_call"), "that one is ours");
+        assert!(!is_provider_call("message"));
+        assert!(!is_provider_call("reasoning"));
+        assert_eq!(activity_name("web_search_call"), "web_search");
+    }
+
+    /// A source is worth a line: a search whose citations nobody sees is unverifiable.
+    #[tokio::test]
+    async fn a_citation_names_the_source() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut items = HashMap::new();
+        handle(
+            SseEvent {
+                name: "response.output_text.annotation.added".into(),
+                data: json!({
+                    "item_id": "msg_1",
+                    "annotation": {
+                        "type": "url_citation",
+                        "url": "https://example.org/async",
+                        "title": "Async Rust",
+                        "start_index": 0,
+                        "end_index": 12
+                    }
+                }),
+            },
+            &mut items,
+            &tx,
+        )
+        .await
+        .unwrap();
+        match rx.try_recv().expect("a citation event") {
+            LlmEvent::Citation { title, url, .. } => {
+                assert_eq!(title, "Async Rust");
+                assert_eq!(url, "https://example.org/async");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    /// The item goes back exactly as it came: it was executed at the provider, so
+    /// there is no local output to pair it with.
+    #[test]
+    fn an_activity_item_replays_exactly_as_it_came() {
+        let item = json!({
+            "id": "ws_1",
+            "type": "web_search_call",
+            "status": "completed",
+            "action": {"type": "search", "query": "q"}
+        });
+        let replayed = history_item_to_input(&HistoryItem::BuiltinCall {
+            item: item.clone(),
+            replayable: true,
+        })
+        .expect("replayed");
+        assert_eq!(replayed, item);
+        // One that lost its payload is not a shape the API takes back.
+        assert!(
+            history_item_to_input(&HistoryItem::BuiltinCall {
+                item,
+                replayable: false
+            })
+            .is_none()
+        );
+    }
+
+    /// Base64 does not go into the transcript, so an item that had it is stored
+    /// without it and never sent back.
+    #[test]
+    fn an_activity_item_with_a_binary_payload_is_kept_but_not_replayed() {
+        let raw = json!({
+            "id": "ig_1",
+            "type": "image_generation_call",
+            "status": "completed",
+            "result": "iVBORw0KGgoAAAANSUhEUg=="
+        });
+        let (stored, replayable) = storable_activity(&raw);
+        assert!(!replayable);
+        assert!(
+            stored.get("result").is_none(),
+            "the payload must not reach sqlite: {stored}"
+        );
+        assert_eq!(stored["id"], "ig_1");
+        // A web search carries no payload and stays replayable.
+        let (_, replayable) = storable_activity(&json!({"type": "web_search_call"}));
+        assert!(replayable);
+    }
+
+    /// The only encoding `image_url` takes for a data URL.
+    #[test]
+    fn base64_matches_the_standard_alphabet() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foob"), "Zm9vYg==");
+        assert_eq!(base64(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+        // Bytes above 0x7f are where a hand-rolled table usually slips.
+        assert_eq!(base64(&[0xff, 0x00, 0x10]), "/wAQ");
+        assert_eq!(base64(&[0x89, b'P', b'N', b'G']), "iVBORw==");
+    }
+
+    /// A picture goes as `input_image`, not as base64 prose to puzzle over.
+    #[test]
+    fn a_picture_rides_in_the_tool_result_as_input_image() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("shot.png");
+        std::fs::write(&path, [0x89, b'P', b'N', b'G']).unwrap();
+        let item = HistoryItem::ToolResult {
+            call_id: "c1".into(),
+            output: "the model is looking at shot.png".into(),
+            images: vec![ImageRef {
+                path: path.to_string_lossy().to_string(),
+                media_type: "image/png".into(),
+            }],
+        };
+        let v = history_item_to_input(&item).unwrap();
+        assert_eq!(v["type"], "function_call_output");
+        let content = v["output"].as_array().expect("a content array");
+        assert_eq!(content[0]["type"], "input_text");
+        assert_eq!(content[0]["text"], "the model is looking at shot.png");
+        assert_eq!(content[1]["type"], "input_image");
+        assert_eq!(
+            content[1]["image_url"],
+            json!(format!(
+                "data:image/png;base64,{}",
+                base64(&[0x89, b'P', b'N', b'G'])
+            ))
+        );
+    }
+
+    /// A file that is gone degrades to a sentence: one unreadable picture must not
+    /// take the whole turn with it.
+    #[test]
+    fn a_missing_picture_degrades_to_a_sentence() {
+        let item = HistoryItem::ToolResult {
+            call_id: "c1".into(),
+            output: "looked at it".into(),
+            images: vec![ImageRef {
+                path: "C:/nowhere/gone.png".into(),
+                media_type: "image/png".into(),
+            }],
+        };
+        let v = history_item_to_input(&item).unwrap();
+        let content = v["output"].as_array().expect("a content array");
+        assert_eq!(content[1]["type"], "input_text");
+        let text = content[1]["text"].as_str().unwrap();
+        assert!(text.contains("C:/nowhere/gone.png"), "{text}");
+        assert!(text.contains("no longer readable"), "{text}");
+    }
+
+    /// The roster's `modalities` is the whole of the image question.
+    #[test]
+    fn a_text_only_model_reports_why_it_cannot_look() {
+        let blind = client_with("roster/text-only", &[], &["text"]);
+        assert!(!blind.accepts_image());
+        let vision = blind.vision();
+        assert!(!vision.accepts_image);
+        assert!(vision.refusal.contains("roster/text-only"), "{vision:?}");
+        assert!(vision.refusal.contains("\"text\""), "{vision:?}");
+
+        let seeing = client_with("roster/sees", &[], &["text", "image"]);
+        assert!(seeing.accepts_image());
+        // Unstated is not a refusal: the roster having no opinion is not a no.
+        assert!(client_with("m", &[], &[]).accepts_image());
     }
 }

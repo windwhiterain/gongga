@@ -313,9 +313,11 @@ async fn send_message(d: &Dispatch, args: &Args) -> Outcome {
         };
 
     if busy {
+        // Whoever is waiting inside this turn hears about it; see the notes.
+        session.note_message();
         // The running turn folds this in; `nudge_inboxes` covers it ending first.
         return Outcome::ok(format!(
-            "message queued for {label}; it will be read at the next step"
+            "message queued for {label}; the running command has been told to stop waiting"
         ));
     }
 
@@ -423,7 +425,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     }
     publish_sessions(d);
 
-    let cwd = session.cwd().await;
+    let cwd = session.cwd();
     let mut message = format!("session is now {name}");
     let mut notes: Vec<String> = Vec::new();
     if let Some(llm) = &tuning.llm {

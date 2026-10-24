@@ -270,3 +270,26 @@ EOF
 | `evolve.sh` 四条纪律与 swap 守卫 | 读 `scripts/evolve.sh` + `status` 实跑 |
 | `evolve.sh swap` 的完整换手 | **未在本会话实跑**（会换掉我）；结论来自脚本与 `DESIGN.md` §10 |
 | 只读 sqlite 自查 | 本会话实测 |
+
+---
+
+## 12. 技能本身是怎么被发现的
+
+服务端的系统提示是一段**静态字符串**（`crates/server/src/config.rs::default_instructions`），
+它不认识 skill，也不读 `AGENTS.md`。所以"懒发现"只能靠提示词里那句**索引指令**：
+
+```bash
+grep -H -m3 -E '^(name|description):' .agents/skills/*/SKILL.md
+```
+
+每个 skill 两行：路径 + name，路径 + description。**这是全部成本**——先只读这个，命中才读正文。
+
+要点：
+
+- **别把 skill 列表写进 Rust 字符串**。加一个 skill 就要重新编译 + 换服务端，太重。提示词里只放
+  *怎么列*，skill 本身是文件。
+- 正文要能独立成立：读它的人只有任务和这份文件，没有你的上下文。
+- 附带脚本就写在 SKILL.md 旁边，让自己直接跑，而不是每次重敲命令。
+- 路径相对仓库根；会话 cwd 不在仓库里就没有 skill，别假装有。
+
+历史：这个机制是 2026-10-24 加的。之前 skill 文件存在但**没人会看见**——包括本文件第一版。

@@ -222,20 +222,19 @@ A flag wants its value, and asking immediately is what turns Tab into "fill the
 flag", Tab again into "fill the value" -- rather than one Tab and a letter typed
 only to make the list reappear.
 
-## stream_into
+## Tui::stream
 
-Kept out of `Tui` so a test can drive it without a terminal -- and so the test
-drives *this* code rather than a copy of it.
+The block table lives in the log, not in `Tui`: there used to be a second copy
+here (key -> line index) and a free function `stream_into` over it, which meant
+the block model existed twice and could drift. `Log::stream` owns it now, and
+`Tui::stream` only marks the screen dirty.
 
-A closed stream must not append to a line that has since moved: `done` removes the
-key before the next chunk looks it up, which is what makes two consecutive
-responses end up as two lines rather than one.
+A closed stream must not append to a block that has since moved: `done` removes
+the key before the next chunk looks it up, which is what makes two consecutive
+responses end up as two blocks rather than one.
 
 In place, and only the new bytes are wrapped: a delta must cost what the delta is
-worth, not what the line has grown to.
-
-An empty first chunk still opens the line when the stream is not finished, so a
-slow first token does not lose its `prefix`.
+worth, not what the block has grown to.
 
 ## layering::the_front_end_depends_on_the_command_layer
 

@@ -17,6 +17,13 @@ The server answers with `ServerMessage::Hello`, or `ServerMessage::Denied` when
 The SPEC models a response as `{session, reasoning, toolcall, output}`; the
 session name identifies the turn and the other three are interleaved deltas.
 
+`Activity` is a fourth: a tool the *provider* ran on its own side -- a web
+search, a web fetch, an image generation -- plus the sources it cited. It is not
+`ToolCall`, because `ToolCall` means this harness called a tool and owes the
+model an output; an activity has already been executed where it happened, and
+nothing is owed. A front-end that ignored it would leave the operator unable to
+see that the model went to the network at all.
+
 ## CmdArg
 
 Sticky arguments are a client-side concern -- the CLI keeps them, fills them into

@@ -10,7 +10,6 @@ mod log;
 mod render;
 pub mod run;
 
-use std::collections::HashMap;
 use std::io::{Stdout, stdout};
 
 use anyhow::Context;
@@ -71,8 +70,6 @@ pub struct Tui {
     terminal: Terminal<CrosstermBackend<Stdout>>,
     screen: Screen,
     completer: SharedCompleter,
-    /// Open stream key -> index into `screen.log`, so deltas append in place.
-    streams: HashMap<String, usize>,
     history: Vec<String>,
     history_pos: Option<usize>,
     events: EventStream,
@@ -103,7 +100,6 @@ impl Tui {
                 max_scroll: 0,
             },
             completer,
-            streams: HashMap::new(),
             history: Vec::new(),
             history_pos: None,
             events: EventStream::new(),
@@ -149,22 +145,11 @@ impl Tui {
         self.dirty = true;
     }
 
-    /// Appends to the stream named `key`, opening the line on first use.
+    /// Appends to the block `key` names, opening it on first use.
     ///
-    /// # Invariant
-    ///
-    /// `done` closes the key, so the next chunk with the same key opens a new
-    /// line rather than appending to the closed one.
+    /// Two blocks streaming at once both keep growing.
     pub fn stream(&mut self, key: &str, kind: LineKind, prefix: &str, text: &str, done: bool) {
-        stream_into(
-            &mut self.screen.log,
-            &mut self.streams,
-            key,
-            kind,
-            prefix,
-            text,
-            done,
-        );
+        self.screen.log.stream(key, kind, prefix, text, done);
         self.dirty = true;
     }
 
@@ -468,36 +453,6 @@ impl Completer for NoCompleter {
     }
 }
 
-/// Stream bookkeeping, kept out of [`Tui`] so a test drives it without a terminal.
-///
-/// # Invariant
-///
-/// A closed stream never appends to a line that has since moved: `done` removes
-/// the key, so two consecutive responses end up as two lines rather than one.
-fn stream_into(
-    log: &mut Log,
-    streams: &mut HashMap<String, usize>,
-    key: &str,
-    kind: LineKind,
-    prefix: &str,
-    text: &str,
-    done: bool,
-) {
-    match streams.get(key) {
-        // In place: only the new bytes are wrapped, so a delta costs what it is worth.
-        Some(&idx) => log.append(idx, text),
-        // An empty first chunk still opens the line, so a slow token keeps its prefix.
-        None if !text.is_empty() || !done => {
-            log.push(kind, format!("{prefix}{text}"));
-            streams.insert(key.to_string(), log.len() - 1);
-        }
-        None => {}
-    }
-    if done {
-        streams.remove(key);
-    }
-}
-
 #[cfg(test)]
 mod layering {
     /// The arrow this crate exists to point: `tui` depends on `cli`, not the reverse.
@@ -518,7 +473,6 @@ mod tests {
     /// Drives the key handler without a terminal: the only part with real logic.
     struct Headless {
         screen: Screen,
-        streams: HashMap<String, usize>,
     }
 
     impl Headless {
@@ -534,20 +488,12 @@ mod tests {
                     scroll: 0,
                     max_scroll: 0,
                 },
-                streams: HashMap::new(),
             }
         }
 
+        /// The same call `Tui::stream` makes, so a test drives the real path.
         fn stream(&mut self, key: &str, kind: LineKind, prefix: &str, text: &str, done: bool) {
-            stream_into(
-                &mut self.screen.log,
-                &mut self.streams,
-                key,
-                kind,
-                prefix,
-                text,
-                done,
-            );
+            self.screen.log.stream(key, kind, prefix, text, done);
         }
 
         /// Every row the log holds, unwrapped at a width these cases never reach.
@@ -682,6 +628,56 @@ mod tests {
                 "[test1] 这是我的",
             ]
         );
+    }
+
+    /// Two sessions squeezed into a window too small for both: each keeps a
+    /// row, and the cut one still says who it is.
+    #[test]
+    fn a_squeezed_window_still_names_both_sessions() {
+        let mut h = Headless::new();
+        h.stream(
+            "r:peer:1:Reasoning",
+            LineKind::Reasoning,
+            "[peer] ",
+            "aaa",
+            false,
+        );
+        h.stream(
+            "r:test1:1:Output",
+            LineKind::Assistant,
+            "[test1] ",
+            "bbb",
+            true,
+        );
+        h.stream(
+            "r:peer:1:Reasoning",
+            LineKind::Reasoning,
+            "[peer] ",
+            "ccc",
+            false,
+        );
+        // Two rows: the peer block is cut to its tail and repeats its tag.
+        let rows = h.screen.log.window(40, 2, 0).rows;
+        let shown: Vec<String> = rows.iter().map(|(_, t)| t.to_string()).collect();
+        assert_eq!(shown, vec!["[peer] aaaccc", "[test1] bbb"]);
+    }
+
+    /// A realistic command leaves no blank row and no empty block.
+    ///
+    /// # Invariant
+    ///
+    /// The shell writes one empty line before every exit sentinel on both
+    /// streams, so this is the traffic every single `bash` call produces.
+    #[test]
+    fn a_command_leaves_no_blank_block() {
+        let mut h = Headless::new();
+        // stdout: the command's own output, then the sentinel's blank line.
+        h.stream("t:c1:Stdout", LineKind::ToolOutput, "", "hi\n", false);
+        h.stream("t:c1:Stdout", LineKind::ToolOutput, "", "\n", true);
+        // stderr: nothing at all but the sentinel's blank line.
+        h.stream("t:c1:Stderr", LineKind::ToolError, "", "\n", false);
+        h.stream("t:c1:Stderr", LineKind::ToolError, "", "", true);
+        assert_eq!(h.rows(), vec!["hi"]);
     }
 
     /// Two streams open at once stay separate: a tool's output never joins a response.

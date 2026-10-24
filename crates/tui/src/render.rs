@@ -294,6 +294,41 @@ mod tests {
         }
     }
 
+    /// Two sessions streaming at once, drawn: both blocks are on screen, in
+    /// the order they opened.
+    #[test]
+    fn a_frame_shows_two_streaming_blocks_side_by_side() {
+        let mut screen = screen_with(&[]);
+        screen.log.stream(
+            "r:peer:1:Reasoning",
+            LineKind::Reasoning,
+            "[peer] ",
+            "one",
+            false,
+        );
+        screen.log.stream(
+            "r:test1:1:Output",
+            LineKind::Assistant,
+            "[test1] ",
+            "two",
+            true,
+        );
+        screen.log.stream(
+            "r:peer:1:Reasoning",
+            LineKind::Reasoning,
+            "[peer] ",
+            "three",
+            false,
+        );
+
+        // 10 rows tall: 6 rows of log. Two blocks of one row each fit whole.
+        let mut term = Terminal::new(TestBackend::new(24, 10)).unwrap();
+        term.draw(|f| draw(f, &mut screen)).unwrap();
+        let buf = term.backend().buffer().clone();
+        assert_eq!(row_text(&buf, 1), "[peer] onethree");
+        assert_eq!(row_text(&buf, 2), "[test1] two");
+    }
+
     /// Layout, window and the rows the bottom of the log shows, without a terminal.
     #[test]
     fn the_log_window_shows_the_newest_rows_above_the_footer() {

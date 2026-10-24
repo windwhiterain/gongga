@@ -110,6 +110,21 @@ A configuration that names something the roster cannot place is a warning rather
 than a failure -- the built-in default still gets the server up, and the line
 says what was actually used, which is how a typo is found.
 
+## LlmConfig::builtin_tools / LlmConfig::modalities
+
+Both come from the roster entry the session is on, never from this file. They are
+capabilities of a *model*, not of the server: a session pointed at another
+`--llm` must not inherit the default entry's web tools or its eyes, which is why
+`for_entry` copies them along with the base URL and the model name.
+
+`accepts_image` and `image_refusal` are the one reader of `modalities`, and
+`image_refusal` quotes the list back, so the refusal names the roster entry that
+said no. Empty is unstated and refuses nothing -- see
+`docs/notes/server-providers.md`.
+
+`write_default_if_absent` teaches both fields in the template's comment, because
+that comment is where a reader learns there is a roster field at all.
+
 ## LlmConfig::for_entry
 
 A session that names its own `--llm` is choosing a different brain, not a
@@ -141,3 +156,26 @@ matters: only two-space keys belong to `refs`.
 The roster is what makes "no `[llm]` section" work. These are the four ways a
 configuration can name something, and the one way it can be wrong: a typo must
 not stop the server from starting.
+
+## is_key_only
+
+A first start mints a key and writes it, and that was the whole of config.toml:
+the annotated template never appeared, because the file already existed by the
+time the template writer ran. So the one document that explains the fields was
+unreachable on a fresh home.
+
+"Untouched" is now the test: a file whose only content is the generated key is
+replaced by the template (with the same key), and a file with any other field in
+it is left exactly as it is. The distinction is the reader's own edit, not a
+guess about intent.
+
+## tests::the_template_replaces_a_file_holding_only_the_generated_key
+
+The template is the documentation users actually read, so it has to reach the
+disk on a first start -- and the key it already generated has to survive, or the
+next start would mint another one and every client's key would go stale.
+
+## tests::the_template_never_rewrites_a_file_someone_edited
+
+One field is enough to count as edited. A configuration that was written by hand
+is not ours to replace with a commented example.

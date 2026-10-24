@@ -69,6 +69,64 @@ transcript stays available to `history` and to anything that wants to audit it.
 Production code always has a lower bound (a summary) or both (compaction), and a
 method nobody calls is a second way to ask the same question.
 
+## HistoryItem::ToolResult — images
+
+A tool result carries the text it always carried, plus `images`: a path and a
+media type per picture, never the bytes.
+
+That is the SPEC's "structured for agentic retrieval/mutation" taken seriously.
+Base64 in a `messages` row would turn the transcript into a binary dump: a
+picture is re-sent on every request of every later turn, and `get_messages` --
+which the CLI prints -- would pour it into a terminal. A path is small, readable,
+and lets the same picture be looked at again only when a request actually needs
+it.
+
+The cost, stated plainly: **the file is the state**. If the working directory is
+cleaned, the branch is switched, or the temp file is deleted, the replay is
+missing that picture. `crates/server/src/llm.rs` degrades it to a sentence naming
+the path instead of failing the request, and compaction writes "an image was
+shown here: <path>" into the summary, so the model is never reasoning on as if it
+had seen something that is now gone.
+
+## MessageRow::parse — builtin_call
+
+A `builtin_call` row is the one kind with no text of its own: nothing was
+returned to it, because it ran at the provider. Leaving `text` empty made
+`get_messages` print a line with no verb on it, and -- worse -- the row fell
+through to the `unknown message kind` warning, so every read of the transcript
+logged a complaint about a kind this server writes itself.
+
+So the row gets a summary instead: `web_search "rust async book"`,
+`web_fetch https://...`, `image_generation "a red cube on a table"`. It comes
+from `activity_summary`, which is also what the live line uses (via
+`activity_name` / `activity_detail`), so the transcript and the stream never
+describe the same event differently.
+
+## activity_summary
+
+Kind name plus whatever the item says about itself, and nothing invented: a
+missing query, missing URL and missing prompt are all left out rather than
+rendered as `{}` or a bare space. An item with no `type` at all says
+`a provider tool ran (its item was not recorded)`, which is true and tells the
+reader the row is damaged; a blank line would read as "nothing happened here".
+
+The status suffix (`(failed)`, ...) is kept, because a search that failed is not
+the same row as one that found something.
+
+## HistoryItem::BuiltinCall
+
+A provider tool item (`web_search_call`, ...), stored as the JSON the provider
+sent plus whether it is still replayable.
+
+Verbatim is the requirement: `input[]` has to contain the item the way the
+provider produced it, because the provider already executed it and has no local
+output to pair it with. A copy assembled from parts is a shape nothing validates
+until the next request fails.
+
+`replayable` is false when a binary payload (`image_generation_call.result`) was
+stripped on the way in, which is why that field is not derivable from the item
+itself.
+
 ## Store::history_between
 
 Compaction needs both bounds, and it needs them as one query: the mapping inside
@@ -226,3 +284,28 @@ just happened rather than a re-read of the beginning.
 A notice explains a stopped turn to the operator. It belongs in the transcript
 they read and must not leak into the request the model sees, or the model ends up
 replying to the harness instead of the user.
+
+## tests::a_tool_result_keeps_its_pictures_by_path
+
+A picture survives the round trip as a path and a media type -- the row holds no
+bytes, and the test would see them if it did.
+
+## tests::a_tool_result_without_pictures_reads_back_empty
+
+Rows written before pictures existed still read back as plain results.
+
+## tests::a_provider_tool_item_survives_a_round_trip
+
+The provider's item comes back byte-for-byte: anything less is a request rejected
+for a transcript that mentions a call nobody made.
+
+## tests::a_provider_tool_row_reads_as_the_search_it_ran
+
+The line a reader sees for a web search and for a page fetch, from a row written
+the way the agent writes it.
+
+## tests::a_provider_tool_row_never_renders_blank
+
+Four damaged or minimal items, none of which may produce a blank row or leak a
+JSON shape into the transcript: the display side must never be the place where a
+reader learns nothing happened.

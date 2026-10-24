@@ -98,6 +98,8 @@ pub enum ResponsePart {
     Reasoning,
     ToolCall,
     Output,
+    /// A tool the provider ran itself, and the sources it cited.
+    Activity,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

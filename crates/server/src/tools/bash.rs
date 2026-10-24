@@ -57,6 +57,9 @@ pub struct BashShell {
     stderr: BufReader<ChildStderr>,
     marker: String,
     cwd: PathBuf,
+    /// A view of `cwd` that can be read while this shell's own lock is held.
+    /// See `docs/notes/server-tools-bash.md`.
+    cwd_cell: Arc<StdMutex<PathBuf>>,
     /// Background output the caller has not collected yet, shared so a tail can append.
     pending: Arc<StdMutex<String>>,
     /// Background jobs still writing.
@@ -137,6 +140,7 @@ impl BashShell {
             stderr,
             marker,
             cwd: cwd.to_path_buf(),
+            cwd_cell: Arc::new(StdMutex::new(cwd.to_path_buf())),
             pending: Arc::new(StdMutex::new(String::new())),
             jobs: Arc::new(AtomicUsize::new(0)),
             next_job: 0,
@@ -148,6 +152,24 @@ impl BashShell {
 
     pub fn cwd(&self) -> &Path {
         &self.cwd
+    }
+
+    /// The same working directory, readable without this shell's lock.
+    ///
+    /// # Invariant
+    ///
+    /// The cell outlives every borrow of the shell, so a reader cannot be made
+    /// to wait on the command currently holding it.
+    pub fn cwd_cell(&self) -> Arc<StdMutex<PathBuf>> {
+        self.cwd_cell.clone()
+    }
+
+    /// Records where the shell now is, for readers holding the cell too.
+    fn set_cwd(&mut self, path: PathBuf) {
+        self.cwd = path.clone();
+        if let Ok(mut guard) = self.cwd_cell.lock() {
+            *guard = path;
+        }
     }
 
     /// Whether the shell is still aligned with its commands; false means replace it.
@@ -189,7 +211,7 @@ impl BashShell {
                 // A shell that lost its place is not asked: `pwd` would read the leftovers.
                 if self.usable() {
                     if let Ok(pwd) = self.pwd().await {
-                        self.cwd = PathBuf::from(pwd);
+                        self.set_cwd(PathBuf::from(pwd));
                     }
                 }
                 Ok(BashOutcome {
@@ -212,7 +234,7 @@ impl BashShell {
     pub async fn finish_outstanding(&mut self) -> (String, String, Option<i32>) {
         let (stdout, stderr, code) = Self::pump_both(self, None).await;
         if let Ok(pwd) = self.pwd().await {
-            self.cwd = PathBuf::from(pwd);
+            self.set_cwd(PathBuf::from(pwd));
         }
         (stdout, stderr, code)
     }
@@ -366,7 +388,7 @@ impl BashShell {
         if line.is_empty() {
             anyhow::bail!("could not read the shell's working directory");
         }
-        self.cwd = PathBuf::from(&line);
+        self.set_cwd(PathBuf::from(&line));
         Ok(line)
     }
 

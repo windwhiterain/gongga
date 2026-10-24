@@ -44,5 +44,12 @@ scripts/evolve.sh clean        # 收掉没人会 swap 的旧继任者（--artifa
 代价见 `DESIGN.md` §10「仍然存在的风险」。
 
 ## 技能
-- `.agents/skills/self-control/SKILL.md`：控制自己的回合 / 进程 / 上下文 / 服务端。
-  要停或续自己的回合、起长跑作业、跨重启保留意图、改服务端并换上新的自己时先读它。
+skill 是"任务相关才读"的散文 + 脚本，放在 `.agents/skills/<name>/SKILL.md`。**别全读**，
+先列索引，命中才读正文：
+
+```bash
+grep -H -m3 -E '^(name|description):' .agents/skills/*/SKILL.md
+```
+
+- `self-control`：控制自己的回合 / 进程 / 上下文 / 服务端。
+- `web-search`：查实时网页、读 URL 正文（DeepSeek REST，不花模型轮次，任何模型都能用）。

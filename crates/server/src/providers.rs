@@ -46,6 +46,10 @@ pub struct Model {
     pub reasoning_default: Option<String>,
     /// How a level spelled by a caller maps onto one this model accepts.
     pub reasoning_mapping: HashMap<String, String>,
+    /// What this model can take in and give back: `text`, `image`, ...
+    pub modalities: Vec<String>,
+    /// Tools the provider runs on its own side, in the provider's own spelling.
+    pub builtin_tools: Vec<String>,
 }
 
 impl Model {
@@ -75,6 +79,10 @@ pub struct Entry {
     pub reasoning_levels: Vec<String>,
     pub reasoning_default: Option<String>,
     pub reasoning_mapping: HashMap<String, String>,
+    /// What this model can take in and give back: `text`, `image`, ...
+    pub modalities: Vec<String>,
+    /// Tools the provider runs on its own side, in the provider's own spelling.
+    pub builtin_tools: Vec<String>,
 }
 
 impl Entry {
@@ -311,6 +319,8 @@ impl Catalog {
             reasoning_levels: model.reasoning_levels.clone(),
             reasoning_default: model.reasoning_default.clone(),
             reasoning_mapping: model.reasoning_mapping.clone(),
+            modalities: model.modalities.clone(),
+            builtin_tools: model.builtin_tools.clone(),
         })
     }
 }
@@ -419,6 +429,12 @@ struct FileModel {
     /// (`medium` -> `high`, `minimal` -> `low`, ...).
     #[serde(default)]
     reasoning_mapping: HashMap<String, String>,
+    /// Input/output kinds the roster says this model handles; unstated is no opinion.
+    #[serde(default)]
+    modalities: Vec<String>,
+    /// Provider-side tools, spelled that provider's way, sent verbatim; absent none.
+    #[serde(default)]
+    builtin_tools: Vec<String>,
 }
 
 fn parse(text: &str) -> Result<Vec<Provider>, toml::de::Error> {
@@ -459,6 +475,8 @@ fn parse(text: &str) -> Result<Vec<Provider>, toml::de::Error> {
                         reasoning_levels: m.reasoning_levels,
                         reasoning_default: m.reasoning_default,
                         reasoning_mapping: m.reasoning_mapping,
+                        modalities: m.modalities,
+                        builtin_tools: m.builtin_tools,
                     })
                     .collect(),
                 id: p.id,
@@ -761,6 +779,41 @@ key = "k"
         );
     }
 
+    /// Capabilities are read off the roster, in the roster's own spelling.
+    #[test]
+    fn modalities_and_builtin_tools_reach_the_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("llm.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[provider]]
+id = "p"
+key = "k"
+  [[provider.endpoint]]
+  api = "openai-responses"
+  base_url = "https://p.example/v1"
+  [[provider.model]]
+  id = "sees"
+  modalities = ["text", "image"]
+  builtin_tools = ["web_search", "web_fetch"]
+  [[provider.model]]
+  id = "plain"
+"#,
+        )
+        .unwrap();
+        let roster = Catalog::load(&path);
+        let entry = roster.entry("p/sees").unwrap();
+        assert_eq!(entry.modalities, vec!["text", "image"]);
+        assert_eq!(entry.builtin_tools, vec!["web_search", "web_fetch"]);
+
+        // Undeclared is empty, not a default: the server sends no tool and
+        // refuses nothing on the roster's behalf.
+        let plain = roster.entry("p/plain").unwrap();
+        assert!(plain.modalities.is_empty());
+        assert!(plain.builtin_tools.is_empty());
+    }
+
     /// A level is mapped first, then checked against what the model takes.
     #[test]
     fn a_level_is_mapped_then_checked() {
@@ -774,6 +827,8 @@ key = "k"
             key: None,
             context: None,
             reasoning_levels: vec!["low".into(), "high".into(), "max".into()],
+            modalities: Vec::new(),
+            builtin_tools: Vec::new(),
             reasoning_default: Some("high".into()),
             reasoning_mapping: [
                 ("medium".to_string(), "high".to_string()),

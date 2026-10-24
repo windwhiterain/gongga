@@ -42,6 +42,8 @@ struct SessionInner {
     cancel: Mutex<CancellationToken>,
     /// How many times the operator has cancelled; a queued turn compares it across the wait.
     cancels: AtomicU64,
+    /// Shared rather than embedded: every tool call waiting holds a copy of the count.
+    inbox: Arc<AtomicU64>,
     /// What every operation that reshapes this session queues behind, FIFO.
     gate: Arc<AsyncMutex<()>>,
     turns: AtomicU64,
@@ -99,6 +101,22 @@ impl SessionHandle {
     /// copy turns read.
     pub fn set_tuning(&self, tuning: Tuning) {
         *self.inner.tuning.lock().unwrap_or_else(|e| e.into_inner()) = tuning;
+    }
+
+    /// Records that a message landed which no running turn can read yet.
+    ///
+    /// See `docs/notes/server-session.md`.
+    pub fn note_message(&self) {
+        self.inner.inbox.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Takes the count, so a tool call can see whether one arrived while it waited.
+    ///
+    /// See `docs/notes/server-session.md`.
+    pub fn inbox_signal(&self) -> InboxSignal {
+        let epoch = self.inner.inbox.clone();
+        let since = epoch.load(Ordering::SeqCst);
+        InboxSignal { epoch, since }
     }
 
     /// Whether someone holds the gate right now; only good for deciding to log a wait.
@@ -169,21 +187,36 @@ impl SessionHandle {
         self.inner.resumable.swap(false, Ordering::SeqCst)
     }
 
-    /// The working directory the default shell currently reports.
-    pub async fn cwd(&self) -> PathBuf {
-        // The guard is not `Send`, so scope it to a block before the first await.
-        let shells = self.shells();
-        let handle = {
-            let guard = shells.lock().unwrap_or_else(|e| e.into_inner());
-            guard.peek(DEFAULT_BASH)
-        };
-        match handle {
-            Some(shell) => {
-                let s = shell.lock().await;
-                s.cwd().to_path_buf()
-            }
-            None => PathBuf::new(),
-        }
+    /// Where the session's own shell last said it is, without taking its lock.
+    ///
+    /// See `docs/notes/server-session.md`.
+    pub fn cwd(&self) -> PathBuf {
+        self.shells()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .reported_cwd()
+    }
+}
+
+/// Whether a message landed for this session since this signal was taken.
+///
+/// See `docs/notes/server-session.md`.
+pub struct InboxSignal {
+    epoch: Arc<AtomicU64>,
+    since: u64,
+}
+
+impl InboxSignal {
+    /// One built around a counter a test can bump, since only a session owns one.
+    #[cfg(test)]
+    pub(crate) fn around(epoch: Arc<AtomicU64>) -> Self {
+        let since = epoch.load(Ordering::SeqCst);
+        Self { epoch, since }
+    }
+
+    /// True if a message arrived after this signal was taken.
+    pub fn arrived(&self) -> bool {
+        self.epoch.load(Ordering::SeqCst) != self.since
     }
 }
 
@@ -191,19 +224,33 @@ impl SessionHandle {
 pub struct ShellSet {
     program: PathBuf,
     cwd: PathBuf,
+    /// Where the default shell last said it was, mirrored out cell by cell;
+    /// see `docs/notes/server-session.md`.
+    reported: Arc<Mutex<PathBuf>>,
     /// Variables every shell of this session starts with. See `BashShell::spawn`.
     env: Vec<(String, String)>,
     shells: HashMap<String, Arc<AsyncMutex<BashShell>>>,
 }
 
 impl ShellSet {
-    fn new(program: PathBuf, cwd: PathBuf, env: Vec<(String, String)>) -> Self {
+    pub(crate) fn new(program: PathBuf, cwd: PathBuf, env: Vec<(String, String)>) -> Self {
         Self {
             program,
-            cwd,
+            cwd: cwd.clone(),
+            reported: Arc::new(Mutex::new(cwd)),
             env,
             shells: HashMap::new(),
         }
+    }
+
+    /// Where the session's own shell last said it is; read without its lock.
+    ///
+    /// See `docs/notes/server-session.md`.
+    pub fn reported_cwd(&self) -> PathBuf {
+        self.reported
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default()
     }
 
     /// The shared handle for `name`, spawning it fresh on first use after a removal.
@@ -213,6 +260,10 @@ impl ShellSet {
         }
         let shell = BashShell::spawn(&self.program, &self.cwd, &self.env)?;
         tracing::debug!(bash = %name, cwd = %self.cwd.display(), "shell started");
+        // Only `default` is mirrored: a replacement brings a cell of its own.
+        if name == DEFAULT_BASH {
+            self.reported = shell.cwd_cell();
+        }
         let handle = Arc::new(AsyncMutex::new(shell));
         self.shells.insert(name.to_string(), handle.clone());
         Ok(handle)
@@ -397,6 +448,7 @@ impl SessionManager {
                 shells: Arc::new(Mutex::new(shells)),
                 cancel: Mutex::new(CancellationToken::new()),
                 cancels: AtomicU64::new(0),
+                inbox: Arc::new(AtomicU64::new(0)),
                 gate: Arc::new(AsyncMutex::new(())),
                 turns: AtomicU64::new(0),
                 tuning: Mutex::new(Tuning {
@@ -442,19 +494,16 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::time::Duration;
 
-    /// A handle with no shells: the flag under test does not touch them.
-    fn handle() -> SessionHandle {
+    /// Everything a test here does not vary, wrapped around the shells it might.
+    fn session(name: &str, shells: ShellSet) -> SessionHandle {
         SessionHandle {
             inner: Arc::new(SessionInner {
                 id: 1,
-                name: "s".to_string(),
-                shells: Arc::new(Mutex::new(ShellSet::new(
-                    PathBuf::from("bash"),
-                    std::env::temp_dir(),
-                    vec![],
-                ))),
+                name: name.to_string(),
+                shells: Arc::new(Mutex::new(shells)),
                 cancel: Mutex::new(CancellationToken::new()),
                 cancels: AtomicU64::new(0),
+                inbox: Arc::new(AtomicU64::new(0)),
                 gate: Arc::new(AsyncMutex::new(())),
                 turns: AtomicU64::new(0),
                 tuning: Mutex::new(Tuning::default()),
@@ -462,6 +511,14 @@ mod tests {
                 resumable: AtomicBool::new(false),
             }),
         }
+    }
+
+    /// A handle with no shells: the flag under test does not touch them.
+    fn handle() -> SessionHandle {
+        session(
+            "s",
+            ShellSet::new(PathBuf::from("bash"), std::env::temp_dir(), vec![]),
+        )
     }
 
     /// `interrupt_session` means "stop and drop it": nothing asks for the turn
@@ -506,6 +563,21 @@ mod tests {
         assert!(!waiting.load(Ordering::SeqCst));
     }
 
+    /// A signal sees the messages that landed after it was taken, and never the same one twice.
+    #[test]
+    fn an_inbox_signal_sees_only_what_arrived_after_it_was_taken() {
+        let h = handle();
+        let taken = h.inbox_signal();
+        assert!(!taken.arrived(), "nothing had arrived");
+        h.note_message();
+        assert!(
+            taken.arrived(),
+            "a message landed after the signal was taken"
+        );
+        // The next call takes a fresh signal, so it is not told about that one again.
+        assert!(!h.inbox_signal().arrived());
+    }
+
     /// A turn queued behind `del_session` must notice the session is gone.
     #[test]
     fn deletion_is_visible_to_a_queued_turn() {
@@ -523,5 +595,68 @@ mod tests {
         let epoch = h.cancel_epoch();
         h.cancel();
         assert_ne!(h.cancel_epoch(), epoch);
+    }
+
+    /// A shell held by a command must not hold up reading where a session is.
+    ///
+    /// See `docs/notes/server-session.md`.
+    #[tokio::test]
+    async fn the_session_cwd_does_not_wait_for_a_running_command() {
+        let Some(program) = crate::config::detect_git_bash() else {
+            return;
+        };
+        let root = std::env::temp_dir();
+        let mut shells = ShellSet::new(program, root.clone(), vec![]);
+        let shell = shells
+            .get(DEFAULT_BASH)
+            .expect("spawning the default shell");
+        let session = session("s", shells);
+
+        // Hold the shell the way a running command does.
+        let held = shell.lock().await;
+        let started = std::time::Instant::now();
+        let cwd = session.cwd();
+        let waited = started.elapsed();
+        drop(held);
+        assert!(
+            waited < Duration::from_secs(1),
+            "reading the cwd waited {waited:?} on the command holding the shell"
+        );
+        assert_eq!(cwd, root, "nothing has run, so this is where it started");
+    }
+
+    /// The mirror has to follow the shell, or it answers with where the session
+    /// started rather than where it is.
+    #[tokio::test]
+    async fn a_cd_in_the_default_shell_reaches_the_session_cwd() {
+        let Some(program) = crate::config::detect_git_bash() else {
+            return;
+        };
+        let root = std::env::temp_dir();
+        let mut shells = ShellSet::new(program, root.clone(), vec![]);
+        let shell = shells
+            .get(DEFAULT_BASH)
+            .expect("spawning the default shell");
+        let session = session("s", shells);
+
+        let leaf = format!("gongga-cwd-{}", std::process::id());
+        let target = root.join(&leaf);
+        std::fs::create_dir_all(&target).expect("creating a directory to cd into");
+        let mut bash = shell.lock().await;
+        bash.run(
+            &format!("cd '{}'", crate::tools::bash::msys_path(&target)),
+            Duration::from_secs(10),
+            None,
+        )
+        .await
+        .expect("running cd");
+        drop(bash);
+        let reported = session.cwd();
+        let _ = std::fs::remove_dir(&target);
+        assert_eq!(
+            reported.file_name().and_then(|n| n.to_str()),
+            Some(leaf.as_str()),
+            "the cd did not reach the session cwd: {reported:?}"
+        );
     }
 }

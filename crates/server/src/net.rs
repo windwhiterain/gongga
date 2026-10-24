@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use protocol::{
-    self, ClientMessage, Event, ServerInfo, ServerMessage, decode_client, encode_server,
+    self, Args, ClientMessage, Event, ServerInfo, ServerMessage, decode_client, encode_server,
     frame::{Flags, Frame},
 };
 use tokio::net::UdpSocket;
@@ -28,6 +28,13 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 struct Peer {
     tx: mpsc::Sender<Frame>,
     conn_id: u32,
+}
+
+/// One command of one connection, either running or waiting its turn.
+struct Queued {
+    id: u64,
+    name: String,
+    args: Args,
 }
 
 pub async fn serve(cfg: Arc<Config>, d: Arc<Dispatch>, bus: EventBus) -> anyhow::Result<()> {
@@ -164,6 +171,10 @@ async fn handle_connection(
     }
 
     let mut bus_rx = bus.subscribe();
+    // Commands run elsewhere: one must not hold up the events owed here.
+    // See `docs/notes/server-net.md`.
+    let (commands, queued) = mpsc::unbounded_channel::<Queued>();
+    tokio::spawn(run_commands(d.clone(), queued));
     if let Err(e) = send_server(
         &sink,
         &ServerMessage::Hello {
@@ -214,13 +225,13 @@ async fn handle_connection(
                             name: name.clone(),
                             args: args.clone(),
                         });
-                        let outcome = dispatch(&d, &name, &args).await;
-                        bus.publish(Event::CmdResult {
-                            id,
-                            ok: outcome.ok,
-                            message: outcome.message,
-                            data: outcome.data,
-                        });
+                        if commands
+                            .send(Queued { id, name, args })
+                            .is_err()
+                        {
+                            // Nobody left to run it, so nobody left to answer.
+                            break;
+                        }
                     }
                     Ok(ClientMessage::Bye) => break,
                     Err(e) => {
@@ -245,6 +256,21 @@ async fn handle_connection(
     }
 
     tracing::info!(%peer, conn_id, "client disconnected");
+}
+
+/// Runs one connection's commands, one at a time and in the order they arrived.
+///
+/// See `docs/notes/server-net.md`.
+async fn run_commands(d: Arc<Dispatch>, mut queued: mpsc::UnboundedReceiver<Queued>) {
+    while let Some(command) = queued.recv().await {
+        let outcome = dispatch(&d, &command.name, &command.args).await;
+        d.bus.publish(Event::CmdResult {
+            id: command.id,
+            ok: outcome.ok,
+            message: outcome.message,
+            data: outcome.data,
+        });
+    }
 }
 
 /// Waits for the client's `Hello` and checks its key. False means "closed".

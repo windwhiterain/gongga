@@ -426,6 +426,7 @@ impl Store {
                         out.push(HistoryItem::ToolResult {
                             call_id,
                             output: INTERRUPTED_CALL.into(),
+                            images: Vec::new(),
                         });
                     }
                 }
@@ -440,7 +441,23 @@ impl Store {
                         .and_then(|v| v.as_str())
                         .unwrap_or_default()
                         .to_string(),
+                    images: images_of(&value),
                 }),
+                "builtin_call" => {
+                    let item = value
+                        .get("item")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null);
+                    if !item.is_null() {
+                        out.push(HistoryItem::BuiltinCall {
+                            item,
+                            replayable: value
+                                .get("replayable")
+                                .and_then(serde_json::Value::as_bool)
+                                .unwrap_or(true),
+                        });
+                    }
+                }
                 // Operator-only: feeding a notice back would put our bookkeeping in the prompt.
                 "notice" => {}
                 other => tracing::warn!("unknown message kind {other}"),
@@ -853,10 +870,101 @@ impl MessageRow {
             }
             // The harness talking to the reader: no role, no answer in the model's mouth.
             "notice" => row.text = str_of("text").unwrap_or_default(),
+            // Something that ran at the provider, not here: it has no output to
+            // show, so the line describes what it did instead.
+            "builtin_call" => {
+                let item = value.get("item").unwrap_or(&serde_json::Value::Null);
+                row.text = activity_summary(item);
+            }
             other => tracing::warn!("unknown message kind {other}"),
         }
         row
     }
+}
+
+/// The pictures a stored `tool_result` row recorded, by path.
+fn images_of(value: &serde_json::Value) -> Vec<ImageRef> {
+    value
+        .get("images")
+        .and_then(|v| v.as_array())
+        .map(|list| {
+            list.iter()
+                .filter_map(|i| {
+                    Some(ImageRef {
+                        path: i.get("path")?.as_str()?.to_string(),
+                        media_type: i
+                            .get("media_type")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("application/octet-stream")
+                            .to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The operator-facing name of a provider tool: `web_search_call` -> `web_search`.
+pub(crate) fn activity_name(item_type: &str) -> &str {
+    item_type.trim_end_matches("_call")
+}
+
+/// What an activity item says about itself: the operation, the query, the URL.
+///
+/// # Invariant
+///
+/// A leading space when there is something to say, nothing at all when there is
+/// not: both readers append it, so an absent detail must not become `" "`.
+/// Fields are looked up, never assumed: DeepSeek sends `action.queries` and
+/// `action.type`, where other examples send `action.query`.
+pub(crate) fn activity_detail(item: &serde_json::Value) -> String {
+    let action = &item["action"];
+    let name = activity_name(item["type"].as_str().unwrap_or("call"));
+    let mut out = String::new();
+    // DeepSeek reports an `open_page` under a `web_search_call`, so say the
+    // operation when the name does not.
+    if let Some(operation) = action["type"].as_str() {
+        if !name.ends_with(operation) {
+            out.push_str(&format!(" {operation}"));
+        }
+    }
+    if let Some(query) = action["query"].as_str() {
+        out.push_str(&format!(" {query:?}"));
+    } else if let Some(queries) = action["queries"].as_array() {
+        // A search may carry several terms; the rest stay out of a one-line row.
+        if let Some(first) = queries.iter().filter_map(|q| q.as_str()).next() {
+            out.push_str(&format!(" {first:?}"));
+            let extra = queries.len().saturating_sub(1);
+            if extra > 0 {
+                out.push_str(&format!(" (+{extra} more)"));
+            }
+        }
+    } else if let Some(url) = action["url"].as_str() {
+        // A provider may tag the URL with its own call id; it is not part of it.
+        let url = url.split("#ws_call_id=").next().unwrap_or(url);
+        out.push_str(&format!(" {url}"));
+    } else if let Some(text) = item["revised_prompt"].as_str() {
+        out.push_str(&format!(" {text:?}"));
+    }
+    match item["status"].as_str() {
+        None | Some("completed") | Some("in_progress") => {}
+        Some(status) => out.push_str(&format!(" ({status})")),
+    }
+    out
+}
+
+/// One readable line for a provider tool item: `web_search "rust async book"`.
+///
+/// # Invariant
+///
+/// An absent field is left out, never rendered as `{}` and never guessed at:
+/// this line is what `get_messages` shows, and a blank one reads as "nothing
+/// happened here". See `docs/notes/server-store.md`.
+pub(crate) fn activity_summary(item: &serde_json::Value) -> String {
+    let Some(kind) = item["type"].as_str() else {
+        return "a provider tool ran (its item was not recorded)".to_string();
+    };
+    format!("{}{}", activity_name(kind), activity_detail(item))
 }
 
 /// A transcript entry, already decoded into the shape the LLM adapter wants.
@@ -879,7 +987,25 @@ pub enum HistoryItem {
     ToolResult {
         call_id: String,
         output: String,
+        /// Pictures the tool handed back, by path: read at request time.
+        images: Vec<ImageRef>,
     },
+    /// A tool the provider ran itself (`web_search_call`, ...), kept verbatim
+    /// so the next request can replay it.
+    BuiltinCall {
+        item: serde_json::Value,
+        /// False when a binary payload was stripped and the item must not be sent back.
+        replayable: bool,
+    },
+}
+
+/// One picture a tool produced, referenced by path rather than carried inline.
+///
+/// See `docs/notes/server-store.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageRef {
+    pub path: String,
+    pub media_type: String,
 }
 
 pub fn status_name(status: SessionStatus) -> &'static str {
@@ -952,6 +1078,82 @@ mod tests {
         let left = store.pending_tasks().unwrap();
         assert_eq!(left.len(), 1, "only the finished turn's row goes");
         assert_eq!(left[0].id, second);
+    }
+
+    /// A picture is a path in the row, not bytes: the request reads the file.
+    #[test]
+    fn a_tool_result_keeps_its_pictures_by_path() {
+        let (_d, store) = temp_store();
+        let id = store.create_session("main", "m", "C:/x").unwrap();
+        store
+            .append_message(
+                id,
+                "tool_result",
+                &json!({
+                    "call_id": "c1",
+                    "output": "looked at it",
+                    "images": [{"path": "C:/w/shot.png", "media_type": "image/png"}]
+                }),
+            )
+            .unwrap();
+        let history = store.history(id).unwrap();
+        match &history[0] {
+            HistoryItem::ToolResult { output, images, .. } => {
+                assert_eq!(output, "looked at it");
+                assert_eq!(
+                    images,
+                    &vec![ImageRef {
+                        path: "C:/w/shot.png".into(),
+                        media_type: "image/png".into()
+                    }]
+                );
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    /// A row written before pictures existed still reads back as a plain result.
+    #[test]
+    fn a_tool_result_without_pictures_reads_back_empty() {
+        let (_d, store) = temp_store();
+        let id = store.create_session("main", "m", "C:/x").unwrap();
+        store
+            .append_message(id, "tool_result", &json!({"call_id": "c1", "output": "ok"}))
+            .unwrap();
+        match &store.history(id).unwrap()[0] {
+            HistoryItem::ToolResult { images, .. } => assert!(images.is_empty()),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    /// The provider's own tool item is kept verbatim, or the next request is rejected.
+    #[test]
+    fn a_provider_tool_item_survives_a_round_trip() {
+        let (_d, store) = temp_store();
+        let id = store.create_session("main", "m", "C:/x").unwrap();
+        let item = json!({
+            "id": "ws_1",
+            "type": "web_search_call",
+            "status": "completed",
+            "action": {"type": "search", "query": "q"}
+        });
+        store
+            .append_message(
+                id,
+                "builtin_call",
+                &json!({"item": item, "replayable": true}),
+            )
+            .unwrap();
+        match &store.history(id).unwrap()[0] {
+            HistoryItem::BuiltinCall {
+                item: kept,
+                replayable,
+            } => {
+                assert_eq!(kept, &item);
+                assert!(replayable);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]
@@ -1239,9 +1441,9 @@ mod tests {
             .iter()
             .map(|item| match item {
                 HistoryItem::ToolCall { call_id, .. } => (call_id.clone(), "call".into()),
-                HistoryItem::ToolResult { call_id, output } => {
-                    (call_id.clone(), format!("result: {output}"))
-                }
+                HistoryItem::ToolResult {
+                    call_id, output, ..
+                } => (call_id.clone(), format!("result: {output}")),
                 _ => ("?".into(), "other".into()),
             })
             .collect();
@@ -1250,6 +1452,140 @@ mod tests {
         assert!(pairs[1].1.contains("interrupted"), "{pairs:?}");
         assert_eq!(pairs[2], ("c2".to_string(), "call".to_string()));
         assert_eq!(pairs[3].1, "result: ok");
+    }
+
+    /// What ran at the provider has no output to show, so the row describes it.
+    #[test]
+    fn a_provider_tool_row_reads_as_the_search_it_ran() {
+        let (_d, store) = temp_store();
+        let id = store.create_session("main", "m", "C:/x").unwrap();
+        store
+            .append_message(
+                id,
+                "builtin_call",
+                &json!({
+                    "item": {
+                        "id": "ws_1",
+                        "type": "web_search_call",
+                        "status": "completed",
+                        "action": {"type": "search", "query": "rust async book"}
+                    },
+                    "replayable": true
+                }),
+            )
+            .unwrap();
+        store
+            .append_message(
+                id,
+                "builtin_call",
+                &json!({
+                    "item": {
+                        "id": "wf_1",
+                        "type": "web_fetch_call",
+                        "status": "completed",
+                        "action": {"type": "open_page", "url": "https://example.org/a"}
+                    },
+                    "replayable": true
+                }),
+            )
+            .unwrap();
+
+        let t = store.messages_after(id, 0, 50).unwrap();
+        assert_eq!(t.messages[0].kind, "builtin_call");
+        assert_eq!(t.messages[0].text, "web_search \"rust async book\"");
+        // The operation is shown when the item's own name does not say it.
+        assert_eq!(
+            t.messages[1].text,
+            "web_fetch open_page https://example.org/a"
+        );
+    }
+
+    /// The shape DeepSeek actually sent: `queries`, `open_page`, call-id fragment.
+    ///
+    /// # Invariant
+    ///
+    /// Copied from a real `deepseek-v4-pro` response, so a provider whose
+    /// action is spelled differently keeps its terms.
+    #[test]
+    fn a_deepseek_web_search_row_keeps_its_terms() {
+        let (_d, store) = temp_store();
+        let id = store.create_session("main", "m", "C:/x").unwrap();
+        for item in [
+            json!({
+                "id": "call_01",
+                "type": "web_search_call",
+                "status": "completed",
+                "action": {"type": "search", "queries": [
+                    "site:news.ycombinator.com top story today",
+                    "Hacker News front page current top story",
+                    "ws_call_id=call_01"
+                ]}
+            }),
+            json!({
+                "id": "call_00",
+                "type": "web_search_call",
+                "status": "failed",
+                "action": {
+                    "type": "open_page",
+                    "url": "https://news.ycombinator.com/#ws_call_id=call_00"
+                }
+            }),
+        ] {
+            store
+                .append_message(
+                    id,
+                    "builtin_call",
+                    &json!({"item": item, "replayable": true}),
+                )
+                .unwrap();
+        }
+        let t = store.messages_after(id, 0, 50).unwrap();
+        assert_eq!(
+            t.messages[0].text,
+            "web_search \"site:news.ycombinator.com top story today\" (+2 more)"
+        );
+        // The fragment is the provider's call id, not part of the page.
+        assert_eq!(
+            t.messages[1].text,
+            "web_search open_page https://news.ycombinator.com/ (failed)"
+        );
+    }
+
+    /// An item that says nothing still gets a line: a blank row reads as nothing.
+    #[test]
+    fn a_provider_tool_row_never_renders_blank() {
+        let (_d, store) = temp_store();
+        let id = store.create_session("main", "m", "C:/x").unwrap();
+        for body in [
+            json!({"item": {"id": "x", "type": "web_search_call"}, "replayable": true}),
+            json!({"item": {"id": "y", "type": "image_generation_call", "status": "failed"}, "replayable": true}),
+            json!({"item": {"id": "z"}, "replayable": true}),
+            json!({"replayable": true}),
+        ] {
+            store.append_message(id, "builtin_call", &body).unwrap();
+        }
+        let t = store.messages_after(id, 0, 50).unwrap();
+        for row in &t.messages {
+            assert!(!row.text.trim().is_empty(), "blank row for {:?}", row.seq);
+            assert!(
+                !row.text.contains("{}"),
+                "shape leaked into the line: {}",
+                row.text
+            );
+        }
+        // A bare tool still names itself, with no trailing space to trim.
+        assert_eq!(t.messages[0].text, "web_search");
+        assert_eq!(t.messages[1].text, "image_generation (failed)");
+        // An item with no type at all says that much rather than guessing.
+        assert!(
+            t.messages[2].text.contains("a provider tool ran"),
+            "{}",
+            t.messages[2].text
+        );
+        assert_eq!(
+            t.messages[3].text,
+            "a provider tool ran (its item was not recorded)"
+        );
     }
 
     /// A window after a seq, ending at the tail, which is reported even when empty.

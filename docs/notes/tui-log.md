@@ -34,19 +34,27 @@ changes shape and nowhere else.
 
 ## Entry
 
-One line of the log, plus what it takes to draw a row of it without wrapping the
-whole line again.
+One *block* of the log, plus what it takes to draw a row of it without wrapping
+the whole block again. A block is the unit the window allocates in: a streaming
+response or tool output is one block, and it keeps growing in place until it is
+sealed.
 
 ## Entry::starts
 
 Byte offset of the first character of each wrapped row. The length of this list
 *is* the row count, which is what the row index sums over.
 
-## Entry::open
+## Entry::col
 
 Display columns used by the last row: where an append resumes. Appending can only
 ever extend the last row or open new ones, so this one number plus the last start
 is the whole wrap state.
+
+## Entry::sealed
+
+No more text can arrive. `Log::push` seals on creation; `Log::stream` seals on
+`done`. Sealing is what allows the blank tail to be trimmed; it does not change
+how the window allocates rows, because it does not allocate by block at all.
 
 ## Entry::new
 
@@ -121,14 +129,23 @@ line. The key handler clamps against it, and only the renderer can work it out.
 The width the cached row offsets were measured at. 0 until a frame has been
 drawn, because until then nobody knows how wide the terminal is.
 
+## Log::stream
+
+What a streaming response and a streaming tool output call for every chunk. The
+key is the block's identity: the first chunk opens a block and every later chunk
+appends to that same block, which is why two blocks streaming at once both keep
+growing instead of interleaving into one another's rows.
+
+`done` seals the block and forgets the key, so a later chunk under the same key
+opens a new block rather than appending to the closed one. A whitespace-only
+chunk never opens a block (see below); an empty one with `done` set only clears
+the key.
+
 ## Log::append
 
-Appends to line `line`, which is what a streaming response and a streaming tool
-output do for every chunk.
-
-A missing line is ignored rather than panicked on: a stream key outlives its line
-only if the caller cleared the log underneath it, and losing a chunk is a better
-failure than taking the window down.
+Appends to an entry by position, which `Log::stream` does once it has resolved a
+key. A missing line is ignored rather than panicked on: losing a chunk is a
+better failure than taking the window down.
 
 ## Log::window
 
@@ -138,8 +155,42 @@ The rows for one frame: everything visible, nothing more.
 it is clamped here because lines can be added or the window can grow between the
 key and the frame.
 
-The row index of a line's first row is carried forward instead of asked for
-again, so the walk is one pass over the window.
+The walk starts at the entry holding the window's bottom row (`RowIndex::
+line_at`, O(log lines)) and goes upwards, so a scrolled window does not touch the
+history below it and a frame still costs what one screen holds.
+
+## Log::window — the window is the tail of the log
+
+No block is reserved space and none is cut out: the window is the last `height`
+rows, full stop. A block is one line however long it grows, so a growing block
+simply pushes older rows above the window, and they come back when the operator
+scrolls. The walk starts at the block holding the first visible row
+(`RowIndex::line_at`, O(log blocks)), so a frame still costs what one screen
+holds.
+
+The cost of that simplicity: a block taller than the window shows its newest rows
+without the session label, because the label is on the block's first row and that
+row is above the window. Keeping a block short -- which agent output mostly does
+-- is what keeps it named.
+
+## Log::stream — a blank chunk opens nothing
+
+The shell writes one empty line before every exit sentinel, on both streams. The
+drain loop reads it as a content line, so every single command used to hand the
+front-end a chunk whose text is just `\n`. A chunk like that must not open a
+block, or every command leaves a blank row -- and on stderr that row is drawn in
+the error colour, so a busy session fills the screen with red blanks.
+
+A whitespace-only chunk is therefore dropped when it would *open* a block. Inside
+a block it is still appended, because a blank line between two paragraphs is real
+output.
+
+## Log::stream — a sealed block has no blank tail
+
+`done` trims the blank tail off the block's text before sealing it. Without that,
+the sentinel's newline leaves one gap after every command. Trimming the text
+rather than the rows keeps it correct at a width nobody measured yet: `reflow`
+derives the rows from the trimmed text afterwards.
 
 ## Log::reflow
 
@@ -182,3 +233,30 @@ Back to the wide shape: the old offsets must not survive.
 
 The row index's binary search has to agree with a plain walk, or scrolling lands
 on the wrong line while everything else looks fine.
+
+## two_open_blocks_grow_together
+
+Two blocks streaming at once each keep growing where they opened, so the second
+one never jumps above the first. This is the difference from a per-line model: a
+line model has nowhere to put a second stream's growth but after it.
+
+## a_growing_block_scrolls_the_window
+
+A block growing past the window pushes older rows *above* it, not out of the log:
+scrolling back finds them.
+
+## a_long_block_shows_its_tail
+
+The tail of a block taller than the window, with no label repeated. This is the
+simple model's cost, stated as a test so it stays a decision rather than a
+surprise.
+
+## a_blank_chunk_opens_no_block
+
+The sentinel's empty line must not become a row. Without this, one blank row per
+command, in the error colour.
+
+## a_sealed_block_has_no_trailing_blank_row
+
+A block's trailing newline is trimmed when it seals, while a blank line *inside*
+the block survives.

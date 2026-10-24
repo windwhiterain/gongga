@@ -32,6 +32,20 @@ Shared rather than owned so the tailing task can append without holding the
 shell, and so a shell thrown away by `del_bash` does not strand the task
 holding a dangling reference.
 
+## BashShell::cwd_cell
+
+Every path that updates `cwd` goes through [`BashShell::set_cwd`], so the cell
+and the field cannot disagree. Outside this shell there is no lock-free way to
+read anything about it -- a running command holds its mutex for as long as it
+runs -- which makes the cell the only thing "where is this session" can ask
+without waiting for that command.
+
+## BashShell::set_cwd
+
+The one way either copy of the directory is written, precisely so they cannot
+drift apart. It exists for code that already holds the shell's lock, which is
+the only code that knows where the shell actually is.
+
 ## BashShell::out_of_sync
 
 One of the pipes ended without its sentinel, so this shell's output is no

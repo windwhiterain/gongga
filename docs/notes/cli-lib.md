@@ -70,10 +70,15 @@ mode emits the events themselves as JSON and renders nothing. Neither
 implementation knows what produced the text.
 
 `stream` takes a `prefix` next to the text, and the front-end prints that prefix
-**once per stream key**: `stream_into` in `crates/tui` writes it when a key
-first opens a line, then appends later chunks of the same key bare. So anything
-that belongs at the start of a line -- and nothing that belongs in its body --
-is a prefix.
+**once per block**: `Log::stream` in `crates/tui` writes it when a key first
+opens a block, then appends later chunks of the same key bare. So anything that
+belongs at the start of a block -- and nothing that belongs in its body -- is a
+prefix.
+
+The prefix is the block's first row, so a block long enough to outgrow the window
+shows its newest rows without the tag. That is the simple model's cost: it keeps
+one block one line and reserves space for nobody, at the price of the label
+scrolling off with the head while a single block streams.
 
 ## Client::handle_response
 

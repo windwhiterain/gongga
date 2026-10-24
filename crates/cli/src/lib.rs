@@ -313,6 +313,8 @@ impl Client {
         let (kind, label) = match e.part {
             ResponsePart::Reasoning => (LineKind::Reasoning, "thinking: "),
             ResponsePart::ToolCall => (LineKind::ToolCall, "tool: "),
+            // Not our tool: the provider ran it, so the label says where it ran.
+            ResponsePart::Activity => (LineKind::ToolCall, "provider: "),
             ResponsePart::Output => (LineKind::Assistant, ""),
         };
         // The tag rides on the prefix: a prefix is printed once per key.
