@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::Agent;
 use crate::bus::EventBus;
 use crate::session::SessionManager;
-use crate::store::{PendingTask, Store, now_millis};
+use crate::store::{PendingTask, Store, Transcript, now_millis};
 
 /// How long `cancel` waits before pulling the plug, so the acknowledgement
 /// still reaches whoever asked for it.
@@ -573,6 +573,15 @@ async fn get_messages(d: &Dispatch, args: &Args) -> Outcome {
         Ok(t) => t,
         Err(e) => return Outcome::err(e.to_string()),
     };
+    transcript_outcome(&name, t)
+}
+
+/// The reply `get_messages` makes: the window, where the transcript ends, and the
+/// session's `status` (SPEC.md:54).
+///
+/// Split out from the handler so the shape the law names can be asserted without
+/// standing up an agent and a bus -- the fields are the contract here, not the I/O.
+fn transcript_outcome(name: &str, t: Transcript) -> Outcome {
     let message = if t.messages.is_empty() {
         format!(
             "no rows in that range in {name} (transcript ends at seq {})",
@@ -591,6 +600,7 @@ async fn get_messages(d: &Dispatch, args: &Args) -> Outcome {
         message,
         json!({
             "session": name,
+            "status": t.status,
             "last_seq": t.last_seq,
             "messages": t.messages,
         }),
@@ -1199,6 +1209,112 @@ mod tests {
         assert!(
             !spec.args.iter().any(|a| a.name == "limit"),
             "a row cap is the caller's business, not this command's"
+        );
+    }
+
+    /// `SPEC.md:54`: the reply is the rows, `last_seq`, **and the session's `status`**.
+    ///
+    /// The shape is the contract, so it is asserted on the reply builder rather than
+    /// through a live dispatch: what the law names here are fields, not I/O.
+    #[test]
+    fn get_messages_reports_the_session_status_with_the_rows() {
+        let rows = vec![
+            crate::store::MessageRow::parse(1, "text", r#"{"role":"user","text":"hi"}"#),
+            crate::store::MessageRow::parse(2, "text", r#"{"role":"assistant","text":"done"}"#),
+        ];
+        for (status, spelled) in [
+            (protocol::SessionStatus::Running, "running"),
+            (protocol::SessionStatus::Idle, "idle"),
+        ] {
+            let out = transcript_outcome(
+                "main",
+                Transcript {
+                    last_seq: 2,
+                    status,
+                    messages: rows.clone(),
+                },
+            );
+            assert!(out.ok);
+            let data = out
+                .data
+                .expect("a reader needs the data, not just a sentence");
+            // Visible with `--nocapture`: the reply SPEC.md:54 describes, verbatim.
+            println!("get_messages reply: {data}");
+            assert_eq!(
+                data["status"], spelled,
+                "SPEC.md:54 spells the status in snake_case: {data}"
+            );
+            assert_eq!(data["last_seq"], 2);
+            assert_eq!(data["session"], "main");
+            assert_eq!(data["messages"].as_array().unwrap().len(), 2);
+        }
+
+        // An empty window still says what the session is doing: that is the state a
+        // poller is waiting to change.
+        let out = transcript_outcome(
+            "main",
+            Transcript {
+                last_seq: 7,
+                status: protocol::SessionStatus::Running,
+                messages: vec![],
+            },
+        );
+        let data = out.data.unwrap();
+        assert_eq!(data["status"], "running");
+        assert_eq!(data["messages"].as_array().unwrap().len(), 0);
+        assert!(
+            out.message.contains("transcript ends at seq 7"),
+            "the sentence still says where the transcript ends: {}",
+            out.message
+        );
+    }
+
+    /// `SPEC.md:54`: "Reads only: creates no session". A name nobody created must
+    /// still be refused -- `set_session` is the only thing that makes a session
+    /// (`crates/server/src/commands.rs`, set_session's `ensure`), and a read that
+    /// quietly materialised one would let a poller fill the database with ghosts.
+    #[test]
+    fn get_messages_still_refuses_a_session_nobody_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("g.db")).unwrap();
+        let config = crate::config::BashConfig {
+            program: None,
+            timeout: Duration::from_secs(1),
+            max_output_chars: 0,
+        };
+        let detached = crate::tools::detached::DetachedRegistry::new(
+            store.clone(),
+            None,
+            dir.path().join("detached"),
+            vec![],
+        );
+        let sessions = SessionManager::new(store.clone(), config, "m".into(), detached, vec![]);
+
+        let err = match sessions.get("ghost") {
+            Ok(_) => panic!("a name nobody created must not resolve"),
+            Err(e) => e.to_string(),
+        };
+        assert_eq!(
+            err, "no session named \"ghost\"",
+            "the refusal is the same one get_messages returns"
+        );
+        assert!(
+            store.list_sessions().unwrap().is_empty(),
+            "reading must not create: {err}"
+        );
+
+        // An existing session is read the same way and still not created twice.
+        // (No `sessions.get` here: materialising a handle spawns a shell, and a
+        // read-shape test must not depend on a shell being installed.)
+        let id = store.create_session("real", "m", "C:/x").unwrap();
+        assert_eq!(store.list_sessions().unwrap().len(), 1);
+        let t = store.messages_between(id, 1, i64::MAX).unwrap();
+        assert_eq!(t.last_seq, 0);
+        assert_eq!(t.status, protocol::SessionStatus::Idle);
+        assert_eq!(
+            store.list_sessions().unwrap().len(),
+            1,
+            "still just the one row"
         );
     }
 }

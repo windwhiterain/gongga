@@ -414,6 +414,17 @@ try:
     check("--session's own help says omitting it wakes the judge",
           "省略就是叫醒法官" in helptext, helptext)
     check("and that giving it addresses that session", "给了就发给那个会话" in helptext, helptext)
+    # Ruling 006 §4: "wake" and "returned" are two facts and must not share a line.
+    # The failure this guards is reading "sent" as "done".
+    body = helptext.splitlines()
+    wake = [i for i, l in enumerate(body) if "叫醒法官" in l]
+    back = [i for i, l in enumerate(body) if "立即返回" in l]
+    check("send --help says both facts", wake and back, body[:8])
+    if wake and back:
+        check("and they are on different lines", wake[0] != back[0], (wake, back, body[:8]))
+        check("with the return meaning spelled out", "不代表对方做完" in body[back[0]], body[back[0]])
+    check("the one line the parent list holds says the same",
+          listed and "不代表对方做完了" in listed[0], listed)
 
     # ---- the client gets a home of its own, so no court command writes the user's
     # per-session client state (SPEC.md:96-97). The check is on what the client was

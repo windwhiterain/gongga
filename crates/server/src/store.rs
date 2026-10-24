@@ -506,10 +506,18 @@ impl Store {
         last: i64,
     ) -> anyhow::Result<Transcript> {
         let conn = self.lock();
-        let last_seq: i64 = conn.query_row(
-            "SELECT COALESCE(MAX(seq), 0) FROM messages WHERE session_id = ?1",
+        // Both facts in one statement: one lock, one snapshot. A second query against
+        // `sessions` would let the status change under a reader being told "these are
+        // the rows as of now" (SPEC.md:54).
+        //
+        // Both sub-selects are coalesced: an id with no session row (the caller
+        // resolved the name, so `get_messages` never passes one) reads as an empty
+        // idle window instead of failing on a NULL. Inventing a row would be worse.
+        let (last_seq, status): (i64, SessionStatus) = conn.query_row(
+            "SELECT COALESCE((SELECT MAX(seq) FROM messages WHERE session_id = ?1), 0),
+                    COALESCE((SELECT status FROM sessions WHERE id = ?1), 'idle')",
             params![session_id],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, parse_status(&r.get::<_, String>(1)?))),
         )?;
         let mut stmt = conn.prepare(
             "SELECT seq, kind, content FROM messages
@@ -529,7 +537,11 @@ impl Store {
             .into_iter()
             .map(|(seq, kind, content)| MessageRow::parse(seq, &kind, &content))
             .collect();
-        Ok(Transcript { last_seq, messages })
+        Ok(Transcript {
+            last_seq,
+            status,
+            messages,
+        })
     }
 
     /// `(seq, kind)` of every message, oldest first. Test-only: folding left the
@@ -861,10 +873,16 @@ pub struct SessionRow {
     pub messages: u64,
 }
 
-/// A window of the transcript plus where it now ends, as `get_messages` reports it.
+/// A window of the transcript plus where it ends, as `get_messages` reports it.
+///
+/// `status` rides along because `SPEC.md:54` says this command reports it: a reader
+/// forced to ask twice can be told about a session that moved on between the two
+/// questions. It is read in the same statement as `last_seq`, so it is the session's
+/// state at the moment the window was taken, not a later guess.
 #[derive(Debug, Clone)]
 pub struct Transcript {
     pub last_seq: i64,
+    pub status: SessionStatus,
     pub messages: Vec<MessageRow>,
 }
 
@@ -883,7 +901,9 @@ pub struct MessageRow {
 }
 
 impl MessageRow {
-    fn parse(seq: i64, kind: &str, content: &str) -> Self {
+    /// Flatten one stored row. `pub(crate)` so a caller with no store at hand
+    /// (a reply-shape test) can build the same value the reader would.
+    pub(crate) fn parse(seq: i64, kind: &str, content: &str) -> Self {
         let value: serde_json::Value =
             serde_json::from_str(content).unwrap_or(serde_json::Value::Null);
         let str_of = |key: &str| value.get(key).and_then(|v| v.as_str()).map(str::to_string);
@@ -1635,5 +1655,72 @@ mod tests {
         assert_eq!(t.messages[1].kind, "notice");
         assert_eq!(t.messages[1].text, "stopped after 64 steps");
         assert_eq!(t.messages[1].role, None);
+    }
+
+    /// The window carries the session's status, and it is the status of *that*
+    /// session -- `SPEC.md:54` says `get_messages` reports it, and a reader that
+    /// has to ask twice can be told about a session that moved on in between.
+    ///
+    /// Both readings come from one statement, so the pair cannot disagree.
+    #[test]
+    fn a_transcript_window_reports_the_session_status() {
+        let (_dir, store) = temp_store();
+        let a = store.create_session("a", "m", "C:/x").unwrap();
+        let b = store.create_session("b", "m", "C:/x").unwrap();
+        store
+            .append_message(a, "text", &json!({"role": "user", "text": "hi"}))
+            .unwrap();
+
+        // A fresh session is idle; a running one says running.
+        assert_eq!(
+            store.messages_between(a, 1, i64::MAX).unwrap().status,
+            SessionStatus::Idle
+        );
+        store.set_status(a, SessionStatus::Running).unwrap();
+        assert_eq!(
+            store.messages_between(a, 1, i64::MAX).unwrap().status,
+            SessionStatus::Running
+        );
+        // The other session is untouched: the status is per session, not global.
+        assert_eq!(
+            store.messages_between(b, 1, i64::MAX).unwrap().status,
+            SessionStatus::Idle
+        );
+        // An error is reported as itself, not flattened into idle: a caller that
+        // polls this must not read a broken session as a finished one.
+        store.set_status(a, SessionStatus::Error).unwrap();
+        assert_eq!(
+            store.messages_between(a, 1, i64::MAX).unwrap().status,
+            SessionStatus::Error
+        );
+
+        // Reading a window never creates a session and never moves the status.
+        let before = store.list_sessions().unwrap().len();
+        store.messages_between(a, 5, 9).unwrap();
+        assert_eq!(store.list_sessions().unwrap().len(), before);
+        assert_eq!(
+            store.messages_between(a, 5, 9).unwrap().status,
+            SessionStatus::Error
+        );
+    }
+
+    /// A session id that was never created still reads as an empty window rather
+    /// than an error: `messages_between` is given an id the caller already resolved.
+    /// The "no such session" refusal belongs to the lookup, and is pinned next door.
+    #[test]
+    fn an_unknown_session_id_has_no_rows_and_no_status() {
+        let (_dir, store) = temp_store();
+        let t = store.messages_between(424242, 1, i64::MAX).unwrap();
+        assert_eq!(t.last_seq, 0);
+        assert!(t.messages.is_empty());
+        assert_eq!(
+            t.status,
+            SessionStatus::Idle,
+            "parse_status defaults, it does not invent a row"
+        );
+        assert!(
+            store.list_sessions().unwrap().is_empty(),
+            "and nothing was created"
+        );
     }
 }

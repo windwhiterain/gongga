@@ -938,7 +938,21 @@ def build_parser():
     sub_root(s)
     s.set_defaults(fn=cmd_status)
 
-    s = sub.add_parser("send", help="叫醒法官（立即返回）；--session 指定别的会话")
+    # Two lines on purpose (ruling 006 §4): "wake" and "returned" are different facts,
+    # and run together they read as "waking it means it is done" -- which is the
+    # cousin of this court's first bug, mistaking "I think it finished" for "it did".
+    s = sub.add_parser(
+        "send",
+        # `help=` is the one line the parent list can hold; `description=` is what
+        # `send --help` prints, and it is two paragraphs on purpose: "wake" and
+        # "returned" are different facts. Run together they read as "waking it means
+        # it is done" -- the cousin of this court's first bug, mistaking "I think it
+        # finished" for "it did". RawDescription keeps the break instead of rewrapping.
+        help="叫醒法官（--session 指定别的会话）；立即返回，不代表对方做完了",
+        description="叫醒法官（--session 指定别的会话）。\n\n"
+                    "立即返回：返回只代表消息被接受，不代表对方做完了。",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     sub_root(s)
     s.add_argument("--session",
                    help="省略就是叫醒法官（.polity/state.json 里记的那个会话）；"
