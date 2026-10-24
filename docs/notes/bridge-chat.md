@@ -29,12 +29,28 @@ it were new.
 
 The same order the server runs its turns in (it queues, it does not interrupt).
 
+## since
+
+The bridge asks the server for a tail window, and the window can reach back into
+the turn before: the rows are a fixed range, not "my turn". `since` is what
+turns the window into this turn's rows, using the cursor the bridge keeps.
+
+Without it a turn that only ran a tool would relay the *previous* answer as if it
+were new -- `final_reply` picks the last assistant text, and that text would
+belong to the turn before.
+
 ## final_reply
 
 The last assistant text, not a concatenation: a turn that used tools says "let me
 look at that" before the tool call and the actual answer after it, and pasting
-both reads like the bot is talking to itself. Rows are already scoped to one turn
-by the caller's `after_seq`.
+both reads like the bot is talking to itself. Rows are scoped to one turn by
+`since`, not by the query: which rows are still owed is the bridge's question.
+
+## READ_SEQ
+
+The tail window the read-back asks for. A turn longer than this loses its head,
+which only `final_reply`'s "it called a tool" fallback notices; the answer itself
+is at the tail, so the relay is unaffected.
 
 ## final_reply (ordering)
 

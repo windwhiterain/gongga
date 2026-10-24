@@ -6,7 +6,8 @@ pub mod frame;
 pub mod message;
 
 pub use channel::{
-    Channel, ChannelConfig, ChannelError, ChannelSink, ChannelStream, Role, accept, connect,
+    Channel, ChannelConfig, ChannelError, ChannelSink, ChannelStream, MAX_MESSAGE_LEN, Role,
+    accept, connect,
 };
 pub use message::{
     ArgSpec, Args, ClientInfo, ClientMessage, CmdArg, CommandSpec, CompletionSource, Event,

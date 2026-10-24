@@ -16,6 +16,9 @@ use tokio::time::interval;
 
 use crate::frame::{DEFAULT_MTU, Flags, Frame, FrameError, HEADER_LEN};
 
+/// Largest message one send may carry, reassembled across fragments.
+pub const MAX_MESSAGE_LEN: usize = 8 * 1024 * 1024;
+
 /// Channel tuning; the defaults assume one CLI-to-server link with few-ms RTTs.
 #[derive(Debug, Clone)]
 pub struct ChannelConfig {
@@ -49,7 +52,7 @@ impl Default for ChannelConfig {
             mtu: DEFAULT_MTU,
             window: 64,
             recv_buffer: 256,
-            max_message_len: 8 * 1024 * 1024,
+            max_message_len: MAX_MESSAGE_LEN,
             keepalive: Duration::from_secs(2),
             idle_timeout: Duration::from_secs(60),
             max_retransmits: 12,
@@ -146,6 +149,7 @@ pub struct Channel {
     shared: Arc<Inbound>,
     peer: SocketAddr,
     conn_id: Arc<std::sync::Mutex<u32>>,
+    max_message_len: usize,
 }
 
 impl Channel {
@@ -158,6 +162,7 @@ impl Channel {
         *self.conn_id.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Queues one message.
     pub async fn send(&self, message: Vec<u8>) -> Result<(), ChannelError> {
         self.outbound
             .send(message)
@@ -177,6 +182,7 @@ impl Channel {
                 outbound: self.outbound,
                 peer: self.peer,
                 conn_id: self.conn_id,
+                max_message_len: self.max_message_len,
                 _shared: self.shared.clone(),
             },
             ChannelStream {
@@ -193,6 +199,8 @@ pub struct ChannelSink {
     outbound: mpsc::Sender<Vec<u8>>,
     peer: SocketAddr,
     conn_id: Arc<std::sync::Mutex<u32>>,
+    /// The bound the writer enforces, so a caller hears about it here instead.
+    max_message_len: usize,
     /// Kept only to hold the reader task open: a sink alone is still a link to come back to.
     _shared: Arc<Inbound>,
 }
@@ -206,7 +214,19 @@ impl ChannelSink {
         *self.conn_id.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Queues one message.
+    ///
+    /// # Invariant
+    ///
+    /// Too large is refused here, not dropped in the writer: the writer can only
+    /// log, and a caller waiting for an answer would wait forever.
     pub async fn send(&self, message: Vec<u8>) -> Result<(), ChannelError> {
+        if message.len() > self.max_message_len {
+            return Err(ChannelError::MessageTooLarge {
+                len: message.len(),
+                limit: self.max_message_len,
+            });
+        }
         self.outbound
             .send(message)
             .await
@@ -706,6 +726,8 @@ fn spawn_inner(
 
     let io = Sender { socket, peer };
     let mut inbox = inbox;
+    // Read before `cfg` moves into the core: the sink needs the same bound.
+    let max_message_len = cfg.max_message_len;
     let mut core = ChannelCore::new(cfg, role, conn_id);
 
     tokio::spawn(async move {
@@ -799,6 +821,7 @@ fn spawn_inner(
         shared,
         peer,
         conn_id: conn_id_shared,
+        max_message_len,
     })
 }
 

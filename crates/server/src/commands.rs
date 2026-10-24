@@ -22,12 +22,6 @@ const SHUTDOWN_NOTICE: Duration = Duration::from_millis(250);
 /// How long a `turn` row must sit unclaimed before the waker takes it.
 const NUDGE_GRACE_SECS: u64 = 5;
 
-/// Default `get_messages` window: one whole turn, not the entire history.
-const DEFAULT_MESSAGE_LIMIT: usize = 50;
-/// Cap, so a typo cannot pull megabytes of transcript through a UDP channel
-/// that fragments at 1174 bytes a packet.
-const MAX_MESSAGE_LIMIT: usize = 500;
-
 pub struct Dispatch {
     pub agent: Arc<Agent>,
     pub sessions: SessionManager,
@@ -212,7 +206,7 @@ pub fn catalog() -> Vec<CommandSpec> {
         },
         CommandSpec {
             name: "get_messages".into(),
-            summary: "Read the transcript: rows after a sequence number, oldest first.".into(),
+            summary: "Read the transcript: a range of sequence numbers, oldest first.".into(),
             args: vec![
                 arg(
                     "session",
@@ -222,24 +216,11 @@ pub fn catalog() -> Vec<CommandSpec> {
                     CompletionSource::Sessions,
                 ),
                 arg(
-                    "after_seq",
-                    "Only rows with a sequence number greater than this. Defaults to 0 (from the \
-                     start, subject to --limit).",
-                    false,
-                    Some("n"),
-                    CompletionSource::None,
-                ),
-                arg(
-                    "limit",
-                    "How many rows to return, counted back from the end. Defaults to 50.",
-                    false,
-                    Some("n"),
-                    CompletionSource::None,
-                ),
-                arg(
                     "seq",
-                    "A range of sequence numbers instead of a cursor: `-1` the newest row,                      `-5:` the newest five, `5:10` rows 5 through 10, `:10` the first ten,                      `5:` from 5 on. Both ends inclusive. Cannot be combined with --after_seq                      or --limit.",
-                    false,
+                    "Which rows, as a range of sequence numbers: `-1` the newest row, `-5:` the \
+                     newest five, `5:10` rows 5 through 10, `:10` the first ten, `5:` from 5 on. \
+                     Both ends inclusive; a range past the end is just the rows that exist.",
+                    true,
                     Some("slice"),
                     CompletionSource::None,
                 ),
@@ -497,20 +478,6 @@ struct SeqWindow {
     last: i64,
 }
 
-impl SeqWindow {
-    fn is_empty(&self) -> bool {
-        self.first > self.last
-    }
-
-    fn len(&self) -> i64 {
-        if self.is_empty() {
-            0
-        } else {
-            self.last - self.first + 1
-        }
-    }
-}
-
 /// A slice over sequence numbers; see `docs/notes/server-commands.md`.
 fn parse_seq_slice(raw: &str, last_seq: i64) -> Result<SeqWindow, String> {
     let one = |part: &str, side: &str| -> Result<i64, String> {
@@ -589,100 +556,45 @@ async fn get_messages(d: &Dispatch, args: &Args) -> Outcome {
         Ok(s) => s,
         Err(e) => return Outcome::err(e.to_string()),
     };
-    // Two ways to name the same rows would be a trap, not a convenience.
-    if let Some(raw) = args.get("seq") {
-        let clash: Vec<&str> = ["after_seq", "limit"]
-            .into_iter()
-            .filter(|a| args.contains_key(*a))
-            .collect();
-        if !clash.is_empty() {
-            return Outcome::err(format!(
-                "--seq already names the rows; drop {}",
-                clash
-                    .iter()
-                    .map(|a| format!("--{a}"))
-                    .collect::<Vec<_>>()
-                    .join(" and ")
-            ));
-        }
-        let last_seq = match d.store.last_seq(session.id()) {
-            Ok(v) => v,
-            Err(e) => return Outcome::err(e.to_string()),
-        };
-        let window = match parse_seq_slice(raw, last_seq) {
-            Ok(w) => w,
-            Err(e) => return Outcome::err(e),
-        };
-        if window.len() > MAX_MESSAGE_LIMIT as i64 {
-            return Outcome::err(format!(
-                "--seq {raw} covers {} rows; one reply carries at most {MAX_MESSAGE_LIMIT}",
-                window.len()
-            ));
-        }
-        let t = match d
-            .store
-            .messages_between(session.id(), window.first, window.last)
-        {
-            Ok(t) => t,
-            Err(e) => return Outcome::err(e.to_string()),
-        };
-        let message = if t.messages.is_empty() {
-            format!(
-                "no rows in that range in {name} (transcript ends at seq {})",
-                t.last_seq
-            )
-        } else {
-            let first = t.messages[0].seq;
-            let last = t.messages[t.messages.len() - 1].seq;
-            format!(
-                "{} row(s) at seq {first}..{last} in {name} (transcript ends at seq {})",
-                t.messages.len(),
-                t.last_seq
-            )
-        };
-        return Outcome::ok_with(
-            message,
-            json!({
-                "session": name,
-                "last_seq": t.last_seq,
-                "messages": t.messages,
-            }),
-        );
-    }
-    let after_seq = match args.get("after_seq") {
-        None => 0,
-        Some(raw) => match raw.trim().parse::<i64>() {
-            Ok(v) if v >= 0 => v,
-            _ => {
-                return Outcome::err(format!(
-                    "--after_seq must be a non-negative number, got {raw:?}"
-                ));
-            }
-        },
+    let last_seq = match d.store.last_seq(session.id()) {
+        Ok(v) => v,
+        Err(e) => return Outcome::err(e.to_string()),
     };
-    let limit = match args.get("limit") {
-        None => DEFAULT_MESSAGE_LIMIT,
-        Some(raw) => match raw.trim().parse::<usize>() {
-            Ok(0) => return Outcome::err("--limit must be at least 1"),
-            Ok(v) => v.min(MAX_MESSAGE_LIMIT),
-            Err(_) => return Outcome::err(format!("--limit must be a number, got {raw:?}")),
-        },
+    let raw = args["seq"].as_str();
+    let window = match parse_seq_slice(raw, last_seq) {
+        Ok(w) => w,
+        Err(e) => return Outcome::err(e),
     };
-    match d.store.messages_after(session.id(), after_seq, limit) {
-        Ok(t) => Outcome::ok_with(
-            format!(
-                "{} message(s) after seq {after_seq} in {name} (transcript ends at seq {})",
-                t.messages.len(),
-                t.last_seq
-            ),
-            json!({
-                "session": name,
-                "last_seq": t.last_seq,
-                "messages": t.messages,
-            }),
-        ),
-        Err(e) => Outcome::err(e.to_string()),
-    }
+    // No size judgement: the channel says so if the answer cannot be carried.
+    let t = match d
+        .store
+        .messages_between(session.id(), window.first, window.last)
+    {
+        Ok(t) => t,
+        Err(e) => return Outcome::err(e.to_string()),
+    };
+    let message = if t.messages.is_empty() {
+        format!(
+            "no rows in that range in {name} (transcript ends at seq {})",
+            t.last_seq
+        )
+    } else {
+        let first = t.messages[0].seq;
+        let last = t.messages[t.messages.len() - 1].seq;
+        format!(
+            "{} row(s) at seq {first}..{last} in {name} (transcript ends at seq {})",
+            t.messages.len(),
+            t.last_seq
+        )
+    };
+    Outcome::ok_with(
+        message,
+        json!({
+            "session": name,
+            "last_seq": t.last_seq,
+            "messages": t.messages,
+        }),
+    )
 }
 
 async fn del_session(d: &Dispatch, args: &Args) -> Outcome {
@@ -1236,10 +1148,10 @@ mod tests {
         );
         // Past the end entirely: an empty window, and the reply still says the tail.
         let w = parse_seq_slice("99:", 10).unwrap();
-        assert!(w.is_empty());
+        assert!(w.first > w.last, "{w:?}");
         // An empty transcript is empty, not a panic.
-        assert!(parse_seq_slice("-1", 0).unwrap().is_empty());
-        assert!(parse_seq_slice(":5", 0).unwrap().is_empty());
+        assert!(parse_seq_slice("-1", 0).unwrap().first > 0);
+        assert!(parse_seq_slice(":5", 0).unwrap().first > 0);
     }
 
     /// Each of these is a typo, and each says what it wanted.
@@ -1266,9 +1178,9 @@ mod tests {
         );
     }
 
-    /// Reading is paged by seq, so a wrong default would make a bridge resend.
+    /// One way to name rows, not two: a cursor and a range would be rivals.
     #[test]
-    fn get_messages_pages_by_seq() {
+    fn get_messages_names_rows_one_way() {
         let spec = catalog()
             .into_iter()
             .find(|c| c.name == "get_messages")
@@ -1276,11 +1188,17 @@ mod tests {
         let session = spec.args.iter().find(|a| a.name == "session").unwrap();
         assert!(session.required);
         assert!(matches!(session.completions, CompletionSource::Sessions));
-        let after = spec.args.iter().find(|a| a.name == "after_seq").unwrap();
-        assert!(!after.required, "0 is a valid starting point");
-        assert!(!spec.args.iter().any(|a| a.name == "limit" && a.required));
-        // The range form is optional too: its absence must keep the old window.
+
         let seq = spec.args.iter().find(|a| a.name == "seq").unwrap();
-        assert!(!seq.required);
+        assert!(seq.required, "SPEC names the range, so it is not optional");
+        // The cursor form is gone: it was this range plus a truncation policy.
+        assert!(
+            !spec.args.iter().any(|a| a.name == "after_seq"),
+            "the cursor spelling is gone"
+        );
+        assert!(
+            !spec.args.iter().any(|a| a.name == "limit"),
+            "a row cap is the caller's business, not this command's"
+        );
     }
 }

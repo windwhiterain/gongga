@@ -21,13 +21,13 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 
 use crate::channel::{ChatId, Incoming, MsgRef, Outbox, Outgoing};
-use crate::chat::{ChatState, Dedupe, Pending, Row, clip, final_reply};
+use crate::chat::{ChatState, Dedupe, Pending, Row, clip, final_reply, since};
 use crate::config::{Bridge as BridgeCfg, Config};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_SERVER: &str = "127.0.0.1:9700";
-/// Rows per read-back: a whole turn, at the server's 500-row cap.
-const READ_LIMIT: &str = "500";
+/// The tail window a read-back asks for; a longer turn only loses a tool name.
+const READ_SEQ: &str = "-500:";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -165,11 +165,12 @@ impl Bridge {
                 .is_some();
             if !known {
                 self.queue.pop_front();
+                // One row: the probe only needs `last_seq`, the end of the transcript.
                 let id = self
                     .command(
                         sink,
                         "get_messages",
-                        args_of(&[("session", &session), ("limit", "1")]),
+                        args_of(&[("session", &session), ("seq", "-1")]),
                     )
                     .await?;
                 self.probes.insert(id, incoming);
@@ -293,7 +294,14 @@ impl Bridge {
                 .map(|value| value["messages"].clone())
                 .and_then(|value| serde_json::from_value(value).ok())
                 .unwrap_or_default();
-            let text = clip(&final_reply(&rows), self.max_chars);
+            // The window may reach back past this turn; the cursor is what says
+            // which rows are still owed an answer.
+            let cursor = self
+                .chats
+                .get(&session)
+                .and_then(|state| state.last_seq)
+                .unwrap_or(0);
+            let text = clip(&final_reply(&since(&rows, cursor)), self.max_chars);
             let last = data.as_ref().and_then(|value| value["last_seq"].as_i64());
             if let Some(state) = self.chats.get_mut(&session) {
                 if let Some(seq) = last {
@@ -319,16 +327,12 @@ impl Bridge {
         if state.waiting.is_empty() {
             return Ok(());
         }
-        let after = state.last_seq.unwrap_or(0).to_string();
+        // The server answers a range; which rows are still owed is our question.
         let id = self
             .command(
                 sink,
                 "get_messages",
-                args_of(&[
-                    ("session", session),
-                    ("after_seq", &after),
-                    ("limit", READ_LIMIT),
-                ]),
+                args_of(&[("session", session), ("seq", READ_SEQ)]),
             )
             .await?;
         self.reads.insert(id, session.to_string());
