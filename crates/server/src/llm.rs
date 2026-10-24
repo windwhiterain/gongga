@@ -164,7 +164,9 @@ impl LlmClient {
                 let mut produced = false;
                 let mut completed = false;
                 let mut cancelled = false;
-                let mut failure: Option<String> = None;
+                // Held back, not forwarded: if a retry follows, this error is
+                // that retry's `reason` rather than the answer.
+                let mut failure: Option<(String, bool)> = None;
 
                 while let Some(event) = once.recv().await {
                     match &event {
@@ -175,10 +177,8 @@ impl LlmClient {
                         | LlmEvent::ToolCall { .. } => produced = true,
                         LlmEvent::Completed { .. } => completed = true,
                         LlmEvent::Cancelled => cancelled = true,
-                        LlmEvent::Failed { message } => {
-                            // Held back: if a retry follows, the first
-                            // attempt's error is not the answer.
-                            failure = Some(message.clone());
+                        LlmEvent::Failed { message, retryable } => {
+                            failure = Some((message.clone(), *retryable));
                             continue;
                         }
                         _ => {}
@@ -194,20 +194,29 @@ impl LlmClient {
                 if completed && produced {
                     return;
                 }
-                // Empty completion or cut-short stream: both are retryable.
-                if !retryable(attempt, max_retries, produced) || cancel.is_cancelled() {
-                    if let Some(message) = failure {
-                        let _ = tx.send(LlmEvent::Failed { message }).await;
+                // Empty completion or cut-short stream: both are retryable, so
+                // long as nothing said this attempt can never work.
+                let refused = failure.as_ref().is_some_and(|(_, again)| !*again);
+                if refused || !retryable(attempt, max_retries, produced) || cancel.is_cancelled() {
+                    if let Some((message, again)) = failure {
+                        let _ = tx
+                            .send(LlmEvent::Failed {
+                                message: with_size_hint(message),
+                                retryable: again,
+                            })
+                            .await;
                     }
                     return;
                 }
 
                 attempt += 1;
                 let delay = backoff(retry_base, attempt);
+                let reason = retry_reason(&failure, completed, produced);
                 tracing::warn!(
                     attempt,
                     delay_ms = delay.as_millis() as u64,
                     empty = completed && !produced,
+                    reason = %reason,
                     "model request gave nothing usable; retrying"
                 );
                 let _ = tx
@@ -215,6 +224,7 @@ impl LlmClient {
                         attempt,
                         max: max_retries,
                         delay,
+                        reason,
                     })
                     .await;
                 // Waiting out the delay, but not past a cancel: an
@@ -375,6 +385,8 @@ pub enum LlmEvent {
     },
     Failed {
         message: String,
+        /// Whether resending this request could succeed at all.
+        retryable: bool,
     },
     Cancelled,
     /// The previous attempt gave nothing usable; another follows after `delay`.
@@ -382,6 +394,8 @@ pub enum LlmEvent {
         attempt: u32,
         max: u32,
         delay: Duration,
+        /// Why that attempt gave nothing; the first failure's only record.
+        reason: String,
     },
 }
 
@@ -408,6 +422,87 @@ fn backoff(base: Duration, attempt: u32) -> Duration {
 /// See `docs/notes/server-llm.md`.
 fn retryable(attempt: u32, max_retries: u32, produced: bool) -> bool {
     (max_retries == 0 || attempt < max_retries) && !produced
+}
+
+/// Whether resending the same request could succeed: a bad minute could, a
+/// refusal cannot.
+///
+/// # Invariant
+///
+/// `408` and `429` are 4xx but describe *timing*, not the request, so they stay
+/// retryable. Every other 4xx is the provider saying the request itself is
+/// wrong -- resending it forever only keeps the operator from seeing why.
+fn status_retryable(status: reqwest::StatusCode) -> bool {
+    status.is_server_error()
+        || status == reqwest::StatusCode::REQUEST_TIMEOUT
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+}
+
+/// Whether a streamed `error` event describes a bad minute or a refusal.
+///
+/// # Invariant
+///
+/// An unknown kind stays retryable: providers invent their own spellings, and
+/// giving up on one this code has not heard of is worse than one extra try.
+fn error_retryable(d: &Value) -> bool {
+    let kind = d["error"]["type"]
+        .as_str()
+        .or_else(|| d["error"]["code"].as_str())
+        .unwrap_or_default();
+    !matches!(
+        kind,
+        "invalid_request_error"
+            | "context_length_exceeded"
+            | "authentication_error"
+            | "permission_error"
+            | "not_found_error"
+            | "insufficient_quota"
+    )
+}
+
+/// Adds the one instruction a size refusal leaves out: how to make it fit.
+///
+/// # Invariant
+///
+/// The provider says "too long" and stops there; the fix is a shell command the
+/// reader has to know about. Anything that is not about size keeps its words.
+fn with_size_hint(message: String) -> String {
+    let lower = message.to_ascii_lowercase();
+    let about_size = lower.contains("context length")
+        || lower.contains("maximum context")
+        || lower.contains("token limit")
+        || lower.contains("too many tokens")
+        || lower.contains("too long");
+    if !about_size {
+        return message;
+    }
+    // One line, so the hint reads as a sentence rather than as a wrapped
+    // fragment of the provider's message.
+    format!(
+        "{message}\n\nThe transcript no longer fits this model. Fold it, then send again: \
+         `.agents/skills/compact/transcript.py collapse --session <name> --upto <seq>` \
+         (see `.agents/skills/compact/SKILL.md`)."
+    )
+}
+
+/// What the previous attempt did, in the words the operator needs to read.
+///
+/// # Invariant
+///
+/// Never empty: a retry that names no cause is the line this replaces, and it
+/// left "why did it fail" unanswerable once the retry succeeded.
+fn retry_reason(failure: &Option<(String, bool)>, completed: bool, produced: bool) -> String {
+    if let Some((message, _)) = failure {
+        return message.clone();
+    }
+    if completed {
+        // Acknowledged, then said nothing.
+        "the provider completed the response with no content in it".to_string()
+    } else if produced {
+        "the stream ended before the response completed".to_string()
+    } else {
+        "the stream ended with nothing in it".to_string()
+    }
 }
 
 /// One attempt at a streaming request, handed back as a channel.
@@ -444,6 +539,7 @@ async fn stream_once(
                 let _ = tx
                     .send(LlmEvent::Failed {
                         message: format!("{e}"),
+                        retryable: true,
                     })
                     .await;
                 return;
@@ -461,6 +557,7 @@ async fn stream_once(
             let _ = tx
                 .send(LlmEvent::Failed {
                     message: format!("HTTP {status}: {}", summarise_error(&text)),
+                    retryable: status_retryable(status),
                 })
                 .await;
             return;
@@ -484,6 +581,7 @@ async fn stream_once(
                     tracing::warn!(idle = ?idle_timeout, elapsed = ?started.elapsed(), "model request: no data");
                     let _ = tx.send(LlmEvent::Failed {
                         message: format!("no response data for {idle_timeout:?}"),
+                        retryable: true,
                     }).await;
                     return;
                 }
@@ -503,7 +601,7 @@ async fn stream_once(
                             }
                         }
                         Err(e) => {
-                            let _ = tx.send(LlmEvent::Failed { message: format!("{e}") }).await;
+                            let _ = tx.send(LlmEvent::Failed { message: format!("{e}"), retryable: true }).await;
                             return;
                         }
                     }
@@ -883,7 +981,11 @@ async fn handle(
                 .or_else(|| d["message"].as_str())
                 .unwrap_or("unknown error")
                 .to_string();
-            tx.send(LlmEvent::Failed { message }).await?;
+            tx.send(LlmEvent::Failed {
+                message,
+                retryable: error_retryable(&d),
+            })
+            .await?;
         }
         _ => {}
     }
@@ -1297,6 +1399,62 @@ mod tests {
         assert!(retryable(10_000, 0, false));
         // Even unlimited retries never ask twice after the model has spoken.
         assert!(!retryable(0, 0, true));
+    }
+
+    /// A refusal is not a bad minute: resending it forever is what keeps the
+    /// reason from ever reaching an operator.
+    #[test]
+    fn a_refused_request_is_not_retried() {
+        for status in [400, 401, 403, 404, 413, 422] {
+            let status = reqwest::StatusCode::from_u16(status).unwrap();
+            assert!(!status_retryable(status), "{status} is a refusal");
+        }
+        // Timing, not the request: worth another attempt.
+        for status in [408, 429, 500, 502, 503, 504] {
+            let status = reqwest::StatusCode::from_u16(status).unwrap();
+            assert!(status_retryable(status), "{status} is a bad minute");
+        }
+    }
+
+    /// A retry always names a cause, and the first attempt's own words win.
+    #[test]
+    fn a_retry_names_the_previous_attempt() {
+        let said = retry_reason(&Some(("HTTP 500: boom".into(), true)), false, false);
+        assert_eq!(said, "HTTP 500: boom");
+        // Acknowledged, then silent.
+        assert!(retry_reason(&None, true, false).contains("no content"));
+        // Spoke, then the stream stopped.
+        assert!(retry_reason(&None, false, true).contains("before the response completed"));
+        assert!(retry_reason(&None, false, false).contains("nothing in it"));
+    }
+
+    /// A streamed error decides by its kind: an unknown one keeps the try it
+    /// might deserve.
+    #[test]
+    fn a_streamed_error_decides_by_its_kind() {
+        let refusal = json!({"error": {"type": "invalid_request_error"}});
+        assert!(!error_retryable(&refusal));
+        let too_long = json!({"error": {"code": "context_length_exceeded"}});
+        assert!(!error_retryable(&too_long));
+        let bad_minute = json!({"error": {"type": "server_error"}});
+        assert!(error_retryable(&bad_minute));
+        let unknown = json!({"error": {"type": "invented-by-a-gateway"}});
+        assert!(error_retryable(&unknown));
+    }
+
+    /// The provider says "too long" and stops; the command that fixes it is the
+    /// part only this side knows.
+    #[test]
+    fn a_size_refusal_says_how_to_fold() {
+        let said = with_size_hint(
+            "HTTP 400 Bad Request: This model's maximum context length is 131072 tokens"
+                .to_string(),
+        );
+        assert!(said.contains(".agents/skills/compact/transcript.py collapse"));
+        assert!(said.starts_with("HTTP 400 Bad Request"));
+        // Anything else keeps the provider's words and nothing more.
+        let other = with_size_hint("HTTP 400 Bad Request: unknown parameter".to_string());
+        assert_eq!(other, "HTTP 400 Bad Request: unknown parameter");
     }
 
     #[test]

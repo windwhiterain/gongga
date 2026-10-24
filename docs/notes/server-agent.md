@@ -145,6 +145,21 @@ connection pool.
 Reports a failure that stops the turn before it starts, and leaves the session
 in a state the operator can act on rather than "running".
 
+## retry_warning
+
+One line for a request that is about to be tried again, naming the attempt, the
+ceiling and why the last one gave nothing. `max == 0` reads as "until
+cancelled": printing `1/0` said the opposite of what it meant.
+
+## Agent::error
+
+Reports a failure and leaves it somewhere readable. The `Event::Log` is
+broadcast and forgotten, so the same sentence also goes into the transcript as
+a `notice` -- readable through `get_messages`, never sent back to the model (see
+`a_notice_is_readable_but_never_sent_back_to_the_model` in `server-store.md`).
+Without it "why did that turn fail" was unanswerable a minute later, which is
+how a refusal's reason went missing entirely.
+
 ## Agent::deliver_inbox
 
 This is the *only* place a mid-turn message enters a running turn, and it is
@@ -221,3 +236,8 @@ turn, the cancellation token.
 
 A known window decides the threshold, so a model with a bigger window gets a
 bigger budget without anyone retuning the config.
+
+## a_retry_warning_names_why
+
+The line names the cause it now carries, and a ceiling of zero reads as
+"until cancelled".

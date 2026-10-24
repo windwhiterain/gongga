@@ -57,7 +57,12 @@ use GitBash as bash on windows.
         - auto set `--session` after `set_session`
     - `del_sticky_cmd_argument --name <name>`
         - auto del `--session` after `del_session`
-    - `set_event_filter --name<name> --value<value>`
+    - `set_event_filter --name <name> --value<value>`
         - auto set `--session` after `set_session`
-    - `del_event_filter --name<name>`
+    - `del_event_filter --name <name>`
         - auto del `--session` after `del_session`
+    - `set_event_detail --mode <mode>`:
+        mode:
+        - all
+        - line: fold each non-output message block into one line, streaming keep re-write that line.
+        - one: each session's all message fold into its own block, all cmd cmd_result fold into one block, all block is single line except output message.

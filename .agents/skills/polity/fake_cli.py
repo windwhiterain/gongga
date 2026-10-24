@@ -1,0 +1,146 @@
+#!/usr/bin/env python3
+"""A stand-in for the `gongga` client: just enough of it to drive polity.py.
+
+State lives in the JSON file named by `FAKE_CLI_STATE`, because polity.py starts a
+new client process per command -- the same thing the real client does. Sessions
+persist across invocations only if they persist on disk.
+
+Two behaviours it deliberately copies, because polity.py is built around them:
+
+  * `send_message` returns at once and the turn happens "later". `FAKE_REPLY` says
+    what the assistant says, and `FAKE_STATUS` says what the session reports next
+    (default `idle`, i.e. an instant turn).
+  * every command prints a `sessions` event *and* an echo line that is not JSON, so
+    a parser that trusts the first line gets caught.
+"""
+import json
+import os
+import sys
+
+STATE = os.environ.get("FAKE_CLI_STATE") or "fake-state.json"
+
+
+def load():
+    try:
+        with open(STATE, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {"sessions": {}, "next_created": 1792837000000}
+
+
+def save(state):
+    with open(STATE, "w", encoding="utf-8", newline="\n") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2, sort_keys=True)
+
+
+def emit(obj):
+    print(json.dumps(obj, ensure_ascii=False), flush=True)
+
+
+def summary(state):
+    return [
+        {
+            "name": name,
+            "status": s.get("status", "idle"),
+            "created_at": s.get("created_at"),
+            "updated_at": s.get("created_at"),
+            "messages": len(s.get("rows", [])),
+            "cwd": s.get("cwd", ""),
+        }
+        for name, s in sorted(state["sessions"].items())
+    ]
+
+
+def args_of(argv):
+    out = {}
+    i = 0
+    while i < len(argv):
+        if argv[i].startswith("--"):
+            key = argv[i][2:]
+            val = argv[i + 1] if i + 1 < len(argv) else ""
+            out[key] = val
+            i += 2
+        else:
+            i += 1
+    return out
+
+
+def main(argv):
+    if len(argv) < 2:
+        print("no command", file=sys.stderr)
+        return 2
+    name = argv[1]
+    args = args_of(argv[2:])
+    state = load()
+    print("gongga · offline — connecting…")  # banner noise; not JSON
+    emit({"t": "cmd", "id": 1, "name": name, "args": args})
+
+    if name == "set_session":
+        session = args.get("session")
+        if not session:
+            emit({"t": "cmd_result", "id": 1, "ok": False,
+                  "message": "set_session is missing --session"})
+            return 1
+        known = state["sessions"].get(session)
+        if known is None:
+            known = {
+                "created_at": state.get("next_created", 1),
+                "rows": [],
+                "status": os.environ.get("FAKE_CREATED_STATUS", "idle"),
+                "cwd": args.get("cwd", ""),
+            }
+            state["sessions"][session] = known
+            state["next_created"] = known["created_at"] + 1
+        emit({"t": "sessions", "sessions": summary(state)})
+        save(state)
+        emit({"t": "cmd_result", "id": 1, "ok": True,
+              "message": "session is now %s (llm fake/model)" % session,
+              "data": {"compact_threshold": None, "cwd": known.get("cwd", ""),
+                       "llm": "fake/model", "session": session,
+                       "created_at": known["created_at"]}})
+        return 0
+
+    if name == "get_messages":
+        session = args.get("session")
+        known = state["sessions"].get(session)
+        if known is None:
+            emit({"t": "cmd_result", "id": 1, "ok": False,
+                  "message": "no session named %r" % session})
+            return 1
+        after = int(args.get("after_seq") or 0)
+        limit = int(args.get("limit") or 200)
+        rows = [r for r in known["rows"] if r["seq"] > after][:limit]
+        emit({"t": "sessions", "sessions": summary(state)})
+        emit({"t": "cmd_result", "id": 1, "ok": True,
+              "message": "%d message(s) after seq %d in %s (transcript ends at seq %d)"
+                         % (len(rows), after, session, len(known["rows"])),
+              "data": {"last_seq": len(known["rows"]), "messages": rows,
+                       "session": session}})
+        return 0
+
+    if name == "send_message":
+        session = args.get("session")
+        known = state["sessions"].get(session)
+        if known is None:
+            emit({"t": "cmd_result", "id": 1, "ok": False,
+                  "message": "send_message requires --session; set a sticky one"})
+            return 1
+        known["rows"].append({"seq": len(known["rows"]) + 1, "kind": "text",
+                              "role": "user", "text": args.get("message", "")})
+        reply = os.environ.get("FAKE_REPLY")
+        if reply:
+            known["rows"].append({"seq": len(known["rows"]) + 1, "kind": "text",
+                                  "role": "assistant", "text": reply})
+        known["status"] = os.environ.get("FAKE_STATUS", "idle")
+        save(state)
+        emit({"t": "cmd_result", "id": 1, "ok": True,
+              "message": "message accepted by %s" % session})
+        return 0
+
+    emit({"t": "cmd_result", "id": 1, "ok": False,
+          "message": 'unknown command "%s"' % name})
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

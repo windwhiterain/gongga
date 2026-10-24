@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Entry point. This one has no inline dependencies, so any Python 3.8+ will do;
+# uv is preferred only because it is what the other skills already use.
+set -uo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if command -v uv >/dev/null 2>&1; then
+  exec uv run --quiet "$here/polity.py" "$@"
+fi
+for c in python3 python py; do
+  if command -v "$c" >/dev/null 2>&1 && "$c" -c 'import sys' >/dev/null 2>&1; then
+    exec "$c" "$here/polity.py" "$@"
+  fi
+done
+# Windows often has a `python3` that is a Microsoft Store stub: it exists, it
+# runs, and it prints "Python was not found". The check above catches it.
+if [ -x /c/SoftWare/Python/python3.12/python ]; then
+  exec /c/SoftWare/Python/python3.12/python "$here/polity.py" "$@"
+fi
+echo "no Python found" >&2
+exit 1

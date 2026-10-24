@@ -38,6 +38,18 @@ An empty completion is worth asking for again: the provider acknowledged the
 request and then said nothing, which is what an overloaded or truncated
 response looks like. So is a stream that stopped without completing.
 
+A *refusal* is not asked again. The event carries `retryable`, and a 4xx other
+than `408`/`429` -- or a streamed `invalid_request_error`,
+`context_length_exceeded`, and the like -- says the request itself is wrong, so
+every retry would get the same answer, forever, with `max_retries == 0`. That
+is the shape a too-long transcript used to take: an endless "retrying" warning
+and no failure, so nothing reached the operator. It now fails the turn at once
+with the provider's words, and a size refusal gains the one instruction the
+provider leaves out -- the `transcript.py collapse` command that makes it fit.
+An unknown streamed error kind stays retryable: providers invent their own
+spellings, and giving up on one this code has not heard of is worse than one
+extra try.
+
 ## LlmClient::build_body
 
 The Responses API's spelling for "how hard to think", which the roster records
@@ -91,6 +103,27 @@ the provider's bad minute and deserves another try.
 a transient outage at hour three, so the default retries until the turn's cancel
 token fires. The cancel is the only honest stop -- nothing about a bad
 provider's recovery time is knowable in advance.
+
+## LlmEvent::Retrying
+
+Carries `reason`, which is the *previous* attempt's own words. It used to carry
+only how many and how long: the first failure of a request is the only clue to
+what is going wrong, and once a retry answers, nothing else records it. The
+agent prints it; the `tracing` line prints it too, so a retry storm in the
+server's stdout says what it is retrying rather than only that it retried.
+
+## retry_reason
+
+The words for a `Retrying`. A failure the attempt reported keeps its own text;
+otherwise the reason is read off what the attempt actually did -- completed with
+nothing in it, spoke and stopped before completing, or ended with nothing at
+all. Never empty, and there is a test for each of the three.
+
+## status_retryable / error_retryable / with_size_hint
+
+The three parts of "was that a bad minute or a refusal": an HTTP status, the
+kind a streamed `error` event names, and the sentence a size refusal needs
+added because the provider stops at "too long".
 
 ## stream_once
 
@@ -345,6 +378,26 @@ not, because the retry would answer a second time.
 `0` is "no ceiling", not "no retries": a ten-day turn must not die on a
 transient outage, and the cancel token is what stops it. Even unlimited retries
 never ask twice after the model has spoken.
+
+## tests::a_refused_request_is_not_retried
+
+A 4xx that is not about timing is a refusal: `400`, `401`, `403`, `404`, `413`
+and `422` all end the turn. `408`, `429` and the 5xx family stay retryable,
+because they describe the provider's minute rather than the request.
+
+## tests::a_retry_names_the_previous_attempt
+
+The reported failure wins; the three silent shapes each get their own sentence.
+
+## tests::a_streamed_error_decides_by_its_kind
+
+`invalid_request_error` and `context_length_exceeded` are refusals;
+`server_error` is a bad minute; an unknown kind keeps the try it might deserve.
+
+## tests::a_size_refusal_says_how_to_fold
+
+The provider says "too long" and stops there. The message gains the command
+that folds the transcript, and nothing else gains anything.
 
 ## tests::a_thinking_level_rides_on_the_request
 

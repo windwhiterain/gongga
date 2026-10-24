@@ -137,7 +137,7 @@ impl Agent {
                 self.store
                     .append_message(id, "text", &json!({"role": "user", "text": text}))
             {
-                self.error(&name, "storing user message", e);
+                self.error(id, &name, "storing user message", e);
                 return;
             }
         }
@@ -184,7 +184,7 @@ impl Agent {
                 }
                 Ok(StepResult::Stopped) => break TurnOutcome::Cancelled,
                 Err(e) => {
-                    self.error(&name, "model request", e);
+                    self.error(id, &name, "model request", e);
                     break TurnOutcome::Failed;
                 }
             }
@@ -267,7 +267,7 @@ impl Agent {
 
     /// Reports a pre-turn failure and leaves the session in a state to act on.
     fn fail(&self, name: &str, id: i64, what: &str, e: anyhow::Error) {
-        self.error(name, what, e);
+        self.error(id, name, what, e);
         let _ = self.store.set_status(id, SessionStatus::Error);
         self.bus.publish(Event::Status {
             session: name.to_string(),
@@ -342,7 +342,7 @@ impl Agent {
             "inject",
             &json!({"session": name, "message": message}),
         ) {
-            self.error(name, "queueing the context notice", e);
+            self.error(id, name, "queueing the context notice", e);
             return;
         }
         self.bus.publish(Event::Log {
@@ -483,7 +483,9 @@ impl Agent {
                         }
                     }
                 }
-                LlmEvent::Failed { message } => {
+                // Fatal by the time it reaches here: `llm::stream` retries
+                // what another attempt could fix and reports the rest.
+                LlmEvent::Failed { message, .. } => {
                     failure = Some(message);
                     break;
                 }
@@ -492,20 +494,11 @@ impl Agent {
                     attempt,
                     max,
                     delay,
+                    reason,
                 } => {
-                    // `max == 0` is "no ceiling", not "zero allowed": printing
-                    // `1/0` read like the opposite of what it meant.
-                    let of = if max == 0 {
-                        "until cancelled".to_string()
-                    } else {
-                        format!("of {max}")
-                    };
                     self.bus.publish(Event::Log {
                         level: LogLevel::Warn,
-                        message: format!(
-                            "{name}: model request failed or came back empty; \
-                             retry {attempt} {of} in {delay:?}"
-                        ),
+                        message: retry_warning(&name, attempt, max, delay, &reason),
                     });
                 }
                 LlmEvent::Cancelled => {
@@ -677,11 +670,23 @@ impl Agent {
         false
     }
 
-    fn error(&self, session: &str, what: &str, e: anyhow::Error) {
+    /// Reports a failure, and leaves the reason somewhere it can be read later.
+    ///
+    /// # Invariant
+    ///
+    /// The line goes into the transcript as a `notice`, which `history_since`
+    /// skips. An `Event::Log` alone is broadcast and forgotten: "why did that
+    /// turn fail" was unanswerable a minute later, and the failure of the
+    /// *first* attempt of a request exists nowhere else at all.
+    fn error(&self, id: i64, session: &str, what: &str, e: anyhow::Error) {
         tracing::error!(session = %session, "failed to {what}: {e}");
+        let said = format!("{session}: failed to {what}: {e}");
+        let _ = self
+            .store
+            .append_message(id, "notice", &json!({"text": said}));
         self.bus.publish(Event::Log {
             level: LogLevel::Error,
-            message: format!("{session}: failed to {what}: {e}"),
+            message: said,
         });
     }
 }
@@ -727,6 +732,27 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
     } else {
         "unknown panic".to_string()
     }
+}
+
+/// The operator-facing line for a request that is about to be tried again.
+///
+/// # Invariant
+///
+/// `max == 0` is "no ceiling", not "zero allowed": printing `1/0` read like the
+/// opposite of what it meant.
+fn retry_warning(
+    session: &str,
+    attempt: u32,
+    max: u32,
+    delay: std::time::Duration,
+    reason: &str,
+) -> String {
+    let of = if max == 0 {
+        "until cancelled".to_string()
+    } else {
+        format!("of {max}")
+    };
+    format!("{session}: model request failed ({reason}); retry {attempt} {of} in {delay:?}")
 }
 
 /// The compaction threshold in input tokens, or 0 for "off".
@@ -819,6 +845,25 @@ mod tests {
         assert!(notice.contains("transcript.py collapse"), "{notice}");
         // And it says the messages are not lost, the fear that stops folding.
         assert!(notice.contains("stay readable"), "{notice}");
+    }
+
+    /// The warning names the cause: "failed or came back empty" is what made
+    /// "why did the first attempt fail" unanswerable.
+    #[test]
+    fn a_retry_warning_names_why() {
+        let said = retry_warning(
+            "main",
+            2,
+            0,
+            std::time::Duration::from_secs(2),
+            "HTTP 500: boom",
+        );
+        assert!(said.contains("HTTP 500: boom"), "{said}");
+        assert!(said.contains("retry 2 until cancelled"), "{said}");
+        assert!(said.contains("2s"), "{said}");
+        // An explicit ceiling still reads as a ceiling, not as a fraction of 0.
+        let said = retry_warning("main", 1, 3, std::time::Duration::from_secs(1), "empty");
+        assert!(said.contains("retry 1 of 3"), "{said}");
     }
 
     /// A notice for a session that already folded says where the summary ends.

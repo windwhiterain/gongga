@@ -185,6 +185,50 @@ remote put box ./probe.sh /tmp/probe.sh && remote run box 'sh /tmp/probe.sh'
 
 `--file` 和 stdin 是**推荐**方式：脚本逐字节送达，不经过任何一层引号。
 
+## 用 doctor 分诊：ssh 通了，就别在 ssh 里找
+
+`remote doctor` 全绿意味着**传输层不是问题**，而这一点非常有用——很多"连不上"的故障
+根本不在 ssh，却会把人拖进 ssh 里查很久。
+
+一个实测过的例子（VS Code Remote-SSH 连一台 Windows 主机失败）：`doctor` 全绿，说明
+ssh、退出码、UTF-8、传输都正常。于是怀疑对象立刻收窄到客户端，最后根因是
+`%APPDATA%\Code\User\settings.json` 末尾多了一个 `}`——文件结构损坏，VS Code 会
+**整份丢弃**，于是 `remote.SSH.remotePlatform` 里把该主机标成 `windows` 的映射也一起失效，
+扩展改去猜平台，服务端就再也装不上。
+
+判断这个文件是否损坏，不要靠肉眼数括号，用这个：
+
+```bash
+python - <<'EOF'
+import os, re, json
+p = os.path.expandvars(r"%APPDATA%\Code\User\settings.json")
+raw = open(p, encoding="utf-8-sig").read()
+out=[]; i=0; instr=False; esc=False
+while i < len(raw):
+    c = raw[i]
+    if instr:
+        out.append(c)
+        if esc: esc=False
+        elif c=="\\": esc=True
+        elif c=='"': instr=False
+        i+=1; continue
+    if c=='"': instr=True; out.append(c); i+=1; continue
+    if c=='/' and raw[i+1:i+2]=='/':
+        j=raw.find("\n", i); i = len(raw) if j<0 else j; continue
+    out.append(c); i+=1
+text = re.sub(r',(\s*[}\]])', r'\1', "".join(out))
+print("OK" if json.loads(text) else "")
+EOF
+```
+
+这份 settings 里值得确认的两项：
+
+- `remote.SSH.remotePlatform` **必须**列出每台 Windows 主机（值是小写 `windows`）。
+  缺了就靠猜，而猜错的表现是"服务端装上了却没起来"。
+- 服务端装在哪、以什么形态跑会随版本变（旧版是 `~/.vscode-server/bin/<commit>/` 里
+  一整份解压目录，新版是 `code-<commit>.exe` 进程）。所以**不要手写安装脚本**，那是会腐烂的
+  知识——让扩展自己装，你只负责证明 ssh 没问题。
+
 ## 限制
 
 - 只支持 SSH。没有 WinRM、没有云厂商 API、没有串口。
