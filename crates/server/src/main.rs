@@ -184,7 +184,6 @@ async fn run() -> anyhow::Result<()> {
         tools: tools.clone(),
         bus: bus.clone(),
         compress_above_tokens: cfg.agent.compress_above_tokens,
-        keep_recent: cfg.agent.keep_recent,
         output_dir,
         detached: detached.clone(),
     });

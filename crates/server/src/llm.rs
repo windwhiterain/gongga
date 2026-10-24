@@ -202,7 +202,7 @@ impl LlmClient {
             input.push(json!({
                 "role": "user",
                 "content": [{"type": "input_text", "text": format!(
-                    "Earlier in this session (compressed to keep the context manageable):\n\n{s}"
+                    "Earlier in this session, folded into this handover note by the agent itself:\n\n{s}"
                 )}],
             }));
         }
@@ -255,102 +255,6 @@ impl LlmClient {
             body["include"] = json!(["reasoning.encrypted_content"]);
         }
         body
-    }
-
-    /// Asks for a plain-text answer: no tools, no streaming, compression only.
-    ///
-    /// # Invariant
-    ///
-    /// `max_retries == 0` is no ceiling, so the turn's `cancel` is the only stop:
-    /// compression never outlives the turn that asked for it.
-    ///
-    /// See `docs/notes/server-llm.md`.
-    pub async fn summarise(
-        &self,
-        prompt: &str,
-        cancel: &tokio_util::sync::CancellationToken,
-    ) -> anyhow::Result<String> {
-        let mut attempt: u32 = 0;
-        loop {
-            if cancel.is_cancelled() {
-                anyhow::bail!("cancelled while summarising");
-            }
-            match self.summarise_once(prompt).await {
-                Ok(text) if !text.trim().is_empty() => return Ok(text),
-                Ok(empty) if self.max_retries != 0 && attempt >= self.max_retries => {
-                    return Ok(empty);
-                }
-                Ok(_) => tracing::warn!(attempt, "compression came back empty; retrying"),
-                Err(e) if self.max_retries != 0 && attempt >= self.max_retries => return Err(e),
-                Err(e) => {
-                    tracing::warn!(attempt, error = %e, "compression request failed; retrying")
-                }
-            }
-            attempt += 1;
-            tokio::time::sleep(backoff(self.retry_base, attempt)).await;
-        }
-    }
-
-    async fn summarise_once(&self, prompt: &str) -> anyhow::Result<String> {
-        let started = Instant::now();
-        let body = json!({
-            "model": self.model,
-            "input": [{"role": "user", "content": prompt}],
-            "stream": false,
-            "store": false,
-            "max_output_tokens": SUMMARY_MAX_TOKENS,
-        });
-        let response = self
-            .http
-            .post(format!("{}/responses", self.base_url))
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .send()
-            .await?;
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        tracing::info!(%status, chars = text.len(), elapsed = ?started.elapsed(), "compression request done");
-        if !status.is_success() {
-            anyhow::bail!("HTTP {status}: {}", summarise_error(&text));
-        }
-        Ok(extract_text(&text))
-    }
-}
-
-/// Budget for a compression request: its summary replaces kilobytes of history.
-const SUMMARY_MAX_TOKENS: u32 = 2_000;
-
-/// Pulls assistant text out of a non-streaming payload, falling back to the body.
-fn extract_text(body: &str) -> String {
-    let Ok(value) = serde_json::from_str::<Value>(body) else {
-        return body.chars().take(2_000).collect();
-    };
-    if let Some(text) = value["output_text"].as_str() {
-        return text.to_string();
-    }
-    let mut out = String::new();
-    let items = value["output"]
-        .as_array()
-        .map(|a| a.as_slice())
-        .unwrap_or(&[]);
-    for item in items {
-        if item["type"] != "message" {
-            continue;
-        }
-        let parts = item["content"]
-            .as_array()
-            .map(|a| a.as_slice())
-            .unwrap_or(&[]);
-        for part in parts {
-            if let Some(t) = part["text"].as_str() {
-                out.push_str(t);
-            }
-        }
-    }
-    if out.is_empty() {
-        body.chars().take(2_000).collect()
-    } else {
-        out
     }
 }
 

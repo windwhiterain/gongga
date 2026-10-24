@@ -8,8 +8,14 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use unicode_width::UnicodeWidthChar;
 
 use crate::{LineKind, Screen};
-pub const HELP: &str =
-    "↑↓ history · Shift+↑↓ row · Alt+↑↓ page · Tab complete · Shift+Enter newline · Alt+Q quit";
+/// The whole keyboard, on one row: a key it does not name is a key nobody finds.
+///
+/// # Invariant
+///
+/// Stays under 100 columns, because a clipped help line loses its last entry --
+/// which is the one that says how to leave.
+pub const HELP: &str = "↑↓ hist · S+↑↓ row · A+↑↓ page · Tab complete · Sh+Enter newline · A+Y copy \
+     · A+M mouse · A+Q quit";
 
 /// Rows spent on header, footer and help; the input's height is asked separately.
 pub const CHROME_ROWS: u16 = 3;
@@ -267,6 +273,43 @@ mod tests {
 
     use super::*;
     use crate::log::Log;
+
+    /// A copy must take exactly the rows the frame drew, however tall the input is.
+    ///
+    /// # Invariant
+    ///
+    /// `log_window_height` is the copy's idea of the log area and `draw` is the
+    /// renderer's. A mismatch copies rows that were never on screen -- the
+    /// direction that silently hands the operator the wrong text.
+    #[test]
+    fn the_copied_height_matches_the_drawn_one() {
+        // Thirty distinct lines, so where the window starts says how tall it is.
+        let lines: Vec<String> = (0..30).map(|i| format!("L{i}")).collect();
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        for (height, text) in [(12u16, ""), (12, "a"), (12, "a\nb\nc"), (20, "a\nb")] {
+            let mut screen = screen_with(&refs);
+            screen.input.insert_str(text);
+            let mut term = Terminal::new(TestBackend::new(30, height)).unwrap();
+            term.draw(|f| draw(f, &mut screen)).unwrap();
+            let buf = term.backend().buffer().clone();
+
+            let input = input_rows(text, 30, height);
+            let copied = crate::log_window_height(height, input);
+            // The newest line sits on the last log row, so the copy's height
+            // is the row it must be on.
+            assert_eq!(
+                row_text(&buf, copied as u16),
+                "L29",
+                "height {height}, input {text:?}: the newest line is not on the row the copy assumes"
+            );
+            let oldest_visible = 30 - copied;
+            assert_eq!(
+                row_text(&buf, 1),
+                format!("L{oldest_visible}"),
+                "height {height}, input {text:?}: the window starts on the wrong line"
+            );
+        }
+    }
 
     /// The text drawn on row `y`, trailing blanks removed.
     fn row_text(buf: &Buffer, y: u16) -> String {

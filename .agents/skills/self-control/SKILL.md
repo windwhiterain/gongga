@@ -9,7 +9,7 @@ harness 给你四类杠杆：**回合**（turn）、**进程**（谁能收尸）
 **身份**（跑着你的那个 exe）。每个都有确切的作用域，其中三个是单向门。
 
 先记住贯穿全文的一个问题：**谁回来收这活？** 有主的东西才谈得上"停"；无主的东西只有
-`kill_bash` 停得住，而本回合被换掉时没有任何人回来。
+`del_bash` 停得住，而本回合被换掉时没有任何人回来。
 
 ---
 
@@ -21,13 +21,13 @@ harness 给你四类杠杆：**回合**（turn）、**进程**（谁能收尸）
 |---|---|---|---|---|
 | 默认（前台） | 本回合 | 工具结果，流式 | 命令结束 / 回合取消（连进程树一起杀） | 被中断，shell 换新 |
 | `background` | 那个 shell | shell 的未读缓冲，`check_bash` 取走 | `del_bash` 随 shell 一起消失 | 看取消点：卡在那条 shell 的前台命令里就一起被杀，否则活着 |
-| `detached` | **没人** | 只有它自己的日志文件 | **只有 `kill_bash`** | **活着** |
+| `detached` | **没人** | 只有它自己的日志文件 | **只有 `del_bash`** | **活着** |
 
 实测（本会话）：
 
 - `detached` 起了个每 1s 追加一行的循环 → `del_bash` 之后行数还在涨（13→15）；
   `list_bash` 把它单列在 `detached[]` 里，带 `pid` / `log` / `running`。
-- `kill_bash --name demo-detached --job 1` → 行数 15→15 停住，`detached[]` 变空。
+- `del_bash --name_regex '^demo-detached$'` → 行数 15→15 停住，`detached[]` 变空。
 - `del_bash` 的回执会明说：「1 detached job(s) from them are still running and were not
   stopped」——它不会假装帮你停。
 
@@ -42,7 +42,7 @@ harness 给你四类杠杆：**回合**（turn）、**进程**（谁能收尸）
 - 想"卡住就回来" → 前台 + `timeout_ms`（见 §3），不要自己 `&` 加轮询。
 
 `detached` 的内部约束（读码）：独立进程组、`kill_on_drop(false)`、pid 写进 `detached_jobs` 表；
-新服务端启动时 `adopt()`，但**绝不**接管 pid 等于自己或自己祖先的行——否则 `kill_bash`
+新服务端启动时 `adopt()`，但**绝不**接管 pid 等于自己或自己祖先的行——否则 `del_bash`
 就成了服务端自杀按钮。
 
 ---
@@ -92,18 +92,28 @@ EOF
 
 ---
 
-## 3. 时间：`timeout_ms` 是等多久，不是干多久
+## 3. 时间：等待可以被两件事打断，命令都不会被杀
 
-超时**只结束等待，不结束命令**。实测：`timeout_ms=1000` 跑 `sleep 5`，回执是
-「still running after 1s, so the wait ended -- the command was not stopped」，约 6 秒后
-输出作为一条 inbox 消息自己回来了（会话里多一条 `The command you started in shell
-demo-timeout ... has now finished`）。
+前台 `bash` 的等待有两个触发源，**两个都只结束等待，不结束命令**：
+
+| 触发 | 回执开头 | 谁等的 |
+|---|---|---|
+| `timeout_ms` 到（默认 120s） | `still running after <n>ms, so the wait ended` | 你自己设的期限 |
+| **有人给本会话发消息** | `a message arrived for this session, so the wait ended and it was handed to the background` | 不是你能预知的 |
+
+第二种是 2026-10-24 加的，也是更常见的那个。实测：先让一个 detached 作业 5 秒后
+`send_message` 给我，同时前台跑 `sleep 40` —— 调用 **3 秒就返回了**，40 秒的命令自己跑满，
+输出（`done after 40s`）之后作为 inbox 消息投回来。
+
+所以：**你不需要为了"能被打断"去开短 timeout**。它就是会断。反过来说，
+长命令被交给后台是**正常现象**，不是故障——不要因为它提前返回就以为命令失败了。
+
+两种情况下，**同名 shell 都换成了新 spawn 的一个，cwd 回到会话目录**。所以之后不要假设
+`cd` 还在；长任务的前缀请写成绝对路径或一句 `cd` 重来。
 
 由此：
 
-- 超时不是预算，也不是 kill。要停就在前台等它被杀（取消），或 `kill_bash`（detached）。
-- 超时后**同名 shell 换成了新 spawn 的一个，cwd 回到会话目录**。所以超时之后不要假设
-  `cd` 还在；长任务的前缀请写成绝对路径或一句 `cd` 重来。
+- 等待不是预算，也不是 kill。要真停就在前台等它被杀（取消），或 `del_bash`（detached）。
 - 默认 `timeout_ms` 是 120s；`background` 忽略它。
 - **没有步数上限**：一个 turn 跑到活干完。所以"我会不会失控"这件事上，harness 不给你预算，
   自我控制只能来自你：小步验证、及时落盘、别开无法收尾的长链。
@@ -148,6 +158,13 @@ $GONGGA_CLI send_message --session test1 --message "SELF-NOTE: ..."
 回执「message queued for test1; it will be read at the next step」，下一个 step 就以
 一条 user 消息出现。
 
+**它现在还能叫醒你**（2026-10-24 起）：前台 `bash` 正等一条长命令时，消息一到，等待就结束、
+命令交给后台继续跑（见 §3）。所以这不是"留言"，是一条**打断**——`sleep 40` 实测 3 秒返回。
+两面的用法：
+
+- 想让长命令早点放手 → 从别处发一条消息，不用干等。
+- 小心：你自己排队发的消息也会打断自己正在等的东西，别在关键写入中途自己插自己。
+
 规矩：
 
 - 它是**用户消息**，会一直留在 transcript 里，还会被压缩进 summary。不要当 printf 用。
@@ -159,33 +176,76 @@ $GONGGA_CLI send_message --session test1 --message "SELF-NOTE: ..."
 
 ## 6. 换掉自己（self-evolution）
 
-`scripts/evolve.sh` 把"替换正在跑自己的服务端"排成了安全顺序：
+完整流程在 **`evolve` skill**（`.agents/skills/evolve/SKILL.md`），脚本是
+`.agents/skills/evolve/evolve.sh`。这里只留几条容易忘的：
 
 ```bash
-scripts/evolve.sh stage          # 跑测试 + 构建到 .dev/target + 暂存 + 生成 launcher
+S=.agents/skills/evolve/evolve.sh
+$S stage        # 测试 + 构建到 .dev/target + 暂存 + 生成 launcher
 # 用 bash --detached 启动它打印的 launcher
-scripts/evolve.sh swap <stamp>   # 确认继任者真在等，再发 cancel
-scripts/evolve.sh status         # 当前 stamp、谁在等、端口与锁
-scripts/evolve.sh clean          # 收掉没人会 swap 的旧继任者
+$S swap <stamp> # 守卫通过才 cancel
 ```
 
-四条纪律（`AGENTS.md` 与脚本头部一致）：
+1. **先起继任者，再 cancel**。反过来一旦新二进制起不来，home 就空着，没人 resume 本回合。
+2. **不要写交接笔记。** resume 会重放完整 transcript（含每个工具调用和结果），笔记不会
+   多提供任何信息；02:24 那次我写了笔记，结果 pending 行丢了、根本没人被唤醒。
+   该做的是**重新测量外部状态**：`server.lock`、端口、`pending_tasks`、残留 detached。
+3. **验证看继任者自己的日志**，不看 `server.lock` 变了没：
 
-1. **先起继任者，再 cancel**。反过来，新二进制起不来时 home 就空着，没人 resume 本回合。
-2. **只有最新的 `stage` 能接管 home**。`stage` 写 `.dev/evolve-current`；被取代的 launcher
-   自己退出等待循环，`swap` 拒绝非当前 stamp。重复 `stage` 安全，但别指望旧 stamp 回滚。
-3. **不要用 `target/` 构建待替换的服务端**：Windows 锁住运行中的 `.exe`，而被替换的往往
-   就是 `target\debug\gongga-server.exe`。`stage` 用 `.dev/target` 正是为此。
-4. **`stage` 默认只构建 server**：协议没变时旧客户端照样能连；`--all` 会连客户端一起换，
-   而用户正在用的 TUI 锁着 `gongga.exe`。
+   ```bash
+   sed 's/\x1b\[[0-9;]*m//g' ~/.gongga/detached/<最新>.log | grep -E "replaying a turn|resumed=true"
+   ```
 
-`swap` 的守卫（读码）：stamp 必须是 current + launcher 的 pid 还活着（`tasklist` 查的是
-**Windows pid**，launcher 从 `/proc/$$/winpid` 取）+ 心跳文件 10s 内有更新 + 老服务端还活着。
-**不要绕过它手动 cancel**：这些检查存在的理由就是"没人接盘时不要放掉 home"。
+   两行都在、时间戳几乎相同，才算接上了。
+4. **Windows 上 `exec` 不保留 pid**（实测：launcher 是 bash，exe 成了它的子进程）。
+   所以 `server.lock` 的 pid ≠ `launch.pid` 是**正常**的，别据此判断换手失败。
 
-代价：`cancel` 之后本回合被取消并保留，继任者重放它。见 `DESIGN.md` §10 的残余风险。
+### 改服务端代码时的两个 Windows 坑
+
+1. **`拒绝访问 (os error 5)`**：`target/` 里的 `.exe` 正被跑着，`cargo build` 写不进去。
+   如果你为了测试起过一个服务端，先关掉它再编。
+2. **别信"私有 target 目录会让 `cli_path` 测试失败"这句话。** 实测
+   `CARGO_TARGET_DIR=.dev/target-test1` 下那条测试**是通过的**（`cli_path()` 有三层兜底）。
+   看到"某条测试会失败"这类断言，先自己跑一遍再转述——包括本文档里的。
 
 日常开发换二进制用 `scripts/dev.sh`（把 exe 复制出 `target/` 再起，避免锁）。
+
+---
+
+### 改服务端又不影响自己：隔离一套环境
+
+要验证服务端改动（新端点、新工具、新 roster 字段），**不要用你自己正在跑的 home 和 roster**。
+一套隔离环境只多三行：
+
+```bash
+# 1. 自己的 roster，指向自己的 fake 端点
+cat > .dev/v/llm.toml <<'EOF'
+[[provider]]
+id = "fake"
+  [[provider.endpoint]]
+  api = "openai-responses"
+  base_url = "http://127.0.0.1:8899/v1"
+  ...
+EOF
+
+# 2. 自己的 home + 端口；GONGGA_LLM_CATALOG 才是 roster 的入口
+GONGGA_LLM_CATALOG=$PWD/.dev/v/llm.toml GONGGA_KEY=sk-fake \
+  ./.dev/target-test1/debug/gongga-server.exe --home .dev/v/srv --bind 127.0.0.1:8900
+
+# 3. 客户端显式指过去
+./target/debug/gongga.exe --server 127.0.0.1:8900 --key sk-fake set_session --session s --llm fake/fake
+```
+
+三个坑：
+
+- **`HOME=` 不管用**：roster 走 `GONGGA_LLM_CATALOG`，`dirs::home_dir()` 在 Windows 上
+  不读 `HOME`。设了 `HOME` 以为隔离了，实际还是读你真实的 `~/.agents/llm.toml`。
+- **roster 是 `OnceLock`，进程启动读一次**。改了 roster 要重启服务端才生效。
+- 用 `scripts/fake_llm.py` 当端点，`FAKE_LLM_DUMP=<path>` 会把**真实请求体**逐行写下来——
+  想看"服务端到底发了什么"，这是唯一可信的办法，别靠读代码推测。
+
+验完记得收尾：关掉测试服务端（否则 `target/` 里的 exe 锁着，见上面的 `os error 5`），
+删掉 `.dev/v/`。
 
 ---
 
@@ -196,7 +256,7 @@ scripts/evolve.sh clean          # 收掉没人会 swap 的旧继任者
 | `del_session --session <n>` | 删 transcript、删 pending，**并停掉该会话的 detached 作业**（`cancel` 不这么干） |
 | 从外面杀服务端 | 本回合没人接，等于丢了一次未落盘的判断 |
 | 没有继任者就 `cancel` | home 空着，直到有人手动起服务端才 `resume_pending` |
-| `kill_bash` | 进程没了；日志文件还在，但状态没了 |
+| `del_bash` | 进程没了；日志文件还在，但状态没了 |
 | `del_bash` | 那个 shell 的 cwd / export / 函数全清零（后台作业一起死） |
 
 ---
@@ -240,8 +300,13 @@ EOF
 - **`bash` 传 `cmd`。** 参数名是 `command`。多余键被忽略，缺 required 会被拒并提示
   「did you mean `command`?」。
 - **在 bash 里 `kill <pid>` 停 detached。** MSYS pid 不等于 Windows pid，`taskkill` 认不出来；
-  用 `kill_bash`。
-- **用 `send_message` 记日志。** 它会永久留在 transcript 里并进入 summary。
+  用 `del_bash`。
+- **用 `send_message` 记日志。** 它会永久留在 transcript 里并进入 summary，而且**会打断
+  你正在等的命令**（见 §5）。
+- **信 `.agents/notes` 或本文档里的"某条测试会失败"而不自己跑一遍。** 已经踩过一次：
+  有记录说私有 target 目录会让 `cli_path` 测试失败，实测是通过的。
+- **以为写了 skill 文件就等于能被发现。** 发现靠提示词里那句索引；索引不在（旧服务端、
+  cwd 不在仓库里），文件就是死的。先跑一遍索引命令再指望别人读到。
 
 ---
 
@@ -261,14 +326,16 @@ EOF
 
 | 结论 | 怎么来的 |
 |---|---|
-| 三种 bash 模式的存活语义（含 `del_bash` 后 detached 继续、`kill_bash` 停住） | 本会话实测 |
+| 三种 bash 模式的存活语义（含 `del_bash` 后 detached 继续、`del_bash` 停住） | 本会话实测 |
 | 超时只结束等待、输出随后回投、shell 被替换 | 本会话实测 |
+| **消息打断等待**、命令不被杀、输出随后回投 | 本会话实测（`sleep 40` / 5 秒后发消息 → 3 秒返回，命令跑满 40s 并回投） |
 | 忙时 `send_message` 在下一个 step 边界投递 | 本会话实测 |
 | `cancel` 保留 pending、`interrupt_session` 删 pending、`del_session` 连带停 detached | 读 `crates/server/src/commands.rs` |
 | resume 不带任何 instruction | 读 `agent.rs::turn_inner`（`user_text: None` 不写行） |
 | 压缩 70% / transcript 不改写 / `summarised_upto` | 读 `agent.rs`、`store.rs` |
-| `evolve.sh` 四条纪律与 swap 守卫 | 读 `scripts/evolve.sh` + `status` 实跑 |
-| `evolve.sh swap` 的完整换手 | **未在本会话实跑**（会换掉我）；结论来自脚本与 `DESIGN.md` §10 |
+| evolve 的四条纪律与 swap 守卫 | 读 `.agents/skills/evolve/evolve.sh` + `status` 实跑 |
+| `evolve.sh swap` 的完整换手 | **实跑 9 次**，其中 02:24 那次**丢了回合**（pending 行被 `resume_pending` 的收尾无条件删除），修好后 3 次全部 resume 成功 |
+| swap 后验证行为而非 pid | 本会话实测：新二进制里"消息打断等待"只有真跑一条长命令才验得出，`server.lock` 变了不证明任何事 |
 | 只读 sqlite 自查 | 本会话实测 |
 
 ---

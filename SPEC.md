@@ -11,16 +11,25 @@ all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, l
 - key.
 ## LLM API
 standard OpenAI Response API.
+- images: sent as `input_image` content parts, gated by the roster's modalities.
 ## Tool
 use GitBash as bash on windows.
-- bash{command, name = "default", task = "default", background = false, detached = false}: detached process does not return, so server can cancle while it is running.
+- bash{command, name = "default", task = "default", background = false, detached = false}:
+  runs in the persistent shell `name`, or starts a detached bash of that name.
     - key = {session_name, bash_name}.
-- list_bash: return all bash with the caller session's name in key.
+- list_bash{name_regex}: list matched bash with the caller session's name in key.
 - check_bash{name = "default"}: return bash's output that hasn't been read by the caller session.
-- del_bash{name_regex}: only mactch bash with the caller sessions' name in key.
-- kill_bash{name = "default", job = <n>}: stop detached jobs -- one job, or every job of one
-  shell. A detached job is not any shell's, so it outlives `del_bash` and the server; this is
-  the only thing that ends it.
+- del_bash{name_regex}: delete matched bash with the caller sessions' name in key. For a
+  persistent shell that discards it (`bash` restarts it); for a detached bash it stops the
+  process, which is the only thing that can.
+- detach: `bash{detached: true, name = <own name>, command}` starts a bash that is a process of
+  its own: no shell owns it, so it outlives the shell, the session, `cancel` and a server
+  restart. `name` here is that process's own name, required and unique in the session, and it
+  is what `del_bash` matches to end it. One noun, two kinds: a bash that a shell owns, and a
+  bash that nothing owns.
+- read_image{path}: look at a picture on this machine. The image reaches the model as an image
+  content part, not as text; the transcript records its path, so a file removed between turns
+  degrades to a note rather than breaking the turn.
 ## State
 - everything in database (sqlite) under a home directory, structured for agentic retrieval/mutation.
 - home directory path can be specified at server start (`gongga-server --home <dir>`; this is

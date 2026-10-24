@@ -4,7 +4,7 @@
 
 The SPEC gives the model `bash{name, cmd}` to run a command in a named
 persistent shell and `del_bash{name}` to throw one away; `check_bash` and
-`list_bash` are the reading half of the same idea, and `kill_bash` exists
+`list_bash` are the reading half of the same idea, and `del_bash` exists
 because a `detached` job outlives everything else and therefore needs an
 explicit way to be stopped. Shells are keyed `session_name/bash_name`, so two
 sessions never share one and a single session can keep several independent

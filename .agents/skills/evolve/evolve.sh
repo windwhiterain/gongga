@@ -14,11 +14,11 @@
 # the new binary, start the successor *before* stopping the old server (so a
 # bad build costs nothing), and only then cancel.
 #
-#   scripts/evolve.sh stage            # test, build, stage, write launcher
+#   .agents/skills/evolve/evolve.sh stage            # test, build, stage, write launcher
 #   bash --detached: <the launcher it printed>
-#   scripts/evolve.sh swap <stamp>     # verify the successor, then cancel
-#   scripts/evolve.sh status           # what is staged, who is waiting
-#   scripts/evolve.sh clean            # kill successors nobody is going to swap
+#   .agents/skills/evolve/evolve.sh swap <stamp>     # verify the successor, then cancel
+#   .agents/skills/evolve/evolve.sh status           # what is staged, who is waiting
+#   .agents/skills/evolve/evolve.sh clean            # kill successors nobody is going to swap
 #
 # Only the newest stage may take the home. `stage` writes `.dev/evolve-current`,
 # a launcher whose stamp is not in there leaves the waiting loop instead of
@@ -35,7 +35,14 @@
 # See DESIGN.md §10 for why the order matters and what is still missing.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# The repo root, found by walking up rather than by counting `../`: this script
+# lives inside a skill directory, and a depth written into the code breaks the
+# first time it moves.
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+while [ "$ROOT" != "/" ] && [ ! -f "$ROOT/Cargo.toml" ]; do
+  ROOT="$(dirname "$ROOT")"
+done
+[ -f "$ROOT/Cargo.toml" ] || { echo "evolve: no Cargo.toml above $0" >&2; exit 1; }
 RUN="$ROOT/.dev"
 # Which stage is allowed to take the home. Written by `stage`, read by every
 # launcher and by `swap`.
@@ -65,8 +72,13 @@ die() { echo "evolve: $*" >&2; exit 1; }
 
 # The successor must not touch the home while the old server still owns it:
 # `InstanceLock` refuses, and the UDP port is still bound. So it waits for both
-# to go, then execs -- exec, not spawn, because that keeps the pid the old
-# server recorded for this job, and `adopt()` drops rows naming its own pid.
+# to go, then `exec`s.
+#
+# Measured on Windows: `exec` of a native .exe does NOT keep the pid. The bash
+# launcher stays alive as the server's parent and the exe gets a fresh pid, so
+# `server.lock` and this launcher's pid file disagree by design. `status` uses
+# the parent link to recognise that case, and `adopt()`'s ancestor guard is what
+# keeps `del_bash` from killing the server through its own parent.
 # The template is filled in afterwards, not expanded while it is written.
 #
 # This used to be an unquoted heredoc, which meant every backtick, `$(...)` and
@@ -159,6 +171,14 @@ LAUNCH
   echo "$path"
 }
 
+# The parent pid of a live process, or nothing. PowerShell because it is the one
+# thing on this platform that answers without extra tooling.
+parent_of() {
+  powershell -NoProfile -Command \
+    "(Get-CimInstance Win32_Process -Filter 'ProcessId=$1').ParentProcessId" \
+    2>/dev/null | tr -d '\r' | grep -E '^[0-9]+$' || true
+}
+
 running_pid() {
   local pid
   pid="$(cat "$HOME_DIR/server.lock" 2>/dev/null || true)"
@@ -208,7 +228,7 @@ cmd_stage() {
   echo
   echo "next: launch detached, then swap"
   echo "  bash --detached: $launcher"
-  echo "  scripts/evolve.sh swap $stamp"
+  echo "  .agents/skills/evolve/evolve.sh swap $stamp"
   echo
   echo "an earlier attempt still waiting will leave on its own; 'clean' says who is left"
 }
@@ -282,9 +302,10 @@ cmd_status() {
     stamp="${stamp#evolve-}"
     stamp="${stamp%-launch.pid}"
     tasklist //FI "PID eq $p" //NH 2>/dev/null | grep -q "$p" || continue
-    if [ "$p" = "$server_pid" ]; then
-      # The launcher `exec`ed: this pid is the server, not a waiter.
-      echo "  $stamp: pid $p is the running server"
+    # Two shapes, because Windows does not honour `exec` for a native exe: either
+    # the pid was kept (unix) or the launcher became the server's parent.
+    if [ "$p" = "$server_pid" ] || parent_of "$server_pid" | grep -qx "$p"; then
+      echo "  $stamp: pid $p is running the server"
       continue
     fi
     mark=""

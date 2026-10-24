@@ -99,14 +99,14 @@ place that means "this work is not wanted either".
 
 Rows whose process is gone are dropped: that is finished work, and keeping it
 would only make the list lie. Rows naming our own pid are dropped too -- that
-is a server that recorded its own launch, and adopting it would let `kill_bash`
+is a server that recorded its own launch, and adopting it would let `del_bash`
 shut this process down. The same goes for any ancestor of ours, which is what a
 launcher that spawns the server instead of `exec`ing it leaves behind (see
 `is_self_or_ancestor`).
 
 The pid is only checked for liveness, never proven to be the same process, so a
 recycled pid could in principle be adopted. The window is narrow and the cost
-is bounded by `kill_bash`, which is explicit.
+is bounded by `del_bash`, which is explicit.
 
 ## DetachedRegistry::adopt (dead rows)
 
@@ -137,7 +137,7 @@ and no header has to be parsed.
 
 ## is_self_or_ancestor
 
-`adopt` refuses a row naming our own pid, because `kill_bash` kills the whole
+`adopt` refuses a row naming our own pid, because `del_bash` kills the whole
 tree and a job that is us would let the model shut the server down. That check
 only covers a launcher that `exec`s the new server: `exec` keeps the pid, so
 the row ends up naming us. A launcher that *spawns* the server and waits --

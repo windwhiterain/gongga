@@ -170,6 +170,46 @@ in every other editor. Shift is what says "move the view, not the line".
 A page is the log window, not a fixed ten rows: on a short terminal ten rows
 scrolls past what is visible and the jump looks arbitrary.
 
+## Tui::paste
+
+A bracketed paste arrives as one event carrying one string. It is inserted with
+`insert_str`, never replayed as keystrokes.
+
+# Invariant
+
+A newline inside a paste must not press Enter. Before bracketed paste was
+enabled, the terminal sent the paste as a burst of key events, so pasting a
+programme submitted its first line and left the rest in the box — the paste
+looked like it "lost" everything after the first break.
+
+The popup is closed on paste: it was about the token before the paste, not about
+what the pasted text means.
+
+## Tui::console
+
+Alt+Y and Alt+M act on the terminal, not on the conversation, so they are not
+`shortcut` (which returns a `UiEvent`). Copy reports what it did in the log;
+mouse reports which mode it just entered, because the operator cannot otherwise
+tell whether a wheel scroll or a terminal selection will happen next.
+
+## Tui::copy_visible
+
+Copies the rows currently drawn, measured exactly as `render::draw_log` measures
+them — one column short, without the chrome rows. A copy that took a different
+width would put back text the screen had wrapped differently.
+
+## Tui::toggle_mouse
+
+Holds no opinion about which mode is better, and flips a flag only after the
+terminal accepted the change: a flag out of step with reality makes the next
+toggle lie.
+
+# Invariant
+
+Releasing mouse capture is what makes native copy possible at all. While the app
+holds the mouse, the terminal never sees a drag and cannot select — which is why
+"the TUI cannot copy" was true before this key existed.
+
 ## Tui::handle_mouse
 
 The wheel is the scroll control everybody tries first. A notch is three rows;

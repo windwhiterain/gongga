@@ -16,9 +16,10 @@ use crate::store::{DetachedRow, Store};
 /// What a caller needs to know about a job. Cheap to copy out of the registry.
 #[derive(Debug, Clone)]
 pub struct JobView {
-    pub job: u64,
-    pub shell: String,
+    /// What the model calls this detached bash.
+    pub name: String,
     pub pid: u32,
+    /// The command it is running, so a name can be recognised without a lookup.
     pub cmd: String,
     pub log: String,
     pub started_at: i64,
@@ -28,8 +29,7 @@ pub struct JobView {
 impl JobView {
     pub fn to_json(&self) -> serde_json::Value {
         json!({
-            "job": self.job,
-            "shell": self.shell,
+            "name": self.name,
             "pid": self.pid,
             "cmd": self.cmd,
             "log": self.log,
@@ -43,7 +43,9 @@ impl JobView {
 pub struct DetachedJob {
     /// Row id, so stopping it can also forget it durably.
     pub id: i64,
-    /// Job number, unique within the session and shown to the model.
+    /// The name the model addresses this bash by, unique within the session.
+    pub name: String,
+    /// Row order in the log file name; never shown to the model.
     pub job: u64,
     /// The shell whose working directory it inherited.
     pub shell: String,
@@ -102,6 +104,7 @@ impl DetachedJob {
         let pid = child.id().unwrap_or(0);
         Ok(Self {
             id: 0,
+            name: String::new(),
             job: 0,
             shell: String::new(),
             pid,
@@ -116,6 +119,7 @@ impl DetachedJob {
     pub fn adopted(row: &DetachedRow) -> Self {
         Self {
             id: row.id,
+            name: row.name.clone(),
             job: row.job,
             shell: row.shell.clone(),
             pid: row.pid as u32,
@@ -160,10 +164,9 @@ impl DetachedJob {
     /// This job as a caller sees it, from one listing that answered for every job.
     pub fn view(&mut self, live: &std::collections::HashSet<u32>) -> JobView {
         JobView {
-            job: self.job,
-            shell: self.shell.clone(),
-            pid: self.pid,
+            name: self.name.clone(),
             cmd: self.cmd.clone(),
+            pid: self.pid,
             log: self.log.display().to_string(),
             started_at: self.started_at,
             running: match &mut self.child {
@@ -243,13 +246,17 @@ impl DetachedRegistry {
         }
     }
 
-    /// Starts a detached command for `session`, from `shell`, in `cwd`.
+    /// Starts a detached bash called `name` for `session`, in `cwd`.
     ///
+    /// # Invariant
+    ///
+    /// The name is unique within the session and is how the thing is later
+    /// deleted: a detached bash nobody can name is one nobody can stop.
     /// See `docs/notes/server-tools-detached.md`.
     pub async fn start(
         &self,
         session: &str,
-        shell: &str,
+        name: &str,
         cmd: &str,
         cwd: &Path,
     ) -> anyhow::Result<JobView> {
@@ -257,6 +264,16 @@ impl DetachedRegistry {
         let Some(program) = registry.program.clone() else {
             anyhow::bail!("no bash available; set [tools.bash] program");
         };
+        if registry
+            .jobs
+            .get(session)
+            .is_some_and(|jobs| jobs.iter().any(|j| j.name == name))
+        {
+            anyhow::bail!(
+                "this session already has a detached bash named {name:?}; delete it with \
+                 `del_bash name_regex: \"^{name}$\"` or pick another name"
+            );
+        }
         registry.next_job += 1;
         let job = registry.next_job;
         let log = registry.logs.join(format!("{session}-{job}.log"));
@@ -264,7 +281,9 @@ impl DetachedRegistry {
         let id = registry.store.add_detached_job(&DetachedRow {
             id: 0,
             session: session.to_string(),
-            shell: shell.to_string(),
+            name: name.to_string(),
+            // It belongs to no shell, so its own name is the only true label.
+            shell: name.to_string(),
             job,
             pid: launched.pid as i64,
             cmd: cmd.to_string(),
@@ -272,8 +291,9 @@ impl DetachedRegistry {
             started_at: launched.started_at,
         })?;
         launched.id = id;
+        launched.name = name.to_string();
         launched.job = job;
-        launched.shell = shell.to_string();
+        launched.shell = name.to_string();
         // A just-launched job has its handle, so no listing is needed.
         let view = launched.view(&Default::default());
         registry
@@ -306,20 +326,25 @@ impl DetachedRegistry {
         jobs.iter_mut().map(|j| j.view(&live)).collect()
     }
 
-    /// Stops one job, or every job of one shell when no number is given.
+    /// Stops every detached bash of `session` whose name matches `pattern`.
     ///
+    /// # Invariant
+    ///
+    /// Only names are matched, never commands: deleting by command text would
+    /// make a typo kill a process the caller never named.
     /// See `docs/notes/server-tools-detached.md`.
-    pub async fn stop(&self, session: &str, shell: &str, job: Option<u64>) -> Stopped {
+    pub async fn stop(&self, session: &str, pattern: &str) -> Stopped {
+        let re = match regex::Regex::new(pattern) {
+            Ok(re) => re,
+            Err(_) => return Stopped::default(),
+        };
         let mut registry = self.inner.lock().await;
         let (taken, kept): (Vec<DetachedJob>, Vec<DetachedJob>) = registry
             .jobs
             .remove(session)
             .unwrap_or_default()
             .into_iter()
-            .partition(|j| match job {
-                Some(number) => j.job == number,
-                None => j.shell == shell,
-            });
+            .partition(|j| re.is_match(&j.name));
         let mut out = Stopped::default();
         for mut one in taken {
             out += Stopped::one(one.stop().await);
@@ -384,7 +409,7 @@ impl DetachedRegistry {
                     job = row.job,
                     pid,
                     "not adopting a detached job that is this server or one of its \
-                     ancestors: `kill_bash` kills the tree, and the tree contains us"
+                     ancestors: `del_bash` kills the tree, and the tree contains us"
                 );
                 let _ = registry.store.delete_detached_job(row.id);
                 continue;
@@ -690,7 +715,7 @@ mod tests {
             .start("main", "build", &script, dir.path())
             .await
             .expect("start");
-        let stopped = reg.stop("main", "build", Some(view.job)).await;
+        let stopped = reg.stop("main", "^build$").await;
         assert_eq!(stopped.stopped, 1, "the job should have been stopped");
         assert!(
             reg.list("main").await.is_empty(),
@@ -727,7 +752,8 @@ mod tests {
             .add_detached_job(&DetachedRow {
                 id: 0,
                 session: "main".into(),
-                shell: "default".into(),
+                name: "held".into(),
+                shell: "held".into(),
                 job: 7,
                 pid: held.id() as i64,
                 cmd: "sleep 5".into(),
@@ -740,7 +766,8 @@ mod tests {
             .add_detached_job(&DetachedRow {
                 id: 0,
                 session: "main".into(),
-                shell: "default".into(),
+                name: "gone".into(),
+                shell: "gone".into(),
                 job: 8,
                 pid: 999_983,
                 cmd: "gone".into(),
@@ -754,20 +781,20 @@ mod tests {
         let listed = fresh.list("main").await;
         assert_eq!(listed.len(), 1);
         assert_eq!(
-            listed[0].job, 7,
-            "it keeps the number the previous run gave it"
+            listed[0].name, "held",
+            "it keeps the name the previous run gave it"
         );
         assert!(listed[0].running);
 
         // An adopted job has no handle, only a pid, and can still be stopped.
-        let stopped = fresh.stop("main", "default", Some(7)).await;
+        let stopped = fresh.stop("main", "^held$").await;
         assert_eq!(stopped.stopped, 1, "an adopted job is still stoppable");
         wait_until("the adopted process to end", WAIT, || !pid_alive(held.id())).await;
         let _ = held.kill();
         let _ = held.wait();
     }
 
-    /// Our own pid must never be adopted: `kill_bash` would then be able to
+    /// Our own pid must never be adopted: `del_bash` would then be able to
     /// shut the server down from inside.
     #[tokio::test]
     async fn a_server_never_adopts_its_own_pid() {
@@ -777,7 +804,8 @@ mod tests {
             .add_detached_job(&DetachedRow {
                 id: 0,
                 session: "main".into(),
-                shell: "default".into(),
+                name: "svc1".into(),
+                shell: "svc1".into(),
                 job: 1,
                 pid: std::process::id() as i64,
                 cmd: "gongga-server --bind 127.0.0.1:9800".into(),
@@ -803,7 +831,8 @@ mod tests {
             .add_detached_job(&DetachedRow {
                 id: 0,
                 session: "main".into(),
-                shell: "default".into(),
+                name: "svc3".into(),
+                shell: "svc3".into(),
                 job: 3,
                 pid: parent as i64,
                 cmd: "bash ./gongga-server &".into(),

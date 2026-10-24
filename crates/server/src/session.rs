@@ -44,6 +44,8 @@ struct SessionInner {
     cancels: AtomicU64,
     /// Shared rather than embedded: every tool call waiting holds a copy of the count.
     inbox: Arc<AtomicU64>,
+    /// The `summarised_upto` a notice was last sent for, plus one; 0 is never.
+    context_asked: AtomicU64,
     /// What every operation that reshapes this session queues behind, FIFO.
     gate: Arc<AsyncMutex<()>>,
     turns: AtomicU64,
@@ -108,6 +110,34 @@ impl SessionHandle {
     /// See `docs/notes/server-session.md`.
     pub fn note_message(&self) {
         self.inner.inbox.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Records that the loop told this session its context reached the threshold.
+    ///
+    /// # Invariant
+    ///
+    /// True only once per `upto`: the agent is told when the threshold is crossed,
+    /// not on every step that stays above it, and it is told again only after it
+    /// has folded something -- the point at which the advice changed.
+    pub fn note_context_asked(&self, upto: i64) -> bool {
+        // Stored plus one, so a fresh session (0) is distinguishable from "told
+        // something that covered nothing".
+        let wanted = upto.saturating_add(1) as u64;
+        let mut current = self.inner.context_asked.load(Ordering::SeqCst);
+        loop {
+            if current == wanted {
+                return false;
+            }
+            match self.inner.context_asked.compare_exchange(
+                current,
+                wanted,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return true,
+                Err(actual) => current = actual,
+            }
+        }
     }
 
     /// Takes the count, so a tool call can see whether one arrived while it waited.
@@ -449,6 +479,7 @@ impl SessionManager {
                 cancel: Mutex::new(CancellationToken::new()),
                 cancels: AtomicU64::new(0),
                 inbox: Arc::new(AtomicU64::new(0)),
+                context_asked: AtomicU64::new(0),
                 gate: Arc::new(AsyncMutex::new(())),
                 turns: AtomicU64::new(0),
                 tuning: Mutex::new(Tuning {
@@ -504,6 +535,7 @@ mod tests {
                 cancel: Mutex::new(CancellationToken::new()),
                 cancels: AtomicU64::new(0),
                 inbox: Arc::new(AtomicU64::new(0)),
+                context_asked: AtomicU64::new(0),
                 gate: Arc::new(AsyncMutex::new(())),
                 turns: AtomicU64::new(0),
                 tuning: Mutex::new(Tuning::default()),
@@ -565,6 +597,33 @@ mod tests {
 
     /// A signal sees the messages that landed after it was taken, and never the same one twice.
     #[test]
+    /// The notice is sent once per transcript state, not once per step.
+    ///
+    /// # Invariant
+    ///
+    /// A turn that stays above the threshold takes several steps; repeating the
+    /// notice on each one would bury the work it is asking about. Folding
+    /// something is the only thing that earns a second notice.
+    #[test]
+    fn a_context_notice_is_sent_once_per_state() {
+        let shells = ShellSet::new(PathBuf::from("bash"), std::env::temp_dir(), vec![]);
+        let handle = session("s", shells);
+        assert!(
+            handle.note_context_asked(0),
+            "the first crossing is announced"
+        );
+        assert!(
+            !handle.note_context_asked(0),
+            "the same state is not announced twice"
+        );
+        assert!(!handle.note_context_asked(0));
+        assert!(
+            handle.note_context_asked(7),
+            "after the agent folds through 7, the advice changed"
+        );
+        assert!(!handle.note_context_asked(7));
+    }
+
     fn an_inbox_signal_sees_only_what_arrived_after_it_was_taken() {
         let h = handle();
         let taken = h.inbox_signal();

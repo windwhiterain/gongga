@@ -457,7 +457,7 @@ UI 上流式看到的仍是完整输出，但进 transcript 的不会反复计�
 这里宁可少干也不拒启动。
 
 
-### 工具（SPEC: bash / check_bash / list_bash / del_bash，外加 kill_bash）
+### 工具（SPEC: bash / check_bash / list_bash / del_bash，外加 del_bash）
 
 Shell **按 `session_name/bash_name` 建键**，所以一个会话持有的是一组常驻 shell，不是单个：
 
@@ -487,7 +487,7 @@ Shell **按 `session_name/bash_name` 建键**，所以一个会话持有的是�
 |---|---|---|---|
 | 默认（前台） | 等，流式回传 | 直接作为工具结果 | turn 取消即中断 |
 | `background` | 不等 | tail 到 shell 的**未读缓冲区**，由 `check_bash` 取走 | `del_bash` 随 shell 一起消失 |
-| `detached` | 不等 | 写进自己的日志文件，**不回收** | 只有 `kill_bash`；`del_bash` / `cancel` / 服务端退出都不碰它 |
+| `detached` | 不等 | 写进自己的日志文件，**不回收** | 只有 `del_bash`；`del_bash` / `cancel` / 服务端退出都不碰它 |
 
 - `background` 的实现：shell 把作业重定向到一个 scratch 文件（路径按 MSYS 写法转换，
   `C:\Temp\x` → `/c/Temp/x`），服务端任务每 150ms 读一次增量，追加进未读缓冲，
@@ -558,14 +558,14 @@ Shell **按 `session_name/bash_name` 建键**，所以一个会话持有的是�
 
 `adopt()` 的规则：进程还在 → 接管（job 号沿用上一任给的，不复用）；进程没了 → 删行
 （那是干完的活，留着只会让列表说谎）；**pid 等于自己 → 一定不接管**，否则
-`kill_bash` 就成了服务端自杀按钮。
+`del_bash` 就成了服务端自杀按钮。
 
 代价说清楚：接管靠的是 pid 是否存活，没法证明它还是原来那个进程，理论上存在 pid 复用
-窗口。这个窗口很窄，而且后果被 `kill_bash`（必须显式调用）框住了。
+窗口。这个窗口很窄，而且后果被 `del_bash`（必须显式调用）框住了。
 
 detached 作业归**会话**所有、不归 shell：它们活在一个 `DetachedRegistry` 里
 （session → jobs），`list_bash` 会把它们单独列出来（含上一任留下的），
-`kill_bash{name, job?}` 是唯一结束它们的方式（不给 `job` 就是停掉该 shell 的全部）。
+`del_bash{name, job?}` 是唯一结束它们的方式（不给 `job` 就是停掉该 shell 的全部）。
 `del_bash` 不杀它们，但会**明确告诉模型还有几个在跑**，免得模型以为丢 shell 就等于停了。
 `del_session` 则相反：删除会话意味着「它起的活也不要了」，会一并停掉。
 
@@ -668,7 +668,7 @@ Windows 上 Git Bash 会**在程序启动之前**把 `/x` 改写成 `C:/.../Git/
 - `cancel` 是 SPEC 那条「not instantly」的停服：先取消所有在跑的 turn、把没干完的活留在
   `pending_tasks` 里，等 250ms 让「正在取消」的回执发出去，再让监听循环退出，并给在跑的
   turn 最多 30s 落盘。下次启动 `resume_pending` 自动重放。
-  **它不杀 detached 作业**（回执里会报「N 个还在跑，用 `kill_bash` 停」）——
+  **它不杀 detached 作业**（回执里会报「N 个还在跑，用 `del_bash` 停」）——
   那正是 detached 存在的理由，见上一节。
 - `get_messages` 是**唯一的读命令**，也是 SPEC「structured for agentic retrieval」第一次
   真的被用上：`send_message` 是 fire-and-forget、`response` 是一堆交错的增量，两者都不适合
@@ -997,7 +997,7 @@ Git Bash 自动探测常见安装路径，找不到再退回 PATH 上的 `bash`�
 最近一轮（假 LLM + 真 Git Bash，端口 9798/9800）：`set_session` → sticky `session=main`
 → `send_message` → 模型调 `bash{"cmd":"sleep 12; echo survived > flag","detached":true}`
 **没有阻塞** → 立刻 `cancel`（回执：`cancelling 1 session(s); 0 pending task(s); 64 detached
-job(s) keep running -- they outlive the server, stop them with kill_bash`）→ 服务端进程退出、
+job(s) keep running -- they outlive the server, stop them with del_bash`）→ 服务端进程退出、
 端口释放；**12 秒后 flag 出现**，说明那个进程确实跨过了服务端的死亡。
 同一库再起一个服务端（9801），启动时清掉已结束的行、接管仍在跑的（该次 64 行 → 31 行被接管）。
 
@@ -1018,8 +1018,8 @@ job(s) keep running -- they outlive the server, stop them with kill_bash`）→ 
 9. **`detached` 不再跑在常驻 shell 里**（见 §4）：它拿不到 shell 的 export / 函数，
    也不能用 `check_bash` 收输出，只能读日志文件。这是「能跨服务端存活并可被叫停」换来的
    代价，是否接受？
-10. **`kill_bash` 是 SPEC 之外新增的第 5 个工具**（`bash` / `check_bash` / `list_bash` /
-    `del_bash` / `kill_bash`）。没有它 detached 作业就没有任何结束方式；但要不要改成
+10. **`del_bash` 是 SPEC 之外新增的第 5 个工具**（`bash` / `check_bash` / `list_bash` /
+    `del_bash` / `del_bash`）。没有它 detached 作业就没有任何结束方式；但要不要改成
     `del_bash{name, job}` 这种「复用已有工具」的形态？
 11. 仓库还没 `git init`。
 12. **模型停自己这件事，现在是命令而不是快捷键**（见 §4）：`interrupt_session` 是服务端命令，
@@ -1027,7 +1027,7 @@ job(s) keep running -- they outlive the server, stop them with kill_bash`）→ 
     （`test1` 当年是用 `taskkill` 硬停的，现在没必要）。要不要**进一步**在工具层加一条豁免
     ——比如禁掉 `$GONGGA_CLI cancel`，免得 agent 一顺手把整个服务端关了？
 13. **`detached_jobs` 里那条 job 就是服务端自己**（`test1` 的 pid 31984 是 `exec` 出来的
-    新 server 的 MSYS wrapper）：`kill_bash` 一下就能自杀，而且重启 adopt 时有 pid 复用
+    新 server 的 MSYS wrapper）：`del_bash` 一下就能自杀，而且重启 adopt 时有 pid 复用
     误伤的风险。要不要在 adopt / kill 时跳过「命令看起来是自己」的作业？
 14. **压缩后 reasoning 链可能断**（见 §4 闸二）：保留区间里的加密块引用的前文已经变成
     摘要，provider 是否还消费它，目前没有直接证据。
@@ -1182,12 +1182,12 @@ assistant text」没有歧义 —— 这也正是 `get_messages` 存在的理由
 | `server.lock` | `instance.rs` | home 是**交接**不是抢占；旧 pid 还在就拒绝启动 |
 | `$GONGGA_CLI` | `main.rs::cli_path` | agent 从 bash 里给自己发 `cancel` |
 
-顺序是有原因的，`scripts/evolve.sh` 把它固化成两条命令：
+顺序是有原因的，`.agents/skills/evolve/evolve.sh` 把它固化成两条命令：
 
 ```
-scripts/evolve.sh stage          # 测试 → 构建 → 复制 → 写 launcher（不重启任何东西）
+.agents/skills/evolve/evolve.sh stage          # 测试 → 构建 → 复制 → 写 launcher（不重启任何东西）
 bash --detached: <launcher>      # 继任者在旧进程之外等端口
-scripts/evolve.sh swap <stamp>   # 确认继任者真的在等，然后 cancel
+.agents/skills/evolve/evolve.sh swap <stamp>   # 确认继任者真的在等，然后 cancel
 ```
 
 **为什么先起继任者再 cancel**：反过来（先 cancel、再起新进程）一旦新二进制起不来，
@@ -1242,7 +1242,7 @@ home 就空着，没有进程去 resume 这个回合 ���— 一次失败�
    pid 就是新服务端自己，`adopt()` 丢弃它；launcher 改成 `spawn` 加等待时，行里记的是服务端
    的**父进程**，`taskkill /T` 会把服务端连根拔掉。现在 `adopt()` 拒绝收养任何「自己或自己的
    祖先」，`stop()` 落刀前再挡一次。剩下的缺口是 **pid 复用**：行里的 pid 只验活性、不验
-   「是不是当年那个进程」，被回收的 pid 仍可能被当成作业收养，代价由显式的 `kill_bash` 兜底。
+   「是不是当年那个进程」，被回收的 pid 仍可能被当成作业收养，代价由显式的 `del_bash` 兜底。
 2. **没有回滚**：新二进制起来了但行为是坏的（比如 LLM 配置读错），`swap` 无从知道。
    要不要让 `swap` 等新服务端 hello 之后再删旧 launcher，或保留「上一版 exe」一个指针，
    让下一回合的 agent 能一键退回？

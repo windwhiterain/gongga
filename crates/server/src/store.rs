@@ -104,6 +104,22 @@ CREATE INDEX IF NOT EXISTS detached_by_session ON detached_jobs(session);
 #[derive(Debug, Clone)]
 pub struct Store(Arc<Mutex<Connection>>);
 
+/// Whether `table` already has `column`, and adds it when it does not.
+fn add_column_if_missing(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    ddl: &str,
+) -> rusqlite::Result<()> {
+    let exists = conn
+        .prepare(&format!("SELECT {column} FROM {table} LIMIT 1"))
+        .is_ok();
+    if !exists {
+        conn.execute(ddl, [])?;
+    }
+    Ok(())
+}
+
 /// Adds columns a `CREATE TABLE IF NOT EXISTS` cannot add to an old database.
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     for (column, ddl) in [
@@ -126,13 +142,19 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             "ALTER TABLE sessions ADD COLUMN thinking_effort TEXT",
         ),
     ] {
-        let exists = conn
-            .prepare(&format!("SELECT {column} FROM sessions LIMIT 1"))
-            .is_ok();
-        if !exists {
-            conn.execute(ddl, [])?;
-        }
+        add_column_if_missing(conn, "sessions", column, ddl)?;
     }
+    // An old row needs a name before it can be listed or deleted.
+    add_column_if_missing(
+        conn,
+        "detached_jobs",
+        "name",
+        "ALTER TABLE detached_jobs ADD COLUMN name TEXT NOT NULL DEFAULT ''",
+    )?;
+    conn.execute(
+        "UPDATE detached_jobs SET name = shell || '-' || job WHERE name = ''",
+        [],
+    )?;
     Ok(())
 }
 
@@ -503,7 +525,9 @@ impl Store {
         Ok(Transcript { last_seq, messages })
     }
 
-    /// `(seq, kind)` of every message, oldest first; compression needs the seqs.
+    /// `(seq, kind)` of every message, oldest first. Test-only: folding left the
+    /// server.
+    #[cfg(test)]
     pub fn message_index(&self, session_id: i64) -> anyhow::Result<Vec<(i64, String)>> {
         let conn = self.lock();
         let mut stmt =
@@ -525,7 +549,8 @@ impl Store {
         Ok(row)
     }
 
-    /// Records a summary of everything up to and including `upto`.
+    /// Records a summary through `upto`. Test-only: the server never folds.
+    #[cfg(test)]
     pub fn set_summary(&self, session_id: i64, summary: &str, upto: i64) -> anyhow::Result<()> {
         self.lock().execute(
             "UPDATE sessions SET summary = ?1, summarised_upto = ?2 WHERE id = ?3",
@@ -652,8 +677,9 @@ impl Store {
     /// Everything left undone, oldest first.
     pub fn pending_tasks(&self) -> anyhow::Result<Vec<PendingTask>> {
         let conn = self.lock();
-        let mut stmt =
-            conn.prepare("SELECT id, session, kind, payload FROM pending_tasks ORDER BY id")?;
+        let mut stmt = conn.prepare(
+            "SELECT id, session, kind, payload, created_at FROM pending_tasks ORDER BY id",
+        )?;
         let rows = stmt
             .query_map([], |r| {
                 let payload: String = r.get(3)?;
@@ -662,6 +688,7 @@ impl Store {
                     session: r.get(1)?,
                     kind: r.get(2)?,
                     payload: serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null),
+                    created_at: r.get(4)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -698,7 +725,7 @@ impl Store {
         let mut taken = Vec::new();
         {
             let mut stmt = tx.prepare(
-                "SELECT id, session, kind, payload FROM pending_tasks
+                "SELECT id, session, kind, payload, created_at FROM pending_tasks
                  WHERE session = ?1 AND id IS NOT ?2 ORDER BY id",
             )?;
             let rows = stmt.query_map(params![session, except], |r| {
@@ -708,6 +735,7 @@ impl Store {
                     session: r.get(1)?,
                     kind: r.get(2)?,
                     payload: serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null),
+                    created_at: r.get(4)?,
                 })
             })?;
             for row in rows {
@@ -728,10 +756,11 @@ impl Store {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
         tx.execute(
-            "INSERT INTO detached_jobs (session, shell, job, pid, cmd, log, started_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO detached_jobs (session, name, shell, job, pid, cmd, log, started_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 job.session,
+                job.name,
                 job.shell,
                 job.job as i64,
                 job.pid,
@@ -749,7 +778,7 @@ impl Store {
     pub fn detached_jobs(&self) -> anyhow::Result<Vec<DetachedRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, shell, job, pid, cmd, log, started_at
+            "SELECT id, session, name, shell, job, pid, cmd, log, started_at
              FROM detached_jobs ORDER BY id",
         )?;
         let rows = stmt
@@ -757,12 +786,13 @@ impl Store {
                 Ok(DetachedRow {
                     id: r.get(0)?,
                     session: r.get(1)?,
-                    shell: r.get(2)?,
-                    job: r.get::<_, i64>(3)? as u64,
-                    pid: r.get(4)?,
-                    cmd: r.get(5)?,
-                    log: r.get(6)?,
-                    started_at: r.get(7)?,
+                    name: r.get(2)?,
+                    shell: r.get(3)?,
+                    job: r.get::<_, i64>(4)? as u64,
+                    pid: r.get(5)?,
+                    cmd: r.get(6)?,
+                    log: r.get(7)?,
+                    started_at: r.get(8)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -783,6 +813,8 @@ pub struct PendingTask {
     pub session: String,
     pub kind: String,
     pub payload: serde_json::Value,
+    /// When the row was written: how long it has been owed.
+    pub created_at: i64,
 }
 
 /// A process started with `bash --detached`.
@@ -790,8 +822,11 @@ pub struct PendingTask {
 pub struct DetachedRow {
     pub id: i64,
     pub session: String,
+    /// The name this detached bash is addressed by, unique within the session.
+    pub name: String,
+    /// Which shell's directory it started in; a label, not a handle.
     pub shell: String,
-    /// Job number, unique within the session.
+    /// Row order within the session; names the log file, never shown to the model.
     pub job: u64,
     pub pid: i64,
     pub cmd: String,
@@ -1328,7 +1363,8 @@ mod tests {
             .add_detached_job(&DetachedRow {
                 id: 0,
                 session: "main".into(),
-                shell: "default".into(),
+                name: "svc".into(),
+                shell: "svc".into(),
                 job: 1,
                 pid: 4242,
                 cmd: "gongga-server --bind 127.0.0.1:9800".into(),
@@ -1338,6 +1374,7 @@ mod tests {
             .unwrap();
         let rows = store.detached_jobs().unwrap();
         assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "svc");
         assert_eq!(rows[0].job, 1);
         assert_eq!(rows[0].pid, 4242);
         assert_eq!(rows[0].log, "C:/tmp/main-1.log");

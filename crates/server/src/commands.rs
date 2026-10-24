@@ -13,11 +13,14 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::Agent;
 use crate::bus::EventBus;
 use crate::session::SessionManager;
-use crate::store::Store;
+use crate::store::{PendingTask, Store, now_millis};
 
 /// How long `cancel` waits before pulling the plug, so the acknowledgement
 /// still reaches whoever asked for it.
 const SHUTDOWN_NOTICE: Duration = Duration::from_millis(250);
+
+/// How long a `turn` row must sit unclaimed before the waker takes it.
+const NUDGE_GRACE_SECS: u64 = 5;
 
 /// Default `get_messages` window: one whole turn, not the entire history.
 const DEFAULT_MESSAGE_LIMIT: usize = 50;
@@ -329,9 +332,7 @@ async fn send_message(d: &Dispatch, args: &Args) -> Outcome {
         let _active = ActiveGuard::new(active);
         agent.run_turn(&session, &message, Some(task_id)).await;
         // Done means the next start owes nothing, unless a `cancel` kept it pending.
-        if !session_resumable.take_resumable() {
-            let _ = store.delete_pending_task(task_id);
-        }
+        forget_finished_task(&store, task_id, session_resumable.take_resumable());
     });
     Outcome::ok(format!("message accepted by {label}"))
 }
@@ -622,11 +623,25 @@ async fn cancel(d: &Dispatch) -> Outcome {
     });
     Outcome::ok(format!(
         "cancelling {} session(s); {} pending task(s) will be picked up on the next start; {} \
-         detached job(s) keep running -- they outlive the server, stop them with `kill_bash`",
+         detached bash(es) keep running -- they outlive the server, stop them with `del_bash`",
         running.len(),
         pending,
         detached
     ))
+}
+
+/// Removes the row for a finished turn, unless a shutdown asked it to stay.
+///
+/// # Invariant
+///
+/// Deleting is the default only because most turns finish. A turn stopped by
+/// `cancel` wants its row kept so the next start replays it, and that decision
+/// lives in one function so no call site can forget it -- `resume_pending` used
+/// to delete unconditionally, which is how a turn cancelled twice lost its work.
+pub fn forget_finished_task(store: &Store, task_id: i64, preserve: bool) {
+    if !preserve {
+        let _ = store.delete_pending_task(task_id);
+    }
 }
 
 /// Wakes sessions holding a message nobody is left to read.
@@ -635,14 +650,26 @@ async fn cancel(d: &Dispatch) -> Outcome {
 ///
 /// Only "inject" rows are woken: a "turn" row already belongs to a turn that is
 /// starting or queued.
+/// Whether this row is one the waker should claim.
+fn wakeable(task: &PendingTask, now: i64, grace: std::time::Duration) -> bool {
+    match task.kind.as_str() {
+        "inject" => true,
+        "turn" => now.saturating_sub(task.created_at) >= grace.as_millis() as i64,
+        _ => false,
+    }
+}
+
 pub fn nudge_inboxes(d: &Dispatch) -> usize {
     let Ok(tasks) = d.store.pending_tasks() else {
         return 0;
     };
+    // The net under `send_message` and `resume_pending`.
+    let grace = std::time::Duration::from_secs(NUDGE_GRACE_SECS);
+    let now = now_millis();
     let mut seen = std::collections::HashSet::new();
     let mut started = 0;
     for task in tasks {
-        if task.kind != "inject" || !seen.insert(task.session.clone()) {
+        if !wakeable(&task, now, grace) || !seen.insert(task.session.clone()) {
             continue;
         }
         let Ok(session) = d.sessions.get(&task.session) else {
@@ -653,10 +680,18 @@ pub fn nudge_inboxes(d: &Dispatch) -> usize {
         }
         let agent = d.agent.clone();
         let active = d.active.clone();
-        // `None`: this turn owns no row, so the drain may take everything queued.
+        // A `turn` row is this turn's own; claiming it as anything else replays it.
+        let own = (task.kind == "turn").then_some(task.id);
+        let task_id = task.id;
+        let store = d.store.clone();
+        // Clear it, or the next tick finds the same row and runs the turn again.
+        let session_resumable = session.clone();
         tokio::spawn(async move {
             let _active = ActiveGuard::new(active);
-            agent.resume_turn(&session, None).await;
+            agent.resume_turn(&session, own).await;
+            if own.is_some() {
+                forget_finished_task(&store, task_id, session_resumable.take_resumable());
+            }
         });
         started += 1;
     }
@@ -704,10 +739,12 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
         let active = d.active.clone();
         // Clear only this task; the session may hold a second pending turn's row.
         let task_id = task.id;
+        // A resumed turn can be cancelled again; that cancel keeps the row.
+        let session_resumable = session.clone();
         tokio::spawn(async move {
             let _active = ActiveGuard::new(active);
             agent.resume_turn(&session, Some(task_id)).await;
-            let _ = store.delete_pending_task(task_id);
+            forget_finished_task(&store, task_id, session_resumable.take_resumable());
         });
         resumed += 1;
     }
@@ -735,6 +772,75 @@ pub fn publish_sessions(d: &Dispatch) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `turn` row nobody claimed is picked up, but only after a grace period.
+    ///
+    /// # Invariant
+    ///
+    /// Without this a preserved row whose server never restarted sits forever on
+    /// an idle session, which looks exactly like a session that never wakes.
+    /// The grace is what keeps the waker from racing `send_message`'s own turn.
+    #[test]
+    fn only_a_stranded_turn_row_is_wakeable() {
+        let fresh = PendingTask {
+            id: 1,
+            session: "main".into(),
+            kind: "turn".into(),
+            payload: json!({}),
+            created_at: now_millis(),
+        };
+        let stale = PendingTask {
+            created_at: now_millis() - (NUDGE_GRACE_SECS as i64 * 1000) - 1,
+            ..fresh.clone()
+        };
+        let inject = PendingTask {
+            kind: "inject".into(),
+            ..fresh.clone()
+        };
+        let grace = std::time::Duration::from_secs(NUDGE_GRACE_SECS);
+        let now = now_millis();
+        assert!(
+            !wakeable(&fresh, now, grace),
+            "a just-written turn row belongs to send_message"
+        );
+        assert!(
+            wakeable(&stale, now, grace),
+            "a stranded turn row must be woken"
+        );
+        assert!(
+            wakeable(&inject, now, grace),
+            "an inject row is woken at once"
+        );
+    }
+
+    /// A turn stopped by `cancel` keeps its row; one that finished drops it.
+    ///
+    /// # Invariant
+    ///
+    /// This is the difference between "the work is done" and "the work is owed",
+    /// and getting it wrong is silent: the reply says the turn will be picked up
+    /// next start, and then nothing is. `resume_pending` had exactly that bug.
+    #[test]
+    fn a_preserved_task_survives_the_turn_that_owned_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("g.db")).unwrap();
+        store.create_session("main", "m", "C:/x").unwrap();
+        let payload = json!({"session": "main", "message": "go"});
+
+        let kept = store.add_pending_task("main", "turn", &payload).unwrap();
+        forget_finished_task(&store, kept, true);
+        assert!(
+            store.pending_tasks().unwrap().iter().any(|t| t.id == kept),
+            "a cancelled turn's row must survive, or nothing replays it"
+        );
+
+        let done = store.add_pending_task("main", "turn", &payload).unwrap();
+        forget_finished_task(&store, done, false);
+        assert!(
+            !store.pending_tasks().unwrap().iter().any(|t| t.id == done),
+            "a finished turn owes nothing"
+        );
+    }
 
     /// A panicking turn must still release its slot, or shutdown waits forever.
     #[test]

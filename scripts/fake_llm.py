@@ -32,6 +32,8 @@ DUMP = os.environ.get("FAKE_LLM_DUMP")
 TOOL_NAME = os.environ.get("FAKE_LLM_TOOL")
 TOOL_ARGS = os.environ.get("FAKE_LLM_TOOL_ARGS") or '{"command":"echo hi-from-fake"}'
 WEB = os.environ.get("FAKE_LLM_WEB") == "1"
+# What the fake claims the request cost, so a threshold can be crossed on purpose.
+INPUT_TOKENS = int(os.environ.get("FAKE_LLM_INPUT_TOKENS") or 0)
 IMAGE_GEN = os.environ.get("FAKE_LLM_IMAGE_GEN") == "1"
 
 _lock = threading.Lock()
@@ -116,7 +118,17 @@ def events(with_tool: bool, with_web: bool, with_image: bool):
                 "content": [{"type": "output_text", "text": "hello from the fake model"}],
             },
         ),
-        ev("response.completed", response={"id": "resp_1"}),
+        ev(
+            "response.completed",
+            response={
+                "id": "resp_1",
+                "usage": {
+                    "input_tokens": INPUT_TOKENS,
+                    "output_tokens": 1,
+                    "total_tokens": INPUT_TOKENS + 1,
+                },
+            },
+        ),
     ]
     return out
 

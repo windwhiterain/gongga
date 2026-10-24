@@ -18,10 +18,8 @@ pub const DEFAULT_API_KEY_ENV: &str = "MINIMAX_CN_API_KEY";
 /// Tool output larger than this is capped and spilled to disk, keeping `cat`s out
 /// of later requests.
 pub const DEFAULT_MAX_OUTPUT_CHARS: usize = 8_000;
-/// Input-token ceiling that triggers compression; fallback with no roster window.
+/// Input-token ceiling that triggers the context notice; fallback with no roster window.
 pub const DEFAULT_COMPRESS_ABOVE_TOKENS: u64 = 40_000;
-/// Messages kept verbatim after a compression: the last few steps stay in full.
-pub const DEFAULT_KEEP_RECENT: usize = 30;
 
 /// Everything the server needs to boot.
 #[derive(Debug, Clone)]
@@ -115,11 +113,8 @@ pub struct BashConfig {
 
 #[derive(Debug, Clone)]
 pub struct AgentConfig {
-    /// Input tokens above which the older transcript is folded into a summary;
-    /// 0 disables it.
+    /// Input tokens above which the agent is told to fold its own context.
     pub compress_above_tokens: u64,
-    /// How many of the most recent messages a compression keeps verbatim.
-    pub keep_recent: usize,
 }
 
 /// The on-disk shape. Every field is optional so a config file can be tiny.
@@ -173,7 +168,6 @@ struct FileBash {
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct FileAgent {
     compress_above_tokens: Option<u64>,
-    keep_recent: Option<usize>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -345,12 +339,6 @@ impl Config {
                 .and_then(|a| a.compress_above_tokens)
                 .or_else(|| env_or("GONGGA_COMPRESS_ABOVE_TOKENS").and_then(|v| v.parse().ok()))
                 .unwrap_or(DEFAULT_COMPRESS_ABOVE_TOKENS),
-            keep_recent: file
-                .agent
-                .as_ref()
-                .and_then(|a| a.keep_recent)
-                .or_else(|| env_or("GONGGA_KEEP_RECENT").and_then(|v| v.parse().ok()))
-                .unwrap_or(DEFAULT_KEEP_RECENT),
         };
 
         let transport = file.transport.unwrap_or_default();
@@ -445,15 +433,14 @@ impl Config {
              max_output_chars = {max_output_chars}\n\
              \n\
              [agent]\n\
-             # No step limit: a turn runs until the work is done. Only the\n\
-             # transcript size is managed, so a long turn stays inside the\n\
-             # model's context window.\n\
-             # Fold the transcript into a summary once a request would carry more\n\
-             # than this many input tokens, as the provider counts them. 0\n\
-             # disables it. Only used when the model's context window is not in\n\
-             # the roster; otherwise the threshold is a share of the window.\n\
+             # No step limit: a turn runs until the work is done.\n\
+             # This server does not compact the transcript. When a request carries\n\
+             # more than this many input tokens, it injects one message telling the\n\
+             # agent so, and the agent folds with the script in\n\
+             # .agents/skills/compact/. 0 disables the\n\
+             # notice. Only used when the model's context window is not in the\n\
+             # roster; otherwise the threshold is a share of the window.\n\
              compress_above_tokens = {compress_above_tokens}\n\
-             keep_recent = {keep_recent}\n\
              \n\
              [transport]\n\
              mtu = {mtu}\n\
@@ -474,7 +461,6 @@ impl Config {
             timeout = self.bash.timeout.as_millis(),
             max_output_chars = self.bash.max_output_chars,
             compress_above_tokens = self.agent.compress_above_tokens,
-            keep_recent = self.agent.keep_recent,
             mtu = self.transport.mtu,
             window = self.transport.window,
         );
@@ -674,13 +660,17 @@ fn default_instructions() -> String {
      You can also replace the server you are running on. `cancel` keeps the \
      current turn as a pending task and the next server resumes it, so a swap \
      only has to put a new process in place before the old one leaves. In the \
-     harness repo, `scripts/evolve.sh stage` runs the tests, builds a \
-     successor and prints a launcher; run that launcher with `bash \
-     --detached`, then `scripts/evolve.sh swap <stamp>` checks that the \
-     successor is really waiting and sends `cancel`. Do this only after \
-     changing the server itself, and let the script decide when it is safe: it \
-     refuses to cancel when no successor is waiting, because then nothing \
-     would resume the turn.\n\nSkills are prose that teaches a procedure this server does not encode as a \
+     the harness repo, `.agents/skills/evolve/SKILL.md` owns it: its script \
+     `stage`s (tests, build, launcher), you run that launcher with `bash \
+     --detached`, and `swap` checks the successor is really waiting before it \
+     sends `cancel`. Do this only after changing the server itself, and let the \
+     script decide when it is safe: it refuses to cancel when no successor is \
+     waiting, because then nothing would resume the turn.\n\
+     \n\
+     Do not write a handoff note before a swap. The resume replays the whole \
+     transcript, so a note adds nothing; what must be re-measured is the \
+     outside world -- the running pid, the port, the pending rows -- because \
+     those are not in the transcript and will have changed.\n\nSkills are prose that teaches a procedure this server does not encode as a \
      tool, and they live in .agents/skills/<name>/SKILL.md, relative to the \
      repo. Do not read them all. Each file opens with frontmatter holding a \
      name and a one-line description, so one command lists every skill for two \
@@ -739,7 +729,7 @@ mod tests {
         let text = default_instructions();
         assert!(!text.contains("\\n"), "literal backslash-n leaked: {text}");
         assert!(text.contains("\n\nYou can also replace the server"));
-        assert!(text.contains("scripts/evolve.sh stage"));
+        assert!(text.contains(".agents/skills/evolve/SKILL.md"));
         assert!(text.contains("grep -H -m3 -E '^(name|description):'"));
         assert!(text.ends_with("do not invent one.\n"));
         assert!(!text.contains("  "), "double space: {text}");

@@ -106,9 +106,10 @@ running becomes part of the transcript here, so the request built by `step`
 below carries it. Injecting earlier would put a user line between a tool call
 and its result, which providers reject outright.
 
-Before building the request: if the transcript has grown past the budget, fold
-its older half into a summary. Doing it here rather than after a step means the
-very next request is the small one.
+Before building the request: if the last request carried more than the budget,
+tell the agent so and stop there. The server does not fold anything itself; the
+notice is queued as an inbox row, so it reaches the transcript at this same step
+boundary. See `Agent::maybe_notify_context`.
 
 The model says it is done, but something may have landed while it was finishing.
 Deliver it and go round again rather than end the turn with a message unread
@@ -167,27 +168,37 @@ speaks can end its wait instead of sitting out the command -- see
 fresh copy per call is what keeps the same message from waking every call after
 it.
 
-## Agent::maybe_compress
+## Agent::maybe_notify_context
 
-Without this a long turn grows without bound until the provider refuses it
-outright.
+The loop measures and asks; it never folds. Folding is a judgement about work
+only the agent has seen -- which failure was decisive, which output is still
+needed -- so the agent folds with `.agents/skills/compact/transcript.py`
+(see `server-compact.md`).
 
 How full the context is, as the provider last measured it. Not an estimate and
 not derived from text length: `usage.input_tokens` already covers the
 instructions, the tool schemas, the summary and the whole transcript, tokenised
-by the party that will bill for it. The only thing it misses is what this step
-adds after the check -- one response plus its tool output -- which is what the
-budget's headroom is for.
+by the party that will bill for it.
 
-Asked for by sequence rather than cut out of the whole transcript: the mapping
-from rows to items is not one-to-one, so counting rows covered a range that was
-not the one the cut named -- and a summary that swallows a message from after
-the cut loses it.
+The notice names the numbers and the two tools, because a bare "you are near the
+limit" leaves the reader to guess what is possible.
 
-The last measured size is now history: it described a request built from the
-prefix that was just folded away. Clearing it means "unknown until the next
-request reports", which stops the following step from compacting again on a
-stale number.
+Sent once per transcript state, not once per step: a turn that stays above the
+threshold takes many steps, and repeating the notice on each would bury the work
+it is asking about. `SessionHandle::note_context_asked` remembers the
+`summarised_upto` it last spoke about, so folding something -- which changes that
+number -- is what earns a second notice.
+
+The notice is queued as an `inject` row and does not touch the inbox signal, so
+it never ends a running command's wait the way an operator's message does.
+
+## compaction_budget
+
+`configured` is the server's own number, used only when the roster does not say
+how big the model's window is. A known window is the better measure: it makes
+the threshold follow the model instead of the other way round.
+
+It is a threshold for *asking*, not for acting: zero turns the notice off.
 
 ## Agent::step
 
@@ -205,46 +216,6 @@ is slow is on screen.
 A bundle rather than three more parameters, because the three travel together
 and nothing else in the turn needs them: `step` already takes the session, the
 turn, the cancellation token.
-
-## compaction_budget
-
-`configured` is the server's own number, used only when the roster does not say
-how big the model's window is. A known window is the better measure: it makes
-the threshold follow the model instead of the other way round.
-
-## choose_cut
-
-The constraint is the API's, not ours: a `function_call_output` with no
-`function_call` in front of it is rejected, and a reasoning item whose
-predecessor vanished is at best wasted. So the boundary is placed where the
-next message can stand on its own -- a user turn or a tool call.
-
-## clip
-
-The transcript is full of Chinese, and slicing a `&str` at a byte offset is a
-panic when that offset lands inside a character. It used to be, and the panic
-took the whole turn down where nothing was left to move it: the session sat at
-"running" with no request in flight and no error anywhere, which reads exactly
-like a provider that has stopped answering.
-
-## clip_cuts_between_characters_not_bytes
-
-Cutting a summary prompt used to slice by bytes, which panics the moment the cut
-lands inside a Chinese character -- taking the turn down mid-flight with no
-request in flight and nothing logged.
-
-## cut_never_leaves_an_orphaned_tool_result
-
-The API rejects a `function_call_output` without its `function_call`, so the cut
-must never leave one of those at the front of what survives.
-
-Cutting at 4 would leave 5 (a tool_result) first, and at 5 leaves the text on
-its own -- that is as far back as it can safely go.
-
-## a_recent_window_of_only_tool_results_is_not_compressed
-
-When nothing in the recent window can start a request on its own, leave the
-transcript alone rather than send something the API would reject.
 
 ## a_known_window_beats_the_configured_number
 

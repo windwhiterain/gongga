@@ -5,6 +5,7 @@
 //! `tui` depends on `cli`, never the reverse, so the command layer stays usable
 //! from a script and a new command never changes this crate.
 
+mod clipboard;
 mod input;
 mod log;
 mod render;
@@ -14,8 +15,9 @@ use std::io::{Stdout, stdout};
 
 use anyhow::Context;
 use crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, Event as TermEvent, EventStream, KeyCode, KeyEvent,
-    KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event as TermEvent, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent,
+    MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -31,6 +33,15 @@ pub use crate::run::interactive;
 
 // The vocabulary is the command layer's, re-exported so this crate can name it.
 pub use cli::{Candidate, Completer, Completion, LineKind, SharedCompleter, token_bounds};
+
+/// What Alt+<key> does to the terminal itself, rather than to the conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConsoleAction {
+    /// Alt+Y: put the visible rows on the clipboard.
+    Copy,
+    /// Alt+M: toggle whether this app or the terminal owns the mouse.
+    Mouse,
+}
 
 /// Something the operator did: only what a keyboard can do that a command
 /// cannot. See `docs/notes/tui-lib.md`.
@@ -73,6 +84,8 @@ pub struct Tui {
     history: Vec<String>,
     history_pos: Option<usize>,
     events: EventStream,
+    /// Whether mouse capture is on, so the toggle knows what to flip.
+    mouse_captured: bool,
     restored: bool,
     /// Whether anything changed since the last frame. Every mutation sets it.
     dirty: bool,
@@ -82,10 +95,15 @@ impl Tui {
     pub fn new(completer: SharedCompleter) -> anyhow::Result<Self> {
         enable_raw_mode().context("enabling raw mode")?;
         let mut out = stdout();
-        // Mouse capture is what makes the wheel a scroll key; without it the
-        // terminal keeps the events for itself.
-        execute!(out, EnterAlternateScreen, EnableMouseCapture)
-            .context("entering alternate screen")?;
+        // Capture makes the wheel a scroll key; Alt+M gives it back. Bracketed
+        // paste makes a paste arrive as one string.
+        execute!(
+            out,
+            EnterAlternateScreen,
+            EnableMouseCapture,
+            EnableBracketedPaste
+        )
+        .context("entering alternate screen")?;
         let terminal = Terminal::new(CrosstermBackend::new(out))?;
         Ok(Self {
             terminal,
@@ -103,6 +121,7 @@ impl Tui {
             history: Vec::new(),
             history_pos: None,
             events: EventStream::new(),
+            mouse_captured: true,
             restored: false,
             // The first frame has to happen even though nothing has changed.
             dirty: true,
@@ -185,6 +204,8 @@ impl Tui {
                     self.dirty = true;
                 }
                 Ok(TermEvent::Mouse(mouse)) => self.handle_mouse(mouse),
+                // One string, so a pasted block stays a block: see `paste`.
+                Ok(TermEvent::Paste(text)) => self.paste(&text),
                 Ok(TermEvent::Resize(..)) => self.dirty = true,
                 _ => {}
             }
@@ -206,6 +227,18 @@ impl Tui {
         }
     }
 
+    /// The keys that act on the terminal, not on the conversation.
+    fn console_key(key: &KeyEvent) -> Option<ConsoleAction> {
+        if !key.modifiers.contains(KeyModifiers::ALT) {
+            return None;
+        }
+        match key.code {
+            KeyCode::Char('y' | 'Y') => Some(ConsoleAction::Copy),
+            KeyCode::Char('m' | 'M') => Some(ConsoleAction::Mouse),
+            _ => None,
+        }
+    }
+
     /// Whether Enter breaks instead of sending: Shift or Alt (ESC CR), not plain Enter.
     fn line_break(key: &KeyEvent) -> bool {
         matches!(key.code, KeyCode::Enter)
@@ -217,6 +250,10 @@ impl Tui {
     fn handle_key(&mut self, key: KeyEvent) -> Option<UiEvent> {
         if let Some(action) = Self::shortcut(&key) {
             return Some(action);
+        }
+        if let Some(action) = Self::console_key(&key) {
+            self.console(action);
+            return None;
         }
 
         if Self::line_break(&key) {
@@ -340,6 +377,100 @@ impl Tui {
     }
 
     /// Breaks the line instead of sending it.
+    /// Inserts a pasted block at the cursor, without sending it.
+    ///
+    /// # Invariant
+    ///
+    /// A paste is text, never a keystroke replay: a newline inside it must not
+    /// press Enter, or pasting a programme would submit its first line and leave
+    /// the rest in the prompt.
+    fn paste(&mut self, raw: &str) {
+        let text = clipboard::paste_text(raw);
+        if text.is_empty() {
+            return;
+        }
+        // The popup was about the token before the paste, not about what it means now.
+        self.screen.completion = None;
+        self.screen.input.insert_str(&text);
+        self.dirty = true;
+    }
+
+    /// Alt+Y copies what is on screen; Alt+M hands the mouse back to the terminal.
+    fn console(&mut self, action: ConsoleAction) {
+        match action {
+            ConsoleAction::Copy => self.copy_visible(),
+            ConsoleAction::Mouse => self.toggle_mouse(),
+        }
+        self.dirty = true;
+    }
+
+    /// Copies the rows the operator can see, which is what "copy that" means.
+    fn copy_visible(&mut self) {
+        let Ok(size) = self.terminal.size() else {
+            self.push(LineKind::Error, "copy: the terminal has no size to read");
+            return;
+        };
+        // One column short and minus the input box, as the renderer measures.
+        let width = size.width.saturating_sub(1).max(1) as usize;
+        let input = render::input_rows(self.screen.input.text(), size.width, size.height);
+        let height = log_window_height(size.height, input);
+        let view = self
+            .screen
+            .log
+            .window(width, height.max(1), self.screen.scroll);
+        let text = view
+            .rows
+            .iter()
+            .map(|(_, row)| *row)
+            .collect::<Vec<_>>()
+            .join("\n");
+        drop(view);
+        match clipboard::copy(&text) {
+            clipboard::Copied::Ok { chars, tool } => self.push(
+                LineKind::System,
+                format!("copied {chars} characters ({tool})"),
+            ),
+            clipboard::Copied::Empty => self.push(LineKind::System, "copy: the window is empty"),
+            clipboard::Copied::NoTool => self.push(
+                LineKind::Error,
+                "copy: no clipboard tool here; Alt+M frees the mouse so the terminal can select",
+            ),
+            clipboard::Copied::Failed(why) => {
+                self.push(LineKind::Error, format!("copy failed: {why}"))
+            }
+        }
+    }
+
+    /// Toggles terminal mouse capture, so selection and the wheel trade places.
+    ///
+    /// # Invariant
+    ///
+    /// Releasing capture is what makes native copy possible: while the app holds
+    /// the mouse, the terminal never sees a drag and cannot select.
+    fn toggle_mouse(&mut self) {
+        self.mouse_captured = !self.mouse_captured;
+        let result = if self.mouse_captured {
+            execute!(self.terminal.backend_mut(), EnableMouseCapture)
+        } else {
+            execute!(self.terminal.backend_mut(), DisableMouseCapture)
+        };
+        match result {
+            Ok(()) if self.mouse_captured => self.push(
+                LineKind::System,
+                "mouse: the app scrolls (Alt+M releases it for selecting)",
+            ),
+            Ok(()) => self.push(
+                LineKind::System,
+                "mouse: the terminal selects; drag to copy, Alt+M gives scrolling back",
+            ),
+            Err(e) => {
+                // The flag must match reality, or the next toggle lies.
+                self.mouse_captured = !self.mouse_captured;
+                self.push(LineKind::Error, format!("mouse: {e}"));
+            }
+        }
+    }
+
     fn newline(&mut self) {
         self.screen.input.insert('\n');
         // The popup was about the token before the break, not the one after it.
@@ -402,6 +533,7 @@ impl Tui {
         execute!(
             self.terminal.backend_mut(),
             LeaveAlternateScreen,
+            DisableBracketedPaste,
             DisableMouseCapture
         )?;
         self.terminal.show_cursor()?;
@@ -414,6 +546,19 @@ impl Drop for Tui {
         // A panicking caller must not leave the terminal in raw mode.
         let _ = self.restore();
     }
+}
+
+/// Rows the log window covers, which is what a copy may take.
+///
+/// # Invariant
+///
+/// Must agree with the layout in `render::draw`: header, footer and help take one
+/// row each, and the input box takes as many as its text needs. A copy that
+/// assumed more would include rows the screen never drew.
+fn log_window_height(terminal: u16, input_rows: u16) -> usize {
+    terminal
+        .saturating_sub(render::CHROME_ROWS + input_rows)
+        .max(1) as usize
 }
 
 /// The completer's answer for this input as a popup; bounds share its split.
@@ -454,6 +599,32 @@ impl Completer for NoCompleter {
 }
 
 #[cfg(test)]
+mod terminal_modes {
+    /// Guards the enable/disable pair nothing else would notice losing.
+    ///
+    /// # Invariant
+    ///
+    /// Each mode is named on the way in and on the way out.
+    #[test]
+    fn the_terminal_modes_are_paired() {
+        let source = include_str!("lib.rs");
+        // Only the impl body: `use` names every mode once, so the whole file
+        // would pass even with the calls deleted.
+        let body = source
+            .split_once("impl Tui {")
+            .map(|(_, rest)| rest)
+            // And not the tests: this test's own literals would satisfy it.
+            .and_then(|rest| rest.split_once("#[cfg(test)]").map(|(body, _)| body))
+            .unwrap_or(source);
+        for mode in ["EnableMouseCapture", "EnableBracketedPaste"] {
+            let disable = mode.replacen("Enable", "Disable", 1);
+            assert!(body.contains(mode), "{mode} is never enabled");
+            assert!(body.contains(&disable), "{mode} is never disabled");
+        }
+    }
+}
+
+#[cfg(test)]
 mod layering {
     /// The arrow this crate exists to point: `tui` depends on `cli`, not the reverse.
     #[test]
@@ -489,6 +660,11 @@ mod tests {
                     max_scroll: 0,
                 },
             }
+        }
+
+        /// The same normalization `Tui::paste` does, on this stand-in's input.
+        fn paste(&mut self, raw: &str) {
+            self.screen.input.insert_str(&clipboard::paste_text(raw));
         }
 
         /// The same call `Tui::stream` makes, so a test drives the real path.
@@ -627,6 +803,53 @@ mod tests {
                 "[peer] ok",
                 "[test1] 这是我的",
             ]
+        );
+    }
+
+    /// A pasted block lands in the prompt whole: no line break may press Enter.
+    ///
+    /// # Invariant
+    ///
+    /// This is the difference between pasting a programme and sending its first
+    /// line while the rest sits in the box.
+    #[test]
+    fn a_paste_is_inserted_not_submitted() {
+        let mut h = Headless::new();
+        h.paste("fn main() {\n    todo!()\n}\n");
+        assert_eq!(h.screen.input.text(), "fn main() {\n    todo!()\n}\n");
+        // Pasted text is not a keystroke replay: nothing was sent.
+        assert!(h.screen.input.text().contains('\n'));
+    }
+
+    /// A Windows clipboard's CRLF must not leave carriage returns in the box.
+    #[test]
+    fn a_paste_normalizes_line_endings() {
+        let mut h = Headless::new();
+        h.paste("a\r\nb\rc");
+        assert_eq!(h.screen.input.text(), "a\nb\nc");
+    }
+
+    /// The console keys are not editing keys: Alt+Y and Alt+M are recognised,
+    /// plain letters still type.
+    #[test]
+    fn the_console_keys_are_recognised() {
+        let alt = KeyModifiers::ALT;
+        assert_eq!(
+            Tui::console_key(&KeyEvent::new(KeyCode::Char('y'), alt)),
+            Some(ConsoleAction::Copy)
+        );
+        assert_eq!(
+            Tui::console_key(&KeyEvent::new(KeyCode::Char('M'), alt)),
+            Some(ConsoleAction::Mouse)
+        );
+        assert_eq!(
+            Tui::console_key(&KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)),
+            None
+        );
+        assert_eq!(
+            Tui::console_key(&KeyEvent::new(KeyCode::Char('q'), alt)),
+            None,
+            "Alt+Q is the quit shortcut, not a console key"
         );
     }
 

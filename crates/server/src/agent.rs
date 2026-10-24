@@ -18,7 +18,7 @@ use crate::config::LlmConfig;
 use crate::llm::{LlmClient, LlmEvent};
 use crate::providers::{self, Catalog};
 use crate::session::SessionHandle;
-use crate::store::{HistoryItem, Store};
+use crate::store::Store;
 use crate::tools::detached::DetachedRegistry;
 use crate::tools::{ToolContext, ToolRegistry};
 
@@ -42,8 +42,6 @@ pub struct Agent {
     /// Compress once a request would carry more than this many input tokens.
     /// 0 disables it.
     pub compress_above_tokens: u64,
-    /// Messages a compression leaves alone at the end of the transcript.
-    pub keep_recent: usize,
     /// Where capped tool output is spilled; without it the tail is lost.
     pub output_dir: PathBuf,
     /// Detached jobs of every session, reached through `ToolContext`.
@@ -160,7 +158,7 @@ impl Agent {
             // Step boundary: a user line between a call and its result is rejected, so inject here.
             self.deliver_inbox(id, &name, task);
             // Compress before the request is built, so the very next request is the small one.
-            self.maybe_compress(id, &name, &llm, budget, &cancel).await;
+            self.maybe_notify_context(session, id, &name, budget);
             tracing::info!(session = %name, step, "step start");
             let attempt = Attempt {
                 number: step,
@@ -312,20 +310,15 @@ impl Agent {
         delivered
     }
 
-    /// Folds the older transcript into one summary when the next request exceeds the budget.
+    /// Tells the session its context reached the threshold, and stops there.
     ///
     /// # Invariant
     ///
-    /// The rows are not deleted; `summarised_upto` only marks where the summary
-    /// takes over, so the full transcript stays readable.
-    async fn maybe_compress(
-        &self,
-        id: i64,
-        name: &str,
-        llm: &LlmClient,
-        budget: u64,
-        cancel: &tokio_util::sync::CancellationToken,
-    ) {
+    /// The loop never folds the transcript itself. Folding is a judgement about
+    /// work only the agent has seen, so the server measures and asks: the agent
+    /// decides what the next stretch of context should contain. See
+    /// `.agents/skills/compact/` and `docs/notes/server-agent.md`.
+    fn maybe_notify_context(&self, session: &SessionHandle, id: i64, name: &str, budget: u64) {
         if budget == 0 {
             return;
         }
@@ -336,55 +329,28 @@ impl Agent {
         if tokens < budget {
             return;
         }
-        let Ok(index) = self.store.message_index(id) else {
+        let Ok((_, upto)) = self.store.summary(id) else {
             return;
         };
-        let Ok((previous, upto)) = self.store.summary(id) else {
-            return;
-        };
-        // Eligible: only what a request would carry; the last summary's prefix is not resent.
-        let live: Vec<&(i64, String)> = index.iter().filter(|(s, _)| *s > upto).collect();
-        let Some(cut) = choose_cut(&live, self.keep_recent) else {
-            return;
-        };
-        // Ask by sequence: rows and items are not one-to-one, so counting rows misses.
-        let Ok(old) = self.store.history_between(id, upto, cut) else {
-            return;
-        };
-        if old.is_empty() {
+        // Once per state of the transcript: nagging every step teaches nothing.
+        if !session.note_context_asked(upto) {
             return;
         }
-        let covered = old.len();
-
+        let message = context_notice(name, tokens, budget, upto);
+        if let Err(e) = self.store.add_pending_task(
+            name,
+            "inject",
+            &json!({"session": name, "message": message}),
+        ) {
+            self.error(name, "queueing the context notice", e);
+            return;
+        }
         self.bus.publish(Event::Log {
             level: LogLevel::Info,
-            message: format!("{name}: compressing {covered} item(s) into a summary"),
+            message: format!(
+                "{name}: context at {tokens} of {budget} tokens; asked the agent to fold"
+            ),
         });
-        let started = std::time::Instant::now();
-        let prompt = summary_prompt(previous.as_deref(), &old);
-        match llm.summarise(&prompt, cancel).await {
-            Ok(text) if !text.trim().is_empty() => {
-                tracing::info!(session = %name, chars = text.len(), elapsed = ?started.elapsed(), "compression done");
-                if let Err(e) = self.store.set_summary(id, &text, cut) {
-                    self.error(name, "storing the summary", e);
-                    return;
-                }
-                // It measured the prefix just folded; clear it so the next step cannot reuse it.
-                let _ = self.store.set_context_tokens(id, 0);
-                self.bus.publish(Event::Log {
-                    level: LogLevel::Info,
-                    message: format!("{name}: compressed up to message {cut}"),
-                });
-            }
-            Ok(_) => {
-                tracing::warn!("compression returned an empty summary; keeping the context as is")
-            }
-            Err(e) => {
-                // Not fatal: the turn continues with the context it has. It will
-                // try again on the next step.
-                self.error(name, "compressing context", e);
-            }
-        }
     }
 
     /// One model request. Returns the tool calls it asked for, if any.
@@ -720,171 +686,45 @@ fn compaction_budget(configured: u64, context: Option<u64>, percent: Option<u8>)
 ///
 /// The boundary is followed by a `text` or `tool_call`, never by an orphaned
 /// `tool_result`, which providers reject.
-fn choose_cut(live: &[&(i64, String)], keep_recent: usize) -> Option<i64> {
-    if live.len() <= keep_recent {
-        return None;
-    }
-    let start = live.len() - keep_recent;
-    for i in start..live.len() {
-        if matches!(live[i].1.as_str(), "text" | "tool_call") {
-            return Some(if i == 0 { 0 } else { live[i - 1].0 });
-        }
-    }
-    None
-}
-
-/// The prompt that turns a stretch of transcript into a handover note.
-fn summary_prompt(previous: Option<&str>, old: &[HistoryItem]) -> String {
-    let mut p = String::from(
-        "You are compressing the history of an agent session so another model \
-         can continue the work without seeing it.\n\n\
-         Write a handover note that keeps: what the user asked for, what was \
-         tried, what worked, what failed and why, the current state of files \
-         and processes, and any decision or constraint that must survive. \
-         Drop raw command output, file contents and repetition. Plain prose or \
-         tight bullets, under 800 words, no preamble.\n\n",
-    );
-    if let Some(prev) = previous {
-        p.push_str("Summary of everything before this stretch:\n");
-        p.push_str(prev);
-        p.push_str("\n\nThis is what happened since:\n");
-    }
-    p.push_str("--- transcript ---\n");
-    for item in old {
-        match item {
-            HistoryItem::Text { role, text } => {
-                p.push_str(&format!("{role}: {}\n", clip(text, 2_000)))
-            }
-            HistoryItem::Reasoning { summary, .. } if !summary.is_empty() => {
-                p.push_str(&format!("(thought: {})\n", clip(summary, 600)))
-            }
-            HistoryItem::ToolCall {
-                name, arguments, ..
-            } => p.push_str(&format!("called {name} {}\n", clip(arguments, 800))),
-            HistoryItem::ToolResult { output, images, .. } => {
-                p.push_str(&format!("=> {}\n", clip(output, 800)));
-                // A summary cannot fold a picture in, so it says one was there.
-                for image in images {
-                    p.push_str(&format!("   (an image was shown here: {})\n", image.path));
-                }
-            }
-            HistoryItem::BuiltinCall { item, .. } => {
-                let kind = item["type"].as_str().unwrap_or("provider tool");
-                p.push_str(&format!("({kind} ran at the provider)\n"));
-            }
-            // A reasoning item with no readable summary adds nothing here.
-            HistoryItem::Reasoning { .. } => {}
-        }
-    }
-    p.push_str("--- end ---\n");
-    p
-}
-
-/// Shortens text to `max` characters, saying how much was dropped.
+/// The message that hands the folding decision to the agent.
 ///
 /// # Invariant
 ///
-/// Counted and cut in characters, not bytes: a cut inside a character would
-/// panic.
-fn clip(text: &str, max: usize) -> String {
-    let total = text.chars().count();
-    if total <= max {
-        return text.to_string();
-    }
-    let end = text
-        .char_indices()
-        .nth(max)
-        .map_or(text.len(), |(index, _)| index);
-    format!("{}... [{} more characters]", &text[..end], total - max)
+/// It names the numbers it is talking about and the two tools that act on them:
+/// a notice that says only "you are near the limit" leaves the reader to guess
+/// what is possible. See `.agents/skills/compact/`.
+fn context_notice(session: &str, tokens: u64, budget: u64, upto: i64) -> String {
+    let folded = if upto == 0 {
+        "nothing has been folded yet".to_string()
+    } else {
+        format!("everything through seq {upto} is already folded into the summary")
+    };
+    format!(
+        "Context notice for `{session}`: the last request carried {tokens} input tokens, and \
+         this session's threshold is {budget}. This server does not compact for you -- the \
+         shape of the context is your decision.\n\n\
+         Right now {folded}.\n\n\
+         To fold the older part, from a shell:\n\
+         \n\
+         .agents/skills/compact/transcript.py read --session {session}\n\
+         \n\
+         that shows the messages actually being sent. Then collapse with a handover note that \
+         keeps what the work still needs:\n\
+         \n\
+         .agents/skills/compact/transcript.py collapse --session {session} --upto <seq> \\\n\
+         \x20   --summary '<what was asked, what was tried, what worked and failed, the \
+         current state, the constraints that must survive>'\n\
+         \n\
+         Folding removes nothing from the database: the messages stay readable, they just stop \
+         being sent. If the work is nearly done, or the context is fine as it is, do nothing. \
+         The `.agents/skills/compact/SKILL.md` skill has the full procedure."
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn live(entries: &[(i64, &str)]) -> Vec<(i64, String)> {
-        entries.iter().map(|(s, k)| (*s, k.to_string())).collect()
-    }
-
-    /// A cut inside a Chinese character must not panic the turn.
-    #[test]
-    fn clip_cuts_between_characters_not_bytes() {
-        let text = "文".repeat(500);
-        let clipped = clip(&text, 3);
-        assert!(clipped.starts_with("文文文"), "{clipped:?}");
-        assert!(clipped.contains("497 more characters"), "{clipped:?}");
-        // A cut point inside a character is the whole point of the test.
-        assert_eq!(clip("中文abc", 5), "中文abc");
-        assert!(clip("中文abc", 3).starts_with("中文a"));
-    }
-
-    /// The API rejects an orphaned tool result, so the cut must never leave one first.
-    #[test]
-    fn cut_never_leaves_an_orphaned_tool_result() {
-        let rows = live(&[
-            (1, "text"),
-            (2, "tool_call"),
-            (3, "tool_result"),
-            (4, "reasoning"),
-            (5, "tool_result"),
-            (6, "text"),
-        ]);
-        let borrow: Vec<&(i64, String)> = rows.iter().collect();
-        // Cutting at 4 would leave a tool_result first; 5 is as far back as is safe.
-        assert_eq!(choose_cut(&borrow, 2), Some(5));
-    }
-
-    /// With nothing that can start a request on its own, leave the transcript alone.
-    #[test]
-    fn a_recent_window_of_only_tool_results_is_not_compressed() {
-        let rows = live(&[
-            (1, "text"),
-            (2, "tool_call"),
-            (3, "tool_result"),
-            (4, "tool_result"),
-            (5, "tool_result"),
-            (6, "tool_result"),
-        ]);
-        let borrow: Vec<&(i64, String)> = rows.iter().collect();
-        assert_eq!(choose_cut(&borrow, 2), None);
-    }
-
-    #[test]
-    fn cut_lands_after_a_completed_step_when_possible() {
-        let rows = live(&[
-            (1, "text"),
-            (2, "tool_call"),
-            (3, "tool_result"),
-            (4, "text"),
-            (5, "tool_call"),
-            (6, "tool_result"),
-            (7, "text"),
-        ]);
-        let borrow: Vec<&(i64, String)> = rows.iter().collect();
-        // Keeps 5..7: a complete step plus the user's line, never half of one.
-        assert_eq!(choose_cut(&borrow, 3), Some(4));
-    }
-
-    #[test]
-    fn nothing_is_compressed_when_the_transcript_is_short() {
-        let rows = live(&[(1, "text"), (2, "tool_call")]);
-        let borrow: Vec<&(i64, String)> = rows.iter().collect();
-        assert_eq!(choose_cut(&borrow, 30), None);
-    }
-
-    #[test]
-    fn an_earlier_summary_is_carried_into_the_next_one() {
-        let items = vec![HistoryItem::Text {
-            role: "user".into(),
-            text: "do the thing".into(),
-        }];
-        let prompt = summary_prompt(Some("we already tried X"), &items);
-        assert!(prompt.contains("we already tried X"));
-        assert!(prompt.contains("do the thing"));
-    }
-
-    /// Off stays off: a server that asked for no compaction is not overruled by
-    /// a default share of the model's window.
     #[test]
     fn a_zero_config_turns_compaction_off_whatever_the_window_is() {
         assert_eq!(compaction_budget(0, Some(1_000_000), Some(50)), 0);
@@ -902,38 +742,29 @@ mod tests {
         assert_eq!(compaction_budget(40_000, None, None), 40_000);
     }
 
-    /// The summary says a picture was there, so nothing is reasoned on silently.
+    /// The notice names the numbers, the session, and the two commands.
+    ///
+    /// # Invariant
+    ///
+    /// A notice that says only "you are near the limit" leaves the reader to
+    /// guess what is possible; one that does not name the session cannot be acted
+    /// on, because the script takes it as an argument.
     #[test]
-    fn the_summary_says_a_picture_was_there() {
-        let items = vec![
-            HistoryItem::ToolResult {
-                call_id: "c1".into(),
-                output: "the model is looking at shot.png".into(),
-                images: vec![crate::store::ImageRef {
-                    path: "C:/w/shot.png".into(),
-                    media_type: "image/png".into(),
-                }],
-            },
-            HistoryItem::BuiltinCall {
-                item: json!({"type": "web_search_call"}),
-                replayable: true,
-            },
-        ];
-        let prompt = summary_prompt(None, &items);
-        assert!(
-            prompt.contains("an image was shown here: C:/w/shot.png"),
-            "{prompt}"
-        );
-        assert!(
-            prompt.contains("web_search_call ran at the provider"),
-            "{prompt}"
-        );
+    fn the_context_notice_says_what_to_do() {
+        let notice = context_notice("main", 700_000, 700_000, 0);
+        assert!(notice.contains("700000 input tokens"), "{notice}");
+        assert!(notice.contains("nothing has been folded yet"), "{notice}");
+        assert!(notice.contains("--session main"), "{notice}");
+        assert!(notice.contains("transcript.py read"), "{notice}");
+        assert!(notice.contains("transcript.py collapse"), "{notice}");
+        // And it says the messages are not lost, the fear that stops folding.
+        assert!(notice.contains("stay readable"), "{notice}");
     }
 
-    fn long_output_is_clipped_in_the_summary_prompt() {
-        let long = "x".repeat(5_000);
-        let clipped = clip(&long, 800);
-        assert!(clipped.len() < 1_000);
-        assert!(clipped.contains("more characters"));
+    /// A notice for a session that already folded says where the summary ends.
+    #[test]
+    fn the_notice_names_what_is_already_folded() {
+        let notice = context_notice("main", 10, 20, 42);
+        assert!(notice.contains("through seq 42"), "{notice}");
     }
 }

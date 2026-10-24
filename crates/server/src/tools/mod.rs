@@ -201,7 +201,6 @@ impl ToolRegistry {
                 Box::new(CheckBashTool { max_output_chars }),
                 Box::new(DelBashTool),
                 Box::new(ListBashTool),
-                Box::new(KillBashTool),
                 Box::new(ReadImageTool),
             ],
         }
@@ -505,14 +504,13 @@ impl Tool for BashTool {
             "properties": {
                 "name": {
                     "type": "string",
-                    "description": "Which persistent shell to use. Defaults to `default`. \
-                                     One name is one live process that stays alive until \
-                                     `del_bash`: reusing a name is what carries `cd`, \
-                                     exports and shell functions from one call to the next, \
-                                     and a fresh name for every call starts a fresh process \
-                                     every call. Unless you need two shells side by side, \
-                                     use one name throughout and put what the call is for in \
-                                     `task`."
+                    "description": "Whichever bash this call is about. Without `detached`: \
+                                     which persistent shell to run in, default `default` -- \
+                                     reusing a name is what carries `cd`, exports and shell \
+                                     functions from one call to the next. With `detached`: \
+                                     the name of the detached bash being created, required, \
+                                     and unique in the session -- it is what `del_bash` uses \
+                                     to end that process later."
                 },
                 "command": {
                     "type": "string",
@@ -539,7 +537,7 @@ impl Tool for BashTool {
                                      exits -- that is how you restart the server you are \
                                      running on. Nothing is collected: its output is written \
                                      to the log file named in the result. Stop it later with \
-                                     `kill_bash`. Defaults to false."
+                                     `del_bash` with its name stops it. Defaults to false."
                 },
                 "timeout_ms": {
                     "type": "integer",
@@ -593,33 +591,48 @@ impl Tool for BashTool {
                     "pick one: `background` collects the output, `detached` does not",
                 );
             }
-            if background || detached {
+            // `detached` names the process itself; `background` is a job of a shell.
+            if detached {
+                // Defaulting to `default` would collide with the persistent shell.
+                let Some(name) = args
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                else {
+                    return ToolOutcome::err(
+                        "`bash` with `detached: true` needs `name`: it is the only handle on a \
+                         process nothing owns, and the default name would collide with the \
+                         persistent shell called `default`",
+                    );
+                };
+                let cwd = ctx.cwd.clone();
+                return match ctx.detached.start(&ctx.session, name, command, &cwd).await {
+                    Ok(job) => ToolOutcome::ok(format!(
+                        "started detached bash `{}` (pid {}), running in {}. It outlives the \
+                         shell, the session, `cancel` and even a server restart, so it is how \
+                         you replace the server you are running on. Delete it with \
+                         `del_bash name_regex: \"^{}$\"`, which stops the process. Its output \
+                         is not collected -- read it at: {}",
+                        job.name,
+                        job.pid,
+                        ctx.cwd.display(),
+                        job.name,
+                        job.log
+                    )),
+                    Err(e) => ToolOutcome::err(format!("{e}")),
+                };
+            }
+            if background {
                 let shell = match ctx.shell(name) {
                     Ok(s) => s,
                     Err(e) => return ToolOutcome::err(format!("{e}")),
                 };
-                if background {
-                    let mut shell = shell.lock().await;
-                    return match shell.run_background(command).await {
-                        Ok(job) => ToolOutcome::ok(format!(
-                            "started background job {job} in shell {name}; \
-                             run `check_bash` to collect its output"
-                        )),
-                        Err(e) => ToolOutcome::err(format!("{e}")),
-                    };
-                }
-                // Only the cwd is inherited: a detached job is a process of its own, not the shell.
-                let cwd = {
-                    let shell = shell.lock().await;
-                    shell.cwd().to_path_buf()
-                };
-                return match ctx.detached.start(&ctx.session, name, command, &cwd).await {
+                let mut shell = shell.lock().await;
+                return match shell.run_background(command).await {
                     Ok(job) => ToolOutcome::ok(format!(
-                        "started detached job {} (pid {}) from shell {name}. It outlives the \
-                         shell, the session, `cancel` and even a server restart, so it is how \
-                         you replace the server you are running on; only `kill_bash` stops it. \
-                         Its output is not collected -- read it at: {}",
-                        job.job, job.pid, job.log
+                        "started background job {job} in shell {name}; \
+                         run `check_bash` to collect its output"
                     )),
                     Err(e) => ToolOutcome::err(format!("{e}")),
                 };
@@ -859,28 +872,53 @@ impl Tool for ListBashTool {
     }
 
     fn description(&self) -> &'static str {
-        "List the persistent shells of this session: their names, working \
-         directories, how much unread output they are holding, and how many \
-         background jobs are still running. Also lists the session's detached \
-         jobs, which are not any shell's and survive them all."
+        "List the bash of this session: their names, working directories, how much \
+         unread output they are holding, and how many background jobs are still \
+         running. Also lists the session's detached bashes, which are not any shell's \
+         and survive them all. `name_regex` narrows the answer to the names that \
+         match, which is how one name's state is asked about."
     }
 
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
-            "properties": {},
+            "properties": {
+                "name_regex": {
+                    "type": "string",
+                    "description": "Only names matching this pattern, unanchored: \
+                                    `qa` also takes `qa2`. Defaults to every bash."
+                }
+            },
             "additionalProperties": false
         })
     }
 
     fn run<'a>(
         &'a self,
-        _args: Value,
+        args: Value,
         ctx: &'a ToolContext,
     ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
+            // The same rule `del_bash` follows: one pattern, both verbs.
+            let pattern = args.get("name_regex").and_then(|v| v.as_str());
+            let matches = match pattern {
+                None => None,
+                Some(pattern) => match regex::Regex::new(pattern) {
+                    Ok(re) => Some(re),
+                    Err(_) => {
+                        return ToolOutcome::err(format!(
+                            "name_regex {pattern:?} is not a valid regex"
+                        ));
+                    }
+                },
+            };
+            let keep = |name: &str| matches.as_ref().is_none_or(|re| re.is_match(name));
+
             let mut rows = Vec::new();
             for name in ctx.shell_names() {
+                if !keep(&name) {
+                    continue;
+                }
                 let Some(handle) = ctx.peek(&name) else {
                     continue;
                 };
@@ -892,16 +930,20 @@ impl Tool for ListBashTool {
                     "background_jobs": shell.background_jobs(),
                 }));
             }
-            // Detached jobs belong to the session, not a shell, so they are listed on their own.
+            // Detached bashes are the session's, not a shell's, and share the pattern.
             let detached: Vec<Value> = ctx
                 .detached
                 .list(&ctx.session)
                 .await
                 .iter()
+                .filter(|j| keep(&j.name))
                 .map(|j| j.to_json())
                 .collect();
             if rows.is_empty() && detached.is_empty() {
-                return ToolOutcome::ok("this session has no shells and no detached jobs");
+                return ToolOutcome::ok(match pattern {
+                    None => "this session has no bash".to_string(),
+                    Some(p) => format!("no bash matches {p:?}"),
+                });
             }
             ToolOutcome::ok(
                 serde_json::to_string_pretty(&json!({"bash": rows, "detached": detached}))
@@ -962,96 +1004,35 @@ impl Tool for DelBashTool {
                 .into_iter()
                 .filter(|name| regex.is_match(name))
                 .collect();
+            // One word for both kinds: nothing else ends a detached process.
+            let stopped = ctx.detached.stop(&ctx.session, pattern).await;
             if names.is_empty() {
-                return ToolOutcome::ok(format!("no live shell matches {pattern:?}"));
+                if stopped.total() == 0 {
+                    return ToolOutcome::ok(format!("no bash matches {pattern:?}"));
+                }
+                return ToolOutcome::ok(format!(
+                    "deleted {} detached bash(es) matching {pattern:?}{}",
+                    stopped.stopped,
+                    if stopped.failed > 0 {
+                        format!("; {} could not be stopped", stopped.failed)
+                    } else {
+                        String::new()
+                    }
+                ));
             }
-            let jobs = ctx.detached.list(&ctx.session).await;
-            let mut survivors = 0;
             let mut discarded = Vec::new();
             for name in &names {
-                survivors += jobs
-                    .iter()
-                    .filter(|j| j.shell == *name && j.running)
-                    .count();
                 if ctx.forget(name) {
                     discarded.push(name.clone());
                 }
             }
             let list = discarded.join(", ");
-            // Detached jobs are not the shells', so say they kept running, or the model assumes.
-            if survivors == 0 {
-                ToolOutcome::ok(format!("discarded shell(s) {list}"))
+            let kept = if stopped.stopped > 0 {
+                format!("; also deleted {} detached bash(es)", stopped.stopped)
             } else {
-                ToolOutcome::ok(format!(
-                    "discarded shell(s) {list}; {survivors} detached job(s) from them are \
-                     still running and were not stopped -- `kill_bash` stops them"
-                ))
-            }
-        })
-    }
-}
-
-// -------------------------------- kill_bash --------------------------------
-
-pub struct KillBashTool;
-
-impl Tool for KillBashTool {
-    fn name(&self) -> &'static str {
-        "kill_bash"
-    }
-
-    fn description(&self) -> &'static str {
-        "Stop a command that was started with `bash --detached`, or every \
-         detached job of one shell if you do not name a job. Detached jobs are \
-         the only ones with nothing to kill them implicitly: `cancel`, \
-         `del_bash` and even restarting the server all leave them running, \
-         which is the point -- this is how they end. Job numbers come from \
-         `list_bash`."
-    }
-
-    fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "Shell the job was started from. Only used when `job` \
-                                     is omitted. Defaults to `default`."
-                },
-                "job": {
-                    "type": "integer",
-                    "description": "Job number from `list_bash`. Omit it to stop every \
-                                     detached job of `name`."
-                }
-            },
-            "additionalProperties": false
-        })
-    }
-
-    fn run<'a>(
-        &'a self,
-        args: Value,
-        ctx: &'a ToolContext,
-    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
-        Box::pin(async move {
-            let name = shell_name(&args);
-            let job = args.get("job").and_then(|v| v.as_u64());
-            let stopped = ctx.detached.stop(&ctx.session, name, job).await;
-            if stopped.total() == 0 {
-                return ToolOutcome::ok(match job {
-                    Some(n) => format!("no detached job {n} in this session"),
-                    None => format!("shell {name} has no detached jobs"),
-                });
-            }
-            ToolOutcome::ok(format!(
-                "stopped {} detached job(s){}",
-                stopped.stopped,
-                if stopped.failed > 0 {
-                    format!("; {} could not be stopped", stopped.failed)
-                } else {
-                    String::new()
-                }
-            ))
+                String::new()
+            };
+            ToolOutcome::ok(format!("discarded shell(s) {list}{kept}"))
         })
     }
 }
@@ -1172,14 +1153,7 @@ mod tests {
         let reg = ToolRegistry::with_builtins(Duration::from_secs(30), 8_000);
         assert_eq!(
             reg.names(),
-            vec![
-                "bash",
-                "check_bash",
-                "del_bash",
-                "list_bash",
-                "kill_bash",
-                "read_image"
-            ]
+            vec!["bash", "check_bash", "del_bash", "list_bash", "read_image"]
         );
         assert!(reg.get("bash").is_some());
         assert!(reg.get("nope").is_none());
@@ -1254,21 +1228,111 @@ mod tests {
         );
     }
 
+    /// Listing takes the same pattern deleting does, so one rule for both.
+    ///
+    /// # Invariant
+    ///
+    /// A pattern that deletes also lists: an operator who can name a bash can see
+    /// what that name will hit before it hits it.
     #[test]
-    fn detached_jobs_have_an_explicit_way_to_end() {
+    fn list_bash_takes_the_same_pattern_as_del_bash() {
         let reg = ToolRegistry::with_builtins(Duration::from_secs(30), 8_000);
-        let kill = reg.get("kill_bash").expect("kill_bash is registered");
-        // `job` is optional: omitting it means every job of that shell, the shape a restart needs.
-        assert!(kill.parameters()["properties"].get("job").is_some());
-        // The same omission, checked as the schema states it: `job` must not be required.
-        assert!(
-            kill.parameters()
-                .get("required")
-                .and_then(|r| r.as_array())
-                .is_none_or(|r| !r.iter().any(|x| x == "job")),
-            "job must be optional"
+        let list = reg.get("list_bash").expect("list_bash is registered");
+        let del = reg.get("del_bash").expect("del_bash is registered");
+        for (this, that) in [(list, del), (del, list)] {
+            let mine = this.parameters();
+            let theirs = that.parameters();
+            assert_eq!(
+                mine["properties"].get("name_regex").is_some(),
+                theirs["properties"].get("name_regex").is_some(),
+                "one takes a pattern, the other does not"
+            );
+            assert_eq!(mine["properties"]["name_regex"]["type"], "string");
+        }
+    }
+
+    /// A pattern that matches nothing says so rather than returning an empty shape.
+    #[tokio::test]
+    async fn list_bash_with_a_pattern_that_matches_nothing_says_so() {
+        let reg = ToolRegistry::with_builtins(Duration::from_secs(30), 8_000);
+        let list = reg.get("list_bash").expect("registered");
+        let Some(program) = crate::config::detect_git_bash() else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = context_for(
+            &program,
+            dir.path(),
+            InboxSignal::around(Default::default()),
         );
-        assert!(kill.description().contains("detached"));
+        let out = list
+            .run(json!({"name_regex": "^nothing-here$"}), &ctx)
+            .await;
+        assert!(out.ok, "{}", out.output);
+        assert!(out.output.contains("no bash matches"), "{}", out.output);
+    }
+
+    /// A bad regex is refused, not treated as "match everything".
+    #[tokio::test]
+    async fn list_bash_refuses_a_bad_pattern() {
+        let reg = ToolRegistry::with_builtins(Duration::from_secs(30), 8_000);
+        let list = reg.get("list_bash").expect("registered");
+        let Some(program) = crate::config::detect_git_bash() else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = context_for(
+            &program,
+            dir.path(),
+            InboxSignal::around(Default::default()),
+        );
+        let out = list.run(json!({"name_regex": "("}), &ctx).await;
+        assert!(
+            !out.ok,
+            "a malformed regex must not silently list everything"
+        );
+        assert!(out.output.contains("not a valid regex"), "{}", out.output);
+    }
+
+    /// A detached bash without a name is refused, not given the shell's.
+    ///
+    /// # Invariant
+    ///
+    /// The default name is `default`, which is also the persistent shell's name,
+    /// so silently defaulting would make `del_bash{^default$}` delete both -- a
+    /// process and a shell with one word meant for one of them.
+    #[tokio::test]
+    async fn a_detached_bash_needs_its_own_name() {
+        let Some(program) = crate::config::detect_git_bash() else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = context_for(
+            &program,
+            dir.path(),
+            InboxSignal::around(Default::default()),
+        );
+        let reg = ToolRegistry::with_builtins(Duration::from_secs(30), 8_000);
+        let bash = reg.get("bash").expect("registered");
+        let out = bash
+            .run(json!({"command": "sleep 1", "detached": true}), &ctx)
+            .await;
+        assert!(!out.ok, "a nameless detached bash must be refused");
+        assert!(out.output.contains("needs `name`"), "{}", out.output);
+    }
+
+    /// One word for both kinds: `del_bash` deletes a shell or a detached process.
+    #[test]
+    fn del_bash_is_the_way_a_detached_bash_ends() {
+        let reg = ToolRegistry::with_builtins(Duration::from_secs(30), 8_000);
+        assert!(reg.get("kill_job").is_none(), "one noun, not two");
+        let del = reg.get("del_bash").expect("del_bash is registered");
+        assert!(del.parameters()["properties"].get("name_regex").is_some());
+        assert!(
+            del.description().contains("detached"),
+            "the description must say it also ends a detached process: {}",
+            del.description()
+        );
     }
 
     #[test]
