@@ -6,6 +6,7 @@ all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, l
 - server
 - cli: cmd fully documented and diagnosed.
 - tui: transparent cli wrapper, do not know cmd.
+- ...: more crates may be added, with the same naming and layout.
 ## Server Client Connection
 - UDP.
 - key.
@@ -13,7 +14,7 @@ all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, l
 standard OpenAI Response API.
 - images: File API, gated by the roster's modalities.
 ## Tool
-use GitBash as bash on windows.
+use `which("bash")` as bash; no platform special case.
 - bash{command, name = "default", task = "default", background = false, detached = false}:
   runs in the persistent shell `name`, or starts a detached bash of that name.
     - key = {session_name, bash_name}.
@@ -46,12 +47,12 @@ use GitBash as bash on windows.
 - invocation: `gongga <cmd> [--arg <v> ...]` -- argv is already tokens, so a command line
   carries no `/` and no prose form. `/` belongs to `cmd_input` only.
 - server:
-    - `set_session --session <name> [--cwd <path>] [--llm <provider/model>] [--compact_threshold <n%>] [--thinking-effort <level>]`
+    - `set_session --session <name> [--cwd <path>] [--llm <provider/model>] [--compact_threshold <n%>] [--thinking_effort <level>]`
     - `del_session --session <name>`
     - `send_message --session <name> --message <string>`: inject message instantly, turn waiting bash to backgound.
     - `interrupt_session --session <name>`
     - `get_messages --session <name> --seq <a:b>`
-    - `cancle`: not instantly, but finish every task that can't be serialized to data, then store the pending tasks into data, the exit. next start will auto pick up those tasks.
+    - `cancel`: not instantly, but finish every task that can't be serialized to data, then store the pending tasks into data, the exit. next start will auto pick up those tasks.
 - client:
     - `set_sticky_cmd_argument --name <name> --value <value>`
         - auto set `--session` after `set_session`
