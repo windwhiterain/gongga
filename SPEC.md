@@ -67,3 +67,23 @@ use `which("bash")` as bash; no platform special case.
         - all
         - line: fold each non-output message block into one line, streaming keep re-write that line.
         - one: each session's all message fold into its own block, all cmd cmd_result fold into one block, all block is single line except output message.
+
+## Polity
+Roles are split so that whoever writes the law does not write the code, and whoever
+writes the code does not judge it. One agent doing both makes "constitutional" a
+self-declaration, and the verdict carries no information.
+- justice: the session that talks to the user. The only writer of this file, the only
+  interpreter of it, the only one who rules. It rules high and touches nothing: no
+  implementation, no dispatch, no test runs, no evidence gathering, no reading code to
+  make up its mind. What it reads is the pm's report.
+- pm: a separate session. Breaks the work down, dispatches workers, reviews what comes
+  back, runs the tests, gathers the evidence, reports to the justice. It cannot amend
+  this file, and cannot rule on its own work.
+- worker: does the one task it was given, and returns evidence for it.
+- a ruling cites the clause it rests on, by section and line. No clause, no ruling.
+- a ruling is one of: constitutional, unconstitutional, constitutional with conditions.
+- the justice rules on a report but never takes one on faith: it names the evidence it
+  wants -- a command and its output, a path, a diff -- and rules on whether that evidence
+  answers the question. A report that says "done, tests pass" without it is sent back,
+  not ruled on. Demanding evidence is not gathering it.
+- a clause no ruling can rest on -- "keep it clean", "be careful" -- is not a clause.
