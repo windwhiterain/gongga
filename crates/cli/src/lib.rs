@@ -280,16 +280,28 @@ impl Client {
                 }
             }
             Event::CmdResult {
-                id, message, ok, ..
+                id,
+                message,
+                ok,
+                data,
+                ..
             } => {
                 self.settle_follow(id, ok, sink);
-                if shown && !message.is_empty() {
-                    let kind = if ok {
-                        LineKind::Result
-                    } else {
-                        LineKind::Error
-                    };
-                    self.cmd_line(kind, &message, sink);
+                if shown {
+                    // A result may carry rows: the transcript a read answered with.
+                    if let Some(data) = &data {
+                        for (kind, line) in rows_of(data) {
+                            sink.line(kind, &line);
+                        }
+                    }
+                    if !message.is_empty() {
+                        let kind = if ok {
+                            LineKind::Result
+                        } else {
+                            LineKind::Error
+                        };
+                        self.cmd_line(kind, &message, sink);
+                    }
                 }
             }
             Event::Response(e) => {
@@ -723,6 +735,50 @@ impl Client {
     fn after_sticky_change(&self, sink: &mut dyn Sink) {
         self.sync_sticky();
         self.refresh(sink);
+    }
+}
+
+/// The rows a command result carries, as lines: the transcript a read returned.
+///
+/// # Invariant
+///
+/// Empty unless `data.messages` is an array: a result without rows renders as its
+/// message alone, as every other command's does.
+fn rows_of(data: &serde_json::Value) -> Vec<(LineKind, String)> {
+    let Some(rows) = data.get("messages").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    let session = data.get("session").and_then(|v| v.as_str());
+    rows.iter()
+        .filter_map(|row| {
+            let text = row.get("text")?.as_str()?;
+            let kind = row_kind(row);
+            let tag = match (session, row.get("seq").and_then(|s| s.as_i64())) {
+                (Some(session), Some(seq)) => format!("[{session} {seq}] "),
+                (Some(session), None) => format!("[{session}] "),
+                (None, Some(seq)) => format!("[{seq}] "),
+                (None, None) => String::new(),
+            };
+            let label = match row.get("name").and_then(|v| v.as_str()) {
+                // A tool call is arguments; the name is what makes them legible.
+                Some(name) if kind == LineKind::ToolCall => format!("{name}: "),
+                _ => String::new(),
+            };
+            Some((kind, format!("{tag}{label}{text}")))
+        })
+        .collect()
+}
+
+/// Which colour a stored row is drawn in; unknown kinds are context, not errors.
+fn row_kind(row: &serde_json::Value) -> LineKind {
+    let field = |key: &str| row.get(key).and_then(|v| v.as_str()).unwrap_or_default();
+    match (field("kind"), field("role")) {
+        ("text", "user") => LineKind::User,
+        ("text", _) => LineKind::Assistant,
+        ("reasoning", _) => LineKind::Reasoning,
+        ("tool_call", _) | ("builtin_call", _) => LineKind::ToolCall,
+        ("tool_result", _) => LineKind::ToolOutput,
+        _ => LineKind::System,
     }
 }
 
@@ -1568,6 +1624,80 @@ mod tests {
         assert_eq!(c.detail, Detail::Line);
         let said = s.0.join("\n");
         assert!(said.contains("all, line, one"), "{said}");
+    }
+
+    /// A read answers with rows: before, `data` was dropped and only the summary
+    /// was visible.
+    #[test]
+    fn a_result_with_rows_shows_them_and_then_its_summary() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
+        let mut s = VecSink(Vec::new());
+        let data = serde_json::json!({
+            "session": "main",
+            "last_seq": 7,
+            "messages": [
+                {"seq": 6, "kind": "text", "role": "user", "text": "check it"},
+                {"seq": 7, "kind": "tool_call", "call_id": "c1", "name": "bash", "text": "{\"cmd\":\"ls\"}"}
+            ]
+        });
+        c.handle_event(
+            Event::CmdResult {
+                id: 1,
+                ok: true,
+                message: "2 row(s) at seq 6..7 in main".into(),
+                data: Some(data),
+            },
+            &mut s,
+        );
+        assert_eq!(
+            s.0,
+            vec![
+                "[main 6] check it",
+                "[main 7] bash: {\"cmd\":\"ls\"}",
+                "2 row(s) at seq 6..7 in main",
+            ]
+        );
+    }
+
+    /// Every other result keeps its old look: one line, no invented content.
+    #[test]
+    fn a_result_without_rows_is_just_its_message() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
+        let mut s = VecSink(Vec::new());
+        for data in [
+            None,
+            Some(serde_json::json!({"session": "main"})),
+            Some(serde_json::json!({"messages": "not rows"})),
+        ] {
+            c.handle_event(
+                Event::CmdResult {
+                    id: 1,
+                    ok: true,
+                    message: "session is now main".into(),
+                    data,
+                },
+                &mut s,
+            );
+        }
+        assert_eq!(s.0, vec!["session is now main"; 3]);
+    }
+
+    /// A row with no text is not a line, and an unknown kind is not an error.
+    #[test]
+    fn a_row_the_client_does_not_understand_is_still_printable() {
+        let data = serde_json::json!({
+            "messages": [
+                {"seq": 1, "kind": "mystery", "text": "what is this"},
+                {"seq": 2, "kind": "text", "role": "assistant"}
+            ]
+        });
+        assert_eq!(
+            rows_of(&data),
+            vec![(LineKind::System, "[1] what is this".to_string())]
+        );
+        assert!(rows_of(&serde_json::json!({})).is_empty());
     }
 
     #[test]

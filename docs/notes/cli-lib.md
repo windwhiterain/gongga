@@ -113,6 +113,22 @@ exists, and the one-shot sink must not start rendering. The mode is pushed on
 every `refresh`, which is how a window that attached after the client learned it
 still hears about it.
 
+## rows_of
+
+A command result can carry rows -- `data.messages`, the shape a transcript read
+answers with. Only one-shot mode showed them, because it prints the whole event;
+the log drew `message` and dropped `data`, so a read looked like a count with
+nothing behind it.
+
+Rendering them belongs here rather than in the front-end: the TUI is a transparent
+wrapper that must not learn which command asked. What this function reads is a
+*shape* (`messages` is an array), not a name, so a second command that returns rows
+is rendered by the same code -- and a result without that shape still renders as
+its message alone.
+
+The seq and the session go in the tag: a transcript line out of context is a
+sentence with no speaker, and one that repeats cannot be paged back.
+
 ## Client::handle_tool_answer
 
 Same rule, same shape: `[<session>] ` opens the line, and the tool's stdout and
