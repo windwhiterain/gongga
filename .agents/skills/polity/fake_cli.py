@@ -65,6 +65,29 @@ def args_of(argv):
     return out
 
 
+def parse_seq(raw, last):
+    """`<a>:<b>`, both ends optional and inclusive; negative counts back from
+    the newest row. Mirrors the server's parse_seq_slice, including its refusal
+    of 0 -- a fake that is more permissive than the real thing hides bugs."""
+    if raw is None:
+        raise ValueError("get_messages requires --seq")
+    start_s, _, end_s = str(raw).partition(":")
+
+    def one(text, default):
+        if text == "":
+            return default
+        try:
+            n = int(text)
+        except ValueError:
+            raise ValueError("--seq wants a number or a range, got %r" % raw)
+        if n == 0:
+            raise ValueError("--seq counts sequence numbers from 1, or from -1 "
+                             "backwards; got 0")
+        return last + 1 + n if n < 0 else n
+
+    return one(start_s, 1), one(end_s, last)
+
+
 def main(argv):
     if len(argv) < 2:
         print("no command", file=sys.stderr)
@@ -107,15 +130,27 @@ def main(argv):
             emit({"t": "cmd_result", "id": 1, "ok": False,
                   "message": "no session named %r" % session})
             return 1
-        after = int(args.get("after_seq") or 0)
-        limit = int(args.get("limit") or 200)
-        rows = [r for r in known["rows"] if r["seq"] > after][:limit]
+        # The real client takes `--seq <a:b>` and nothing else (SPEC.md:53).
+        # Rejecting the old spelling here is what makes a regression in
+        # polity.rows() show up as a red test instead of a silent pass.
+        for stale in ("after_seq", "limit"):
+            if stale in args:
+                emit({"t": "cmd_result", "id": 1, "ok": False,
+                      "message": "get_messages has no argument --%s; "
+                                 "it takes --session, --seq" % stale})
+                return 1
+        last = len(known["rows"])
+        try:
+            first, end = parse_seq(args.get("seq"), last)
+        except ValueError as exc:
+            emit({"t": "cmd_result", "id": 1, "ok": False, "message": str(exc)})
+            return 1
+        rows = [r for r in known["rows"] if first <= r["seq"] <= end]
         emit({"t": "sessions", "sessions": summary(state)})
         emit({"t": "cmd_result", "id": 1, "ok": True,
-              "message": "%d message(s) after seq %d in %s (transcript ends at seq %d)"
-                         % (len(rows), after, session, len(known["rows"])),
-              "data": {"last_seq": len(known["rows"]), "messages": rows,
-                       "session": session}})
+              "message": "%d row(s) at seq %s:%s in %s (transcript ends at seq %d)"
+                         % (len(rows), first, end, session, last),
+              "data": {"last_seq": last, "messages": rows, "session": session}})
         return 0
 
     if name == "send_message":

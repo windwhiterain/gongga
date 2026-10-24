@@ -60,6 +60,22 @@ def row(seq, role, text, kind="text"):
     return {"seq": seq, "kind": kind, "role": role, "text": text}
 
 
+def _parse_seq(raw, last):
+    """Same shape the server accepts: `<a>:<b>`, inclusive, 1-based, negative
+    counting back from the newest row."""
+    start_s, _, end_s = str(raw).partition(":")
+
+    def one(text, default):
+        if text == "":
+            return default
+        n = int(text)
+        if n == 0:
+            raise ValueError("--seq counts from 1, or from -1 backwards")
+        return last + 1 + n if n < 0 else n
+
+    return one(start_s, 1), one(end_s, last)
+
+
 class Clock:
     """A scripted session: one `(status, rows)` step per poll, and time that moves
     only when waited on, so a timeout is reachable without sleeping."""
@@ -141,12 +157,16 @@ class Server:
             if live is None:
                 return 0, [{"t": "cmd_result", "id": 1, "ok": False,
                             "message": "no session named %r" % s}], ""
-            after = int(a.get("after_seq") or 0)
-            limit = int(a.get("limit") or 200)
-            rows = [r for r in live["rows"] if r["seq"] > after][:limit]
+            for stale in ("after_seq", "limit"):
+                if stale in a:
+                    return 0, [{"t": "cmd_result", "id": 1, "ok": False,
+                                "message": "get_messages has no argument --%s" % stale}], ""
+            last = len(live["rows"])
+            first, end = _parse_seq(a.get("seq"), last)
+            rows = [r for r in live["rows"] if first <= r["seq"] <= end]
             return 0, [{"t": "cmd_result", "id": 1, "ok": True,
-                        "message": "%d message(s)" % len(rows),
-                        "data": {"last_seq": len(live["rows"]), "messages": rows,
+                        "message": "%d row(s)" % len(rows),
+                        "data": {"last_seq": last, "messages": rows,
                                  "session": s}}], ""
         if name == "send_message":
             s = a.get("session")
@@ -430,6 +450,25 @@ finally:
     shutil.rmtree(tmp, ignore_errors=True)
 
 # ---------------------------------------------------------------- 真进程
+print("\ntranscript: the window the client is asked for")
+
+# `--seq <a:b>` is inclusive at both ends and counts from 1 (SPEC.md:53), so a
+# baseline of N is asked for as "N+1:N+limit". Both halves of that arithmetic
+# have been wrong in a draft of this file; these two checks are the pins.
+srv = Server()
+srv.create("t", [row(i, "assistant", "line %d" % i) for i in range(1, 11)])
+with server_installed(srv):
+    got, tail = m.rows("t", after=0, limit=3)
+    equal("a baseline of 0 starts at the first row", [r["seq"] for r in got], [1, 2, 3])
+    equal("and the tail still reports the end of the transcript", tail, 10)
+    got, _ = m.rows("t", after=7, limit=3)
+    equal("a baseline of 7 excludes row 7 itself", [r["seq"] for r in got], [8, 9, 10])
+    got, _ = m.rows("t", after=9, limit=5)
+    equal("a window past the end is just the rows that exist",
+          [r["seq"] for r in got], [10])
+    equal("the client is asked in the protocol's own spelling",
+          args_of(srv.calls[-1][1:]).get("seq"), "10:14")
+
 print("\nplumbing: a real client process per command")
 
 

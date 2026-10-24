@@ -267,7 +267,7 @@ GONGGA_LLM_CATALOG=$PWD/.dev/v/llm.toml GONGGA_KEY=sk-fake \
 |---|---|
 | 我有几个 shell、谁还有没读的输出、有哪些 detached | `list_bash`（`unread_bytes`、`background_jobs`、`detached[]`） |
 | 后台作业跑到哪了 | `check_bash --name <shell>`，**读即清空**，同一段不会给两次 |
-| 我刚才到底做了什么、上一条命令的原文 | `get_messages --session <s> --after_seq <n> [--limit n]`（默认 50，上限 500） |
+| 我刚才到底做了什么、上一条命令的原文 | `get_messages --session <s> --seq <a>:<b>`（1 基、两端含，`-1` 最新一条，如 `-5:` 取最后五条） |
 | 会话状态 / 模型 / 压缩阈值 / 消息数 | 只读查库（下面） |
 | 我哪些工具调用在失败 | `tool_calls` 表按 `name,status` 汇总 |
 

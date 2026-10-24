@@ -42,7 +42,7 @@ P=.agents/skills/polity/polity
 | `send_message` 立刻返回 | 实测 **0.25 秒**；回合在后台跑 |
 | 会话忙时再发消息 | **注入正在跑的那个回合**，不是排队 |
 | `set_session` 同名再调 | 幂等；返回里带**所有会话的 status**，是 CLI 里唯一的只读状态来源 |
-| `get_messages --after_seq N` | 增量行 + `last_seq`，可反复轮询 |
+| `get_messages --seq <a>:<b>` | 行区间（1 基、两端含、`-5:` 取最后五条）+ `last_seq`，可反复轮询 |
 | per-session 系统提示 | **没有**。`instructions` 只有全局一份 |
 | 子会话的 `$GONGGA_CLI` | 有。所以总理能再派生执行者——两层是真的 |
 

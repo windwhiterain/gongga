@@ -170,10 +170,15 @@ def send(session, message):
 
 
 def rows(session, after=None, limit=200):
-    """Transcript rows, oldest first. `after` is the seq baseline (exclusive)."""
-    args = ["get_messages", "--session", session, "--limit", str(limit)]
-    if after is not None:
-        args += ["--after_seq", str(after)]
+    """Transcript rows, oldest first. `after` is the seq baseline (exclusive).
+
+    `--seq <a:b>` is the protocol's only form (SPEC.md:53): sequence numbers
+    count from 1 and both ends are inclusive, so "after N" is "N+1:". That +1
+    is the one place an off-by-one can hide, hence the tests pin it.
+    """
+    first = int(after or 0) + 1
+    args = ["get_messages", "--session", session,
+            "--seq", f"{first}:{first + int(limit) - 1}"]
     rc, evs, err = run_cli(args)
     ok, said, data = result_of(evs, "get_messages", err)
     if rc != 0 or not ok:
