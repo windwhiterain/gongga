@@ -654,6 +654,23 @@ mod tests {
         assert_eq!(values(&c, "/del_event_filter --name "), vec!["session"]);
     }
 
+    /// The new command completes like every other one: name, argument, values.
+    #[test]
+    fn the_detail_command_completes_name_argument_and_modes() {
+        let c = catalog();
+        // Order follows the catalog, which is not what this is about.
+        let mut both = values(&c, "/set_event");
+        both.sort();
+        assert_eq!(both, vec!["/set_event_detail", "/set_event_filter"]);
+        assert_eq!(values(&c, "/set_event_det"), vec!["/set_event_detail"]);
+        assert_eq!(values(&c, "/set_event_detail --"), vec!["--mode"]);
+        assert_eq!(
+            values(&c, "/set_event_detail --mode "),
+            vec!["all", "line", "one"]
+        );
+        assert_eq!(values(&c, "/set_event_detail --mode o"), vec!["one"]);
+    }
+
     #[test]
     fn event_filters_are_client_commands() {
         let c = catalog();
