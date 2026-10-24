@@ -307,8 +307,13 @@ try:
           open(os.path.join(tmp, ".polity", "constitution.md"), encoding="utf-8").read(), const)
     body = open(os.path.join(tmp, ".polity", "charter", "justice.md"), encoding="utf-8").read()
     check("the justice is told not to grade its own work", "不写实现代码" in body, body[:80])
+    check("the justice is told demanding is not gathering", "要证据不是取证" in body, body)
+    check("and that test runs and evidence are not its job",
+          "不跑测试" in body and "不取证" in body, body)
     pm_body = open(os.path.join(tmp, ".polity", "charter", "pm.md"), encoding="utf-8").read()
     check("the pm is told not to amend the constitution", "不改宪法" in pm_body)
+    check("and to review, test and gather the evidence itself",
+          "跑测试" in pm_body and "取证" in pm_body, pm_body)
 
     with quiet() as (out, err):
         equal("new ruling works", run("--root", tmp, "new", "ruling", "007"), m.EXIT_OK)
@@ -317,6 +322,7 @@ try:
     for field in ("结论", "依据条款", "证据", "若要修复"):
         check("a ruling template demands %s" % field, field in text)
     check("a ruling demands evidence over self-report", "不接受自述" in text, text)
+    check("and sends back a report that only asserts", "退回不判" in text, text)
 
     with quiet() as (out, err):
         code = run("--root", tmp, "new", "ruling", "007")

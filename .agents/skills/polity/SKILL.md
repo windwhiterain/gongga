@@ -19,13 +19,14 @@ description: 把活分给几个互相制衡的 agent——大法官与 user 对�
 
 | 角色 | 一句话 | 碰宪法 | 产出 |
 |---|---|---|---|
-| **大法官** | 与 user 对话，把意图写成宪法，向别人解释宪法，判合宪性 | **只有他**能改 | `constitution.md`、`rulings/` |
-| **总理** | 拆任务、派工、收取结果、向大法官汇报 | 不能 | `tasks/`、`proposals/`、`reports/` |
+| **大法官** | 与 user 对话，把意图写成宪法，向别人解释宪法，只读总理的汇报判合宪性 | **只有他**能改 | `constitution.md`、`rulings/` |
+| **总理** | 拆任务、派工、收结果、review、跑测试、取证，向大法官汇报 | 不能 | `tasks/`、`proposals/`、`reports/` |
 | **执行者** | 只做被派的那一件事，给证据 | 不能 | `reports/<任务>.md` |
 
 几件"不做"的，比"做"重要：
 
-- 大法官**不写实现、不派工**。一动手就失去了判自己的资格。
+- 大法官**不写实现、不派工、不跑测试、不取证、不读代码下判断**。他只读总理的汇报；
+  证据由他点名要，不由他去取。一动手就失去了判自己的资格。
 - 总理**不改宪法、不判自己合宪**，也不在判决回来前做"可能违宪"的那部分。
 - 执行者**不派生 agent、不和 user 对话**。
 
@@ -93,9 +94,8 @@ $P up --pm pm                # 开总理会话
 # 手写 .polity/constitution.md：把 user 的原话变成条款
 $P dispatch --to pm --task 001 --title "把 A 的构建搬到 B" --role pm --body @-
 $P wait --session pm --after <上面打印的基线> --timeout 900
-$P read --session pm --after 0         # 总理做了什么，紧凑地看
-$P verify --root .                     # 自己看 git 到底改了什么
-$P new ruling 001                      # 填判决
+$P read --session pm --after 0         # 读总理的汇报：做了什么、拿了什么证据
+$P new ruling 001                      # 判；证据不回答问题的，退回，不判
 ```
 
 ### 总理（被派工的那个会话）
@@ -103,6 +103,7 @@ $P new ruling 001                      # 填判决
 ```bash
 $P dispatch --to w1 --task 001a --title "改 a.txt" --role worker --body @-
 $P wait --session w1 --after <上面打印的基线> --timeout 600
+$P verify --root .                     # 取证：git 上到底改了什么（输出贴进汇报）
 $P new report 001                      # 汇总，交给大法官
 $P send --session <大法官的会话> --tag 汇报 --message "001 汇报已就绪：.polity/reports/001.md"
 ```
@@ -150,13 +151,16 @@ $P send --session <大法官的会话> --tag 汇报 --message "001 汇报已就�
 两条硬规矩：
 
 1. **判决必须引用条款号。** 指不出第几条，就不是判决，是意见。
-2. **证据必须是你自己取的。** 总理说"已完成、测试通过"不构成证据。
-   `polity verify` 给的是 git 的事实（`status` / `diff --stat` / `log`），加上你自己读的文件
-   和你自己跑的命令。判决模板里"证据"那一栏写着"不接受自述"，就是为这个。
+2. **判决只吃点名要来的证据，不自己取。** 总理说"已完成、测试通过"不构成证据；
+   你要点名：哪条命令及其输出、哪个路径、哪个 diff、要看到什么结果。`polity verify`
+   的 git 事实（`status` / `diff --stat` / `log`）由总理跑、总理贴，你判它回不回答问题。
+   读代码、跑命令都不该发生在你手里——**要证据不是取证**。汇报只有结论没有证据，
+   原样退回，不判。判决模板里"证据"那一栏写着"不接受自述"，就是为这个。
 
-**注意 `verify` 的盲区：** 如果 root 本身被外层仓库的 `.gitignore` 忽略，`git status` 会是空的——
-那不是"没改动"，是"这个目录不归 git 管"。`verify` 检测到这种情况会先打一行警告；看到警告就改用
-mtime / md5 取证。demo 里的总理自己撞上了这一条（`.dev/` 被忽略），并且正确地换了证据方式。
+**盯证据质量：`verify` 的盲区。** 如果 root 本身被外层仓库的 `.gitignore` 忽略，
+`git status` 会是空的——那不是"没改动"，是"这个目录不归 git 管"。`verify` 遇到这种情况
+会打警告；汇报若拿这种空输出当证据，退回，点名要 mtime / md5。demo 里的总理撞上过这一条
+（`.dev/` 被忽略），并且自己换了证据方式。
 
 ---
 
@@ -182,6 +186,7 @@ mtime / md5 取证。demo 里的总理自己撞上了这一条（`.dev/` 被忽�
 |---|---|
 | 大法官顺手改一行代码 | 它再判这段就是判自己，制衡消失 |
 | 收"已完成、测试通过"就判合宪 | 判决退化成转述 |
+| 大法官自己跑 `verify`、读代码取证 | 既做又判，判决还是自我声明；证据该点名要，不该自己取 |
 | 一个会话里轮流演三个角色 | 制衡消失，退化成普通对话——那就别用这个 skill |
 | 把 CLI 原始输出贴进上下文 | 会自我递归膨胀（实测一条命令 16 KB） |
 | 一次开十个会话 | 并行度有上限：`.polity/state.json` 的 `max_parallel`（默认 3），超了先等 |
@@ -207,7 +212,7 @@ detached 的进程不随会话死（见 `self-control`）。判决"违宪、要�
 ```bash
 .agents/skills/polity/polity --help          # 10 个子命令
 .agents/skills/polity/polity status --root .
-python3 .agents/skills/polity/test_polity.py # 94 项，退出码即结论
+python3 .agents/skills/polity/test_polity.py # 103 项，退出码即结论
 ```
 
 `test_polity.py` 分两层：`wait_loop` 对着**脚本化的时钟**跑（时序错误都在那里），
@@ -216,6 +221,9 @@ python3 .agents/skills/polity/test_polity.py # 94 项，退出码即结论
 标量行、派工失败当成功、不报已消失的会话、角色一律写成大法官、报告名带回角色后缀、init 不落模板、
 verify 不警告被忽略的根、任务单不带交付章节、任务单不填标题和作者、吞掉客户端的 stderr——
 每一项都有测试变红。
+2026-10-24 新法（`SPEC.md` §Polity）落地时补了四条断言——法官「要证据不是取证」、
+法官「不跑测试/不取证」、总理「review/跑测试/取证」、判决模板「退回不判」——
+每条各做一次变异，全红。
 
 测试自己的教训也记在这里：最初"未跳过非 JSON 行"和"角色一律大法官"这两个变异**没红**——
 前者因为 try/except 本来就挡住了非 JSON（那个判断真正挡的是 `42` 这种**合法 JSON 但不是对象**
