@@ -62,6 +62,12 @@ grep -H -m3 -E '^(name|description):' .agents/skills/*/SKILL.md
   `cu.py` + 每平台一个后端（Windows ctypes/UIA 已实测，macOS/Linux 已写未实测），
   uv 解析内联依赖，不需要 pyautogui/pywinauto。这是用户的真实桌面，打字前先确认目标窗口，
   截图会把屏幕上的密钥一起带走。
+- `remote`：在另一台机器上跑命令、搬文件。`.agents/skills/remote/remote` 是纯标准库的 SSH
+  外壳，目标由 `add` 记住（host/port/user/key），**不读 ~/.ssh/config，不依赖任何本地约定或
+  第三方 CLI**。先 `doctor` 证明这条链每环（退出码/UTF-8/二进制/传输），再 `run`。脚本走
+  base64 落盘执行、输出按 base64 分帧——所以引号、GBK、退出码这三个坑不存在。会话复用一条
+  ssh（~390ms vs 一次性 ~800ms）；带 `--runner`（如 Windows 上跑 Git Bash）的目标没有会话，
+  自动走一次性。传文件用 `put`/`get`，默认读回大小核对——sftp 会报告成功而文件没到。
 - `compact`：折叠自己的上下文。收到 `Context notice` 时读它，用
   `.agents/skills/compact/transcript.py`（脚本，不是服务端工具）——服务端只测量和提醒，
   不再替你压缩。read 读的是消息（模型输出 + 注入），工具调用与 reasoning 被过滤掉。

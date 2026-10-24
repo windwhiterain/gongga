@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Entry point. uv resolves the inline dependencies; this one has none, so any
+# Python 3.9+ works as a fallback.
+set -uo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if command -v uv >/dev/null 2>&1; then
+  exec uv run --quiet "$here/remote.py" "$@"
+fi
+for c in python3 python py; do
+  if command -v "$c" >/dev/null 2>&1 && "$c" -c 'import sys' >/dev/null 2>&1; then
+    exec "$c" "$here/remote.py" "$@"
+  fi
+done
+echo "no Python found" >&2
+exit 1

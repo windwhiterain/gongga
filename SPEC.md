@@ -50,9 +50,14 @@ use GitBash as bash on windows.
     - `del_session --session <name>`
     - `send_message --session <name> --message <string>`: inject message instantly, turn waiting bash to backgound.
     - `interrupt_session --session <name>`
-    - `get_messages --session <name> [--after_seq <n>] [--limit <n>]`: read the transcript back,
-      oldest first; `--limit` counts back from the end.
+    - `get_messages --session <name> --seq <a:b>`
     - `cancle`: not instantly, but finish every task that can't be serialized to data, then store the pending tasks into data, the exit. next start will auto pick up those tasks.
 - client:
     - `set_sticky_cmd_argument --name <name> --value <value>`
+        - auto set `--session` after `set_session`
     - `del_sticky_cmd_argument --name <name>`
+        - auto del `--session` after `del_session`
+    - `set_event_filter --name<name> --value<value>`
+        - auto set `--session` after `set_session`
+    - `del_event_filter --name<name>`
+        - auto del `--session` after `del_session`
