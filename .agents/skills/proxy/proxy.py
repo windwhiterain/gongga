@@ -750,8 +750,31 @@ def do_doctor(config):
     return 0 if problems == 0 else 1
 
 
+def run_core(argv):
+    """Hand `proxy core ...` to the core-API client.
+
+    The client lives in its own module because it talks to a different thing -- a
+    running routing core -- but it is reached through the same entry point, so there is
+    one name to remember rather than one per layer.
+    """
+    import importlib.util
+    here = os.path.dirname(os.path.abspath(__file__))
+    spec = importlib.util.spec_from_file_location("mihomo", os.path.join(here, "mihomo.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.run(argv)
+
+
 def main(argv):
-    parser = argparse.ArgumentParser(prog="proxy", description="per-host routing proxy")
+    if argv and argv[0] == "core":
+        return run_core(argv[1:])
+    parser = argparse.ArgumentParser(
+        prog="proxy",
+        description="per-host routing proxy; `proxy core ...` drives a running mihomo core",
+        epilog="core subcommands: doctor, groups, nodes GROUP, use GROUP NODE, "
+               "bench [GROUP] [--throughput], mode [rule|global|direct], reload [PATH], "
+               "connect HOST:PORT --save",
+    )
     sub = parser.add_subparsers(dest="cmd")
     sub.add_parser("serve", help="run the proxy in the foreground")
     sub.add_parser("rules", help="show the rule table")
@@ -851,5 +874,27 @@ def main(argv):
     return 2
 
 
+def reader_went_away(error):
+    """True when the reader closed the pipe -- `proxy rules | head`.
+
+    Windows reports this as OSError(22), not BrokenPipeError. mihomo.py carries the
+    same guard because it is also runnable on its own.
+    """
+    if isinstance(error, BrokenPipeError):
+        return True
+    return isinstance(error, OSError) and getattr(error, "errno", None) == 22
+
+
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except OSError as error:
+        if not reader_went_away(error):
+            raise
+        # Sink stdout so the flush during shutdown does not hit the closed pipe again.
+        try:
+            sink = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(sink, sys.stdout.fileno())
+        except OSError:
+            pass
+        sys.exit(0)

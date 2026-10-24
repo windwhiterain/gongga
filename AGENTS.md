@@ -50,10 +50,13 @@ grep -H -m3 -E '^(name|description):' .agents/skills/*/SKILL.md
 - `evolve`：换掉正在跑自己的服务端（改完 server 代码之后）。
 - `image`：让模型真看到一张图。用 `.agents/skills/image/show` 打印 `@路径`，harness
   自动上传到 Files API 并作为 `input_image` 交给模型——不要自己拼 base64。
-- `proxy`：按 host 路由并证明它真的走了。`.agents/skills/proxy/proxy` 是自实现的纯标准库
-  代理（HTTP/SOCKS5/直连上游，用户可接任何 API 端点）。先 `doctor`，`upstream add` 加上游，
-  `add host --via` 定规则，`check host` 看代理自己记下的去向。出口 IP 只在两条路由相同时
-  才说明问题——`check` 会明说。改配置后要重启 `serve`。
+- `proxy`：两层。`.agents/skills/proxy/proxy` 是自实现的纯标准库分流代理（HTTP/SOCKS5/直连
+  上游，用户可接任何 API 端点）：先 `doctor`，`upstream add` 加上游，`add host --via` 定规则，
+  `check host` 看代理自己记下的去向。出口 IP 只在两条路由相同时才说明问题——`check` 会明说。
+  改配置后要重启 `serve`。`proxy core …` 直接驱动跑着的 mihomo/clash core：`groups` /
+  `nodes` / `use GROUP NODE` 换节点、`bench [--throughput]` 测延迟和吞吐、`mode` 切
+  rule/global/direct、`reload` 热重载。控制器自己从 core 的 config.yaml 找（不依赖任何
+  客户端），`doctor` 会打印用的是哪一条来源。**换节点不用 flm；只有刷新订阅那一步需要账号。**
 - `computer_use`：用鼠标键盘操作真实桌面。`.agents/skills/computer_use/cu` 先跑 `doctor`，
   然后 `shot` 看屏 → `tree` 拿控件矩形 → `click`/`type`/`key`（都带 `--window`）。
   `cu.py` + 每平台一个后端（Windows ctypes/UIA 已实测，macOS/Linux 已写未实测），
