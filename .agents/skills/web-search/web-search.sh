@@ -25,12 +25,20 @@ api_key() {
   printf '%s' "$k"
 }
 
+# Schannel's revocation check hangs behind some corporate proxies, so Windows curl
+# gets --ssl-no-revoke. Every other curl rejects that flag outright ("option not
+# recognised"), so it is probed for rather than assumed.
+CURL_OPTS=(-sS -m 120)
+if curl --help all 2>/dev/null | grep -q -- '--ssl-no-revoke'; then
+  CURL_OPTS+=(--ssl-no-revoke)
+fi
+
 # One JSON body in, one JSON body out; HTTP status on stderr when it is not 200.
 post() {
   local path="$1" body="$2" key
   key=$(api_key) || return 1
   local out status
-  out=$(curl -sS -m 120 --ssl-no-revoke -w '\n%{http_code}' "$BASE/$path" \
+  out=$(curl "${CURL_OPTS[@]}" -w '\n%{http_code}' "$BASE/$path" \
     -H "Authorization: Bearer $key" -H 'content-type: application/json' \
     -d "$body" 2>&1) || die "request to $BASE/$path failed: $out"
   status=${out##*$'\n'}
@@ -45,7 +53,12 @@ post() {
 render() { python -c "$1" ; }
 
 cmd_search() {
-  local query="${1:?usage: web-search.sh search \"query\" [count] [--content]}"
+  local query="${1-}"
+  # Not ${1:?usage...}: that prints bash's own "line N:" prefix, which reads like an
+  # internal failure rather than a usage mistake.
+  if [ -z "$query" ]; then
+    die 'search needs a query: web-search.sh search "query" [count] [--content]'
+  fi
   shift
   local count=6 content=false
   for arg in "$@"; do

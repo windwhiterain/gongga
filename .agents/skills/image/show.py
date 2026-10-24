@@ -33,14 +33,24 @@ MAGIC = [
 
 
 def media_type(path, head):
+    """The picture type, from the magic bytes, agreeing with the extension.
+
+    The extension alone is not enough: a truncated or empty file named .png used to
+    pass, and the reference then failed at upload instead of here. The header is the
+    authority; the extension only has to be one the harness accepts.
+    """
     ext = os.path.splitext(path)[1].lstrip(".").lower()
-    if ext in KNOWN:
-        return KNOWN[ext]
+    by_magic = None
     for magic, media in MAGIC:
         if head.startswith(magic):
-            return media
-    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
-        return "image/webp"
+            by_magic = media
+            break
+    if by_magic is None and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        by_magic = "image/webp"
+    if by_magic is None:
+        return None
+    if ext in KNOWN:
+        return by_magic
     return None
 
 
@@ -61,12 +71,15 @@ def main(argv):
         except OSError as e:
             print(f"cannot read {given}: {e}", file=sys.stderr)
             continue
+        if size == 0:
+            print(f"cannot read {given}: the file is empty", file=sys.stderr)
+            continue
         media = media_type(path, head)
         if media is None:
             known = ", ".join(KNOWN)
             print(
-                f"{given} is not a picture this harness takes ({known}); "
-                "convert it first",
+                f"{given} is not a picture this harness takes ({known}); its header "
+                f"is not one of them (first bytes: {head[:8]!r}). Convert it first",
                 file=sys.stderr,
             )
             continue

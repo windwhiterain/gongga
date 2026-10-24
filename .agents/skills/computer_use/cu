@@ -1,16 +1,25 @@
 #!/usr/bin/env bash
-# Entry point: hands the arguments to the PowerShell engine next to this file.
-# It exists so callers never have to think about execution policy or quoting.
+# Entry point for the desktop driver.
+#
+# The implementation is Python only. The other skills in this repo (image, compact)
+# already require Python, so a second implementation in PowerShell would be a copy
+# of the same logic with no new reach -- and two copies of one fact drift, which is
+# how the UIA tree walker here broke once already.
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-for shell in powershell pwsh; do
-  if command -v "$shell" >/dev/null 2>&1; then
-    argv=""
-    for a in "$@"; do argv+="$a"$'\x1f'; done
-    CU_ARGV="$argv" exec "$shell" -NoProfile -ExecutionPolicy Bypass -File "$here/cu.ps1"
+# uv resolves the inline dependencies (comtypes on Windows, pyobjc on macOS) without
+# asking anyone to install them first.
+if command -v uv >/dev/null 2>&1; then
+  exec uv run --quiet "$here/cu.py" "$@"
+fi
+
+for candidate in python3 python py; do
+  if command -v "$candidate" >/dev/null 2>&1 \
+     && "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then
+    exec "$candidate" "$here/cu.py" "$@"
   fi
 done
 
-echo "no PowerShell found (tried powershell, pwsh)" >&2
+echo "no Python 3.9+ found (tried uv, python3, python, py); install uv from https://docs.astral.sh/uv/" >&2
 exit 1

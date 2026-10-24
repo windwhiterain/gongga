@@ -50,10 +50,15 @@ grep -H -m3 -E '^(name|description):' .agents/skills/*/SKILL.md
 - `evolve`：换掉正在跑自己的服务端（改完 server 代码之后）。
 - `image`：让模型真看到一张图。用 `.agents/skills/image/show` 打印 `@路径`，harness
   自动上传到 Files API 并作为 `input_image` 交给模型——不要自己拼 base64。
+- `proxy`：按 host 路由并证明它真的走了。`.agents/skills/proxy/proxy` 是自实现的纯标准库
+  代理（HTTP/SOCKS5/直连上游，用户可接任何 API 端点）。先 `doctor`，`upstream add` 加上游，
+  `add host --via` 定规则，`check host` 看代理自己记下的去向。出口 IP 只在两条路由相同时
+  才说明问题——`check` 会明说。改配置后要重启 `serve`。
 - `computer_use`：用鼠标键盘操作真实桌面。`.agents/skills/computer_use/cu` 先跑 `doctor`，
   然后 `shot` 看屏 → `tree` 拿控件矩形 → `click`/`type`/`key`（都带 `--window`）。
-  纯 PowerShell + .NET UIAutomation，不需要 pyautogui/pywinauto。这是用户的真实桌面，
-  打字前先确认目标窗口。
+  `cu.py` + 每平台一个后端（Windows ctypes/UIA 已实测，macOS/Linux 已写未实测），
+  uv 解析内联依赖，不需要 pyautogui/pywinauto。这是用户的真实桌面，打字前先确认目标窗口，
+  截图会把屏幕上的密钥一起带走。
 - `compact`：折叠自己的上下文。收到 `Context notice` 时读它，用
   `.agents/skills/compact/transcript.py`（脚本，不是服务端工具）——服务端只测量和提醒，
   不再替你压缩。read 读的是消息（模型输出 + 注入），工具调用与 reasoning 被过滤掉。

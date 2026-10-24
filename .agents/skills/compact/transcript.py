@@ -36,7 +36,11 @@ def connect():
     # is already a mistake worth naming rather than guessing at.
     home = os.environ.get("GONGGA_HOME")
     if not home:
-        die("GONGGA_HOME is not set; run this from a shell the server started")
+        die(
+            "GONGGA_HOME is not set. This tool edits the running server's database, so it "
+            "only works from a shell that server started; check with: "
+            "echo \"$GONGGA_HOME\" (and $GONGGA_SERVER for the URL)"
+        )
     path = os.path.join(home, "gongga.db")
     if not os.path.exists(path):
         die(f"no database at {path}")
