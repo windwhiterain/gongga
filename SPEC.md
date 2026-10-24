@@ -51,7 +51,7 @@ use `which("bash")` as bash; no platform special case.
     - `del_session --session <name>`
     - `send_message --session <name> --message <string>`: inject message instantly, turn waiting bash to backgound.
     - `interrupt_session --session <name>`
-    - `get_messages --session <name> --seq <a:b>`
+    - `get_messages --session <name> --seq <a:b>`: the rows in that range, `last_seq`, and the session's `status` (`running`|`idle`). Reads only: creates no session, sets no sticky argument.
     - `cancel`: not instantly, but finish every task that can't be serialized to data, then store the pending tasks into data, the exit. next start will auto pick up those tasks.
 - client:
     - `set_sticky_cmd_argument --name <name> --value <value>`
