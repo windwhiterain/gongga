@@ -488,6 +488,50 @@ impl Store {
         Ok(out)
     }
 
+    /// Where the transcript now ends, `0` for an empty one.
+    pub fn last_seq(&self, session_id: i64) -> anyhow::Result<i64> {
+        let conn = self.lock();
+        Ok(conn.query_row(
+            "SELECT COALESCE(MAX(seq), 0) FROM messages WHERE session_id = ?1",
+            params![session_id],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Rows in an inclusive `seq` window, oldest first. See `docs/notes/server-store.md`.
+    pub fn messages_between(
+        &self,
+        session_id: i64,
+        first: i64,
+        last: i64,
+    ) -> anyhow::Result<Transcript> {
+        let conn = self.lock();
+        let last_seq: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(seq), 0) FROM messages WHERE session_id = ?1",
+            params![session_id],
+            |r| r.get(0),
+        )?;
+        let mut stmt = conn.prepare(
+            "SELECT seq, kind, content FROM messages
+             WHERE session_id = ?1 AND seq >= ?2 AND seq <= ?3
+             ORDER BY seq ASC",
+        )?;
+        let rows = stmt
+            .query_map(params![session_id, first, last], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let messages = rows
+            .into_iter()
+            .map(|(seq, kind, content)| MessageRow::parse(seq, &kind, &content))
+            .collect();
+        Ok(Transcript { last_seq, messages })
+    }
+
     /// A window of the transcript after `after_seq`, oldest first, plus its end seq.
     pub fn messages_after(
         &self,
@@ -1646,6 +1690,85 @@ mod tests {
         assert_eq!(
             t.messages.iter().map(|m| m.seq).collect::<Vec<_>>(),
             vec![2, 3]
+        );
+    }
+
+    /// Both ends are named, so the window is exactly what was asked for.
+    #[test]
+    fn messages_between_names_both_ends() {
+        let (_d, store) = temp_store();
+        let id = store.create_session("main", "m", "C:/x").unwrap();
+        for text in ["a", "b", "c", "d"] {
+            store
+                .append_message(
+                    id,
+                    "text",
+                    &serde_json::json!({"role": "user", "text": text}),
+                )
+                .unwrap();
+        }
+
+        let t = store.messages_between(id, 2, 3).unwrap();
+        assert_eq!(
+            t.messages.iter().map(|m| m.seq).collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+        assert_eq!(t.last_seq, 4, "the tail is reported, not the window end");
+
+        // Inclusive on both ends, and a one-row window is one row.
+        assert_eq!(store.messages_between(id, 1, 1).unwrap().messages.len(), 1);
+        assert_eq!(store.messages_between(id, 1, 4).unwrap().messages.len(), 4);
+
+        // Past the end is empty, not an error, and still reports the tail.
+        let t = store.messages_between(id, 9, 20).unwrap();
+        assert!(t.messages.is_empty());
+        assert_eq!(t.last_seq, 4);
+
+        // An inverted window is empty too: the caller asked for nothing.
+        assert!(
+            store
+                .messages_between(id, 3, 2)
+                .unwrap()
+                .messages
+                .is_empty()
+        );
+    }
+
+    /// The upper end stops the window; the query's contract, not a bug seen.
+    #[test]
+    fn the_upper_end_stops_the_window() {
+        let (_d, store) = temp_store();
+        let id = store.create_session("main", "m", "C:/x").unwrap();
+        for text in ["a", "b", "c", "d"] {
+            store
+                .append_message(
+                    id,
+                    "text",
+                    &serde_json::json!({"role": "user", "text": text}),
+                )
+                .unwrap();
+        }
+        {
+            let conn = store.lock();
+            conn.execute(
+                "INSERT INTO messages (session_id, seq, kind, content, created_at)
+                 VALUES (?1, 13, 'text', '{\"role\":\"user\",\"text\":\"far\"}', 0)",
+                params![id],
+            )
+            .unwrap();
+        }
+
+        // Two rows in the range, and row 13 stays outside it.
+        let t = store.messages_between(id, 3, 4).unwrap();
+        assert_eq!(
+            t.messages.iter().map(|m| m.seq).collect::<Vec<_>>(),
+            vec![3, 4]
+        );
+        // The cursor form has no upper bound: a count of two reaches row 13.
+        let t = store.messages_after(id, 2, 2).unwrap();
+        assert_eq!(
+            t.messages.iter().map(|m| m.seq).collect::<Vec<_>>(),
+            vec![4, 13]
         );
     }
 

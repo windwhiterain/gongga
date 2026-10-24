@@ -236,6 +236,13 @@ pub fn catalog() -> Vec<CommandSpec> {
                     Some("n"),
                     CompletionSource::None,
                 ),
+                arg(
+                    "seq",
+                    "A range of sequence numbers instead of a cursor: `-1` the newest row,                      `-5:` the newest five, `5:10` rows 5 through 10, `:10` the first ten,                      `5:` from 5 on. Both ends inclusive. Cannot be combined with --after_seq                      or --limit.",
+                    false,
+                    Some("slice"),
+                    CompletionSource::None,
+                ),
             ],
         },
     ]
@@ -483,6 +490,93 @@ fn parse_percent(raw: &str) -> Result<u8, String> {
     Ok(value as u8)
 }
 
+/// An inclusive window of `seq` numbers, `first > last` meaning empty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SeqWindow {
+    first: i64,
+    last: i64,
+}
+
+impl SeqWindow {
+    fn is_empty(&self) -> bool {
+        self.first > self.last
+    }
+
+    fn len(&self) -> i64 {
+        if self.is_empty() {
+            0
+        } else {
+            self.last - self.first + 1
+        }
+    }
+}
+
+/// A slice over sequence numbers; see `docs/notes/server-commands.md`.
+fn parse_seq_slice(raw: &str, last_seq: i64) -> Result<SeqWindow, String> {
+    let one = |part: &str, side: &str| -> Result<i64, String> {
+        let part = part.trim();
+        let n: i64 = part.parse().map_err(|_| {
+            format!("--seq takes sequence numbers like `5:10` or `-5:`, got {part:?} in the {side}")
+        })?;
+        // Seq starts at 1, so 0 is a typo written either way.
+        if n == 0 {
+            return Err(format!(
+                "--seq counts sequence numbers from 1, or from -1 backwards; got 0 in the {side}"
+            ));
+        }
+        // Negative counts back from the tail, like a Python index: -1 is the newest row.
+        Ok(if n > 0 {
+            n
+        } else {
+            last_seq.saturating_add(n).saturating_add(1)
+        })
+    };
+
+    let raw = raw.trim();
+    // A second colon is a step (`1:2:3`), which names no range here.
+    if raw.matches(':').count() > 1 {
+        return Err(format!(
+            "--seq takes one `start:end` range, not a step: got {raw:?}"
+        ));
+    }
+    let window = match raw.split_once(':') {
+        None => {
+            let at = one(raw, "index")?;
+            SeqWindow {
+                first: at,
+                last: at,
+            }
+        }
+        Some((start, end)) => {
+            if start.trim().is_empty() && end.trim().is_empty() {
+                return Err("--seq needs a bound on one side, e.g. `-5:` or `:10`".into());
+            }
+            let first = if start.trim().is_empty() {
+                1
+            } else {
+                one(start, "start")?
+            };
+            let last = if end.trim().is_empty() {
+                last_seq
+            } else {
+                one(end, "end")?
+            };
+            // Backwards as written is a typo; empty after clamping is an answer.
+            if !start.trim().is_empty() && !end.trim().is_empty() && first > last {
+                return Err(format!(
+                    "--seq {raw} runs backwards: it starts at {first} and ends at {last}"
+                ));
+            }
+            SeqWindow { first, last }
+        }
+    };
+
+    // Clamp like a slice: asking for more than exists is fewer rows, not an error.
+    let first = window.first.max(1);
+    let last = window.last.min(last_seq);
+    Ok(SeqWindow { first, last })
+}
+
 /// Reads the transcript back out, so a caller need not reassemble deltas.
 ///
 /// # Invariant
@@ -495,6 +589,66 @@ async fn get_messages(d: &Dispatch, args: &Args) -> Outcome {
         Ok(s) => s,
         Err(e) => return Outcome::err(e.to_string()),
     };
+    // Two ways to name the same rows would be a trap, not a convenience.
+    if let Some(raw) = args.get("seq") {
+        let clash: Vec<&str> = ["after_seq", "limit"]
+            .into_iter()
+            .filter(|a| args.contains_key(*a))
+            .collect();
+        if !clash.is_empty() {
+            return Outcome::err(format!(
+                "--seq already names the rows; drop {}",
+                clash
+                    .iter()
+                    .map(|a| format!("--{a}"))
+                    .collect::<Vec<_>>()
+                    .join(" and ")
+            ));
+        }
+        let last_seq = match d.store.last_seq(session.id()) {
+            Ok(v) => v,
+            Err(e) => return Outcome::err(e.to_string()),
+        };
+        let window = match parse_seq_slice(raw, last_seq) {
+            Ok(w) => w,
+            Err(e) => return Outcome::err(e),
+        };
+        if window.len() > MAX_MESSAGE_LIMIT as i64 {
+            return Outcome::err(format!(
+                "--seq {raw} covers {} rows; one reply carries at most {MAX_MESSAGE_LIMIT}",
+                window.len()
+            ));
+        }
+        let t = match d
+            .store
+            .messages_between(session.id(), window.first, window.last)
+        {
+            Ok(t) => t,
+            Err(e) => return Outcome::err(e.to_string()),
+        };
+        let message = if t.messages.is_empty() {
+            format!(
+                "no rows in that range in {name} (transcript ends at seq {})",
+                t.last_seq
+            )
+        } else {
+            let first = t.messages[0].seq;
+            let last = t.messages[t.messages.len() - 1].seq;
+            format!(
+                "{} row(s) at seq {first}..{last} in {name} (transcript ends at seq {})",
+                t.messages.len(),
+                t.last_seq
+            )
+        };
+        return Outcome::ok_with(
+            message,
+            json!({
+                "session": name,
+                "last_seq": t.last_seq,
+                "messages": t.messages,
+            }),
+        );
+    }
     let after_seq = match args.get("after_seq") {
         None => 0,
         Some(raw) => match raw.trim().parse::<i64>() {
@@ -1017,6 +1171,101 @@ mod tests {
         assert!(parse_percent("-5").is_err());
     }
 
+    /// The slice syntax, case by case: this is the whole grammar.
+    #[test]
+    fn a_seq_slice_is_parsed_like_a_python_slice() {
+        // One index names one row; -1 is the newest, like `rows[-1]`.
+        assert_eq!(
+            parse_seq_slice("5", 10),
+            Ok(SeqWindow { first: 5, last: 5 })
+        );
+        assert_eq!(
+            parse_seq_slice("-1", 10),
+            Ok(SeqWindow {
+                first: 10,
+                last: 10
+            })
+        );
+        // `-n:` is the newest n.
+        assert_eq!(
+            parse_seq_slice("-5:", 10),
+            Ok(SeqWindow { first: 6, last: 10 })
+        );
+        // Both ends inclusive, which is the documented difference from Python.
+        assert_eq!(
+            parse_seq_slice("5:10", 10),
+            Ok(SeqWindow { first: 5, last: 10 })
+        );
+        assert_eq!(
+            parse_seq_slice("1:1", 10),
+            Ok(SeqWindow { first: 1, last: 1 })
+        );
+        // An omitted bound takes the end it stands for.
+        assert_eq!(
+            parse_seq_slice(":10", 10),
+            Ok(SeqWindow { first: 1, last: 10 })
+        );
+        assert_eq!(
+            parse_seq_slice("5:", 10),
+            Ok(SeqWindow { first: 5, last: 10 })
+        );
+        // Two negatives are a window inside the tail.
+        assert_eq!(
+            parse_seq_slice("-5:-2", 10),
+            Ok(SeqWindow { first: 6, last: 9 })
+        );
+        // Whitespace is the shell's doing, not the caller's mistake.
+        assert_eq!(
+            parse_seq_slice(" 5 : 10 ", 10),
+            Ok(SeqWindow { first: 5, last: 10 })
+        );
+    }
+
+    /// Asking for more than exists is fewer rows, not an error.
+    #[test]
+    fn a_seq_slice_clamps_to_the_transcript() {
+        // Past the tail.
+        assert_eq!(
+            parse_seq_slice("5:99", 10),
+            Ok(SeqWindow { first: 5, last: 10 })
+        );
+        // Further back than the transcript goes.
+        assert_eq!(
+            parse_seq_slice("-99:", 10),
+            Ok(SeqWindow { first: 1, last: 10 })
+        );
+        // Past the end entirely: an empty window, and the reply still says the tail.
+        let w = parse_seq_slice("99:", 10).unwrap();
+        assert!(w.is_empty());
+        // An empty transcript is empty, not a panic.
+        assert!(parse_seq_slice("-1", 0).unwrap().is_empty());
+        assert!(parse_seq_slice(":5", 0).unwrap().is_empty());
+    }
+
+    /// Each of these is a typo, and each says what it wanted.
+    #[test]
+    fn a_bad_seq_slice_is_refused() {
+        assert!(parse_seq_slice("", 10).is_err());
+        assert!(parse_seq_slice(":", 10).is_err());
+        assert!(parse_seq_slice("0", 10).is_err(), "seq starts at 1");
+        assert!(parse_seq_slice("0:", 10).is_err());
+        assert!(parse_seq_slice(":-0", 10).is_err());
+        assert!(parse_seq_slice("a:b", 10).is_err());
+        assert!(parse_seq_slice("1:2:3", 10).is_err(), "no step");
+        assert!(parse_seq_slice("10:5", 10).is_err(), "written backwards");
+        assert!(
+            parse_seq_slice("-2:-5", 10).is_err(),
+            "backwards, tail-wise"
+        );
+        assert!(
+            parse_seq_slice(&format!("-{}", i64::MAX), 10)
+                .unwrap()
+                .first
+                >= 1,
+            "a huge negative clamps instead of overflowing"
+        );
+    }
+
     /// Reading is paged by seq, so a wrong default would make a bridge resend.
     #[test]
     fn get_messages_pages_by_seq() {
@@ -1030,5 +1279,8 @@ mod tests {
         let after = spec.args.iter().find(|a| a.name == "after_seq").unwrap();
         assert!(!after.required, "0 is a valid starting point");
         assert!(!spec.args.iter().any(|a| a.name == "limit" && a.required));
+        // The range form is optional too: its absence must keep the old window.
+        let seq = spec.args.iter().find(|a| a.name == "seq").unwrap();
+        assert!(!seq.required);
     }
 }

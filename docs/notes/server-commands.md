@@ -141,6 +141,46 @@ Read-only and cheap: one indexed range scan. It does not claim the session gate,
 because reading a transcript while a turn appends to it is exactly what the TUI's
 replay does, and neither has anything to write.
 
+## get_messages --seq
+
+Two readers want two different things from the same rows. A bridge has a cursor
+and wants "what arrived after it", which is `--after_seq` + `--limit`: a count
+taken back from the tail. A reader that was not there wants "that part of the
+transcript", and a *count* cannot say where to stop -- it only says how many of
+the newest rows to take. So `--seq` names both ends.
+
+The syntax is Python's, with two differences that are deliberate:
+
+- **Both ends are inclusive.** `5:10` is seq 5 through 10. Python's half-open
+  range counts the gaps between elements; here every number names a row, and the
+  unit is the row, so excluding the one the caller typed would be the surprise.
+  The reply always states the range it actually returned (`3 row(s) at seq 7..9`),
+  so a reader never has to remember which convention this is.
+- **A negative bound counts back from the newest row**, resolved against the
+  session's `last_seq` at read time: `-1` is the newest row, `-5:` the newest
+  five, `-5:-2` the five-to-second-newest. This is the part Python and this
+  command agree on exactly.
+
+Everything else behaves like a slice: an omitted bound takes its end of the
+transcript, and asking for more than exists is fewer rows rather than an error
+(`-99:` on a ten-row transcript is all ten). A range that starts past the tail is
+an empty window, and the reply says where the transcript actually ends.
+
+What is refused, because each is a typo rather than an intention:
+
+- a second colon (`1:2:3` has a step, and nothing here steps);
+- `0`, in either direction of spelling -- seq starts at 1, so 0 names no row;
+- a range written backwards (`10:5`, `-2:-5`);
+- `:` with neither bound, which names everything and is not what anyone meant;
+- `--seq` together with `--after_seq` or `--limit`, since those name the same
+  rows another way and two spellings of one thing is how a client learns the
+  wrong one.
+
+The cap is the one `--limit` already had (`MAX_MESSAGE_LIMIT`), not a new budget:
+a reply travels over a channel that fragments at 1174 bytes a packet. `--seq`
+reuses it and *refuses* rather than truncating, because a silently short window
+would make `-590:` look like it worked.
+
 ## del_session
 
 Delete means "not this session and not what it is doing", so stop the turn first.
@@ -264,6 +304,24 @@ out would make Tab silently offer nothing.
 
 `set_session` is where a session's model and compaction point are chosen, so both
 flags have to be described well enough to complete.
+
+## a_seq_slice_is_parsed_like_a_python_slice
+
+The grammar, case by case, because a slice is the kind of thing that is right
+everywhere except the boundary a caller actually uses.
+
+## a_seq_slice_clamps_to_the_transcript
+
+Asking for more than exists is fewer rows. This is what keeps `-99:` usable in a
+script that does not know how long the transcript is, and it is also why a range
+past the end is a *successful* empty reply rather than an error: "there is
+nothing there" is an answer.
+
+## a_bad_seq_slice_is_refused
+
+Every one of these is a typo, and the message names what was wanted. The huge
+negative is the arithmetic guard: a bound is `last_seq + n + 1`, so an `i64`
+minimum would overflow in debug without saturating.
 
 ## get_messages_pages_by_seq
 

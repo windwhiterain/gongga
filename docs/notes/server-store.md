@@ -157,6 +157,22 @@ still moves it).
 Newest `limit` first, then flipped, so a long transcript yields its tail rather
 than its head -- a caller that asked for 50 rows wants the 50 that just happened.
 
+## Store::messages_between
+
+`messages_after` states a lower bound and a count taken from the tail; this states
+both ends. The difference only shows when a range is asked for that has rows
+beyond it -- which `messages_after` would happily walk into, because a count has
+no upper bound to stop at.
+
+`last_seq` comes back from both, because a caller still needs to know where the
+transcript ends: an empty window and an empty transcript are different answers.
+
+## the_upper_end_stops_the_window
+
+A gap in `seq` cannot happen today -- `append_message` is the only writer and rows
+go only with their session -- so this pins the query's contract rather than a bug
+that was seen.
+
 ## Store::message_index
 
 Compression needs the seqs to decide where a summary may take over, not just the
