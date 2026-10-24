@@ -94,5 +94,10 @@ self-declaration, and the verdict carries no information.
   takes no name the pm has to guess. A command taught in a charter that cannot run as
   written is a bug in the instrument, not a mistake by whoever copied it.
 - the pm may wait on its own workers, since that is work it owns; what it waits with must
-  not write the user's per-session client state.
+  not write the user's per-session client state. It waits by sleeping, not by polling: a
+  sleep is the timeout fallback and `send_message` backgrounds it instantly (line 52), so
+  the worker's message wakes the pm as surely as it wakes the justice. A poll loop is a
+  hand-rolled version of something the transport already does, and it costs a client
+  process per round to learn what the wake would have said for free. A worker that
+  finishes without waking its pm is a broken instrument, not a quiet success.
 - a clause no ruling can rest on -- "keep it clean", "be careful" -- is not a clause.
