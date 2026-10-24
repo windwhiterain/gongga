@@ -154,6 +154,46 @@ that starts a session also hands back the catalog and the session list, so a
 client that redials after a restart comes up knowing exactly what a fresh one
 does. That is the whole reason reconnecting is cheap.
 
+## Client::handle_event
+
+Filters hide *lines*, not state. A hidden `Status` still updates the session list
+and still calls `refresh`, and a hidden `Sessions` is not hidden at all -- it
+carries no session to filter on and is how the client learns the names it
+filters against.
+
+The reason is the one thing a filter must not break: the operator narrows the log
+to one session in order to read it, not to stop the client knowing what is
+happening in the others. A status line that vanished *and* left the session list
+stale would make the harness look dead.
+
+The gate sits here rather than in `Sink` because a front-end has no idea which
+events were dropped, and a sink that could drop them would have to re-derive the
+same rules in every implementation.
+
+`run_once` does not filter at all: a script gets the events it asked for, one
+JSON object each, and a filtered `cmd_result` would leave it waiting for an
+acknowledgement that was never printed.
+
+## Client::follow_session_command
+
+The two SPEC rules about `set_session` and `del_session` are one behaviour: the
+session you name is the one this client follows. Naming a session sets both the
+sticky `session` (so the argument can be omitted) and its event filter (so the
+log is that session's), because those are the same intention spelled twice.
+
+`del_session` only clears them when it deletes the session they point at.
+Deleting some other session must not silently retarget a client that is watching
+one, and neither must a failed delete -- hence the equality test rather than an
+unconditional clear.
+
+Neither runs at submission time. `set_session --llm nosuch/model` is refused, and
+a client that had already followed it would be watching a session that does not
+exist -- the kind of wrong that reads as "the log stopped". So the command is
+remembered in `follows` (id, name, session) and `settle_follow` applies it when
+its `cmd_result` says `ok`. That is one extra piece of state, and it is the reason
+`run_once` now feeds events through `handle_event`: a one-shot `set_session` gets
+the same acknowledgement, and would otherwise never follow at all.
+
 ## Client::refresh
 
 Deliberately has no "current session" in it. The only thing that ever stood
@@ -162,6 +202,14 @@ argument into something that looked like a mode the UI was in. What is left are
 facts about the server: its model and how many sessions exist -- and, when there
 is no link, that there is no link, because a model name with no server behind it
 is a lie the operator cannot see through.
+
+## Client::refresh — the footer
+
+The footer is the only place the client's own state is visible, which is why the
+filters join the sticky arguments there: a line that never appears has to be
+explained somewhere, or the operator concludes the server stopped talking. The
+filters half is omitted entirely when there are none, so the common case stays
+one line of text.
 
 ## Client::command
 

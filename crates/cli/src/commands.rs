@@ -1,18 +1,26 @@
-//! Sticky command arguments and the two commands that manage them.
+//! Sticky arguments and event filters: the client's own state in `cli.toml`.
 //!
 //! See `docs/notes/cli-commands.md`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use protocol::{Args, CommandSpec};
+use protocol::{Args, CommandSpec, Event};
 use serde::{Deserialize, Serialize};
+
+/// The event fields an `--name` may select. An event that lacks one passes.
+pub const EVENT_FIELDS: &[&str] = &[
+    "args", "call_id", "data", "detail", "done", "id", "level", "message", "name", "ok", "part",
+    "session", "sessions", "status", "stream", "t", "text", "tool", "turn",
+];
 
 /// `~/.gongga/cli.toml`.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct File {
     #[serde(default)]
     persistant_cmd_arguments: Vec<Entry>,
+    #[serde(default)]
+    event_filters: Vec<Entry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,6 +52,11 @@ impl Sticky {
         Self { path, args }
     }
 
+    /// The directory whose `cli.toml` this is; event filters live beside it.
+    pub fn home(&self) -> &Path {
+        self.path.parent().unwrap_or(Path::new("."))
+    }
+
     pub fn names(&self) -> Vec<String> {
         self.args.keys().cloned().collect()
     }
@@ -54,6 +67,10 @@ impl Sticky {
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
+    }
+
+    pub fn get(&self, name: &str) -> Option<&str> {
+        self.args.get(name).map(String::as_str)
     }
 
     pub fn set(&mut self, name: &str, value: &str) -> anyhow::Result<()> {
@@ -70,22 +87,9 @@ impl Sticky {
     }
 
     fn save(&self) -> anyhow::Result<()> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let file = File {
-            persistant_cmd_arguments: self
-                .args
-                .iter()
-                .map(|(name, value)| Entry {
-                    name: name.clone(),
-                    value: value.clone(),
-                })
-                .collect(),
-        };
-        let text = toml::to_string_pretty(&file)?;
-        std::fs::write(&self.path, text)?;
-        Ok(())
+        let mut file = read_file(&self.path);
+        file.persistant_cmd_arguments = entries(&self.args);
+        write_file(&self.path, &file)
     }
 
     /// Fills in any argument the caller omitted, when a sticky value exists.
@@ -99,6 +103,112 @@ impl Sticky {
             }
         }
     }
+}
+
+/// A display filter: each pair narrows the events that carry that field.
+pub struct EventFilters {
+    path: PathBuf,
+    filters: BTreeMap<String, String>,
+}
+
+impl EventFilters {
+    /// Loads from `home/cli.toml`; a missing or unreadable file yields none.
+    pub fn load(home: &Path) -> Self {
+        let path = home.join("cli.toml");
+        let filters = read_file(&path)
+            .event_filters
+            .into_iter()
+            .map(|e| (e.name, e.value))
+            .collect();
+        Self { path, filters }
+    }
+
+    pub fn names(&self) -> Vec<String> {
+        self.filters.keys().cloned().collect()
+    }
+
+    pub fn pairs(&self) -> Vec<(String, String)> {
+        self.filters
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+
+    pub fn get(&self, name: &str) -> Option<&str> {
+        self.filters.get(name).map(String::as_str)
+    }
+
+    pub fn set(&mut self, name: &str, value: &str) -> anyhow::Result<()> {
+        self.filters.insert(name.to_string(), value.to_string());
+        self.save()
+    }
+
+    /// Returns false when there was nothing to remove.
+    pub fn del(&mut self, name: &str) -> anyhow::Result<bool> {
+        match self.filters.remove(name) {
+            Some(_) => self.save().map(|()| true),
+            None => Ok(false),
+        }
+    }
+
+    /// An event without the named field is left alone: `session` filters the
+    /// streams, not the command echo.
+    pub fn allows(&self, event: &Event) -> bool {
+        if self.filters.is_empty() {
+            return true;
+        }
+        let Ok(serde_json::Value::Object(fields)) = serde_json::to_value(event) else {
+            return true;
+        };
+        self.filters
+            .iter()
+            .all(|(name, want)| match fields.get(name) {
+                None => true,
+                Some(actual) => scalar(actual).as_deref() == Some(want.as_str()),
+            })
+    }
+
+    fn save(&self) -> anyhow::Result<()> {
+        let mut file = read_file(&self.path);
+        file.event_filters = entries(&self.filters);
+        write_file(&self.path, &file)
+    }
+}
+
+/// The JSON scalar as the string a filter value is written with.
+fn scalar(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        serde_json::Value::Null => Some("null".to_string()),
+        _ => None,
+    }
+}
+
+fn entries(args: &BTreeMap<String, String>) -> Vec<Entry> {
+    args.iter()
+        .map(|(name, value)| Entry {
+            name: name.clone(),
+            value: value.clone(),
+        })
+        .collect()
+}
+
+/// Reads what is on disk so one writer keeps the other's section.
+fn read_file(path: &Path) -> File {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| toml::from_str::<File>(&text).ok())
+        .unwrap_or_default()
+}
+
+fn write_file(path: &Path, file: &File) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, toml::to_string_pretty(file)?)?;
+    Ok(())
 }
 
 /// `--flag value` or `--flag=value`; nothing positional, and a value may
@@ -168,6 +278,66 @@ mod tests {
         s.set("session", "main").unwrap();
         assert!(s.del("session").unwrap());
         assert!(!s.del("session").unwrap());
+    }
+
+    /// The two writers share one file, so each has to keep the other's rows.
+    #[test]
+    fn event_filters_persist_beside_sticky_arguments() {
+        let d = dir();
+        let mut sticky = Sticky::load(d.path());
+        sticky.set("session", "main").unwrap();
+        let mut filters = EventFilters::load(d.path());
+        filters.set("session", "main").unwrap();
+
+        let sticky = Sticky::load(d.path());
+        let filters = EventFilters::load(d.path());
+        assert_eq!(sticky.get("session"), Some("main"));
+        assert_eq!(filters.get("session"), Some("main"));
+    }
+
+    /// A session filter narrows the streams; a command has no session to match.
+    #[test]
+    fn a_session_filter_hides_other_sessions_but_not_commands() {
+        let d = dir();
+        let mut filters = EventFilters::load(d.path());
+        filters.set("session", "main").unwrap();
+
+        let response = |session: &str| {
+            protocol::Event::Response(protocol::ResponseEvent {
+                session: session.into(),
+                turn: 1,
+                part: protocol::ResponsePart::Output,
+                text: "hi".into(),
+                done: false,
+            })
+        };
+        assert!(filters.allows(&response("main")));
+        assert!(!filters.allows(&response("other")));
+        assert!(filters.allows(&protocol::Event::Cmd {
+            id: 1,
+            name: "send_message".into(),
+            args: Args::new(),
+        }));
+    }
+
+    /// Every filter has to match: one session filter plus one level filter.
+    #[test]
+    fn every_filter_has_to_match() {
+        let d = dir();
+        let mut filters = EventFilters::load(d.path());
+        filters.set("session", "main").unwrap();
+        filters.set("part", "output").unwrap();
+        let event = |part| {
+            protocol::Event::Response(protocol::ResponseEvent {
+                session: "main".into(),
+                turn: 1,
+                part,
+                text: "x".into(),
+                done: false,
+            })
+        };
+        assert!(filters.allows(&event(protocol::ResponsePart::Output)));
+        assert!(!filters.allows(&event(protocol::ResponsePart::Reasoning)));
     }
 
     #[test]

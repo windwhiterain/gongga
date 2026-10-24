@@ -679,6 +679,37 @@ Windows 上 Git Bash 会**在程序启动之前**把 `/x` 改写成 `C:/.../Git/
 
 客户端（本地执行，不上线）：`set_persistant_cmd_argument --name --value`、
 `del_persistant_cmd_argument --name`。这两个本来就在客户端，名字和 SPEC 一致，没有改动。
+另有 `set_event_filter --name --value` / `del_event_filter --name`（SPEC 里叫
+`set_sticky_cmd_argument`，与实现和 DESIGN §5 的既有拼法不一致，按代码拼法实现）。
+
+### 事件过滤器（`set_event_filter` / `del_event_filter`）
+
+多会话时日志是交错的一条流，sticky `session` 解决的是「发给谁」，不解决「看谁的」。
+过滤器补上后一半，和 sticky 参数一样存在 `~/.gongga/cli.toml` 的 `event_filters` 段：
+两个写入方各改各的段，互不覆盖（以前 `Sticky::save` 直接整文件重写，加一个写入方就会
+把对方删掉，所以先改成「读盘 → 改自己那段 → 写回」）。
+
+三条规则，都是为了让「过滤」不变成一个会咬人的开关：
+
+- **每一对都要命中**。`session=main` 加 `part=output` 是「main 的回答」，不是并集。
+- **事件没有这个字段就放行**。`session` 只约束会话流；`cmd`/`cmd_result` 是 operator
+  自己敲的，不属于任何会话，滤掉会出现「只看到输出、看不到是谁发的命令」。
+- **只滤行，不滤状态**。被滤掉的 `status` 仍然更新会话列表，`sessions` 事件永远不滤
+  ——它是客户端学到会话名的唯一途径。把状态一起滤掉，界面上就是「另一个会话看起来死了」。
+
+`--name` 只接受线上真实存在的字段（`EVENT_FIELDS`），不在表里的当场拒绝并列出可选项：
+一个永远不命中任何事件的过滤器，只会让用户以为日志坏了。比较走序列化后的 JSON 字段名，
+所以过滤值就是 `jq` 里会写的那个名字，新增事件变体也不用加分支。
+
+`set_session` 成功（`cmd_result ok`）后自动把 sticky `session` 和 `session` 过滤器一起设为
+该会话（SPEC 的两条 `- auto set/del --session`），`del_session` 只在删的正是过滤器指向的
+那个会话时才清——删掉别的会话不该悄悄改掉「我在看哪个」。**不在提交时就改**：
+`set_session --llm nosuch/model` 会被服务端拒，那时客户端已经指向一个不存在的会话，
+表现为「日志忽然不说话了」。为此 `Client.follows` 记 (id, 命令, 会话)，收到回执才结算；
+一次性模式也照此走，所以 `run_once` 现在把事件同时喂给 client（静默），stdout 仍只有 JSON。
+
+非交互模式（`gongga <cmd>`）**不应用过滤**：脚本拿到的是它要的那些事件的完整 JSON，
+而且滤掉 `cmd_result` 会让它一直等一个永远不会打印的回执。
 
 ## 5. CLI（命令层）
 

@@ -8,11 +8,46 @@ server. They persist in `~/.gongga/cli.toml`, so a restarted client still knows
 which session you were talking to -- the file, not a running server, is what
 remembers.
 
+`event_filters[{name, value}]` lives in the same file for the same reason, and
+for one more: what a client chooses to watch is a property of that client, not
+of the harness. A per-session "only show main" toggle on the server would have to
+be per connection anyway, and then it would be remembered by whoever holds the
+connection -- which is the client.
+
 ## Sticky::load
 
 Tolerating a missing or unreadable file is deliberate: a client that cannot
 remember its defaults is still usable, and refusing to start over a corrupt
 `cli.toml` would make the file a single point of failure for the whole harness.
+
+## EventFilters
+
+Each pair says "an event carrying `name` must have value `value`". Two rules make
+that usable:
+
+- **Every pair has to match.** Narrowing to `session=main` and then to
+  `part=output` should show main's answers, not main's everything plus every
+  other session's answers.
+- **An event without that field passes.** `--name session` is about the streams
+  that belong to a session; a `cmd` echo has no session and belongs to the
+  operator who typed it. Dropping it would hide the command that caused the
+  output still being shown.
+
+`allows` compares through the serialised event rather than a `match` over every
+variant: the field names are the names in the wire JSON (`session`, `part`,
+`level`), so a filter value is what a `jq` selector would call it, and adding an
+event variant does not need a new filtering branch. A hidden event still returns
+`true` for everything else -- see `Client::handle_event`.
+
+## EVENT_FIELDS
+
+An `--name` that no event carries filters nothing, and silently doing nothing is
+how a user concludes the log is broken. The list is the wire vocabulary, and
+`set_event_filter` refuses anything outside it with the list in the message.
+
+`session` and `sessions` both appear because both are on the wire: the first
+tags a stream, the second is the session list event. They mean different things
+on purpose; `session=main` does not hide the list.
 
 ## parse_args
 

@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
+use crate::commands::EVENT_FIELDS;
 use crate::complete::{Candidate, Completer, token_bounds};
 use protocol::{ArgSpec, CommandSpec, CompletionSource};
 
@@ -16,6 +17,8 @@ struct Inner {
     server: Vec<CommandSpec>,
     client: Vec<CommandSpec>,
     sessions: Vec<String>,
+    sticky_names: Vec<String>,
+    filter_names: Vec<String>,
     /// Where a relative path value is read from: the client's own directory.
     cwd: PathBuf,
 }
@@ -26,6 +29,8 @@ impl Default for Inner {
             server: Vec::new(),
             client: Vec::new(),
             sessions: Vec::new(),
+            sticky_names: Vec::new(),
+            filter_names: Vec::new(),
             cwd: std::env::current_dir().unwrap_or_default(),
         }
     }
@@ -54,7 +59,16 @@ impl Catalog {
     /// Rebuilds the client-side specs, whose `--name` completion depends on the
     /// sticky arguments that currently exist.
     pub fn set_sticky_names(&self, names: &[String]) {
-        self.write().client = client_specs(names);
+        let mut inner = self.write();
+        inner.sticky_names = names.to_vec();
+        inner.client = client_specs(&inner.sticky_names, &inner.filter_names);
+    }
+
+    /// The same rebuild for `del_event_filter --name`.
+    pub fn set_filter_names(&self, names: &[String]) {
+        let mut inner = self.write();
+        inner.filter_names = names.to_vec();
+        inner.client = client_specs(&inner.sticky_names, &inner.filter_names);
     }
 
     pub fn commands(&self) -> Vec<CommandSpec> {
@@ -312,8 +326,8 @@ fn directory(cwd: &Path, typed: &str) -> PathBuf {
     }
 }
 
-/// The commands the CLI handles itself; rebuilt whenever the sticky set changes.
-fn client_specs(sticky: &[String]) -> Vec<CommandSpec> {
+/// The commands the CLI handles itself; rebuilt whenever either set changes.
+fn client_specs(sticky: &[String], filters: &[String]) -> Vec<CommandSpec> {
     vec![
         CommandSpec {
             name: "set_persistant_cmd_argument".into(),
@@ -347,6 +361,37 @@ fn client_specs(sticky: &[String]) -> Vec<CommandSpec> {
                 CompletionSource::Static(sticky.to_vec()),
             )],
         },
+        CommandSpec {
+            name: "set_event_filter".into(),
+            summary: "Show only events whose named field has this value.".into(),
+            args: vec![
+                arg(
+                    "name",
+                    "Event field, e.g. `session`.",
+                    true,
+                    Some("name"),
+                    CompletionSource::Static(EVENT_FIELDS.iter().map(|f| f.to_string()).collect()),
+                ),
+                arg(
+                    "value",
+                    "Value the field must have. Completes the way the named argument does.",
+                    true,
+                    Some("value"),
+                    CompletionSource::OfNamedArgument,
+                ),
+            ],
+        },
+        CommandSpec {
+            name: "del_event_filter".into(),
+            summary: "Remove an event filter.".into(),
+            args: vec![arg(
+                "name",
+                "Filter name to remove.",
+                true,
+                Some("name"),
+                CompletionSource::Static(filters.to_vec()),
+            )],
+        },
     ]
 }
 
@@ -373,6 +418,7 @@ mod tests {
     fn catalog() -> Catalog {
         let c = Catalog::new();
         c.set_sticky_names(&["session".to_string()]);
+        c.set_filter_names(&[]);
         c.set_server_commands(vec![
             CommandSpec {
                 name: "send_message".into(),
@@ -556,6 +602,47 @@ mod tests {
         assert_eq!(values(&c, "/set_session --cwd .h"), vec![".hidden"]);
         // A prefix that names nothing is not an error, just no candidates.
         assert!(values(&c, "/set_session --cwd nowhere/").is_empty());
+    }
+
+    /// `--name` takes an event field, so it offers the fields an event has.
+    #[test]
+    fn event_filter_names_complete_from_the_event_vocabulary() {
+        let c = catalog();
+        let got = values(&c, "/set_event_filter --name ");
+        assert!(got.contains(&"session".to_string()), "{got:?}");
+        assert!(got.contains(&"level".to_string()), "{got:?}");
+        assert_eq!(
+            values(&c, "/set_event_filter --name sess"),
+            vec!["session", "sessions"]
+        );
+        assert!(values(&c, "/set_event_filter --name nope").is_empty());
+    }
+
+    /// The value is judged like the argument it mirrors: a session filter takes
+    /// sessions.
+    #[test]
+    fn a_filter_value_completes_like_the_argument_it_mirrors() {
+        let c = catalog();
+        assert_eq!(
+            values(&c, "/set_event_filter --name session --value "),
+            vec!["main", "scratch"]
+        );
+    }
+
+    /// The removal candidate comes from state, and follows it.
+    #[test]
+    fn del_event_filter_completes_against_the_filters_that_exist() {
+        let c = catalog();
+        assert!(values(&c, "/del_event_filter --name ").is_empty());
+        c.set_filter_names(&["session".to_string()]);
+        assert_eq!(values(&c, "/del_event_filter --name "), vec!["session"]);
+    }
+
+    #[test]
+    fn event_filters_are_client_commands() {
+        let c = catalog();
+        assert!(c.is_client_command("set_event_filter"));
+        assert!(c.is_client_command("del_event_filter"));
     }
 
     #[test]

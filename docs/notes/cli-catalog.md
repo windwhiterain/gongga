@@ -91,6 +91,17 @@ is how people write it.
 Their arguments complete against the sticky arguments that exist right now, so
 the specs are rebuilt on change rather than patched.
 
+Two states feed it, and both rebuild the whole list: the sticky arguments for
+`del_persistant_cmd_argument --name`, and the event filters for
+`del_event_filter --name`. Keeping one setter would make each change erase the
+other's candidates, so `set_sticky_names` and `set_filter_names` each write only
+their own field and re-derive from both.
+
+`set_event_filter --name` offers the wire's field vocabulary instead of the
+catalog's argument names, because it names an *event* field. Its `--value`
+completes as the argument of the same name would -- `session` offers sessions --
+through the same `OfNamedArgument` hop the sticky value uses.
+
 ## the_flag_being_typed_is_still_a_candidate
 
 The word being completed is not "already filled": typing `--sess` must still

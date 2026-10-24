@@ -24,7 +24,7 @@ use protocol::{
 };
 use tokio::net::UdpSocket;
 
-use crate::commands::{parse_args, render_args};
+use crate::commands::{EVENT_FIELDS, EventFilters, parse_args, render_args};
 
 const DEFAULT_SERVER: &str = "127.0.0.1:9700";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -165,6 +165,10 @@ pub enum Submission {
 pub struct Client {
     catalog: Catalog,
     sticky: Sticky,
+    filters: EventFilters,
+    /// Where `set_session` / `del_session` land, once the server says yes.
+    /// See `docs/notes/cli-lib.md`.
+    follows: Vec<(u64, String, String)>,
     sessions: Vec<SessionSummary>,
     model: String,
     next_id: u64,
@@ -196,9 +200,14 @@ impl Echo<'_> {
 
 impl Client {
     fn new(catalog: Catalog, sticky: Sticky) -> Self {
+        let filters = EventFilters::load(sticky.home());
+        catalog.set_sticky_names(&sticky.names());
+        catalog.set_filter_names(&filters.names());
         Self {
             catalog,
             sticky,
+            filters,
+            follows: Vec::new(),
             sessions: Vec::new(),
             model: "-".to_string(),
             next_id: 1,
@@ -256,26 +265,40 @@ impl Client {
     }
 
     fn handle_event(&mut self, event: Event, sink: &mut dyn Sink) {
+        // Filters hide lines, not state: a hidden `Status` still updates the list.
+        let shown = self.filters.allows(&event);
         match event {
             Event::Cmd { name, args, .. } => {
-                let rendered = render_args(&args);
-                sink.line(LineKind::System, &format!("$ {name}{rendered}"));
-            }
-            Event::CmdResult { message, ok, .. } => {
-                if message.is_empty() {
-                    return;
+                if shown {
+                    let rendered = render_args(&args);
+                    sink.line(LineKind::System, &format!("$ {name}{rendered}"));
                 }
-                sink.line(
-                    if ok {
-                        LineKind::Result
-                    } else {
-                        LineKind::Error
-                    },
-                    &message,
-                );
             }
-            Event::Response(e) => self.handle_response(e, sink),
-            Event::ToolAnswer(e) => self.handle_tool_answer(e, sink),
+            Event::CmdResult {
+                id, message, ok, ..
+            } => {
+                self.settle_follow(id, ok, sink);
+                if shown && !message.is_empty() {
+                    sink.line(
+                        if ok {
+                            LineKind::Result
+                        } else {
+                            LineKind::Error
+                        },
+                        &message,
+                    );
+                }
+            }
+            Event::Response(e) => {
+                if shown {
+                    self.handle_response(e, sink);
+                }
+            }
+            Event::ToolAnswer(e) => {
+                if shown {
+                    self.handle_tool_answer(e, sink);
+                }
+            }
             Event::Sessions { sessions } => {
                 self.sessions = sessions;
                 self.catalog.set_sessions(self.session_names());
@@ -286,24 +309,28 @@ impl Client {
                 status,
                 detail,
             } => {
-                let label = match status {
-                    SessionStatus::Idle => "idle",
-                    SessionStatus::Running => "running",
-                    SessionStatus::Error => "error",
-                };
-                let suffix = detail.map(|d| format!(" ({d})")).unwrap_or_default();
-                sink.line(LineKind::System, &format!("[{session}] {label}{suffix}"));
                 if let Some(s) = self.sessions.iter_mut().find(|s| s.name == session) {
                     s.status = status;
+                }
+                if shown {
+                    let label = match status {
+                        SessionStatus::Idle => "idle",
+                        SessionStatus::Running => "running",
+                        SessionStatus::Error => "error",
+                    };
+                    let suffix = detail.map(|d| format!(" ({d})")).unwrap_or_default();
+                    sink.line(LineKind::System, &format!("[{session}] {label}{suffix}"));
                 }
                 self.refresh(sink);
             }
             Event::Log { level, message } => {
-                let kind = match level {
-                    LogLevel::Debug | LogLevel::Info => LineKind::System,
-                    LogLevel::Warn | LogLevel::Error => LineKind::Error,
-                };
-                sink.line(kind, &message);
+                if shown {
+                    let kind = match level {
+                        LogLevel::Debug | LogLevel::Info => LineKind::System,
+                        LogLevel::Warn | LogLevel::Error => LineKind::Error,
+                    };
+                    sink.line(kind, &message);
+                }
             }
         }
     }
@@ -337,9 +364,10 @@ impl Client {
         self.sessions.iter().map(|s| s.name.clone()).collect()
     }
 
-    /// Keeps the completer's `--name` candidates in step with the sticky set.
+    /// Keeps the completer's `--name` candidates in step with both sets.
     pub fn sync_sticky(&self) {
         self.catalog.set_sticky_names(&self.sticky.names());
+        self.catalog.set_filter_names(&self.filters.names());
     }
 
     /// The status line: server facts only, never a "current session".
@@ -353,18 +381,17 @@ impl Client {
             format!("offline — reconnecting (attempt {})", self.attempts)
         };
         sink.status(&facts);
-        let sticky = self
-            .sticky
-            .pairs()
-            .iter()
-            .map(|(k, v)| format!("{k}={v}"))
-            .collect::<Vec<_>>()
-            .join("  ");
-        sink.footer(&if sticky.is_empty() {
+        let sticky = pairs(&self.sticky.pairs());
+        let mut footer = if sticky.is_empty() {
             "sticky: (none)".to_string()
         } else {
             format!("sticky: {sticky}")
-        });
+        };
+        let filters = pairs(&self.filters.pairs());
+        if !filters.is_empty() {
+            footer.push_str(&format!("  | filters: {filters}"));
+        }
+        sink.footer(&footer);
     }
 
     /// Records that there is no link, and how many dials have failed since.
@@ -512,11 +539,56 @@ impl Client {
             );
             return Submission::Rejected;
         }
+        let id = self.next_id();
+        if let Some(session) = args.get("session") {
+            if matches!(head.as_str(), "set_session" | "del_session") {
+                self.follows.push((id, head.clone(), session.clone()));
+            }
+        }
         Submission::Send(ClientMessage::Command {
-            id: self.next_id(),
+            id,
             name: head,
             args,
         })
+    }
+
+    /// A refusal has to leave the client where it was, so this runs on the
+    /// acknowledgement, not on the submission.
+    fn settle_follow(&mut self, id: u64, ok: bool, sink: &mut dyn Sink) {
+        let Some(at) = self.follows.iter().position(|(i, ..)| *i == id) else {
+            return;
+        };
+        let (_, name, session) = self.follows.remove(at);
+        if ok {
+            self.follow_session_command(&name, &session, sink);
+        }
+    }
+
+    /// `set_session` sets a sticky `session` and its filter; `del_session` clears
+    /// them only when it names that session.
+    fn follow_session_command(&mut self, name: &str, session: &str, sink: &mut dyn Sink) {
+        let saved = match name {
+            "set_session" => self
+                .sticky
+                .set("session", session)
+                .and_then(|()| self.filters.set("session", session)),
+            "del_session" => {
+                let sticky = match self.sticky.get("session") == Some(session) {
+                    true => self.sticky.del("session"),
+                    false => Ok(false),
+                };
+                let filters = match self.filters.get("session") == Some(session) {
+                    true => self.filters.del("session"),
+                    false => Ok(false),
+                };
+                sticky.and(filters).map(|_| ())
+            }
+            _ => return,
+        };
+        if let Err(e) = saved {
+            sink.line(LineKind::Error, &format!("could not save: {e}"));
+        }
+        self.after_sticky_change(sink);
     }
 
     fn run_client_command(&mut self, name: &str, tokens: &[String], sink: &mut dyn Sink) {
@@ -559,6 +631,40 @@ impl Client {
                 ),
                 Err(e) => sink.line(LineKind::Error, &format!("could not save: {e}")),
             },
+            "set_event_filter" => {
+                let Some(value) = args.get("value").cloned() else {
+                    sink.line(LineKind::Error, "set_event_filter requires --value");
+                    return;
+                };
+                if !EVENT_FIELDS.contains(&arg_name.as_str()) {
+                    sink.line(
+                        LineKind::Error,
+                        &format!(
+                            "no event field named {arg_name:?}; it takes {}",
+                            EVENT_FIELDS.join(", ")
+                        ),
+                    );
+                    return;
+                }
+                match self.filters.set(&arg_name, &value) {
+                    Ok(()) => {
+                        sink.line(LineKind::Result, &format!("{arg_name} = {value}"));
+                        self.after_sticky_change(sink);
+                    }
+                    Err(e) => sink.line(LineKind::Error, &format!("could not save: {e}")),
+                }
+            }
+            "del_event_filter" => match self.filters.del(&arg_name) {
+                Ok(true) => {
+                    sink.line(LineKind::Result, &format!("cleared filter {arg_name}"));
+                    self.after_sticky_change(sink);
+                }
+                Ok(false) => sink.line(
+                    LineKind::Error,
+                    &format!("no event filter named {arg_name:?}"),
+                ),
+                Err(e) => sink.line(LineKind::Error, &format!("could not save: {e}")),
+            },
             other => sink.line(
                 LineKind::Error,
                 &format!("unknown client command {other:?}"),
@@ -570,6 +676,14 @@ impl Client {
         self.sync_sticky();
         self.refresh(sink);
     }
+}
+
+fn pairs(pairs: &[(String, String)]) -> String {
+    pairs
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("  ")
 }
 
 // Front-ends
@@ -614,8 +728,13 @@ pub async fn run(args: &Args, command: &[String]) -> anyhow::Result<()> {
 async fn run_once(client: &mut Client, link: &mut Link, command: &[String]) -> anyhow::Result<()> {
     let mut printer = NullSink::default();
     let msg = match client.command(command.to_vec(), &mut printer) {
-        // A client-side command already did its work; nothing goes on the wire.
-        Submission::Local => return Ok(()),
+        // Nothing to send, but a refusal it reported must still fail.
+        Submission::Local => {
+            return match printer.take_error() {
+                Some(why) => Err(anyhow!(why)),
+                None => Ok(()),
+            };
+        }
         // Rejected before the server saw it, so there is no event; the reason
         // still has to come out.
         Submission::Rejected => {
@@ -646,6 +765,9 @@ async fn run_once(client: &mut Client, link: &mut Link, command: &[String]) -> a
         let ServerMessage::Event(event) = decode_server(&bytes)? else {
             continue;
         };
+        // Feed the client too: a one-shot `set_session` still leaves a sticky
+        // `session` behind.
+        client.handle_event(event.clone(), &mut printer);
         // The event *is* the output; JSON lines survive `jq` and a pipe.
         println!("{}", serde_json::to_string(&event)?);
         if let Event::CmdResult {
@@ -775,7 +897,6 @@ pub fn build_client(args: &Args) -> Client {
     let home = home_dir(args.conn.home.as_deref());
     let catalog = Catalog::new();
     let sticky = Sticky::load(&home);
-    catalog.set_sticky_names(&sticky.names());
     Client::new(catalog, sticky)
 }
 
@@ -879,6 +1000,7 @@ fn config_value(args: &Connection, pick: impl Fn(&FileConfig) -> Option<String>)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use protocol::encode_server;
 
     fn home_with(text: &str) -> tempfile::TempDir {
         let d = tempfile::tempdir().unwrap();
@@ -1352,6 +1474,207 @@ mod tests {
         let said = s.0.join("\n");
         assert!(said.contains("has no argument --name"), "{said}");
         assert!(said.contains("--session"), "{said}");
+    }
+
+    /// A session filter silences the other sessions' streams and nothing else.
+    #[test]
+    fn an_event_filter_hides_the_streams_it_does_not_name() {
+        let d = tempfile::tempdir().unwrap();
+        let mut filters = EventFilters::load(d.path());
+        filters.set("session", "main").unwrap();
+        let mut c = Client::new(Catalog::new(), Sticky::load(d.path()));
+        c.filters = filters;
+        c.connected = true;
+        let mut s = StreamSink::default();
+        for session in ["main", "peer"] {
+            let text = if session == "main" { "mine" } else { "theirs" };
+            c.handle_event(
+                Event::Response(response(session, ResponsePart::Output, text)),
+                &mut s,
+            );
+        }
+        assert_eq!(s.lines, vec!["[main] mine"]);
+    }
+
+    /// A filter is written with a wire field name, so this goes through bytes.
+    #[test]
+    fn a_filter_matches_an_event_that_arrived_on_the_wire() {
+        let d = tempfile::tempdir().unwrap();
+        let mut filters = EventFilters::load(d.path());
+        filters.set("session", "main").unwrap();
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
+        c.filters = filters;
+        let mut s = StreamSink::default();
+
+        for session in ["main", "peer"] {
+            let msg = ServerMessage::Event(Event::Response(response(
+                session,
+                ResponsePart::Output,
+                session,
+            )));
+            c.handle_bytes(&encode_server(&msg).unwrap(), &mut s)
+                .unwrap();
+        }
+        assert_eq!(s.lines, vec!["[main] main"]);
+    }
+
+    /// Filters are about what is shown: the session list still learns the
+    /// status of a session whose lines are hidden.
+    #[test]
+    fn a_filtered_event_still_updates_the_client_state() {
+        let d = tempfile::tempdir().unwrap();
+        let mut filters = EventFilters::load(d.path());
+        filters.set("session", "main").unwrap();
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["peer"]);
+        c.filters = filters;
+        let mut s = VecSink(Vec::new());
+        c.handle_event(
+            Event::Status {
+                session: "peer".into(),
+                status: SessionStatus::Running,
+                detail: None,
+            },
+            &mut s,
+        );
+        assert!(s.0.is_empty(), "the line was hidden: {:?}", s.0);
+        assert_eq!(c.sessions[0].status, SessionStatus::Running);
+    }
+
+    /// The acknowledgement of the command just sent, so `settle_follow` sees it.
+    fn ack(c: &mut Client, ok: bool, sink: &mut dyn Sink) {
+        let id = c.next_id - 1;
+        c.handle_event(
+            Event::CmdResult {
+                id,
+                ok,
+                message: String::new(),
+                data: None,
+            },
+            sink,
+        );
+    }
+
+    /// Naming a session is what makes it the one this client watches.
+    #[test]
+    fn set_session_leaves_a_sticky_session_and_its_filter() {
+        let d = tempfile::tempdir().unwrap();
+        let cat = Catalog::new();
+        cat.set_server_commands(vec![protocol::CommandSpec {
+            name: "set_session".into(),
+            summary: "s".into(),
+            args: vec![protocol::ArgSpec {
+                name: "session".into(),
+                summary: "s".into(),
+                required: true,
+                value_hint: None,
+                completions: protocol::CompletionSource::None,
+            }],
+        }]);
+        let mut c = client_with(cat, Sticky::load(d.path()), vec!["main"]);
+        let mut s = VecSink(Vec::new());
+        assert!(matches!(
+            c.command(argv("set_session --session main"), &mut s),
+            Submission::Send(_)
+        ));
+        ack(&mut c, true, &mut s);
+        assert_eq!(c.sticky.get("session"), Some("main"));
+        assert_eq!(c.filters.get("session"), Some("main"));
+    }
+
+    /// A refused `set_session` must not leave the client watching a session that
+    /// was never created.
+    #[test]
+    fn a_refused_set_session_leaves_the_client_where_it_was() {
+        let d = tempfile::tempdir().unwrap();
+        let cat = Catalog::new();
+        cat.set_server_commands(vec![protocol::CommandSpec {
+            name: "set_session".into(),
+            summary: "s".into(),
+            args: vec![protocol::ArgSpec {
+                name: "session".into(),
+                summary: "s".into(),
+                required: true,
+                value_hint: None,
+                completions: protocol::CompletionSource::None,
+            }],
+        }]);
+        let mut sticky = Sticky::load(d.path());
+        sticky.set("session", "main").unwrap();
+        let mut c = client_with(cat, sticky, vec!["main"]);
+        let mut s = VecSink(Vec::new());
+        c.command(argv("set_session --session typo"), &mut s);
+        ack(&mut c, false, &mut s);
+        assert_eq!(c.sticky.get("session"), Some("main"));
+        assert_eq!(c.filters.get("session"), None);
+    }
+
+    /// Deleting another session must not retarget the client.
+    #[test]
+    fn del_session_only_clears_the_session_it_names() {
+        let d = tempfile::tempdir().unwrap();
+        let cat = Catalog::new();
+        cat.set_server_commands(vec![protocol::CommandSpec {
+            name: "del_session".into(),
+            summary: "s".into(),
+            args: vec![protocol::ArgSpec {
+                name: "session".into(),
+                summary: "s".into(),
+                required: true,
+                value_hint: None,
+                completions: protocol::CompletionSource::None,
+            }],
+        }]);
+        let mut sticky = Sticky::load(d.path());
+        sticky.set("session", "main").unwrap();
+        let mut filters = EventFilters::load(d.path());
+        filters.set("session", "main").unwrap();
+        let mut c = client_with(cat, sticky, vec!["main", "scratch"]);
+        c.filters = filters;
+
+        let mut s = VecSink(Vec::new());
+        c.command(argv("del_session --session scratch"), &mut s);
+        ack(&mut c, true, &mut s);
+        assert_eq!(c.sticky.get("session"), Some("main"));
+        assert_eq!(c.filters.get("session"), Some("main"));
+
+        c.command(argv("del_session --session main"), &mut s);
+        ack(&mut c, true, &mut s);
+        assert_eq!(c.sticky.get("session"), None);
+        assert_eq!(c.filters.get("session"), None);
+    }
+
+    /// A field no event carries would filter nothing; say so instead of
+    /// storing a filter that quietly does nothing.
+    #[test]
+    fn set_event_filter_refuses_a_field_no_event_has() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
+        let mut s = VecSink(Vec::new());
+        assert!(matches!(
+            c.command(argv("set_event_filter --name nope --value x"), &mut s),
+            Submission::Local
+        ));
+        assert!(c.filters.pairs().is_empty());
+        let said = s.0.join("\n");
+        assert!(said.contains("no event field named \"nope\""), "{said}");
+        assert!(said.contains("session"), "{said}");
+    }
+
+    /// A filter that hides lines has to be visible somewhere, or the log reads
+    /// as broken.
+    #[test]
+    fn the_footer_shows_the_filters() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
+        let mut s = StatusSink::default();
+        c.refresh(&mut s);
+        assert!(!s.footer.contains("filters"), "footer was {s:?}");
+
+        let mut filters = EventFilters::load(d.path());
+        filters.set("session", "main").unwrap();
+        c.filters = filters;
+        c.refresh(&mut s);
+        assert!(s.footer.contains("filters: session=main"), "{s:?}");
     }
 
     #[test]
