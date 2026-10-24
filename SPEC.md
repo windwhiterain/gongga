@@ -74,8 +74,8 @@ writes the code does not judge it. One agent doing both makes "constitutional" a
 self-declaration, and the verdict carries no information.
 - justice: the session that talks to the user. The only writer of this file, the only
   interpreter of it, the only one who rules. It rules high and touches nothing: no
-  implementation, no dispatch, no test runs, no evidence gathering, no reading code to
-  make up its mind. What it reads is the pm's report.
+  implementation, no dispatch to workers, no test runs, no evidence gathering, no reading
+  code to make up its mind. It commissions the pm, and reads what comes back.
 - pm: a separate session. Breaks the work down, dispatches workers, reviews what comes
   back, runs the tests, gathers the evidence, reports to the justice. It cannot amend
   this file, and cannot rule on its own work.
