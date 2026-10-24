@@ -131,7 +131,9 @@ impl Tui {
             EnableBracketedPaste
         )
         .context("entering alternate screen")?;
-        let terminal = Terminal::new(CrosstermBackend::new(out))?;
+        let mut terminal = Terminal::new(CrosstermBackend::new(out))?;
+        // A blank cell is never written to, so a dead process's last frame stays.
+        terminal.clear().context("clearing the alternate screen")?;
         Ok(Self {
             terminal,
             screen: Screen {
@@ -731,6 +733,27 @@ fn pasted(keys: &[KeyEvent]) -> Option<String> {
         }
     }
     Some(text)
+}
+
+#[cfg(test)]
+mod startup {
+    /// A start clears the screen it is about to draw on.
+    ///
+    /// # Invariant
+    ///
+    /// A previous process that died without restoring -- killed, not quitted --
+    /// leaves its last frame in the alternate screen, and the first draw will not
+    /// overwrite the blank cells. Only an explicit clear does.
+    #[test]
+    fn the_screen_is_cleared_before_the_first_frame() {
+        let source = include_str!("lib.rs");
+        let new = source
+            .split_once("pub fn new(completer: SharedCompleter)")
+            .and_then(|(_, rest)| rest.split_once("Ok(Self {"))
+            .map(|(body, _)| body)
+            .expect("the constructor is where a start happens");
+        assert!(new.contains(".clear()"), "{new}");
+    }
 }
 
 #[cfg(test)]

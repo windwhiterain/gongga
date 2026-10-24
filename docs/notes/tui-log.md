@@ -171,10 +171,13 @@ that was the row that stayed three screens tall between two folded ones. SPEC's
 
 ## Entry::reflow_folded
 
-One row, always, showing the **head** of the text and an ellipsis where it was
-cut. Showing the tail instead was the first version and it was wrong in use: as
-text streamed the visible window slid, so a row being written read as a row
-scrolling. Keeping the start fixed is what makes it read as one line filling up.
+One row, always, showing the **head** of the text and nothing else: no ellipsis,
+because the row is the text itself up to the edge of the window, and a marker
+would both eat a column and be one more thing to misread.
+
+Showing the tail was the first version and it was wrong in use: as text streamed
+the visible window slid, so a row being written read as a row scrolling. Keeping
+the start fixed is what makes it read as one line filling up.
 
 The tag is kept out of `text` so the cut cannot take the label with it.
 

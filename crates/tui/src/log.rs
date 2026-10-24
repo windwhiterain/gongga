@@ -118,13 +118,8 @@ impl Entry {
         let avail = width.saturating_sub(self.tag.width());
         self.starts.clear();
         self.starts.push(0);
-        // One column for the ellipsis whenever the text does not fit whole.
-        let whole = self.text.width() <= avail;
-        let room = if whole {
-            avail
-        } else {
-            avail.saturating_sub(1)
-        };
+        // No marker where the text is cut: the row is the text, up to the edge.
+        let room = avail;
         let mut used = 0;
         let mut kept = self.text.len();
         for (i, ch) in self.text.char_indices() {
@@ -211,13 +206,7 @@ impl Entry {
         if !self.folded {
             return Cow::Borrowed(self.row(row));
         }
-        // The row shows the head, so what was left out is always on the right.
-        let cut = if self.view_end.is_some() || self.truncated {
-            "…"
-        } else {
-            ""
-        };
-        Cow::Owned(format!("{}{}{cut}", self.tag, self.row(row)))
+        Cow::Owned(format!("{}{}", self.tag, self.row(row)))
     }
 }
 
@@ -719,7 +708,8 @@ mod tests {
         let rows = shown(&mut log, 40, 10, 0);
         assert_eq!(rows.len(), 1, "{rows:?}");
         assert!(rows[0].starts_with(&before[0]), "{rows:?} vs {before:?}");
-        assert!(rows[0].ends_with('…'), "{rows:?}");
+        // No marker where it is cut: the row is the text, up to the edge.
+        assert!(!rows[0].contains('…'), "{rows:?}");
     }
 
     /// The label survives the cut: it is what says whose line this is.
@@ -751,10 +741,7 @@ mod tests {
             // Whatever the width cut, the beginning is the beginning.
             assert!(row.starts_with("[m] alpha"), "{row}");
             if !seen.is_empty() {
-                assert!(
-                    row.starts_with(seen.trim_end_matches('…')),
-                    "the row moved: {seen} -> {row}"
-                );
+                assert!(row.starts_with(&seen), "the row moved: {seen} -> {row}");
             }
             seen = row;
         }
