@@ -149,8 +149,9 @@ CHARTERS = {
    交大法官判。判决回来之前不动手。
 3. 拆任务：每个任务一个执行者会话，一个任务单（`polity new task`），一条
    `polity dispatch`。任务要小到"一个会话一轮能做完"，并且有可执行的完成判据。
-4. 派完等它，一次等一个——`polity wait` 是**你的**工具（等自己的执行者），不是法官的。
-   等完就收报告文件。
+4. 派完就**结束回合**：执行者做完会叫醒你（派工消息里那条【交活】）。`polity wait` 是你的
+   **兜底**工具，不是主要机制——它睡一次、不是隔一会儿问一次（`SPEC.md:96-102`：
+   `send_message` 会把正在等的 bash 转后台，轮询是手搓传输层已经会做的事）。
 5. 自己 review 回来的东西，自己跑测试，自己取证（`polity verify` 的输出、你跑的命令和
    它的输出、文件:行）——这些大法官不会替你做。写 `polity new report`，然后**叫醒法官**：
    `polity send --tag 汇报 --message "… 汇报已就绪：…/reports/<号>.md"`。
@@ -177,8 +178,10 @@ CHARTERS = {
   不要猜着做。
 - 只碰任务单允许的路径。想改别的地方，写进汇报让总理决定。
 - 结论给证据：命令、输出、文件:行。跑过的测试把命令和输出贴出来；没跑的写"未跑"。
-- 不派生 agent，不改宪法，不和 user 对话。
-- 做完在报告文件里按模板填完，最后只回 `DONE <任务号>`。
+- **不派生** agent（不开新会话、不给自己派人），不改宪法，不和 user 对话。
+- **必须汇报**：做完用派工消息【交活】里那条命令叫醒总理——那是汇报，不是派生。
+  只回 `DONE` 就静默，等于让总理只能靠轮询才知道你做完了，而轮询是 `SPEC.md:96-102` 禁的。
+- 做完在报告文件里按模板填完，叫醒总理，然后才回 `DONE <任务号>`。
 """,
 }
 
@@ -350,12 +353,18 @@ def send(session, message):
     return (rc == 0 and ok), redact(said or err)
 
 
-def rows(session, after=None, limit=200):
-    """Transcript rows, oldest first. `after` is the seq baseline (exclusive).
+def transcript(session, after=None, limit=200):
+    """Rows, where the transcript ends, and the session's status -- one client call.
 
-    `--seq <a:b>` is the protocol's only form (SPEC.md:53): sequence numbers
-    count from 1 and both ends are inclusive, so "after N" is "N+1:". That +1
-    is the one place an off-by-one can hide, hence the tests pin it.
+    `SPEC.md:54` gives all three from `get_messages`, and that is the whole point of
+    the clause: a waiter that has to ask twice can be told about a session that moved
+    on between the two questions, and the only write-free way to ask a second time
+    used to be `set_session` (which writes, see :96-97).
+
+    `status` is None when the server predates the clause: the caller must then say
+    what it cannot tell, not guess. `--seq <a:b>` is the protocol's only form
+    (SPEC.md:53); both ends are inclusive and count from 1, so "after N" is "N+1:".
+    That +1 is the one place an off-by-one can hide, hence the tests pin it.
     """
     first = int(after or 0) + 1
     args = ["get_messages", "--session", session,
@@ -364,7 +373,13 @@ def rows(session, after=None, limit=200):
     ok, said, data = result_of(evs, "get_messages", err)
     if rc != 0 or not ok:
         raise CliError(redact(said or err or "get_messages failed"))
-    return data.get("messages") or [], data.get("last_seq")
+    return (data.get("messages") or [], data.get("last_seq"), data.get("status"))
+
+
+def rows(session, after=None, limit=200):
+    """Just the rows and the end, for callers that do not care about the status."""
+    got, tail, _ = transcript(session, after, limit)
+    return got, tail
 
 
 class CliError(Exception):
@@ -499,8 +514,12 @@ def archive_drift(root):
 
 
 RULE_2 = {
-    "worker": """2. 你不得派生别的 agent（不要用 set_session/send_message 去开新会话）。要人，
-   在汇报里向总理申请。""",
+    # Two rules, not one (SPEC.md:99-102). Folding "do not derive" into "do not use
+    # send_message" made the instrument broken: a worker that cannot report has to be
+    # polled, and polling is exactly what the law forbids.
+    "worker": """2. **不许派生**：不要用 set_session/send_message 去开新会话、不要给自己派人。
+   要人，在汇报里向总理申请。
+   但**必须汇报**：做完用【交活】里那条命令叫醒总理——那是汇报，不是派生。""",
     "pm": """2. 你要派生执行者——每个任务一个会话（`polity dispatch`，或 set_session +
    send_message）。这是你的活，不是越权（SPEC.md:79-81）。并行度上限是
    `.polity/state.json` 的 max_parallel（默认 3），超了先等；汇报里要报并行度：
@@ -515,13 +534,21 @@ def launcher():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "polity")
 
 
-def wake_command(root, task_id, justice):
-    """The line that wakes the justice, spelled so it runs as written (SPEC.md:93-95)."""
-    return "%s send --root %s --tag 汇报 --message %s" % (
-        shlex.quote(launcher()),
-        shlex.quote(os.path.abspath(root)),
-        shlex.quote("%s 汇报已就绪：%s" % (task_id, report_path(root, task_id))),
-    )
+def wake_command(root, task_id, target=None):
+    """The line that wakes someone, spelled so it runs as written (SPEC.md:93-95).
+
+    `target=None` means the justice, who is recorded in state.json, so the line needs
+    no name and none can be guessed wrong. Anyone else (a worker waking its pm) has to
+    be named: `send` defaults to the justice, and a report filed to the wrong reader
+    is worse than none.
+    """
+    parts = [shlex.quote(launcher()), "send", "--root",
+             shlex.quote(os.path.abspath(root))]
+    if target:
+        parts += ["--session", shlex.quote(target)]
+    parts += ["--tag", "汇报", "--message",
+              shlex.quote("%s 汇报已就绪：%s" % (task_id, report_path(root, task_id)))]
+    return " ".join(parts)
 
 
 def brief(root, role, task_id, title, task_file, constitution):
@@ -530,13 +557,24 @@ def brief(root, role, task_id, title, task_file, constitution):
     zh = ROLES[role]
     report = report_path(root, task_id)
     template = path_in(root, "templates", "report.md")
-    justice = load_state(root).get("justice")
-    if role == "pm" and justice:
+    st = load_state(root)
+    justice = st.get("justice")
+    pm = st.get("pm") or "pm"
+    if role == "worker":
+        # A worker that finishes silently leaves its pm nothing to do but poll, and
+        # polling is what SPEC.md:96-102 forbids. Naming the pm is safe: `dispatch`
+        # just wrote it.
+        handover = f"""【交活】做完**先叫醒总理（会话 `{pm}`），再结束回合**。这条照抄能跑：
+  {wake_command(root, task_id, pm)}
+**不要 `polity wait` 总理，也不要指望它来问你**——它结束回合等着你这条消息
+（SPEC.md:96-102）。不要只回 DONE 就收工：那一句没有内容，它读的是报告文件。
+"""
+    elif role == "pm" and justice:
         # The pm's last act is the wake, not a DONE line. SPEC.md:89-92: the justice
         # ends its turn and is woken by this message; nobody polls anybody.
         handover = f"""【交活】做完就叫醒我（法官，会话 `{justice}`），**不要 `polity wait` 我**：
 我结束回合等着你这条消息，你 wait 我等到的只有超时。这条照抄能跑：
-  {wake_command(root, task_id, justice)}
+  {wake_command(root, task_id)}
 发完就结束回合。不要只回 DONE 就收工——那一句没有内容，我读的是报告文件。
 """
     elif role == "pm":
@@ -782,40 +820,70 @@ def cmd_dispatch(a):
     return EXIT_OK
 
 
-def wait_loop(session, after, timeout, probe, poll, sleep=time.sleep,
-              tail=rows, clock=time.monotonic):
-    """Block until the session is idle *and* has spoken after `after`.
+def _closing(rows_seen):
+    """The last assistant text in a window, if the turn said anything at all."""
+    said = [r for r in rows_seen
+            if r.get("kind") == "text" and r.get("role") == "assistant"]
+    return said[-1] if said else None
 
-    Two-sided on purpose: "idle" alone is also the state left over from the turn
-    before, and a new row alone can appear mid-turn. Requiring both is what makes
-    the answer the one we dispatched for.
+
+def wait_loop(session, after, timeout, sleep=time.sleep, tail=transcript,
+              clock=time.monotonic, seen=None):
+    """Wait for a turn to finish by sleeping once, not by asking over and over.
+
+    `SPEC.md:96-102`: a sleep is both things a waiter needs -- the timeout fallback,
+    and a target the wake can interrupt, because `send_message` backgrounds a waiting
+    bash instantly (`SPEC.md:52`). So the wait makes **two** client calls whatever the
+    timeout: one before sleeping (is it already over?) and one after (what happened?).
+    A poll loop would be a hand-rolled copy of what the transport does, at two client
+    processes per round.
+
+    What that costs, stated plainly: normally the worker's wake backgrounds this
+    process and nobody reads its exit code. The code below is what a *fallback*
+    returns when nothing woke us.
 
     Returns (code, final_row_or_None, note). Codes: 0 done, 3 timeout,
     5 the turn ended without a closing reply.
     """
-    deadline = clock() + timeout
-    seen_busy = False
-    while True:
-        st, _ = status_of(session, probe)
-        got, _ = tail(session, after)
-        final = [
-            r for r in got
-            if r.get("kind") == "text" and r.get("role") == "assistant"
-        ]
-        if st == "running":
-            seen_busy = True
-        if st == "idle":
-            if final:
-                return EXIT_OK, final[-1], "done"
-            if seen_busy or got:
-                return EXIT_NO_REPLY, None, "回合结束了，但没有收尾的助手正文"
-        if clock() > deadline:
-            if not got and not seen_busy:
-                return EXIT_TIMEOUT, None, (
-                    "超时，而且基线之后一行都没有——派工可能没落进去"
-                )
-            return EXIT_TIMEOUT, None, "超时，回合可能还在跑"
-        sleep(poll)
+    def look():
+        """One client call, and a copy left for the caller's diagnostic (no re-read)."""
+        got, end, status = tail(session, after)
+        if seen is not None:
+            seen[:] = [(got, end)]
+        return got, end, status
+
+    got, _, status = look()
+    final = _closing(got)
+    if final is not None and (status == "idle" or status is None):
+        # Two-sided on purpose: a closing row alone is not an answer, because it can
+        # land while the turn runs on (that was true before 008 and still is).
+        return EXIT_OK, final, "done"
+    if status == "idle" and got:
+        # Over before we started waiting, and it never said anything closing.
+        return EXIT_NO_REPLY, None, "回合结束了，但没有收尾的助手正文"
+
+    # The sleep is the wait. If the turn ends, its wake backgrounds this process;
+    # if nothing comes, we wake by ourselves and look once more.
+    sleep(timeout)
+
+    got, _, status = look()
+    final = _closing(got)
+    if final is not None and (status == "idle" or status is None):
+        note = "done" if status == "idle" else "done（这个服务端不报 status，idle 未确认）"
+        return EXIT_OK, final, note
+    # Order matters here: it is what keeps 3 and 5 apart with only one look.
+    if status == "running":
+        return EXIT_TIMEOUT, None, "超时，回合可能还在跑"
+    if status is None:
+        return EXIT_TIMEOUT, None, (
+            "超时，而且这个服务端不报 status（SPEC.md:54 还没生效）："
+            "分不清它还在跑还是已经结束"
+        )
+    if not got:
+        # Idle with nothing after the baseline: the turn either never landed or
+        # ended before saying anything. Not the same as "ended silently" (5).
+        return EXIT_TIMEOUT, None, "超时，而且基线之后一行都没有——派工可能没落进去"
+    return EXIT_NO_REPLY, None, "回合结束了，但没有收尾的助手正文"
 
 
 def cmd_wait(a):
@@ -832,9 +900,11 @@ def cmd_wait(a):
         print(f"! `{a.session}` 是法官会话：法官不轮询，也不被轮询——它结束回合、被汇报消息叫醒"
               "（SPEC.md:89-92）。这条 wait 照样跑，但你可能在等一个永远不会来的收尾。",
               file=sys.stderr)
-    probe = st.get("pm") or a.session
+    # `seen` is handed in so the give-up diagnostic below can print what was already
+    # read: a second look would be a third client call for a message.
+    seen = []
     try:
-        code, final, note = wait_loop(a.session, a.after, a.timeout, probe, a.poll)
+        code, final, note = wait_loop(a.session, a.after, a.timeout, seen=seen)
     except CliError as e:
         print(f"wait failed: {e}", file=sys.stderr)
         return EXIT_CLI
@@ -843,14 +913,11 @@ def cmd_wait(a):
         print(f"-- 收尾于 seq {final.get('seq')}")
     else:
         print(note, file=sys.stderr)
-        try:
-            got, tail = rows(a.session, a.after, 20)
+        for got, tail in seen:
             for r in got[-5:]:
                 print(f"  {r.get('seq')} {r.get('kind')} "
                       f"{' '.join(str(r.get('text','')).split())[:100]}")
             print(f"-- transcript ends at seq {tail}", file=sys.stderr)
-        except CliError:
-            pass
     return code
 
 
@@ -980,12 +1047,18 @@ def build_parser():
     s.add_argument("--timeout", type=int, default=300, help="只用于打印建议命令")
     s.set_defaults(fn=cmd_dispatch)
 
-    s = sub.add_parser("wait", help="等到回合结束（总理等自己的执行者用；法官不用它）")
+    s = sub.add_parser(
+        "wait",
+        help="超时兜底：睡一次，靠对方的消息被叫醒（总理等执行者用；法官不用它）",
+        description="睡一次就够（SPEC.md:96-102）：对方做完会叫醒你，"
+                    "这次 wait 的返回值只是没人叫醒时的兜底。\n\n"
+                    "总客户端调用 2 次，与 timeout 长短无关。",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     sub_root(s)
     s.add_argument("--session", required=True)
     s.add_argument("--after", type=int, required=False)
     s.add_argument("--timeout", type=int, default=300)
-    s.add_argument("--poll", type=float, default=1.5)
     s.set_defaults(fn=cmd_wait)
 
     s = sub.add_parser("new", help="按模板建档案（task/proposal/ruling/report）")

@@ -54,19 +54,31 @@ P=.agents/skills/polity/polity
 
 1. **角色只能靠消息和文件承载。** 没有 per-session 系统提示，所以 `dispatch` 每次都把
    角色、宪法路径、章程路径、铁律重新写进派工消息里。不要指望"创建时设过一次"。
-2. **派工 ≠ 做完。** 派完必须等到结果——但"等"分两种：总理用自己的 `wait` 等执行者；
-   法官不等，它结束回合、被汇报消息唤醒（`SPEC.md:89-92`）。唤醒是**一条命令**，不是等：
-   总理的派工消息里带着照抄就能跑的那一行，`--session` 都不用给。
+2. **派工 ≠ 做完，而"等"这个动作现在只有一种：结束回合、被叫醒。** 法官等总理的汇报
+   （`SPEC.md:89-92`），总理等执行者（`:96-102`），两者都是"派完就结束回合，对方的叫醒命令
+   把你叫回来"。派工消息里带着照抄就能跑的那一行。需要兜底才睡一次——见第 3 节。
 
 ---
 
-## 3. 为什么要 seq 基线（最容易写错的一处）——`wait` 是总理的工具
+## 3. `wait` 是兜底，不是主要机制（200 轮 → 2 次调用）
 
-**先说归属**：`wait` 给总理等它自己的执行者用。**法官不用它**——法官派完工就结束回合，
-被总理的汇报消息唤醒（`SPEC.md:89-92`：the turn boundary already is the wait，法官的会话里
-放一个 wait 循环是设计错误）。所以下面这段是总理读的。
+**先说做法**：派完工就**结束回合**，执行者做完会用【交活】里那条命令叫醒你。
+`wait` 只在"我不放心，想睡一觉当兜底"时用——它**睡一次**，不是隔一会儿问一次。
 
-`wait` 要两件事**同时**成立：
+原因写在 `SPEC.md:96-102`：`send_message` 会把正在等的 bash 转后台（`:52`），所以一次
+`sleep` 同时是超时兜底和被叫醒的落点。轮询是手搓传输层已经会做的事：实测同一个场景
+（等一个 5 分钟才答完的回合），**旧实现 402 次客户端调用，现在 2 次**。
+
+```bash
+$P dispatch --to w1 --task 001 --title "…" --body @-   # 打印 基线 seq = 42，并给执行者唤醒命令
+# —— 到此结束回合。执行者做完叫醒你；不放心就睡一次兜底 ——
+$P wait --session w1 --after 42 --timeout 600          # 睡一次，不轮询
+```
+
+**两个读一次给齐**：`wait` 只调 `get_messages`（`SPEC.md:54` 的回包同时带行、`last_seq`
+和会话 `status`），**总调用 2 次，与 timeout 长短无关**（已经答完的话只读 1 次，不睡）。
+
+`wait` 判两个条件**同时**成立才算收尾：
 
 - 会话 `status` 是 `idle`；
 - **派工前记下的 seq 之后**，出现了新的助手正文。
@@ -75,13 +87,10 @@ P=.agents/skills/polity/polity
 一个还在跑的回合的半截回复。所以基线必须在**发消息之前**取——`dispatch` 就是先取基线再发，
 它会把基线打印给你，照抄进 `wait --after`。
 
-```bash
-$P dispatch --to w1 --task 001 --title "…" --body @-   # 打印 基线 seq = 42
-$P wait --session w1 --after 42 --timeout 600
-```
-
-`wait` 的退出码：`0` 拿到收尾正文；`3` 超时；`5` 回合结束了但没有收尾正文（通常是跑崩了）。
-`5` 和 `3` 都要看 `read`，别当成功。
+`wait` 的退出码（这是**没人叫醒你**时兜底给的结论）：`0` 拿到收尾正文；`3` 超时（回合可能
+还在跑，或者压根没派进去）；`5` 回合结束了但没有收尾正文（通常是跑崩了）。`5` 和 `3` 都要
+看 `read`，别当成功。**3 与 5 的区分是特意保住的**：正常路径上你是被消息叫醒的，这条 `wait`
+的退出码往往没人读——所以别把结论只押在它上面。
 
 （`wait` 只写 polity 自己的 client home，不碰 user 的 `~/.gongga/cli.toml`——见第 10 节。）
 
@@ -113,7 +122,7 @@ $P new ruling 001                      # 判；证据不回答问题的，退回
 
 ```bash
 $P dispatch --to w1 --task 001a --title "改 a.txt" --role worker --body @-
-$P wait --session w1 --after <上面打印的基线> --timeout 600
+# —— 到此结束回合。执行者做完会叫醒你；下面两条是醒来之后的事 ——
 $P verify --root .                     # 取证：git 上到底改了什么（输出贴进汇报）
 $P new report 001                      # 汇总，交给大法官
 $P send --tag 汇报 --message "001 汇报已就绪：.polity/reports/001.md"
@@ -235,7 +244,7 @@ detached 的进程不随会话死（见 `self-control`）。判决"违宪、要�
 ```bash
 .agents/skills/polity/polity --help          # 10 个子命令
 .agents/skills/polity/polity status --root .
-python3 .agents/skills/polity/test_polity.py # 171 项，退出码即结论
+python3 .agents/skills/polity/test_polity.py # 197 项，退出码即结论
 ```
 
 `test_polity.py` 分两层：`wait_loop` 对着**脚本化的时钟**跑（时序错误都在那里），
@@ -254,6 +263,11 @@ verify 不警告被忽略的根、任务单不带交付章节、任务单不填�
 006 又补二十五条——key 不外出（`redact()` 在传输层与每个出口各擦一遍；`init` 落 `.polity/.gitignore` 挡住 `client-home/`）、`send --help` 说实话（叫醒法官；`--session` 指定别人）、
 对法官跑 `wait` 时 stderr 警告而退出码不变、派工消息明写「做完就叫醒我，不要 wait 我」。
 八条变异各红一次：不擦 key、去掉 `wait` 警告、`send` help 回退、brief 不写「不要 wait 我」、`init` 不落 `.gitignore`、`verify` 不擦 git 输出、`.gitignore` 警告里不擦 git 输出（这两条是测试自己抓出来的漏洞）、「没记法官」那一支不写「不要 wait 法官」。
+
+008 又补二十二条——`wait` 改成**睡一次**（两次 `get_messages`，与 timeout 无关；旧实现同一场景
+402 次调用）、执行者的派工消息带一条叫醒**总理**的命令、铁律 2 拆成「不许派生」+「必须汇报」。
+五条变异各红一次：`wait` 退回轮询、只看正文不看 status（3/5 合并）、执行者不给叫醒命令、
+铁律 2 又并成一句、叫醒命令不带 `--session`。
 
 005 又补三十条——客户端被加了 `--home`（每条 CLI 调用都指向 `.polity/client-home/`）、
 `up --justice` 记下法官、`send` 省略 `--session` 时发给法官（没记就报错、不猜）、总理的派工消息

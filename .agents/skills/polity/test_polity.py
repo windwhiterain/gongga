@@ -77,8 +77,14 @@ def _parse_seq(raw, last):
 
 
 class Clock:
-    """A scripted session: one `(status, rows)` step per poll, and time that moves
-    only when waited on, so a timeout is reachable without sleeping."""
+    """A scripted session: one `(status, rows)` per *read*, and time that moves only
+    when slept on.
+
+    There is no `status_of` here any more: the wait no longer asks a session for its
+    state (`set_session`), it reads `get_messages`, which carries the status since
+    SPEC.md:54 (008). One read = one client call, so `reads` is the number the law
+    cares about.
+    """
 
     def __init__(self, steps):
         self.steps = list(steps)
@@ -89,15 +95,11 @@ class Clock:
     def _step(self):
         return self.steps[min(self.n, len(self.steps) - 1)]
 
-    def status_of(self, session, probe):
-        return self._step()[0], {}
-
-    def rows(self, session, after):
+    def transcript(self, session, after=None, limit=200):
         status, all_rows = self._step()
         self.n += 1
-        return [r for r in all_rows if r["seq"] > after], (
-            all_rows[-1]["seq"] if all_rows else 0
-        )
+        rows = [r for r in all_rows if r["seq"] > after]
+        return rows, (all_rows[-1]["seq"] if all_rows else 0), status
 
     def sleep(self, seconds):
         self.slept.append(seconds)
@@ -106,17 +108,16 @@ class Clock:
     def clock(self):
         return self.now
 
+    @property
+    def reads(self):
+        return self.n
 
-def run_wait(clock, after, timeout=5, poll=1.0):
-    real = m.status_of
-    m.status_of = clock.status_of
-    try:
-        return m.wait_loop(
-            "w", after, timeout, "w", poll,
-            sleep=clock.sleep, tail=clock.rows, clock=clock.clock,
-        )
-    finally:
-        m.status_of = real
+
+def run_wait(clock, after, timeout=5):
+    return m.wait_loop(
+        "w", after, timeout, sleep=clock.sleep, tail=clock.transcript,
+        clock=clock.clock,
+    )
 
 
 class Server:
@@ -239,46 +240,69 @@ finally:
         os.environ["GONGGA_CLI"] = saved
 
 # ---------------------------------------------------------------- wait
-print("\nwait: the state left over from the turn before is not an answer")
+print("\nwait: one sleep, two reads -- the wake is the mechanism (SPEC.md:96-102)")
 old = [row(1, "user", "previous task"), row(2, "assistant", "DONE 000")]
-c = Clock([("idle", old)])
-code, final, note = run_wait(c, after=2, timeout=5, poll=1.0)
-equal("a stale idle times out instead of returning the old reply", code, m.EXIT_TIMEOUT)
-check("and it says why", "超时" in note, note)
-check("it kept polling", len(c.slept) >= 4, c.slept)
 
-c = Clock([("running", old), ("running", old), ("idle", old + [row(3, "assistant", "DONE 001")])])
+# The whole point of 008: the number of client calls does not depend on the timeout.
+c = Clock([("idle", old)])
+code, final, note = run_wait(c, after=2, timeout=5)
+equal("with nothing after the baseline it is a timeout", code, m.EXIT_TIMEOUT)
+check("and it says the dispatch may not have landed", "没落进去" in note, note)
+equal("it read twice and no more", c.reads, 2)
+equal("and slept exactly once", len(c.slept), 1)
+equal("for the whole timeout, not for a poll interval", c.slept, [5])
+
+c = Clock([("running", old), ("idle", old + [row(3, "assistant", "DONE 001")])])
 code, final, note = run_wait(c, after=2)
-equal("running then idle with a new reply is a finish", code, m.EXIT_OK)
+equal("a turn that ends after the sleep is a finish", code, m.EXIT_OK)
 equal("the reply is the new one", final["text"], "DONE 001")
+equal("still just two reads", c.reads, 2)
 
 c = Clock([("idle", old + [row(3, "assistant", "DONE 002")])])
 code, final, _ = run_wait(c, after=2)
 equal("a turn that is already over is still readable", code, m.EXIT_OK)
 equal("with its reply", final["text"], "DONE 002")
+equal("and it does not sleep at all", c.slept, [])
+equal("because one read already answered", c.reads, 1)
 
-# The reply row lands just before the state flips: a wait that trusts the row alone
-# hands back a turn that is still running.
+# A reply row can land while the turn is still running: the status is what says the
+# turn is not over, which is why the clause put it in the same reply as the rows.
 late = old + [row(3, "assistant", "DONE 003")]
-c = Clock([("running", late)])
-code, final, note = run_wait(c, after=2, timeout=3, poll=1.0)
+c = Clock([("running", late), ("running", late)])
+code, final, note = run_wait(c, after=2, timeout=3)
 equal("a reply while still running is not a finish", code, m.EXIT_TIMEOUT)
 check("and nothing was handed back", final is None, final)
+check("the note blames the turn, not the dispatch", "回合可能还在跑" in note, note)
 
-c = Clock([("running", old + [row(3, "tool_call", '{"command":"sleep 9"}')]), ("idle", old + [row(3, "tool_call", "{}")])])
+c = Clock([("running", old + [row(3, "tool_call", '{"command":"sleep 9"}')]),
+           ("idle", old + [row(3, "tool_call", "{}")])])
 code, final, note = run_wait(c, after=2)
 equal("a turn that ends without closing prose is not success", code, m.EXIT_NO_REPLY)
 check("it says so", "没有收尾" in note, note)
 
-c = Clock([("running", old + [row(3, "user", "x")])])
-code, final, note = run_wait(c, after=2, timeout=3, poll=1.0)
-equal("still running at the deadline times out", code, m.EXIT_TIMEOUT)
-check("the note blames the turn, not the dispatch", "回合可能还在跑" in note, note)
+# 3 and 5 stay apart: this is the distinction proposal 004 fought for.
+cases = {
+    "idle, rows, no closing prose": ([("idle", old + [row(3, "tool_call", "{}")]),
+                                      ("idle", old + [row(3, "tool_call", "{}")])],
+                                     m.EXIT_NO_REPLY),
+    "idle, nothing at all": ([("idle", old), ("idle", old)], m.EXIT_TIMEOUT),
+    "running, rows": ([("running", old + [row(3, "user", "x")]),
+                       ("running", old + [row(3, "user", "x")])], m.EXIT_TIMEOUT),
+}
+for label, (steps, want) in cases.items():
+    c = Clock(steps)
+    code, final, note = run_wait(c, after=2, timeout=3)
+    equal("the 3-vs-5 split holds: %s" % label, code, want)
+    check("  and it explains itself: %s" % label, note.strip() != "", note)
+equal("5 is not reachable from 'still running', nor 3 from 'ended silently'",
+      cases["idle, rows, no closing prose"][1] != cases["running, rows"][1], True)
 
-c = Clock([("idle", old)])
-code, final, note = run_wait(c, after=2, timeout=3, poll=1.0)
-check("no rows past the baseline is called out as a dispatch that did not land",
-      "没落进去" in note, note)
+# An old server does not report status (SPEC.md:54 landed after it was built): the
+# wait must say it cannot tell, rather than read silence as "still running".
+c = Clock([(None, old + [row(3, "user", "x")]), (None, old + [row(3, "user", "x")])])
+code, final, note = run_wait(c, after=2, timeout=3)
+equal("a server without status is a timeout", code, m.EXIT_TIMEOUT)
+check("and it says why it cannot tell", "不报 status" in note, note)
 
 with quiet() as (out, err):
     code = run("wait", "--session", "w", "--timeout", "10", "--root", tempfile.gettempdir())
@@ -306,6 +330,9 @@ try:
     equal("init does not overwrite a filled-in constitution",
           open(os.path.join(tmp, ".polity", "constitution.md"), encoding="utf-8").read(), const)
     body = open(os.path.join(tmp, ".polity", "charter", "justice.md"), encoding="utf-8").read()
+    check("the worker charter says it must wake its pm",
+          "必须汇报" in open(os.path.join(tmp, ".polity", "charter", "worker.md"),
+                          encoding="utf-8").read())
     check("the justice charter never runs wait",
           "polity wait --session" not in body and "$P wait" not in body, body)
     check("it says wait belongs to the pm", "`polity wait` 是总理" in body, body)
@@ -360,7 +387,7 @@ try:
           isinstance(brief, str) and "\n" in brief and brief.count("【") >= 1, brief[:60])
     for needle in (os.path.join(tmp, ".polity", "constitution.md"),
                    os.path.join(tmp, ".polity", "charter", "worker.md"),
-                   "001", "只做任务单上的事", "不得派生别的 agent",
+                   "001", "只做任务单上的事", "不许派生", "必须汇报",
                    os.path.join(tmp, ".polity", "reports", "001.md"),
                    os.path.join(tmp, ".polity", "templates", "report.md")):
         check("the brief carries %s" % os.path.basename(needle),
@@ -389,8 +416,14 @@ try:
     check("a pm brief does not forbid dispatching", "不得派生" not in brief2, brief2)
     check("it tells the pm to dispatch and report the parallelism",
           "你要派生执行者" in brief2 and "并行度" in brief2, brief2)
-    check("a worker brief still forbids it", "不得派生别的 agent" in brief, brief)
-    check("and says nothing about parallelism", "并行度" not in brief, brief)
+    # Rule 2 splits in two (SPEC.md:99-102): deriving is forbidden, reporting is
+    # required. One sentence for both is what made a silent worker look correct.
+    check("a worker brief forbids deriving", "**不许派生**" in brief, brief)
+    check("and requires reporting", "**必须汇报**" in brief, brief)
+    check("it names opening a session as the forbidden act, not sending a message",
+          "不要用 set_session/send_message 去开新会话" in brief, brief)
+    check("and says reporting is not deriving", "那是汇报，不是派生" in brief, brief)
+    check("a worker brief says nothing about parallelism", "并行度" not in brief, brief)
 
     print("\nsend: the help says what it does -- wake the justice, --session for others")
     helped = io.StringIO()
@@ -630,7 +663,18 @@ try:
           brief4)
     check("and it does not invent a name", "会话 `" not in brief4.split("【交活】")[1].split("】")[0],
           brief4)
-    check("a worker brief has no wake block", "交活" not in brief, brief)
+    # A worker must wake its pm (SPEC.md:99-102): that is the whole reason the pm
+    # never has to poll. The wake line has to name the pm -- `send` defaults to the
+    # justice, so an unaddressed line would file the report with the wrong reader.
+    check("a worker brief has a handover block", "【交活】" in brief, brief)
+    check("it names the pm as the one to wake", "会话 `pm`" in brief, brief)
+    check("and the command addresses the pm explicitly",
+          "--session pm" in brief, brief)
+    check("it says waking comes before ending the turn",
+          "先叫醒总理" in brief and "再结束回合" in brief, brief)
+    check("and forbids waiting for the pm", "不要 `polity wait` 总理" in brief, brief)
+    check("it does not tell the worker to wait on anything", "polity wait --session" not in brief,
+          brief)
 
     with server_installed(Server()), quiet() as (out, err):
         run("--root", tmp, "dispatch", "--to", "w1", "--task", "001",
