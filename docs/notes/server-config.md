@@ -87,12 +87,13 @@ answer to "what models exist".
 
 ## Config::load_with_home (api key order)
 
-The roster is the machine's own answer, so it is consulted before the DSH
-credential store rather than after: a file that names the key is more specific
-than one that only names a variable.
+The roster is the machine's own answer, so a key written in it is used before
+any fallback: a file that names the key is more specific than one that only
+names a variable.
 
-Last resort: the credential store DSH keeps on this machine, so a provider key
-does not have to be exported by hand.
+A provider key comes from one of three places, in order: `GONGGA_API_KEY`, the
+variable that provider names (`api_key_env`), or the `key` written in the roster.
+Nothing outside this repository is consulted.
 
 ## Config::load_with_home (max_retries)
 
@@ -136,20 +137,10 @@ exactly as configured.
 Windows separators are normalised to `/`: TOML would read `\` as an escape, and
 every Windows API accepts forward slashes anyway.
 
-## dsh_credential
-
-Only the flat `refs:` mapping is understood. The file is DSH's, not ours, so
-anything it adds elsewhere is ignored rather than parsed.
-
 ## tests::the_instructions_are_well_formed
 
 The instructions are assembled by line continuation, where a stray escape or a
 missing space is invisible until a model reads the prompt as one run-on line.
-
-## tests::continuation_lines_are_not_treated_as_keys
-
-A folded value keeps its leading spaces, which is why the block test above
-matters: only two-space keys belong to `refs`.
 
 ## tests::the_roster_answers_what_the_config_does_not_say
 

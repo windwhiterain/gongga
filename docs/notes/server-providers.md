@@ -20,8 +20,8 @@ dependency than not having it.
 
 ## DEFAULT_PATH
 
-Where the roster lives, relative to the home directory. DSH reads the same
-path, which is the point: one file describes this machine.
+Where the roster lives, relative to the home directory. One file per machine,
+so `--llm` and the server's own default read the same answer.
 
 ## Model::context
 
@@ -49,8 +49,9 @@ request goes: everything `--llm` names, and nothing about whose key pays for it.
 Kept separate from `Choice` because the two callers need different things.
 `--llm` must be able to say "this is wrong" at the moment it is typed, so it
 wants a key. Startup must not: the server's own key comes from a longer chain
-(an exported `GONGGA_API_KEY`, the DSH credential store), and refusing to boot
-because `llm.toml` did not hold one would be a step backwards.
+(an exported `GONGGA_API_KEY`, its `key_env` variable, or the roster's `key`),
+and refusing to boot because `llm.toml` did not hold one would be a step
+backwards.
 
 ## Model::modalities
 

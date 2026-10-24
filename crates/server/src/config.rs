@@ -252,16 +252,13 @@ impl Config {
             .unwrap_or_else(|| DEFAULT_API_KEY_ENV.to_string());
         let api_key = env_or("GONGGA_API_KEY")
             .or_else(|| std::env::var(&api_key_env).ok())
-            // The roster's own key is more specific than the DSH store, so first.
+            // The roster's own key is the most specific source, so it comes first.
             .or_else(|| {
                 entry
                     .as_ref()
                     .and_then(|e| e.key.clone())
                     .filter(|k| !k.is_empty())
             })
-            // Last resort: the credential store DSH keeps on this machine, so a
-            // provider key does not have to be exported by hand.
-            .or_else(|| dsh_credential(&api_key_env))
             .unwrap_or_default();
 
         let llm = LlmConfig {
@@ -580,42 +577,6 @@ fn home_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".gongga"))
 }
 
-/// Reads a provider key out of `~/.dsh/.credentials.yaml`; only `refs:` is read.
-fn dsh_credential(name: &str) -> Option<String> {
-    let path = dirs::home_dir()?.join(".dsh").join(".credentials.yaml");
-    let text = std::fs::read_to_string(path).ok()?;
-    dsh_ref(&text, name)
-}
-
-fn dsh_ref(text: &str, name: &str) -> Option<String> {
-    let mut in_refs = false;
-    for line in text.lines() {
-        if line.starts_with("refs:") {
-            in_refs = true;
-            continue;
-        }
-        // A top-level key ends the block.
-        if !line.starts_with(' ') && !line.trim().is_empty() {
-            in_refs = false;
-        }
-        if !in_refs {
-            continue;
-        }
-        let trimmed = line.trim();
-        let Some((key, value)) = trimmed.split_once(':') else {
-            continue;
-        };
-        if key.trim() != name {
-            continue;
-        }
-        let value = value.trim().trim_matches('\'').trim_matches('"');
-        if !value.is_empty() {
-            return Some(value.to_string());
-        }
-    }
-    None
-}
-
 fn env_or(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.is_empty())
 }
@@ -740,36 +701,6 @@ mod tests {
         let cfg: FileConfig = toml::from_str("[llm]\nmodel = \"x\"\n").unwrap();
         assert_eq!(cfg.llm.unwrap().model.as_deref(), Some("x"));
         assert!(cfg.server.is_none());
-    }
-
-    const DSH_FIXTURE: &str =
-        "version: 1\nrecords: {}\nrefs:\n  MINIMAX_CN_API_KEY: 'sk-abc123'\n  OTHER: 'no'\n";
-
-    #[test]
-    fn reads_a_key_out_of_the_dsh_credential_store() {
-        assert_eq!(
-            dsh_ref(DSH_FIXTURE, "MINIMAX_CN_API_KEY").as_deref(),
-            Some("sk-abc123")
-        );
-        assert_eq!(dsh_ref(DSH_FIXTURE, "OTHER").as_deref(), Some("no"));
-        assert_eq!(dsh_ref(DSH_FIXTURE, "MISSING"), None);
-    }
-
-    #[test]
-    fn dsh_refs_stay_inside_their_block() {
-        // The same name appears outside `refs:`; only the block counts.
-        let text = "MINIMAX_CN_API_KEY: 'outside'\nrefs:\n  MINIMAX_CN_API_KEY: 'inside'\n";
-        assert_eq!(
-            dsh_ref(text, "MINIMAX_CN_API_KEY").as_deref(),
-            Some("inside")
-        );
-    }
-
-    #[test]
-    fn continuation_lines_are_not_treated_as_keys() {
-        // A folded value keeps its leading spaces, so only two-space keys count.
-        let text = "refs:\n  A: 'x'\n    continued\n  B: 'y'\n";
-        assert_eq!(dsh_ref(text, "B").as_deref(), Some("y"));
     }
 
     #[test]

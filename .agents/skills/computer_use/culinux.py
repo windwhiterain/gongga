@@ -1,8 +1,9 @@
 """Linux backend: shell tools, because every display server already ships a driver.
 
-Status: NOT verified on a real Linux desktop. Written from documented behaviour of
-xdotool, wmctrl and ImageMagick, never run, because the machine this was written on
-is Windows.
+Status: verified on X11 (Ubuntu 24.04, openbox, Xvfb) on 2026-10-24: doctor, windows,
+tree, focus, click, type (including CJK) and shot all ran end to end, with input proved
+to land in the intended window by comparing shell pids across two terminals. Wayland
+still relies on ydotool and has not been run.
 
 X11 and Wayland are not the same target. Under X11 these tools drive the session
 directly. Under Wayland a client cannot inject input or read other windows by
@@ -26,7 +27,24 @@ def _run(cmd):
 
 
 def _session_type():
-    return os.environ.get("XDG_SESSION_TYPE", "unknown").lower()
+    """Which display server this is, inferred when the variable is absent.
+
+    XDG_SESSION_TYPE is set by a login manager, so it is missing over ssh, in a
+    container and in a bare WSL shell -- exactly the places this backend gets used.
+    Reporting "unknown" there was a false failure: DISPLAY and WAYLAND_DISPLAY say
+    the same thing without a session bus.
+    """
+    declared = os.environ.get("XDG_SESSION_TYPE", "").strip().lower()
+    if declared in ("x11", "wayland"):
+        return declared
+    # DISPLAY is checked before WAYLAND_DISPLAY on purpose: this backend drives X11
+    # tools, and a Wayland session almost always runs XWayland, so X11 is the usable
+    # answer there. WSLg sets both and only the X one has wmctrl answering.
+    if os.environ.get("DISPLAY"):
+        return "x11"
+    if os.environ.get("WAYLAND_DISPLAY"):
+        return "wayland"
+    return "headless"
 
 
 def list_windows():
@@ -179,6 +197,41 @@ def type_text(text):
     return len(text) * 2 if res.returncode == 0 else 0
 
 
+# X11 keysym names, which are not the friendly names the other backends accept.
+# "enter" is not one: xdotool prints "No such key name 'enter'. Ignoring it." and
+# still exits 0, so a wrong name fails silently while every count says success.
+_KEYMAP = {
+    "enter": "Return", "return": "Return", "esc": "Escape", "escape": "Escape",
+    "tab": "Tab",
+    "space": "space", "backspace": "BackSpace", "delete": "Delete",
+    "up": "Up", "down": "Down", "left": "Left", "right": "Right",
+    "home": "Home", "end": "End", "pageup": "Prior", "pagedown": "Next",
+    "insert": "Insert", "printscreen": "Print", "capslock": "Caps_Lock",
+    "ctrl": "ctrl", "control": "ctrl", "shift": "shift", "alt": "alt",
+    "win": "super", "meta": "super",
+}
+for _n in range(1, 25):
+    _KEYMAP["f%d" % _n] = "F%d" % _n
+
+
+def _x11_combo(combo):
+    """Translate a friendly combination into X11 keysym names, refusing unknowns."""
+    parts = [p for p in combo.lower().split("+") if p]
+    if not parts:
+        raise ValueError("empty key combination")
+    names = []
+    for part in parts:
+        if part in _KEYMAP:
+            names.append(_KEYMAP[part])
+        elif len(part) == 1:
+            names.append(part)
+        else:
+            raise ValueError(
+                "unknown key %r; known: %s, f1-f24, or one character"
+                % (part, " ".join(sorted(_KEYMAP))))
+    return "+".join(names)
+
+
 def send_keys(combo):
     if _session_type() == "wayland":
         if not _have("ydotool"):
@@ -187,7 +240,11 @@ def send_keys(combo):
         return (len(combo.split("+")) * 2) if res.returncode == 0 else 0
     if not _have("xdotool"):
         raise RuntimeError("xdotool not installed (apt install xdotool)")
-    res = _run(["xdotool", "key", "--clearmodifiers", combo])
+    translated = _x11_combo(combo)
+    res = _run(["xdotool", "key", "--clearmodifiers", translated])
+    # xdotool complains on stderr and still exits 0, so the text is the only signal.
+    if "No such key name" in (res.stderr or ""):
+        raise RuntimeError("xdotool rejected %r: %s" % (translated, res.stderr.strip()))
     return (len(combo.split("+")) * 2) if res.returncode == 0 else 0
 
 
@@ -240,9 +297,15 @@ def capture(path, window=None, scale=1.0):
         raise RuntimeError("no capture tool found (apt install imagemagick for `import`)")
     if res.returncode != 0:
         raise RuntimeError("capture failed: %s" % (res.stderr.strip() or res.returncode))
-    w, h = _pixels(path)
+    # Measure before any resize: the source rectangle is what maps image pixels back to
+    # screen pixels, so reporting the scaled size would put every click off by 1/scale.
     if src[2] == 0:
-        src = (0, 0, w, h)
+        full_w, full_h = _pixels(path)
+        if scale != 1:
+            # The file was resized by the capture tool; the original is scale-times larger.
+            full_w, full_h = int(round(full_w / scale)), int(round(full_h / scale))
+        src = (0, 0, full_w, full_h)
+    w, h = _pixels(path)
     return {"w": w, "h": h, "src": src, "scale": scale}
 
 
@@ -256,10 +319,15 @@ def _pixels(path):
 
 
 def doctor():
-    out = [("Linux backend is unverified by its author; treat results with suspicion", True)]
+    out = [("X11 verified end to end; Wayland (ydotool) not yet exercised", True)]
     kind = _session_type()
-    out.append(("session type: %s" % kind, kind in ("x11", "wayland")))
-    ok = True
+    servable = kind in ("x11", "wayland")
+    out.append(("session type: %s" % kind, servable))
+    if not servable:
+        out.append(("set DISPLAY (X11) or WAYLAND_DISPLAY (Wayland) first", False))
+    # Every line above contributes to the verdict: a doctor that prints FAIL and then
+    # says "usable" trains the reader to ignore both.
+    ok = servable
     for tool, why in (("wmctrl", "window list and focus"),
                       ("xdotool", "input under X11"),
                       ("import", "capture (ImageMagick)")):

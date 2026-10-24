@@ -379,7 +379,7 @@ UI 上流式看到的仍是完整输出，但进 transcript 的不会反复计�
 
 ### LLM（OpenAI Responses API）
 
-默认 provider 是 **minimax-cn / MiniMax-M3.1-Flash**（取自 DSH 的 `models.dev` 缓存）：
+默认 provider 是 **minimax-cn / MiniMax-M3.1-Flash**：
 
 | 项 | 值 |
 |---|---|
@@ -389,8 +389,7 @@ UI 上流式看到的仍是完整输出，但进 transcript 的不会反复计�
 | key 来源 | 环境变量 → **`~/.dsh/.credentials.yaml` 的 `refs:` 块** |
 
 已实测：`https://api.minimax.cn/v1/responses` 接受标准 Responses API 请求，无需代理。
-（该 host 的 `/anthropic/v1` 是 Anthropic 兼容端点，DSH 的 models.dev 记录指向它；
-我们按 SPEC 走 Responses，所以用 `/v1`。）
+（该 host 的 `/anthropic/v1` 是 Anthropic 兼容端点；我们按 SPEC 走 Responses，所以用 `/v1`。）
 
 `POST {base_url}/responses`，`stream: true`，手写 SSE 解析（不引 SSE crate，因为要能
 在参数未完整时就往外吐 tool-call delta）。
@@ -425,7 +424,7 @@ UI 上流式看到的仍是完整输出，但进 transcript 的不会反复计�
 
 #### 名单：`~/.agents/llm.toml`（自动导入）
 
-这台机器已经有一份 LLM 名单（DSH 用的同一份）：15 个 provider，各自带
+这台机器有一份机器级的 LLM 名单：15 个 provider，各自带
 `[[provider.endpoint]]`（`api` + `base_url`）、`[[provider.model]]`（`id` / `context` /
 可选 `endpoints`）、以及 `key` 字面量或 `key_env`。服务端启动时直接读它，
 所以「哪个 provider、什么 base_url、key 在哪、上下文多大」不再需要在 config.toml 里重抄一遍
@@ -439,7 +438,7 @@ UI 上流式看到的仍是完整输出，但进 transcript 的不会反复计�
 
 `base_url` / `model` / `api_key_env` 仍是「环境变量 > config.toml > 名单 > 内置默认」，
 所以老配置不会被新逻辑悄悄改掉；key 的链条是
-`GONGGA_API_KEY` → 该 provider 的 `key_env` → 名单里的 `key` 字面量 → DSH 的 credentials 文件。
+`GONGGA_API_KEY` → 该 provider 的 `key_env` → 名单里的 `key` 字面量。
 
 `--llm <provider/model>`（也接受裸 model id）就是在这份名单里点名：
 在 `set_session` 时解析，**错了当场报错并列出可选项**，而不是留到下一轮才失败。

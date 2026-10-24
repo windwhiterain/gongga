@@ -203,4 +203,10 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    # A backend raises for the errors a caller can act on (unknown window, missing
+    # tool, no display). Printing a traceback for those hides the one useful line.
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except (LookupError, RuntimeError, ValueError, OSError) as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        sys.exit(1)

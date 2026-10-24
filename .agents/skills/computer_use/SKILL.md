@@ -22,11 +22,11 @@ PowerShell 翻译成 Python 就完事——两者调的是不同的系统 API。
 |---|---|---|
 | Windows | `cuwin.py`：ctypes + UIAutomation | **实测通过**（截图、控件树、点击、打字、组合键、焦点） |
 | macOS | `cumac.py`：Quartz + Accessibility + `screencapture` | 未实测，按文档写的 |
-| Linux | `culinux.py`：`xdotool`/`wmctrl`/ImageMagick | 未实测，按文档写的 |
+| Linux (X11) | `culinux.py`：`xdotool`/`wmctrl`/ImageMagick | **实测通过**（Ubuntu 24.04 + openbox + Xvfb：8 条命令全跑通，中文字符串完整落地） |
 
-后两个我**没法在这台机器上验证**（这里只有 Windows，没有 WSL 发行版也没有容器），
-`doctor` 会明说 `UNVERIFIED`。别把它们的"能跑"当成已知事实——第一次在 mac/Linux
-上用它时，先跑 `doctor`，再拿一件小事验证（截一张图、读一次控件树）。
+**macOS 仍未实测**——`doctor` 会明说 `UNVERIFIED`，别把它的“能跑”当成已知事实：第一次用它时，先跑 `doctor`，再拿一件小事验证。
+
+Linux 的实测环境是 WSL2 里的 Ubuntu 24.04 + Xvfb + openbox。**它验证了 X11 协议和工具链，不是每一台 Linux 桌面**：WSLg、GNOME、Wayland 各自还有自己的脾气。
 
 Linux 还有一层分裂：X11 下这些工具直接驱动会话；**Wayland 按设计不允许客户端注入
 输入或读别的窗口**，`click`/`type` 要 `ydotool`，控件树退化成窗口树。`doctor` 会报出
@@ -132,6 +132,7 @@ could not focus 198124 "SPEC.md - gongga"; refusing to send input blind
 | `SendInput` 返回满数但字没进去（PowerShell 版） | PowerShell 不能给**嵌套结构体字段**赋值，写进副本后丢弃 | 输入搬进 C#；Python 版直接在 ctypes 里构造 `INPUT`，`sizeof` 自动是 40 |
 | 同上，换布局才好 | x64 上 `INPUT` 的联合体必须从偏移 **8** 开始 | Windows 后端用 `_anonymous_` 联合体，`doctor` 断言 `sizeof(INPUT)` |
 | `tree` 报 `Cannot convert "∞" to Int32` | 无矩形的控件 UIA 返回无穷大 | Python 版按 right/bottom 是否 0 判空，打印 `?` |
+| `key enter` 报成功但没反应（Linux） | X11 的键名是 `Return`；`xdotool` 遇到未知键名时打印 `No such key name` 却仍然 exit 0 | `culinux.py` 显式映射友好名→keysym，未知键直接 ValueError，并检查 stderr |
 | Windows 上多出「Windows 输入体验」之类幽灵窗口 | UWP 隐藏窗口，`EnumWindows` 看得见但点不着 | 用 `DwmGetWindowAttribute(DWMWA_CLOAKED)` 过滤 |
 | `--window` 被 PowerShell 当自己的参数 | PS 参数解析套在脚本参数上 | PS 回落版走 `CU_ARGV` 环境变量（`\x1f` 分隔） |
 | 这版 PowerShell 缺 `[ushort]`/`[uint]` 别名 | PS 5.1 的行为 | PS 回落版用全限定 `[System.UInt16]` |

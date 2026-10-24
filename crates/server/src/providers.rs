@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
-/// Where the roster lives. DSH reads the same path: one file, this machine.
+/// Where the roster lives: one file per machine, at `~/.agents/llm.toml`.
 pub const DEFAULT_PATH: &str = ".agents/llm.toml";
 
 /// Everything `llm.toml` says about one provider.
