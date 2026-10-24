@@ -21,6 +21,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -53,6 +54,14 @@ CONSTITUTION = """# 宪法 v0（骨架，条款未生效）
 ## 修订记录
 
 - v0 <日期> <会话> 建骨架，条款待填。
+"""
+
+POLITY_GITIGNORE = """# polity's own state, never the project's.
+#
+# `client-home/` holds a copy of the server's config, connection key included:
+# `polity init` copies it there so the court's client calls cannot write the
+# user's ~/.gongga/cli.toml (SPEC.md:96-97). A key must not travel with the code.
+client-home/
 """
 
 TEMPLATES = {
@@ -230,6 +239,35 @@ def prepare_client_home(root, source=None):
     return home
 
 
+def client_key(home=None):
+    """The connection key this court's client home carries, or "" if none.
+
+    Read so it can be scrubbed, never so it can be shown: `SPEC.md:75-98` makes the
+    court an instrument, and an instrument that echoes the server key into a
+    terminal, a log or the ledger hands it to whoever reads that file next.
+    """
+    # Derive it from ROOT when the home has not been prepared yet: redaction must
+    # not depend on a client call having happened first.
+    home = home or CLIENT_HOME or (client_home(ROOT) if ROOT else None)
+    if not home:
+        return ""
+    text = read_text(os.path.join(home, "config.toml"))
+    m = re.search(r'^\s*key\s*=\s*"?([^"\s#]+)"?', text, re.M)
+    if m:
+        return m.group(1)
+    return os.environ.get("GONGGA_KEY") or ""
+
+
+def redact(text, key=None):
+    """Replace the key with `<key>` wherever it appears. Empty key: nothing to do."""
+    if text is None:
+        return text
+    key = client_key() if key is None else key
+    if not key or key not in text:
+        return text
+    return text.replace(key, "<key>")
+
+
 def client_argv(args):
     """The argv for one client command: global flags first, then the command."""
     argv = [cli_path()]
@@ -255,7 +293,10 @@ def run_cli(args, timeout=120):
         return EXIT_CLI, [], f"no client at {cli_path()!r}"
     except subprocess.TimeoutExpired:
         return EXIT_CLI, [], f"{args[0]} timed out after {timeout}s"
-    return p.returncode, parse_events(p.stdout), p.stderr.strip()
+    # One choke point: everything the client said passes through here, so the key
+    # cannot reach a caller's stdout, stderr or the ledger by a path nobody watched.
+    key = client_key()
+    return p.returncode, parse_events(redact(p.stdout, key)), redact(p.stderr.strip(), key)
 
 
 def parse_events(text):
@@ -287,8 +328,8 @@ def result_of(events, action, err=""):
     """
     r = cmd_result(events)
     if r is None:
-        return False, f"{action}: {err or 'the client said nothing'}", {}
-    return bool(r.get("ok")), r.get("message", ""), r.get("data") or {}
+        return False, redact(f"{action}: {err or 'the client said nothing'}"), {}
+    return bool(r.get("ok")), redact(r.get("message", "")), r.get("data") or {}
 
 
 def sessions_in(events):
@@ -306,7 +347,7 @@ def send(session, message):
     """Fire a turn. Returns immediately by design; use `wait` to see it end."""
     rc, evs, err = run_cli(["send_message", "--session", session, "--message", message])
     ok, said, _ = result_of(evs, "send_message", err)
-    return (rc == 0 and ok), said or err
+    return (rc == 0 and ok), redact(said or err)
 
 
 def rows(session, after=None, limit=200):
@@ -322,7 +363,7 @@ def rows(session, after=None, limit=200):
     rc, evs, err = run_cli(args)
     ok, said, data = result_of(evs, "get_messages", err)
     if rc != 0 or not ok:
-        raise CliError(said or err or "get_messages failed")
+        raise CliError(redact(said or err or "get_messages failed"))
     return data.get("messages") or [], data.get("last_seq")
 
 
@@ -340,7 +381,7 @@ def status_of(session, probe):
     rc, evs, err = run_cli(["set_session", "--session", probe])
     ok, said, data = result_of(evs, "set_session", err)
     if rc != 0 or not ok:
-        raise CliError(said or err or "set_session failed")
+        raise CliError(redact(said or err or "set_session failed"))
     for s in sessions_in(evs):
         if s.get("name") == session:
             return s.get("status"), data
@@ -395,8 +436,9 @@ def record(root, **event):
     """One line per decision, so the audit trail does not depend on anyone's memory."""
     event.setdefault("at", time.strftime("%Y-%m-%dT%H:%M:%S"))
     os.makedirs(polity_dir(root), exist_ok=True)
+    line = redact(json.dumps(event, ensure_ascii=False, sort_keys=True))
     with open(path_in(root, "ledger.jsonl"), "a", encoding="utf-8", newline="\n") as f:
-        f.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
+        f.write(line + "\n")
 
 
 def report_path(root, task_id):
@@ -492,13 +534,15 @@ def brief(root, role, task_id, title, task_file, constitution):
     if role == "pm" and justice:
         # The pm's last act is the wake, not a DONE line. SPEC.md:89-92: the justice
         # ends its turn and is woken by this message; nobody polls anybody.
-        handover = f"""【交活】做完不要只回 DONE——叫醒法官（会话 `{justice}`）。这条照抄能跑：
+        handover = f"""【交活】做完就叫醒我（法官，会话 `{justice}`），**不要 `polity wait` 我**：
+我结束回合等着你这条消息，你 wait 我等到的只有超时。这条照抄能跑：
   {wake_command(root, task_id, justice)}
-发完就结束回合。**不要** `polity wait` 去探它（SPEC.md:89-92）。
+发完就结束回合。不要只回 DONE 就收工——那一句没有内容，我读的是报告文件。
 """
     elif role == "pm":
         handover = """【交活】法官会话还没记下来（`polity up --justice <名字>`），所以叫醒命令
 还写不出真实名字。做完在汇报里问清楚，别猜一个名字发过去（SPEC.md:93-95）。
+另外：**不要 `polity wait` 法官**——它结束回合、被汇报消息叫醒（SPEC.md:89-92）。
 """
     else:
         handover = ""
@@ -541,6 +585,10 @@ def cmd_init(a):
             made.append(f"templates/{kind}.md")
     if write_new(path_in(root, "ledger.jsonl"), ""):
         made.append("ledger.jsonl")
+    # polity's client home carries a copy of the server key. In a root that is
+    # itself a repo, that copy would be committed with everything else.
+    if write_new(path_in(root, ".gitignore"), POLITY_GITIGNORE):
+        made.append(".gitignore")
     st = load_state(root)
     st.setdefault("max_parallel", 3)
     save_state(root, st)
@@ -656,7 +704,7 @@ def cmd_read(a):
         print(f"read failed: {e}", file=sys.stderr)
         return EXIT_CLI
     for r in got:
-        text = " ".join(str(r.get("text", "")).split())
+        text = redact(" ".join(str(r.get("text", "")).split()))
         if len(text) > a.width:
             text = text[: a.width] + "…"
         role = r.get("role") or ""
@@ -776,6 +824,14 @@ def cmd_wait(a):
               "它会打印这个数。", file=sys.stderr)
         return EXIT_USAGE
     st = load_state(a.root)
+    # The justice does not poll and is not polled: it ends its turn and is woken by
+    # the report (SPEC.md:89-92). Waiting on it still works -- refusing would bite
+    # an honest debugging session -- but say it, in the same contract as the charter
+    # drift warning: a line on stderr, exit code untouched.
+    if a.session == st.get("justice"):
+        print(f"! `{a.session}` 是法官会话：法官不轮询，也不被轮询——它结束回合、被汇报消息叫醒"
+              "（SPEC.md:89-92）。这条 wait 照样跑，但你可能在等一个永远不会来的收尾。",
+              file=sys.stderr)
     probe = st.get("pm") or a.session
     try:
         code, final, note = wait_loop(a.session, a.after, a.timeout, probe, a.poll)
@@ -783,7 +839,7 @@ def cmd_wait(a):
         print(f"wait failed: {e}", file=sys.stderr)
         return EXIT_CLI
     if final is not None:
-        print(" ".join(str(final.get("text", "")).split()))
+        print(redact(" ".join(str(final.get("text", "")).split())))
         print(f"-- 收尾于 seq {final.get('seq')}")
     else:
         print(note, file=sys.stderr)
@@ -827,13 +883,15 @@ def cmd_verify(a):
         ignored = subprocess.run(["git", "check-ignore", "-q", os.path.abspath(a.root)],
                                  cwd=a.root)
         if ignored.returncode == 0:
-            print(f"! {a.root} 被 {top.stdout.strip()} 的 .gitignore 忽略："
+            print(f"! {redact(a.root)} 被 {redact(top.stdout.strip())} 的 .gitignore 忽略："
                   "下面的 git 输出说明不了这个目录里改了什么。用 mtime/md5 取证。\n")
     rc_all = EXIT_OK
     for c in cmds:
         print(f"$ {' '.join(shlex.quote(x) for x in c)}")
         p = subprocess.run(c, cwd=a.root, capture_output=True, text=True)
-        out = (p.stdout or "").rstrip()
+        # A repo diff can carry anything a repo carries; the key is not printed even
+        # when it is the thing that changed.
+        out = redact((p.stdout or "").rstrip())
         print(out if out else "(empty)")
         print()
         if p.returncode != 0 and c[1] != "log":
@@ -880,10 +938,11 @@ def build_parser():
     sub_root(s)
     s.set_defaults(fn=cmd_status)
 
-    s = sub.add_parser("send", help="给法官发消息（立即返回）；--session 省略就是法官")
+    s = sub.add_parser("send", help="叫醒法官（立即返回）；--session 指定别的会话")
     sub_root(s)
     s.add_argument("--session",
-                   help="缺省用 .polity/state.json 里记的法官会话；没记就报错，不猜")
+                   help="省略就是叫醒法官（.polity/state.json 里记的那个会话）；"
+                        "给了就发给那个会话。法官没记、又没给，报错，不猜")
     s.add_argument("--message")
     s.add_argument("--tag", help="加前缀，如 汇报 / 判决")
     s.set_defaults(fn=cmd_send)

@@ -392,6 +392,29 @@ try:
     check("a worker brief still forbids it", "不得派生别的 agent" in brief, brief)
     check("and says nothing about parallelism", "并行度" not in brief, brief)
 
+    print("\nsend: the help says what it does -- wake the justice, --session for others")
+    helped = io.StringIO()
+    with contextlib.redirect_stdout(helped):
+        try:
+            run("--help")
+        except SystemExit:
+            pass
+    listed = [l for l in helped.getvalue().splitlines() if l.strip().startswith("send")]
+    check("the one-line summary names the judge as the addressee",
+          listed and "叫醒法官" in listed[0], listed)
+    check("and says --session goes elsewhere",
+          listed and "指定别的会话" in listed[0], listed)
+    helped = io.StringIO()
+    with contextlib.redirect_stdout(helped):
+        try:
+            run("send", "--help")
+        except SystemExit:
+            pass
+    helptext = helped.getvalue()
+    check("--session's own help says omitting it wakes the judge",
+          "省略就是叫醒法官" in helptext, helptext)
+    check("and that giving it addresses that session", "给了就发给那个会话" in helptext, helptext)
+
     # ---- the client gets a home of its own, so no court command writes the user's
     # per-session client state (SPEC.md:96-97). The check is on what the client was
     # actually run with, not on our intention.
@@ -419,6 +442,93 @@ try:
     check("a command with no client call creates no client home",
           not os.path.exists(os.path.join(other, ".polity", "client-home")))
 
+    # ---- the key in that home must never reach an output ----------------------
+    # SPEC.md:75-78 makes the court an instrument: a key echoed into a terminal,
+    # a log or the ledger is handed to whoever reads that file next.
+    print("\nkey: the client home carries it, and no command ever prints it")
+    secret = "sekrit-key-9d41c0ffee"
+    # Write it where `main` will point the client: it resets CLIENT_HOME per run and
+    # then reuses whatever config the home already has.
+    home = os.path.join(tmp, ".polity", "client-home")
+    os.makedirs(home, exist_ok=True)
+    open(os.path.join(home, "config.toml"), "w", encoding="utf-8").write(
+        "[server]\nbind = \"127.0.0.1:1\"\nkey = \"%s\"\n" % secret)
+    equal("the key is read from the home", m.client_key(home), secret)
+    equal("and redacted, not printed", m.redact("boom " + secret + " tail", secret),
+          "boom <key> tail")
+
+    class Leaky(Server):
+        """A client that fails loudly and quotes the key while doing it."""
+
+        def __call__(self, args, timeout=120):
+            self.calls.append(list(args))
+            if args[0] == "set_session":
+                return 0, [], "connection refused; I tried key %s at that address" % secret
+            return Server.__call__(self, args, timeout)
+
+    with server_installed(Leaky()), quiet() as (out, err):
+        code = run("--root", tmp, "status")
+    equal("a client failure is still a failure", code, m.EXIT_CLI)
+    both = out.getvalue() + err.getvalue()
+    check("its complaint is passed through", "connection refused" in both, both)
+    check("but the key is not in it", secret not in both, both)
+    check("the redaction is visible", "<key>" in both, both)
+    # The stdout side: the sessions event the client sends back.
+    class LeakyStdout(Server):
+        def __call__(self, args, timeout=120):
+            self.calls.append(list(args))
+            rc, evs, err = Server.__call__(self, args, timeout)
+            for e in evs:
+                if e.get("t") == "cmd_result":
+                    e["message"] = "ok, key=%s" % secret
+            return rc, evs, err
+
+    with server_installed(LeakyStdout()), quiet() as (out, err):
+        run("--root", tmp, "up", "--justice", "judge-x")
+        run("--root", tmp, "send", "--message", "m")
+    both = out.getvalue() + err.getvalue()
+    check("what the client says on stdout is scrubbed too", secret not in both, both)
+    ledger = open(os.path.join(tmp, ".polity", "ledger.jsonl"), encoding="utf-8").read()
+    check("and the ledger never holds it", secret not in ledger, ledger[-300:])
+
+    # `verify` prints `git` output, which is repo content: scrub it there too. Git is
+    # replaced only for the duration of the call, so the check is about polity, not git.
+    class FakeGit:
+        returncode = 0
+        stdout = "+ connection_key = %s\n" % secret
+        stderr = ""
+
+    real_run = m.subprocess.run
+    m.subprocess.run = lambda *a, **k: FakeGit()
+    try:
+        with quiet() as (out, err):
+            code = run("--root", tmp, "verify")
+    finally:
+        m.subprocess.run = real_run
+    both = out.getvalue() + err.getvalue()
+    check("verify scrubs what git prints", secret not in both and "<key>" in both, both)
+
+    # init must leave a .gitignore behind: that home is inside the root, and the
+    # root may be a repo.
+    ign = os.path.join(tmp, ".polity", ".gitignore")
+    check("init lands .polity/.gitignore", os.path.exists(ign), os.listdir(os.path.join(tmp, ".polity")))
+    if os.path.exists(ign):
+        text = open(ign, encoding="utf-8").read()
+        check("it ignores client-home/", "client-home/" in text, text)
+        with quiet():
+            run("--root", tmp, "init")
+        equal("and init does not rewrite it", open(ign, encoding="utf-8").read(), text)
+    repo3 = os.path.join(tmp, "repo3")
+    os.makedirs(os.path.join(repo3, ".polity", "client-home"))
+    open(os.path.join(repo3, ".polity", "client-home", "config.toml"), "w").write("key = \"x\"\n")
+    with quiet():
+        run("--root", repo3, "init")
+    subprocess.run([shutil.which("git") or "git", "init", "-q"], cwd=repo3, check=True)
+    ignored = subprocess.run([shutil.which("git") or "git", "check-ignore", "-q",
+                              os.path.join(repo3, ".polity", "client-home", "config.toml")],
+                             cwd=repo3)
+    equal("so git refuses that copy", ignored.returncode, 0)
+
     print("\nwake: the court records the justice, and send finds it without a name")
     srv4 = Server()
     with server_installed(srv4), quiet() as (out, err):
@@ -439,6 +549,23 @@ try:
     equal("and goes where it says",
           [args_of(c[1:]).get("session") for c in srv4.calls if c[0] == "send_message"][-1],
           "someone-else")
+
+    print("\nwait: waiting on the justice warns -- it is not polled (SPEC.md:89-92)")
+    srvw = Server()
+    srvw.create("judge-x", [row(1, "assistant", "DONE 001")])
+    with server_installed(srvw), quiet() as (out, err):
+        code = run("--root", tmp, "wait", "--session", "judge-x", "--after", "0",
+                   "--timeout", "2")
+    check("the wait on the justice is not refused", code in (m.EXIT_OK, m.EXIT_TIMEOUT), code)
+    check("it says the justice is not polled", err.getvalue().count("法官") >= 1,
+          err.getvalue())
+    check("and cites the clause", "89-92" in err.getvalue(), err.getvalue())
+    # A worker gets no such warning: only the justice is the special case.
+    srvw.create("w-doc", [row(1, "assistant", "DONE 002")])
+    with server_installed(srvw), quiet() as (out, err):
+        run("--root", tmp, "wait", "--session", "w-doc", "--after", "0", "--timeout", "2")
+    check("a worker wait says nothing about the justice", "不被轮询" not in err.getvalue(),
+          err.getvalue())
 
     # A court that never recorded its justice must refuse, not guess.
     stj = json.load(open(os.path.join(tmp, ".polity", "state.json"), encoding="utf-8"))
@@ -468,8 +595,30 @@ try:
           m.launcher() in brief3, m.launcher())
     check("and the wake command omits --session",
           "send --root" in brief3 and "--session" not in brief3, brief3)
-    check("and tells the pm not to wait on the justice", "不要" in brief3 and "wait" in brief3,
-          brief3)
+    check("and tells the pm not to wait on the justice",
+          "不要 `polity wait` 我" in brief3, brief3)
+    check("it says the wake is the handover", "做完就叫醒我" in brief3, brief3)
+    check("and why waiting is pointless", "结束回合" in brief3, brief3)
+    # The other branch: no justice recorded, so there is no command to hand over --
+    # but "do not wait the justice" must still be said (it does not need a name).
+    stj2 = json.load(open(os.path.join(tmp, ".polity", "state.json"), encoding="utf-8"))
+    recorded = stj2.pop("justice", None)
+    json.dump(stj2, open(os.path.join(tmp, ".polity", "state.json"), "w", encoding="utf-8"),
+              ensure_ascii=False)
+    try:
+        srv7 = Server()
+        with server_installed(srv7), quiet():
+            run("--root", tmp, "dispatch", "--to", "pm3", "--task", "011",
+                "--title", "统筹", "--role", "pm")
+        brief4 = args_of(srv7.calls[-1][1:])["message"]
+    finally:
+        stj2["justice"] = recorded
+        json.dump(stj2, open(os.path.join(tmp, ".polity", "state.json"), "w", encoding="utf-8"),
+                  ensure_ascii=False)
+    check("with no justice recorded it still says do not wait", "不要 `polity wait` 法官" in brief4,
+          brief4)
+    check("and it does not invent a name", "会话 `" not in brief4.split("【交活】")[1].split("】")[0],
+          brief4)
     check("a worker brief has no wake block", "交活" not in brief, brief)
 
     with server_installed(Server()), quiet() as (out, err):

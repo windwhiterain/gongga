@@ -48,6 +48,7 @@ P=.agents/skills/polity/polity
 | 子会话的 `$GONGGA_CLI` | 有。所以总理能再派生执行者——两层是真的 |
 | `send` 的 `--session` | 可省：法庭在 `up --justice <名字>` 时记下法官，省略就发给它；没记就报错，不猜 |
 | 每次 CLI 调用的 `--home` | 指向 `.polity/client-home/`（polity 自己的），所以法庭的命令**不写**用户的 `cli.toml` |
+| 那份 `client-home/config.toml` | 里面是**连接 key 的副本**：`init` 落一份 `.polity/.gitignore` 挡住它，任何命令也不把 key 打进输出 |
 
 两个直接后果：
 
@@ -189,6 +190,12 @@ $P send --tag 汇报 --message "001 汇报已就绪：.polity/reports/001.md"
 档案都不覆盖写：任务号已经被用过，`dispatch` 会用盘上那一份并警告；判决和汇报同理。
 一个会静默丢判决的档案库比没有更糟。
 
+**`client-home/` 里有一个不该进 git 的东西。** polity 为了不写用户的 `cli.toml`，把客户端指到
+`.polity/client-home/`，并往那里拷一份 `config.toml`——**里面有连接 key**。所以 `polity init` 会在
+`.polity/` 下落一份 `.gitignore`（`client-home/`）；任何命令也不把 key 打进 stdout/stderr/ledger：
+`redact()` 在传输层擦一遍，`result_of()` / `send()` / `rows()` / `read` 的打印各再擦一遍。
+测试用一份带假 key 的 client home 钉住这一条，包括「客户端失败时把 key 说出来」这条路。
+
 **章程和模板也是从不覆盖的副本**，所以器具改了法、旧法庭还在读旧章程——这正是
 `polity status` 现在会逐条警告的东西：哪一份、从第几行开始不同、盘上与内置的两个 md5。
 只提醒，不改退出码、不挡任何命令：副本不是法，法在宪法，副本与法不一致时副本错。看到警告
@@ -228,7 +235,7 @@ detached 的进程不随会话死（见 `self-control`）。判决"违宪、要�
 ```bash
 .agents/skills/polity/polity --help          # 10 个子命令
 .agents/skills/polity/polity status --root .
-python3 .agents/skills/polity/test_polity.py # 146 项，退出码即结论
+python3 .agents/skills/polity/test_polity.py # 171 项，退出码即结论
 ```
 
 `test_polity.py` 分两层：`wait_loop` 对着**脚本化的时钟**跑（时序错误都在那里），
@@ -243,6 +250,10 @@ verify 不警告被忽略的根、任务单不带交付章节、任务单不填�
 003 又补十三条——`brief()` 的铁律 2 按角色分叉（总理那份不得再出现「不得派生」，且要报并行度；
 执行者那份不得松动）、`status` 的章程漂移警告（真漂移要报、全新法庭不许报、退出码不变、
 缺文件也要报）、`verify` 的帮助不再写「独立取证」——四条变异各红一次。
+
+006 又补二十五条——key 不外出（`redact()` 在传输层与每个出口各擦一遍；`init` 落 `.polity/.gitignore` 挡住 `client-home/`）、`send --help` 说实话（叫醒法官；`--session` 指定别人）、
+对法官跑 `wait` 时 stderr 警告而退出码不变、派工消息明写「做完就叫醒我，不要 wait 我」。
+八条变异各红一次：不擦 key、去掉 `wait` 警告、`send` help 回退、brief 不写「不要 wait 我」、`init` 不落 `.gitignore`、`verify` 不擦 git 输出、`.gitignore` 警告里不擦 git 输出（这两条是测试自己抓出来的漏洞）、「没记法官」那一支不写「不要 wait 法官」。
 
 005 又补三十条——客户端被加了 `--home`（每条 CLI 调用都指向 `.polity/client-home/`）、
 `up --justice` 记下法官、`send` 省略 `--session` 时发给法官（没记就报错、不猜）、总理的派工消息
