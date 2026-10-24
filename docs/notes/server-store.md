@@ -145,27 +145,21 @@ A notice is written for the operator, not for the model: it explains why a turn
 stopped. Feeding it back as history would put our own bookkeeping in the
 transcript the provider sees, and make the model answer questions nobody asked.
 
-## Store::messages_after
+## Store::last_seq
 
-`history_since` answers "what should the model see"; this answers "what happened
-while I was waiting", which is what an IM bridge asks after a turn goes idle: it
-knows the seq the turn started at and wants the assistant text that followed.
-`last_seq` comes back with the rows so a caller can advance its cursor without a
-second round trip (and without guessing: a turn whose only output was tool calls
-still moves it).
-
-Newest `limit` first, then flipped, so a long transcript yields its tail rather
-than its head -- a caller that asked for 50 rows wants the 50 that just happened.
+Where the transcript ends. A negative bound in `--seq` is resolved against it at
+read time, which is what makes `-1` mean "the newest row" rather than "one row
+before some fixed number".
 
 ## Store::messages_between
 
-`messages_after` states a lower bound and a count taken from the tail; this states
-both ends. The difference only shows when a range is asked for that has rows
-beyond it -- which `messages_after` would happily walk into, because a count has
-no upper bound to stop at.
+Both ends stated. The cursor form this replaced (`after_seq` plus a count from
+the tail) could also truncate, which was the one thing it did that a range
+cannot -- and truncation is a policy, so it moved to the caller.
 
-`last_seq` comes back from both, because a caller still needs to know where the
-transcript ends: an empty window and an empty transcript are different answers.
+`last_seq` comes back with the rows, because a caller still needs to know where
+the transcript ends: an empty window and an empty transcript are different
+answers.
 
 ## the_upper_end_stops_the_window
 
@@ -282,18 +276,6 @@ A turn interrupted between "call this tool" and "here is what it said" leaves a
 `function_call` with no `function_call_output`. Providers reject that outright
 ("No tool output found for tool call ..."), so the session fails the same way on
 every later turn. The transcript closes the call on the way out instead.
-
-## messages_after_returns_a_window_and_the_tail
-
-The read path an IM bridge uses: a window starting after a seq, ending at the
-current tail, with that tail reported so the cursor can advance even when the
-window turns out to be empty.
-
-An empty window still reports the tail: "nothing new, and the transcript has not
-moved" is a different answer from "start over".
-
-The limit counts back from the end, so a long transcript yields the part that
-just happened rather than a re-read of the beginning.
 
 ## a_notice_is_readable_but_never_sent_back_to_the_model
 

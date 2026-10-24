@@ -143,11 +143,18 @@ replay does, and neither has anything to write.
 
 ## get_messages --seq
 
-Two readers want two different things from the same rows. A bridge has a cursor
-and wants "what arrived after it", which is `--after_seq` + `--limit`: a count
-taken back from the tail. A reader that was not there wants "that part of the
-transcript", and a *count* cannot say where to stop -- it only says how many of
-the newest rows to take. So `--seq` names both ends.
+There is one way to name rows: a range. The old `--after_seq` + `--limit` pair
+was this range plus a truncation policy -- "the newest n after the cursor" --
+and a truncation policy is not something a terminal should hold: it silently
+answers a different question than the one asked, and the caller cannot tell.
+Both are gone.
+
+A caller with a cursor (the IM bridge) asks for a tail window and drops the rows
+it already answered with its own `since`; that judgement belongs where the
+cursor is. A caller reading a part of the transcript asks for exactly that part.
+
+The default is `-50:`, which is a *default range*, not a cap: naming more rows
+is always allowed. There is no row limit any more.
 
 The syntax is Python's, with two differences that are deliberate:
 
@@ -172,14 +179,12 @@ What is refused, because each is a typo rather than an intention:
 - `0`, in either direction of spelling -- seq starts at 1, so 0 names no row;
 - a range written backwards (`10:5`, `-2:-5`);
 - `:` with neither bound, which names everything and is not what anyone meant;
-- `--seq` together with `--after_seq` or `--limit`, since those name the same
-  rows another way and two spellings of one thing is how a client learns the
-  wrong one.
 
-The cap is the one `--limit` already had (`MAX_MESSAGE_LIMIT`), not a new budget:
-a reply travels over a channel that fragments at 1174 bytes a packet. `--seq`
-reuses it and *refuses* rather than truncating, because a silently short window
-would make `-590:` look like it worked.
+The one limit left is the channel's: 8 MiB per message, because that is what it
+can carry. A range bigger than that is not refused by this command -- it is
+answered, and the channel says it cannot carry the answer. That refusal arrives
+as a `cmd_result` naming both sizes, not as a dropped connection, which is what
+it used to do.
 
 ## del_session
 
@@ -322,6 +327,16 @@ nothing there" is an answer.
 Every one of these is a typo, and the message names what was wanted. The huge
 negative is the arithmetic guard: a bound is `last_seq + n + 1`, so an `i64`
 minimum would overflow in debug without saturating.
+
+## get_messages_names_rows_one_way
+
+One spelling, not two. A cursor and a range are rival answers to "which rows",
+and the one a caller learns first is the one it will keep using.
+
+## the_default_range_is_the_tail
+
+A default range, not a cap: `-50:` means "the newest 50 unless you say
+otherwise", and saying otherwise is always allowed.
 
 ## get_messages_pages_by_seq
 

@@ -10,7 +10,8 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use protocol::{
-    self, Args, ClientMessage, Event, ServerInfo, ServerMessage, decode_client, encode_server,
+    self, Args, ChannelError, ClientMessage, Event, ServerInfo, ServerMessage, decode_client,
+    encode_server,
     frame::{Flags, Frame},
 };
 use tokio::net::UdpSocket;
@@ -242,7 +243,7 @@ async fn handle_connection(
             event = bus_rx.recv() => {
                 match event {
                     Ok(event) => {
-                        if send_server(&sink, &ServerMessage::Event(event)).await.is_err() {
+                        if send_event(&sink, event).await.is_err() {
                             break;
                         }
                     }
@@ -328,6 +329,41 @@ fn key_matches(given: &str, expected: &str) -> bool {
 async fn send_server(sink: &protocol::ChannelSink, msg: &ServerMessage) -> anyhow::Result<()> {
     let bytes = encode_server(msg)?;
     sink.send(bytes).await.map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// Sends one event, reporting a reply too large to carry instead of dying.
+///
+/// # Invariant
+///
+/// A size refusal keeps the connection: the caller asked a question this channel
+/// cannot answer, and the answer to that is a sentence, not a dropped link.
+async fn send_event(sink: &protocol::ChannelSink, event: Event) -> anyhow::Result<()> {
+    let bytes = encode_server(&ServerMessage::Event(event.clone()))?;
+    match sink.send(bytes).await {
+        Ok(()) => Ok(()),
+        Err(ChannelError::MessageTooLarge { len, limit }) => {
+            // Only a command result has a caller to tell; the rest has nowhere to go.
+            let Event::CmdResult { id, .. } = event else {
+                tracing::warn!(len, limit, "dropped an event too large to send");
+                return Ok(());
+            };
+            let why = format!(
+                "the reply was {len} bytes, over the {limit} bytes one message carries; \
+                 ask for fewer rows with --seq, e.g. `--seq -500:`"
+            );
+            tracing::warn!(id, len, limit, "reply too large to send");
+            let small = ServerMessage::Event(Event::CmdResult {
+                id,
+                ok: false,
+                message: why,
+                data: None,
+            });
+            sink.send(encode_server(&small)?)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))
+        }
+        Err(e) => Err(anyhow::anyhow!("{e}")),
+    }
 }
 
 #[cfg(test)]

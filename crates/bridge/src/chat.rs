@@ -99,6 +99,18 @@ pub struct Row {
     pub text: String,
 }
 
+/// The rows this bridge still owes a reply for: those after its cursor.
+///
+/// # Invariant
+///
+/// A read-back window can reach an earlier turn, whose answer is not this one.
+pub fn since(rows: &[Row], cursor: i64) -> Vec<Row> {
+    rows.iter()
+        .filter(|row| row.seq > cursor)
+        .cloned()
+        .collect()
+}
+
 /// Picks the sentence a chat user should receive from one turn's rows.
 ///
 /// # Invariant
@@ -247,6 +259,49 @@ mod tests {
         ];
         let reply = final_reply(&rows);
         assert!(reply.contains("bash"), "{reply}");
+    }
+
+    /// A tool-only turn must not relay the previous answer as its own.
+    #[test]
+    fn a_silent_turn_does_not_repeat_the_earlier_answer() {
+        let rows = vec![
+            row(1, "text", Some("assistant"), None, "the earlier answer"),
+            row(2, "text", Some("user"), None, "check it"),
+            row(3, "tool_call", None, Some("bash"), r#"{"cmd":"ls"}"#),
+            row(4, "tool_result", None, None, "a.txt"),
+        ];
+        let fresh = since(&rows, 2);
+        assert_eq!(fresh.iter().map(|r| r.seq).collect::<Vec<_>>(), vec![3, 4]);
+        // What the user is owed is an explanation, not the previous answer again.
+        assert!(
+            final_reply(&fresh).contains("bash"),
+            "{}",
+            final_reply(&fresh)
+        );
+        assert_eq!(final_reply(&rows), "the earlier answer");
+    }
+
+    /// A turn that does answer relays its own words, filtered or not.
+    #[test]
+    fn rows_before_the_cursor_are_dropped() {
+        let rows = vec![
+            row(1, "text", Some("assistant"), None, "the earlier answer"),
+            row(2, "text", Some("user"), None, "do it again"),
+            row(3, "text", Some("assistant"), None, "this turn's answer"),
+        ];
+        let fresh = since(&rows, 2);
+        assert_eq!(fresh.iter().map(|r| r.seq).collect::<Vec<_>>(), vec![3]);
+        assert_eq!(final_reply(&fresh), "this turn's answer");
+    }
+
+    /// A cursor at the tail means the turn said nothing yet, not "send it all".
+    #[test]
+    fn a_cursor_at_the_tail_leaves_nothing_owed() {
+        let rows = vec![row(1, "text", Some("assistant"), None, "old")];
+        assert!(since(&rows, 1).is_empty());
+        assert!(since(&[], 0).is_empty());
+        // A silent turn still gets a sentence rather than an empty message.
+        assert!(!final_reply(&since(&rows, 1)).is_empty());
     }
 
     /// The user's own words must never be echoed back as the answer.
