@@ -43,6 +43,18 @@ pub use cli::{Candidate, Completer, Completion, Detail, LineKind, SharedComplete
 /// See `docs/notes/tui-paste.md`.
 const PASTE_GAP: Duration = Duration::from_millis(10);
 
+/// How soon after a machine-fast run an `Enter` still belongs to that paste.
+///
+/// # Invariant
+///
+/// A run of [`MACHINE_RUN`] text keys inside [`PASTE_GAP`] is delivery, not a
+/// keyboard, so the break that follows it is the paste's, not a submit.
+/// See `docs/notes/tui-paste.md`.
+const GLUE_GAP: Duration = Duration::from_millis(150);
+
+/// Text keys inside one [`PASTE_GAP`] that a keyboard cannot produce.
+const MACHINE_RUN: usize = 3;
+
 /// What Alt+<key> does to the terminal itself, rather than to the conversation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConsoleAction {
@@ -100,6 +112,8 @@ pub struct Tui {
     dirty: bool,
     /// Keys seen so far that may be one paste. See `docs/notes/tui-paste.md`.
     pending: Vec<KeyEvent>,
+    /// When the last run ended, and how many text keys it carried.
+    settled: Option<(std::time::Instant, usize)>,
     /// An event read while deciding whether a keystroke began a paste.
     stashed: Option<std::io::Result<TermEvent>>,
 }
@@ -139,6 +153,7 @@ impl Tui {
             // The first frame has to happen even though nothing has changed.
             dirty: true,
             pending: Vec::new(),
+            settled: None,
             stashed: None,
         })
     }
@@ -281,12 +296,32 @@ impl Tui {
     /// nothing changed for, so a missed flag is a keypress that looks ignored.
     fn flush(&mut self) -> Option<UiEvent> {
         let keys = std::mem::take(&mut self.pending);
+        // A break right after a machine-fast run is that paste's own newline.
+        let run = self
+            .settled
+            .filter(|(at, _)| at.elapsed() <= GLUE_GAP)
+            .map(|(_, chars)| chars);
         let action = match pasted(&keys) {
             Some(text) => {
                 self.paste(&text);
+                self.settled = None;
                 None
             }
-            None => keys.into_iter().find_map(|key| self.handle_key(key)),
+            None if glue_break(&keys, run) => {
+                self.paste("\n");
+                // The paste may continue after this break, so the run stays open.
+                self.settled = Some((std::time::Instant::now(), MACHINE_RUN));
+                None
+            }
+            None => {
+                let run = keys.iter().filter(|k| k.code != KeyCode::Enter).count();
+                if run >= MACHINE_RUN {
+                    self.settled = Some((std::time::Instant::now(), run));
+                } else {
+                    self.settled = None;
+                }
+                keys.into_iter().find_map(|key| self.handle_key(key))
+            }
         };
         self.dirty = true;
         action
@@ -673,7 +708,14 @@ impl Completer for NoCompleter {
     }
 }
 
-/// The text a run of keys spells, when the run is a paste rather than typing.
+/// Whether this run is one bare `Enter` that a recent paste delivered.
+fn glue_break(keys: &[KeyEvent], pasted_run: Option<usize>) -> bool {
+    pasted_run.is_some_and(|chars| chars >= MACHINE_RUN)
+        && keys.len() == 1
+        && keys[0].code == KeyCode::Enter
+        && keys[0].modifiers.is_empty()
+}
+
 fn pasted(keys: &[KeyEvent]) -> Option<String> {
     // A lone key is what a keyboard sends; a paste is a break among other keys.
     if keys.len() < 2 || !keys.iter().any(|k| k.code == KeyCode::Enter) {
@@ -964,6 +1006,27 @@ mod tests {
         )));
         assert!(!Tui::paste_key(&key(KeyCode::Esc, KeyModifiers::NONE)));
         assert!(!Tui::paste_key(&key(KeyCode::Up, KeyModifiers::NONE)));
+    }
+
+    /// The reported failure: a pasted block whose breaks each arrive alone.
+    #[test]
+    fn a_break_after_a_machine_run_is_part_of_the_paste() {
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+
+        // Three keys inside one window is delivery; the break belongs to it.
+        assert!(glue_break(&[enter], Some(MACHINE_RUN)));
+        assert!(glue_break(&[enter], Some(40)));
+
+        // A human's Enter follows one or two keys, or arrives late.
+        assert!(!glue_break(&[enter], None));
+        assert!(!glue_break(&[enter], Some(MACHINE_RUN - 1)));
+
+        // Only a bare Enter: the modified ones already break the line by hand.
+        let shift = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
+        assert!(!glue_break(&[shift], Some(40)));
+        // And only a lone one: a run carrying Enter is already handled by `pasted`.
+        let more = [enter, KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)];
+        assert!(!glue_break(&more, Some(40)));
     }
 
     /// Windows reports a paste key by key, so it only shows as no pause.

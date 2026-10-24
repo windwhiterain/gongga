@@ -59,6 +59,28 @@ reading the syntax of `flush` rather than by driving a terminal: this is exactly
 the class of bug a headless test cannot see, and the one that must not come back
 silently.
 
+## The break that arrives alone
+
+Reported in use: pasting a five-line block sent five messages, one per line.
+The transcript showed five `user` rows inside the same second, each equal to one
+line of the block -- so every break had been taken for a submit.
+
+A terminal that pauses at each break delivers `line`, `Enter`, `line` as three
+runs, not one: the run of line characters closes on the timeout, and the `Enter`
+then arrives as a run of exactly one key, which is what a break typed by hand
+looks like. Widening `PASTE_GAP` alone would not be safe -- it is also what
+decides whether a human's fast typing is taken for a paste.
+
+What separates the two is not the gap but **who could have produced the run**:
+`MACHINE_RUN` (3) text keys inside `PASTE_GAP` (10 ms) is faster than a keyboard
+and slower than nothing. So a bare `Enter` arriving within `GLUE_GAP` (150 ms) of
+such a run is that paste's own break, and becomes `'\n'` in the prompt instead of
+a submit.
+
+The residual risk is a human who rolls three keys together and then hits Enter
+within 150 ms. It costs them one extra Enter, and it is the safe direction: the
+alternative is one message per pasted line.
+
 ## What the run holds back
 
 Whatever ended a run is returned as `Tui::stashed` and read at the top of the
@@ -77,7 +99,9 @@ what arrives is the text, which is why the run is all it takes. A terminal that
 both sends markers *and* has no paste parser would put `[200~` in the prompt; no
 such case has been observed, so guessing at a stripper would be guessing.
 
-Verified by unit tests on both halves (`only_text_joins_a_run` for what joins a
+A paste delivered in one- or two-key runs with pauses between them is still
+indistinguishable from typing; nothing here can fix that, because the terminal
+sends no marker. Verified by unit tests on both halves (`only_text_joins_a_run` for what joins a
 run, `a_key_run_with_a_break_in_it_is_a_paste` for what a run means) and by the
 existing `a_paste_is_inserted_not_submitted` for the insertion path. A real paste
 into a real terminal is the open check: a ConPTY driver was attempted and hung
