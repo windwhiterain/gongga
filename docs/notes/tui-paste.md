@@ -45,6 +45,20 @@ So `pending` is a field: a cancelled wait resumes the run next round with the
 keys it already had. The event read itself is cancel-safe (`EventStream::next` is
 a channel receive), so nothing is lost either way.
 
+## The repaint flag
+
+The first version of this lost `self.dirty = true`, which used to live in the
+key branch of `next_event`. A held key is only turned into an edit inside
+`flush`, so without the flag nothing marked the frame dirty -- and `draw` skips a
+frame nothing changed for. The characters were in the input line the whole time;
+the screen simply never showed them, which reads as "the keyboard stopped
+working" rather than as a rendering bug.
+
+`flush` now sets it unconditionally, and the `repaint` module holds that line by
+reading the syntax of `flush` rather than by driving a terminal: this is exactly
+the class of bug a headless test cannot see, and the one that must not come back
+silently.
+
 ## What the run holds back
 
 Whatever ended a run is returned as `Tui::stashed` and read at the top of the

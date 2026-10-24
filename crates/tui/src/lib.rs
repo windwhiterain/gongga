@@ -268,15 +268,22 @@ impl Tui {
     }
 
     /// Ends a run: a paste is inserted, typing is replayed key by key.
+    ///
+    /// # Invariant
+    ///
+    /// A run that changed the prompt marks the frame dirty. `draw` skips a frame
+    /// nothing changed for, so a missed flag is a keypress that looks ignored.
     fn flush(&mut self) -> Option<UiEvent> {
         let keys = std::mem::take(&mut self.pending);
-        match pasted(&keys) {
+        let action = match pasted(&keys) {
             Some(text) => {
                 self.paste(&text);
                 None
             }
             None => keys.into_iter().find_map(|key| self.handle_key(key)),
-        }
+        };
+        self.dirty = true;
+        action
     }
 
     /// The one key that is not editing: leaving, on Alt+Q. See `docs/notes/tui-lib.md`.
@@ -676,6 +683,28 @@ fn pasted(keys: &[KeyEvent]) -> Option<String> {
         }
     }
     Some(text)
+}
+
+#[cfg(test)]
+mod repaint {
+    /// A key that reaches the prompt has to repaint the frame.
+    ///
+    /// # Invariant
+    ///
+    /// `flush` is the only way a held key becomes an edit, and `draw` skips a
+    /// frame nothing changed for. Without this flag every keypress looks
+    /// ignored -- invisible to a headless test, which is why it is read here.
+    #[test]
+    fn a_flushed_run_marks_the_frame_dirty() {
+        let source = include_str!("lib.rs");
+        // Up to the closing brace: this file is CRLF, so `\n    }` is the split.
+        let body = source
+            .split_once("fn flush(&mut self)")
+            .and_then(|(_, rest)| rest.split_once("\n    }"))
+            .map(|(body, _)| body)
+            .expect("flush is where a held key becomes an edit");
+        assert!(body.contains("self.dirty = true"), "{body}");
+    }
 }
 
 #[cfg(test)]
