@@ -414,9 +414,13 @@ mod tests {
             "{all:?}"
         );
 
-        // `line`: the same block is one row, with the tail on it.
+        // `line`: the same block is one row, showing its start.
         let line = frame(Detail::Line);
-        assert!(line[0].starts_with("[main] thinking: …"), "{line:?}");
+        assert!(
+            line[0].starts_with("[main] thinking: abcdefghij"),
+            "{line:?}"
+        );
+        assert!(line[0].ends_with('…'), "{line:?}");
         assert!(!line[1].is_empty(), "the tool row follows at once");
 
         // `one`: the session's row is rewritten by the tool call, so the thinking

@@ -19,11 +19,9 @@ const FOLD_KEEP: usize = 4096;
 fn folds(detail: Detail, kind: LineKind) -> bool {
     match detail {
         Detail::All => false,
-        Detail::Line => matches!(kind, LineKind::Reasoning | LineKind::ToolCall),
-        Detail::One => !matches!(
-            kind,
-            LineKind::Assistant | LineKind::ToolOutput | LineKind::ToolError
-        ),
+        // "Output message" is the answer; everything else is progress, including
+        // a tool's own output.
+        Detail::Line | Detail::One => kind != LineKind::Assistant,
     }
 }
 
@@ -45,12 +43,12 @@ struct Entry {
     sealed: bool,
     /// Drawn as one row, whatever its length. See `docs/notes/tui-log.md`.
     folded: bool,
-    /// The label a folded row always shows. Kept out of `text` so clipping the
-    /// tail cannot cut it.
+    /// The label a folded row always shows, kept out of `text` so cutting cannot
+    /// take it.
     tag: String,
-    /// Byte offset of the first character of `text` a folded row shows.
-    view_start: usize,
-    /// Text was dropped from the front, so the row begins mid-sentence.
+    /// Where a folded row's visible part ends; `None` if all of it fits.
+    view_end: Option<usize>,
+    /// More text arrived than the buffer keeps.
     truncated: bool,
 }
 
@@ -64,7 +62,7 @@ impl Entry {
             sealed: false,
             folded: false,
             tag: String::new(),
-            view_start: 0,
+            view_end: None,
             truncated: false,
         };
         // Width 0 means "not measured yet": the first draw reflows at its own width.
@@ -84,7 +82,7 @@ impl Entry {
             sealed: false,
             folded: true,
             tag: tag.to_string(),
-            view_start: 0,
+            view_end: None,
             truncated: false,
         }
     }
@@ -110,36 +108,35 @@ impl Entry {
         *col = wrap.col;
     }
 
-    /// The one row a folded block shows: the tail of the text that fits.
+    /// The one row a folded block shows: as much of the *head* as fits.
     ///
     /// # Invariant
     ///
-    /// Exactly one row, and the tag survives: the label is what tells a reader
-    /// whose line this is, so the cut always comes from the front.
+    /// Streaming never moves the visible start. A row that kept the tail instead
+    /// would slide as text arrived, which reads as scrolling, not writing.
     fn reflow_folded(&mut self, width: usize) {
         let avail = width.saturating_sub(self.tag.width());
         self.starts.clear();
         self.starts.push(0);
-        // The whole body fits, and nothing was dropped: show it as it is.
-        if !self.truncated && self.text.width() <= avail {
-            self.view_start = 0;
-            self.col = self.text.width();
-            return;
-        }
-        // One column short of the body, so the ellipsis itself still fits.
-        let room = avail.saturating_sub(1).max(1);
+        // One column for the ellipsis whenever the text does not fit whole.
+        let whole = self.text.width() <= avail;
+        let room = if whole {
+            avail
+        } else {
+            avail.saturating_sub(1)
+        };
         let mut used = 0;
-        let mut start = self.text.len();
-        for (i, ch) in self.text.char_indices().rev() {
+        let mut kept = self.text.len();
+        for (i, ch) in self.text.char_indices() {
             let w = ch.width().unwrap_or(0).max(1);
             if used + w > room {
+                kept = i;
                 break;
             }
             used += w;
-            start = i;
         }
-        self.view_start = start;
-        self.col = used;
+        self.view_end = (kept < self.text.len()).then_some(kept);
+        self.col = used.min(room);
     }
 
     /// Starts a folded block over under a new tag, keeping the row it already has.
@@ -147,7 +144,7 @@ impl Entry {
         self.tag.clear();
         self.tag.push_str(tag);
         self.text.clear();
-        self.view_start = 0;
+        self.view_end = None;
         self.truncated = false;
     }
 
@@ -158,13 +155,13 @@ impl Entry {
             self.text
                 .push(if ch == '\n' || ch == '\r' { ' ' } else { ch });
         }
-        let overflow = self.text.len().saturating_sub(FOLD_KEEP);
-        if overflow > 0 {
-            let mut cut = overflow;
-            while cut < self.text.len() && !self.text.is_char_boundary(cut) {
-                cut += 1;
+        // Keep the head: it is what a row shows, so the rest is not worth holding.
+        if self.text.len() > FOLD_KEEP {
+            let mut cut = FOLD_KEEP;
+            while cut > 0 && !self.text.is_char_boundary(cut) {
+                cut -= 1;
             }
-            self.text.replace_range(..cut, "");
+            self.text.truncate(cut);
             self.truncated = true;
         }
         if width > 0 {
@@ -197,11 +194,10 @@ impl Entry {
     /// it, so a trailing newline yields a final empty row. See
     /// `docs/notes/tui-log.md`.
     fn row(&self, row: usize) -> &str {
-        let start = if self.folded {
-            self.view_start
-        } else {
-            self.starts[row]
-        };
+        if self.folded {
+            return &self.text[..self.view_end.unwrap_or(self.text.len())];
+        }
+        let start = self.starts[row];
         let end = self.starts.get(row + 1).copied().unwrap_or(self.text.len());
         let text = &self.text[start..end];
         text.strip_suffix('\n').unwrap_or(text)
@@ -215,12 +211,13 @@ impl Entry {
         if !self.folded {
             return Cow::Borrowed(self.row(row));
         }
-        let cut = if self.view_start > 0 || self.truncated {
+        // The row shows the head, so what was left out is always on the right.
+        let cut = if self.view_end.is_some() || self.truncated {
             "…"
         } else {
             ""
         };
-        Cow::Owned(format!("{}{cut}{}", self.tag, self.row(row)))
+        Cow::Owned(format!("{}{}{cut}", self.tag, self.row(row)))
     }
 }
 
@@ -708,7 +705,8 @@ mod tests {
         assert_eq!(rows.len(), 1, "{rows:?}");
         assert_eq!(rows[0], "[main] thinking: first second third");
 
-        // Long text keeps the tail, so the newest words are what is on screen.
+        // Long text keeps its head, so the row never moves as it streams.
+        let before = rows;
         for _ in 0..10 {
             log.stream(
                 "r:main:1:Reasoning",
@@ -720,8 +718,8 @@ mod tests {
         }
         let rows = shown(&mut log, 40, 10, 0);
         assert_eq!(rows.len(), 1, "{rows:?}");
-        assert!(rows[0].starts_with("[main] thinking: …"), "{rows:?}");
-        assert!(rows[0].ends_with("and more"), "{rows:?}");
+        assert!(rows[0].starts_with(&before[0]), "{rows:?} vs {before:?}");
+        assert!(rows[0].ends_with('…'), "{rows:?}");
     }
 
     /// The label survives the cut: it is what says whose line this is.
@@ -741,9 +739,43 @@ mod tests {
         assert!(rows[0].starts_with("[peer] thinking: "), "{rows:?}");
     }
 
+    /// The reported symptom: text arriving must not move what is already shown.
+    #[test]
+    fn streaming_a_folded_row_never_moves_its_start() {
+        let mut log = Log::new();
+        log.set_detail(Detail::Line);
+        let mut seen = String::new();
+        for chunk in ["alpha ", "beta ", "gamma ", "delta ", "epsilon ", "zeta"] {
+            log.stream("k", LineKind::Reasoning, "[m] ", chunk, false);
+            let row = shown(&mut log, 20, 5, 0).remove(0);
+            // Whatever the width cut, the beginning is the beginning.
+            assert!(row.starts_with("[m] alpha"), "{row}");
+            if !seen.is_empty() {
+                assert!(
+                    row.starts_with(seen.trim_end_matches('…')),
+                    "the row moved: {seen} -> {row}"
+                );
+            }
+            seen = row;
+        }
+    }
+
+    /// The reported gap: a tool's own output folds too, in both folding modes.
+    #[test]
+    fn a_tool_output_folds_like_any_other_progress() {
+        for mode in [Detail::Line, Detail::One] {
+            let mut log = Log::new();
+            log.set_detail(mode);
+            log.stream("t:c1:Stdout", LineKind::ToolOutput, "[m] ", "a\nb\nc", true);
+            let rows = shown(&mut log, 40, 10, 0);
+            assert_eq!(rows.len(), 1, "{mode:?}: {rows:?}");
+            assert_eq!(rows[0], "[m] a b c", "{mode:?}");
+        }
+    }
+
     /// `line` folds progress, not content: the answer keeps its own rows.
     #[test]
-    fn line_leaves_content_alone() {
+    fn line_leaves_the_answer_alone() {
         let mut log = Log::new();
         log.set_detail(Detail::Line);
         log.stream("o", LineKind::Assistant, "[main] ", "one\ntwo\nthree", true);
