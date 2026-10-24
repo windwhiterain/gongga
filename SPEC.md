@@ -86,4 +86,13 @@ self-declaration, and the verdict carries no information.
   wants -- a command and its output, a path, a diff -- and rules on whether that evidence
   answers the question. A report that says "done, tests pass" without it is sent back,
   not ruled on. Demanding evidence is not gathering it.
+- the justice never polls for a report. It dispatches, ends its turn, and is woken by the
+  pm's message. A wait loop in the justice's session is a design error, not a technique:
+  the turn boundary already is the wait, and polling for it burns processes and per-session
+  state to learn something the wake would have told it.
+- so the wake must be wired: the court records which session the justice is, and waking it
+  takes no name the pm has to guess. A command taught in a charter that cannot run as
+  written is a bug in the instrument, not a mistake by whoever copied it.
+- the pm may wait on its own workers, since that is work it owns; what it waits with must
+  not write the user's per-session client state.
 - a clause no ruling can rest on -- "keep it clean", "be careful" -- is not a clause.
