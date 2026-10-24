@@ -25,6 +25,16 @@ told to paint. Re-exported so `crate::LineKind` and friends keep reading the
 same from inside this crate -- the renderer and the log never have to know where
 the words came from.
 
+## Tui::new — the clear
+
+`EnterAlternateScreen` switches to the alternate screen; it does not empty it. On
+a terminal that keeps those contents, a process killed rather than quitted leaves
+its last frame there, and the first `draw` will not paint over it: ratatui diffs
+against its own empty buffer, so a cell holding a space is never written.
+
+Hence the explicit `terminal.clear()` before the first frame. It is one sequence
+on every start, and the only thing that makes a start look like a start.
+
 ## UiEvent
 
 There is deliberately no "cancel" here. Stopping work is a command like any
