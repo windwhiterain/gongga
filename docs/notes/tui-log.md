@@ -164,21 +164,26 @@ block occupies is a question about drawing, so it is answered here. Neither laye
 has to know the other's half of the rule, and a front-end that renders events
 some other way can ignore `Sink::detail` entirely (its default is a no-op).
 
-Content is never folded: `Assistant`, `ToolOutput` and `ToolError` are what the
-operator came for. Everything else is progress.
+Only the answer keeps its text. Everything else folds, including a tool's own
+output: the first version left `ToolOutput` unfolded in `line` mode, and in use
+that was the row that stayed three screens tall between two folded ones. SPEC's
+"non-output message block" means the assistant's output, not a tool's.
 
 ## Entry::reflow_folded
 
-One row, always. The tag is kept out of `text` for exactly this reason: the cut
-has to come from the front, and clipping a composed string would take the label
-with it.
+One row, always, showing the **head** of the text and an ellipsis where it was
+cut. Showing the tail instead was the first version and it was wrong in use: as
+text streamed the visible window slid, so a row being written read as a row
+scrolling. Keeping the start fixed is what makes it read as one line filling up.
+
+The tag is kept out of `text` so the cut cannot take the label with it.
 
 ## Entry::append_folded
 
 A break inside a folded block becomes a space, because the row it lands on is
-the only row there is. The buffer keeps its last `FOLD_KEEP` bytes: a row shows
-the tail, so the front is the part that can go, and a thinking block that runs
-for an hour cannot grow the log without bound.
+the only row there is. The buffer keeps its first `FOLD_KEEP` bytes -- the head is
+what a row shows -- so a thinking block that runs for an hour cannot grow the log
+without bound, and what it drops is what was already off the right edge.
 
 ## Log::stream — a folded block in `one` mode
 
