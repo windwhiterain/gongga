@@ -12,6 +12,7 @@ mod render;
 pub mod run;
 
 use std::io::{Stdout, stdout};
+use std::time::Duration;
 
 use anyhow::Context;
 use crossterm::event::{
@@ -33,6 +34,14 @@ pub use crate::run::interactive;
 
 // The vocabulary is the command layer's, re-exported so this crate can name it.
 pub use cli::{Candidate, Completer, Completion, LineKind, SharedCompleter, token_bounds};
+
+/// How long a keystroke waits to see whether the next one is part of a paste.
+///
+/// # Invariant
+///
+/// The wait only ever joins keys, never sends: one `Enter` alone still submits.
+/// See `docs/notes/tui-paste.md`.
+const PASTE_GAP: Duration = Duration::from_millis(10);
 
 /// What Alt+<key> does to the terminal itself, rather than to the conversation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,6 +98,10 @@ pub struct Tui {
     restored: bool,
     /// Whether anything changed since the last frame. Every mutation sets it.
     dirty: bool,
+    /// Keys seen so far that may be one paste. See `docs/notes/tui-paste.md`.
+    pending: Vec<KeyEvent>,
+    /// An event read while deciding whether a keystroke began a paste.
+    stashed: Option<std::io::Result<TermEvent>>,
 }
 
 impl Tui {
@@ -125,6 +138,8 @@ impl Tui {
             restored: false,
             // The first frame has to happen even though nothing has changed.
             dirty: true,
+            pending: Vec::new(),
+            stashed: None,
         })
     }
 
@@ -190,7 +205,32 @@ impl Tui {
             if self.draw().is_err() {
                 return None;
             }
-            let next = self.events.next().await?;
+            // A run in progress is finished first: it lives in `self`, so a
+            // cancelled wait resumes it instead of losing the keys.
+            if !self.pending.is_empty() {
+                match tokio::time::timeout(PASTE_GAP, self.events.next()).await {
+                    // Quiet: the run is over.
+                    Err(_) => {}
+                    Ok(None) => return self.flush(),
+                    Ok(Some(Err(e))) => self.stashed = Some(Err(e)),
+                    Ok(Some(Ok(TermEvent::Key(key))))
+                        if Self::actionable(&key) && Self::paste_key(&key) =>
+                    {
+                        self.pending.push(key);
+                        continue;
+                    }
+                    // Anything else is not part of a paste, and is kept for later.
+                    Ok(Some(Ok(other))) => self.stashed = Some(Ok(other)),
+                }
+                if let Some(action) = self.flush() {
+                    return Some(action);
+                }
+                continue;
+            }
+            let next = match self.stashed.take() {
+                Some(held) => held,
+                None => self.events.next().await?,
+            };
             // Every event kind is handled; a resize only needs the redraw it asks for.
             match next {
                 Ok(TermEvent::Key(key)) => {
@@ -198,10 +238,8 @@ impl Tui {
                     if !Self::actionable(&key) {
                         continue;
                     }
-                    if let Some(action) = self.handle_key(key) {
-                        return Some(action);
-                    }
-                    self.dirty = true;
+                    // Held until the pause that says whether this was a paste.
+                    self.pending.push(key);
                 }
                 Ok(TermEvent::Mouse(mouse)) => self.handle_mouse(mouse),
                 // One string, so a pasted block stays a block: see `paste`.
@@ -215,6 +253,30 @@ impl Tui {
     /// Whether a key event drives the UI: presses and repeats, never releases.
     fn actionable(key: &KeyEvent) -> bool {
         !matches!(key.kind, KeyEventKind::Release)
+    }
+
+    /// Whether a key is one a paste arrives as, when the terminal cannot say so.
+    fn paste_key(key: &KeyEvent) -> bool {
+        let typing = !key
+            .modifiers
+            .intersects(KeyModifiers::ALT | KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char(_) => typing,
+            KeyCode::Enter => key.modifiers.is_empty(),
+            _ => false,
+        }
+    }
+
+    /// Ends a run: a paste is inserted, typing is replayed key by key.
+    fn flush(&mut self) -> Option<UiEvent> {
+        let keys = std::mem::take(&mut self.pending);
+        match pasted(&keys) {
+            Some(text) => {
+                self.paste(&text);
+                None
+            }
+            None => keys.into_iter().find_map(|key| self.handle_key(key)),
+        }
     }
 
     /// The one key that is not editing: leaving, on Alt+Q. See `docs/notes/tui-lib.md`.
@@ -598,6 +660,24 @@ impl Completer for NoCompleter {
     }
 }
 
+/// The text a run of keys spells, when the run is a paste rather than typing.
+fn pasted(keys: &[KeyEvent]) -> Option<String> {
+    // A lone key is what a keyboard sends; a paste is a break among other keys.
+    if keys.len() < 2 || !keys.iter().any(|k| k.code == KeyCode::Enter) {
+        return None;
+    }
+    let mut text = String::new();
+    for key in keys {
+        match key.code {
+            KeyCode::Enter if key.modifiers.is_empty() => text.push('\n'),
+            KeyCode::Char(c) => text.push(c),
+            // Anything else means this was not one pasted block after all.
+            _ => return None,
+        }
+    }
+    Some(text)
+}
+
 #[cfg(test)]
 mod terminal_modes {
     /// Guards the enable/disable pair nothing else would notice losing.
@@ -827,6 +907,50 @@ mod tests {
         let mut h = Headless::new();
         h.paste("a\r\nb\rc");
         assert_eq!(h.screen.input.text(), "a\nb\nc");
+    }
+
+    /// What joins a run and what ends it: typing and breaks join, bindings do not.
+    #[test]
+    fn only_text_joins_a_run() {
+        let key = |code, modifiers| KeyEvent::new(code, modifiers);
+        assert!(Tui::paste_key(&key(KeyCode::Char('a'), KeyModifiers::NONE)));
+        // Shift is part of the character, not a binding.
+        assert!(Tui::paste_key(&key(
+            KeyCode::Char('A'),
+            KeyModifiers::SHIFT
+        )));
+        assert!(Tui::paste_key(&key(KeyCode::Enter, KeyModifiers::NONE)));
+
+        assert!(!Tui::paste_key(&key(KeyCode::Enter, KeyModifiers::SHIFT)));
+        assert!(!Tui::paste_key(&key(KeyCode::Char('k'), KeyModifiers::ALT)));
+        assert!(!Tui::paste_key(&key(
+            KeyCode::Char('a'),
+            KeyModifiers::CONTROL
+        )));
+        assert!(!Tui::paste_key(&key(KeyCode::Esc, KeyModifiers::NONE)));
+        assert!(!Tui::paste_key(&key(KeyCode::Up, KeyModifiers::NONE)));
+    }
+
+    /// Windows reports a paste key by key, so it only shows as no pause.
+    #[test]
+    fn a_key_run_with_a_break_in_it_is_a_paste() {
+        let ch = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+
+        assert_eq!(
+            pasted(&[ch('a'), ch('b'), enter, ch('c')]),
+            Some("ab\nc".to_string())
+        );
+        // One key is what a keyboard sends, break or not.
+        assert_eq!(pasted(&[enter]), None);
+        assert_eq!(pasted(&[ch('a')]), None);
+        // No break, no send at stake: this is ordinary fast typing.
+        assert_eq!(pasted(&[ch('a'), ch('b')]), None);
+        // Shift+Enter breaks a line by hand; it is never part of a paste.
+        assert_eq!(
+            pasted(&[ch('a'), KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)]),
+            None
+        );
     }
 
     /// The console keys are not editing keys: Alt+Y and Alt+M are recognised,
