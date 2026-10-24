@@ -13,8 +13,9 @@ Status: done, verified on Windows（隔离 home + 文件库 + 真 UDP 往返）,
 
 ## 改了什么
 
-- 删掉 `--after_seq` 和 `--limit`。只剩 `--seq a:b`；不给就是 `-50:`（这是**默认区间**，
-  不是上限——要更多永远可以写出来）。index 越界一律不拒绝：要得比有的多就是行数少。
+- 删掉 `--after_seq` 和 `--limit`。只剩 `--seq a:b`，且按 SPEC（你已改成不带方括号）**必填**。
+  我先前给了默认 `-50:`，与 SPEC 不符，已去掉——默认区间也是一种替调用方拿主意。
+  index 越界一律不拒绝：要得比有的多就是行数少。
 - 删掉 500 行拒绝。唯一的上限是通道事实：单条消息 8 MiB。
 - **修了一个真缺陷**：超限消息原来在 channel 的写端被 `tracing::warn!("dropping oversized
   message")` 静默丢弃，而 `sink.send()` 早已返回 Ok。调用方永远等一个不会来的回执。
@@ -43,19 +44,19 @@ text 属于上一轮**，会被当成这轮的回答重发。
 ## 验证
 
 - 单测：`rows_before_the_cursor_are_dropped`、`a_silent_turn_does_not_repeat_the_earlier_answer`、
-  `a_cursor_at_the_tail_leaves_nothing_owed`、`the_default_range_is_the_tail`、
-  `get_messages_names_rows_one_way`（断言 `after_seq`/`limit` 确实不在目录里）。
+  `a_cursor_at_the_tail_leaves_nothing_owed`、`get_messages_names_rows_one_way`
+  （断言 `after_seq`/`limit` 不在目录里，且 `seq` 必填）。
   `cargo test --workspace` 20+55+13+5+144+51 全过。
 - 真 UDP 往返（隔离 home，端口 9791，文件库，按 pid 起停）：
   - 700 行 / 7.92 MiB：成功（旧实现会在 500 行拒绝）。
   - 800 行 / 9.5 MiB：**2 秒内**返回上面那句 cmd_result，连接不断。
-  - `-600:` 成功（600 行，超过旧上限）；不给 `--seq` = 最新 50 行；
-    `-1` = 最新一行；`9999:` = 空窗口并回显真实末尾。
+  - `-600:` 成功（600 行，超过旧上限）；`-1` = 最新一行；
+    `9999:` = 空窗口并回显真实末尾；不给 `--seq` 被拒为缺必填参数。
 - fmt / comments-check / test-layout-check 全过；clippy 只剩 HEAD 上既有的 3 条 server 警告。
 
 ## 留给用户的
 
-- SPEC 第 53 行仍是 `[--after_seq <n>] [--limit <n>]`，按 `AGENTS.md` 未改。
-  `--after_seq` 已不接受（传了会被目录拒为未知参数），所以这句话现在是错的。
+- SPEC 第 53 行已由你改成 `get_messages --session <name> --seq <a:b>`，与实现一致
+  （不带方括号 = 必填，实现也改成必填）。
 - 没做的事：`--seq` 没有绝对 turn/step 列可依，`-2` 这类相对下标仍是坏游标
   （稳定游标靠 `--seq (n+1):`）。

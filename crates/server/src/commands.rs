@@ -22,10 +22,6 @@ const SHUTDOWN_NOTICE: Duration = Duration::from_millis(250);
 /// How long a `turn` row must sit unclaimed before the waker takes it.
 const NUDGE_GRACE_SECS: u64 = 5;
 
-/// The range `get_messages` reads when the caller names none. A default range,
-/// not a cap: naming more is always allowed.
-const DEFAULT_SEQ: &str = "-50:";
-
 pub struct Dispatch {
     pub agent: Arc<Agent>,
     pub sessions: SessionManager,
@@ -223,9 +219,8 @@ pub fn catalog() -> Vec<CommandSpec> {
                     "seq",
                     "Which rows, as a range of sequence numbers: `-1` the newest row, `-5:` the \
                      newest five, `5:10` rows 5 through 10, `:10` the first ten, `5:` from 5 on. \
-                     Both ends inclusive; a range past the end is just the rows that exist. \
-                     Defaults to `-50:`.",
-                    false,
+                     Both ends inclusive; a range past the end is just the rows that exist.",
+                    true,
                     Some("slice"),
                     CompletionSource::None,
                 ),
@@ -565,7 +560,7 @@ async fn get_messages(d: &Dispatch, args: &Args) -> Outcome {
         Ok(v) => v,
         Err(e) => return Outcome::err(e.to_string()),
     };
-    let raw = args.get("seq").map(String::as_str).unwrap_or(DEFAULT_SEQ);
+    let raw = args["seq"].as_str();
     let window = match parse_seq_slice(raw, last_seq) {
         Ok(w) => w,
         Err(e) => return Outcome::err(e),
@@ -1195,7 +1190,7 @@ mod tests {
         assert!(matches!(session.completions, CompletionSource::Sessions));
 
         let seq = spec.args.iter().find(|a| a.name == "seq").unwrap();
-        assert!(!seq.required, "omitting it reads the default range");
+        assert!(seq.required, "SPEC names the range, so it is not optional");
         // The cursor form is gone: it was this range plus a truncation policy.
         assert!(
             !spec.args.iter().any(|a| a.name == "after_seq"),
@@ -1204,22 +1199,6 @@ mod tests {
         assert!(
             !spec.args.iter().any(|a| a.name == "limit"),
             "a row cap is the caller's business, not this command's"
-        );
-    }
-
-    /// The default range is the tail, expressed in the only grammar there is.
-    #[test]
-    fn the_default_range_is_the_tail() {
-        assert_eq!(
-            parse_seq_slice(DEFAULT_SEQ, 10),
-            Ok(SeqWindow { first: 1, last: 10 })
-        );
-        assert_eq!(
-            parse_seq_slice(DEFAULT_SEQ, 500),
-            Ok(SeqWindow {
-                first: 451,
-                last: 500
-            })
         );
     }
 }

@@ -153,8 +153,8 @@ A caller with a cursor (the IM bridge) asks for a tail window and drops the rows
 it already answered with its own `since`; that judgement belongs where the
 cursor is. A caller reading a part of the transcript asks for exactly that part.
 
-The default is `-50:`, which is a *default range*, not a cap: naming more rows
-is always allowed. There is no row limit any more.
+The range is required, as SPEC spells it: a caller always says which rows it
+wants. There is no row limit any more, and no default to guess at.
 
 The syntax is Python's, with two differences that are deliberate:
 
@@ -332,11 +332,6 @@ minimum would overflow in debug without saturating.
 
 One spelling, not two. A cursor and a range are rival answers to "which rows",
 and the one a caller learns first is the one it will keep using.
-
-## the_default_range_is_the_tail
-
-A default range, not a cap: `-50:` means "the newest 50 unless you say
-otherwise", and saying otherwise is always allowed.
 
 ## get_messages_pages_by_seq
 
