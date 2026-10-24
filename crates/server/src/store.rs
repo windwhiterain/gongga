@@ -922,20 +922,7 @@ fn images_of(value: &serde_json::Value) -> Vec<ImageRef> {
     value
         .get("images")
         .and_then(|v| v.as_array())
-        .map(|list| {
-            list.iter()
-                .filter_map(|i| {
-                    Some(ImageRef {
-                        path: i.get("path")?.as_str()?.to_string(),
-                        media_type: i
-                            .get("media_type")
-                            .and_then(|m| m.as_str())
-                            .unwrap_or("application/octet-stream")
-                            .to_string(),
-                    })
-                })
-                .collect()
-        })
+        .map(|list| list.iter().filter_map(ImageRef::from_json).collect())
         .unwrap_or_default()
 }
 
@@ -1034,14 +1021,8 @@ pub enum HistoryItem {
     },
 }
 
-/// One picture a tool produced, referenced by path rather than carried inline.
-///
-/// See `docs/notes/server-store.md`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ImageRef {
-    pub path: String,
-    pub media_type: String,
-}
+// One shape for every reader: the scan, the store and the request all agree.
+pub use crate::image::ImageRef;
 
 pub fn status_name(status: SessionStatus) -> &'static str {
     match status {
@@ -1135,13 +1116,7 @@ mod tests {
         match &history[0] {
             HistoryItem::ToolResult { output, images, .. } => {
                 assert_eq!(output, "looked at it");
-                assert_eq!(
-                    images,
-                    &vec![ImageRef {
-                        path: "C:/w/shot.png".into(),
-                        media_type: "image/png".into()
-                    }]
-                );
+                assert_eq!(images, &vec![ImageRef::new("C:/w/shot.png", "image/png")]);
             }
             other => panic!("unexpected {other:?}"),
         }

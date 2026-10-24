@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# The same reason as `compact/transcript`: `python3` on Windows can be the Store
+# stub, which exits 49 and prints an advert.
+set -uo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+for candidate in python3 python py; do
+  if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys' >/dev/null 2>&1; then
+    exec "$candidate" "$here/show.py" "$@"
+  fi
+done
+echo "no Python found (tried python3, python, py)" >&2
+exit 1

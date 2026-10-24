@@ -660,6 +660,11 @@ fn wakeable(task: &PendingTask, now: i64, grace: std::time::Duration) -> bool {
 }
 
 pub fn nudge_inboxes(d: &Dispatch) -> usize {
+    // Nothing starts after shutdown: picking up the row `cancel` kept would
+    // hold `active` up forever.
+    if d.shutdown.is_cancelled() {
+        return 0;
+    }
     let Ok(tasks) = d.store.pending_tasks() else {
         return 0;
     };

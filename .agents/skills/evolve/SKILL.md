@@ -10,7 +10,8 @@ description: 替换掉正在跑自己的那个服务端——改完 server 代�
 ```bash
 S=.agents/skills/evolve/evolve.sh
 
-$S stage              # 跑测试 + 构建到 .dev/target + 暂存 + 生成 launcher
+$S stage              # 跑测试 + 构建 + 暂存 + 生成 launcher（会先报磁盘余量）
+$S stage --clean      # 同上，并让继任者在旧服务端退出后、绑定端口前跑 cargo clean
 # 用 bash --detached 启动它打印的 launcher
 $S swap <stamp>       # 确认继任者真在等，再发 cancel
 $S status             # 当前 stamp、谁在等、端口与锁
@@ -28,6 +29,34 @@ stage → 起继任者 → swap(cancel) → 旧进程退出 → 继任者绑端�
 反过来（先 cancel 再起），一旦新二进制起不来，home 就空着，没人 resume——回合真的丢了。
 `swap` 的守卫就是为此存在（stamp 必须是 current + launcher pid 活着 + 心跳 10s 内 +
 老服务端还在）。**不要绕过它手动 `cancel`。**
+
+## 磁盘：为什么 clean 必须由继任者做
+
+`cargo clean` 删的是 `target/`，而**旧服务端本体就是 `target/debug/gongga-server.exe`**。
+Windows 锁住运行中的 exe，所以 `stage` 里 clean 一定失败（`os error 5`）。
+
+正确时机只有一个：**旧进程已经退出、继任者还没绑定端口**那一段。也就是 launcher 的
+等待循环结束之后、`exec` 之前 —— `swap --clean`（其实是 `stage --clean`）就是干这个的：
+
+```bash
+$S stage --clean     # launcher 里带上了 clean
+$S status            # armed: the current successor runs 'cargo clean' before it binds
+# 起 launcher，然后 swap
+```
+
+三条命令都报磁盘，因为**自我迭代的第一约束是空间**：
+
+```
+disk:  (free 31G of 476G, 94% used)
+```
+
+- `stage` 一开始报一次 —— 在构建需要空间**之前**知道；
+- `swap` 报 `disk before:`；
+- 继任者 clean 完报 `free X -> Y`；
+- `status` 随时能看。
+
+`cargo clean` 失败不会中断换手：树留着，继任者照常接管。空间不够是运气问题，接不上是
+流程问题，后者严重得多。
 
 ## 换完怎么证明成功
 
@@ -87,6 +116,53 @@ pid，这是**正常**的，不是换手失败。`status` 用父进程关系识�
 
 **5. 继任者会留在进程表里。** 每次 swap 多一个 `bash.exe`（服务器的父进程），随服务器
 退出而死。不是泄漏。
+
+**6. 反复 swap 会耗尽 MSYS 的 fork。** 这是实测踩到的、代价最高的一条：launcher 每
+0.2 秒 spawn 两个进程（`tasklist` + `netstat`）看家是否释放，被放弃的等待者会永远轮询。
+三个这样的等待者 = 每秒 30 次进程创建，于是**你自己的 shell** 开始报
+
+```
+*** fatal error in forked process - WFSO timed out after longjmp
+child_copy: cygheap read copy failed ... Win32 error 299
+*** fatal error in forked process - ccalloc would have returned NULL
+```
+
+那不是 gongga 的 bug，是 fork 失败。因此：
+
+- launcher 现在**前 5 秒用 0.2s，之后退到 1s**（等待不紧急，不该每 200ms 付一次创建）；
+- **swap 前后跑一次 `clean`**，别让等待者堆积（`clean --artifacts` 连旧暂存件一起收，
+  实测 345M → 20M）。
+
+**7. `cancel` 期间 waker 必须停手。** `cancel` 会**保留** pending 行（这是对的设计），
+如果唤醒器在 shutdown 中把那一行捡起来，它会起一个新回合、把 `active` 钉在 1，
+服务端就永远退不出去：
+
+```
+turn end outcome=Cancelled
+woke sessions holding an undelivered message started=1
+turn start resumed=true
+still waiting for running turn(s) to stop active=1 waited=20s
+```
+
+`nudge_inboxes` 的第一行是 `if d.shutdown.is_cancelled() { return 0; }`，就是为了这个。
+**如果进程退不掉、继任者一直等，先看日志里有没有这四行。**
+
+**8. 先确认"谁在服务"再 swap。** `server.lock` 给出 pid，但它可能不是任何 evolve 二进制
+（比如有人在 `target/debug` 直接跑了一个）。一次调用就能确认：
+
+```bash
+powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId=<pid>').ExecutablePath"
+```
+
+不是 `evolve-*-server.exe` 的话，你做的 swap 会一直"失败"，而且你会以为是脚本的问题——
+我为此空转了三轮。
+
+**9. 别在 `.dev` 上跑 `du -sh`。** 那里有 `.dev/target`（十几 GB 的构建产物），MSYS 上
+扫一遍要几分钟，看起来像卡死。要看 evolve 占了多少，只统计暂存件：
+
+```bash
+du -ch .dev/evolve-*-server.exe | tail -1
+```
 
 ## 什么时候不需要它
 

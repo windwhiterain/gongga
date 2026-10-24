@@ -4,6 +4,7 @@ mod agent;
 mod bus;
 mod commands;
 mod config;
+mod image;
 mod instance;
 mod llm;
 mod net;

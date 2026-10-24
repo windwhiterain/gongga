@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::store::{HistoryItem, ImageRef, activity_detail, activity_name};
+use crate::store::{HistoryItem, activity_detail, activity_name};
 
 #[derive(Debug, Clone)]
 pub struct LlmClient {
@@ -81,7 +81,50 @@ impl LlmClient {
         crate::config::image_refusal(&self.model, &self.modalities)
     }
 
-    /// The same facts, for a tool that is about to send a picture.
+    /// Mints a provider-side id for one picture, so the request carries that
+    /// instead of the bytes.
+    ///
+    /// # Invariant
+    ///
+    /// The id is kept on the [`crate::image::ImageRef`], so a replayed transcript
+    /// reuses it instead of uploading again.
+    pub async fn upload_image(&self, path: &str, media_type: &str) -> anyhow::Result<String> {
+        let bytes = tokio::fs::read(path)
+            .await
+            .map_err(|e| anyhow::anyhow!("reading {path}: {e}"))?;
+        let name = std::path::Path::new(path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("image")
+            .to_string();
+        let part = reqwest::multipart::Part::bytes(bytes)
+            .file_name(name)
+            .mime_str(media_type)?;
+        let form = reqwest::multipart::Form::new()
+            .text("purpose", "user_data")
+            .part("file", part);
+        let url = format!("{}/files", self.base_url);
+        let response = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.api_key)
+            .multipart(form)
+            .send()
+            .await?;
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            anyhow::bail!("HTTP {status} from {url}: {}", summarise_error(&body));
+        }
+        let value: Value = serde_json::from_str(&body)?;
+        value["id"].as_str().map(str::to_string).ok_or_else(|| {
+            anyhow::anyhow!(
+                "{url} returned no file id: {}",
+                body.chars().take(200).collect::<String>()
+            )
+        })
+    }
+
     pub fn vision(&self) -> Vision {
         Vision {
             accepts_image: self.accepts_image(),
@@ -888,7 +931,7 @@ fn history_item_to_input(item: &HistoryItem) -> Option<Value> {
                 json!({"type":"function_call_output","call_id":call_id,"output":output})
             } else {
                 let mut content = vec![json!({"type": "input_text", "text": output})];
-                content.extend(images.iter().map(image_content));
+                content.extend(images.iter().map(crate::image::content_part));
                 json!({"type":"function_call_output","call_id":call_id,"output":content})
             }
         }
@@ -921,60 +964,13 @@ fn history_item_to_input(item: &HistoryItem) -> Option<Value> {
 /// is read. A picture that is gone degrades to a sentence naming it, because a
 /// turn that cannot see one image is still a turn. See
 /// `docs/notes/server-llm.md`.
-fn image_content(image: &ImageRef) -> Value {
-    match std::fs::read(&image.path) {
-        Ok(bytes) => json!({
-            "type": "input_image",
-            "image_url": format!("data:{};base64,{}", image.media_type, base64(&bytes)),
-        }),
-        Err(e) => json!({
-            "type": "input_text",
-            "text": format!(
-                "[the image at {} is no longer readable ({e}); it was here when this \
-                 tool call ran, and whatever it showed cannot be recovered]",
-                image.path
-            ),
-        }),
-    }
-}
-
-/// Standard base64, padded: the only encoding `image_url` accepts for a data URL.
-fn base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let b = [
-            chunk[0],
-            chunk.get(1).copied().unwrap_or(0),
-            chunk.get(2).copied().unwrap_or(0),
-        ];
-        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
-        out.push(ALPHABET[(n >> 18) as usize & 63] as char);
-        out.push(ALPHABET[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 {
-            ALPHABET[(n >> 6) as usize & 63] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            ALPHABET[n as usize & 63] as char
-        } else {
-            '='
-        });
-    }
-    out
-}
-
 /// Pulls a readable message out of an error body, tolerating plain text.
 fn summarise_error(body: &str) -> String {
     match serde_json::from_str::<Value>(body) {
         Ok(v) => v["error"]["message"]
             .as_str()
             .map(str::to_string)
-            .unwrap_or_else(|| {
-                let t: String = body.chars().take(400).collect();
-                t
-            }),
+            .unwrap_or_else(|| body.chars().take(400).collect()),
         Err(_) => body.chars().take(400).collect(),
     }
 }
@@ -982,6 +978,7 @@ fn summarise_error(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::image::ImageRef;
 
     /// A client with no roster behind it: what a test drives is the body it builds.
     fn client_with(model: &str, builtin_tools: &[&str], modalities: &[&str]) -> LlmClient {
@@ -1529,19 +1526,6 @@ mod tests {
     }
 
     /// The only encoding `image_url` takes for a data URL.
-    #[test]
-    fn base64_matches_the_standard_alphabet() {
-        assert_eq!(base64(b""), "");
-        assert_eq!(base64(b"f"), "Zg==");
-        assert_eq!(base64(b"fo"), "Zm8=");
-        assert_eq!(base64(b"foo"), "Zm9v");
-        assert_eq!(base64(b"foob"), "Zm9vYg==");
-        assert_eq!(base64(b"fooba"), "Zm9vYmE=");
-        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
-        // Bytes above 0x7f are where a hand-rolled table usually slips.
-        assert_eq!(base64(&[0xff, 0x00, 0x10]), "/wAQ");
-        assert_eq!(base64(&[0x89, b'P', b'N', b'G']), "iVBORw==");
-    }
 
     /// A picture goes as `input_image`, not as base64 prose to puzzle over.
     #[test]
@@ -1552,10 +1536,10 @@ mod tests {
         let item = HistoryItem::ToolResult {
             call_id: "c1".into(),
             output: "the model is looking at shot.png".into(),
-            images: vec![ImageRef {
-                path: path.to_string_lossy().to_string(),
-                media_type: "image/png".into(),
-            }],
+            images: vec![ImageRef::new(
+                path.to_string_lossy().to_string(),
+                "image/png",
+            )],
         };
         let v = history_item_to_input(&item).unwrap();
         assert_eq!(v["type"], "function_call_output");
@@ -1567,7 +1551,7 @@ mod tests {
             content[1]["image_url"],
             json!(format!(
                 "data:image/png;base64,{}",
-                base64(&[0x89, b'P', b'N', b'G'])
+                crate::image::base64_for_test(&[0x89, b'P', b'N', b'G'])
             ))
         );
     }
@@ -1579,10 +1563,7 @@ mod tests {
         let item = HistoryItem::ToolResult {
             call_id: "c1".into(),
             output: "looked at it".into(),
-            images: vec![ImageRef {
-                path: "C:/nowhere/gone.png".into(),
-                media_type: "image/png".into(),
-            }],
+            images: vec![ImageRef::new("C:/nowhere/gone.png", "image/png")],
         };
         let v = history_item_to_input(&item).unwrap();
         let content = v["output"].as_array().expect("a content array");

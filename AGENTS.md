@@ -1,4 +1,4 @@
-- SPEC is the only source of truth.
+- SPEC is the only source of truth (agents should not edit without user's permission).
 - when designing new feature, search any existing wheels. 
 - setting any limit/budget is forbidden.
 - session turn end should kill all process it spawns so user won't use a process that tied to a session as a long running process.
@@ -22,7 +22,8 @@
 
 ```bash
 S=.agents/skills/evolve/evolve.sh
-$S stage        # 跑测试 + 构建 + 暂存 + 生成 launcher（不重启任何东西）
+$S stage        # 跑测试 + 构建 + 暂存 + 生成 launcher（不重启任何东西，先报磁盘）
+$S stage --clean # 同上，并让继任者在旧服务端退出后跑 cargo clean（磁盘紧张时用）
 # 然后用 bash --detached 启动它打印的 launcher
 $S swap <stamp> # 确认继任者真在等，再发 cancel
 $S status       # 当前 stamp、谁在等、端口与锁
@@ -47,6 +48,12 @@ grep -H -m3 -E '^(name|description):' .agents/skills/*/SKILL.md
 - `self-control`：控制自己的回合 / 进程 / 上下文 / 服务端。
 - `web-search`：查实时网页、读 URL 正文（DeepSeek REST，不花模型轮次，任何模型都能用）。
 - `evolve`：换掉正在跑自己的服务端（改完 server 代码之后）。
+- `image`：让模型真看到一张图。用 `.agents/skills/image/show` 打印 `@路径`，harness
+  自动上传到 Files API 并作为 `input_image` 交给模型——不要自己拼 base64。
+- `computer_use`：用鼠标键盘操作真实桌面。`.agents/skills/computer_use/cu` 先跑 `doctor`，
+  然后 `shot` 看屏 → `tree` 拿控件矩形 → `click`/`type`/`key`（都带 `--window`）。
+  纯 PowerShell + .NET UIAutomation，不需要 pyautogui/pywinauto。这是用户的真实桌面，
+  打字前先确认目标窗口。
 - `compact`：折叠自己的上下文。收到 `Context notice` 时读它，用
   `.agents/skills/compact/transcript.py`（脚本，不是服务端工具）——服务端只测量和提醒，
   不再替你压缩。read 读的是消息（模型输出 + 注入），工具调用与 reasoning 被过滤掉。

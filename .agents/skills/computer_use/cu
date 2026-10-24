@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Entry point: hands the arguments to the PowerShell engine next to this file.
+# It exists so callers never have to think about execution policy or quoting.
+set -uo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+for shell in powershell pwsh; do
+  if command -v "$shell" >/dev/null 2>&1; then
+    argv=""
+    for a in "$@"; do argv+="$a"$'\x1f'; done
+    CU_ARGV="$argv" exec "$shell" -NoProfile -ExecutionPolicy Bypass -File "$here/cu.ps1"
+  fi
+done
+
+echo "no PowerShell found (tried powershell, pwsh)" >&2
+exit 1

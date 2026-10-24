@@ -138,6 +138,24 @@ class Handler(BaseHTTPRequestHandler):
         global _requests
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b""
+        # The Files API is a different shape from the Responses stream: one JSON
+        # id back, nothing to stream. Without this the harness's upload would be
+        # answered with an SSE body and read as "no file id".
+        if self.path.rstrip("/").endswith("/files"):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(
+                json.dumps(
+                    {
+                        "id": f"file-fake-{len(raw)}",
+                        "object": "file",
+                        "bytes": len(raw),
+                        "purpose": "user_data",
+                    }
+                ).encode()
+            )
+            return
         if DUMP:
             with _lock:
                 with open(DUMP, "a", encoding="utf-8") as f:

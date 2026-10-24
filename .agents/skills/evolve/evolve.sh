@@ -70,6 +70,37 @@ fi
 
 die() { echo "evolve: $*" >&2; exit 1; }
 
+# Free space on the volume holding this repo, and how full it is.
+#
+# Every swap says it: iterating on a Rust tree fills a disk, and the moment to
+# know is before the build that needs the room, not after it fails. `df` is in
+# Git Bash; a platform without it prints nothing rather than failing a handover.
+disk_line() {
+  local out
+  out="$(df -h "$ROOT" 2>/dev/null | tail -n 1)" || return 0
+  [ -n "$out" ] || return 0
+  printf '%s  (free %s of %s, %s used)\n' "$1" \
+    "$(printf '%s' "$out" | awk '{print $4}')" \
+    "$(printf '%s' "$out" | awk '{print $2}')" \
+    "$(printf '%s' "$out" | awk '{print $5}')"
+}
+
+# Reclaims the build tree. Only safe once the old server is gone: on Windows it
+# is `target/debug/gongga-server.exe` that holds the lock, so this runs in the
+# launcher, after the wait, not in `stage`.
+clean_build_tree() {
+  local before after
+  before="$(df -h "$ROOT" 2>/dev/null | tail -n 1 | awk '{print $4}')"
+  # CARGO_TARGET_DIR would send this somewhere else; the tree that grows is the
+  # default one at $ROOT/target.
+  if ! ( cd "$ROOT" && CARGO_TARGET_DIR= cargo clean ) >/dev/null 2>&1; then
+    echo "evolve: cargo clean failed; keeping the tree and carrying on"
+    return 0
+  fi
+  after="$(df -h "$ROOT" 2>/dev/null | tail -n 1 | awk '{print $4}')"
+  echo "evolve: cargo clean done (free ${before:-?} -> ${after:-?})"
+}
+
 # The successor must not touch the home while the old server still owns it:
 # `InstanceLock` refuses, and the UDP port is still bound. So it waits for both
 # to go, then `exec`s.
@@ -96,7 +127,7 @@ fill() {
 }
 
 write_launcher() {
-  local stamp="$1" exe="$2" old_pid="$3"
+  local stamp="$1" exe="$2" old_pid="$3" clean="${4:-0}"
   local path="$RUN/evolve-$stamp-launch.sh"
   local pidfile="$RUN/evolve-$stamp-launch.pid"
   local beatfile="$RUN/evolve-$stamp-launch.beat"
@@ -109,6 +140,7 @@ write_launcher() {
     -e "s|@@ROOT@@|$(fill "$ROOT")|g" \
     -e "s|@@PORT@@|$(fill "$PORT")|g" \
     -e "s|@@CURRENT@@|$(fill "$CURRENT")|g" \
+    -e "s|@@CLEAN@@|$(fill "$clean")|g" \
     > "$path" <<'LAUNCH'
 #!/usr/bin/env bash
 # Successor for @@STAMP@@: waits outside the old server, then takes the home.
@@ -154,14 +186,25 @@ while :; do
   listening=$(netstat -ano 2>/dev/null | grep -c ':@@PORT@@' || true)
   if [ "$alive" = 0 ] && [ "$listening" = 0 ]; then
     cd '@@ROOT@@'
+    # Only now is the build tree unlocked: on Windows the old server *is*
+    # target/debug/gongga-server.exe, so a clean before this point would fail.
+    if [ '@@CLEAN@@' = "1" ]; then
+      echo "evolve: cargo clean before taking the home"
+      CARGO_TARGET_DIR= cargo clean || echo "evolve: cargo clean failed; carrying on"
+    fi
     exec "$NEW"
   fi
   date +%s > '@@BEATFILE@@'
-  if [ $((tick % 150)) = 0 ]; then
+  if [ $((tick % 60)) = 0 ]; then
     echo "evolve: waiting for the home (old pid ${OLD_PID:-none} alive=$alive, port @@PORT@@ still bound=$listening)"
   fi
   tick=$((tick + 1))
-  sleep 0.2
+  # Fast while a handover is expected, slow once it is not. Each tick spawns
+  # `tasklist` and `netstat`, and a waiter left behind by an abandoned attempt
+  # polls forever: three of those at 5Hz exhausted MSYS's fork on this machine,
+  # which then failed inside unrelated shells. Waiting is not urgent enough to
+  # cost a process spawn every 200ms for minutes.
+  if [ "$tick" -le 25 ]; then sleep 0.2; else sleep 1; fi
 done
 LAUNCH
   chmod +x "$path"
@@ -188,8 +231,15 @@ running_pid() {
 }
 
 cmd_stage() {
-  local all=0
-  [ "${1:-}" = "--all" ] && all=1
+  local all=0 clean=0
+  for flag in "$@"; do
+    case "$flag" in
+      --all) all=1 ;;
+      --clean) clean=1 ;;
+    esac
+  done
+
+  disk_line "disk:"
 
   echo "== tests =="
   # Test binaries are named after the crate, not after the shipped exe, so this
@@ -213,7 +263,7 @@ cmd_stage() {
   cp "$BUILD/debug/gongga-server.exe" "$exe" || die "copying the server failed"
   old_pid="$(running_pid || true)"
   [ -n "$old_pid" ] || echo "note: no live server holds $HOME_DIR/server.lock"
-  launcher="$(write_launcher "$stamp" "$exe" "$old_pid")"
+  launcher="$(write_launcher "$stamp" "$exe" "$old_pid" "$clean")"
   # The previous attempt is abandoned from here on: its launcher sees itself
   # superseded and leaves the waiting loop by itself (see the loop below).
   echo "$stamp" > "$CURRENT"
@@ -230,6 +280,9 @@ cmd_stage() {
   echo "  bash --detached: $launcher"
   echo "  .agents/skills/evolve/evolve.sh swap $stamp"
   echo
+  if [ "$clean" = 1 ]; then
+    echo "armed: the successor runs 'cargo clean' after the old server is gone, before it binds"
+  fi
   echo "an earlier attempt still waiting will leave on its own; 'clean' says who is left"
 }
 
@@ -279,13 +332,20 @@ its launcher has already left the queue -- run stage again if you meant the newe
   if [ -z "$CLI" ] || [ ! -x "$CLI" ]; then
     die "no gongga CLI to send cancel with; set GONGGA_CLI"
   fi
+  disk_line "disk before:"
   echo "old server pid $pid; successor $exe (pid $launch_pid) is waiting"
   echo "cancelling: this turn is cancelled and preserved, the successor resumes it"
   "$CLI" cancel
 }
 
 cmd_status() {
+  disk_line "disk:"
   echo "current: $(cat "$CURRENT" 2>/dev/null || echo none)"
+  local armed_launcher
+  armed_launcher="$RUN/evolve-$(cat "$CURRENT" 2>/dev/null)-launch.sh"
+  if grep -q 'cargo clean' "$armed_launcher" 2>/dev/null; then
+    echo "armed: the current successor runs 'cargo clean' before it binds"
+  fi
   local server_pid
   server_pid="$(cat "$HOME_DIR/server.lock" 2>/dev/null || echo none)"
   echo "server.lock: $server_pid"

@@ -18,13 +18,11 @@ use crate::session::{DEFAULT_BASH, ShellSet};
 use crate::store::Store;
 use crate::tools::bash::{BashChunk, BashShell, BashStream};
 use crate::tools::detached::DetachedRegistry;
-use crate::tools::read_image::ReadImageTool;
 
 pub mod bash;
 pub mod detached;
 #[cfg(windows)]
 pub mod job;
-pub mod read_image;
 #[cfg(test)]
 pub(crate) mod testbed;
 
@@ -136,14 +134,6 @@ pub struct ToolOutcome {
     /// Text handed back to the model as the function call output.
     pub output: String,
     pub ok: bool,
-    /// Pictures handed back alongside the text, by path rather than inline.
-    ///
-    /// # Invariant
-    ///
-    /// Only a path and a media type: the bytes are read when the request is
-    /// built, so no base64 ever reaches the transcript.
-    /// See `docs/notes/server-tools-read-image.md`.
-    pub images: Vec<crate::store::ImageRef>,
 }
 
 impl ToolOutcome {
@@ -151,7 +141,6 @@ impl ToolOutcome {
         Self {
             output: output.into(),
             ok: true,
-            images: Vec::new(),
         }
     }
 
@@ -159,17 +148,7 @@ impl ToolOutcome {
         Self {
             output: output.into(),
             ok: false,
-            images: Vec::new(),
         }
-    }
-
-    /// The same outcome, carrying one picture for the model to look at.
-    pub fn with_image(mut self, path: impl Into<String>, media_type: impl Into<String>) -> Self {
-        self.images.push(crate::store::ImageRef {
-            path: path.into(),
-            media_type: media_type.into(),
-        });
-        self
     }
 }
 
@@ -201,7 +180,6 @@ impl ToolRegistry {
                 Box::new(CheckBashTool { max_output_chars }),
                 Box::new(DelBashTool),
                 Box::new(ListBashTool),
-                Box::new(ReadImageTool),
             ],
         }
     }
@@ -1153,7 +1131,7 @@ mod tests {
         let reg = ToolRegistry::with_builtins(Duration::from_secs(30), 8_000);
         assert_eq!(
             reg.names(),
-            vec!["bash", "check_bash", "del_bash", "list_bash", "read_image"]
+            vec!["bash", "check_bash", "del_bash", "list_bash"]
         );
         assert!(reg.get("bash").is_some());
         assert!(reg.get("nope").is_none());

@@ -530,6 +530,64 @@ impl Agent {
         Ok(StepResult::NeedsTools(calls))
     }
 
+    /// Turns `@<path>` mentions in a tool's output into attachments.
+    ///
+    /// # Invariant
+    ///
+    /// A mention that names no readable picture is left as text: a command that
+    /// prints `@missing.png` must not fail the turn, and a model that has to learn
+    /// the file is gone should be told so by the note `image::content_part` emits.
+    /// A model that cannot take images gets those references reported once, in the
+    /// output, rather than silently dropped.
+    async fn attach_references(
+        &self,
+        ctx: &ToolContext,
+        output: &str,
+        llm: &LlmClient,
+    ) -> Vec<crate::image::ImageRef> {
+        let mut out = Vec::new();
+        for given in crate::image::references(output) {
+            let path = crate::image::resolve(&ctx.cwd, &given);
+            let bytes = match std::fs::read(&path) {
+                Ok(b) => b,
+                // Not a picture this harness can read: leave the text alone.
+                Err(_) => continue,
+            };
+            let Some(media) = crate::image::media_type(&path, &bytes) else {
+                continue;
+            };
+            if !ctx.vision.accepts_image {
+                self.bus.publish(Event::Log {
+                    level: LogLevel::Warn,
+                    message: format!(
+                        "{}: {given} was referenced but not attached -- {}",
+                        ctx.session, ctx.vision.refusal
+                    ),
+                });
+                continue;
+            }
+            let mut image = crate::image::ImageRef::new(path.to_string_lossy().to_string(), media);
+            // One id per file per session: a replay reuses it instead of the bytes.
+            match llm.upload_image(&image.path, &image.media_type).await {
+                Ok(id) => image.file_id = Some(id),
+                Err(e) => {
+                    // Attaching is an improvement, not a requirement: the turn goes
+                    // on with the reference as text.
+                    self.bus.publish(Event::Log {
+                        level: LogLevel::Warn,
+                        message: format!(
+                            "{}: could not attach {given} ({e}); it stays a path in the text",
+                            ctx.session
+                        ),
+                    });
+                    continue;
+                }
+            }
+            out.push(image);
+        }
+        out
+    }
+
     /// Executes the tool calls for a step. Returns true if the turn was cancelled.
     async fn run_tools(
         &self,
@@ -575,6 +633,7 @@ impl Agent {
             let started = std::time::Instant::now();
             tracing::info!(session = %name, tool = %call.tool, "tool start");
             let outcome = self.tools.run(&call.tool, arguments, &ctx).await;
+            let scanned = self.attach_references(&ctx, &outcome.output, llm).await;
             drop(ctx);
             let _ = forwarder.await;
             tracing::info!(
@@ -595,10 +654,11 @@ impl Agent {
             }));
 
             let status = if outcome.ok { "ok" } else { "error" };
-            let images: Vec<_> = outcome
-                .images
+            // A command that printed `@shot.png` names a picture: it becomes an
+            // attachment, uploaded once per file.
+            let images: Vec<_> = scanned
                 .iter()
-                .map(|i| json!({"path": i.path, "media_type": i.media_type}))
+                .map(crate::image::ImageRef::to_json)
                 .collect();
             let _ = self.store.append_message(
                 id,

@@ -404,7 +404,7 @@ impl Config {
              #   [[provider.model]]\n\
              #   id = \"some-model\"\n\
              #   # What it takes in and gives back. A list without \"image\" makes\n\
-             #   # read_image refuse with this entry's name instead of letting the\n\
+             #   # an attachment be refused by this entry's name instead of letting the\n\
              #   # provider answer with an opaque 400. Omit the list and nothing is\n\
              #   # refused: unstated is not a no.\n\
              #   modalities = [\"text\", \"image\"]\n\
