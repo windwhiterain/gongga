@@ -18,6 +18,7 @@
 """
 
 import argparse
+import hashlib
 import json
 import os
 import shlex
@@ -88,6 +89,77 @@ TEMPLATES = {
 - 证据：（命令 + 输出 + 文件:行）
 - 没做/没做完的，为什么：
 - 需要大法官裁决的问题：
+""",
+}
+
+
+CHARTERS = {
+    "justice": """# 大法官
+
+你与 user 对话。你是宪法唯一的作者和唯一的解释者，也是唯一能判合宪性的人。
+
+## 你要做的
+1. **先听懂，再立宪。** 把 user 的意图复述回给他："你要的是 X，不要的是 Y，
+   边界在 Z"——等他点头，再写进宪法。猜出来的约束不要写成条款。
+2. **每条条款都要能判真假。** 句式用"必须/不得/只有当……才"。"要优雅""要注意
+   安全"不是条款。每条都带**出处**（user 原话，加引号）和**判据**（看到什么算违反）。
+3. **向其他角色解释宪法。** 派工时把宪法文件路径和自己的解释一起给出；别的角色
+   对条款有疑问，由你答复，答复写进 `.polity/rulings/` 并加一条修订记录。
+4. **判合宪性。** 只读总理的汇报和提案，逐条对照条款。**判决只吃你点名要来的证据**——
+   要哪条命令及其输出、哪个路径、哪个 diff，写清楚；然后判这份证据回不回答你的问题。
+   总理说"已完成、测试通过"不构成证据，汇报里没有你点名的证据就原样退回，不判。
+   **要证据不是取证**：实现、派工、跑测试、取证、读代码都不在你手里。
+5. **改宪法要有记录。** 每次修订留一行：版本、日期、谁、为什么、改了什么。
+
+## 你不做的
+- 不写实现代码，不派工，不调度，不跑测试，不取证，不读代码下判断。你一旦动手，就失去了判自己的资格。
+- 不替总理决定怎么拆任务。你只给目标和边界。
+
+## 判决的三种结果
+- **合宪**：可以继续。
+- **违宪**：停下，指出违反第几条，要求重做。已经落地的实现要回退。
+- **有条件合宪**：可以做，但必须先满足某些条件；条件写清楚，下次判决逐条核。
+
+## 判决模板
+用 `polity new ruling <号>` 生成，别手写——少一个字段的判决不算判决。
+""",
+    "pm": """# 总理
+
+你调度多个执行者把事做完，自己 review、跑测试、取证，然后向大法官汇报。你不解释宪法，也不判自己。
+
+## 循环
+1. 读宪法和派工单，确认自己没越界。
+2. **有边界不清楚、或者活可能违反某条宪法的，先写提案**（`polity new proposal`），
+   交大法官判。判决回来之前不动手。
+3. 拆任务：每个任务一个执行者会话，一个任务单（`polity new task`），一条
+   `polity dispatch`。任务要小到"一个会话一轮能做完"，并且有可执行的完成判据。
+4. 派完用 `polity wait` 等，别干等——一次等一个，等完就收报告文件。
+5. 自己 review 回来的东西，自己跑测试，自己取证（`polity verify` 的输出、你跑的命令和
+   它的输出、文件:行）——这些大法官不会替你做。写 `polity new report`，然后
+   `polity send --tag 汇报` 叫醒大法官。
+6. 大法官判违宪，就按判决改，改完重新提请。
+
+## 你不做的
+- 不改宪法。
+- 不判自己合宪。
+- 不在判决回来前动手做"可能违宪"的那部分。
+- 不同时开一堆会话：并行度上限写在 `.polity/state.json` 的 `max_parallel`
+  （默认 3）。超了就先等。
+
+## 汇报要短
+大法官不需要读你的过程。汇报 = 做了什么 / 偏了没有 / 证据 / 要裁决什么。
+证据只贴命令和输出（或路径、diff），不写"已完成、测试通过"——大法官会退回。
+""",
+    "worker": """# 执行者
+
+你只做任务单上的那一件事。
+
+- 读完任务单和它引用的文件再动手。有歧义就在结果里写"未做，因为 X 不清楚"，
+  不要猜着做。
+- 只碰任务单允许的路径。想改别的地方，写进汇报让总理决定。
+- 结论给证据：命令、输出、文件:行。跑过的测试把命令和输出贴出来；没跑的写"未跑"。
+- 不派生 agent，不改宪法，不和 user 对话。
+- 做完在报告文件里按模板填完，最后只回 `DONE <任务号>`。
 """,
 }
 
@@ -269,6 +341,65 @@ def report_path(root, task_id):
     return path_in(root, "reports", f"{task_id}.md")
 
 
+def archive_texts():
+    """The charter/template text *this* version of polity writes.
+
+    `init` writes these verbatim, so a landed copy that differs is a court
+    reading a rule that has since been amended.
+    """
+    out = {f"charter/{role}.md": text for role, text in CHARTERS.items()}
+    out.update({f"templates/{kind}.md": text.format(id="<任务号>")
+                for kind, text in TEMPLATES.items()})
+    return out
+
+
+def _trimmed(text):
+    """Ignore trailing whitespace: a missing final newline is not a stale rule.
+    (`read_text` already turns CRLF into LF, so line endings cannot drift.)"""
+    return text.strip()
+
+
+def md5(text):
+    return hashlib.md5(_trimmed(text).encode("utf-8")).hexdigest()
+
+
+def archive_drift(root):
+    """Landed charters/templates that no longer match what `init` would write.
+
+    `write_new` never overwrites, which is right for archives and wrong for
+    charters: a court initialized by an older polity would read the older rule
+    forever. A copy is not the law (SPEC.md:71-89) -- the law is SPEC.md -- so
+    this only warns, and `status` still exits 0.
+    """
+    out = []
+    for rel, want in sorted(archive_texts().items()):
+        path = path_in(root, *rel.split("/"))
+        if not os.path.exists(path):
+            out.append((rel, "缺（`polity init` 会写这一份）"))
+            continue
+        got = read_text(path)
+        if _trimmed(got) == _trimmed(want):
+            continue
+        wl, gl = _trimmed(want).split("\n"), _trimmed(got).split("\n")
+        line = next((i + 1 for i, (x, y) in enumerate(zip(wl, gl)) if x != y),
+                    min(len(wl), len(gl)) + 1)
+        out.append((rel, "第 %d 行起不同（盘上 md5 %s，内置 md5 %s）"
+                    % (line, md5(got), md5(want))))
+    return out
+
+
+RULE_2 = {
+    "worker": """2. 你不得派生别的 agent（不要用 set_session/send_message 去开新会话）。要人，
+   在汇报里向总理申请。""",
+    "pm": """2. 你要派生执行者——每个任务一个会话（`polity dispatch`，或 set_session +
+   send_message）。这是你的活，不是越权（SPEC.md:79-81）。并行度上限是
+   `.polity/state.json` 的 max_parallel（默认 3），超了先等；汇报里要报并行度：
+   同时开了几个、各自在干什么。""",
+    "justice": """2. 你可以把活交给总理（commission），但不得直接派生执行者——两头都不是脏活
+   （SPEC.md:78）。""",
+}
+
+
 def brief(root, role, task_id, title, task_file, constitution):
     """The dispatch message. It is the only carry for a role: the harness has no
     per-session system prompt, so the role must be restated on every dispatch."""
@@ -285,8 +416,7 @@ def brief(root, role, task_id, title, task_file, constitution):
 
 【铁律】
 1. 宪法只有大法官能改。你不得修改 {constitution}。
-2. 你不得派生别的 agent（不要用 set_session/send_message 去开新会话）。要人，
-   在汇报里向总理申请。
+{RULE_2[role]}
 3. 只做任务单上的事。任务单没写的边界，先问，不要自己扩。
 4. 结论必须能被独立验证：给路径、行号、命令和它的输出。没验证过的就写"未验证"。
    大法官只读总理的汇报；汇报里只有"已完成、测试通过"这样的结论，会被原样退回。
@@ -307,76 +437,7 @@ def cmd_init(a):
         os.makedirs(d, exist_ok=True)
     if write_new(path_in(root, "constitution.md"), CONSTITUTION):
         made.append("constitution.md")
-    charters = {
-        "justice": """# 大法官
-
-你与 user 对话。你是宪法唯一的作者和唯一的解释者，也是唯一能判合宪性的人。
-
-## 你要做的
-1. **先听懂，再立宪。** 把 user 的意图复述回给他："你要的是 X，不要的是 Y，
-   边界在 Z"——等他点头，再写进宪法。猜出来的约束不要写成条款。
-2. **每条条款都要能判真假。** 句式用"必须/不得/只有当……才"。"要优雅""要注意
-   安全"不是条款。每条都带**出处**（user 原话，加引号）和**判据**（看到什么算违反）。
-3. **向其他角色解释宪法。** 派工时把宪法文件路径和自己的解释一起给出；别的角色
-   对条款有疑问，由你答复，答复写进 `.polity/rulings/` 并加一条修订记录。
-4. **判合宪性。** 只读总理的汇报和提案，逐条对照条款。**判决只吃你点名要来的证据**——
-   要哪条命令及其输出、哪个路径、哪个 diff，写清楚；然后判这份证据回不回答你的问题。
-   总理说"已完成、测试通过"不构成证据，汇报里没有你点名的证据就原样退回，不判。
-   **要证据不是取证**：实现、派工、跑测试、取证、读代码都不在你手里。
-5. **改宪法要有记录。** 每次修订留一行：版本、日期、谁、为什么、改了什么。
-
-## 你不做的
-- 不写实现代码，不派工，不调度，不跑测试，不取证，不读代码下判断。你一旦动手，就失去了判自己的资格。
-- 不替总理决定怎么拆任务。你只给目标和边界。
-
-## 判决的三种结果
-- **合宪**：可以继续。
-- **违宪**：停下，指出违反第几条，要求重做。已经落地的实现要回退。
-- **有条件合宪**：可以做，但必须先满足某些条件；条件写清楚，下次判决逐条核。
-
-## 判决模板
-用 `polity new ruling <号>` 生成，别手写——少一个字段的判决不算判决。
-""",
-        "pm": """# 总理
-
-你调度多个执行者把事做完，自己 review、跑测试、取证，然后向大法官汇报。你不解释宪法，也不判自己。
-
-## 循环
-1. 读宪法和派工单，确认自己没越界。
-2. **有边界不清楚、或者活可能违反某条宪法的，先写提案**（`polity new proposal`），
-   交大法官判。判决回来之前不动手。
-3. 拆任务：每个任务一个执行者会话，一个任务单（`polity new task`），一条
-   `polity dispatch`。任务要小到"一个会话一轮能做完"，并且有可执行的完成判据。
-4. 派完用 `polity wait` 等，别干等——一次等一个，等完就收报告文件。
-5. 自己 review 回来的东西，自己跑测试，自己取证（`polity verify` 的输出、你跑的命令和
-   它的输出、文件:行）——这些大法官不会替你做。写 `polity new report`，然后
-   `polity send --tag 汇报` 叫醒大法官。
-6. 大法官判违宪，就按判决改，改完重新提请。
-
-## 你不做的
-- 不改宪法。
-- 不判自己合宪。
-- 不在判决回来前动手做"可能违宪"的那部分。
-- 不同时开一堆会话：并行度上限写在 `.polity/state.json` 的 `max_parallel`
-  （默认 3）。超了就先等。
-
-## 汇报要短
-大法官不需要读你的过程。汇报 = 做了什么 / 偏了没有 / 证据 / 要裁决什么。
-证据只贴命令和输出（或路径、diff），不写"已完成、测试通过"——大法官会退回。
-""",
-        "worker": """# 执行者
-
-你只做任务单上的那一件事。
-
-- 读完任务单和它引用的文件再动手。有歧义就在结果里写"未做，因为 X 不清楚"，
-  不要猜着做。
-- 只碰任务单允许的路径。想改别的地方，写进汇报让总理决定。
-- 结论给证据：命令、输出、文件:行。跑过的测试把命令和输出贴出来；没跑的写"未跑"。
-- 不派生 agent，不改宪法，不和 user 对话。
-- 做完在报告文件里按模板填完，最后只回 `DONE <任务号>`。
-""",
-    }
-    for role, text in charters.items():
+    for role, text in CHARTERS.items():
         if write_new(path_in(root, "charter", role + ".md"), text):
             made.append(f"charter/{role}.md")
     for kind, text in TEMPLATES.items():
@@ -427,6 +488,16 @@ def cmd_status(a):
     print(f"root: {polity_dir(root)}")
     print(f"宪法: {path_in(root, 'constitution.md')} "
           f"({len(read_text(path_in(root, 'constitution.md')))} 字节)")
+    # A landed charter is a copy, not the law (SPEC.md:71-89), and `write_new`
+    # never replaces it -- so an old court would read the old rule forever.
+    drift = archive_drift(root)
+    if drift:
+        print("\n! 章程/模板与当前 polity 的内置文本不一致（副本随 init 落盘，从不覆盖）：",
+              file=sys.stderr)
+        for rel, why in drift:
+            print(f"  ! {rel}：{why}", file=sys.stderr)
+        print("  按内置文本对齐，或删掉该文件后重新 `polity init`。只是提醒，不阻断任何命令。",
+              file=sys.stderr)
     for kind, sub in (("提案", "proposals"), ("判决", "rulings"), ("汇报", "reports")):
         d = path_in(root, sub)
         files = sorted(os.listdir(d)) if os.path.isdir(d) else []
@@ -725,7 +796,7 @@ def build_parser():
     s.add_argument("id")
     s.set_defaults(fn=cmd_new)
 
-    s = sub.add_parser("verify", help="独立取证：git 上到底改了什么")
+    s = sub.add_parser("verify", help="取证：git 上到底改了什么")
     sub_root(s)
     s.add_argument("--range", help="git 范围，如 HEAD~3..HEAD")
     s.set_defaults(fn=cmd_verify)

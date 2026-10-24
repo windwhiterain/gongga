@@ -381,6 +381,12 @@ try:
     check("and a worker dispatch opens as 执行者", "【角色】执行者" in brief, brief[:60])
     check("and points at the pm charter",
           os.path.join(tmp, ".polity", "charter", "pm.md") in brief2)
+    # 铁律 2 forks: forbidding the pm to open sessions makes SPEC.md:79-81 impossible.
+    check("a pm brief does not forbid dispatching", "不得派生" not in brief2, brief2)
+    check("it tells the pm to dispatch and report the parallelism",
+          "你要派生执行者" in brief2 and "并行度" in brief2, brief2)
+    check("a worker brief still forbids it", "不得派生别的 agent" in brief, brief)
+    check("and says nothing about parallelism", "并行度" not in brief, brief)
 
     with server_installed(Server()), quiet() as (out, err):
         run("--root", tmp, "dispatch", "--to", "w1", "--task", "001",
@@ -423,8 +429,46 @@ try:
     check("it notices a same-name session that was rebuilt",
           "created_at" in err.getvalue(), err.getvalue())
 
+    # A charter on disk is a copy taken at init time, and write_new never
+    # refreshes it: an old court would read the old rule forever. Warn, never block.
+    print("\nstatus: a landed charter older than the built-in text is called out")
+    with server_installed(Server()), quiet() as (out, err):
+        code = run("--root", tmp, "status")
+    equal("a court whose charters match is not called drift", code, m.EXIT_OK)
+    check("and nothing is said about charters", "章程/模板" not in err.getvalue(),
+          err.getvalue())
+    charter = os.path.join(tmp, ".polity", "charter", "justice.md")
+    want = open(charter, encoding="utf-8").read()
+    open(charter, "w", encoding="utf-8").write(
+        want.replace("只读总理的汇报和提案", "读提案和实现"))
+    with server_installed(Server()), quiet() as (out, err):
+        code = run("--root", tmp, "status")
+    equal("a drifted charter does not change the exit code", code, m.EXIT_OK)
+    check("it names the file", "charter/justice.md" in err.getvalue(), err.getvalue())
+    check("and the line it diverges at", "行起不同" in err.getvalue(), err.getvalue())
+    check("and both md5s", err.getvalue().count("md5") >= 2, err.getvalue())
+    os.remove(os.path.join(tmp, ".polity", "templates", "proposal.md"))
+    with server_installed(Server()), quiet() as (out, err):
+        code = run("--root", tmp, "status")
+    equal("a missing template is not fatal either", code, m.EXIT_OK)
+    check("and it is called missing", "templates/proposal.md" in err.getvalue()
+          and "缺" in err.getvalue(), err.getvalue())
+    open(charter, "w", encoding="utf-8").write(want)
+
     # ------------------------------------------------------------ 取证
-    print("\nverify: the justice reads the repo, not the report")
+    print("\nverify: the pm gathers it, the justice reads it")
+    helped = io.StringIO()
+    with contextlib.redirect_stdout(helped):
+        try:
+            run("--help")
+        except SystemExit:
+            pass
+    # "独立" read as "this belongs to the justice" (SPEC.md:77-78, 85-88).
+    # The subcommand list is where the one-line `help=` shows up.
+    listed = [l for l in helped.getvalue().splitlines() if l.strip().startswith("verify")]
+    check("verify's help does not claim the evidence is the justice's",
+          listed and "独立取证" not in "\n".join(listed) and "取证" in "\n".join(listed),
+          listed)
     with quiet() as (out, err):
         code = run("--root", tmp, "verify")
     equal("verify outside a repo fails, so a clean report means something", code, m.EXIT_CLI)
