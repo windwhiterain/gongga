@@ -22,6 +22,7 @@ import hashlib
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -105,14 +106,20 @@ CHARTERS = {
    安全"不是条款。每条都带**出处**（user 原话，加引号）和**判据**（看到什么算违反）。
 3. **向其他角色解释宪法。** 派工时把宪法文件路径和自己的解释一起给出；别的角色
    对条款有疑问，由你答复，答复写进 `.polity/rulings/` 并加一条修订记录。
-4. **判合宪性。** 只读总理的汇报和提案，逐条对照条款。**判决只吃你点名要来的证据**——
+4. **把活交给总理，然后结束回合。** `polity dispatch --to pm --role pm …` 或给总理发一条
+   消息（commission，`SPEC.md:78`）。**派完就结束回合**：你会被总理的汇报消息唤醒，
+   不必也不该守着（`SPEC.md:89-92`）。
+5. **判合宪性。** 只读总理的汇报和提案，逐条对照条款。**判决只吃你点名要来的证据**——
    要哪条命令及其输出、哪个路径、哪个 diff，写清楚；然后判这份证据回不回答你的问题。
    总理说"已完成、测试通过"不构成证据，汇报里没有你点名的证据就原样退回，不判。
    **要证据不是取证**：实现、派工、跑测试、取证、读代码都不在你手里。
-5. **改宪法要有记录。** 每次修订留一行：版本、日期、谁、为什么、改了什么。
+6. **改宪法要有记录。** 每次修订留一行：版本、日期、谁、为什么、改了什么。
 
 ## 你不做的
-- 不写实现代码，不派工，不调度，不跑测试，不取证，不读代码下判断。你一旦动手，就失去了判自己的资格。
+- 不写实现代码，不派工给执行者，不调度，不跑测试，不取证，不读代码下判断。你一旦动手，
+  就失去了判自己的资格。
+- **不轮询。** `polity wait` 是总理等它自己执行者的工具，不是你的；法官用它就是设计错误
+  （`SPEC.md:89-92`：the turn boundary already is the wait）。
 - 不替总理决定怎么拆任务。你只给目标和边界。
 
 ## 判决的三种结果
@@ -133,10 +140,13 @@ CHARTERS = {
    交大法官判。判决回来之前不动手。
 3. 拆任务：每个任务一个执行者会话，一个任务单（`polity new task`），一条
    `polity dispatch`。任务要小到"一个会话一轮能做完"，并且有可执行的完成判据。
-4. 派完用 `polity wait` 等，别干等——一次等一个，等完就收报告文件。
+4. 派完等它，一次等一个——`polity wait` 是**你的**工具（等自己的执行者），不是法官的。
+   等完就收报告文件。
 5. 自己 review 回来的东西，自己跑测试，自己取证（`polity verify` 的输出、你跑的命令和
-   它的输出、文件:行）——这些大法官不会替你做。写 `polity new report`，然后
-   `polity send --tag 汇报` 叫醒大法官。
+   它的输出、文件:行）——这些大法官不会替你做。写 `polity new report`，然后**叫醒法官**：
+   `polity send --tag 汇报 --message "… 汇报已就绪：…/reports/<号>.md"`。
+   `--session` 可以省略：法庭在 `up --justice <名字>` 时记下了法官是谁。发完就结束回合，
+   **不要** `polity wait` 去探法官（`SPEC.md:89-92`：法官不轮询，也不被轮询）。
 6. 大法官判违宪，就按判决改，改完重新提请。
 
 ## 你不做的
@@ -172,11 +182,69 @@ def cli_path():
     return os.environ.get("GONGGA_CLI") or "gongga"
 
 
+# Set by `main`; the client home is created on the first client call, so a command
+# that never drives the client leaves no trace in the root.
+ROOT = None
+# Set by `prepare_client_home`; every client call runs with `--home` on it.
+CLIENT_HOME = None
+
+
+def client_home(root):
+    """Where polity's own client state lives -- never the user's home."""
+    return path_in(root, "client-home")
+
+
+def prepare_client_home(root, source=None):
+    """Point the client at a home polity owns, so its sticky never lands on the user.
+
+    `SPEC.md:58` makes `set_session` set a sticky `--session`. That is right for a
+    human typing commands and wrong for an instrument: `status`, `wait`, `dispatch`
+    and `up` all call `set_session`, so each one rewrote the user's
+    `~/.gongga/cli.toml` and stole their `--session` (SPEC.md:96-97: the court's
+    waits must not write the user's per-session client state).
+
+    The write-free read at SPEC.md:54 (`get_messages` reports `status`) needs a
+    rebuilt server, so it is not available today. A private home is: the client
+    takes `--home`, and everything it would write lands under `.polity/client-home/`
+    instead. The copy below carries the connection key; the server address still
+    comes from `--server`/`GONGGA_SERVER`/the copied `[server] bind`.
+
+    Returns the home. Sets it even when no config could be copied: falling back to
+    the user's home would silently restore the bug being fixed here.
+    """
+    global CLIENT_HOME
+    home = client_home(root)
+    os.makedirs(home, exist_ok=True)
+    dest = os.path.join(home, "config.toml")
+    if not os.path.exists(dest):
+        src = source or os.environ.get("GONGGA_HOME") or os.path.join(
+            os.path.expanduser("~"), ".gongga")
+        src_cfg = os.path.join(src, "config.toml")
+        if os.path.exists(src_cfg):
+            shutil.copyfile(src_cfg, dest)
+        else:
+            print(f"! 没找到 {src_cfg}：polity 用 {home} 当自己的 client home，"
+                  "里面没有连接 key。放一份 config.toml 进去，或设 GONGGA_KEY。",
+                  file=sys.stderr)
+    CLIENT_HOME = home
+    return home
+
+
+def client_argv(args):
+    """The argv for one client command: global flags first, then the command."""
+    argv = [cli_path()]
+    if CLIENT_HOME:
+        argv += ["--home", os.path.abspath(CLIENT_HOME)]
+    return argv + list(args)
+
+
 def run_cli(args, timeout=120):
     """Run one client command. Returns (returncode, parsed events, stderr)."""
+    if CLIENT_HOME is None and ROOT is not None:
+        prepare_client_home(ROOT)
     try:
         p = subprocess.run(
-            [cli_path(), *args],
+            client_argv(args),
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -400,12 +468,40 @@ RULE_2 = {
 }
 
 
+def launcher():
+    """This instrument's own entry point, by absolute path: a brief is copied verbatim."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "polity")
+
+
+def wake_command(root, task_id, justice):
+    """The line that wakes the justice, spelled so it runs as written (SPEC.md:93-95)."""
+    return "%s send --root %s --tag 汇报 --message %s" % (
+        shlex.quote(launcher()),
+        shlex.quote(os.path.abspath(root)),
+        shlex.quote("%s 汇报已就绪：%s" % (task_id, report_path(root, task_id))),
+    )
+
+
 def brief(root, role, task_id, title, task_file, constitution):
     """The dispatch message. It is the only carry for a role: the harness has no
     per-session system prompt, so the role must be restated on every dispatch."""
     zh = ROLES[role]
     report = report_path(root, task_id)
     template = path_in(root, "templates", "report.md")
+    justice = load_state(root).get("justice")
+    if role == "pm" and justice:
+        # The pm's last act is the wake, not a DONE line. SPEC.md:89-92: the justice
+        # ends its turn and is woken by this message; nobody polls anybody.
+        handover = f"""【交活】做完不要只回 DONE——叫醒法官（会话 `{justice}`）。这条照抄能跑：
+  {wake_command(root, task_id, justice)}
+发完就结束回合。**不要** `polity wait` 去探它（SPEC.md:89-92）。
+"""
+    elif role == "pm":
+        handover = """【交活】法官会话还没记下来（`polity up --justice <名字>`），所以叫醒命令
+还写不出真实名字。做完在汇报里问清楚，别猜一个名字发过去（SPEC.md:93-95）。
+"""
+    else:
+        handover = ""
     return f"""【角色】{zh}  任务号 {task_id}：{title}
 
 你是这个政体的{zh}。动手前先读这两份文件：
@@ -422,7 +518,7 @@ def brief(root, role, task_id, title, task_file, constitution):
    大法官只读总理的汇报；汇报里只有"已完成、测试通过"这样的结论，会被原样退回。
 
 【交付】复制 {template} 到 {report} 再填；没有模板文件就按这些字段写。
-最后一句只回 DONE <任务号>，不要复述全文——原文在文件里，谁要谁读。
+{handover}最后一句只回 DONE <任务号>，不要复述全文——原文在文件里，谁要谁读。
 """
 
 
@@ -473,11 +569,18 @@ def cmd_up(a):
         "created_at": data.get("created_at"),
         "llm": data.get("llm"),
     }
+    # `send` wakes the justice by default, so the court has to know its name
+    # (SPEC.md:93-95). No default: guessing would wake the wrong session.
+    if a.justice:
+        st["justice"] = a.justice
     save_state(root, st)
-    record(root, kind="up", session=pm)
+    record(root, kind="up", session=pm, justice=st.get("justice"))
     print(said)
     print(f"\n总理会话 `{pm}` 已就位。派第一个任务：")
     print(f"  polity dispatch --to {pm} --task 001 --title '…' --role pm --body @-")
+    if not st.get("justice"):
+        print("\n! 还没记法官会话：`polity send` 会因此拒绝。用 "
+              "`polity up --justice <名字>` 记下来。", file=sys.stderr)
     return EXIT_OK
 
 
@@ -529,10 +632,19 @@ def cmd_status(a):
 
 
 def cmd_send(a):
+    target = a.session
+    if not target:
+        # No guess and no fallback to "pm": a report sent to the wrong session is
+        # worse than a refusal, and SPEC.md:93-95 wants the name recorded once.
+        target = load_state(a.root).get("justice")
+        if not target:
+            print("还没记法官会话：用 --session <名字> 指定，或先跑 "
+                  "`polity up --justice <名字>` 记下来。", file=sys.stderr)
+            return EXIT_USAGE
     msg = a.message if a.message is not None else sys.stdin.read()
     if a.tag:
         msg = f"【{a.tag}】{msg}"
-    ok, said = send(a.session, msg)
+    ok, said = send(target, msg)
     print(("ok: " if ok else "FAILED: ") + said)
     return EXIT_OK if ok else EXIT_CLI
 
@@ -606,8 +718,19 @@ def cmd_dispatch(a):
         return EXIT_CLI
     record(root, kind="dispatch", task=a.task, session=target, role=role, baseline=base)
     print(f"dispatched {a.task} -> {target} ({ROLES[role]})  [{said}]")
-    print(f"基线 seq = {base}；等它做完：")
-    print(f"  polity wait --session {target} --after {base} --timeout {a.timeout}")
+    if role == "pm":
+        justice = load_state(root).get("justice")
+        if justice:
+            print(f"法官会话 `{justice}`；它会被这一条叫醒（派工消息里也写了）：")
+            print(f"  {wake_command(root, a.task, justice)}")
+        else:
+            print("! 法官会话还没记（`polity up --justice <名字>`）：总理汇报时无法叫醒任何人。",
+                  file=sys.stderr)
+    else:
+        # `wait` is the pm's tool for its own workers (SPEC.md:96-97); the justice
+        # never polls (SPEC.md:89-92), so this hint is only printed for a worker.
+        print(f"基线 seq = {base}；等它做完：")
+        print(f"  polity wait --session {target} --after {base} --timeout {a.timeout}")
     return EXIT_OK
 
 
@@ -746,9 +869,10 @@ def build_parser():
     sub_root(s)
     s.set_defaults(fn=cmd_init)
 
-    s = sub.add_parser("up", help="开总理会话")
+    s = sub.add_parser("up", help="开总理会话，并记下法官是谁")
     sub_root(s)
     s.add_argument("--pm", help="会话名，默认 pm")
+    s.add_argument("--justice", help="法官会话名。记下来之后 `send` 不用再给 --session")
     s.add_argument("--cwd", help="总理会话的工作目录，默认项目根")
     s.set_defaults(fn=cmd_up)
 
@@ -756,9 +880,10 @@ def build_parser():
     sub_root(s)
     s.set_defaults(fn=cmd_status)
 
-    s = sub.add_parser("send", help="给一个会话发消息（立即返回）")
+    s = sub.add_parser("send", help="给法官发消息（立即返回）；--session 省略就是法官")
     sub_root(s)
-    s.add_argument("--session", required=True)
+    s.add_argument("--session",
+                   help="缺省用 .polity/state.json 里记的法官会话；没记就报错，不猜")
     s.add_argument("--message")
     s.add_argument("--tag", help="加前缀，如 汇报 / 判决")
     s.set_defaults(fn=cmd_send)
@@ -782,7 +907,7 @@ def build_parser():
     s.add_argument("--timeout", type=int, default=300, help="只用于打印建议命令")
     s.set_defaults(fn=cmd_dispatch)
 
-    s = sub.add_parser("wait", help="等到回合结束，打印收尾那一句")
+    s = sub.add_parser("wait", help="等到回合结束（总理等自己的执行者用；法官不用它）")
     sub_root(s)
     s.add_argument("--session", required=True)
     s.add_argument("--after", type=int, required=False)
@@ -810,6 +935,14 @@ def build_parser():
 
 def main(argv=None):
     a = build_parser().parse_args(argv)
+    # Remember the root so the first client call can point the client at a home
+    # polity owns: nothing it does may write the user's cli.toml (SPEC.md:96-97).
+    # Lazy, not eager: a command that never calls the client (`verify`, `new`)
+    # must not create a `.polity/client-home/` in whatever root it was pointed at.
+    # A command run is for one root, so the home derived from the previous root must
+    # not leak into this one (an in-process caller -- the tests -- can run both).
+    global ROOT, CLIENT_HOME
+    ROOT, CLIENT_HOME = a.root, None
     return a.fn(a)
 
 

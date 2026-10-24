@@ -46,16 +46,24 @@ P=.agents/skills/polity/polity
 | `get_messages --seq <a>:<b>` | 行区间（1 基、两端含、`-5:` 取最后五条）+ `last_seq`，可反复轮询 |
 | per-session 系统提示 | **没有**。`instructions` 只有全局一份 |
 | 子会话的 `$GONGGA_CLI` | 有。所以总理能再派生执行者——两层是真的 |
+| `send` 的 `--session` | 可省：法庭在 `up --justice <名字>` 时记下法官，省略就发给它；没记就报错，不猜 |
+| 每次 CLI 调用的 `--home` | 指向 `.polity/client-home/`（polity 自己的），所以法庭的命令**不写**用户的 `cli.toml` |
 
 两个直接后果：
 
 1. **角色只能靠消息和文件承载。** 没有 per-session 系统提示，所以 `dispatch` 每次都把
    角色、宪法路径、章程路径、铁律重新写进派工消息里。不要指望"创建时设过一次"。
-2. **派工 ≠ 做完。** 派完必须 `wait`。
+2. **派工 ≠ 做完。** 派完必须等到结果——但"等"分两种：总理用自己的 `wait` 等执行者；
+   法官不等，它结束回合、被汇报消息唤醒（`SPEC.md:89-92`）。唤醒是**一条命令**，不是等：
+   总理的派工消息里带着照抄就能跑的那一行，`--session` 都不用给。
 
 ---
 
-## 3. 为什么要 seq 基线（最容易写错的一处）
+## 3. 为什么要 seq 基线（最容易写错的一处）——`wait` 是总理的工具
+
+**先说归属**：`wait` 给总理等它自己的执行者用。**法官不用它**——法官派完工就结束回合，
+被总理的汇报消息唤醒（`SPEC.md:89-92`：the turn boundary already is the wait，法官的会话里
+放一个 wait 循环是设计错误）。所以下面这段是总理读的。
 
 `wait` 要两件事**同时**成立：
 
@@ -74,6 +82,8 @@ $P wait --session w1 --after 42 --timeout 600
 `wait` 的退出码：`0` 拿到收尾正文；`3` 超时；`5` 回合结束了但没有收尾正文（通常是跑崩了）。
 `5` 和 `3` 都要看 `read`，别当成功。
 
+（`wait` 只写 polity 自己的 client home，不碰 user 的 `~/.gongga/cli.toml`——见第 10 节。）
+
 ---
 
 ## 4. 一次完整的闭环
@@ -90,10 +100,10 @@ $P wait --session w1 --after 42 --timeout 600
 
 ```bash
 $P init                      # .polity/、宪法骨架、三份章程
-$P up --pm pm                # 开总理会话
+$P up --pm pm --justice test1  # 开总理会话，并记下"法官是哪个会话"
 # 手写 .polity/constitution.md：把 user 的原话变成条款
 $P dispatch --to pm --task 001 --title "把 A 的构建搬到 B" --role pm --body @-
-$P wait --session pm --after <上面打印的基线> --timeout 900
+# —— 到此结束回合。汇报来了你自然被唤醒，不要 wait ——
 $P read --session pm --after 0         # 读总理的汇报：做了什么、拿了什么证据
 $P new ruling 001                      # 判；证据不回答问题的，退回，不判
 ```
@@ -105,7 +115,8 @@ $P dispatch --to w1 --task 001a --title "改 a.txt" --role worker --body @-
 $P wait --session w1 --after <上面打印的基线> --timeout 600
 $P verify --root .                     # 取证：git 上到底改了什么（输出贴进汇报）
 $P new report 001                      # 汇总，交给大法官
-$P send --session <大法官的会话> --tag 汇报 --message "001 汇报已就绪：.polity/reports/001.md"
+$P send --tag 汇报 --message "001 汇报已就绪：.polity/reports/001.md"
+#   --session 省略：法庭在 `up --justice` 时记下了法官是谁。发完就结束回合，不要 wait 探法官。
 ```
 
 ### 执行者
@@ -217,7 +228,7 @@ detached 的进程不随会话死（见 `self-control`）。判决"违宪、要�
 ```bash
 .agents/skills/polity/polity --help          # 10 个子命令
 .agents/skills/polity/polity status --root .
-python3 .agents/skills/polity/test_polity.py # 116 项，退出码即结论
+python3 .agents/skills/polity/test_polity.py # 146 项，退出码即结论
 ```
 
 `test_polity.py` 分两层：`wait_loop` 对着**脚本化的时钟**跑（时序错误都在那里），
@@ -232,6 +243,15 @@ verify 不警告被忽略的根、任务单不带交付章节、任务单不填�
 003 又补十三条——`brief()` 的铁律 2 按角色分叉（总理那份不得再出现「不得派生」，且要报并行度；
 执行者那份不得松动）、`status` 的章程漂移警告（真漂移要报、全新法庭不许报、退出码不变、
 缺文件也要报）、`verify` 的帮助不再写「独立取证」——四条变异各红一次。
+
+005 又补三十条——客户端被加了 `--home`（每条 CLI 调用都指向 `.polity/client-home/`）、
+`up --justice` 记下法官、`send` 省略 `--session` 时发给法官（没记就报错、不猜）、总理的派工消息
+带一条照抄能跑的唤醒命令、法官章程不再教 `wait`。五条变异各红一次：去掉 `--home`、`send` 猜名字、
+派工消息不写唤醒、`up` 忽略 `--justice`、法官章程重新教 `wait`。
+
+**一条 005 的实测，值得记下来**：同一条 `dispatch`，旧代码把用户的 `cli.toml` 从 `keep-me`
+改成被派的会话名（md5 `98685aaa…` → `9423790c…`）；新代码跑 `status` / `wait` / `dispatch`
+三条之后 md5 一格没动。这不是"我认为不会写了"，是同一个 home 上、同一批命令、前后两份代码的对照。
 
 测试自己的教训也记在这里：最初"未跳过非 JSON 行"和"角色一律大法官"这两个变异**没红**——
 前者因为 try/except 本来就挡住了非 JSON（那个判断真正挡的是 `42` 这种**合法 JSON 但不是对象**

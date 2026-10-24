@@ -88,12 +88,35 @@ def parse_seq(raw, last):
     return one(start_s, 1), one(end_s, last)
 
 
+GLOBAL_FLAGS = ("--server", "--home", "--key")
+
+
+def split_global(argv):
+    """Global options come before the command, exactly as in the real client.
+
+    polity now runs every call with `--home` on its own client home
+    (SPEC.md:96-97), so a fake that assumed `argv[0]` was the command would
+    report "unknown command --home" and hide the wiring instead of testing it.
+    """
+    i, opts = 0, {}
+    while i < len(argv) and argv[i] in GLOBAL_FLAGS:
+        opts[argv[i][2:]] = argv[i + 1] if i + 1 < len(argv) else ""
+        i += 2
+    return argv[i], argv[i + 1:], opts
+
+
 def main(argv):
-    if len(argv) < 2:
+    name, rest, opts = split_global(argv[1:])   # argv[0] is this script
+    if not name:
         print("no command", file=sys.stderr)
         return 2
-    name = argv[1]
-    args = args_of(argv[2:])
+    args = args_of(rest)
+    # `FAKE_CLI_ARGV` makes the global flags observable: a test can then prove the
+    # court ran the client with a home of its own, not the user's.
+    log = os.environ.get("FAKE_CLI_ARGV")
+    if log:
+        with open(log, "a", encoding="utf-8", newline="\n") as f:
+            f.write(json.dumps({"cmd": name, "global": opts}, ensure_ascii=False) + "\n")
     state = load()
     print("gongga · offline — connecting…")  # banner noise; not JSON
     emit({"t": "cmd", "id": 1, "name": name, "args": args})

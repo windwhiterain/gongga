@@ -306,6 +306,10 @@ try:
     equal("init does not overwrite a filled-in constitution",
           open(os.path.join(tmp, ".polity", "constitution.md"), encoding="utf-8").read(), const)
     body = open(os.path.join(tmp, ".polity", "charter", "justice.md"), encoding="utf-8").read()
+    check("the justice charter never runs wait",
+          "polity wait --session" not in body and "$P wait" not in body, body)
+    check("it says wait belongs to the pm", "`polity wait` 是总理" in body, body)
+    check("and that the justice is woken instead", "结束回合" in body and "唤醒" in body, body)
     check("the justice is told not to grade its own work", "不写实现代码" in body, body[:80])
     check("the justice is told demanding is not gathering", "要证据不是取证" in body, body)
     check("and that test runs and evidence are not its job",
@@ -387,6 +391,86 @@ try:
           "你要派生执行者" in brief2 and "并行度" in brief2, brief2)
     check("a worker brief still forbids it", "不得派生别的 agent" in brief, brief)
     check("and says nothing about parallelism", "并行度" not in brief, brief)
+
+    # ---- the client gets a home of its own, so no court command writes the user's
+    # per-session client state (SPEC.md:96-97). The check is on what the client was
+    # actually run with, not on our intention.
+    print("\nclient home: every client call runs with --home on polity's own directory")
+    src = os.path.join(tmp, "user-home")
+    os.makedirs(src)
+    open(os.path.join(src, "config.toml"), "w", encoding="utf-8").write("[server]\nkey = \"k\"\n")
+    home = m.prepare_client_home(tmp, source=src)
+    equal("the private home is inside .polity",
+          os.path.abspath(home), os.path.abspath(os.path.join(tmp, ".polity", "client-home")))
+    check("it carries the connection key", os.path.exists(os.path.join(home, "config.toml")),
+          os.listdir(home))
+    argv = m.client_argv(["set_session", "--session", "x"])
+    check("the client is told to use it", argv[1:3] == ["--home", os.path.abspath(home)], argv)
+    check("and the command still comes last", argv[-3:] == ["set_session", "--session", "x"], argv)
+    # A command that never drives the client must not litter the root with a home.
+    other = os.path.join(tmp, "no-client")
+    os.makedirs(other)
+    m.CLIENT_HOME, keep = None, m.CLIENT_HOME
+    try:
+        with quiet():
+            run("--root", other, "new", "report", "009")
+    finally:
+        m.CLIENT_HOME = keep
+    check("a command with no client call creates no client home",
+          not os.path.exists(os.path.join(other, ".polity", "client-home")))
+
+    print("\nwake: the court records the justice, and send finds it without a name")
+    srv4 = Server()
+    with server_installed(srv4), quiet() as (out, err):
+        code = run("--root", tmp, "up", "--justice", "judge-x")
+    equal("up with --justice succeeds", code, m.EXIT_OK)
+    saved = json.load(open(os.path.join(tmp, ".polity", "state.json"), encoding="utf-8"))
+    equal("the court records which session the justice is", saved.get("justice"), "judge-x")
+    srv4.create("judge-x")
+    with server_installed(srv4), quiet() as (out, err):
+        code = run("--root", tmp, "send", "--tag", "汇报", "--message", "报告好了")
+    equal("send without --session succeeds", code, m.EXIT_OK)
+    sent_to = [args_of(c[1:]).get("session") for c in srv4.calls if c[0] == "send_message"]
+    equal("and it goes to the recorded justice", sent_to, ["judge-x"])
+    srv4.create("someone-else")
+    with server_installed(srv4), quiet() as (out, err):
+        code = run("--root", tmp, "send", "--session", "someone-else", "--message", "m")
+    equal("an explicit --session still wins", code, m.EXIT_OK)
+    equal("and goes where it says",
+          [args_of(c[1:]).get("session") for c in srv4.calls if c[0] == "send_message"][-1],
+          "someone-else")
+
+    # A court that never recorded its justice must refuse, not guess.
+    stj = json.load(open(os.path.join(tmp, ".polity", "state.json"), encoding="utf-8"))
+    stj.pop("justice", None)
+    json.dump(stj, open(os.path.join(tmp, ".polity", "state.json"), "w", encoding="utf-8"),
+              ensure_ascii=False)
+    srv5 = Server()
+    with server_installed(srv5), quiet() as (out, err):
+        code = run("--root", tmp, "send", "--message", "m")
+    equal("no recorded justice and no --session is a usage error", code, m.EXIT_USAGE)
+    check("and it says how to record one", "up --justice" in err.getvalue(), err.getvalue())
+    check("and nothing was sent", not [c for c in srv5.calls if c[0] == "send_message"],
+          srv5.calls)
+    stj["justice"] = "judge-x"
+    json.dump(stj, open(os.path.join(tmp, ".polity", "state.json"), "w", encoding="utf-8"),
+              ensure_ascii=False)
+
+    # The brief the pm gets must carry a wake line that runs as written (SPEC.md:93-95).
+    print("\nwake: the pm's brief carries a command that runs as written")
+    srv6 = Server()
+    with server_installed(srv6), quiet() as (out, err):
+        run("--root", tmp, "dispatch", "--to", "pm2", "--task", "010",
+            "--title", "统筹", "--role", "pm")
+    brief3 = args_of(srv6.calls[-1][1:])["message"]
+    check("the pm brief names the justice", "judge-x" in brief3, brief3)
+    check("and carries the launcher, not a bare `polity`",
+          m.launcher() in brief3, m.launcher())
+    check("and the wake command omits --session",
+          "send --root" in brief3 and "--session" not in brief3, brief3)
+    check("and tells the pm not to wait on the justice", "不要" in brief3 and "wait" in brief3,
+          brief3)
+    check("a worker brief has no wake block", "交活" not in brief, brief)
 
     with server_installed(Server()), quiet() as (out, err):
         run("--root", tmp, "dispatch", "--to", "w1", "--task", "001",
@@ -542,9 +626,18 @@ tmp = tempfile.mkdtemp(prefix="polity-p-")
 try:
     state = os.path.join(tmp, "state.json")
     cli, _ = shim(tmp, state)
-    env = dict(os.environ, GONGGA_CLI=cli, FAKE_CLI_STATE=state)
+    # A stand-in for the user's home: if polity ever pointed the client at it, the
+    # fake would write its sticky there and these checks would see it.
+    user_home = os.path.join(tmp, "user-home")
+    os.makedirs(user_home)
+    open(os.path.join(user_home, "config.toml"), "w", encoding="utf-8").write(
+        "[server]\nkey = \"from-user-home\"\n")
+    argv_log = os.path.join(tmp, "argv.jsonl")
+    env = dict(os.environ, GONGGA_CLI=cli, FAKE_CLI_STATE=state,
+               GONGGA_HOME=user_home, FAKE_CLI_ARGV=argv_log)
     real_env = dict(os.environ)
-    os.environ.update(GONGGA_CLI=cli, FAKE_CLI_STATE=state)
+    os.environ.update(GONGGA_CLI=cli, FAKE_CLI_STATE=state,
+                      GONGGA_HOME=user_home, FAKE_CLI_ARGV=argv_log)
     try:
         with quiet():
             equal("init through the launcher", run("--root", tmp, "init"), m.EXIT_OK)
@@ -556,6 +649,21 @@ try:
             code = run("--root", tmp, "status")
         equal("status reads the live server", code, m.EXIT_OK)
         check("and lists the pm session", "pm" in out.getvalue(), out.getvalue())
+
+        # -- the zero-write claim, checked on the child processes themselves --
+        calls = [json.loads(x) for x in open(argv_log, encoding="utf-8") if x.strip()]
+        check("the client calls so far are on record", len(calls) >= 2, calls)
+        homes = [c["global"].get("home") for c in calls]
+        want_home = os.path.abspath(os.path.join(tmp, ".polity", "client-home"))
+        check("each one ran with --home on polity's own directory",
+              all(h and os.path.abspath(h) == want_home for h in homes), homes)
+        check("none of them ran on the user's home",
+              all(os.path.abspath(h) != os.path.abspath(user_home) for h in homes if h), homes)
+        check("the private home carries the connection key",
+              os.path.exists(os.path.join(want_home, "config.toml")), os.listdir(want_home))
+        check("and the user's home gained no cli.toml",
+              not os.path.exists(os.path.join(user_home, "cli.toml")),
+              os.listdir(user_home))
 
         os.environ["FAKE_REPLY"] = "DONE 001"
         p = subprocess.run([sys.executable, os.path.join(HERE, "polity.py"),
@@ -576,6 +684,18 @@ try:
                            capture_output=True, text=True, env=os.environ)
         check("a second dispatch takes the current tail as its baseline",
               "基线 seq = 2" in p.stdout, p.stdout + p.stderr)
+        # Every command that drove the client -- up, status, two dispatches, each
+        # with a set_session + get_messages + send_message inside it -- must have
+        # run on polity's own home. This is the zero-write proof, from the children.
+        calls = [json.loads(x) for x in open(argv_log, encoding="utf-8") if x.strip()]
+        check("dispatch drove the client too", len(calls) >= 6, len(calls))
+        check("and every call kept --home on the private directory",
+              all(h and os.path.abspath(h) == want_home
+                  for h in (c["global"].get("home") for c in calls)),
+              [c["global"].get("home") for c in calls])
+        check("still no cli.toml in the user's home",
+              not os.path.exists(os.path.join(user_home, "cli.toml")),
+              os.listdir(user_home))
     finally:
         os.environ.clear()
         os.environ.update(real_env)
