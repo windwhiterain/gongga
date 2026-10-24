@@ -139,7 +139,7 @@ fn draw_log(f: &mut Frame, s: &mut Screen, area: Rect) {
     let lines: Vec<Line> = view
         .rows
         .iter()
-        .map(|(kind, text)| Line::from(Span::styled(*text, style_for(*kind))))
+        .map(|(kind, text)| Line::from(Span::styled(text.clone(), style_for(*kind))))
         .collect();
 
     f.render_widget(Paragraph::new(lines), area);
@@ -272,6 +272,7 @@ mod tests {
     use ratatui::buffer::Buffer;
 
     use super::*;
+    use crate::Detail;
     use crate::log::Log;
 
     /// A copy must take exactly the rows the frame drew, however tall the input is.
@@ -370,6 +371,59 @@ mod tests {
         let buf = term.backend().buffer().clone();
         assert_eq!(row_text(&buf, 1), "[peer] onethree");
         assert_eq!(row_text(&buf, 2), "[test1] two");
+    }
+
+    /// The three detail modes, drawn: they differ in how many rows a turn takes.
+    #[test]
+    fn the_detail_modes_change_what_a_frame_shows() {
+        // Long enough to wrap at this width, so folding is visible.
+        let thinking = "abcdefghij klmnopqrst uvwxyz abcdefghi jklmnop";
+        let frame = |detail: Detail| {
+            let mut screen = screen_with(&[]);
+            screen.log.set_detail(detail);
+            screen.log.stream(
+                "s:main",
+                LineKind::Reasoning,
+                "[main] thinking: ",
+                thinking,
+                true,
+            );
+            screen.log.stream(
+                "s:main",
+                LineKind::ToolCall,
+                "[main] tool: ",
+                "bash{ls}",
+                true,
+            );
+            screen
+                .log
+                .stream("o:main:1", LineKind::Assistant, "[main] ", "a\nb", true);
+            let mut term = Terminal::new(TestBackend::new(40, 12)).unwrap();
+            term.draw(|f| draw(f, &mut screen)).unwrap();
+            let buf = term.backend().buffer().clone();
+            (1..=8).map(|row| row_text(&buf, row)).collect::<Vec<_>>()
+        };
+
+        // `all`: the thinking block wraps, so the turn takes more rows than the log
+        // window has to spare.
+        let all = frame(Detail::All);
+        assert!(all[0].starts_with("[main] thinking: abcdefghij"), "{all:?}");
+        assert_eq!(
+            all.iter().filter(|r| r.is_empty()).count(),
+            8 - 5,
+            "{all:?}"
+        );
+
+        // `line`: the same block is one row, with the tail on it.
+        let line = frame(Detail::Line);
+        assert!(line[0].starts_with("[main] thinking: …"), "{line:?}");
+        assert!(!line[1].is_empty(), "the tool row follows at once");
+
+        // `one`: the session's row is rewritten by the tool call, so the thinking
+        // text is not on screen at all.
+        let one = frame(Detail::One);
+        assert_eq!(one[0], "[main] tool: bash{ls}");
+        assert!(!one[1].is_empty(), "the answer follows at once");
     }
 
     /// Layout, window and the rows the bottom of the log shows, without a terminal.

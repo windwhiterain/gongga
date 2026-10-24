@@ -7,7 +7,7 @@ pub mod commands;
 pub mod complete;
 
 pub use crate::catalog::Catalog;
-pub use crate::commands::Sticky;
+pub use crate::commands::{Detail, Sticky};
 pub use crate::complete::{Candidate, Completer, Completion, SharedCompleter, token_bounds};
 
 use std::net::SocketAddr;
@@ -122,6 +122,8 @@ pub trait Sink {
     fn stream(&mut self, key: &str, kind: LineKind, prefix: &str, text: &str, done: bool);
     fn status(&mut self, text: &str);
     fn footer(&mut self, text: &str);
+    /// How much of each event to show. A front-end that does not fold ignores it.
+    fn detail(&mut self, _mode: Detail) {}
 }
 
 /// The one-shot mode's sink: it prints nothing, but it remembers what went
@@ -166,6 +168,7 @@ pub struct Client {
     catalog: Catalog,
     sticky: Sticky,
     filters: EventFilters,
+    detail: Detail,
     /// Where `set_session` / `del_session` land, once the server says yes.
     /// See `docs/notes/cli-lib.md`.
     follows: Vec<(u64, String, String)>,
@@ -201,12 +204,14 @@ impl Echo<'_> {
 impl Client {
     fn new(catalog: Catalog, sticky: Sticky) -> Self {
         let filters = EventFilters::load(sticky.home());
+        let detail = Detail::load(sticky.home());
         catalog.set_sticky_names(&sticky.names());
         catalog.set_filter_names(&filters.names());
         Self {
             catalog,
             sticky,
             filters,
+            detail,
             follows: Vec::new(),
             sessions: Vec::new(),
             model: "-".to_string(),
@@ -270,8 +275,8 @@ impl Client {
         match event {
             Event::Cmd { name, args, .. } => {
                 if shown {
-                    let rendered = render_args(&args);
-                    sink.line(LineKind::System, &format!("$ {name}{rendered}"));
+                    let line = format!("$ {name}{}", render_args(&args));
+                    self.cmd_line(LineKind::System, &line, sink);
                 }
             }
             Event::CmdResult {
@@ -279,14 +284,12 @@ impl Client {
             } => {
                 self.settle_follow(id, ok, sink);
                 if shown && !message.is_empty() {
-                    sink.line(
-                        if ok {
-                            LineKind::Result
-                        } else {
-                            LineKind::Error
-                        },
-                        &message,
-                    );
+                    let kind = if ok {
+                        LineKind::Result
+                    } else {
+                        LineKind::Error
+                    };
+                    self.cmd_line(kind, &message, sink);
                 }
             }
             Event::Response(e) => {
@@ -336,7 +339,14 @@ impl Client {
     }
 
     fn handle_response(&self, e: ResponseEvent, sink: &mut dyn Sink) {
-        let key = format!("r:{}:{}:{:?}", e.session, e.turn, e.part);
+        // Which rows a stream joins is meaning, so it is decided here; how a
+        // block is drawn is the front-end's.
+        let key = match (self.detail, e.part) {
+            // `one` folds a session's messages together; the answer keeps its text.
+            (Detail::One, ResponsePart::Output) => format!("o:{}:{}", e.session, e.turn),
+            (Detail::One, _) => format!("s:{}", e.session),
+            _ => format!("r:{}:{}:{:?}", e.session, e.turn, e.part),
+        };
         let (kind, label) = match e.part {
             ResponsePart::Reasoning => (LineKind::Reasoning, "thinking: "),
             ResponsePart::ToolCall => (LineKind::ToolCall, "tool: "),
@@ -347,6 +357,15 @@ impl Client {
         // The tag rides on the prefix: a prefix is printed once per key.
         let prefix = format!("[{}] {label}", e.session);
         sink.stream(&key, kind, &prefix, &e.text, e.done);
+    }
+
+    /// The command echo and its result: one row each, or one shared row in `one`.
+    fn cmd_line(&self, kind: LineKind, text: &str, sink: &mut dyn Sink) {
+        if self.detail == Detail::One {
+            sink.stream("cmd", kind, "", text, false);
+        } else {
+            sink.line(kind, text);
+        }
     }
 
     fn handle_tool_answer(&self, e: ToolAnswerEvent, sink: &mut dyn Sink) {
@@ -373,6 +392,8 @@ impl Client {
     /// The status line: server facts only, never a "current session".
     /// See `docs/notes/cli-lib.md`.
     pub fn refresh(&self, sink: &mut dyn Sink) {
+        // Told on every refresh, so a front-end attached late still learns it.
+        sink.detail(self.detail);
         let facts = if self.connected {
             format!("model {} | {} session(s)", self.model, self.sessions.len())
         } else if self.attempts == 0 {
@@ -390,6 +411,9 @@ impl Client {
         let filters = pairs(&self.filters.pairs());
         if !filters.is_empty() {
             footer.push_str(&format!("  | filters: {filters}"));
+        }
+        if self.detail != Detail::All {
+            footer.push_str(&format!("  | detail: {}", self.detail.as_str()));
         }
         sink.footer(&footer);
     }
@@ -599,11 +623,35 @@ impl Client {
                 return;
             }
         };
-        let Some(arg_name) = args.get("name").cloned() else {
+        // `--name` belongs to the commands that name something; the detail mode
+        // names a mode instead.
+        if !matches!(name, "set_event_detail") && !args.contains_key("name") {
             sink.line(LineKind::Error, &format!("{name} requires --name"));
             return;
-        };
+        }
+        let arg_name = args.get("name").cloned().unwrap_or_default();
         match name {
+            "set_event_detail" => {
+                let Some(raw) = args.get("mode").cloned() else {
+                    sink.line(LineKind::Error, "set_event_detail requires --mode");
+                    return;
+                };
+                let mode = match Detail::parse(&raw) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        sink.line(LineKind::Error, &e);
+                        return;
+                    }
+                };
+                match mode.save(self.sticky.home()) {
+                    Ok(()) => {
+                        self.detail = mode;
+                        sink.line(LineKind::Result, &format!("detail = {}", mode.as_str()));
+                        self.after_sticky_change(sink);
+                    }
+                    Err(e) => sink.line(LineKind::Error, &format!("could not save: {e}")),
+                }
+            }
             "set_persistant_cmd_argument" => {
                 let Some(value) = args.get("value").cloned() else {
                     sink.line(
@@ -1419,6 +1467,107 @@ mod tests {
             }
             _ => panic!("expected a message to send"),
         }
+    }
+
+    /// `one` groups a session's messages under one key so the front-end can fold
+    /// them; the other modes keep one key per part.
+    #[test]
+    fn one_mode_groups_a_sessions_messages_under_one_key() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
+        c.detail = Detail::One;
+        let mut s = StreamSink::default();
+        c.handle_response(response("main", ResponsePart::Reasoning, "a"), &mut s);
+        c.handle_response(response("main", ResponsePart::ToolCall, "b"), &mut s);
+        c.handle_response(response("main", ResponsePart::Output, "c"), &mut s);
+        // Reasoning and tool calls share the session's row; the answer has its own.
+        assert_eq!(s.keys, vec!["s:main", "s:main", "o:main:1"]);
+    }
+
+    /// In the other modes a part is a block of its own, so nothing is glued.
+    #[test]
+    fn all_and_line_keep_one_key_per_part() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
+        for mode in [Detail::All, Detail::Line] {
+            c.detail = mode;
+            let mut s = StreamSink::default();
+            c.handle_response(response("main", ResponsePart::Reasoning, "a"), &mut s);
+            c.handle_response(response("main", ResponsePart::ToolCall, "b"), &mut s);
+            assert_eq!(
+                s.keys,
+                vec!["r:main:1:Reasoning", "r:main:1:ToolCall"],
+                "{mode:?}"
+            );
+        }
+    }
+
+    /// `one` puts the command echo and its result on one shared row.
+    #[test]
+    fn one_mode_folds_the_command_echo_and_its_result() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
+        c.detail = Detail::One;
+        let mut s = StreamSink::default();
+        c.handle_event(
+            Event::Cmd {
+                id: 1,
+                name: "get_messages".into(),
+                args: protocol::Args::default(),
+            },
+            &mut s,
+        );
+        c.handle_event(
+            Event::CmdResult {
+                id: 1,
+                ok: true,
+                message: "3 rows".into(),
+                data: None,
+            },
+            &mut s,
+        );
+        assert_eq!(s.keys, vec!["cmd", "cmd"]);
+        assert_eq!(s.lines, vec!["$ get_messages", "3 rows"]);
+
+        // The other modes keep them as lines of their own.
+        c.detail = Detail::All;
+        let mut s = StreamSink::default();
+        c.handle_event(
+            Event::CmdResult {
+                id: 1,
+                ok: true,
+                message: "3 rows".into(),
+                data: None,
+            },
+            &mut s,
+        );
+        assert!(s.keys.is_empty(), "{:?}", s.keys);
+    }
+
+    /// The mode is a client setting: it persists and the front-end is told.
+    #[test]
+    fn set_event_detail_saves_and_tells_the_front_end() {
+        let d = tempfile::tempdir().unwrap();
+        let cat = Catalog::new();
+        cat.set_sticky_names(&[]);
+        cat.set_filter_names(&[]);
+        let mut c = client_with(cat, Sticky::load(d.path()), vec!["main"]);
+        let mut s = VecSink(Vec::new());
+        assert!(matches!(
+            c.command(argv("set_event_detail --mode line"), &mut s),
+            Submission::Local
+        ));
+        assert_eq!(c.detail, Detail::Line);
+        assert_eq!(Detail::load(d.path()), Detail::Line);
+
+        // A mode nothing answers to is refused, and the list says what does.
+        assert!(matches!(
+            c.command(argv("set_event_detail --mode huge"), &mut s),
+            Submission::Local
+        ));
+        assert_eq!(c.detail, Detail::Line);
+        let said = s.0.join("\n");
+        assert!(said.contains("all, line, one"), "{said}");
     }
 
     #[test]

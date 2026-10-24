@@ -33,7 +33,7 @@ pub use crate::log::Log;
 pub use crate::run::interactive;
 
 // The vocabulary is the command layer's, re-exported so this crate can name it.
-pub use cli::{Candidate, Completer, Completion, LineKind, SharedCompleter, token_bounds};
+pub use cli::{Candidate, Completer, Completion, Detail, LineKind, SharedCompleter, token_bounds};
 
 /// How long a keystroke waits to see whether the next one is part of a paste.
 ///
@@ -154,6 +154,12 @@ impl Tui {
             self.screen.status = status;
             self.dirty = true;
         }
+    }
+
+    /// How much of each event to show, as the command layer last said.
+    pub fn set_detail(&mut self, mode: Detail) {
+        self.screen.log.set_detail(mode);
+        self.dirty = true;
     }
 
     pub fn set_footer(&mut self, footer: impl Into<String>) {
@@ -490,7 +496,7 @@ impl Tui {
         let text = view
             .rows
             .iter()
-            .map(|(_, row)| *row)
+            .map(|(_, row)| row.as_ref())
             .collect::<Vec<_>>()
             .join("\n");
         drop(view);

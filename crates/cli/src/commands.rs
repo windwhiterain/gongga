@@ -14,6 +14,60 @@ pub const EVENT_FIELDS: &[&str] = &[
     "session", "sessions", "status", "stream", "t", "text", "tool", "turn",
 ];
 
+/// How much of each event the log shows. Client-side only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Detail {
+    /// Every block in full; the default.
+    #[default]
+    All,
+    /// Each block that is not content folded onto one row, rewritten as it streams.
+    Line,
+    /// One row per session, and one for the command echo; content keeps its text.
+    One,
+}
+
+/// The modes `set_event_detail --mode` takes, in the order it lists them.
+pub const DETAIL_MODES: &[&str] = &["all", "line", "one"];
+
+impl Detail {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Detail::All => "all",
+            Detail::Line => "line",
+            Detail::One => "one",
+        }
+    }
+
+    /// The mode named, or the list of modes; there is no silent default.
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim() {
+            "all" => Ok(Detail::All),
+            "line" => Ok(Detail::Line),
+            "one" => Ok(Detail::One),
+            other => Err(format!(
+                "no event detail mode {other:?}; it takes {}",
+                DETAIL_MODES.join(", ")
+            )),
+        }
+    }
+
+    /// Loads `home/cli.toml`; a missing or unreadable file is the default mode.
+    pub fn load(home: &Path) -> Self {
+        read_file(&home.join("cli.toml"))
+            .event_detail
+            .as_deref()
+            .and_then(|raw| Detail::parse(raw).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save(self, home: &Path) -> anyhow::Result<()> {
+        let path = home.join("cli.toml");
+        let mut file = read_file(&path);
+        file.event_detail = Some(self.as_str().to_string());
+        write_file(&path, &file)
+    }
+}
+
 /// `~/.gongga/cli.toml`.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct File {
@@ -21,6 +75,8 @@ struct File {
     persistant_cmd_arguments: Vec<Entry>,
     #[serde(default)]
     event_filters: Vec<Entry>,
+    #[serde(default)]
+    event_detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -338,6 +394,27 @@ mod tests {
         };
         assert!(filters.allows(&event(protocol::ResponsePart::Output)));
         assert!(!filters.allows(&event(protocol::ResponsePart::Reasoning)));
+    }
+
+    /// The mode survives a restart; an unknown one on disk falls back rather
+    /// than refusing to start.
+    #[test]
+    fn the_detail_mode_is_remembered() {
+        let d = dir();
+        assert_eq!(Detail::load(d.path()), Detail::All);
+        Detail::Line.save(d.path()).unwrap();
+        assert_eq!(Detail::load(d.path()), Detail::Line);
+
+        // Hand-written rubbish is not a reason to fail to start.
+        std::fs::write(d.path().join("cli.toml"), "event_detail = \"huge\"\n").unwrap();
+        assert_eq!(Detail::load(d.path()), Detail::All);
+    }
+
+    #[test]
+    fn an_unknown_detail_mode_lists_the_modes() {
+        let why = Detail::parse("huge").unwrap_err();
+        assert!(why.contains("all, line, one"), "{why}");
+        assert_eq!(Detail::parse(" one "), Ok(Detail::One));
     }
 
     #[test]

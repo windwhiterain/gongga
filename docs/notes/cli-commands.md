@@ -39,6 +39,18 @@ variant: the field names are the names in the wire JSON (`session`, `part`,
 event variant does not need a new filtering branch. A hidden event still returns
 `true` for everything else -- see `Client::handle_event`.
 
+## Detail
+
+`set_event_detail --mode` is a display preference, so it is client state: the
+server sends the same events either way. It lives in `cli.toml` beside the sticky
+arguments and the filters, through the same read-modify-write, so the three
+writers still do not clobber each other.
+
+An unknown mode is refused with the list, and an unknown value already in the file
+falls back to `all` -- a hand-edited file is not a reason for a client to refuse to
+start. Its own parse failure is different from the file's: the first is someone
+typing, the second is damage.
+
 ## EVENT_FIELDS
 
 An `--name` that no event carries filters nothing, and silently doing nothing is

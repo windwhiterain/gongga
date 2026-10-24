@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use crate::commands::EVENT_FIELDS;
+use crate::commands::{DETAIL_MODES, EVENT_FIELDS};
 use crate::complete::{Candidate, Completer, token_bounds};
 use protocol::{ArgSpec, CommandSpec, CompletionSource};
 
@@ -382,6 +382,19 @@ fn client_specs(sticky: &[String], filters: &[String]) -> Vec<CommandSpec> {
             ],
         },
         CommandSpec {
+            name: "set_event_detail".into(),
+            summary: "How much of each event the log shows: all, line, or one.".into(),
+            args: vec![arg(
+                "mode",
+                "`all` shows every block in full; `line` folds each block that is not \
+                 content onto one rewritten row; `one` keeps one row per session and one \
+                 for commands.",
+                true,
+                Some("mode"),
+                CompletionSource::Static(DETAIL_MODES.iter().map(|m| m.to_string()).collect()),
+            )],
+        },
+        CommandSpec {
             name: "del_event_filter".into(),
             summary: "Remove an event filter.".into(),
             args: vec![arg(
@@ -538,7 +551,10 @@ mod tests {
     fn argument_names_complete_from_the_whole_catalog() {
         let c = catalog();
         let got = values(&c, "/set_persistant_cmd_argument --name ");
-        assert_eq!(got, vec!["cwd", "message", "name", "session", "value"]);
+        assert_eq!(
+            got,
+            vec!["cwd", "message", "mode", "name", "session", "value"]
+        );
     }
 
     /// A sticky value completes like the argument it fills: `session` offers

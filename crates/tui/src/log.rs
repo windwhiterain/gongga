@@ -5,11 +5,27 @@
 //! A frame touches only the visible rows, and an append lands on exactly the
 //! rows a reflow of the whole line would. See `docs/notes/tui-log.md`.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::LineKind;
+use crate::{Detail, LineKind};
+
+/// How much of a folded block is kept: a row shows the tail, so the front may go.
+const FOLD_KEEP: usize = 4096;
+
+/// Whether a block folds under `detail`: content keeps its text, progress folds.
+fn folds(detail: Detail, kind: LineKind) -> bool {
+    match detail {
+        Detail::All => false,
+        Detail::Line => matches!(kind, LineKind::Reasoning | LineKind::ToolCall),
+        Detail::One => !matches!(
+            kind,
+            LineKind::Assistant | LineKind::ToolOutput | LineKind::ToolError
+        ),
+    }
+}
 
 /// One block: a line that may still be growing, plus its rows.
 ///
@@ -27,6 +43,15 @@ struct Entry {
     col: usize,
     /// No more text can arrive, so the block is scrollback.
     sealed: bool,
+    /// Drawn as one row, whatever its length. See `docs/notes/tui-log.md`.
+    folded: bool,
+    /// The label a folded row always shows. Kept out of `text` so clipping the
+    /// tail cannot cut it.
+    tag: String,
+    /// Byte offset of the first character of `text` a folded row shows.
+    view_start: usize,
+    /// Text was dropped from the front, so the row begins mid-sentence.
+    truncated: bool,
 }
 
 impl Entry {
@@ -37,6 +62,10 @@ impl Entry {
             starts: vec![0],
             col: 0,
             sealed: false,
+            folded: false,
+            tag: String::new(),
+            view_start: 0,
+            truncated: false,
         };
         // Width 0 means "not measured yet": the first draw reflows at its own width.
         if width > 0 {
@@ -45,12 +74,31 @@ impl Entry {
         entry
     }
 
+    /// A block that is drawn as one row however long it grows.
+    fn folded(kind: LineKind, tag: &str) -> Self {
+        Self {
+            kind,
+            text: String::new(),
+            starts: vec![0],
+            col: 0,
+            sealed: false,
+            folded: true,
+            tag: tag.to_string(),
+            view_start: 0,
+            truncated: false,
+        }
+    }
+
     fn rows(&self) -> usize {
         self.starts.len()
     }
 
     /// Recomputes every row offset at `width`.
     fn reflow(&mut self, width: usize) {
+        if self.folded {
+            self.reflow_folded(width);
+            return;
+        }
         let Self {
             text, starts, col, ..
         } = self;
@@ -60,6 +108,68 @@ impl Entry {
         let mut wrap = Wrap { width, col: 0 };
         wrap.feed(text, 0, starts);
         *col = wrap.col;
+    }
+
+    /// The one row a folded block shows: the tail of the text that fits.
+    ///
+    /// # Invariant
+    ///
+    /// Exactly one row, and the tag survives: the label is what tells a reader
+    /// whose line this is, so the cut always comes from the front.
+    fn reflow_folded(&mut self, width: usize) {
+        let avail = width.saturating_sub(self.tag.width());
+        self.starts.clear();
+        self.starts.push(0);
+        // The whole body fits, and nothing was dropped: show it as it is.
+        if !self.truncated && self.text.width() <= avail {
+            self.view_start = 0;
+            self.col = self.text.width();
+            return;
+        }
+        // One column short of the body, so the ellipsis itself still fits.
+        let room = avail.saturating_sub(1).max(1);
+        let mut used = 0;
+        let mut start = self.text.len();
+        for (i, ch) in self.text.char_indices().rev() {
+            let w = ch.width().unwrap_or(0).max(1);
+            if used + w > room {
+                break;
+            }
+            used += w;
+            start = i;
+        }
+        self.view_start = start;
+        self.col = used;
+    }
+
+    /// Starts a folded block over under a new tag, keeping the row it already has.
+    fn restart(&mut self, tag: &str) {
+        self.tag.clear();
+        self.tag.push_str(tag);
+        self.text.clear();
+        self.view_start = 0;
+        self.truncated = false;
+    }
+
+    /// Adds to a folded block: the text is joined onto one row, keeping the tail.
+    fn append_folded(&mut self, text: &str, width: usize) {
+        for ch in text.chars() {
+            // A folded row is one row, so a break inside the block is a space.
+            self.text
+                .push(if ch == '\n' || ch == '\r' { ' ' } else { ch });
+        }
+        let overflow = self.text.len().saturating_sub(FOLD_KEEP);
+        if overflow > 0 {
+            let mut cut = overflow;
+            while cut < self.text.len() && !self.text.is_char_boundary(cut) {
+                cut += 1;
+            }
+            self.text.replace_range(..cut, "");
+            self.truncated = true;
+        }
+        if width > 0 {
+            self.reflow_folded(width);
+        }
     }
 
     /// Adds text to the end of this line, continuing the wrap from the last row.
@@ -87,10 +197,30 @@ impl Entry {
     /// it, so a trailing newline yields a final empty row. See
     /// `docs/notes/tui-log.md`.
     fn row(&self, row: usize) -> &str {
-        let start = self.starts[row];
+        let start = if self.folded {
+            self.view_start
+        } else {
+            self.starts[row]
+        };
         let end = self.starts.get(row + 1).copied().unwrap_or(self.text.len());
         let text = &self.text[start..end];
         text.strip_suffix('\n').unwrap_or(text)
+    }
+}
+
+impl Entry {
+    /// One row as a frame shows it: a folded row carries its tag, and an
+    /// ellipsis when the front was cut.
+    fn view_row(&self, row: usize) -> Cow<'_, str> {
+        if !self.folded {
+            return Cow::Borrowed(self.row(row));
+        }
+        let cut = if self.view_start > 0 || self.truncated {
+            "…"
+        } else {
+            ""
+        };
+        Cow::Owned(format!("{}{cut}{}", self.tag, self.row(row)))
     }
 }
 
@@ -206,7 +336,7 @@ impl RowIndex {
 
 /// What one frame needs: the rows that fit, borrowed from the log, and the bound.
 pub struct Viewport<'a> {
-    pub rows: Vec<(LineKind, &'a str)>,
+    pub rows: Vec<(LineKind, Cow<'a, str>)>,
     /// Rows hidden above the window; only the renderer can work this out.
     pub max_scroll: usize,
 }
@@ -226,11 +356,30 @@ pub struct Log {
     open: HashMap<String, usize>,
     /// The width the cached row offsets were measured at; 0 until a frame is drawn.
     width: usize,
+    /// How much of each event to show. See [`Log::set_detail`].
+    detail: Detail,
 }
 
 impl Log {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Changes how much each event shows: blocks on screen keep their shape.
+    pub fn set_detail(&mut self, detail: Detail) {
+        if self.detail == detail {
+            return;
+        }
+        self.detail = detail;
+        // The open keys belong to the old grouping, so they cannot be reused.
+        self.open.clear();
+        // Force the next frame to re-measure every block under the new mode.
+        self.width = 0;
+        self.index = RowIndex::default();
+    }
+
+    pub fn detail(&self) -> Detail {
+        self.detail
     }
 
     pub fn len(&self) -> usize {
@@ -258,11 +407,23 @@ impl Log {
     /// first chunk still opens the block, so a slow token keeps its label.
     pub fn stream(&mut self, key: &str, kind: LineKind, tag: &str, text: &str, done: bool) {
         let width = self.width;
+        let detail = self.detail;
+        let folded = folds(detail, kind);
         let line = match self.open.get(key).copied() {
             Some(line) => {
-                let before = self.entries[line].rows();
-                self.entries[line].append(text, width);
-                let after = self.entries[line].rows();
+                let entry = &mut self.entries[line];
+                let before = entry.rows();
+                if entry.folded {
+                    // A new tag means a different event is speaking, so the row is
+                    // rewritten rather than growing: one row cannot hold both.
+                    if entry.tag != tag {
+                        entry.restart(tag);
+                    }
+                    entry.append_folded(text, width);
+                } else {
+                    entry.append(text, width);
+                }
+                let after = entry.rows();
                 self.index.add(line, after.saturating_sub(before));
                 line
             }
@@ -274,6 +435,15 @@ impl Log {
                 }
                 return;
             }
+            None if folded => {
+                let mut entry = Entry::folded(kind, tag);
+                entry.append_folded(text, width);
+                self.index.push(entry.rows());
+                self.entries.push(entry);
+                let line = self.entries.len() - 1;
+                self.open.insert(key.to_string(), line);
+                line
+            }
             None => {
                 let mut entry = Entry::new(kind, format!("{tag}{text}"), width);
                 entry.sealed = false;
@@ -284,7 +454,10 @@ impl Log {
                 line
             }
         };
-        if done {
+        // A folded `one` block belongs to the session, so the next chunk rewrites
+        // it instead of a seal here.
+        let sticky = self.entries[line].folded && detail == Detail::One;
+        if done && !sticky {
             self.open.remove(key);
             self.trim_tail(line);
             self.entries[line].sealed = true;
@@ -349,7 +522,7 @@ impl Log {
         let end = total - scroll;
         let start = end.saturating_sub(height);
 
-        let mut rows: Vec<(LineKind, &str)> = Vec::with_capacity(end - start);
+        let mut rows: Vec<(LineKind, Cow<'_, str>)> = Vec::with_capacity(end - start);
         if start < end {
             // Jump to the block holding the first visible row: O(log blocks).
             let mut line = self.index.line_at(start).min(self.entries.len() - 1);
@@ -358,7 +531,7 @@ impl Log {
                 let entry = &self.entries[line];
                 let next = first + entry.rows();
                 for row in start.max(first)..end.min(next) {
-                    rows.push((entry.kind, entry.row(row - first)));
+                    rows.push((entry.kind, entry.view_row(row - first)));
                 }
                 if next >= end || line + 1 >= self.entries.len() {
                     break;
@@ -514,6 +687,128 @@ mod tests {
         assert_eq!(shown(&mut log, 4, 2, 1), vec!["aaa", "bbbb"]);
         assert_eq!(shown(&mut log, 4, 2, 99), vec!["aaaa", "aaa"]);
         assert_eq!(log.window(4, 2, 99).max_scroll, 2);
+    }
+
+    /// `line`: a folded block is one row however much text it receives, and the
+    /// row keeps the newest of it.
+    #[test]
+    fn line_folds_a_reasoning_block_onto_one_row() {
+        let mut log = Log::new();
+        log.set_detail(Detail::Line);
+        for chunk in ["first ", "second ", "third"] {
+            log.stream(
+                "r:main:1:Reasoning",
+                LineKind::Reasoning,
+                "[main] thinking: ",
+                chunk,
+                false,
+            );
+        }
+        let rows = shown(&mut log, 40, 10, 0);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0], "[main] thinking: first second third");
+
+        // Long text keeps the tail, so the newest words are what is on screen.
+        for _ in 0..10 {
+            log.stream(
+                "r:main:1:Reasoning",
+                LineKind::Reasoning,
+                "[main] thinking: ",
+                "and more",
+                false,
+            );
+        }
+        let rows = shown(&mut log, 40, 10, 0);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert!(rows[0].starts_with("[main] thinking: …"), "{rows:?}");
+        assert!(rows[0].ends_with("and more"), "{rows:?}");
+    }
+
+    /// The label survives the cut: it is what says whose line this is.
+    #[test]
+    fn a_folded_row_keeps_its_tag_however_long_the_text() {
+        let mut log = Log::new();
+        log.set_detail(Detail::Line);
+        log.stream(
+            "k",
+            LineKind::Reasoning,
+            "[peer] thinking: ",
+            &"x".repeat(500),
+            false,
+        );
+        let rows = shown(&mut log, 30, 5, 0);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].starts_with("[peer] thinking: "), "{rows:?}");
+    }
+
+    /// `line` folds progress, not content: the answer keeps its own rows.
+    #[test]
+    fn line_leaves_content_alone() {
+        let mut log = Log::new();
+        log.set_detail(Detail::Line);
+        log.stream("o", LineKind::Assistant, "[main] ", "one\ntwo\nthree", true);
+        assert_eq!(
+            shown(&mut log, 40, 10, 0),
+            vec!["[main] one", "two", "three"]
+        );
+    }
+
+    /// `all` is what it always was: a block grows a row at a time.
+    #[test]
+    fn all_keeps_every_row() {
+        let mut log = Log::new();
+        log.stream("k", LineKind::Reasoning, "[m] ", "a\nb", true);
+        assert_eq!(shown(&mut log, 40, 10, 0), vec!["[m] a", "b"]);
+    }
+
+    /// `one`: a block that is folded keeps being the same row across chunks,
+    /// even though each chunk arrives with `done`.
+    #[test]
+    fn one_rewrites_one_row_for_the_whole_stream() {
+        let mut log = Log::new();
+        log.set_detail(Detail::One);
+        log.stream(
+            "s:main",
+            LineKind::Reasoning,
+            "[main] thinking: ",
+            "thinking",
+            true,
+        );
+        // A new chunk, a different label, still the same row.
+        log.stream(
+            "s:main",
+            LineKind::ToolCall,
+            "[main] tool: ",
+            "bash{ls}",
+            true,
+        );
+        let rows = shown(&mut log, 40, 10, 0);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        // Rewritten, not glued: one row cannot show two events' text.
+        assert_eq!(rows[0], "[main] tool: bash{ls}");
+    }
+
+    /// A mode change does not reuse the open keys of the old one.
+    #[test]
+    fn changing_the_mode_opens_new_blocks() {
+        let mut log = Log::new();
+        log.stream("k", LineKind::Reasoning, "[m] ", "a\nb", false);
+        log.set_detail(Detail::Line);
+        log.stream("k", LineKind::Reasoning, "[m] ", "c", true);
+        let rows = shown(&mut log, 40, 10, 0);
+        assert_eq!(rows.len(), 3, "{rows:?}");
+        assert_eq!(rows[2], "[m] c");
+    }
+
+    /// A folded block still costs what one row costs, whatever it holds.
+    #[test]
+    fn a_folded_block_stays_one_row_at_any_width() {
+        let mut log = Log::new();
+        log.set_detail(Detail::Line);
+        log.stream("k", LineKind::Reasoning, "[m] ", &"y".repeat(300), false);
+        assert_eq!(log.rows(10), 1);
+        assert_eq!(log.rows(200), 1);
+        assert_eq!(log.rows(4), 1);
     }
 
     /// A frame must not depend on how long the log is, or wrapping per frame returns.

@@ -3,7 +3,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use cli::{DialFailure, Greeting, LineKind, Link, Sink};
+use cli::{Detail, DialFailure, Greeting, LineKind, Link, Sink};
 use tokio::time::Duration;
 
 use crate::{Tui, UiEvent};
@@ -35,6 +35,10 @@ impl Sink for TuiSink<'_> {
 
     fn footer(&mut self, text: &str) {
         self.0.set_footer(text);
+    }
+
+    fn detail(&mut self, mode: Detail) {
+        self.0.set_detail(mode);
     }
 }
 

@@ -147,6 +147,47 @@ Appends to an entry by position, which `Log::stream` does once it has resolved a
 key. A missing line is ignored rather than panicked on: losing a chunk is a
 better failure than taking the window down.
 
+## Log::set_detail
+
+A display preference, so it lives with the front-end and not with the events:
+the same stream arrives, only the number of rows it occupies changes. Blocks
+already on screen keep the shape they were drawn in -- retro-fitting them would
+mean re-reading history nobody asked to see again -- and `open` is cleared so the
+next chunk of a key opens a block in the new mode instead of appending to one
+drawn the old way.
+
+## Log::set_detail — why `folds` lives here
+
+Which *rows a stream joins* is a question about meaning, so the command layer
+answers it: in `one` mode it hands a session's parts one key. How many rows one
+block occupies is a question about drawing, so it is answered here. Neither layer
+has to know the other's half of the rule, and a front-end that renders events
+some other way can ignore `Sink::detail` entirely (its default is a no-op).
+
+Content is never folded: `Assistant`, `ToolOutput` and `ToolError` are what the
+operator came for. Everything else is progress.
+
+## Entry::reflow_folded
+
+One row, always. The tag is kept out of `text` for exactly this reason: the cut
+has to come from the front, and clipping a composed string would take the label
+with it.
+
+## Entry::append_folded
+
+A break inside a folded block becomes a space, because the row it lands on is
+the only row there is. The buffer keeps its last `FOLD_KEEP` bytes: a row shows
+the tail, so the front is the part that can go, and a thinking block that runs
+for an hour cannot grow the log without bound.
+
+## Log::stream — a folded block in `one` mode
+
+`done` seals a block, which is right for a key that names one part and wrong for
+a key that names a session: the next part arrives with `done` of its own and must
+reuse the same row. So a folded block in `one` mode stays open, and a changed tag
+restarts it -- one row cannot show two events' text, and gluing them reads as a
+word that was never typed.
+
 ## Log::window
 
 The rows for one frame: everything visible, nothing more.
