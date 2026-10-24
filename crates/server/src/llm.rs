@@ -1469,7 +1469,7 @@ mod tests {
         assert_eq!(v["call_id"], "c1");
     }
 
-    /// `--thinking-effort` rides on the request as the API spells it; unset sends
+    /// `--thinking_effort` rides on the request as the API spells it; unset sends
     /// no `reasoning` object at all.
     #[test]
     fn a_thinking_level_rides_on_the_request() {

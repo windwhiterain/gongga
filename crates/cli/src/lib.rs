@@ -664,12 +664,9 @@ impl Client {
                     Err(e) => sink.line(LineKind::Error, &format!("could not save: {e}")),
                 }
             }
-            "set_persistant_cmd_argument" => {
+            "set_sticky_cmd_argument" => {
                 let Some(value) = args.get("value").cloned() else {
-                    sink.line(
-                        LineKind::Error,
-                        "set_persistant_cmd_argument requires --value",
-                    );
+                    sink.line(LineKind::Error, "set_sticky_cmd_argument requires --value");
                     return;
                 };
                 match self.sticky.set(&arg_name, &value) {
@@ -680,7 +677,7 @@ impl Client {
                     Err(e) => sink.line(LineKind::Error, &format!("could not save: {e}")),
                 }
             }
-            "del_persistant_cmd_argument" => match self.sticky.del(&arg_name) {
+            "del_sticky_cmd_argument" => match self.sticky.del(&arg_name) {
                 Ok(true) => {
                     sink.line(LineKind::Result, &format!("cleared {arg_name}"));
                     self.after_sticky_change(sink);
@@ -1709,7 +1706,7 @@ mod tests {
         let mut s = VecSink(Vec::new());
         assert!(matches!(
             c.command(
-                argv("set_persistant_cmd_argument --name session --value main"),
+                argv("set_sticky_cmd_argument --name session --value main"),
                 &mut s
             ),
             Submission::Local
@@ -1719,7 +1716,7 @@ mod tests {
             vec![("session".to_string(), "main".to_string())]
         );
         assert!(matches!(
-            c.command(argv("del_persistant_cmd_argument --name session"), &mut s),
+            c.command(argv("del_sticky_cmd_argument --name session"), &mut s),
             Submission::Local
         ));
         assert!(c.sticky.pairs().is_empty());

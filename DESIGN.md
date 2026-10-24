@@ -142,7 +142,7 @@ Event:         Cmd | CmdResult | Response | ToolAnswer | Sessions | Status | Log
 `Event` 自己也带 `t` 判别符，内部标签嵌套会序列化出两个 `t`，客户端直接反序列化失败。
 这个坑在第一次端到端冒烟时踩到了。
 
-**sticky 参数不在协议里**。SPEC 把它放在 UI 一节（`persistant_cmd_arguments[{name,value}]`），
+**sticky 参数不在协议里**。SPEC 把它放在 UI 一节（`sticky_cmd_arguments[{name,value}]`），
 所以它是纯客户端概念：CLI 保存在自己的 `~/.gongga/cli.toml` 里，发送前补齐，服务端完全不知道。
 早先版本让服务端存 `cmd_args` 表、在 dispatch 前补齐 —— 已按 SPEC 删掉。
 
@@ -236,7 +236,7 @@ turn 结束时会把还在排队的第二条消息的 pending 一起删掉 —�
 某会话的全部失败工具调用、或改写单条消息，而不必反序列化整份文档。
 
 **没有 `meta` 表，也没有「当前会话」。** 会话要么被点名，要么命令就报错；默认值只可能
-来自客户端的 `persistant_cmd_argument`，它在命令上线前就被填好。服务端不保存任何
+来自客户端的 `sticky_cmd_argument`，它在命令上线前就被填好。服务端不保存任何
 「你上次用的是哪个会话」这类隐藏状态。
 
 `pending_tasks` 是未完成的活：一个 turn **开始前**写行、**结束后**删行，所以崩溃留下的痕迹
@@ -652,7 +652,7 @@ Windows 上 Git Bash 会**在程序启动之前**把 `/x` 改写成 `C:/.../Git/
 `get_messages --session <s> [--after_seq <n>] [--limit <n>]`。
 - **会话名一律叫 `--session`**。以前 `set_session` / `del_session` / `interrupt_session` 写的是
   `--name`，只有 `send_message` 是 `--session` —— 同一个东西四种拼法，代价是 sticky
-  `session` 只能填上其中三条。现在四条一致，`set_persistant_cmd_argument --name session
+  `session` 只能填上其中三条。现在四条一致，`set_sticky_cmd_argument --name session
   --value main` 对每条命令都生效。
 - `set_session` 同时承担创建与配置：命名是唯一得到会话的方式，拒绝创建会让它没用。
   **它不再设置任何「当前会话」** —— 想要默认值就用客户端的 sticky `session`。
@@ -677,10 +677,9 @@ Windows 上 Git Bash 会**在程序启动之前**把 `/x` 改写成 `C:/.../Git/
   而判断不出该从哪继续。**只读就不排队**：它不拿会话门，因为读一份正在被追加的
   transcript 正是 TUI 回放在做的事，两者都没有东西要写。
 
-客户端（本地执行，不上线）：`set_persistant_cmd_argument --name --value`、
-`del_persistant_cmd_argument --name`。这两个本来就在客户端，名字和 SPEC 一致，没有改动。
-另有 `set_event_filter --name --value` / `del_event_filter --name`（SPEC 里叫
-`set_sticky_cmd_argument`，与实现和 DESIGN §5 的既有拼法不一致，按代码拼法实现）。
+客户端（本地执行，不上线）：`set_sticky_cmd_argument --name --value`、
+`del_sticky_cmd_argument --name`。这两个本来就在客户端，名字按 SPEC 统一为 sticky 拼法。
+另有 `set_event_filter --name --value` / `del_event_filter --name`。
 
 ### 事件过滤器（`set_event_filter` / `del_event_filter`）
 
@@ -720,13 +719,13 @@ TUI 是一种实现（带样式的行），非交互模式是另一种（什么�
 - **补全目录 = 服务端目录 + 客户端目录**。三个位置都补：命令名、`--` 后的参数名、
   参数值。值只在目录声明了来源时才补，来源有五种：`Sessions`（活着的会话）、
   `Static`（固定集合：`--llm` 的名单条目、`--compact_threshold` 的百分位）、
-  `Arguments`（目录里所有参数名，给 `set_persistant_cmd_argument --name`）、
+  `Arguments`（目录里所有参数名，给 `set_sticky_cmd_argument --name`）、
   `Paths`（客户端这台机器的文件系统，给 `--cwd`）、`OfNamedArgument`（见下）。
-  `del_persistant_cmd_argument --name` 的候选来自当前 sticky 参数名，随 sticky 变化重建。
+  `del_sticky_cmd_argument --name` 的候选来自当前 sticky 参数名，随 sticky 变化重建。
 - **打了一半的值也要补**：`--session <TAB>` 与 `--session sc<TAB>` 是同一份候选。判据是
   「光标前一个词是不是旗标」，而不是「行尾是不是旗标」——以前只看行尾，于是打出几个字母
   之后就再也补不出来，等于只支持「一个字母都没打」的补全。
-- **`--value` 的形状取决于它要填哪个参数**：`set_persistant_cmd_argument --name session
+- **`--value` 的形状取决于它要填哪个参数**：`set_sticky_cmd_argument --name session
   --value <TAB>` 列会话名，`--name message` 就什么都不列。`OfNamedArgument` 的含义就是
   「读同一行 `--name` 的值，按那个参数声明的来源补」，所以不需要在每个命令上重复一遍。
 - **目录不带尾随空格**：`apply_completion` 默认补完补一个空格（旗标后面要跟值、命令名
@@ -752,7 +751,7 @@ TUI 是一种实现（带样式的行），非交互模式是另一种（什么�
 
 TUI 和 CLI **共用这一套模型**，TUI 不持有任何额外状态：它只是 `Sink` 的一种实现。
 状态条只报服务端事实（model、会话数量），**没有「当前会话」这一项**；sticky 参数单独一行
-显示，那是用户显式设的 persistant argument，不是 UI 的模式。
+显示，那是用户显式设的 sticky argument，不是 UI 的模式。
 **没有任何一条路径会替用户推断会话** —— 连以前那个 Ctrl+X 也没有了：`interrupt_session`
 和别的命令一样要求 `--session`，想省掉打字就设 sticky `session`，那是显式的。
 
@@ -994,7 +993,7 @@ Git Bash 自动探测常见安装路径，找不到再退回 PATH 上的 `bash`�
 | 中断在工具调用中间的 transcript 能继续用：造一条无结果的 `tool_call` 再追问 | 通过（真实 DeepSeek 答「结果未知，本轮被中断」；修复前同一份历史整条 400）|
 | `--name` 被拒并列出 `--session/--cwd/--llm/--compact_threshold` | 通过 |
 | 值补全：`--session` 列会话、`--llm` 列 44 个名单条目、`--compact_threshold` 列 0–90% | 通过（单测 5 个 + 目录过线测试）|
-| 值补全：`set_persistant_cmd_argument --name` 列全部参数名；`--name session --value` 列会话 | 通过（单测）|
+| 值补全：`set_sticky_cmd_argument --name` 列全部参数名；`--name session --value` 列会话 | 通过（单测）|
 | 值补全：`--cwd` 列目录，目录补成 `src/` 不带空格、再按 Tab 能进下一层 | 通过（单测，真 TTY 未验证）|
 | 工具输出上限：22KB `cat` → 2004 字符 + 落盘（真实 provider） | 通过 |
 | 摘要压缩：第 51 条处压出 2318 字符摘要，会话继续（真实 provider） | 通过 |

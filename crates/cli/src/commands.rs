@@ -68,11 +68,16 @@ impl Detail {
     }
 }
 
+/// The array-of-tables key `cli.toml` used before the rename. It is read and
+/// rewritten under `sticky_cmd_arguments`; the old key is never written again.
+/// This is the only surviving occurrence of the old spelling.
+const OLD_STICKY_KEY: &str = "persistant_cmd_arguments";
+
 /// `~/.gongga/cli.toml`.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct File {
     #[serde(default)]
-    persistant_cmd_arguments: Vec<Entry>,
+    sticky_cmd_arguments: Vec<Entry>,
     #[serde(default)]
     event_filters: Vec<Entry>,
     #[serde(default)]
@@ -94,17 +99,11 @@ impl Sticky {
     /// Loads from `home/cli.toml`; a missing or unreadable file yields none.
     pub fn load(home: &Path) -> Self {
         let path = home.join("cli.toml");
-        let args = match std::fs::read_to_string(&path) {
-            Ok(text) => toml::from_str::<File>(&text)
-                .map(|f| {
-                    f.persistant_cmd_arguments
-                        .into_iter()
-                        .map(|e| (e.name, e.value))
-                        .collect()
-                })
-                .unwrap_or_default(),
-            Err(_) => BTreeMap::new(),
-        };
+        let args = read_file(&path)
+            .sticky_cmd_arguments
+            .into_iter()
+            .map(|e| (e.name, e.value))
+            .collect();
         Self { path, args }
     }
 
@@ -144,7 +143,7 @@ impl Sticky {
 
     fn save(&self) -> anyhow::Result<()> {
         let mut file = read_file(&self.path);
-        file.persistant_cmd_arguments = entries(&self.args);
+        file.sticky_cmd_arguments = entries(&self.args);
         write_file(&self.path, &file)
     }
 
@@ -253,10 +252,37 @@ fn entries(args: &BTreeMap<String, String>) -> Vec<Entry> {
 
 /// Reads what is on disk so one writer keeps the other's section.
 fn read_file(path: &Path) -> File {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|text| toml::from_str::<File>(&text).ok())
-        .unwrap_or_default()
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return File::default();
+    };
+    let Ok(mut value) = toml::from_str::<toml::Value>(&text) else {
+        return File::default();
+    };
+    fold_old_sticky_key(&mut value);
+    File::deserialize(value).unwrap_or_default()
+}
+
+/// Moves the pre-rename key under the current one. A file carrying both keys
+/// keeps every pair; on a name clash the current key wins, because that is the
+/// one a later write keeps.
+fn fold_old_sticky_key(value: &mut toml::Value) {
+    let Some(root) = value.as_table_mut() else {
+        return;
+    };
+    let Some(old) = root.remove(OLD_STICKY_KEY) else {
+        return;
+    };
+    let mut merged = old.as_array().cloned().unwrap_or_default();
+    match root.get("sticky_cmd_arguments") {
+        Some(toml::Value::Array(new)) => merged.extend(new.iter().cloned()),
+        // A malformed current key is left for the parser to reject.
+        Some(_) => return,
+        None => {}
+    }
+    root.insert(
+        "sticky_cmd_arguments".to_string(),
+        toml::Value::Array(merged),
+    );
 }
 
 fn write_file(path: &Path, file: &File) -> anyhow::Result<()> {
@@ -334,6 +360,63 @@ mod tests {
         s.set("session", "main").unwrap();
         assert!(s.del("session").unwrap());
         assert!(!s.del("session").unwrap());
+    }
+
+    /// A `cli.toml` written before the rename still yields its arguments.
+    #[test]
+    fn the_old_disk_key_is_still_read() {
+        let d = dir();
+        std::fs::write(
+            d.path().join("cli.toml"),
+            format!("[[{OLD_STICKY_KEY}]]\nname = \"session\"\nvalue = \"test1\"\n"),
+        )
+        .unwrap();
+        let s = Sticky::load(d.path());
+        assert_eq!(s.get("session"), Some("test1"));
+    }
+
+    /// Both spellings may be on disk at once: the file parses, every pair
+    /// survives, and the new key wins a name that appears in both.
+    #[test]
+    fn both_disk_keys_load_without_losing_a_pair() {
+        let d = dir();
+        std::fs::write(
+            d.path().join("cli.toml"),
+            format!(
+                "[[{OLD_STICKY_KEY}]]\nname = \"session\"\nvalue = \"old\"\n\
+                 [[{OLD_STICKY_KEY}]]\nname = \"cwd\"\nvalue = \"/old\"\n\
+                 [[sticky_cmd_arguments]]\nname = \"session\"\nvalue = \"new\"\n"
+            ),
+        )
+        .unwrap();
+        let s = Sticky::load(d.path());
+        assert_eq!(
+            s.pairs(),
+            vec![
+                ("cwd".to_string(), "/old".to_string()),
+                ("session".to_string(), "new".to_string())
+            ]
+        );
+    }
+
+    /// Whichever writer saves, the file ends up under the new key with every
+    /// argument intact -- including an event-filter write, which never touched
+    /// the sticky pairs.
+    #[test]
+    fn any_save_migrates_the_old_key_without_dropping_arguments() {
+        let d = dir();
+        std::fs::write(
+            d.path().join("cli.toml"),
+            format!("[[{OLD_STICKY_KEY}]]\nname = \"session\"\nvalue = \"test1\"\n"),
+        )
+        .unwrap();
+        let mut filters = EventFilters::load(d.path());
+        filters.set("part", "output").unwrap();
+
+        let text = std::fs::read_to_string(d.path().join("cli.toml")).unwrap();
+        assert!(!text.contains(OLD_STICKY_KEY), "{text}");
+        assert_eq!(Sticky::load(d.path()).get("session"), Some("test1"));
+        assert_eq!(EventFilters::load(d.path()).get("part"), Some("output"));
     }
 
     /// The two writers share one file, so each has to keep the other's rows.

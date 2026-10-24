@@ -749,7 +749,7 @@ key = "second"
         assert_eq!(providers[0].endpoints[0].base_url, "https://one.example/v1");
     }
 
-    /// `--thinking-effort` is checked against these, and the mapping translates.
+    /// `--thinking_effort` is checked against these, and the mapping translates.
     #[test]
     fn reasoning_levels_are_read_and_mapped() {
         let text = r#"

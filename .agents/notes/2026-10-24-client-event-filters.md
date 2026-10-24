@@ -65,3 +65,5 @@ client 命令落地（SPEC 拼的是 `set_sticky_cmd_argument`，和代码/DESIG
 `taskkill /F /IM gongga-server.exe` 会把**跑着自己的那个**服务端一起杀掉。
 这次就把本会话的服务端杀了（harness 自动重启并 resume 了本回合）。杀测试服务端
 只按自己记下的 pid，或者干脆用 `$GONGGA_CLI`。
+
+更正（2026-10-24）：上文的 `persistant_cmd_argument` 已按 SPEC 改名为 `sticky_cmd_arguments`，命令改为 `set_sticky_cmd_argument` / `del_sticky_cmd_argument`；本文件是历史记录，正文不改写。

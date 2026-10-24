@@ -330,7 +330,7 @@ fn directory(cwd: &Path, typed: &str) -> PathBuf {
 fn client_specs(sticky: &[String], filters: &[String]) -> Vec<CommandSpec> {
     vec![
         CommandSpec {
-            name: "set_persistant_cmd_argument".into(),
+            name: "set_sticky_cmd_argument".into(),
             summary: "Set a sticky argument applied to every later command.".into(),
             args: vec![
                 arg(
@@ -351,7 +351,7 @@ fn client_specs(sticky: &[String], filters: &[String]) -> Vec<CommandSpec> {
             ],
         },
         CommandSpec {
-            name: "del_persistant_cmd_argument".into(),
+            name: "del_sticky_cmd_argument".into(),
             summary: "Remove a sticky argument.".into(),
             args: vec![arg(
                 "name",
@@ -470,10 +470,7 @@ mod tests {
     #[test]
     fn completes_command_names_from_both_catalogs() {
         let c = catalog();
-        assert_eq!(
-            values(&c, "/set_pers"),
-            vec!["/set_persistant_cmd_argument"]
-        );
+        assert_eq!(values(&c, "/set_st"), vec!["/set_sticky_cmd_argument"]);
         assert_eq!(values(&c, "/send"), vec!["/send_message"]);
     }
 
@@ -540,7 +537,7 @@ mod tests {
     fn sticky_names_complete_against_state() {
         let c = catalog();
         assert_eq!(
-            values(&c, "/del_persistant_cmd_argument --name "),
+            values(&c, "/del_sticky_cmd_argument --name "),
             vec!["session"]
         );
     }
@@ -550,7 +547,7 @@ mod tests {
     #[test]
     fn argument_names_complete_from_the_whole_catalog() {
         let c = catalog();
-        let got = values(&c, "/set_persistant_cmd_argument --name ");
+        let got = values(&c, "/set_sticky_cmd_argument --name ");
         assert_eq!(
             got,
             vec!["cwd", "message", "mode", "name", "session", "value"]
@@ -563,11 +560,11 @@ mod tests {
     fn a_sticky_value_completes_like_the_argument_it_fills() {
         let c = catalog();
         assert_eq!(
-            values(&c, "/set_persistant_cmd_argument --name session --value "),
+            values(&c, "/set_sticky_cmd_argument --name session --value "),
             vec!["main", "scratch"]
         );
         assert_eq!(
-            values(&c, "/set_persistant_cmd_argument --name=session --value ma"),
+            values(&c, "/set_sticky_cmd_argument --name=session --value ma"),
             vec!["main"]
         );
     }
@@ -577,8 +574,8 @@ mod tests {
     #[test]
     fn a_sticky_value_for_a_free_form_argument_offers_nothing() {
         let c = catalog();
-        assert!(values(&c, "/set_persistant_cmd_argument --name message --value ").is_empty());
-        assert!(values(&c, "/set_persistant_cmd_argument --value main").is_empty());
+        assert!(values(&c, "/set_sticky_cmd_argument --name message --value ").is_empty());
+        assert!(values(&c, "/set_sticky_cmd_argument --value main").is_empty());
     }
 
     /// A path value lists the directory it names, and a directory is inserted
@@ -681,7 +678,7 @@ mod tests {
     #[test]
     fn client_commands_are_marked() {
         let c = catalog();
-        assert!(c.is_client_command("set_persistant_cmd_argument"));
+        assert!(c.is_client_command("set_sticky_cmd_argument"));
         assert!(!c.is_client_command("send_message"));
     }
 }
