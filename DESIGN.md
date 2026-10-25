@@ -649,7 +649,7 @@ Windows 上 Git Bash 会**在程序启动之前**把 `/x` 改写成 `C:/.../Git/
 服务端：`send_message --message <m> --session <s>`、
 `set_session --session <s> [--cwd <path>] [--llm <provider/model>] [--compact_threshold <n%>]`、
 `del_session --session <s>`、`interrupt_session --session <s>`、`cancel`、
-`get_messages --session <s> [--after_seq <n>] [--limit <n>]`。
+`get_messages --session <s> --range <a:b>`。
 - **会话名一律叫 `--session`**。以前 `set_session` / `del_session` / `interrupt_session` 写的是
   `--name`，只有 `send_message` 是 `--session` —— 同一个东西四种拼法，代价是 sticky
   `session` 只能填上其中三条。现在四条一致，`set_sticky_cmd_argument --name session
@@ -671,9 +671,9 @@ Windows 上 Git Bash 会**在程序启动之前**把 `/x` 改写成 `C:/.../Git/
   那正是 detached 存在的理由，见上一节。
 - `get_messages` 是**唯一的读命令**，也是 SPEC「structured for agentic retrieval」第一次
   真的被用上：`send_message` 是 fire-and-forget、`response` 是一堆交错的增量，两者都不适合
-  「我不在场，告诉我它最后说了什么」。它按 `seq > after_seq` 取**最近的** `limit` 行
-  （SQL 里倒序取再翻回来，所以长 transcript 给的是尾巴而不是开头），顺手把
-  `last_seq` 带回来 —— 调用方据此推进游标，不许多跑一趟，也不会因为「这一轮只有工具调用」
+  「我不在场，告诉我它最后说了什么」。它取 `--range <a:b>` 这段**闭区间**的 seq
+  （两端都含、负数从末尾数，`-500:` 就是尾巴），顺手把 `last_seq` 和会话 `status`
+  带回来 —— 调用方据此推进游标，不许多跑一趟，也不会因为「这一轮只有工具调用」
   而判断不出该从哪继续。**只读就不排队**：它不拿会话门，因为读一份正在被追加的
   transcript 正是 TUI 回放在做的事，两者都没有东西要写。
 

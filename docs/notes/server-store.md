@@ -147,7 +147,7 @@ transcript the provider sees, and make the model answer questions nobody asked.
 
 ## Store::last_seq
 
-Where the transcript ends. A negative bound in `--seq` is resolved against it at
+Where the transcript ends. A negative bound in `--range` is resolved against it at
 read time, which is what makes `-1` mean "the newest row" rather than "one row
 before some fixed number".
 

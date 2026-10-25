@@ -216,10 +216,11 @@ pub fn catalog() -> Vec<CommandSpec> {
                     CompletionSource::Sessions,
                 ),
                 arg(
-                    "seq",
-                    "Which rows, as a range of sequence numbers: `-1` the newest row, `-5:` the \
-                     newest five, `5:10` rows 5 through 10, `:10` the first ten, `5:` from 5 on. \
-                     Both ends inclusive; a range past the end is just the rows that exist.",
+                    "range",
+                    "Which rows, as a closed range of sequence numbers: `-1` the newest row, \
+                     `-5:` the newest five, `5:10` rows 5 through 10, `:10` the first ten, `5:` \
+                     from 5 on. A negative number counts from the end; both ends inclusive, and \
+                     a range past the end is just the rows that exist.",
                     true,
                     Some("slice"),
                     CompletionSource::None,
@@ -483,12 +484,14 @@ fn parse_seq_slice(raw: &str, last_seq: i64) -> Result<SeqWindow, String> {
     let one = |part: &str, side: &str| -> Result<i64, String> {
         let part = part.trim();
         let n: i64 = part.parse().map_err(|_| {
-            format!("--seq takes sequence numbers like `5:10` or `-5:`, got {part:?} in the {side}")
+            format!(
+                "--range takes sequence numbers like `5:10` or `-5:`, got {part:?} in the {side}"
+            )
         })?;
         // Seq starts at 1, so 0 is a typo written either way.
         if n == 0 {
             return Err(format!(
-                "--seq counts sequence numbers from 1, or from -1 backwards; got 0 in the {side}"
+                "--range counts sequence numbers from 1, or from -1 backwards; got 0 in the {side}"
             ));
         }
         // Negative counts back from the tail, like a Python index: -1 is the newest row.
@@ -503,7 +506,7 @@ fn parse_seq_slice(raw: &str, last_seq: i64) -> Result<SeqWindow, String> {
     // A second colon is a step (`1:2:3`), which names no range here.
     if raw.matches(':').count() > 1 {
         return Err(format!(
-            "--seq takes one `start:end` range, not a step: got {raw:?}"
+            "--range takes one `start:end` range, not a step: got {raw:?}"
         ));
     }
     let window = match raw.split_once(':') {
@@ -516,7 +519,7 @@ fn parse_seq_slice(raw: &str, last_seq: i64) -> Result<SeqWindow, String> {
         }
         Some((start, end)) => {
             if start.trim().is_empty() && end.trim().is_empty() {
-                return Err("--seq needs a bound on one side, e.g. `-5:` or `:10`".into());
+                return Err("--range needs a bound on one side, e.g. `-5:` or `:10`".into());
             }
             let first = if start.trim().is_empty() {
                 1
@@ -531,7 +534,7 @@ fn parse_seq_slice(raw: &str, last_seq: i64) -> Result<SeqWindow, String> {
             // Backwards as written is a typo; empty after clamping is an answer.
             if !start.trim().is_empty() && !end.trim().is_empty() && first > last {
                 return Err(format!(
-                    "--seq {raw} runs backwards: it starts at {first} and ends at {last}"
+                    "--range {raw} runs backwards: it starts at {first} and ends at {last}"
                 ));
             }
             SeqWindow { first, last }
@@ -560,7 +563,7 @@ async fn get_messages(d: &Dispatch, args: &Args) -> Outcome {
         Ok(v) => v,
         Err(e) => return Outcome::err(e.to_string()),
     };
-    let raw = args["seq"].as_str();
+    let raw = args["range"].as_str();
     let window = match parse_seq_slice(raw, last_seq) {
         Ok(w) => w,
         Err(e) => return Outcome::err(e),
@@ -576,8 +579,12 @@ async fn get_messages(d: &Dispatch, args: &Args) -> Outcome {
     transcript_outcome(&name, t)
 }
 
-/// The reply `get_messages` makes: the window, where the transcript ends, and the
-/// session's `status` (SPEC.md:54).
+/// The reply `get_messages` makes: the window and where the transcript ends.
+///
+/// # Invariant
+///
+/// `last_seq` and `status` come from the same snapshot as the rows, so the reply
+/// answers "these rows, as of this moment" without a second read.
 ///
 /// Split out from the handler so the shape the law names can be asserted without
 /// standing up an agent and a bus -- the fields are the contract here, not the I/O.
@@ -1199,8 +1206,11 @@ mod tests {
         assert!(session.required);
         assert!(matches!(session.completions, CompletionSource::Sessions));
 
-        let seq = spec.args.iter().find(|a| a.name == "seq").unwrap();
-        assert!(seq.required, "SPEC names the range, so it is not optional");
+        let range = spec.args.iter().find(|a| a.name == "range").unwrap();
+        assert!(
+            range.required,
+            "SPEC names the range, so it is not optional"
+        );
         // The cursor form is gone: it was this range plus a truncation policy.
         assert!(
             !spec.args.iter().any(|a| a.name == "after_seq"),
@@ -1212,10 +1222,12 @@ mod tests {
         );
     }
 
-    /// `SPEC.md:54`: the reply is the rows, `last_seq`, **and the session's `status`**.
+    /// The reply is the rows, `last_seq`, and the session's `status`.
     ///
-    /// The shape is the contract, so it is asserted on the reply builder rather than
-    /// through a live dispatch: what the law names here are fields, not I/O.
+    /// # Invariant
+    ///
+    /// Asserted on the reply builder, not through a live dispatch: what matters
+    /// here are fields, not I/O.
     #[test]
     fn get_messages_reports_the_session_status_with_the_rows() {
         let rows = vec![
@@ -1238,11 +1250,11 @@ mod tests {
             let data = out
                 .data
                 .expect("a reader needs the data, not just a sentence");
-            // Visible with `--nocapture`: the reply SPEC.md:54 describes, verbatim.
+            // Visible with `--nocapture`: the reply shape, verbatim.
             println!("get_messages reply: {data}");
             assert_eq!(
                 data["status"], spelled,
-                "SPEC.md:54 spells the status in snake_case: {data}"
+                "status is spelled in snake_case on the wire: {data}"
             );
             assert_eq!(data["last_seq"], 2);
             assert_eq!(data["session"], "main");
@@ -1269,10 +1281,13 @@ mod tests {
         );
     }
 
-    /// `SPEC.md:54`: "Reads only: creates no session". A name nobody created must
-    /// still be refused -- `set_session` is the only thing that makes a session
-    /// (`crates/server/src/commands.rs`, set_session's `ensure`), and a read that
-    /// quietly materialised one would let a poller fill the database with ghosts.
+    /// A read creates no session.
+    ///
+    /// # Invariant
+    ///
+    /// A name nobody created is still refused -- `set_session` is the only thing
+    /// that makes a session (`ensure`), and a read that quietly materialised one
+    /// would let a poller fill the database with ghosts.
     #[test]
     fn get_messages_still_refuses_a_session_nobody_created() {
         let dir = tempfile::tempdir().unwrap();
@@ -1303,9 +1318,8 @@ mod tests {
             "reading must not create: {err}"
         );
 
-        // An existing session is read the same way and still not created twice.
-        // (No `sessions.get` here: materialising a handle spawns a shell, and a
-        // read-shape test must not depend on a shell being installed.)
+        // An existing session is read without being created again. No
+        // `sessions.get`: that would need a shell.
         let id = store.create_session("real", "m", "C:/x").unwrap();
         assert_eq!(store.list_sessions().unwrap().len(), 1);
         let t = store.messages_between(id, 1, i64::MAX).unwrap();

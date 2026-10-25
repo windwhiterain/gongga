@@ -506,13 +506,8 @@ impl Store {
         last: i64,
     ) -> anyhow::Result<Transcript> {
         let conn = self.lock();
-        // Both facts in one statement: one lock, one snapshot. A second query against
-        // `sessions` would let the status change under a reader being told "these are
-        // the rows as of now" (SPEC.md:54).
-        //
-        // Both sub-selects are coalesced: an id with no session row (the caller
-        // resolved the name, so `get_messages` never passes one) reads as an empty
-        // idle window instead of failing on a NULL. Inventing a row would be worse.
+        // One statement: rows and status from the same snapshot. Both
+        // sub-selects coalesce so a missing id reads empty and idle.
         let (last_seq, status): (i64, SessionStatus) = conn.query_row(
             "SELECT COALESCE((SELECT MAX(seq) FROM messages WHERE session_id = ?1), 0),
                     COALESCE((SELECT status FROM sessions WHERE id = ?1), 'idle')",
@@ -875,9 +870,10 @@ pub struct SessionRow {
 
 /// A window of the transcript plus where it ends, as `get_messages` reports it.
 ///
-/// `status` rides along because `SPEC.md:54` says this command reports it: a reader
-/// forced to ask twice can be told about a session that moved on between the two
-/// questions. It is read in the same statement as `last_seq`, so it is the session's
+/// # Invariant
+///
+/// `status` and `last_seq` come from the same snapshot: a reader is not told
+/// about a session that moved on between the rows and the status. It is read in the same statement as `last_seq`, so it is the session's
 /// state at the moment the window was taken, not a later guess.
 #[derive(Debug, Clone)]
 pub struct Transcript {
@@ -901,8 +897,7 @@ pub struct MessageRow {
 }
 
 impl MessageRow {
-    /// Flatten one stored row. `pub(crate)` so a caller with no store at hand
-    /// (a reply-shape test) can build the same value the reader would.
+    /// Flatten one stored row, for callers with no store at hand.
     pub(crate) fn parse(seq: i64, kind: &str, content: &str) -> Self {
         let value: serde_json::Value =
             serde_json::from_str(content).unwrap_or(serde_json::Value::Null);
@@ -1657,9 +1652,12 @@ mod tests {
         assert_eq!(t.messages[1].role, None);
     }
 
-    /// The window carries the session's status, and it is the status of *that*
-    /// session -- `SPEC.md:54` says `get_messages` reports it, and a reader that
-    /// has to ask twice can be told about a session that moved on in between.
+    /// The window carries the status of *that* session.
+    ///
+    /// # Invariant
+    ///
+    /// Rows and status come from one statement, so a reader is not told about a
+    /// session that moved on in between.
     ///
     /// Both readings come from one statement, so the pair cannot disagree.
     #[test]
@@ -1686,8 +1684,7 @@ mod tests {
             store.messages_between(b, 1, i64::MAX).unwrap().status,
             SessionStatus::Idle
         );
-        // An error is reported as itself, not flattened into idle: a caller that
-        // polls this must not read a broken session as a finished one.
+        // An error stays an error: a poller must not read it as finished.
         store.set_status(a, SessionStatus::Error).unwrap();
         assert_eq!(
             store.messages_between(a, 1, i64::MAX).unwrap().status,
@@ -1704,9 +1701,12 @@ mod tests {
         );
     }
 
-    /// A session id that was never created still reads as an empty window rather
-    /// than an error: `messages_between` is given an id the caller already resolved.
-    /// The "no such session" refusal belongs to the lookup, and is pinned next door.
+    /// An id that was never created reads as an empty window.
+    ///
+    /// # Invariant
+    ///
+    /// `messages_between` is given an id the caller already resolved: the "no such
+    /// session" refusal belongs to the lookup, and is pinned next door.
     #[test]
     fn an_unknown_session_id_has_no_rows_and_no_status() {
         let (_dir, store) = temp_store();

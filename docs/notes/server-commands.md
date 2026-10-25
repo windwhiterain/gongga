@@ -141,7 +141,7 @@ Read-only and cheap: one indexed range scan. It does not claim the session gate,
 because reading a transcript while a turn appends to it is exactly what the TUI's
 replay does, and neither has anything to write.
 
-## get_messages --seq
+## get_messages --range
 
 There is one way to name rows: a range. The old `--after_seq` + `--limit` pair
 was this range plus a truncation policy -- "the newest n after the cursor" --

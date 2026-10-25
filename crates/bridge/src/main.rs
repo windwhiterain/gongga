@@ -27,7 +27,7 @@ use crate::config::{Bridge as BridgeCfg, Config};
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_SERVER: &str = "127.0.0.1:9700";
 /// The tail window a read-back asks for; a longer turn only loses a tool name.
-const READ_SEQ: &str = "-500:";
+const READ_RANGE: &str = "-500:";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -170,7 +170,7 @@ impl Bridge {
                     .command(
                         sink,
                         "get_messages",
-                        args_of(&[("session", &session), ("seq", "-1")]),
+                        args_of(&[("session", &session), ("range", "-1")]),
                     )
                     .await?;
                 self.probes.insert(id, incoming);
@@ -332,7 +332,7 @@ impl Bridge {
             .command(
                 sink,
                 "get_messages",
-                args_of(&[("session", session), ("seq", READ_SEQ)]),
+                args_of(&[("session", session), ("range", READ_RANGE)]),
             )
             .await?;
         self.reads.insert(id, session.to_string());

@@ -349,7 +349,7 @@ async fn send_event(sink: &protocol::ChannelSink, event: Event) -> anyhow::Resul
             };
             let why = format!(
                 "the reply was {len} bytes, over the {limit} bytes one message carries; \
-                 ask for fewer rows with --seq, e.g. `--seq -500:`"
+                 ask for fewer rows with --range, e.g. `--range -500:`"
             );
             tracing::warn!(id, len, limit, "reply too large to send");
             let small = ServerMessage::Event(Event::CmdResult {

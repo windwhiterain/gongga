@@ -46,7 +46,7 @@ look at that" before the tool call and the actual answer after it, and pasting
 both reads like the bot is talking to itself. Rows are scoped to one turn by
 `since`, not by the query: which rows are still owed is the bridge's question.
 
-## READ_SEQ
+## READ_RANGE
 
 The tail window the read-back asks for. A turn longer than this loses its head,
 which only `final_reply`'s "it called a tool" fallback notices; the answer itself

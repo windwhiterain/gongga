@@ -68,9 +68,8 @@ impl Detail {
     }
 }
 
-/// The array-of-tables key `cli.toml` used before the rename. It is read and
-/// rewritten under `sticky_cmd_arguments`; the old key is never written again.
-/// This is the only surviving occurrence of the old spelling.
+/// The pre-rename key for sticky arguments: read once, then rewritten
+/// under `sticky_cmd_arguments`.
 const OLD_STICKY_KEY: &str = "persistant_cmd_arguments";
 
 /// `~/.gongga/cli.toml`.
@@ -262,9 +261,12 @@ fn read_file(path: &Path) -> File {
     File::deserialize(value).unwrap_or_default()
 }
 
-/// Moves the pre-rename key under the current one. A file carrying both keys
-/// keeps every pair; on a name clash the current key wins, because that is the
-/// one a later write keeps.
+/// Moves the pre-rename key under the current one.
+///
+/// # Invariant
+///
+/// A file carrying both keys keeps every pair; on a name clash the current key
+/// wins, because that is the one a later write keeps.
 fn fold_old_sticky_key(value: &mut toml::Value) {
     let Some(root) = value.as_table_mut() else {
         return;
@@ -375,8 +377,12 @@ mod tests {
         assert_eq!(s.get("session"), Some("test1"));
     }
 
-    /// Both spellings may be on disk at once: the file parses, every pair
-    /// survives, and the new key wins a name that appears in both.
+    /// Both spellings may be on disk at once.
+    ///
+    /// # Invariant
+    ///
+    /// The file parses, every pair survives, and the new key wins a name that
+    /// appears in both.
     #[test]
     fn both_disk_keys_load_without_losing_a_pair() {
         let d = dir();
@@ -399,9 +405,12 @@ mod tests {
         );
     }
 
-    /// Whichever writer saves, the file ends up under the new key with every
-    /// argument intact -- including an event-filter write, which never touched
-    /// the sticky pairs.
+    /// Whichever writer saves, the file ends up under the new key.
+    ///
+    /// # Invariant
+    ///
+    /// Every argument stays intact -- including through an event-filter write,
+    /// which never touched the sticky pairs.
     #[test]
     fn any_save_migrates_the_old_key_without_dropping_arguments() {
         let d = dir();

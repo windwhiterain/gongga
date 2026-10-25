@@ -46,13 +46,6 @@ grep -H -m3 -E '^(name|description):' .agents/skills/*/SKILL.md
 ```
 
 - `self-control`：控制自己的回合 / 进程 / 上下文 / 服务端。
-- `polity`：多 agent 分权。**大法官**（与 user 对话的那个会话）写宪法、判合宪性；
-  **总理**（另一个会话）拆任务、派工、汇报；**执行者**只做被派的那一件。核心是
-  **写宪法的人不写代码、写代码的人不判自己**——否则"合宪"只是自我声明。
-  `.agents/skills/polity/polity init` 建 `.polity/`（宪法 + 三份章程 + 四份模板 + 档案），
-  然后 `up` 开总理会话、`dispatch` 派工、`wait` 等（**必须带派工前记的 seq 基线**，
-  否则 idle 会是上一轮的答案）、`verify` 自己看 git、`new ruling` 写判决。
-  角色只靠派工消息和文件承载——服务端没有 per-session 系统提示。
 - `web-search`：查实时网页、读 URL 正文（DeepSeek REST，不花模型轮次，任何模型都能用）。
 - `evolve`：换掉正在跑自己的服务端（改完 server 代码之后）。
 - `image`：让模型真看到一张图。用 `.agents/skills/image/show` 打印 `@路径`，harness
