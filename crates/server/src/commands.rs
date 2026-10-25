@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use protocol::{Args, CommandSpec, CompletionSource, Event};
+use protocol::{Args, CommandSpec, CommandTarget, CompletionSource, Event};
 use serde_json::json;
 use std::time::Duration;
 
@@ -27,6 +27,8 @@ pub struct Dispatch {
     pub sessions: SessionManager,
     pub store: Store,
     pub bus: EventBus,
+    /// Commands registered by scripts, and the way to run one.
+    pub scripts: Arc<crate::script::Scripts>,
     /// The machine's LLM roster: what `set_session --llm` is checked against.
     pub providers: &'static crate::providers::Catalog,
     /// Turns currently running. `cancel` waits for this to drain before the
@@ -53,6 +55,7 @@ impl Drop for ActiveGuard {
 }
 
 /// The result of one command, sent back as a `cmd_result` event.
+#[derive(Debug)]
 pub struct Outcome {
     pub ok: bool,
     pub message: String,
@@ -60,7 +63,7 @@ pub struct Outcome {
 }
 
 impl Outcome {
-    fn ok(message: impl Into<String>) -> Self {
+    pub fn ok(message: impl Into<String>) -> Self {
         Self {
             ok: true,
             message: message.into(),
@@ -68,7 +71,7 @@ impl Outcome {
         }
     }
 
-    fn ok_with(message: impl Into<String>, data: serde_json::Value) -> Self {
+    pub fn ok_with(message: impl Into<String>, data: serde_json::Value) -> Self {
         Self {
             ok: true,
             message: message.into(),
@@ -76,7 +79,7 @@ impl Outcome {
         }
     }
 
-    fn err(message: impl Into<String>) -> Self {
+    pub fn err(message: impl Into<String>) -> Self {
         Self {
             ok: false,
             message: message.into(),
@@ -85,9 +88,16 @@ impl Outcome {
     }
 }
 
-pub fn catalog() -> Vec<CommandSpec> {
+/// The commands the server runs itself.
+///
+/// # Invariant
+///
+/// Not the whole catalog: `Dispatch::catalog` adds the client's commands and
+/// whatever scripts registered. One list, built once per greeting.
+pub fn server_catalog() -> Vec<CommandSpec> {
     vec![
         CommandSpec {
+            target: CommandTarget::Server,
             name: "send_message".into(),
             summary: "Send a message to a session and run a turn.".into(),
             args: vec![
@@ -108,6 +118,7 @@ pub fn catalog() -> Vec<CommandSpec> {
             ],
         },
         CommandSpec {
+            target: CommandTarget::Server,
             name: "set_session".into(),
             summary: "Create the session if it does not exist, and apply the given settings to \
                       it. Settings omitted now are left as they are."
@@ -174,6 +185,7 @@ pub fn catalog() -> Vec<CommandSpec> {
             ],
         },
         CommandSpec {
+            target: CommandTarget::Server,
             name: "del_session".into(),
             summary: "Delete a session, its shells and its transcript.".into(),
             args: vec![arg(
@@ -185,6 +197,7 @@ pub fn catalog() -> Vec<CommandSpec> {
             )],
         },
         CommandSpec {
+            target: CommandTarget::Server,
             name: "interrupt_session".into(),
             summary: "Stop the turn one session is running. The turn is dropped, not resumed on \
                       the next start. Detached jobs keep running."
@@ -198,6 +211,7 @@ pub fn catalog() -> Vec<CommandSpec> {
             )],
         },
         CommandSpec {
+            target: CommandTarget::Server,
             name: "cancel".into(),
             summary: "Stop running turns, save what is left undone, and shut the server down. \
                       Detached jobs are left running."
@@ -205,6 +219,7 @@ pub fn catalog() -> Vec<CommandSpec> {
             args: vec![],
         },
         CommandSpec {
+            target: CommandTarget::Server,
             name: "get_messages".into(),
             summary: "Read the transcript: a range of sequence numbers, oldest first.".into(),
             args: vec![
@@ -247,24 +262,14 @@ fn arg(
 }
 
 pub async fn dispatch(d: &Dispatch, name: &str, args: &Args) -> Outcome {
-    let missing = catalog()
-        .into_iter()
-        .find(|c| c.name == name)
-        .map(|c| {
-            c.args
-                .iter()
-                .filter(|a| a.required && !args.contains_key(&a.name))
-                .map(|a| a.name.clone())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    if !missing.is_empty() {
-        return Outcome::err(format!(
-            "{name} is missing required argument(s): {}",
-            missing.join(", ")
-        ));
+    // One catalog decides existence, runner and required args, for every kind.
+    let spec = match resolve(&d.catalog().await, name, args) {
+        Ok(spec) => spec,
+        Err(refusal) => return refusal,
+    };
+    if spec.target == CommandTarget::ServerScript {
+        return d.scripts.run(name, args).await;
     }
-
     match name {
         "send_message" => send_message(d, args).await,
         "set_session" => set_session(d, args).await,
@@ -272,7 +277,51 @@ pub async fn dispatch(d: &Dispatch, name: &str, args: &Args) -> Outcome {
         "interrupt_session" => interrupt_session(d, args).await,
         "cancel" => cancel(d).await,
         "get_messages" => get_messages(d, args).await,
-        other => Outcome::err(format!("unknown command {other:?}")),
+        // Published as a server command but unhandled: a catalog bug, named.
+        other => Outcome::err(format!(
+            "{other} is published as a server command but has no handler"
+        )),
+    }
+}
+
+/// Finds the command a call names, or says why it cannot run here.
+///
+/// # Invariant
+///
+/// Client commands are refused, not executed: the server cannot change a
+/// caller's own state, and saying "unknown" would hide a catalog entry that is
+/// right there in the greeting.
+pub fn resolve(catalog: &[CommandSpec], name: &str, args: &Args) -> Result<CommandSpec, Outcome> {
+    let Some(spec) = catalog.iter().find(|c| c.name == name) else {
+        return Err(Outcome::err(format!("unknown command {name:?}")));
+    };
+    if spec.target == CommandTarget::Client {
+        return Err(Outcome::err(format!(
+            "{name} runs in the client, not here: it changes the caller's own state"
+        )));
+    }
+    let missing: Vec<String> = spec
+        .args
+        .iter()
+        .filter(|a| a.required && !args.contains_key(&a.name))
+        .map(|a| a.name.clone())
+        .collect();
+    if !missing.is_empty() {
+        return Err(Outcome::err(format!(
+            "{name} is missing required argument(s): {}",
+            missing.join(", ")
+        )));
+    }
+    Ok(spec.clone())
+}
+
+impl Dispatch {
+    /// Every command offered, from all three sources: the only list there is.
+    pub async fn catalog(&self) -> Vec<CommandSpec> {
+        let mut all = server_catalog();
+        all.extend(protocol::client_commands());
+        all.extend(self.scripts.commands().await);
+        all
     }
 }
 
@@ -948,9 +997,10 @@ mod tests {
         );
     }
 
+    /// The server's own commands, and nothing else.
     #[test]
-    fn catalog_is_exactly_the_known_commands() {
-        let catalog = catalog();
+    fn server_catalog_is_exactly_the_known_commands() {
+        let catalog = server_catalog();
         let mut names: Vec<&str> = catalog.iter().map(|c| c.name.as_str()).collect();
         names.sort();
         assert_eq!(
@@ -964,11 +1014,116 @@ mod tests {
                 "set_session"
             ]
         );
+        assert!(
+            catalog.iter().all(|c| c.target == CommandTarget::Server),
+            "every entry here runs in this process"
+        );
+    }
+
+    /// The client's commands are published too, and say that they run there.
+    #[test]
+    fn the_client_commands_are_published_as_client_ones() {
+        let mut names: Vec<String> = protocol::client_commands()
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                "del_event_filter",
+                "del_sticky_cmd_argument",
+                "set_event_detail",
+                "set_event_filter",
+                "set_sticky_cmd_argument"
+            ]
+        );
+        assert!(
+            protocol::client_commands()
+                .iter()
+                .all(|c| c.target == CommandTarget::Client),
+            "the server must not claim to run these"
+        );
+        // The names the client owns stay on the client: the server names the
+        // source and nothing more.
+        let sticky = protocol::client_commands()
+            .into_iter()
+            .find(|c| c.name == "del_sticky_cmd_argument")
+            .unwrap();
+        assert!(matches!(
+            sticky.args[0].completions,
+            CompletionSource::StickyArguments
+        ));
+    }
+
+    /// The whole published catalog, as a greeting would carry it.
+    fn published() -> Vec<CommandSpec> {
+        let mut all = server_catalog();
+        all.extend(protocol::client_commands());
+        all
+    }
+
+    /// A client command sent over the wire is refused by name, not called unknown.
+    #[test]
+    fn a_client_command_is_refused_with_a_reason() {
+        let out = resolve(
+            &published(),
+            "set_event_detail",
+            &Args::from([("mode".to_string(), "line".to_string())]),
+        )
+        .unwrap_err();
+        assert!(!out.ok);
+        assert!(
+            out.message.contains("runs in the client"),
+            "the refusal must say where it runs: {}",
+            out.message
+        );
+    }
+
+    /// One resolve for a built-in, a script command, and a name nobody knows.
+    #[test]
+    fn resolve_tells_the_three_kinds_apart() {
+        let mut all = published();
+        all.push(CommandSpec {
+            name: "weather".into(),
+            summary: "Registered by a script.".into(),
+            args: vec![arg(
+                "city",
+                "Which city.",
+                true,
+                None,
+                CompletionSource::None,
+            )],
+            target: CommandTarget::ServerScript,
+        });
+
+        let builtin = resolve(
+            &all,
+            "cancel",
+            &Args::from([("session".to_string(), "x".to_string())]),
+        )
+        .unwrap();
+        assert_eq!(builtin.target, CommandTarget::Server);
+
+        let scripted = resolve(
+            &all,
+            "weather",
+            &Args::from([("city".to_string(), "Oslo".to_string())]),
+        )
+        .unwrap();
+        assert_eq!(scripted.target, CommandTarget::ServerScript);
+
+        // Missing arguments are judged the same way for both.
+        let missing = resolve(&all, "weather", &Args::default()).unwrap_err();
+        assert!(missing.message.contains("city"), "{}", missing.message);
+
+        let unknown = resolve(&all, "weather2", &Args::default()).unwrap_err();
+        assert_eq!(unknown.message, "unknown command \"weather2\"");
     }
 
     #[test]
     fn session_args_are_completable() {
-        let spec = catalog()
+        let spec = server_catalog()
             .into_iter()
             .find(|c| c.name == "send_message")
             .unwrap();
@@ -981,14 +1136,17 @@ mod tests {
 
     #[test]
     fn cancel_takes_no_arguments() {
-        let spec = catalog().into_iter().find(|c| c.name == "cancel").unwrap();
+        let spec = server_catalog()
+            .into_iter()
+            .find(|c| c.name == "cancel")
+            .unwrap();
         assert!(spec.args.is_empty(), "cancel is a whole-server stop");
     }
 
     /// Interrupting names one session; guessing one is the hidden state we avoid.
     #[test]
     fn interrupt_session_names_one_session() {
-        let spec = catalog()
+        let spec = server_catalog()
             .into_iter()
             .find(|c| c.name == "interrupt_session")
             .unwrap();
@@ -1000,7 +1158,7 @@ mod tests {
     /// Every command spells its session the same way, so sticky `session` works.
     #[test]
     fn every_command_takes_a_session_or_a_message() {
-        for spec in catalog() {
+        for spec in server_catalog() {
             // `cancel` is the one command with nothing to configure.
             if spec.name == "cancel" {
                 continue;
@@ -1027,7 +1185,7 @@ mod tests {
     /// Every completion source must survive the wire, or Tab silently offers nothing.
     #[test]
     fn completion_sources_survive_the_wire() {
-        let json = serde_json::to_string(&catalog()).unwrap();
+        let json = serde_json::to_string(&server_catalog()).unwrap();
         let back: Vec<CommandSpec> = serde_json::from_str(&json).unwrap();
         let source = |command: &str, arg: &str| {
             back.iter()
@@ -1059,7 +1217,7 @@ mod tests {
     /// `set_session` chooses model and compaction, so both flags must complete.
     #[test]
     fn set_session_offers_the_roster_and_a_percentage() {
-        let spec = catalog()
+        let spec = server_catalog()
             .into_iter()
             .find(|c| c.name == "set_session")
             .unwrap();
@@ -1198,7 +1356,7 @@ mod tests {
     /// One way to name rows, not two: a cursor and a range would be rivals.
     #[test]
     fn get_messages_names_rows_one_way() {
-        let spec = catalog()
+        let spec = server_catalog()
             .into_iter()
             .find(|c| c.name == "get_messages")
             .unwrap();

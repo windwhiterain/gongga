@@ -10,6 +10,13 @@ explicit way to be stopped. Shells are keyed `session_name/bash_name`, so two
 sessions never share one and a single session can keep several independent
 ones.
 
+## ToolRegistry::with_harness
+
+The tool that drives the harness is added separately, by `main`, because it
+needs a reference to the dispatch that owns this registry: the registry is built
+first, and the dispatch is built around it. `ToolRegistry::with_builtins` alone
+therefore has no `harness`, which its test pins.
+
 ## ToolContext::detached
 
 Deliberately not part of a shell: a detached job outlives its shell, its

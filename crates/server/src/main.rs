@@ -9,6 +9,7 @@ mod instance;
 mod llm;
 mod net;
 mod providers;
+mod script;
 mod session;
 mod store;
 mod tools;
@@ -163,10 +164,6 @@ async fn run() -> anyhow::Result<()> {
         detached.clone(),
         shell_env,
     );
-    let tools = Arc::new(ToolRegistry::with_builtins(
-        cfg.bash.timeout,
-        cfg.bash.max_output_chars,
-    ));
     let bus = EventBus::new(4096);
 
     // Capped output has to go somewhere the model can read it back.
@@ -175,28 +172,53 @@ async fn run() -> anyhow::Result<()> {
         tracing::warn!(error = %e, "cannot create {output_dir:?}; capped output will be dropped");
     }
 
-    let agent = Arc::new(Agent {
-        store: store.clone(),
-        llm: llm.clone(),
-        providers: providers::roster(),
-        llm_config: cfg.llm.clone(),
-        clients: std::sync::Mutex::new(std::collections::HashMap::new()),
-        default_context: cfg.llm.context,
-        tools: tools.clone(),
-        bus: bus.clone(),
-        compress_above_tokens: cfg.agent.compress_above_tokens,
-        output_dir,
-        detached: detached.clone(),
-    });
+    // Scripts register commands; the directory is data, so nothing here knows one.
+    let scripts = script::Scripts::new(
+        cfg.scripts.dir.clone(),
+        cfg.scripts.interpreter(),
+        vec![
+            ("GONGGA_SERVER".to_string(), cfg.bind.to_string()),
+            ("GONGGA_HOME".to_string(), cfg.home.display().to_string()),
+            ("GONGGA_CLI".to_string(), cli_path().display().to_string()),
+        ],
+    );
+    if let Err(e) = std::fs::create_dir_all(&cfg.scripts.dir) {
+        tracing::warn!(dir = %cfg.scripts.dir.display(), error = %e, "cannot create the scripts directory");
+    }
+    tracing::info!(scripts = %scripts.describe(), "script commands");
+    for problem in scripts.problems().await {
+        tracing::warn!(problem = %problem, "a script could not be read");
+    }
 
-    let dispatch = Arc::new(Dispatch {
-        agent,
-        sessions: sessions.clone(),
-        store: store.clone(),
-        bus: bus.clone(),
-        providers: providers::roster(),
-        active: Arc::new(AtomicUsize::new(0)),
-        shutdown: CancellationToken::new(),
+    // Cyclic on purpose: the `harness` tool drives the dispatch that owns it.
+    let dispatch = Arc::new_cyclic(|weak| {
+        let tools = Arc::new(
+            ToolRegistry::with_builtins(cfg.bash.timeout, cfg.bash.max_output_chars)
+                .with_harness(weak.clone(), cfg.bash.max_output_chars),
+        );
+        let agent = Arc::new(Agent {
+            store: store.clone(),
+            llm: llm.clone(),
+            providers: providers::roster(),
+            llm_config: cfg.llm.clone(),
+            clients: std::sync::Mutex::new(std::collections::HashMap::new()),
+            default_context: cfg.llm.context,
+            tools,
+            bus: bus.clone(),
+            compress_above_tokens: cfg.agent.compress_above_tokens,
+            output_dir: output_dir.clone(),
+            detached: detached.clone(),
+        });
+        Dispatch {
+            agent,
+            sessions: sessions.clone(),
+            store: store.clone(),
+            bus: bus.clone(),
+            scripts: scripts.clone(),
+            providers: providers::roster(),
+            active: Arc::new(AtomicUsize::new(0)),
+            shutdown: CancellationToken::new(),
+        }
     });
 
     // Whatever was in flight when the server last stopped is owed work.
@@ -227,7 +249,7 @@ async fn run() -> anyhow::Result<()> {
         }
     });
 
-    tracing::info!(tools = ?tools.names().join(", "), "tool registry ready");
+    tracing::info!(tools = ?dispatch.agent.tools.names().join(", "), "tool registry ready");
     // Which roster was read, and whether it was readable at all: "no --llm
     // worked" is nearly always this line.
     tracing::info!(
@@ -257,9 +279,13 @@ async fn run() -> anyhow::Result<()> {
     );
 
     let served = net::serve(Arc::new(cfg), dispatch, bus).await;
-    // Every exit from `serve` lands here, so no shell outlives the stop decision.
-    // See `docs/notes/server-main.md`.
+    // Every exit from `serve` lands here, so nothing it started outlives the
+    // stop decision. See `docs/notes/server-main.md`.
     sessions.close_shells().await;
+    let stopped = scripts.stop_all().await;
+    if stopped > 0 {
+        tracing::info!(stopped, "stopped scripts still running at the stop");
+    }
     served
 }
 

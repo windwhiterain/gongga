@@ -172,6 +172,154 @@ pub struct CommandSpec {
     pub name: String,
     pub summary: String,
     pub args: Vec<ArgSpec>,
+    /// Who runs it. Published by the server, so no front-end keeps a list.
+    #[serde(default)]
+    pub target: CommandTarget,
+}
+
+/// The event fields an event filter's `--name` may select.
+///
+/// # Invariant
+///
+/// It lives here, not in a front-end: the server publishes `set_event_filter`,
+/// so the list is catalog data.
+pub const EVENT_FIELDS: &[&str] = &[
+    "args", "call_id", "data", "detail", "done", "id", "level", "message", "name", "ok", "part",
+    "session", "sessions", "status", "stream", "t", "text", "tool", "turn",
+];
+
+/// The modes `set_event_detail --mode` takes, in the order it lists them.
+pub const DETAIL_MODES: &[&str] = &["all", "line", "one"];
+
+/// Where a command runs.
+///
+/// # Invariant
+///
+/// Every front-end dispatches on this, never on a name: a command added by a
+/// script is runnable the moment the greeting names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandTarget {
+    /// The server runs it in-process.
+    #[default]
+    Server,
+    /// A script registered with the server runs it, on the server's behalf.
+    ServerScript,
+    /// The client runs it against its own state; it never reaches the server.
+    Client,
+}
+
+/// The commands a client runs against its own state, published like any other.
+///
+/// # Invariant
+///
+/// No front-end dispatches on this list: each reads the `target` of what the
+/// server sent. It lives here because the greeting is the contract, so a test
+/// anywhere can stand in for a server by handing it over.
+pub fn client_commands() -> Vec<CommandSpec> {
+    [
+        (
+            "set_sticky_cmd_argument",
+            "Set a sticky argument applied to every later command.",
+            vec![
+                spec_arg(
+                    "name",
+                    "Argument name, e.g. `session`.",
+                    true,
+                    Some("name"),
+                    CompletionSource::Arguments,
+                ),
+                spec_arg(
+                    "value",
+                    "Value to apply when the flag is omitted. Completes the way the named \
+                     argument does.",
+                    true,
+                    Some("value"),
+                    CompletionSource::OfNamedArgument,
+                ),
+            ],
+        ),
+        (
+            "del_sticky_cmd_argument",
+            "Remove a sticky argument.",
+            vec![spec_arg(
+                "name",
+                "Argument name to remove.",
+                true,
+                Some("name"),
+                CompletionSource::StickyArguments,
+            )],
+        ),
+        (
+            "set_event_filter",
+            "Show only events whose named field has this value.",
+            vec![
+                spec_arg(
+                    "name",
+                    "Event field, e.g. `session`.",
+                    true,
+                    Some("name"),
+                    CompletionSource::Static(EVENT_FIELDS.iter().map(|f| f.to_string()).collect()),
+                ),
+                spec_arg(
+                    "value",
+                    "Value the field must have. Completes the way the named argument does.",
+                    true,
+                    Some("value"),
+                    CompletionSource::OfNamedArgument,
+                ),
+            ],
+        ),
+        (
+            "del_event_filter",
+            "Remove an event filter.",
+            vec![spec_arg(
+                "name",
+                "Filter name to remove.",
+                true,
+                Some("name"),
+                CompletionSource::EventFilters,
+            )],
+        ),
+        (
+            "set_event_detail",
+            "How much of each event the log shows: all, line, or one.",
+            vec![spec_arg(
+                "mode",
+                "`all` shows every block in full; `line` folds each block that is not \
+                 content onto one rewritten row; `one` keeps one row per session and one \
+                 for commands.",
+                true,
+                Some("mode"),
+                CompletionSource::Static(DETAIL_MODES.iter().map(|m| m.to_string()).collect()),
+            )],
+        ),
+    ]
+    .into_iter()
+    .map(|(name, summary, args)| CommandSpec {
+        name: name.into(),
+        summary: summary.into(),
+        args,
+        target: CommandTarget::Client,
+    })
+    .collect()
+}
+
+/// One argument of a published command.
+fn spec_arg(
+    name: &str,
+    summary: &str,
+    required: bool,
+    value_hint: Option<&str>,
+    completions: CompletionSource,
+) -> ArgSpec {
+    ArgSpec {
+        name: name.into(),
+        summary: summary.into(),
+        required,
+        value_hint: value_hint.map(str::to_string),
+        completions,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -206,6 +354,15 @@ pub enum CompletionSource {
     /// Complete this value the way the argument named by `--name` would be.
     /// See `docs/notes/protocol-message.md`.
     OfNamedArgument,
+    /// Complete against the client's sticky argument names.
+    ///
+    /// # Invariant
+    ///
+    /// Client state stays client-side: the server names the source, the client
+    /// fills it in, so publishing a client command needs no knowledge of it.
+    StickyArguments,
+    /// Complete against the client's event-filter names, same shape.
+    EventFilters,
 }
 
 // Encoding helpers
@@ -256,6 +413,52 @@ mod tests {
                 assert_eq!(args["message"], "hi");
             }
             other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    /// A catalog entry says where it runs; saying nothing means the server.
+    #[test]
+    fn a_command_spec_says_who_runs_it() {
+        let mut spec = CommandSpec {
+            name: "echo".into(),
+            summary: "Say it back.".into(),
+            args: vec![],
+            target: CommandTarget::ServerScript,
+        };
+        let json = serde_json::to_value(&spec).unwrap();
+        assert_eq!(json["target"], "server_script", "{json}");
+        let back: CommandSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(back.target, CommandTarget::ServerScript);
+
+        spec.target = CommandTarget::Client;
+        assert_eq!(serde_json::to_value(&spec).unwrap()["target"], "client");
+
+        // Absent means server: that is what every older entry said.
+        let short: CommandSpec =
+            serde_json::from_str(r#"{"name":"cancel","summary":"Stop.","args":[]}"#).unwrap();
+        assert_eq!(short.target, CommandTarget::Server);
+    }
+
+    /// The client-state sources name state the server cannot see.
+    #[test]
+    fn client_state_completion_sources_round_trip() {
+        for (source, spelled) in [
+            (CompletionSource::StickyArguments, "sticky_arguments"),
+            (CompletionSource::EventFilters, "event_filters"),
+        ] {
+            let json = serde_json::to_string(&source).unwrap();
+            assert_eq!(json, format!("\"{spelled}\""));
+            let back: CompletionSource = serde_json::from_str(&json).unwrap();
+            assert!(matches!(
+                (back, source),
+                (
+                    CompletionSource::StickyArguments,
+                    CompletionSource::StickyArguments
+                ) | (
+                    CompletionSource::EventFilters,
+                    CompletionSource::EventFilters
+                )
+            ));
         }
     }
 

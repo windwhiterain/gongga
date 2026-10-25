@@ -109,6 +109,14 @@ never exits on its own, and the thread reaping it can never finish while it live
 `server stopped`. Ending the shells is what gives those threads an end, so the
 runtime's `Drop` can simply wait for them instead of being given a deadline.
 
+## run (stop_all)
+
+The same rule as the shells, for the other kind of child: a script a command
+started is a process too, so it is ended here rather than being left to finish
+work nobody is waiting for any more. Its caller is told the server stopped --
+not shown a killed process's exit status, which would read as the script's own
+failure.
+
 ## tests::the_cli_path_is_something_that_can_be_run
 
 The CLI is what lets the model cancel, restart or replace this server, so the

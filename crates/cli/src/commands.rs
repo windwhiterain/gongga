@@ -5,14 +5,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use protocol::{Args, CommandSpec, Event};
+use protocol::{Args, CommandSpec, DETAIL_MODES, Event};
 use serde::{Deserialize, Serialize};
-
-/// The event fields an `--name` may select. An event that lacks one passes.
-pub const EVENT_FIELDS: &[&str] = &[
-    "args", "call_id", "data", "detail", "done", "id", "level", "message", "name", "ok", "part",
-    "session", "sessions", "status", "stream", "t", "text", "tool", "turn",
-];
 
 /// How much of each event the log shows. Client-side only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -25,9 +19,6 @@ pub enum Detail {
     /// One row per session, and one for the command echo; content keeps its text.
     One,
 }
-
-/// The modes `set_event_detail --mode` takes, in the order it lists them.
-pub const DETAIL_MODES: &[&str] = &["all", "line", "one"];
 
 impl Detail {
     pub fn as_str(self) -> &'static str {
@@ -515,6 +506,7 @@ mod tests {
         let mut s = Sticky::load(d.path());
         s.set("session", "main").unwrap();
         let spec = CommandSpec {
+            target: protocol::CommandTarget::Server,
             name: "send_message".into(),
             summary: String::new(),
             args: vec![ArgSpec {

@@ -31,6 +31,7 @@ pub struct Config {
     pub key: String,
     pub llm: LlmConfig,
     pub bash: BashConfig,
+    pub scripts: ScriptConfig,
     pub agent: AgentConfig,
     pub transport: TransportConfig,
 }
@@ -111,6 +112,49 @@ pub struct BashConfig {
     pub max_output_chars: usize,
 }
 
+/// Where commands registered by Python scripts live.
+#[derive(Debug, Clone)]
+pub struct ScriptConfig {
+    /// The directory scanned for `*.py`; defaults to `<home>/scripts`.
+    pub dir: PathBuf,
+    /// Explicit interpreter. `None` means detect one that answers `-V`.
+    pub program: Option<PathBuf>,
+}
+
+impl ScriptConfig {
+    /// The interpreter to run scripts with: the configured one, else the first
+    /// candidate that is really Python.
+    ///
+    /// # Invariant
+    ///
+    /// A name on `PATH` is not enough: Windows ships a `python3` stub that
+    /// prints an install advert and fails, so the candidate has to answer.
+    pub fn interpreter(&self) -> Option<PathBuf> {
+        if let Some(explicit) = &self.program {
+            return explicit.is_file().then(|| explicit.clone());
+        }
+        detect_python()
+    }
+}
+
+/// The first `python3`/`python` that answers `-V` with a version line.
+pub fn detect_python() -> Option<PathBuf> {
+    for name in ["python3", "python"] {
+        let Ok(candidate) = which::which(name) else {
+            continue;
+        };
+        let Ok(out) = std::process::Command::new(&candidate).arg("-V").output() else {
+            continue;
+        };
+        let said = String::from_utf8_lossy(&out.stdout).to_string()
+            + &String::from_utf8_lossy(&out.stderr);
+        if out.status.success() && said.starts_with("Python") {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 #[derive(Debug, Clone)]
 pub struct AgentConfig {
     /// Input tokens above which the agent is told to fold its own context.
@@ -123,6 +167,7 @@ struct FileConfig {
     server: Option<FileServer>,
     llm: Option<FileLlm>,
     tools: Option<FileTools>,
+    scripts: Option<FileScripts>,
     agent: Option<FileAgent>,
     transport: Option<FileTransport>,
 }
@@ -163,6 +208,12 @@ struct FileBash {
     program: Option<PathBuf>,
     timeout_ms: Option<u64>,
     max_output_chars: Option<usize>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct FileScripts {
+    dir: Option<PathBuf>,
+    program: Option<PathBuf>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -213,6 +264,9 @@ impl Config {
                 .unwrap_or_else(home_dir)
         });
         std::fs::create_dir_all(&home)?;
+        // Absolute from here on: a child in another directory (script, shell)
+        // must resolve the same home.
+        let home = std::path::absolute(&home).unwrap_or(home);
 
         let db_path = file
             .server
@@ -329,6 +383,15 @@ impl Config {
                 .unwrap_or(DEFAULT_MAX_OUTPUT_CHARS),
         };
 
+        let scripts_file = file.scripts.unwrap_or_default();
+        let scripts = ScriptConfig {
+            dir: scripts_file
+                .dir
+                .map(expand)
+                .unwrap_or_else(|| home.join("scripts")),
+            program: env_path("GONGGA_SCRIPT_PYTHON").or(scripts_file.program),
+        };
+
         let agent = AgentConfig {
             compress_above_tokens: file
                 .agent
@@ -359,6 +422,7 @@ impl Config {
             key,
             llm,
             bash,
+            scripts,
             agent,
             transport,
         })
@@ -429,6 +493,14 @@ impl Config {
              # whole thing lands in ~/.gongga/outputs/. 0 disables the cap.\n\
              max_output_chars = {max_output_chars}\n\
              \n\
+             [scripts]\n\
+             # Commands a Python script registers with this server, without a Rust\n\
+             # change: every *.py here is asked for its manifest, and what it\n\
+             # declares appears in the catalog like any other command.\n\
+             dir = \"{scripts_dir}\"\n\
+             # Interpreter. Commented out: one that answers `-V` is detected.\n\
+             # program = \"/usr/bin/python3\"\n\
+             \n\
              [agent]\n\
              # No step limit: a turn runs until the work is done.\n\
              # This server does not compact the transcript. When a request carries\n\
@@ -457,6 +529,7 @@ impl Config {
             retry_base = self.llm.retry_base.as_millis(),
             timeout = self.bash.timeout.as_millis(),
             max_output_chars = self.bash.max_output_chars,
+            scripts_dir = toml_path(&self.scripts.dir),
             compress_above_tokens = self.agent.compress_above_tokens,
             mtu = self.transport.mtu,
             window = self.transport.window,
@@ -608,15 +681,21 @@ fn default_instructions() -> String {
      command fails, read the error before retrying.\n\
      Do not ask for confirmation; the user has already authorised bash execution.\n\
      \n\
-     You are running inside a gongga server, and you can drive it from bash \
-     with the gongga CLI: `$GONGGA_CLI <command>`, e.g. `$GONGGA_CLI cancel` \
-     to stop the running turn and shut the server down, or `set_session` / \
-     `send_message` / `del_session`. The command is just its name -- no leading \
-     `/`, which is the interactive client's input syntax; a `/word` here is \
-     only a path to the shell. `$GONGGA_CLI`, `$GONGGA_SERVER` and \
-     `$GONGGA_HOME` are already set in your shell, so no flags are needed. \
-     Prefer this over killing processes: `cancel` saves the turn so the next \
-     server picks it up, whereas killing the server from outside does not.\n\
+     You are running inside a gongga server, and you reach it with the \
+     `harness` tool. Call it with no arguments to list the commands it has, then \
+     with `command` and `arguments` (names without leading dashes). It runs them \
+     in this process, so it is the same command surface every client has, with \
+     no CLI and no network in between: `harness{command: \"get_messages\", \
+     arguments: {\"session\": \"main\", \"range\": \"-5:\"}}` reads a \
+     transcript back, and `harness{command: \"cancel\"}` stops the running turn \
+     and shuts the server down. Prefer `cancel` over killing processes: it keeps the turn as a \
+     pending task so the next server picks it up, whereas killing the server \
+     from outside does not.\n\
+     \n\
+     `$GONGGA_CLI`, `$GONGGA_SERVER` and `$GONGGA_HOME` are in your shell's \
+     environment for the scripts you run -- the evolve launcher and the skill \
+     scripts use them. You do not need the CLI yourself: the tool is the same \
+     door without the extra process and the round trip.\n\
      \n\
      You can also replace the server you are running on. `cancel` keeps the \
      current turn as a pending task and the next server resumes it, so a swap \
@@ -694,6 +773,26 @@ mod tests {
         assert!(text.contains("grep -H -m3 -E '^(name|description):'"));
         assert!(text.ends_with("do not invent one.\n"));
         assert!(!text.contains("  "), "double space: {text}");
+    }
+
+    /// The agent reaches the harness through the tool, not by spawning a client
+    /// that dials back into this same server.
+    #[test]
+    fn the_instructions_send_the_agent_through_the_tool() {
+        let text = default_instructions();
+        assert!(text.contains("`harness` tool"), "{text}");
+        assert!(
+            text.contains("runs them \nin this process") || text.contains("in this process"),
+            "{text}"
+        );
+        // Teaching `$GONGGA_CLI <command>` as the way the agent drives the
+        // harness is what this replaced.
+        assert!(
+            !text.contains("drive it from bash with the gongga CLI"),
+            "the CLI is for scripts, not for the agent: {text}"
+        );
+        // It is still true that scripts get it, so it must still be mentioned.
+        assert!(text.contains("$GONGGA_CLI"), "{text}");
     }
 
     #[test]

@@ -5,18 +5,20 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use crate::commands::{DETAIL_MODES, EVENT_FIELDS};
 use crate::complete::{Candidate, Completer, token_bounds};
-use protocol::{ArgSpec, CommandSpec, CompletionSource};
+use protocol::{ArgSpec, CommandSpec, CommandTarget, CompletionSource};
 
 /// A catalog that can be swapped while the TUI holds a reference to it.
 #[derive(Clone, Default)]
 pub struct Catalog(Arc<RwLock<Inner>>);
 
 struct Inner {
-    server: Vec<CommandSpec>,
-    client: Vec<CommandSpec>,
+    /// Everything the server published, as published: this client keeps no
+    /// command list of its own.
+    published: Vec<CommandSpec>,
     sessions: Vec<String>,
+    /// The client's sticky argument names, for the sources the server names
+    /// but cannot fill in.
     sticky_names: Vec<String>,
     filter_names: Vec<String>,
     /// Where a relative path value is read from: the client's own directory.
@@ -26,8 +28,7 @@ struct Inner {
 impl Default for Inner {
     fn default() -> Self {
         Self {
-            server: Vec::new(),
-            client: Vec::new(),
+            published: Vec::new(),
             sessions: Vec::new(),
             sticky_names: Vec::new(),
             filter_names: Vec::new(),
@@ -41,8 +42,9 @@ impl Catalog {
         Self::default()
     }
 
-    pub fn set_server_commands(&self, commands: Vec<CommandSpec>) {
-        self.write().server = commands;
+    /// Replaces the catalog with the one the greeting carried.
+    pub fn set_commands(&self, commands: Vec<CommandSpec>) {
+        self.write().published = commands;
     }
 
     pub fn set_sessions(&self, sessions: Vec<String>) {
@@ -56,34 +58,34 @@ impl Catalog {
         self.write().cwd = cwd.into();
     }
 
-    /// Rebuilds the client-side specs, whose `--name` completion depends on the
-    /// sticky arguments that currently exist.
+    /// The sticky arguments that exist, for the source the server names.
     pub fn set_sticky_names(&self, names: &[String]) {
-        let mut inner = self.write();
-        inner.sticky_names = names.to_vec();
-        inner.client = client_specs(&inner.sticky_names, &inner.filter_names);
+        self.write().sticky_names = names.to_vec();
     }
 
-    /// The same rebuild for `del_event_filter --name`.
+    /// The same for `del_event_filter --name`.
     pub fn set_filter_names(&self, names: &[String]) {
-        let mut inner = self.write();
-        inner.filter_names = names.to_vec();
-        inner.client = client_specs(&inner.sticky_names, &inner.filter_names);
+        self.write().filter_names = names.to_vec();
     }
 
     pub fn commands(&self) -> Vec<CommandSpec> {
-        let inner = self.read();
-        let mut all = inner.client.clone();
-        all.extend(inner.server.iter().cloned());
-        all
+        self.read().published.clone()
     }
 
     pub fn command(&self, name: &str) -> Option<CommandSpec> {
-        self.commands().into_iter().find(|c| c.name == name)
+        self.read()
+            .published
+            .iter()
+            .find(|c| c.name == name)
+            .cloned()
     }
 
+    /// Whether the caller runs this one itself. Answered from the published
+    /// target, never from a list here.
     pub fn is_client_command(&self, name: &str) -> bool {
-        self.read().client.iter().any(|c| c.name == name)
+        self.command(name)
+            .map(|c| c.target == CommandTarget::Client)
+            .unwrap_or(false)
     }
 
     fn read(&self) -> std::sync::RwLockReadGuard<'_, Inner> {
@@ -98,6 +100,8 @@ impl Catalog {
 /// What a value may be completed against, snapshotted so no lock is held.
 struct Ctx<'a> {
     sessions: &'a [String],
+    sticky: &'a [String],
+    filters: &'a [String],
     cwd: &'a Path,
     all: &'a [CommandSpec],
 }
@@ -112,20 +116,16 @@ impl Completer for Catalog {
         let (_, _, token) = token_bounds(line, cursor);
         let words = shell_words::split(line).unwrap_or_default();
         let position = line[..cursor.min(line.len())].split_whitespace().count();
-        let (server, client, sessions, cwd) = {
+        let (all, sessions, sticky, filters, cwd) = {
             let inner = self.read();
             (
-                inner.server.clone(),
-                inner.client.clone(),
+                inner.published.clone(),
                 inner.sessions.clone(),
+                inner.sticky_names.clone(),
+                inner.filter_names.clone(),
                 inner.cwd.clone(),
             )
         };
-        let all: Vec<CommandSpec> = client
-            .iter()
-            .cloned()
-            .chain(server.iter().cloned())
-            .collect();
         let cmd = words.first().map(|t| t.trim_start_matches('/'));
         // The word the cursor is in is about to be replaced, so it is not
         // already on the line.
@@ -182,6 +182,8 @@ impl Completer for Catalog {
         };
         let ctx = Ctx {
             sessions: &sessions,
+            sticky: &sticky,
+            filters: &filters,
             cwd: &cwd,
             all: &all,
         };
@@ -215,6 +217,12 @@ fn resolve(
             pick(names.into_iter(), token, "argument")
         }
         CompletionSource::Paths => paths(ctx.cwd, token),
+        CompletionSource::StickyArguments => {
+            pick(ctx.sticky.iter().map(String::as_str), token, "argument")
+        }
+        CompletionSource::EventFilters => {
+            pick(ctx.filters.iter().map(String::as_str), token, "filter")
+        }
         CompletionSource::OfNamedArgument if depth < 2 => {
             let Some(named) = flag_value(words, "name") else {
                 return Vec::new();
@@ -326,88 +334,8 @@ fn directory(cwd: &Path, typed: &str) -> PathBuf {
     }
 }
 
-/// The commands the CLI handles itself; rebuilt whenever either set changes.
-fn client_specs(sticky: &[String], filters: &[String]) -> Vec<CommandSpec> {
-    vec![
-        CommandSpec {
-            name: "set_sticky_cmd_argument".into(),
-            summary: "Set a sticky argument applied to every later command.".into(),
-            args: vec![
-                arg(
-                    "name",
-                    "Argument name, e.g. `session`.",
-                    true,
-                    Some("name"),
-                    CompletionSource::Arguments,
-                ),
-                arg(
-                    "value",
-                    "Value to apply when the flag is omitted. Completes the way the named \
-                     argument does.",
-                    true,
-                    Some("value"),
-                    CompletionSource::OfNamedArgument,
-                ),
-            ],
-        },
-        CommandSpec {
-            name: "del_sticky_cmd_argument".into(),
-            summary: "Remove a sticky argument.".into(),
-            args: vec![arg(
-                "name",
-                "Argument name to remove.",
-                true,
-                Some("name"),
-                CompletionSource::Static(sticky.to_vec()),
-            )],
-        },
-        CommandSpec {
-            name: "set_event_filter".into(),
-            summary: "Show only events whose named field has this value.".into(),
-            args: vec![
-                arg(
-                    "name",
-                    "Event field, e.g. `session`.",
-                    true,
-                    Some("name"),
-                    CompletionSource::Static(EVENT_FIELDS.iter().map(|f| f.to_string()).collect()),
-                ),
-                arg(
-                    "value",
-                    "Value the field must have. Completes the way the named argument does.",
-                    true,
-                    Some("value"),
-                    CompletionSource::OfNamedArgument,
-                ),
-            ],
-        },
-        CommandSpec {
-            name: "set_event_detail".into(),
-            summary: "How much of each event the log shows: all, line, or one.".into(),
-            args: vec![arg(
-                "mode",
-                "`all` shows every block in full; `line` folds each block that is not \
-                 content onto one rewritten row; `one` keeps one row per session and one \
-                 for commands.",
-                true,
-                Some("mode"),
-                CompletionSource::Static(DETAIL_MODES.iter().map(|m| m.to_string()).collect()),
-            )],
-        },
-        CommandSpec {
-            name: "del_event_filter".into(),
-            summary: "Remove an event filter.".into(),
-            args: vec![arg(
-                "name",
-                "Filter name to remove.",
-                true,
-                Some("name"),
-                CompletionSource::Static(filters.to_vec()),
-            )],
-        },
-    ]
-}
-
+/// One argument of a catalog entry, for tests that build a greeting by hand.
+#[cfg(test)]
 fn arg(
     name: &str,
     summary: &str,
@@ -428,12 +356,16 @@ fn arg(
 mod tests {
     use super::*;
 
+    /// Stands in for a greeting: the server's own commands plus the client's,
+    /// exactly what it publishes.
     fn catalog() -> Catalog {
         let c = Catalog::new();
         c.set_sticky_names(&["session".to_string()]);
         c.set_filter_names(&[]);
-        c.set_server_commands(vec![
+        let mut published = protocol::client_commands();
+        published.extend(vec![
             CommandSpec {
+                target: CommandTarget::Server,
                 name: "send_message".into(),
                 summary: "Send a message.".into(),
                 args: vec![
@@ -448,6 +380,7 @@ mod tests {
                 ],
             },
             CommandSpec {
+                target: CommandTarget::Server,
                 name: "set_session".into(),
                 summary: "Create or configure.".into(),
                 args: vec![
@@ -456,6 +389,7 @@ mod tests {
                 ],
             },
         ]);
+        c.set_commands(published);
         c.set_sessions(vec!["main".into(), "scratch".into()]);
         c
     }

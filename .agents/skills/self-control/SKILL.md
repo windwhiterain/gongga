@@ -149,14 +149,16 @@ EOF
 会话正忙时 `send_message` 不排队第二个 turn，而是写一条 `kind=inject` 的行，由当前 turn
 在**下一个 step 边界**读进 transcript。这就是"给自己留一句不会丢的话"。
 
-实测：本会话运行中执行
+你自己（agent）走的是 **`harness` 工具**，不是 CLI —— 你就住在 server 里，没理由为了
+发一句话再起一个客户端去连自己：
 
-```bash
-$GONGGA_CLI send_message --session test1 --message "SELF-NOTE: ..."
+```
+harness{command: "send_message", arguments: {"session": "test1", "message": "SELF-NOTE: ..."}}
 ```
 
 回执「message queued for test1; it will be read at the next step」，下一个 step 就以
-一条 user 消息出现。
+一条 user 消息出现。脚本、launcher、别的进程仍然用 `$GONGGA_CLI` —— 它们是独立进程，
+本来就没有你的工具。
 
 **它现在还能叫醒你**（2026-10-24 起）：前台 `bash` 正等一条长命令时，消息一到，等待就结束、
 命令交给后台继续跑（见 §3）。所以这不是"留言"，是一条**打断**——`sleep 40` 实测 3 秒返回。
@@ -164,6 +166,8 @@ $GONGGA_CLI send_message --session test1 --message "SELF-NOTE: ..."
 
 - 想让长命令早点放手 → 从别处发一条消息，不用干等。
 - 小心：你自己排队发的消息也会打断自己正在等的东西，别在关键写入中途自己插自己。
+  这条只在**别的进程**发消息时成立：你卡在一个 `bash` 调用里时无法调用 `harness`，
+  所以"自己叫醒自己那条 sleep"做不到——要么等它超时转后台，要么让另一个会话/脚本发。
 
 规矩：
 
@@ -295,8 +299,9 @@ EOF
 - **超时后假设 cwd 没变。** 同名 shell 已经换成新的、回到会话目录。
 - **`cat` 溢出文件。** 它们可能很大；用 `sed -n` / `grep`。
 - **第二次 `check_bash` 期待同样输出。** 读即清空；第二次只会拿到新的部分。
-- **`$GONGGA_CLI /cancel`。** `/` 只属于交互式输入行；这里 `/cancel` 会被 Git Bash 当路径
-  改写成 `C:/.../Git/cancel`。命令就是裸名字：`$GONGGA_CLI cancel`。
+- **在 bash 里 `$GONGGA_CLI /cancel`。** `/` 只属于交互式输入行；这里 `/cancel` 会被
+  Git Bash 当路径改写成 `C:/.../Git/cancel`。脚本里写裸名字：`$GONGGA_CLI cancel`。
+  （`harness` 工具两种都收 —— 你在文档里读到过那种写法，它不该因此拒绝你。）
 - **`bash` 传 `cmd`。** 参数名是 `command`。多余键被忽略，缺 required 会被拒并提示
   「did you mean `command`?」。
 - **在 bash 里 `kill <pid>` 停 detached。** MSYS pid 不等于 Windows pid，`taskkill` 认不出来；

@@ -2,9 +2,11 @@
 
 ## lib.rs
 
-This crate owns the command surface: it knows the catalog the server publishes,
+This crate owns the command surface: it takes the catalog the server publishes,
 keeps the sticky arguments, and turns one command's tokens into either a local
-action or a message on the wire.
+action or a message on the wire. Which is which is the published `target`, not a
+list here -- so a command a script registered is handled by the same code path
+as a built-in, and none of them needs a client rebuild.
 
 It does not own the *input line*. Whether a line is a `/command` or prose for
 the agent is the interactive front-end's decision (`Client::command` and
@@ -276,11 +278,11 @@ by whoever had an input box.
 
 ## Client::submit_tokens — offline
 
-Offline, the server's half of the catalog is whatever the last greeting said --
-possibly nothing at all, on a client started before its server. Falling through
-to "unknown command" would then blame the operator for the server being down, so
-say what is really wrong. Client commands are unaffected: they never leave this
-process.
+Offline, the catalog is whatever the last greeting said -- possibly nothing at
+all, on a client started before its server. Falling through to "unknown command"
+would then blame the operator for the server being down, so say what is really
+wrong. Client commands keep working from the last greeting, because they never
+leave this process.
 
 ## Client::submit_tokens — unknown command
 
@@ -401,8 +403,9 @@ whole reason reconnecting is cheap.
 
 ## build_client
 
-The catalog starts with only the client's half; the server's half arrives with
-the greeting, which is why a client can exist before its server does.
+The catalog starts empty and is filled by the greeting, which is why a client can
+exist before its server does -- and why, with no greeting yet, it knows no
+command at all rather than a stale list of its own.
 
 ## connect
 

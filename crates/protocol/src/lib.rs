@@ -10,8 +10,8 @@ pub use channel::{
     accept, connect,
 };
 pub use message::{
-    ArgSpec, Args, ClientInfo, ClientMessage, CmdArg, CommandSpec, CompletionSource, Event,
-    LogLevel, PROTOCOL_VERSION, ResponseEvent, ResponsePart, ServerInfo, ServerMessage,
-    SessionStatus, SessionSummary, ToolAnswerEvent, ToolStream, decode_client, decode_server,
-    encode_client, encode_server,
+    ArgSpec, Args, ClientInfo, ClientMessage, CmdArg, CommandSpec, CommandTarget, CompletionSource,
+    DETAIL_MODES, EVENT_FIELDS, Event, LogLevel, PROTOCOL_VERSION, ResponseEvent, ResponsePart,
+    ServerInfo, ServerMessage, SessionStatus, SessionSummary, ToolAnswerEvent, ToolStream,
+    client_commands, decode_client, decode_server, encode_client, encode_server,
 };

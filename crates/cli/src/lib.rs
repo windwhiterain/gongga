@@ -24,7 +24,8 @@ use protocol::{
 };
 use tokio::net::UdpSocket;
 
-use crate::commands::{EVENT_FIELDS, EventFilters, parse_args, render_args};
+use crate::commands::{EventFilters, parse_args, render_args};
+use protocol::EVENT_FIELDS;
 
 const DEFAULT_SERVER: &str = "127.0.0.1:9700";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -215,10 +216,26 @@ impl Client {
             follows: Vec::new(),
             sessions: Vec::new(),
             model: "-".to_string(),
-            next_id: 1,
+            next_id: Self::seed_command_id(),
             connected: false,
             attempts: 0,
         }
+    }
+
+    /// The first id this client will use.
+    ///
+    /// # Invariant
+    ///
+    /// Unique across live clients. `cmd_result` is broadcast to every connected
+    /// client, so a counter starting at 1 would let one client's result answer
+    /// another client's command -- which is exactly what a script that shells
+    /// out to the CLI produces.
+    fn seed_command_id() -> u64 {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        (nanos ^ ((std::process::id() as u64) << 32)) | 1
     }
 
     fn next_id(&mut self) -> u64 {
@@ -249,7 +266,7 @@ impl Client {
             } => {
                 self.model = server.model.clone();
                 self.sessions = sessions;
-                self.catalog.set_server_commands(commands);
+                self.catalog.set_commands(commands);
                 self.catalog.set_sessions(self.session_names());
                 self.sync_sticky();
                 // A greeting *is* the recovery: it carries the catalog and
@@ -514,23 +531,19 @@ impl Client {
                 .iter()
                 .map(|c| c.name.clone())
                 .collect();
-            sink.line(
-                LineKind::Error,
-                &format!(
-                    "unknown command {head:?}; this client knows: {}",
-                    known.join(", ")
-                ),
-            );
+            // No greeting yet means no list: the server owns it.
+            let why = if known.is_empty() {
+                "the command list comes from the server and it has not sent one yet: \
+                 connect, then ask again"
+                    .to_string()
+            } else {
+                format!("this server publishes: {}", known.join(", "))
+            };
+            sink.line(LineKind::Error, &format!("unknown command {head:?}; {why}"));
             return Submission::Rejected;
         };
 
-        if self.catalog.is_client_command(&head) {
-            echo.show(sink, &tokens);
-            self.run_client_command(&head, &tokens[1..], sink);
-            return Submission::Local;
-        }
-
-        echo.show(sink, &tokens);
+        // One validation, by the published spec: `target` picks the path.
         let mut args = match parse_args(&tokens[1..]) {
             Ok(a) => a,
             Err(e) => {
@@ -565,16 +578,23 @@ impl Client {
             .map(|a| a.name.as_str())
             .collect();
         if !missing.is_empty() {
+            echo.show(sink, &tokens);
             sink.line(
                 LineKind::Error,
                 &format!(
-                    "{} is missing required argument(s): {}",
-                    head,
+                    "{head} is missing required argument(s): {}",
                     missing.join(", ")
                 ),
             );
             return Submission::Rejected;
         }
+
+        echo.show(sink, &tokens);
+        if spec.target == protocol::CommandTarget::Client {
+            self.run_client_command(&head, &args, sink);
+            return Submission::Local;
+        }
+
         let id = self.next_id();
         if let Some(session) = args.get("session") {
             if matches!(head.as_str(), "set_session" | "del_session") {
@@ -627,20 +647,8 @@ impl Client {
         self.after_sticky_change(sink);
     }
 
-    fn run_client_command(&mut self, name: &str, tokens: &[String], sink: &mut dyn Sink) {
-        let args = match parse_args(tokens) {
-            Ok(a) => a,
-            Err(e) => {
-                sink.line(LineKind::Error, &e.to_string());
-                return;
-            }
-        };
-        // `--name` belongs to the commands that name something; the detail mode
-        // names a mode instead.
-        if !matches!(name, "set_event_detail") && !args.contains_key("name") {
-            sink.line(LineKind::Error, &format!("{name} requires --name"));
-            return;
-        }
+    /// Runs one client command, whose args the spec already validated.
+    fn run_client_command(&mut self, name: &str, args: &protocol::Args, sink: &mut dyn Sink) {
         let arg_name = args.get("name").cloned().unwrap_or_default();
         match name {
             "set_event_detail" => {
@@ -722,9 +730,13 @@ impl Client {
                 ),
                 Err(e) => sink.line(LineKind::Error, &format!("could not save: {e}")),
             },
+            // Published as a client command this build cannot run: say so.
             other => sink.line(
                 LineKind::Error,
-                &format!("unknown client command {other:?}"),
+                &format!(
+                    "the server publishes {other:?} as a client command, but this client \
+                     has no handler for it: the two are from different builds"
+                ),
             ),
         }
     }
@@ -1291,11 +1303,19 @@ mod tests {
         c
     }
 
+    /// A greeting's catalog: what the server publishes, client commands and all.
+    fn published_catalog() -> Catalog {
+        let cat = Catalog::new();
+        cat.set_commands(protocol::client_commands());
+        cat
+    }
+
     /// The smallest catalog that can take a message: one command, one required
     /// argument, one sticky one.
     fn send_message_catalog() -> Catalog {
         let cat = Catalog::new();
-        cat.set_server_commands(vec![protocol::CommandSpec {
+        cat.set_commands(vec![protocol::CommandSpec {
+            target: protocol::CommandTarget::Server,
             name: "send_message".into(),
             summary: "s".into(),
             args: vec![
@@ -1492,7 +1512,8 @@ mod tests {
         let mut sticky = Sticky::load(d.path());
         sticky.set("session", "scratch").unwrap();
         let cat = Catalog::new();
-        cat.set_server_commands(vec![protocol::CommandSpec {
+        cat.set_commands(vec![protocol::CommandSpec {
+            target: protocol::CommandTarget::Server,
             name: "send_message".into(),
             summary: "s".into(),
             args: vec![
@@ -1601,7 +1622,7 @@ mod tests {
     #[test]
     fn set_event_detail_saves_and_tells_the_front_end() {
         let d = tempfile::tempdir().unwrap();
-        let cat = Catalog::new();
+        let cat = published_catalog();
         cat.set_sticky_names(&[]);
         cat.set_filter_names(&[]);
         let mut c = client_with(cat, Sticky::load(d.path()), vec!["main"]);
@@ -1700,7 +1721,7 @@ mod tests {
     #[test]
     fn client_commands_never_reach_the_wire() {
         let d = tempfile::tempdir().unwrap();
-        let cat = Catalog::new();
+        let cat = published_catalog();
         cat.set_sticky_names(&[]);
         let mut c = client_with(cat, Sticky::load(d.path()), vec!["main"]);
         let mut s = VecSink(Vec::new());
@@ -1728,7 +1749,8 @@ mod tests {
     fn an_unknown_flag_is_refused_and_the_known_ones_are_listed() {
         let d = tempfile::tempdir().unwrap();
         let cat = Catalog::new();
-        cat.set_server_commands(vec![protocol::CommandSpec {
+        cat.set_commands(vec![protocol::CommandSpec {
+            target: protocol::CommandTarget::Server,
             name: "del_session".into(),
             summary: "s".into(),
             args: vec![protocol::ArgSpec {
@@ -1816,6 +1838,34 @@ mod tests {
         assert_eq!(c.sessions[0].status, SessionStatus::Running);
     }
 
+    /// Two clients must not share an id: results are broadcast.
+    #[test]
+    fn two_clients_never_share_a_command_id() {
+        let a = Client::seed_command_id();
+        let b = Client::seed_command_id();
+        assert_ne!(
+            a, b,
+            "two starts in the same tick still differ by process id"
+        );
+        assert_ne!(a, 0, "0 is a fine id only if it cannot be a seed");
+    }
+
+    /// A result addressed to another client settles nothing here.
+    #[test]
+    fn a_result_for_another_client_is_not_ours() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
+        let id = c.next_id();
+        // The pending follow belongs to *our* id; a stranger's must not clear it.
+        c.follows
+            .push((id, "set_session".to_string(), "main".to_string()));
+        let mut s = VecSink(Vec::new());
+        c.settle_follow(id + 1, true, &mut s);
+        assert_eq!(c.follows.len(), 1, "a foreign id settled our follow");
+        c.settle_follow(id, true, &mut s);
+        assert!(c.follows.is_empty());
+    }
+
     /// The acknowledgement of the command just sent, so `settle_follow` sees it.
     fn ack(c: &mut Client, ok: bool, sink: &mut dyn Sink) {
         let id = c.next_id - 1;
@@ -1835,7 +1885,8 @@ mod tests {
     fn set_session_leaves_a_sticky_session_and_its_filter() {
         let d = tempfile::tempdir().unwrap();
         let cat = Catalog::new();
-        cat.set_server_commands(vec![protocol::CommandSpec {
+        cat.set_commands(vec![protocol::CommandSpec {
+            target: protocol::CommandTarget::Server,
             name: "set_session".into(),
             summary: "s".into(),
             args: vec![protocol::ArgSpec {
@@ -1863,7 +1914,8 @@ mod tests {
     fn a_refused_set_session_leaves_the_client_where_it_was() {
         let d = tempfile::tempdir().unwrap();
         let cat = Catalog::new();
-        cat.set_server_commands(vec![protocol::CommandSpec {
+        cat.set_commands(vec![protocol::CommandSpec {
+            target: protocol::CommandTarget::Server,
             name: "set_session".into(),
             summary: "s".into(),
             args: vec![protocol::ArgSpec {
@@ -1889,7 +1941,8 @@ mod tests {
     fn del_session_only_clears_the_session_it_names() {
         let d = tempfile::tempdir().unwrap();
         let cat = Catalog::new();
-        cat.set_server_commands(vec![protocol::CommandSpec {
+        cat.set_commands(vec![protocol::CommandSpec {
+            target: protocol::CommandTarget::Server,
             name: "del_session".into(),
             summary: "s".into(),
             args: vec![protocol::ArgSpec {
@@ -1924,7 +1977,7 @@ mod tests {
     #[test]
     fn set_event_filter_refuses_a_field_no_event_has() {
         let d = tempfile::tempdir().unwrap();
-        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
+        let mut c = client_with(published_catalog(), Sticky::load(d.path()), vec!["main"]);
         let mut s = VecSink(Vec::new());
         assert!(matches!(
             c.command(argv("set_event_filter --name nope --value x"), &mut s),
@@ -1957,7 +2010,8 @@ mod tests {
     fn missing_required_arguments_are_reported() {
         let d = tempfile::tempdir().unwrap();
         let cat = Catalog::new();
-        cat.set_server_commands(vec![protocol::CommandSpec {
+        cat.set_commands(vec![protocol::CommandSpec {
+            target: protocol::CommandTarget::Server,
             name: "del_session".into(),
             summary: "s".into(),
             args: vec![protocol::ArgSpec {

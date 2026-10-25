@@ -2,14 +2,20 @@
 
 ## catalog.rs
 
-The TUI supplies the token; this decides what could go there. It merges two
-catalogs: the server's, published at connect time, and the client's own
-(`set_persistant_cmd_argument` and friends), which never leave the process.
+The TUI supplies the token; this decides what could go there. There is one
+catalog, published at connect time, and this client keeps no list of its own:
+every command completes from the specs the greeting carried, including the
+client's own ones and whatever a script registered.
 
-Both halves complete: the flag *names* come from the spec, and the flag *values*
-from whatever the spec says can be enumerated -- the live session list, a fixed
-set, every argument name, the filesystem, or another argument's list when the
-value is a name that chooses one.
+What the client does own is the *state* those specs point at. `--name` for a
+sticky argument completes from the sticky arguments that exist, and `--name` for
+an event filter from the filters that exist: the server names the source
+(`sticky_arguments`, `event_filters`) and the side that owns it fills it in, the
+same way `sessions` and `paths` already worked.
+
+Values complete from whatever the spec says can be enumerated -- the live
+session list, a fixed set, every argument name, the filesystem, client state, or
+another argument's list when the value is a name that chooses one.
 
 ## Inner::cwd
 

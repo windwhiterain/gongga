@@ -13,8 +13,25 @@ There is no "current session". A command either names its session or fails; the
 only way to get a default is the client's `persistant_cmd_argument`, which is
 filled in before the command ever reaches the wire.
 
-The catalog is published to clients at connect time, which is what lets the
-CLI's completer stay in sync without a second source of truth.
+The catalog is the only list, and it is published to clients at connect time.
+It has three parts -- the server's own commands, the client's (published so no
+front-end keeps a copy), and whatever scripts registered -- and one `target`
+field on each entry says who runs it. Dispatch reads that field; so does the
+CLI. A command nobody implemented is not "unknown" but a catalog entry with no
+handler, which the answer says outright.
+
+## Dispatch::resolve
+
+One decision for every kind of command: does the name exist, who runs it, and are
+its required arguments here. Client commands are refused rather than executed --
+the server cannot change a caller's own state, and calling them "unknown" would
+deny an entry that is right there in the greeting it just sent.
+
+## Dispatch::catalog
+
+Rebuilt per greeting, not cached: the script half is a filesystem scan that
+re-reads only changed files, so a script added while the server runs appears on
+the next connect.
 
 ## DEFAULT_MESSAGE_LIMIT
 

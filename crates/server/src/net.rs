@@ -18,7 +18,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 
 use crate::bus::EventBus;
-use crate::commands::{Dispatch, catalog, dispatch};
+use crate::commands::{Dispatch, dispatch};
 use crate::config::Config;
 
 const FRAME_QUEUE: usize = 512;
@@ -189,7 +189,8 @@ async fn handle_connection(
                     .unwrap_or_default(),
                 model: cfg.llm.model.clone(),
             },
-            commands: catalog(),
+            // The one list: built-ins, client commands, and a script's.
+            commands: d.catalog().await,
             sessions: d
                 .sessions
                 .list()
