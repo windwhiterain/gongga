@@ -49,39 +49,46 @@ pub struct Agent {
 }
 
 impl Agent {
-    /// Runs one turn, reporting failures on the bus rather than returning them.
-    ///
-    /// # Invariant
-    ///
-    /// `task` names a pending row whose message is already in the transcript, so
-    /// the step-boundary inbox must not hand it back.
-    pub async fn run_turn(&self, session: &SessionHandle, user_text: &str, task: Option<i64>) {
-        self.turn(session, Some(user_text), task).await;
-    }
-
-    /// Replays a turn a shutdown interrupted; its user message is already stored.
-    pub async fn resume_turn(&self, session: &SessionHandle, task: Option<i64>) {
-        self.turn(session, None, task).await;
-    }
-
-    async fn turn(&self, session: &SessionHandle, user_text: Option<&str>, task: Option<i64>) {
-        // A panic must surface as an error status, not a session that looks stuck.
-        let outcome = AssertUnwindSafe(self.turn_inner(session, user_text, task))
+    /// Runs one already-claimed turn whose user messages and obligations are durable.
+    pub async fn run_turn(
+        &self,
+        session: &SessionHandle,
+        tasks: Vec<i64>,
+        epoch: u64,
+        gate: tokio::sync::OwnedMutexGuard<()>,
+    ) {
+        let outcome = AssertUnwindSafe(self.turn_inner(session, epoch, gate))
             .catch_unwind()
             .await;
-        if let Err(payload) = outcome {
-            let message = panic_message(&payload);
-            let name = session.name().to_string();
-            tracing::error!(session = %name, "turn panicked: {message}");
-            let _ = self.store.set_status(session.id(), SessionStatus::Error);
-            self.bus.publish(Event::Log {
-                level: LogLevel::Error,
-                message: format!("{name}: turn panicked: {message}"),
-            });
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(payload) => {
+                let message = panic_message(&payload);
+                tracing::error!(session = %session.name(), "turn panicked: {message}");
+                self.bus.publish(Event::Log {
+                    level: LogLevel::Error,
+                    message: format!("{}: turn panicked: {message}", session.name()),
+                });
+                TurnOutcome::Failed
+            }
+        };
+        let (status, detail) = match outcome {
+            TurnOutcome::Done => (SessionStatus::Idle, None),
+            TurnOutcome::Cancelled => (SessionStatus::Idle, Some("cancelled".to_string())),
+            TurnOutcome::Failed => (SessionStatus::Error, Some("see log".to_string())),
+        };
+        let preserve = session.take_resumable();
+        if let Err(e) = self
+            .store
+            .finish_turn(session.id(), session.name(), &tasks, status, preserve)
+        {
+            tracing::error!(session = %session.name(), error = %e, "could not finish the durable turn");
+        }
+        if !session.is_deleted() {
             self.bus.publish(Event::Status {
-                session: name,
-                status: SessionStatus::Error,
-                detail: Some("panicked".to_string()),
+                session: session.name().to_string(),
+                status,
+                detail,
             });
         }
     }
@@ -89,28 +96,19 @@ impl Agent {
     async fn turn_inner(
         &self,
         session: &SessionHandle,
-        user_text: Option<&str>,
-        task: Option<i64>,
-    ) {
+        epoch: u64,
+        _gate: tokio::sync::OwnedMutexGuard<()>,
+    ) -> TurnOutcome {
         let name = session.name().to_string();
         let id = session.id();
-        // Take the gate before `new_turn`: it cancels, so claiming first kills the queue.
-        let epoch = session.cancel_epoch();
-        let queued = session.busy();
-        let _gate = session.claim().await;
-        if queued {
-            // A queued turn looks frozen otherwise; say so, since that can last minutes.
-            tracing::info!(session = %name, "turn waited for the session to be free");
-        }
         if session.cancel_epoch() != epoch {
             // Cancelled while queued: running looks like the interrupt did nothing.
             tracing::info!(session = %name, "turn dropped: cancelled while queued");
-            return;
+            return TurnOutcome::Cancelled;
         }
         if session.is_deleted() {
-            // Waited behind `del_session`: writing would resurrect deleted rows.
-            tracing::info!(session = %name, "turn dropped: session was deleted while queued");
-            return;
+            tracing::info!(session = %name, "turn dropped: session was deleted before starting");
+            return TurnOutcome::Cancelled;
         }
         let (turn, cancel) = session.new_turn();
         let started = std::time::Instant::now();
@@ -118,29 +116,14 @@ impl Agent {
         let (llm, budget) = match self.route(&name, &session.tuning()) {
             Ok(route) => route,
             Err(e) => {
-                self.fail(&name, id, "resolving the session's llm", e);
-                return;
+                self.error(id, &name, "resolving the session's llm", e);
+                return TurnOutcome::Failed;
             }
         };
         // Read once, like the route: every step sends the level this turn began with.
         let effort = session.tuning().thinking_effort;
-        tracing::info!(
-            session = %name,
-            resumed = user_text.is_none(),
-            model = %llm.model(),
-            budget,
-            "turn start"
-        );
+        tracing::info!(session = %name, model = %llm.model(), budget, "turn start");
 
-        if let Some(text) = user_text {
-            if let Err(e) =
-                self.store
-                    .append_message(id, "text", &json!({"role": "user", "text": text}))
-            {
-                self.error(id, &name, "storing user message", e);
-                return;
-            }
-        }
         self.bus.publish(Event::Status {
             session: name.clone(),
             status: SessionStatus::Running,
@@ -156,7 +139,7 @@ impl Agent {
                 break TurnOutcome::Cancelled;
             }
             // Step boundary: a user line between a call and its result is rejected, so inject here.
-            self.deliver_inbox(id, &name, task);
+            self.deliver_inbox(id, &name);
             // Compress before the request is built, so the very next request is the small one.
             self.maybe_notify_context(session, id, &name, budget);
             tracing::info!(session = %name, step, "step start");
@@ -168,7 +151,7 @@ impl Agent {
             match self.step(id, &name, turn, &cancel, &attempt).await {
                 Ok(StepResult::Finished) => {
                     // Something may have landed while it finished; deliver it and go round again.
-                    if self.deliver_inbox(id, &name, task) > 0 {
+                    if self.deliver_inbox(id, &name) > 0 {
                         step = step.wrapping_add(1);
                         continue;
                     }
@@ -192,19 +175,8 @@ impl Agent {
             step = step.wrapping_add(1);
         };
 
-        let (status, detail) = match outcome {
-            TurnOutcome::Done => (SessionStatus::Idle, None),
-            TurnOutcome::Cancelled => (SessionStatus::Idle, Some("cancelled".to_string())),
-            TurnOutcome::Failed => (SessionStatus::Error, Some("see log".to_string())),
-        };
-        let _ = self.store.set_status(id, status);
-        let _ = self.store.touch_session(id);
         tracing::info!(session = %name, outcome = ?outcome, elapsed = ?started.elapsed(), "turn end");
-        self.bus.publish(Event::Status {
-            session: name,
-            status,
-            detail,
-        });
+        outcome
     }
 
     /// Where this turn sends, and how many input tokens it may carry before compacting.
@@ -265,49 +237,24 @@ impl Agent {
         Ok(client)
     }
 
-    /// Reports a pre-turn failure and leaves the session in a state to act on.
-    fn fail(&self, name: &str, id: i64, what: &str, e: anyhow::Error) {
-        self.error(id, name, what, e);
-        let _ = self.store.set_status(id, SessionStatus::Error);
-        self.bus.publish(Event::Status {
-            session: name.to_string(),
-            status: SessionStatus::Error,
-            detail: Some("see log".to_string()),
-        });
-    }
-
-    /// Moves the session's inbox into the transcript, returning how many it delivered.
-    ///
-    /// # Invariant
-    ///
-    /// Called only at step boundaries, and the row is deleted with the transcript
-    /// write, so a message is delivered exactly once.
-    fn deliver_inbox(&self, id: i64, name: &str, own: Option<i64>) -> usize {
-        let Ok(tasks) = self.store.take_pending_tasks(name, own) else {
-            return 0;
-        };
-        let mut delivered = 0;
-        for task in tasks {
-            let Some(text) = task.payload.get("message").and_then(|v| v.as_str()) else {
-                // No message means it cannot be delivered; dropping it beats blocking the queue.
-                tracing::warn!(session = %name, kind = %task.kind, "dropping an empty pending task");
-                continue;
-            };
-            if let Err(e) =
-                self.store
-                    .append_message(id, "text", &json!({"role": "user", "text": text}))
-            {
-                tracing::warn!(session = %name, error = %e, "could not deliver a queued message");
-                continue;
+    /// Moves the session's inbox into the transcript in one durable transaction.
+    fn deliver_inbox(&self, id: i64, name: &str) -> usize {
+        match self.store.deliver_pending(id, name) {
+            Ok(delivered) => {
+                if delivered > 0 {
+                    tracing::info!(session = %name, delivered, "delivered queued messages at a step boundary");
+                    self.bus.publish(Event::Log {
+                        level: LogLevel::Info,
+                        message: format!("{name}: delivered {delivered} queued message(s)"),
+                    });
+                }
+                delivered
             }
-            delivered += 1;
-            tracing::info!(session = %name, chars = text.len(), "delivered queued message at a step boundary");
-            self.bus.publish(Event::Log {
-                level: LogLevel::Info,
-                message: format!("{name}: delivered a message that arrived while working"),
-            });
+            Err(e) => {
+                tracing::warn!(session = %name, error = %e, "could not deliver queued messages");
+                0
+            }
         }
-        delivered
     }
 
     /// Tells the session its context reached the threshold, and stops there.

@@ -51,6 +51,14 @@ falls back to `all` -- a hand-edited file is not a reason for a client to refuse
 start. Its own parse failure is different from the file's: the first is someone
 typing, the second is damage.
 
+## Split
+
+`set_event_split --split` is the other half of the same preference: it says whether
+a session's events share one window, not how much of each is shown. It is client
+state for the same reason -- the server sends the same events either way -- and it
+is saved in the same `cli.toml`, so a detail change and a split change cannot
+overwrite each other.
+
 ## EVENT_FIELDS
 
 An `--name` that no event carries filters nothing, and silently doing nothing is

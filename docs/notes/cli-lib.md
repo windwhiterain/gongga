@@ -96,24 +96,24 @@ turning it on by session count would change how the lines of a session already
 on screen look the moment another session is created -- and a prefix must stay
 fixed for the life of its key.
 
-## Client::handle_response — the key under `one`
+## Client::handle_response — the key under a split
 
 Which rows a stream joins is meaning, so it is decided here and not in the
-front-end: in `one` mode every part of a session but the answer shares
+front-end: split, and every part of a session but the answer shares
 `s:<session>`, so a front-end can fold them onto one row, while the answer keeps
-`o:<session>:<turn>` and its own rows. Every other mode keeps one key per part,
-which is what makes a block per part.
+`o:<session>:<turn>` and its own rows. Unsplit, one key names one part, which is
+what makes a block per part.
 
 The rule is expressed as a key rather than as a flag because a key is already
 what a front-end groups by; a flag saying "fold these together" would be the same
 information with a second way to spell it.
 
-## Sink::detail
+## Sink::detail and Sink::split
 
-A default no-op: a front-end that does not fold does not have to know the mode
-exists, and the one-shot sink must not start rendering. The mode is pushed on
-every `refresh`, which is how a window that attached after the client learned it
-still hears about it.
+Both default to a no-op: a front-end that does not fold has to know neither mode
+nor grouping exists, and the one-shot sink must not start rendering. Both are
+pushed on every `refresh`, which is how a window that attached after the client
+learned it still hears about it.
 
 ## rows_of
 

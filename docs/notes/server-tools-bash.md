@@ -101,6 +101,9 @@ Asking where the shell is means writing one more command into the same pipe. A
 shell that lost its place would answer that from the leftovers, so it is not
 asked.
 
+The same caller-supplied deadline bounds this internal command. If it expires,
+the unread `pwd` sentinel is what makes this shell unsafe to reuse.
+
 ## BashShell::finish_outstanding
 
 Only meaningful right after [`BashShell::run`] returned `still_running` on this
@@ -113,6 +116,20 @@ The shell redirects the job into a scratch file, which a task then tails into
 the unread buffer; `check_bash` is how the model collects it. The job keeps the
 shell's `cd`/exports, so a background command still runs where the foreground
 ones run.
+
+The wrapper writes the done sentinel, not the job, so three things have to hold
+of the script:
+
+* the job runs in an inner subshell -- `exit` only leaves the subshell and
+  `exec` only replaces it, so control returns to the wrapper and the sentinel
+  still gets written;
+* the pid file lets the tailing reader finish when the wrapper itself is killed,
+  since nothing is left to print the sentinel (`tail_background`'s pid check is
+  the fallback);
+* the sentinel is printed with `command printf`, which bypasses a user-defined
+  shell function of that name -- the shell survives `cd`, exports and functions
+  across calls, so a redefined `printf` would otherwise decide when the job
+  looked finished.
 
 ## BashShell::run_background (the done marker)
 

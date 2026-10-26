@@ -10,6 +10,9 @@ that already owns that address. From then on a connection is three things at onc
 it reads commands, it forwards events, and it runs the commands it has accepted --
 the last of those off to the side, so that neither of the other two waits for it.
 
+Command echoes and results are RPC on their requesting connection. The event bus
+is reserved for genuinely shared response, tool, status, and log events.
+
 ## Peer
 
 `conn_id` makes release safe: if a client reconnects from the same address before
@@ -83,6 +86,10 @@ meaning, not of speed, so the fix stops at "must not block the other two".
 
 Results carry their own `id`, which is what the client matches on, so a slow
 command costs nobody else anything but time.
+
+`CmdResult` is RPC traffic addressed to this connection: sending it directly,
+rather than publishing it on the shared bus, avoids both cross-client id
+collisions and loss through a lagged broadcast.
 
 A client that hangs up mid-command is not cut off: dropping the sender only closes
 the queue for new ones, so the command already running finishes and publishes its

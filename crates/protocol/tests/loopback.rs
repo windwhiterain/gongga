@@ -12,7 +12,7 @@ use bytes::Bytes;
 // Integration tests see the crate by its published name, not its workspace alias.
 use gongga_protocol as protocol;
 use protocol::frame::Frame;
-use protocol::{ChannelConfig, ChannelSink, ChannelStream};
+use protocol::{ChannelConfig, ChannelError, ChannelSink, ChannelStream};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 
@@ -136,6 +136,31 @@ async fn pair(loss_every: usize) -> (ChannelSink, ChannelStream, Arc<AtomicUsize
         .expect("handshake");
     let (sink, stream) = channel.split();
     (sink, stream, dropped, server_addr)
+}
+
+#[tokio::test]
+async fn unsplit_and_split_senders_reject_oversized_messages() {
+    let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+    let peer = socket.local_addr().unwrap();
+    let (_inbox, rx) = mpsc::channel(1);
+    let cfg = ChannelConfig {
+        max_message_len: 8,
+        ..ChannelConfig::default()
+    };
+    let channel = protocol::accept(socket, peer, rx, cfg, 1);
+
+    let err = channel.send(vec![0; 9]).await.unwrap_err();
+    assert!(matches!(
+        err,
+        ChannelError::MessageTooLarge { len: 9, limit: 8 }
+    ));
+
+    let (sink, _stream) = channel.split();
+    let err = sink.send(vec![0; 9]).await.unwrap_err();
+    assert!(matches!(
+        err,
+        ChannelError::MessageTooLarge { len: 9, limit: 8 }
+    ));
 }
 
 #[tokio::test]

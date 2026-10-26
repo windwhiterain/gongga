@@ -50,6 +50,14 @@ Already gone: nothing to do, and *do not* go looking for its pid. A pid is only
 unique until it is recycled, and signalling whatever owns it now would be far
 worse than a stale entry.
 
+## DetachedJob::stop (an exited leader)
+
+The handle is what rules out PID reuse, and it only rules it out while the leader
+lives. Once the leader has exited, a new group could hold the same id, so the id
+is safe to signal only when the lookup says the leader is absent -- and even then
+the group may still hold descendants, which is why the tree goes first and the
+leader is only reaped afterwards.
+
 ## DetachedJob::stop (a row naming an ancestor)
 
 A row written before `adopt` learned to refuse ancestors, or one put there by
@@ -123,6 +131,14 @@ reason the job has to be our own child rather than a shell background job.
 The same reasoning applies to a persistent shell being shut down: its children
 hold the write end of the pipe we read, so killing only the shell leaves a
 reader waiting for a close that never comes.
+
+## kill_tree (unix)
+
+The escalation is TERM, then a fixed grace window watching the group, then KILL,
+and after each of those the group has to be *seen* gone. Delivered signal is
+never success -- the kernel accepts the signal and the process may trap or
+ignore it -- and an exited leader never implies an empty group, which is why the
+answer comes from polling the group and not from the leader's exit status.
 
 ## pid_alive
 

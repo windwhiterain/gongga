@@ -41,12 +41,14 @@ pub struct BashOutcome {
     pub still_running: bool,
 }
 
-/// What one pipe produced, up to its sentinel.
-struct Drained {
+/// One pipe's resumable state, kept in the shell: a cancelled wait loses neither
+/// output nor a seen sentinel.
+#[derive(Default)]
+struct DrainState {
     text: String,
-    /// The exit status the sentinel carried.
+    /// A line read in progress; unlike a future-local buffer, this survives timeout.
+    buf: Vec<u8>,
     code: Option<i32>,
-    /// The sentinel was seen, so the pipe is exactly at a command boundary.
     settled: bool,
 }
 
@@ -55,6 +57,8 @@ pub struct BashShell {
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     stderr: BufReader<ChildStderr>,
+    stdout_state: DrainState,
+    stderr_state: DrainState,
     marker: String,
     cwd: PathBuf,
     /// A view of `cwd` that can be read while this shell's own lock is held.
@@ -93,6 +97,11 @@ pub(crate) fn msys_path(path: &Path) -> String {
         }
         _ => text.to_string(),
     }
+}
+
+/// Quotes one word for the shell, including embedded single quotes.
+fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
 }
 
 impl BashShell {
@@ -138,6 +147,8 @@ impl BashShell {
             stdin,
             stdout,
             stderr,
+            stdout_state: DrainState::default(),
+            stderr_state: DrainState::default(),
             marker,
             cwd: cwd.to_path_buf(),
             cwd_cell: Arc::new(StdMutex::new(cwd.to_path_buf())),
@@ -177,6 +188,11 @@ impl BashShell {
         !self.out_of_sync
     }
 
+    /// The shell process's own id, for a teardown that must not take its lock.
+    pub fn pid(&self) -> u32 {
+        self.child.id().unwrap_or_default()
+    }
+
     /// Bytes of background output waiting to be read.
     pub fn pending_len(&self) -> usize {
         self.pending.lock().map(|g| g.len()).unwrap_or(0)
@@ -195,6 +211,15 @@ impl BashShell {
             .unwrap_or_default()
     }
 
+    /// Takes foreground output an interrupted wait left, keeping each pipe's
+    /// sentinel state for `finish_outstanding`.
+    pub fn take_partial_output(&mut self) -> (String, String) {
+        (
+            std::mem::take(&mut self.stdout_state.text),
+            std::mem::take(&mut self.stderr_state.text),
+        )
+    }
+
     /// Runs one command, streaming to `sink`; the deadline covers waiting only.
     pub async fn run(
         &mut self,
@@ -208,10 +233,13 @@ impl BashShell {
         let pumped = tokio::time::timeout(timeout, Self::pump_both(self, sink)).await;
         match pumped {
             Ok((stdout, stderr, exit_code)) => {
-                // A shell that lost its place is not asked: `pwd` would read the leftovers.
+                // A shell that lost its place is not asked: `pwd` would read the
+                // leftovers. See `docs/notes/server-tools-bash.md`.
                 if self.usable() {
-                    if let Ok(pwd) = self.pwd().await {
-                        self.set_cwd(PathBuf::from(pwd));
+                    match tokio::time::timeout(timeout, self.pwd()).await {
+                        Ok(Ok(pwd)) => self.set_cwd(PathBuf::from(pwd)),
+                        Ok(Err(_)) => {}
+                        Err(_) => self.out_of_sync = true,
                     }
                 }
                 Ok(BashOutcome {
@@ -221,22 +249,23 @@ impl BashShell {
                     still_running: false,
                 })
             }
-            Err(_) => Ok(BashOutcome {
-                exit_code: None,
-                stdout: String::new(),
-                stderr: String::new(),
-                still_running: true,
-            }),
+            Err(_) => {
+                let (stdout, stderr) = self.take_partial_output();
+                Ok(BashOutcome {
+                    exit_code: None,
+                    stdout,
+                    stderr,
+                    still_running: true,
+                })
+            }
         }
     }
 
     /// Reads until the command that outlived its deadline finishes, as `run` left it.
     pub async fn finish_outstanding(&mut self) -> (String, String, Option<i32>) {
-        let (stdout, stderr, code) = Self::pump_both(self, None).await;
-        if let Ok(pwd) = self.pwd().await {
-            self.set_cwd(PathBuf::from(pwd));
-        }
-        (stdout, stderr, code)
+        // Retired: an extra `pwd` would be an unbounded command. The pump gives only
+        // what the timed-out call left.
+        Self::pump_both(self, None).await
     }
 
     /// Starts a command without waiting; its output is tailed into the unread buffer.
@@ -244,12 +273,27 @@ impl BashShell {
         self.next_job += 1;
         let job = self.next_job;
         let scratch = std::env::temp_dir().join(format!("gongga-bg-{}-{job}.out", self.marker));
+        let pid_file = scratch.with_extension("pid");
         let _ = std::fs::remove_file(&scratch);
-        let path = msys_path(&scratch);
-        let done_marker = format!("__GONGGA_BG_{job}__");
-        // `printf` takes the marker as an argument, so a `%` in the command cannot corrupt it.
+        let _ = std::fs::remove_file(&pid_file);
+        let path = shell_quote(&msys_path(&scratch));
+        let pid_path = shell_quote(&msys_path(&pid_file));
+        // Git Bash's `$!` is an MSYS pid; Windows process APIs need its winpid.
+        let pid = if cfg!(windows) {
+            "$(</proc/$!/winpid)"
+        } else {
+            "$!"
+        };
+        // Unguessable, like the foreground marker: a job that prints this line
+        // would otherwise end its own output early.
+        let done_marker = format!(
+            "__GONGGA_BG_{}_{job}__",
+            &uuid::Uuid::new_v4().simple().to_string()[..12]
+        );
+        // The wrapper, not the job, writes the sentinel: see
+        // `docs/notes/server-tools-bash.md`.
         let script = format!(
-            "{{ {command}\nprintf '\\n%s%d\\n' '{done_marker}' \"$?\"; }} > '{path}' 2>&1 &\n"
+            "{{ (\n{command}\n); command printf '\\n%s%d\\n' '{done_marker}' \"$?\"; }} > {path} 2>&1 &\ncommand printf '%s\\n' \"{pid}\" > {pid_path}\n"
         );
         self.stdin.write_all(script.as_bytes()).await?;
         self.stdin.flush().await?;
@@ -257,6 +301,7 @@ impl BashShell {
         self.jobs.fetch_add(1, Ordering::SeqCst);
         tokio::spawn(tail_background(
             scratch,
+            pid_file,
             done_marker,
             self.pending.clone(),
             self.jobs.clone(),
@@ -266,7 +311,7 @@ impl BashShell {
 
     async fn write_command(&mut self, command: &str) -> anyhow::Result<()> {
         let script = format!(
-            "{command}\n__gongga_st=$?\nprintf '\\n{marker}%d\\n' \"$__gongga_st\"\nprintf '\\n{marker}%d\\n' \"$__gongga_st\" >&2\n",
+            "{command}\n__gongga_st=$?\ncommand printf '\\n{marker}%d\\n' \"$__gongga_st\"\ncommand printf '\\n{marker}%d\\n' \"$__gongga_st\" >&2\n",
             marker = self.marker
         );
         self.stdin.write_all(script.as_bytes()).await?;
@@ -274,64 +319,87 @@ impl BashShell {
         Ok(())
     }
 
-    /// Drains both pipes until each has produced its sentinel.
+    /// Drains both pipes to their sentinels; progress lives on `self`, so a timeout
+    /// can resume the exact same place.
     async fn pump_both(
         &mut self,
         sink: Option<&mpsc::Sender<BashChunk>>,
     ) -> (String, String, Option<i32>) {
         let marker = &self.marker;
-        let (stdout_res, stderr_res) = tokio::join!(
-            Self::drain(&mut self.stdout, marker, sink, BashStream::Stdout),
-            Self::drain(&mut self.stderr, marker, sink, BashStream::Stderr)
+        tokio::join!(
+            Self::drain(
+                &mut self.stdout,
+                &mut self.stdout_state,
+                marker,
+                sink,
+                BashStream::Stdout
+            ),
+            Self::drain(
+                &mut self.stderr,
+                &mut self.stderr_state,
+                marker,
+                sink,
+                BashStream::Stderr
+            )
         );
-        let exit_code = stdout_res.code.or(stderr_res.code);
+        let exit_code = self.stdout_state.code.or(self.stderr_state.code);
         // Half-read pipe: the rest would be the next command's output, so flag the shell.
-        if !stdout_res.settled || !stderr_res.settled {
+        if !self.stdout_state.settled || !self.stderr_state.settled {
             self.out_of_sync = true;
         }
-        (stdout_res.text, stderr_res.text, exit_code)
+        let stdout = std::mem::take(&mut self.stdout_state.text);
+        let stderr = std::mem::take(&mut self.stderr_state.text);
+        self.stdout_state = DrainState::default();
+        self.stderr_state = DrainState::default();
+        (stdout, stderr, exit_code)
     }
 
     async fn drain<R>(
         reader: &mut R,
+        state: &mut DrainState,
         marker: &str,
         sink: Option<&mpsc::Sender<BashChunk>>,
         stream: BashStream,
-    ) -> Drained
-    where
+    ) where
         R: tokio::io::AsyncBufRead + Unpin,
     {
-        // Bytes, not `String`: one non-UTF-8 byte loses the sentinel and deafens the shell.
-        let mut buf: Vec<u8> = Vec::new();
-        let mut text = String::new();
+        // The other pipe may have timed out after this one finished: a settled pipe
+        // must not wait for a second sentinel.
+        if state.settled {
+            return;
+        }
+        // Bytes, not `String`: a bad byte must not cost the sentinel. `state.buf`
+        // keeps a half line across a cancelled future.
         loop {
-            buf.clear();
-            match reader.read_until(b'\n', &mut buf).await {
+            match reader.read_until(b'\n', &mut state.buf).await {
                 Ok(0) => break, // EOF: the shell died
                 Ok(_) => {}
                 Err(e) => {
-                    if !text.is_empty() {
-                        text.push('\n');
+                    if !state.text.is_empty() {
+                        state.text.push('\n');
                     }
-                    text.push_str(&format!("[read error: {e}]"));
+                    state.text.push_str(&format!("[read error: {e}]"));
                     break;
                 }
             }
-            let line = String::from_utf8_lossy(&buf);
-            let line = line.trim_end_matches('\n').trim_end_matches('\r');
+            let line = String::from_utf8_lossy(&state.buf);
+            let line = line
+                .trim_end_matches('\n')
+                .trim_end_matches('\r')
+                .to_string();
             if let Some(rest) = line.strip_prefix(marker) {
-                return Drained {
-                    text,
-                    code: rest.trim().parse::<i32>().ok(),
-                    settled: true,
-                };
+                state.buf.clear();
+                state.code = rest.trim().parse::<i32>().ok();
+                state.settled = true;
+                return;
             }
-            if !text.is_empty() {
-                text.push('\n');
+            if !state.text.is_empty() {
+                state.text.push('\n');
             }
-            text.push_str(line);
+            state.text.push_str(&line);
+            state.buf.clear();
             if let Some(sink) = sink {
-                let mut chunk = String::from(line);
+                let mut chunk = line;
                 chunk.push('\n');
                 if sink
                     .send(BashChunk {
@@ -345,11 +413,6 @@ impl BashShell {
                     // in a usable state.
                 }
             }
-        }
-        Drained {
-            text,
-            code: None,
-            settled: false,
         }
     }
 
@@ -381,7 +444,7 @@ impl BashShell {
     pub async fn pwd(&mut self) -> anyhow::Result<String> {
         // Git Bash's `pwd` reports an MSYS path; `-W` reports the Windows one.
         let flag = if cfg!(windows) { "-W" } else { "" };
-        let cmd = format!("pwd {flag}").trim().to_string();
+        let cmd = format!("command pwd {flag}").trim().to_string();
         self.write_command(&cmd).await?;
         let (out, _err, _code) = Self::pump_both(self, None).await;
         let line = out.lines().next().unwrap_or_default().trim().to_string();
@@ -395,8 +458,8 @@ impl BashShell {
     /// Changes directory, failing if the path does not exist; unused, `bash` sends `cd`.
     #[allow(dead_code)]
     pub async fn cd(&mut self, path: &str) -> anyhow::Result<String> {
-        let quoted = path.replace('\'', "'\\''");
-        self.write_command(&format!("cd '{quoted}'")).await?;
+        let quoted = shell_quote(path);
+        self.write_command(&format!("cd {quoted}")).await?;
         let (out, err, code) = Self::pump_both(self, None).await;
         if code != Some(0) {
             anyhow::bail!(
@@ -413,40 +476,118 @@ impl BashShell {
 /// See `docs/notes/server-tools-bash.md`.
 async fn tail_background(
     path: PathBuf,
+    pid_file: PathBuf,
     done_marker: String,
     pending: Arc<StdMutex<String>>,
     jobs: Arc<AtomicUsize>,
 ) {
     let mut offset = 0usize;
     let mut missing = 0u32;
+    let mut carry = Vec::new();
+    let mut settled = false;
     loop {
         tokio::time::sleep(POLL).await;
-        let Ok(bytes) = tokio::fs::read(&path).await else {
-            // The shell has not created the file yet, or the job is one that
-            // writes nothing at all.
-            missing += 1;
-            if missing > MISSING_FILE_POLLS {
-                break;
+        match tokio::fs::read(&path).await {
+            Ok(bytes) => {
+                missing = 0;
+                if bytes.len() > offset {
+                    settled =
+                        push_background_chunk(&mut carry, &bytes[offset..], &done_marker, &pending);
+                    offset = bytes.len();
+                    if settled {
+                        break;
+                    }
+                }
             }
-            continue;
-        };
-        missing = 0;
-        if bytes.len() <= offset {
-            continue;
-        }
-        let chunk = String::from_utf8_lossy(&bytes[offset..]).to_string();
-        offset = bytes.len();
-        match chunk.find(&done_marker) {
-            Some(pos) => {
-                let (head, _tail) = chunk.split_at(pos);
-                collect(&pending, head);
-                break;
+            Err(_) => {
+                // The shell has not created the file yet, or the job is one that
+                // writes nothing at all.
+                missing += 1;
+                if missing > MISSING_FILE_POLLS {
+                    break;
+                }
             }
-            None => collect(&pending, &chunk),
         }
+        // The wrapper's sentinel covers `exit`, `exec` and normal termination; this is
+        // the fallback for a killed wrapper.
+        if let Ok(pid) = tokio::fs::read_to_string(&pid_file).await {
+            if let Ok(pid) = pid.trim().parse::<u32>() {
+                if !pid_alive(pid) {
+                    break;
+                }
+            }
+        }
+    }
+    if !settled && !carry.is_empty() {
+        collect(&pending, &String::from_utf8_lossy(&carry));
     }
     jobs.fetch_sub(1, Ordering::SeqCst);
     let _ = tokio::fs::remove_file(&path).await;
+    let _ = tokio::fs::remove_file(&pid_file).await;
+}
+
+/// Adds new bytes, holding back a partial sentinel; true once the whole sentinel
+/// has been consumed.
+fn push_background_chunk(
+    carry: &mut Vec<u8>,
+    bytes: &[u8],
+    marker: &str,
+    pending: &StdMutex<String>,
+) -> bool {
+    carry.extend_from_slice(bytes);
+    let marker = marker.as_bytes();
+    if let Some(pos) = carry
+        .windows(marker.len())
+        .position(|window| window == marker)
+    {
+        collect(pending, &String::from_utf8_lossy(&carry[..pos]));
+        carry.clear();
+        return true;
+    }
+    let keep = (1..=marker.len().min(carry.len()))
+        .rev()
+        .find(|&len| carry.ends_with(&marker[..len]))
+        .unwrap_or(0);
+    let emit = carry.len() - keep;
+    if emit > 0 {
+        collect(pending, &String::from_utf8_lossy(&carry[..emit]));
+        carry.drain(..emit);
+    }
+    false
+}
+
+#[cfg(unix)]
+fn pid_alive(pid: u32) -> bool {
+    unsafe extern "C" {
+        fn kill(pid: i32, signal: i32) -> i32;
+    }
+    pid != 0 && unsafe { kill(pid as i32, 0) == 0 }
+}
+
+#[cfg(windows)]
+fn pid_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    if pid == 0 {
+        return false;
+    }
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return false;
+        }
+        let mut code = 0;
+        let alive = GetExitCodeProcess(process, &mut code) != 0 && code == STILL_ACTIVE as u32;
+        CloseHandle(process);
+        alive
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn pid_alive(_pid: u32) -> bool {
+    false
 }
 
 /// Caps tool output: the head and the tail survive, the rest is spilled to disk.
@@ -673,6 +814,31 @@ mod tests {
         assert_eq!(msys_path(Path::new("/tmp/x.out")), "/tmp/x.out");
     }
 
+    #[test]
+    fn shell_quoting_keeps_single_quotes_in_a_path() {
+        assert_eq!(shell_quote("/tmp/it's done"), "'/tmp/it'\\''s done'");
+    }
+
+    #[test]
+    fn background_sentinel_can_span_reads() {
+        let pending = StdMutex::new(String::new());
+        let mut carry = Vec::new();
+        assert!(!push_background_chunk(
+            &mut carry,
+            b"before\n__GONG",
+            "__GONGGA_BG_1__",
+            &pending
+        ));
+        assert_eq!(pending.lock().unwrap().as_str(), "before\n");
+        assert!(push_background_chunk(
+            &mut carry,
+            b"GA_BG_1__0\n",
+            "__GONGGA_BG_1__",
+            &pending
+        ));
+        assert_eq!(pending.lock().unwrap().as_str(), "before\n");
+    }
+
     /// Only a real run shows it: the scratch file must be writable and findable.
     #[tokio::test]
     async fn background_output_waits_for_check_bash() {
@@ -698,6 +864,141 @@ mod tests {
         assert!(collected.contains("from-background"), "got {collected:?}");
         // Reading it clears it, so the same chunk cannot be returned twice.
         assert!(shell.take_pending().is_empty());
+        shell.kill().await;
+    }
+
+    #[tokio::test]
+    async fn a_timeout_keeps_partial_output_for_exactly_one_completion() {
+        let Some(program) = crate::config::detect_git_bash() else {
+            return;
+        };
+        let mut shell = BashShell::spawn(&program, &std::env::temp_dir(), &[]).unwrap();
+        let early = shell
+            .run(
+                "printf 'before\\npart'; sleep 1; printf 'ial\\nafter\\n'",
+                Duration::from_millis(500),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(early.still_running);
+        assert_eq!(early.stdout.trim_end(), "before");
+        assert!(early.stderr.is_empty());
+
+        let (stdout, stderr, code) = tokio::time::timeout(WAIT, shell.finish_outstanding())
+            .await
+            .expect("the outstanding command must finish");
+        assert_eq!(code, Some(0));
+        assert_eq!(stdout.trim_end(), "partial\nafter");
+        assert_eq!(stderr, "");
+        assert!(!stdout.contains("before"), "partial output was repeated");
+        shell.kill().await;
+    }
+
+    #[tokio::test]
+    async fn background_jobs_finish_without_a_user_command_sentinel() {
+        let Some(program) = crate::config::detect_git_bash() else {
+            return;
+        };
+        let mut shell = BashShell::spawn(&program, &std::env::temp_dir(), &[]).unwrap();
+        for command in [
+            "printf 'exit-done\\n'; exit 7",
+            "exec printf 'exec-done\\n'",
+            "printf 'kill-done\\n'; kill -9 \"$BASHPID\"",
+        ] {
+            shell.run_background(command).await.unwrap();
+        }
+        let mut collected = String::new();
+        wait_until(
+            "all background jobs without normal command completion",
+            WAIT,
+            || {
+                collected.push_str(&shell.take_pending());
+                shell.background_jobs() == 0
+            },
+        )
+        .await;
+        assert_eq!(shell.background_jobs(), 0, "jobs never settled");
+        for expected in ["exit-done", "exec-done", "kill-done"] {
+            assert!(
+                collected.contains(expected),
+                "missing {expected}: {collected:?}"
+            );
+        }
+        assert!(!collected.contains("__GONGGA_BG_"), "{collected:?}");
+        shell.kill().await;
+    }
+
+    #[tokio::test]
+    async fn a_dead_background_wrapper_finishes_without_a_sentinel() {
+        let Some(program) = crate::config::detect_git_bash() else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("job.out");
+        let pid_file = dir.path().join("job.pid");
+        tokio::fs::write(&output, b"last output").await.unwrap();
+        let mut child = Command::new(program)
+            .arg("-c")
+            .arg("exit 7")
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        child.wait().await.unwrap();
+        tokio::fs::write(&pid_file, pid.to_string()).await.unwrap();
+        let pending = Arc::new(StdMutex::new(String::new()));
+        let jobs = Arc::new(AtomicUsize::new(1));
+        tokio::time::timeout(
+            WAIT,
+            tail_background(
+                output.clone(),
+                pid_file.clone(),
+                "__GONGGA_BG_TEST__".to_string(),
+                pending.clone(),
+                jobs.clone(),
+            ),
+        )
+        .await
+        .expect("a dead process must finish its tail");
+        assert_eq!(jobs.load(Ordering::SeqCst), 0);
+        assert_eq!(pending.lock().unwrap().as_str(), "last output");
+        assert!(!output.exists() && !pid_file.exists());
+    }
+
+    #[tokio::test]
+    async fn protocol_builtins_cannot_be_replaced_by_shell_functions() {
+        let Some(program) = crate::config::detect_git_bash() else {
+            return;
+        };
+        let mut shell = BashShell::spawn(&program, &std::env::temp_dir(), &[]).unwrap();
+        let outcome = tokio::time::timeout(
+            WAIT,
+            shell.run(
+                "printf() { command printf 'hijacked\\n'; }; pwd() { command printf '/hijacked\\n'; }; echo safe",
+                Duration::from_secs(1),
+                None,
+            ),
+        )
+        .await
+        .expect("internal pwd must not hang")
+        .unwrap();
+        assert_eq!(outcome.stdout.trim_end(), "safe");
+        assert!(shell.usable());
+        assert_ne!(shell.cwd(), Path::new("/hijacked"));
+        shell.kill().await;
+    }
+
+    #[tokio::test]
+    async fn cd_accepts_a_single_quote_in_the_path() {
+        let Some(program) = crate::config::detect_git_bash() else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let quoted = dir.path().join("single'quote");
+        std::fs::create_dir(&quoted).unwrap();
+        let mut shell = BashShell::spawn(&program, dir.path(), &[]).unwrap();
+        shell.cd(quoted.to_str().unwrap()).await.unwrap();
+        assert_eq!(shell.cwd(), quoted);
         shell.kill().await;
     }
 

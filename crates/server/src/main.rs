@@ -17,7 +17,7 @@ mod transport;
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 use clap::Parser;
 use tokio_util::sync::CancellationToken;
@@ -217,6 +217,7 @@ async fn run() -> anyhow::Result<()> {
             scripts: scripts.clone(),
             providers: providers::roster(),
             active: Arc::new(AtomicUsize::new(0)),
+            shutting_down: Arc::new(AtomicBool::new(false)),
             shutdown: CancellationToken::new(),
         }
     });

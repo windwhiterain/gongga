@@ -40,6 +40,10 @@ impl Sink for TuiSink<'_> {
     fn detail(&mut self, mode: Detail) {
         self.0.set_detail(mode);
     }
+
+    fn split(&mut self, on: bool) {
+        self.0.set_split(on);
+    }
 }
 
 /// One input line: `/` starts a command, anything else is a message to the agent.

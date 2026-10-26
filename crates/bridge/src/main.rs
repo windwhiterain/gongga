@@ -87,8 +87,17 @@ impl Bridge {
             queue: VecDeque::new(),
             probes: HashMap::new(),
             reads: HashMap::new(),
-            next_id: 1,
+            next_id: Self::seed_command_id(),
         }
+    }
+
+    /// A process/time-seeded start avoids collisions with other bridge clients.
+    fn seed_command_id() -> u64 {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        (nanos ^ ((std::process::id() as u64) << 32)) | 1
     }
 
     /// Screens a delivered message: deduplicated, allow-listed, queued.
@@ -137,18 +146,18 @@ impl Bridge {
             let session = incoming.chat.session_name(self.kind);
             // A stop is interrupt_session, never cancel: that stops every chat.
             if is_stop(&incoming.text) {
-                self.queue.pop_front();
-                if let Some(state) = self.chats.get_mut(&session) {
-                    // Forget what was owed, or the next Idle relays it anyway.
-                    state.waiting.clear();
-                }
                 self.command(
                     sink,
                     "interrupt_session",
                     args_of(&[("session", session.as_str())]),
                 )
                 .await?;
-                deliver(
+                self.queue.pop_front();
+                if let Some(state) = self.chats.get_mut(&session) {
+                    // Forget what was owed, or the next Idle relays it anyway.
+                    state.waiting.clear();
+                }
+                let _ = deliver(
                     out,
                     &incoming.chat,
                     &incoming.reply,
@@ -164,7 +173,6 @@ impl Bridge {
                 .and_then(|state| state.last_seq)
                 .is_some();
             if !known {
-                self.queue.pop_front();
                 // One row: the probe only needs `last_seq`, the end of the transcript.
                 let id = self
                     .command(
@@ -173,11 +181,11 @@ impl Bridge {
                         args_of(&[("session", &session), ("range", "-1")]),
                     )
                     .await?;
+                self.queue.pop_front();
                 self.probes.insert(id, incoming);
                 continue;
             }
 
-            self.queue.pop_front();
             // `set_session` creates as well as selects, so send it every time.
             let mut ensure = vec![("session", session.as_str())];
             if !self.cwd.is_empty() {
@@ -193,6 +201,7 @@ impl Bridge {
                 ]),
             )
             .await?;
+            self.queue.pop_front();
 
             let state = self.chats.entry(session.clone()).or_default();
             state.waiting.push_back(Pending {
@@ -200,11 +209,48 @@ impl Bridge {
                 reply: incoming.reply.clone(),
             });
             if self.ack {
-                deliver(out, &incoming.chat, &incoming.reply, 1, "收到，正在跑…").await;
+                let _ = deliver(out, &incoming.chat, &incoming.reply, 1, "收到，正在跑…").await;
             }
             tracing::info!(chat = %incoming.chat.label(), %session, "handed a message to the harness");
         }
         Ok(())
+    }
+
+    /// Settles everything tied to the previous connection before using a new one.
+    ///
+    /// # Invariant
+    ///
+    /// A probe never ran a user message, so retrying it is safe. A turn already
+    /// handed over may have finished while disconnected, and a partial read-back
+    /// could not prove it: what was waiting is failed explicitly instead.
+    async fn recover(
+        &mut self,
+        sink: &protocol::ChannelSink,
+        out: &Arc<dyn Outbox>,
+    ) -> anyhow::Result<()> {
+        let mut probes: Vec<(u64, Incoming)> = self.probes.drain().collect();
+        probes.sort_by_key(|(id, _)| *id);
+        for (_, incoming) in probes.into_iter().rev() {
+            self.queue.push_front(incoming);
+        }
+
+        self.reads.clear();
+        let waiting: Vec<Pending> = self
+            .chats
+            .values_mut()
+            .flat_map(|state| state.waiting.drain(..))
+            .collect();
+        for pending in waiting {
+            let _ = deliver(
+                out,
+                &pending.chat,
+                &pending.reply,
+                2,
+                "与服务端的连接中断，这一轮结果未知；请重新发送。",
+            )
+            .await;
+        }
+        self.pump(sink, out).await
     }
 
     async fn on_event(
@@ -257,7 +303,7 @@ impl Bridge {
                 }
                 None => {
                     let text = format!("读不到会话 transcript，没有执行：{message}");
-                    deliver(
+                    let _ = deliver(
                         out,
                         &incoming.chat,
                         &incoming.reply,
@@ -283,7 +329,7 @@ impl Bridge {
             };
             if !ok {
                 let text = clip(&format!("读回回答失败：{message}"), self.max_chars);
-                deliver(out, &pending.chat, &pending.reply, 2, &text).await;
+                deliver(out, &pending.chat, &pending.reply, 2, &text).await?;
                 if let Some(state) = self.chats.get_mut(&session) {
                     state.waiting.pop_front();
                 }
@@ -303,13 +349,15 @@ impl Bridge {
                 .unwrap_or(0);
             let text = clip(&final_reply(&since(&rows, cursor)), self.max_chars);
             let last = data.as_ref().and_then(|value| value["last_seq"].as_i64());
+            // Delivery commits the turn: on failure the pending reply and cursor
+            // stay for recovery to settle.
+            deliver(out, &pending.chat, &pending.reply, 2, &text).await?;
             if let Some(state) = self.chats.get_mut(&session) {
                 if let Some(seq) = last {
                     state.last_seq = Some(seq);
                 }
                 state.waiting.pop_front();
             }
-            deliver(out, &pending.chat, &pending.reply, 2, &text).await;
             return Ok(());
         }
 
@@ -345,16 +393,18 @@ impl Bridge {
         detail: Option<String>,
         out: &Arc<dyn Outbox>,
     ) -> anyhow::Result<()> {
-        let Some(state) = self.chats.get_mut(session) else {
+        let Some(state) = self.chats.get(session) else {
             return Ok(());
         };
         let Some(pending) = state.waiting.front().cloned() else {
             return Ok(());
         };
-        state.waiting.pop_front();
         let detail = detail.unwrap_or_else(|| "看服务端日志".to_string());
         let text = clip(&format!("这一轮出错了：{detail}"), self.max_chars);
-        deliver(out, &pending.chat, &pending.reply, 2, &text).await;
+        deliver(out, &pending.chat, &pending.reply, 2, &text).await?;
+        if let Some(state) = self.chats.get_mut(session) {
+            state.waiting.pop_front();
+        }
         Ok(())
     }
 
@@ -380,21 +430,25 @@ impl Bridge {
 
 // -------------------------------- Plumbing --------------------------------
 
-/// Delivers one chat message, logging instead of failing.
-///
-/// # Invariant
-///
-/// A refused reply never fails the caller: the answer is still in the
-/// transcript, and the next message will work.
-async fn deliver(out: &Arc<dyn Outbox>, chat: &ChatId, reference: &MsgRef, seq: u32, text: &str) {
+/// Delivers one chat message, logging and returning the failure so callers can
+/// decide whether to commit.
+async fn deliver(
+    out: &Arc<dyn Outbox>,
+    chat: &ChatId,
+    reference: &MsgRef,
+    seq: u32,
+    text: &str,
+) -> anyhow::Result<()> {
     let outgoing = Outgoing {
         chat: chat.clone(),
         text: text.to_string(),
         reply_to: Some((reference.clone(), seq)),
     };
-    if let Err(e) = out.send(outgoing).await {
+    let result = out.send(outgoing).await;
+    if let Err(e) = &result {
         tracing::warn!(chat = %chat.label(), error = %e, "could not deliver a reply");
     }
+    result
 }
 
 /// `/stop` and `/cancel` end the turn of the conversation that sent them.
@@ -474,29 +528,32 @@ async fn main() -> anyhow::Result<()> {
             }
         };
         backoff = REDIAL_MIN;
-        let link = loop {
-            tokio::select! {
-                Some(message) = incoming.recv() => {
-                    match bridge.accept(message) {
-                        None => {
-                            if let Err(e) = bridge.pump(&sink, &outbox).await {
-                                break e;
+        let link = match bridge.recover(&sink, &outbox).await {
+            Err(e) => e,
+            Ok(()) => loop {
+                tokio::select! {
+                    Some(message) = incoming.recv() => {
+                        match bridge.accept(message) {
+                            None => {
+                                if let Err(e) = bridge.pump(&sink, &outbox).await {
+                                    break e;
+                                }
+                            }
+                            Some(refusal) => {
+                                let _ = deliver(&outbox, &refusal.chat, &refusal.reply, 1, &refusal.text).await;
                             }
                         }
-                        Some(refusal) => {
-                            deliver(&outbox, &refusal.chat, &refusal.reply, 1, &refusal.text).await;
+                    }
+                    frame = stream.recv() => {
+                        let Some(bytes) = frame else {
+                            break anyhow!("the server closed the connection");
+                        };
+                        if let Err(e) = bridge.on_event(decode_server(&bytes)?, &sink, &outbox).await {
+                            break e;
                         }
                     }
                 }
-                frame = stream.recv() => {
-                    let Some(bytes) = frame else {
-                        break anyhow!("the server closed the connection");
-                    };
-                    if let Err(e) = bridge.on_event(decode_server(&bytes)?, &sink, &outbox).await {
-                        break e;
-                    }
-                }
-            }
+            },
         };
         // Both halves go with the link; the next dial makes new ones.
         drop((sink, stream));
@@ -634,6 +691,52 @@ fn resolve_key(args: &Args, home: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct TestOutbox {
+        fail: bool,
+        sent: Mutex<Vec<Outgoing>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Outbox for TestOutbox {
+        async fn send(&self, out: Outgoing) -> anyhow::Result<()> {
+            if self.fail {
+                anyhow::bail!("test delivery failure");
+            }
+            self.sent.lock().unwrap().push(out);
+            Ok(())
+        }
+    }
+
+    /// A sink with no live peer; keeping its sender alive lets recovery queue probes
+    /// with no network fixture.
+    async fn test_sink() -> (protocol::ChannelSink, mpsc::Sender<protocol::frame::Frame>) {
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let peer = socket.local_addr().unwrap();
+        let (tx, rx) = mpsc::channel(8);
+        let channel = protocol::accept(socket, peer, rx, ChannelConfig::default(), 1);
+        let (sink, _stream) = channel.split();
+        (sink, tx)
+    }
+
+    fn incoming(id: &str) -> Incoming {
+        Incoming {
+            chat: ChatId::Direct("user".into()),
+            user: "user".into(),
+            text: "hello".into(),
+            reply: MsgRef { id: id.into() },
+        }
+    }
+
+    fn pending(id: &str) -> Pending {
+        let incoming = incoming(id);
+        Pending {
+            chat: incoming.chat,
+            reply: incoming.reply,
+        }
+    }
 
     /// Only the slash form is a control message; "cancel the commit" is a task.
     #[test]
@@ -643,5 +746,75 @@ mod tests {
         assert!(!is_stop("stop"));
         assert!(!is_stop("cancel the last commit"));
         assert!(!is_stop("请取消上一条"));
+    }
+
+    #[test]
+    fn command_ids_do_not_start_at_one() {
+        let id = Bridge::seed_command_id();
+        assert_ne!(id, 1);
+        assert_eq!(id & 1, 1);
+    }
+
+    #[tokio::test]
+    async fn failed_final_delivery_does_not_commit_cursor_or_waiting() {
+        let mut bridge = Bridge::new("qq", BridgeCfg::default());
+        let session = "qq-d-user".to_string();
+        bridge.chats.insert(
+            session.clone(),
+            ChatState {
+                last_seq: Some(4),
+                waiting: VecDeque::from([pending("m1")]),
+            },
+        );
+        bridge.reads.insert(7, session);
+        let out: Arc<dyn Outbox> = Arc::new(TestOutbox {
+            fail: true,
+            ..TestOutbox::default()
+        });
+        let (sink, _frames) = test_sink().await;
+        let data = serde_json::json!({
+            "last_seq": 6,
+            "messages": [{"seq": 6, "kind": "text", "role": "assistant", "text": "done"}]
+        });
+
+        assert!(
+            bridge
+                .on_result(7, true, "ok".into(), Some(data), &sink, &out)
+                .await
+                .is_err()
+        );
+        let state = &bridge.chats["qq-d-user"];
+        assert_eq!(state.last_seq, Some(4));
+        assert_eq!(state.waiting.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn reconnect_retries_probes_and_fails_old_waiting() {
+        let mut bridge = Bridge::new("qq", BridgeCfg::default());
+        bridge.next_id = 100;
+        let mut probe = incoming("probe");
+        probe.chat = ChatId::Direct("new-user".into());
+        bridge.probes.insert(1, probe);
+        bridge.reads.insert(2, "qq-d-user".into());
+        bridge.chats.insert(
+            "qq-d-user".into(),
+            ChatState {
+                last_seq: Some(4),
+                waiting: VecDeque::from([pending("waiting")]),
+            },
+        );
+        let delivered = Arc::new(TestOutbox::default());
+        let out: Arc<dyn Outbox> = delivered.clone();
+        let (sink, _frames) = test_sink().await;
+
+        bridge.recover(&sink, &out).await.unwrap();
+
+        assert!(bridge.reads.is_empty());
+        assert_eq!(bridge.probes.len(), 1);
+        assert!(bridge.probes.contains_key(&100));
+        assert!(bridge.chats["qq-d-user"].waiting.is_empty());
+        let sent = delivered.sent.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].text.contains("结果未知"), "{}", sent[0].text);
     }
 }

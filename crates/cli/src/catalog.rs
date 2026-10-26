@@ -484,7 +484,7 @@ mod tests {
         let got = values(&c, "/set_sticky_cmd_argument --name ");
         assert_eq!(
             got,
-            vec!["cwd", "message", "mode", "name", "session", "value"]
+            vec!["cwd", "message", "mode", "name", "session", "split", "value"]
         );
     }
 
@@ -592,14 +592,17 @@ mod tests {
         // Order follows the catalog, which is not what this is about.
         let mut both = values(&c, "/set_event");
         both.sort();
-        assert_eq!(both, vec!["/set_event_detail", "/set_event_filter"]);
+        assert_eq!(
+            both,
+            vec!["/set_event_detail", "/set_event_filter", "/set_event_split"]
+        );
         assert_eq!(values(&c, "/set_event_det"), vec!["/set_event_detail"]);
         assert_eq!(values(&c, "/set_event_detail --"), vec!["--mode"]);
-        assert_eq!(
-            values(&c, "/set_event_detail --mode "),
-            vec!["all", "line", "one"]
-        );
-        assert_eq!(values(&c, "/set_event_detail --mode o"), vec!["one"]);
+        assert_eq!(values(&c, "/set_event_detail --mode "), vec!["all", "line"]);
+        // `one` was a mode; splitting is a command of its own now.
+        assert!(values(&c, "/set_event_detail --mode o").is_empty());
+        assert_eq!(values(&c, "/set_event_split --"), vec!["--split"]);
+        assert_eq!(values(&c, "/set_event_split --split "), vec!["true", "false"]);
     }
 
     #[test]

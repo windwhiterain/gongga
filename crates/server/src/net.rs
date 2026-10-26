@@ -76,17 +76,21 @@ pub async fn serve(cfg: Arc<Config>, d: Arc<Dispatch>, bus: EventBus) -> anyhow:
         };
 
         // Clone the sender, drop the lock: a slow peer must not stall the loop.
+        // A full inbox is ARQ's to retry.
         let known = conns.lock().unwrap().get(&peer).map(|p| p.tx.clone());
         if let Some(tx) = known {
-            if tx.send(frame).await.is_err() {
-                // Evict only if the address still maps to this sender, not a reconnect.
-                let mut map = conns.lock().unwrap();
-                let stale = map
-                    .get(&peer)
-                    .map(|p| p.tx.same_channel(&tx))
-                    .unwrap_or(false);
-                if stale {
-                    map.remove(&peer);
+            match tx.try_send(frame) {
+                Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {}
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    // Evict only if the address still maps to this sender, not a reconnect.
+                    let mut map = conns.lock().unwrap();
+                    let stale = map
+                        .get(&peer)
+                        .map(|p| p.tx.same_channel(&tx))
+                        .unwrap_or(false);
+                    if stale {
+                        map.remove(&peer);
+                    }
                 }
             }
             continue;
@@ -99,6 +103,11 @@ pub async fn serve(cfg: Arc<Config>, d: Arc<Dispatch>, bus: EventBus) -> anyhow:
         }
 
         let (tx, rx) = mpsc::channel::<Frame>(FRAME_QUEUE);
+        // The opening SYN is also this connection's first input: without it no
+        // SYN-ACK goes out and the client redials.
+        if tx.try_send(frame).is_err() {
+            continue;
+        }
         let conn_id = next_id.fetch_add(1, Ordering::Relaxed);
         conns.lock().unwrap().insert(peer, Peer { tx, conn_id });
         let channel = protocol::accept(
@@ -175,7 +184,7 @@ async fn handle_connection(
     // Commands run elsewhere: one must not hold up the events owed here.
     // See `docs/notes/server-net.md`.
     let (commands, queued) = mpsc::unbounded_channel::<Queued>();
-    tokio::spawn(run_commands(d.clone(), queued));
+    tokio::spawn(run_commands(d.clone(), queued, sink.clone()));
     if let Err(e) = send_server(
         &sink,
         &ServerMessage::Hello {
@@ -222,11 +231,15 @@ async fn handle_connection(
                         tracing::info!(%peer, conn_id, label = %client.label, "client ready");
                     }
                     Ok(ClientMessage::Command { id, name, args }) => {
-                        bus.publish(Event::Cmd {
+                        // Cmd is this request's local echo, not a global event.
+                        let echo = Event::Cmd {
                             id,
                             name: name.clone(),
                             args: args.clone(),
-                        });
+                        };
+                        if send_event(&sink, echo).await.is_err() {
+                            break;
+                        }
                         if commands
                             .send(Queued { id, name, args })
                             .is_err()
@@ -261,17 +274,24 @@ async fn handle_connection(
 }
 
 /// Runs one connection's commands, one at a time and in the order they arrived.
-///
 /// See `docs/notes/server-net.md`.
-async fn run_commands(d: Arc<Dispatch>, mut queued: mpsc::UnboundedReceiver<Queued>) {
+async fn run_commands(
+    d: Arc<Dispatch>,
+    mut queued: mpsc::UnboundedReceiver<Queued>,
+    sink: protocol::ChannelSink,
+) {
     while let Some(command) = queued.recv().await {
         let outcome = dispatch(&d, &command.name, &command.args).await;
-        d.bus.publish(Event::CmdResult {
+        let result = Event::CmdResult {
             id: command.id,
             ok: outcome.ok,
             message: outcome.message,
             data: outcome.data,
-        });
+        };
+        if let Err(e) = send_event(&sink, result).await {
+            tracing::debug!(id = command.id, error = %e, "command reply connection closed");
+            break;
+        }
     }
 }
 

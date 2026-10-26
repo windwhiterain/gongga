@@ -134,7 +134,7 @@ impl InputLine {
         let before = self.text[..self.cursor].trim_end();
         self.cursor = before
             .rfind(char::is_whitespace)
-            .map(|i| i + 1)
+            .map(|i| i + before[i..].chars().next().unwrap().len_utf8())
             .unwrap_or(0);
     }
 }
@@ -153,6 +153,13 @@ pub fn apply_completion(line: &mut InputLine, completion: &Completion) {
     let Some(candidate) = completion.current() else {
         return;
     };
+    if completion.start > completion.end
+        || completion.end > line.text.len()
+        || !line.text.is_char_boundary(completion.start)
+        || !line.text.is_char_boundary(completion.end)
+    {
+        return;
+    }
     line.text
         .replace_range(completion.start..completion.end, &candidate.insert);
     line.cursor = completion.start + candidate.insert.len();
@@ -222,6 +229,37 @@ mod tests {
         );
         assert_eq!(line.text(), "src/");
         assert_eq!(line.cursor, 4);
+    }
+
+    #[test]
+    fn applying_rejects_stale_or_non_boundary_ranges() {
+        for (text, start, end) in [("abc", 0, 4), ("abc", 2, 1), ("éx", 1, 2), ("éx", 0, 1)] {
+            let mut line = InputLine::default();
+            line.insert_str(text);
+            let cursor = line.cursor();
+            apply_completion(
+                &mut line,
+                &Completion {
+                    start,
+                    end,
+                    candidates: vec![Candidate::word("replacement", "")],
+                    selected: 0,
+                },
+            );
+            assert_eq!(line.text(), text);
+            assert_eq!(line.cursor(), cursor);
+        }
+    }
+
+    #[test]
+    fn word_left_skips_the_whole_multibyte_whitespace() {
+        let mut line = InputLine::default();
+        line.insert_str("one\u{2003}two");
+        line.word_left();
+        assert_eq!(line.cursor, 6);
+        assert!(line.text().is_char_boundary(line.cursor));
+        line.right();
+        assert_eq!(line.cursor, 7);
     }
 
     #[test]

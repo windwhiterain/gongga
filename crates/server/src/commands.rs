@@ -2,7 +2,7 @@
 //! See `docs/notes/server-commands.md`.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use protocol::{Args, CommandSpec, CommandTarget, CompletionSource, Event};
 use serde_json::json;
@@ -13,14 +13,11 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::Agent;
 use crate::bus::EventBus;
 use crate::session::SessionManager;
-use crate::store::{PendingTask, Store, Transcript, now_millis};
+use crate::store::{PendingTask, Store, Transcript};
 
 /// How long `cancel` waits before pulling the plug, so the acknowledgement
 /// still reaches whoever asked for it.
 const SHUTDOWN_NOTICE: Duration = Duration::from_millis(250);
-
-/// How long a `turn` row must sit unclaimed before the waker takes it.
-const NUDGE_GRACE_SECS: u64 = 5;
 
 pub struct Dispatch {
     pub agent: Arc<Agent>,
@@ -34,7 +31,9 @@ pub struct Dispatch {
     /// Turns currently running. `cancel` waits for this to drain before the
     /// process is allowed to exit.
     pub active: Arc<AtomicUsize>,
-    /// Pulled by `cancel`; the listen loop stops accepting work when it fires.
+    /// Set as soon as cancellation starts, before the delayed socket shutdown.
+    pub shutting_down: Arc<AtomicBool>,
+    /// Pulled after the cancel acknowledgement has had a chance to leave.
     pub shutdown: CancellationToken,
 }
 
@@ -52,6 +51,61 @@ impl Drop for ActiveGuard {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::SeqCst);
     }
+}
+
+/// A durable turn plus the session slot reserved before any task is spawned.
+struct TurnWork {
+    session: crate::session::SessionHandle,
+    tasks: Vec<i64>,
+    epoch: u64,
+    gate: tokio::sync::OwnedMutexGuard<()>,
+}
+
+/// Hands one durable turn to the agent, counted in [`Dispatch::active`] before
+/// the task exists.
+///
+/// # Invariant
+///
+/// The slot is taken by the caller's thread, not inside the spawned task: the
+/// drain after `cancel` reads the count, and a task queued but not yet polled
+/// would leave it reading zero and let the process exit mid-turn.
+fn spawn_turn(d: &Dispatch, work: TurnWork) {
+    if d.shutting_down.load(Ordering::SeqCst) {
+        // The turn's pending row stays in the database, so the next start owes it.
+        return;
+    }
+    let agent = d.agent.clone();
+    let active: ActiveGuard = ActiveGuard::new(d.active.clone());
+    tokio::spawn(async move {
+        let _active = active;
+        agent
+            .run_turn(&work.session, work.tasks, work.epoch, work.gate)
+            .await;
+    });
+}
+
+/// Claims one idle session; an inject-only recovery gets a durable turn row before
+/// its inbox is delivered.
+fn claim_recovery(d: &Dispatch, session: crate::session::SessionHandle, mut tasks: Vec<i64>) -> Option<TurnWork> {
+    let epoch = session.cancel_epoch();
+    let gate = session.try_claim()?;
+    if session.is_deleted() {
+        return None;
+    }
+    if tasks.is_empty() {
+        match d.store.add_pending_task(
+            session.name(),
+            "turn",
+            &json!({"session": session.name()}),
+        ) {
+            Ok(id) => tasks.push(id),
+            Err(e) => {
+                tracing::warn!(session = %session.name(), error = %e, "could not record recovered turn");
+                return None;
+            }
+        }
+    }
+    Some(TurnWork { session, tasks, epoch, gate })
 }
 
 /// The result of one command, sent back as a `cmd_result` event.
@@ -329,7 +383,6 @@ async fn send_message(d: &Dispatch, args: &Args) -> Outcome {
     let Some(message) = args.get("message").cloned() else {
         return Outcome::err("send_message requires --message");
     };
-    // No implicit session: a default is the client's business, not hidden state.
     let Some(name) = args.get("session").cloned() else {
         return Outcome::err(
             "send_message requires --session; set a sticky `session` to avoid typing it",
@@ -339,40 +392,35 @@ async fn send_message(d: &Dispatch, args: &Args) -> Outcome {
         Ok(s) => s,
         Err(e) => return Outcome::err(e.to_string()),
     };
-    let label = session.name().to_string();
-    // One read of `busy` picks the kind and whether a turn starts; see `docs/notes/server-commands.md`.
-    let busy = session.busy();
-    let kind = if busy { "inject" } else { "turn" };
-    // Keep this message's own row id; clearing by session would take others with it.
-    let task_id =
-        match d
-            .store
-            .add_pending_task(&label, kind, &json!({"session": label, "message": message}))
-        {
-            Ok(id) => id,
-            Err(e) => return Outcome::err(format!("could not record the pending turn: {e}")),
-        };
-
-    if busy {
-        // Whoever is waiting inside this turn hears about it; see the notes.
-        session.note_message();
-        // The running turn folds this in; `nudge_inboxes` covers it ending first.
-        return Outcome::ok(format!(
-            "message queued for {label}; the running command has been told to stop waiting"
-        ));
+    if session.is_deleted() {
+        return Outcome::err(format!("session {name:?} is being deleted"));
     }
-
-    let agent = d.agent.clone();
-    let store = d.store.clone();
-    let active = d.active.clone();
-    let session_resumable = session.clone();
-    tokio::spawn(async move {
-        let _active = ActiveGuard::new(active);
-        agent.run_turn(&session, &message, Some(task_id)).await;
-        // Done means the next start owes nothing, unless a `cancel` kept it pending.
-        forget_finished_task(&store, task_id, session_resumable.take_resumable());
-    });
-    Outcome::ok(format!("message accepted by {label}"))
+    let epoch = session.cancel_epoch();
+    if let Some(gate) = session.try_claim() {
+        // The gate is claimed before the durable write, so a second sender can only
+        // inject, never spawn a competing turn.
+        match d.store.begin_turn(session.id(), &name, &message) {
+            Ok(task) => {
+                spawn_turn(d, TurnWork { session, tasks: vec![task], epoch, gate });
+                Outcome::ok(format!("message accepted by {name}"))
+            }
+            Err(e) => Outcome::err(format!("could not record the pending turn: {e}")),
+        }
+    } else {
+        match d.store.add_pending_task(
+            &name,
+            "inject",
+            &json!({"session": name, "message": message}),
+        ) {
+            Ok(_) => {
+                session.note_message();
+                Outcome::ok(format!(
+                    "message queued for {name}; the running command has been told to stop waiting"
+                ))
+            }
+            Err(e) => Outcome::err(format!("could not record the pending message: {e}")),
+        }
+    }
 }
 
 async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
@@ -663,28 +711,37 @@ fn transcript_outcome(name: &str, t: Transcript) -> Outcome {
     )
 }
 
-async fn del_session(d: &Dispatch, args: &Args) -> Outcome {
-    let name = args["session"].clone();
-    // Delete means "not this work either", so interrupt before waiting for the gate.
-    let (was_busy, dropped) = interrupt(d, &name);
-    // The rows cannot go until the turn lets go, so take the gate after interrupting.
-    let _gate = match d.sessions.peek(&name) {
+fn prepare_delete(d: &Dispatch, name: &str) -> (bool, usize) {
+    let interrupted = interrupt(d, name);
+    if let Some(session) = d.sessions.peek(name) {
+        session.mark_deleted();
+    }
+    interrupted
+}
+
+async fn finish_delete(d: &Dispatch, name: &str, was_busy: bool, dropped: usize) -> Outcome {
+    let session = d.sessions.peek(name);
+    let _gate = match &session {
         Some(session) => Some(session.claim().await),
         None => None,
     };
-    match d.sessions.delete(&name) {
+    let stopped = d.sessions.detached().stop_session(name).await;
+    if stopped.failed > 0 {
+        return Outcome::err(format!(
+            "could not stop {} detached bash(es) for {name}; session kept for retry",
+            stopped.failed
+        ));
+    }
+    if let Some(session) = &session {
+        session.close_shells().await;
+    }
+    match d.sessions.delete(name) {
         Ok(true) => {
-            // Delete stops detached jobs too; `cancel` keeps them, by design.
-            let stopped = d.sessions.detached().stop_session(&name).await;
             publish_sessions(d);
-            let mut message = if stopped.total() == 0 {
-                format!("deleted session {name}")
-            } else {
-                format!(
-                    "deleted session {name} and stopped {} detached job(s)",
-                    stopped.stopped
-                )
-            };
+            let mut message = format!("deleted session {name}");
+            if stopped.stopped > 0 {
+                message.push_str(&format!(" and stopped {} detached bash(es)", stopped.stopped));
+            }
             if was_busy {
                 message.push_str(" (interrupted the running turn)");
             }
@@ -696,6 +753,31 @@ async fn del_session(d: &Dispatch, args: &Args) -> Outcome {
         Ok(false) => Outcome::err(format!("no session named {name:?}")),
         Err(e) => Outcome::err(e.to_string()),
     }
+}
+
+async fn del_session(d: &Dispatch, args: &Args) -> Outcome {
+    let name = args["session"].clone();
+    let (was_busy, dropped) = prepare_delete(d, &name);
+    finish_delete(d, &name, was_busy, dropped).await
+}
+
+/// Defers only self-deletion until the calling turn has released its gate.
+pub fn delete_own_session(d: &Arc<Dispatch>, args: &Args, caller: &str) -> Option<Outcome> {
+    if args.get("session").map(String::as_str) != Some(caller) {
+        return None;
+    }
+    let name = caller.to_string();
+    let (was_busy, dropped) = prepare_delete(d, &name);
+    let d = d.clone();
+    tokio::spawn(async move {
+        let outcome = finish_delete(&d, &name, was_busy, dropped).await;
+        if !outcome.ok {
+            tracing::error!(session = %name, error = %outcome.message, "deferred session deletion failed");
+        }
+    });
+    Some(Outcome::ok(format!(
+        "deleting session {caller} after the current turn, including all of its bash"
+    )))
 }
 
 /// Stops one session's turn and drops its pending rows, unlike `cancel`.
@@ -740,6 +822,9 @@ async fn interrupt_session(d: &Dispatch, args: &Args) -> Outcome {
 /// Detached jobs keep running: they were started precisely so they would
 /// outlive this.
 async fn cancel(d: &Dispatch) -> Outcome {
+    // First: the listen loop keeps dispatching through the notice window; a turn
+    // started there is not waited for.
+    d.shutting_down.store(true, Ordering::SeqCst);
     let running = d.sessions.live_sessions();
     for session in &running {
         // Preserve, not cancel: "cancel, restart, continue" is the point of this.
@@ -762,128 +847,76 @@ async fn cancel(d: &Dispatch) -> Outcome {
     ))
 }
 
-/// Removes the row for a finished turn, unless a shutdown asked it to stay.
-///
-/// # Invariant
-///
-/// Deleting is the default only because most turns finish. A turn stopped by
-/// `cancel` wants its row kept so the next start replays it, and that decision
-/// lives in one function so no call site can forget it -- `resume_pending` used
-/// to delete unconditionally, which is how a turn cancelled twice lost its work.
-pub fn forget_finished_task(store: &Store, task_id: i64, preserve: bool) {
-    if !preserve {
-        let _ = store.delete_pending_task(task_id);
+fn recovery_groups(tasks: Vec<PendingTask>) -> std::collections::BTreeMap<String, Vec<PendingTask>> {
+    let mut groups = std::collections::BTreeMap::<String, Vec<PendingTask>>::new();
+    for task in tasks {
+        if matches!(task.kind.as_str(), "turn" | "inject") {
+            groups.entry(task.session.clone()).or_default().push(task);
+        }
     }
+    groups
 }
 
-/// Wakes sessions holding a message nobody is left to read.
-///
-/// # Invariant
-///
-/// Only "inject" rows are woken: a "turn" row already belongs to a turn that is
-/// starting or queued.
-/// Whether this row is one the waker should claim.
-fn wakeable(task: &PendingTask, now: i64, grace: std::time::Duration) -> bool {
-    match task.kind.as_str() {
-        "inject" => true,
-        "turn" => now.saturating_sub(task.created_at) >= grace.as_millis() as i64,
-        _ => false,
-    }
-}
-
+/// Wakes each session with stranded work at most once.
 pub fn nudge_inboxes(d: &Dispatch) -> usize {
-    // Nothing starts after shutdown: picking up the row `cancel` kept would
-    // hold `active` up forever.
-    if d.shutdown.is_cancelled() {
+    if d.shutting_down.load(Ordering::SeqCst) || d.shutdown.is_cancelled() {
         return 0;
     }
     let Ok(tasks) = d.store.pending_tasks() else {
         return 0;
     };
-    // The net under `send_message` and `resume_pending`.
-    let grace = std::time::Duration::from_secs(NUDGE_GRACE_SECS);
-    let now = now_millis();
-    let mut seen = std::collections::HashSet::new();
     let mut started = 0;
-    for task in tasks {
-        if !wakeable(&task, now, grace) || !seen.insert(task.session.clone()) {
-            continue;
-        }
-        let Ok(session) = d.sessions.get(&task.session) else {
+    for (name, tasks) in recovery_groups(tasks) {
+        let Ok(session) = d.sessions.get(&name) else {
             continue;
         };
-        if session.busy() {
-            continue;
+        let owned = tasks
+            .iter()
+            .filter(|task| task.kind == "turn")
+            .map(|task| task.id)
+            .collect();
+        if let Some(work) = claim_recovery(d, session, owned) {
+            spawn_turn(d, work);
+            started += 1;
         }
-        let agent = d.agent.clone();
-        let active = d.active.clone();
-        // A `turn` row is this turn's own; claiming it as anything else replays it.
-        let own = (task.kind == "turn").then_some(task.id);
-        let task_id = task.id;
-        let store = d.store.clone();
-        // Clear it, or the next tick finds the same row and runs the turn again.
-        let session_resumable = session.clone();
-        tokio::spawn(async move {
-            let _active = ActiveGuard::new(active);
-            agent.resume_turn(&session, own).await;
-            if own.is_some() {
-                forget_finished_task(&store, task_id, session_resumable.take_resumable());
-            }
-        });
-        started += 1;
     }
     started
 }
 
-/// Replays interrupted turns once the server is back, from their transcript.
+/// Replays interrupted work with exactly one recovery owner per session.
 pub async fn resume_pending(d: &Dispatch) -> usize {
     let Ok(tasks) = d.store.pending_tasks() else {
         return 0;
     };
+    let known: std::collections::HashSet<i64> = tasks
+        .iter()
+        .filter(|task| matches!(task.kind.as_str(), "turn" | "inject"))
+        .map(|task| task.id)
+        .collect();
+    for task in tasks.iter().filter(|task| !known.contains(&task.id)) {
+        let _ = d.store.delete_pending_task(task.id);
+    }
     let mut resumed = 0;
-    for task in tasks {
-        let Ok(session) = d.sessions.get(&task.session) else {
-            // The session is gone; there is nothing to resume into.
-            let _ = d.store.delete_pending_task(task.id);
-            continue;
-        };
-        // Log only: the turn replays from the transcript, so do not append it twice.
-        let message = task
-            .payload
-            .get("message")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
-        // An "inject" row was never delivered; write it, or the resume replays nothing.
-        if task.kind == "inject" {
-            if !message.is_empty() {
-                if let Err(e) = d.store.append_message(
-                    session.id(),
-                    "text",
-                    &json!({"role": "user", "text": message}),
-                ) {
-                    tracing::warn!(session = %task.session, error = %e, "could not deliver a pending message");
+    for (name, tasks) in recovery_groups(tasks) {
+        let Ok(session) = d.sessions.get(&name) else {
+            // Only a confirmed missing session may discard owed work.
+            if matches!(d.store.get_session(&name), Ok(None)) {
+                for task in tasks {
+                    let _ = d.store.delete_pending_task(task.id);
                 }
             }
-        } else if task.kind != "turn" {
-            // Not a kind this loop knows how to replay.
-            let _ = d.store.delete_pending_task(task.id);
             continue;
+        };
+        let owned = tasks
+            .iter()
+            .filter(|task| task.kind == "turn")
+            .map(|task| task.id)
+            .collect();
+        if let Some(work) = claim_recovery(d, session, owned) {
+            tracing::info!(session = %name, "replaying work left pending");
+            spawn_turn(d, work);
+            resumed += 1;
         }
-        tracing::info!(session = %task.session, message = %message, "replaying a turn left pending");
-        let agent = d.agent.clone();
-        let store = d.store.clone();
-        let active = d.active.clone();
-        // Clear only this task; the session may hold a second pending turn's row.
-        let task_id = task.id;
-        // A resumed turn can be cancelled again; that cancel keeps the row.
-        let session_resumable = session.clone();
-        tokio::spawn(async move {
-            let _active = ActiveGuard::new(active);
-            agent.resume_turn(&session, Some(task_id)).await;
-            forget_finished_task(&store, task_id, session_resumable.take_resumable());
-        });
-        resumed += 1;
     }
     resumed
 }
@@ -910,73 +943,42 @@ pub fn publish_sessions(d: &Dispatch) {
 mod tests {
     use super::*;
 
-    /// A `turn` row nobody claimed is picked up, but only after a grace period.
-    ///
-    /// # Invariant
-    ///
-    /// Without this a preserved row whose server never restarted sits forever on
-    /// an idle session, which looks exactly like a session that never wakes.
-    /// The grace is what keeps the waker from racing `send_message`'s own turn.
     #[test]
-    fn only_a_stranded_turn_row_is_wakeable() {
-        let fresh = PendingTask {
-            id: 1,
-            session: "main".into(),
-            kind: "turn".into(),
+    fn recovery_has_one_owner_per_session() {
+        let task = |id, session: &str, kind: &str| PendingTask {
+            id,
+            session: session.into(),
+            kind: kind.into(),
             payload: json!({}),
-            created_at: now_millis(),
+            created_at: 0,
         };
-        let stale = PendingTask {
-            created_at: now_millis() - (NUDGE_GRACE_SECS as i64 * 1000) - 1,
-            ..fresh.clone()
-        };
-        let inject = PendingTask {
-            kind: "inject".into(),
-            ..fresh.clone()
-        };
-        let grace = std::time::Duration::from_secs(NUDGE_GRACE_SECS);
-        let now = now_millis();
-        assert!(
-            !wakeable(&fresh, now, grace),
-            "a just-written turn row belongs to send_message"
-        );
-        assert!(
-            wakeable(&stale, now, grace),
-            "a stranded turn row must be woken"
-        );
-        assert!(
-            wakeable(&inject, now, grace),
-            "an inject row is woken at once"
-        );
+        let groups = recovery_groups(vec![
+            task(1, "main", "turn"),
+            task(2, "main", "inject"),
+            task(3, "main", "inject"),
+            task(4, "other", "turn"),
+        ]);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups["main"].len(), 3);
+        assert_eq!(groups["other"].len(), 1);
     }
 
-    /// A turn stopped by `cancel` keeps its row; one that finished drops it.
-    ///
-    /// # Invariant
-    ///
-    /// This is the difference between "the work is done" and "the work is owed",
-    /// and getting it wrong is silent: the reply says the turn will be picked up
-    /// next start, and then nothing is. `resume_pending` had exactly that bug.
     #[test]
-    fn a_preserved_task_survives_the_turn_that_owned_it() {
+    fn finishing_and_preserving_a_turn_use_the_durable_boundary() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&dir.path().join("g.db")).unwrap();
-        store.create_session("main", "m", "C:/x").unwrap();
-        let payload = json!({"session": "main", "message": "go"});
+        let id = store.create_session("main", "m", "C:/x").unwrap();
+        let task = store.begin_turn(id, "main", "go").unwrap();
 
-        let kept = store.add_pending_task("main", "turn", &payload).unwrap();
-        forget_finished_task(&store, kept, true);
-        assert!(
-            store.pending_tasks().unwrap().iter().any(|t| t.id == kept),
-            "a cancelled turn's row must survive, or nothing replays it"
-        );
+        store
+            .finish_turn(id, "main", &[task], protocol::SessionStatus::Idle, true)
+            .unwrap();
+        assert!(store.pending_tasks().unwrap().iter().any(|t| t.id == task));
 
-        let done = store.add_pending_task("main", "turn", &payload).unwrap();
-        forget_finished_task(&store, done, false);
-        assert!(
-            !store.pending_tasks().unwrap().iter().any(|t| t.id == done),
-            "a finished turn owes nothing"
-        );
+        store
+            .finish_turn(id, "main", &[task], protocol::SessionStatus::Idle, false)
+            .unwrap();
+        assert!(store.pending_tasks().unwrap().is_empty());
     }
 
     /// A panicking turn must still release its slot, or shutdown waits forever.
@@ -1035,6 +1037,7 @@ mod tests {
                 "del_sticky_cmd_argument",
                 "set_event_detail",
                 "set_event_filter",
+                "set_event_split",
                 "set_sticky_cmd_argument"
             ]
         );

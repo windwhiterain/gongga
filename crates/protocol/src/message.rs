@@ -189,7 +189,10 @@ pub const EVENT_FIELDS: &[&str] = &[
 ];
 
 /// The modes `set_event_detail --mode` takes, in the order it lists them.
-pub const DETAIL_MODES: &[&str] = &["all", "line", "one"];
+pub const DETAIL_MODES: &[&str] = &["all", "line"];
+
+/// The values `set_event_split --split` takes.
+pub const SPLIT_VALUES: &[&str] = &["true", "false"];
 
 /// Where a command runs.
 ///
@@ -283,15 +286,26 @@ pub fn client_commands() -> Vec<CommandSpec> {
         ),
         (
             "set_event_detail",
-            "How much of each event the log shows: all, line, or one.",
+            "How much of each event the log shows: all, or one line per block.",
             vec![spec_arg(
                 "mode",
                 "`all` shows every block in full; `line` folds each block that is not \
-                 content onto one rewritten row; `one` keeps one row per session and one \
-                 for commands.",
+                 content onto one rewritten row.",
                 true,
                 Some("mode"),
                 CompletionSource::Static(DETAIL_MODES.iter().map(|m| m.to_string()).collect()),
+            )],
+        ),
+        (
+            "set_event_split",
+            "Split the events window by session name.",
+            vec![spec_arg(
+                "split",
+                "`true` gives each session its own block and puts `cmd`/`cmd_result` on \
+                 a line of their own; `false` keeps every event part on its own block.",
+                true,
+                Some("split"),
+                CompletionSource::Static(SPLIT_VALUES.iter().map(|v| v.to_string()).collect()),
             )],
         ),
     ]

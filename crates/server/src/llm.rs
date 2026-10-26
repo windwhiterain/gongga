@@ -169,12 +169,8 @@ impl LlmClient {
                 let mut failure: Option<(String, bool)> = None;
 
                 while let Some(event) = once.recv().await {
+                    produced |= event_produced(&event);
                     match &event {
-                        // Content of any kind: this attempt said something.
-                        LlmEvent::Delta { .. }
-                        | LlmEvent::Output { .. }
-                        | LlmEvent::Reasoning { .. }
-                        | LlmEvent::ToolCall { .. } => produced = true,
                         LlmEvent::Completed { .. } => completed = true,
                         LlmEvent::Cancelled => cancelled = true,
                         LlmEvent::Failed { message, retryable } => {
@@ -399,6 +395,23 @@ pub enum LlmEvent {
     },
 }
 
+/// Any content means this attempt said something. Activity counts: a completed
+/// response may hold nothing else.
+fn event_produced(event: &LlmEvent) -> bool {
+    matches!(
+        event,
+        LlmEvent::Delta { .. }
+            | LlmEvent::Output { .. }
+            | LlmEvent::Reasoning { .. }
+            | LlmEvent::ToolCall { .. }
+            | LlmEvent::BuiltinCall { .. }
+            | LlmEvent::PartStart {
+                part: ResponsePart::Activity,
+                ..
+            }
+    )
+}
+
 /// Cap on one retry delay. Doubling is meant to wait out a provider's bad
 /// minute, not to add a silent one of our own.
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
@@ -438,6 +451,17 @@ fn status_retryable(status: reqwest::StatusCode) -> bool {
         || status == reqwest::StatusCode::TOO_MANY_REQUESTS
 }
 
+/// Both use the same `message`/`type`/`code` shape; only `response.failed` nests
+/// its error under `response`.
+fn event_error(d: &Value) -> &Value {
+    let error = &d["response"]["error"];
+    if error.is_object() {
+        error
+    } else {
+        &d["error"]
+    }
+}
+
 /// Whether a streamed `error` event describes a bad minute or a refusal.
 ///
 /// # Invariant
@@ -445,9 +469,10 @@ fn status_retryable(status: reqwest::StatusCode) -> bool {
 /// An unknown kind stays retryable: providers invent their own spellings, and
 /// giving up on one this code has not heard of is worse than one extra try.
 fn error_retryable(d: &Value) -> bool {
-    let kind = d["error"]["type"]
+    let error = event_error(d);
+    let kind = error["type"]
         .as_str()
-        .or_else(|| d["error"]["code"].as_str())
+        .or_else(|| error["code"].as_str())
         .unwrap_or_default();
     !matches!(
         kind,
@@ -976,14 +1001,15 @@ async fn handle(
             tx.send(LlmEvent::Completed { usage }).await?;
         }
         "response.failed" | "error" => {
-            let message = d["error"]["message"]
+            let error = event_error(d);
+            let message = error["message"]
                 .as_str()
                 .or_else(|| d["message"].as_str())
                 .unwrap_or("unknown error")
                 .to_string();
             tx.send(LlmEvent::Failed {
                 message,
-                retryable: error_retryable(&d),
+                retryable: error_retryable(d),
             })
             .await?;
         }
@@ -1401,6 +1427,25 @@ mod tests {
         assert!(!retryable(0, 0, true));
     }
 
+    /// Provider-side work is a response even when there is no assistant text.
+    #[test]
+    fn provider_activity_counts_as_produced() {
+        let builtin = LlmEvent::BuiltinCall {
+            item_id: "ws_1".into(),
+            item: json!({"id": "ws_1", "type": "web_search_call"}),
+            replayable: true,
+        };
+        let activity = LlmEvent::PartStart {
+            part: ResponsePart::Activity,
+            item_id: "ws_1".into(),
+        };
+        assert!(event_produced(&builtin));
+        assert!(event_produced(&activity));
+        assert!(!retryable(0, 0, event_produced(&builtin)));
+        assert!(!retryable(0, 0, event_produced(&activity)));
+        assert!(!event_produced(&LlmEvent::Completed { usage: None }));
+    }
+
     /// A refusal is not a bad minute: resending it forever is what keeps the
     /// reason from ever reaching an operator.
     #[test]
@@ -1440,6 +1485,65 @@ mod tests {
         assert!(error_retryable(&bad_minute));
         let unknown = json!({"error": {"type": "invented-by-a-gateway"}});
         assert!(error_retryable(&unknown));
+    }
+
+    /// Both Responses envelopes keep the provider's message and classify a
+    /// permanent failure by `type` or `code`.
+    #[tokio::test]
+    async fn streamed_failures_read_both_error_envelopes() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut items = HashMap::new();
+        let cases = [
+            (
+                "response.failed",
+                json!({"response": {"error": {
+                    "message": "bad request",
+                    "type": "invalid_request_error",
+                    "code": null
+                }}}),
+                "bad request",
+                false,
+            ),
+            (
+                "response.failed",
+                json!({"response": {"error": {
+                    "message": "too many tokens",
+                    "type": null,
+                    "code": "context_length_exceeded"
+                }}}),
+                "too many tokens",
+                false,
+            ),
+            (
+                "error",
+                json!({"error": {
+                    "message": "gateway unavailable",
+                    "type": "server_error",
+                    "code": null
+                }}),
+                "gateway unavailable",
+                true,
+            ),
+        ];
+        for (name, data, expected_message, expected_retryable) in cases {
+            handle(
+                SseEvent {
+                    name: name.into(),
+                    data,
+                },
+                &mut items,
+                &tx,
+            )
+            .await
+            .unwrap();
+            match rx.recv().await.expect("a failure event") {
+                LlmEvent::Failed { message, retryable } => {
+                    assert_eq!(message, expected_message);
+                    assert_eq!(retryable, expected_retryable);
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+        }
     }
 
     /// The provider says "too long" and stops; the command that fixes it is the

@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use protocol::SessionStatus;
 use rusqlite::{Connection, OptionalExtension, params};
+use serde_json::json;
 
 /// What the model is told about a tool call that never returned: verify, do not assume.
 const INTERRUPTED_CALL: &str = "No result was recorded: the turn was interrupted before this call returned. \
@@ -212,8 +213,9 @@ impl Store {
         else {
             return Ok(false);
         };
-        // `events` has no foreign key; SQLite reuses the id, so delete its rows first.
+        // These tables have no session foreign key; none may leak into a reused name.
         tx.execute("DELETE FROM events WHERE session_id = ?1", params![id])?;
+        tx.execute("DELETE FROM pending_tasks WHERE session = ?1", params![name])?;
         let n = tx.execute("DELETE FROM sessions WHERE name = ?1", params![name])?;
         tx.commit()?;
         Ok(n > 0)
@@ -261,14 +263,6 @@ impl Store {
             compact_threshold: r.get::<_, Option<i64>>(9)?.map(|v| v as u8),
             thinking_effort: r.get(10)?,
         })
-    }
-
-    pub fn touch_session(&self, id: i64) -> anyhow::Result<()> {
-        self.lock().execute(
-            "UPDATE sessions SET updated_at = ?1 WHERE id = ?2",
-            params![now_millis(), id],
-        )?;
-        Ok(())
     }
 
     /// Records what a session was told to use: tuning columns and `model` at once.
@@ -321,14 +315,20 @@ impl Store {
         kind: &str,
         content: &serde_json::Value,
     ) -> anyhow::Result<i64> {
-        let conn = self.lock();
-        let seq: i64 = conn
-            .query_row(
-                "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?1",
-                params![session_id],
-                |r| r.get(0),
-            )
-            .unwrap_or(1);
+        Self::append_message_conn(&self.lock(), session_id, kind, content)
+    }
+
+    fn append_message_conn(
+        conn: &rusqlite::Connection,
+        session_id: i64,
+        kind: &str,
+        content: &serde_json::Value,
+    ) -> anyhow::Result<i64> {
+        let seq: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?1",
+            params![session_id],
+            |r| r.get(0),
+        )?;
         conn.execute(
             "INSERT INTO messages (session_id, seq, kind, content, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -688,6 +688,76 @@ impl Store {
         Ok(id)
     }
 
+    /// Accepts an idle session's first message and its turn obligation together.
+    pub fn begin_turn(&self, session_id: i64, session: &str, message: &str) -> anyhow::Result<i64> {
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT INTO pending_tasks (session, kind, payload, created_at)
+             VALUES (?1, 'turn', ?2, ?3)",
+            params![session, serde_json::to_string(&json!({"session": session}))?, now_millis()],
+        )?;
+        let id = tx.last_insert_rowid();
+        Self::append_message_conn(&tx, session_id, "text", &json!({"role": "user", "text": message}))?;
+        tx.commit()?;
+        Ok(id)
+    }
+
+    /// Delivers every injected message and removes its inbox row in the same transaction.
+    pub fn deliver_pending(&self, session_id: i64, session: &str) -> anyhow::Result<usize> {
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        let tasks = {
+            let mut stmt = tx.prepare(
+                "SELECT id, payload FROM pending_tasks
+                 WHERE session = ?1 AND kind = 'inject' ORDER BY id",
+            )?;
+            let rows = stmt.query_map(params![session], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        let delivered = tasks.len();
+        for (id, payload) in tasks {
+            let payload: serde_json::Value = serde_json::from_str(&payload)?;
+            let message = payload
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("pending inject {id} has no string message"))?;
+            Self::append_message_conn(&tx, session_id, "text", &json!({"role": "user", "text": message}))?;
+            tx.execute("DELETE FROM pending_tasks WHERE id = ?1", params![id])?;
+        }
+        tx.commit()?;
+        Ok(delivered)
+    }
+
+    /// Commits the terminal status and the fate of this turn's durable obligations together.
+    pub fn finish_turn(
+        &self,
+        session_id: i64,
+        session: &str,
+        tasks: &[i64],
+        status: SessionStatus,
+        preserve: bool,
+    ) -> anyhow::Result<()> {
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "UPDATE sessions SET status = ?1, updated_at = ?2 WHERE id = ?3",
+            params![status_name(status), now_millis(), session_id],
+        )?;
+        if !preserve {
+            for id in tasks {
+                tx.execute(
+                    "DELETE FROM pending_tasks WHERE id = ?1 AND session = ?2",
+                    params![id, session],
+                )?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Everything left undone, oldest first.
     pub fn pending_tasks(&self) -> anyhow::Result<Vec<PendingTask>> {
         let conn = self.lock();
@@ -721,46 +791,6 @@ impl Store {
         self.lock()
             .execute("DELETE FROM pending_tasks WHERE id = ?1", params![id])?;
         Ok(())
-    }
-
-    /// Takes this session's inbox except the running turn's row, and deletes what it returns.
-    ///
-    /// # Invariant
-    ///
-    /// One transaction, so a message is either still in the inbox or already in
-    /// the transcript, never both and never neither.
-    pub fn take_pending_tasks(
-        &self,
-        session: &str,
-        except: Option<i64>,
-    ) -> anyhow::Result<Vec<PendingTask>> {
-        let mut conn = self.lock();
-        let tx = conn.transaction()?;
-        let mut taken = Vec::new();
-        {
-            let mut stmt = tx.prepare(
-                "SELECT id, session, kind, payload, created_at FROM pending_tasks
-                 WHERE session = ?1 AND id IS NOT ?2 ORDER BY id",
-            )?;
-            let rows = stmt.query_map(params![session, except], |r| {
-                let payload: String = r.get(3)?;
-                Ok(PendingTask {
-                    id: r.get(0)?,
-                    session: r.get(1)?,
-                    kind: r.get(2)?,
-                    payload: serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null),
-                    created_at: r.get(4)?,
-                })
-            })?;
-            for row in rows {
-                taken.push(row?);
-            }
-        }
-        for task in &taken {
-            tx.execute("DELETE FROM pending_tasks WHERE id = ?1", params![task.id])?;
-        }
-        tx.commit()?;
-        Ok(taken)
     }
 
     // -- detached jobs ------------------------------------------------------
@@ -1116,6 +1146,40 @@ mod tests {
         let left = store.pending_tasks().unwrap();
         assert_eq!(left.len(), 1, "only the finished turn's row goes");
         assert_eq!(left[0].id, second);
+    }
+
+    #[test]
+    fn a_new_turn_commits_its_obligation_and_first_message_together() {
+        let (_d, store) = temp_store();
+        let id = store.create_session("main", "m", "C:/x").unwrap();
+        let task = store.begin_turn(id, "main", "hello").unwrap();
+        assert!(store.pending_tasks().unwrap().iter().any(|t| t.id == task));
+        let rows = store.messages_between(id, 0, i64::MAX).unwrap();
+        assert_eq!(rows.messages.len(), 1);
+        assert_eq!(rows.messages[0].kind, "text");
+
+        assert!(store.begin_turn(i64::MAX, "broken", "rollback").is_err());
+        assert!(!store.pending_tasks().unwrap().iter().any(|t| t.session == "broken"));
+    }
+
+    #[test]
+    fn inbox_delivery_is_atomic_and_does_not_consume_turn_rows() {
+        let (_d, store) = temp_store();
+        let id = store.create_session("main", "m", "C:/x").unwrap();
+        let turn = store.begin_turn(id, "main", "first").unwrap();
+        store.add_pending_task("main", "inject", &json!({"message": "second"})).unwrap();
+        store.add_pending_task("main", "inject", &json!({"message": "third"})).unwrap();
+
+        assert_eq!(store.deliver_pending(id, "main").unwrap(), 2);
+        assert_eq!(store.deliver_pending(id, "main").unwrap(), 0);
+        let pending = store.pending_tasks().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, turn);
+        assert_eq!(store.messages_between(id, 0, i64::MAX).unwrap().messages.len(), 3);
+
+        store.add_pending_task("main", "inject", &json!({"message": "kept"})).unwrap();
+        assert!(store.deliver_pending(i64::MAX, "main").is_err());
+        assert!(store.pending_tasks().unwrap().iter().any(|t| t.kind == "inject"));
     }
 
     /// A picture is a path in the row, not bytes: the request reads the file.

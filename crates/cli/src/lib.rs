@@ -7,7 +7,7 @@ pub mod commands;
 pub mod complete;
 
 pub use crate::catalog::Catalog;
-pub use crate::commands::{Detail, Sticky};
+pub use crate::commands::{Detail, Split, Sticky};
 pub use crate::complete::{Candidate, Completer, Completion, SharedCompleter, token_bounds};
 
 use std::net::SocketAddr;
@@ -74,15 +74,25 @@ impl Args {
         let Some(Sub::Cmd(command)) = &self.command else {
             return Ok(());
         };
-        if let Some(flag) = command.iter().find(|t| {
-            ["--server", "--home", "--key"]
+        // Every command flag takes one value, which may itself look like a flag:
+        // walk pairs rather than match every token.
+        let mut i = 1;
+        while i < command.len() {
+            let token = &command[i];
+            if let Some(flag) = ["--server", "--home", "--key"]
                 .iter()
-                .any(|f| *t == f || t.starts_with(&format!("{f}=")))
-        }) {
-            anyhow::bail!(
-                "{flag} has to come before the command: `gongga {flag} <value> {} ...`",
-                command[0]
-            );
+                .find(|flag| token.as_str() == **flag || token.starts_with(&format!("{flag}=")))
+            {
+                anyhow::bail!(
+                    "{flag} has to come before the command: `gongga {flag} <value> {} ...`",
+                    command[0]
+                );
+            }
+            i += if token.starts_with("--") && !token.contains('=') {
+                2
+            } else {
+                1
+            };
         }
         Ok(())
     }
@@ -125,6 +135,9 @@ pub trait Sink {
     fn footer(&mut self, text: &str);
     /// How much of each event to show. A front-end that does not fold ignores it.
     fn detail(&mut self, _mode: Detail) {}
+    /// Whether each session has its own window. A front-end that does not split
+    /// ignores it.
+    fn split(&mut self, _on: bool) {}
 }
 
 /// The one-shot mode's sink: it prints nothing, but it remembers what went
@@ -170,6 +183,8 @@ pub struct Client {
     sticky: Sticky,
     filters: EventFilters,
     detail: Detail,
+    /// Whether each session gets its own events window.
+    split: Split,
     /// Where `set_session` / `del_session` land, once the server says yes.
     /// See `docs/notes/cli-lib.md`.
     follows: Vec<(u64, String, String)>,
@@ -206,6 +221,7 @@ impl Client {
     fn new(catalog: Catalog, sticky: Sticky) -> Self {
         let filters = EventFilters::load(sticky.home());
         let detail = Detail::load(sticky.home());
+        let split = Split::load(sticky.home());
         catalog.set_sticky_names(&sticky.names());
         catalog.set_filter_names(&filters.names());
         Self {
@@ -213,6 +229,7 @@ impl Client {
             sticky,
             filters,
             detail,
+            split,
             follows: Vec::new(),
             sessions: Vec::new(),
             model: "-".to_string(),
@@ -226,10 +243,8 @@ impl Client {
     ///
     /// # Invariant
     ///
-    /// Unique across live clients. `cmd_result` is broadcast to every connected
-    /// client, so a counter starting at 1 would let one client's result answer
-    /// another client's command -- which is exactly what a script that shells
-    /// out to the CLI produces.
+    /// Hard for separate processes to collide. Command results are connection-
+    /// local, but distinct ids also keep logs and pending follows unambiguous.
     fn seed_command_id() -> u64 {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -293,7 +308,7 @@ impl Client {
             Event::Cmd { name, args, .. } => {
                 if shown {
                     let line = format!("$ {name}{}", render_args(&args));
-                    self.cmd_line(LineKind::System, &line, sink);
+                    sink.line(LineKind::System, &line);
                 }
             }
             Event::CmdResult {
@@ -317,7 +332,7 @@ impl Client {
                         } else {
                             LineKind::Error
                         };
-                        self.cmd_line(kind, &message, sink);
+                        sink.line(kind, &message);
                     }
                 }
             }
@@ -370,10 +385,11 @@ impl Client {
     fn handle_response(&self, e: ResponseEvent, sink: &mut dyn Sink) {
         // Which rows a stream joins is meaning, so it is decided here; how a
         // block is drawn is the front-end's.
-        let key = match (self.detail, e.part) {
-            // `one` folds a session's messages together; the answer keeps its text.
-            (Detail::One, ResponsePart::Output) => format!("o:{}:{}", e.session, e.turn),
-            (Detail::One, _) => format!("s:{}", e.session),
+        let key = match (self.split, e.part) {
+            // A split window folds a session's messages together; the answer keeps
+            // its text.
+            (Split(true), ResponsePart::Output) => format!("o:{}:{}", e.session, e.turn),
+            (Split(true), _) => format!("s:{}", e.session),
             _ => format!("r:{}:{}:{:?}", e.session, e.turn, e.part),
         };
         let (kind, label) = match e.part {
@@ -386,15 +402,6 @@ impl Client {
         // The tag rides on the prefix: a prefix is printed once per key.
         let prefix = format!("[{}] {label}", e.session);
         sink.stream(&key, kind, &prefix, &e.text, e.done);
-    }
-
-    /// The command echo and its result: one row each, or one shared row in `one`.
-    fn cmd_line(&self, kind: LineKind, text: &str, sink: &mut dyn Sink) {
-        if self.detail == Detail::One {
-            sink.stream("cmd", kind, "", text, false);
-        } else {
-            sink.line(kind, text);
-        }
     }
 
     fn handle_tool_answer(&self, e: ToolAnswerEvent, sink: &mut dyn Sink) {
@@ -423,6 +430,7 @@ impl Client {
     pub fn refresh(&self, sink: &mut dyn Sink) {
         // Told on every refresh, so a front-end attached late still learns it.
         sink.detail(self.detail);
+        sink.split(self.split.0);
         let facts = if self.connected {
             format!("model {} | {} session(s)", self.model, self.sessions.len())
         } else if self.attempts == 0 {
@@ -443,6 +451,9 @@ impl Client {
         }
         if self.detail != Detail::All {
             footer.push_str(&format!("  | detail: {}", self.detail.as_str()));
+        }
+        if self.split.0 {
+            footer.push_str(&format!("  | split: {}", self.split.as_str()));
         }
         sink.footer(&footer);
     }
@@ -667,6 +678,27 @@ impl Client {
                     Ok(()) => {
                         self.detail = mode;
                         sink.line(LineKind::Result, &format!("detail = {}", mode.as_str()));
+                        self.after_sticky_change(sink);
+                    }
+                    Err(e) => sink.line(LineKind::Error, &format!("could not save: {e}")),
+                }
+            }
+            "set_event_split" => {
+                let Some(raw) = args.get("split").cloned() else {
+                    sink.line(LineKind::Error, "set_event_split requires --split");
+                    return;
+                };
+                let on = match Split::parse(&raw) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        sink.line(LineKind::Error, &e);
+                        return;
+                    }
+                };
+                match on.save(self.sticky.home()) {
+                    Ok(()) => {
+                        self.split = on;
+                        sink.line(LineKind::Result, &format!("split = {}", on.as_str()));
                         self.after_sticky_change(sink);
                     }
                     Err(e) => sink.line(LineKind::Error, &format!("could not save: {e}")),
@@ -1126,6 +1158,39 @@ mod tests {
         shell_words::split(line).expect("test argv parses")
     }
 
+    fn parsed_command(command: Vec<String>) -> Args {
+        Args {
+            conn: Connection {
+                server: None,
+                home: None,
+                key: None,
+            },
+            command: Some(Sub::Cmd(command)),
+        }
+    }
+
+    #[test]
+    fn flag_order_check_skips_values_that_look_like_global_flags() {
+        for value in ["--key", "--home", "--server"] {
+            let args = parsed_command(argv(&format!(
+                "send_message --message {value} --session=--key"
+            )));
+            assert!(args.check_flag_order().is_ok(), "value was {value}");
+        }
+    }
+
+    #[test]
+    fn flag_order_check_still_rejects_misplaced_global_flags() {
+        for command in [
+            "send_message --message hi --key secret",
+            "send_message --home=/tmp/other --message hi",
+            "send_message --server 127.0.0.1:9701 --message hi",
+        ] {
+            let args = parsed_command(argv(command));
+            assert!(args.check_flag_order().is_err(), "accepted {command}");
+        }
+    }
+
     /// A quoted argument containing a space has to stay one argument.
     #[test]
     fn an_argument_that_contains_a_space_stays_one_argument() {
@@ -1359,7 +1424,9 @@ mod tests {
     }
 
     impl Sink for StreamSink {
-        fn line(&mut self, _kind: LineKind, _text: &str) {}
+        fn line(&mut self, _kind: LineKind, text: &str) {
+            self.lines.push(text.to_string());
+        }
         fn stream(&mut self, key: &str, _kind: LineKind, prefix: &str, text: &str, _done: bool) {
             self.keys.push(key.to_string());
             self.lines.push(format!("{prefix}{text}"));
@@ -1543,13 +1610,13 @@ mod tests {
         }
     }
 
-    /// `one` groups a session's messages under one key so the front-end can fold
-    /// them; the other modes keep one key per part.
+    /// Split groups a session's messages under one key so the front-end can fold them;
+    /// unsplit keeps a key per part.
     #[test]
-    fn one_mode_groups_a_sessions_messages_under_one_key() {
+    fn split_groups_a_sessions_messages_under_one_key() {
         let d = tempfile::tempdir().unwrap();
         let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
-        c.detail = Detail::One;
+        c.split = Split(true);
         let mut s = StreamSink::default();
         c.handle_response(response("main", ResponsePart::Reasoning, "a"), &mut s);
         c.handle_response(response("main", ResponsePart::ToolCall, "b"), &mut s);
@@ -1576,12 +1643,13 @@ mod tests {
         }
     }
 
-    /// `one` puts the command echo and its result on one shared row.
+    /// Split keeps the command echo and its result on their own lines: they name
+    /// no session to join.
     #[test]
-    fn one_mode_folds_the_command_echo_and_its_result() {
+    fn split_keeps_the_command_echo_and_its_result_on_their_own_lines() {
         let d = tempfile::tempdir().unwrap();
         let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
-        c.detail = Detail::One;
+        c.split = Split(true);
         let mut s = StreamSink::default();
         c.handle_event(
             Event::Cmd {
@@ -1600,22 +1668,8 @@ mod tests {
             },
             &mut s,
         );
-        assert_eq!(s.keys, vec!["cmd", "cmd"]);
-        assert_eq!(s.lines, vec!["$ get_messages", "3 rows"]);
-
-        // The other modes keep them as lines of their own.
-        c.detail = Detail::All;
-        let mut s = StreamSink::default();
-        c.handle_event(
-            Event::CmdResult {
-                id: 1,
-                ok: true,
-                message: "3 rows".into(),
-                data: None,
-            },
-            &mut s,
-        );
         assert!(s.keys.is_empty(), "{:?}", s.keys);
+        assert_eq!(s.lines, vec!["$ get_messages", "3 rows"]);
     }
 
     /// The mode is a client setting: it persists and the front-end is told.
@@ -1641,7 +1695,33 @@ mod tests {
         ));
         assert_eq!(c.detail, Detail::Line);
         let said = s.0.join("\n");
-        assert!(said.contains("all, line, one"), "{said}");
+        assert!(said.contains("all, line"), "{said}");
+    }
+
+    /// Splitting is a client setting too: it persists and the front-end is told.
+    #[test]
+    fn set_event_split_saves_and_tells_the_front_end() {
+        let d = tempfile::tempdir().unwrap();
+        let cat = published_catalog();
+        cat.set_sticky_names(&[]);
+        cat.set_filter_names(&[]);
+        let mut c = client_with(cat, Sticky::load(d.path()), vec!["main"]);
+        let mut s = VecSink(Vec::new());
+        assert!(matches!(
+            c.command(argv("set_event_split --split true"), &mut s),
+            Submission::Local
+        ));
+        assert_eq!(c.split, Split(true));
+        assert_eq!(Split::load(d.path()), Split(true));
+
+        // A value that is neither word is refused, and the setting stays.
+        assert!(matches!(
+            c.command(argv("set_event_split --split sideways"), &mut s),
+            Submission::Local
+        ));
+        assert_eq!(c.split, Split(true));
+        let said = s.0.join("\n");
+        assert!(said.contains("true, false"), "{said}");
     }
 
     /// A read answers with rows: before, `data` was dropped and only the summary
@@ -1838,7 +1918,7 @@ mod tests {
         assert_eq!(c.sessions[0].status, SessionStatus::Running);
     }
 
-    /// Two clients must not share an id: results are broadcast.
+    /// Separate processes should not reuse the same easily guessed id sequence.
     #[test]
     fn two_clients_never_share_a_command_id() {
         let a = Client::seed_command_id();

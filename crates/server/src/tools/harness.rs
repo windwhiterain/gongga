@@ -13,7 +13,7 @@ use std::sync::Weak;
 
 use serde_json::{Value, json};
 
-use crate::commands::{Dispatch, dispatch};
+use crate::commands::{Dispatch, delete_own_session, dispatch};
 use crate::tools::{Tool, ToolContext, ToolOutcome};
 
 /// Runs one harness command, or lists the ones that exist.
@@ -155,7 +155,14 @@ impl Tool for HarnessTool {
                 Err(e) => return ToolOutcome::err(e),
             };
 
-            let outcome = dispatch(&d, command, &named).await;
+            let outcome = if command == "del_session" {
+                match delete_own_session(&d, &named, &ctx.session) {
+                    Some(outcome) => outcome,
+                    None => dispatch(&d, command, &named).await,
+                }
+            } else {
+                dispatch(&d, command, &named).await
+            };
             let mut text = outcome.message;
             // The data is the answer for a read; the message alone is a summary.
             if let Some(data) = outcome.data {
@@ -269,6 +276,7 @@ mod tests {
                 scripts,
                 providers: crate::providers::roster(),
                 active: Arc::new(AtomicUsize::new(0)),
+                shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 shutdown: tokio_util::sync::CancellationToken::new(),
             }
         })

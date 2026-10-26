@@ -12,6 +12,6 @@ pub use channel::{
 pub use message::{
     ArgSpec, Args, ClientInfo, ClientMessage, CmdArg, CommandSpec, CommandTarget, CompletionSource,
     DETAIL_MODES, EVENT_FIELDS, Event, LogLevel, PROTOCOL_VERSION, ResponseEvent, ResponsePart,
-    ServerInfo, ServerMessage, SessionStatus, SessionSummary, ToolAnswerEvent, ToolStream,
-    client_commands, decode_client, decode_server, encode_client, encode_server,
+    SPLIT_VALUES, ServerInfo, ServerMessage, SessionStatus, SessionSummary, ToolAnswerEvent,
+    ToolStream, client_commands, decode_client, decode_server, encode_client, encode_server,
 };

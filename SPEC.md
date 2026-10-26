@@ -4,8 +4,8 @@
 all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, live inside directory "crates/xxx". 
 - protocol
 - server
-- cli: cmd fully documented and diagnosed.
-- tui: transparent cli wrapper, do not know cmd.
+- cli: cmd fully documented and diagnosed, transparent server cmd wrapper, do not know server cmd.
+- tui: transparent cli wrapper.
 - ...: more crates may be added, with the same naming and layout.
 ## Server Client Connection
 - UDP.
@@ -21,13 +21,7 @@ use `which("bash")` as bash.
   - `@<path>.<supported image suffix>` will be replaced as file id, referencing image will be upload via File API in advance.
 - list_bash{name_regex}: list matched bash with the caller session's name in key.
 - check_bash{name = "default"}: return bash's output that hasn't been read by the caller session.
-- del_bash{name_regex}: delete matched bash with the caller sessions' name in key. For a
-  persistent shell that discards it (`bash` restarts it); for a detached bash it stops the
-  process, which is the only thing that can.
-- detach: `bash{detached: true, name = <own name>, command}` starts a bash that is a process of
-  its own: no shell owns it, so it outlives the shell, the session, `cancel` and a server
-  restart. `name` here is that process's own name, required and unique in the session, and it
-  is what `del_bash` matches to end it.
+- del_bash{name_regex}: delete matched bash with the caller sessions' name in key. 
 ## State
 - everything in database (sqlite) under a home directory, structured for agentic retrieval/mutation.
 - home directory path can be specified at server start (`gongga-server --home <dir>`; this is
@@ -48,7 +42,7 @@ use `which("bash")` as bash.
   carries no `/` and no prose form. `/` belongs to `cmd_input` only.
 - server:
   - `set_session --session <name> [--cwd <path>] [--llm <provider/model>] [--compact_threshold <n%>] [--thinking_effort <level>]`
-  - `del_session --session <name>`
+  - `del_session --session <name>`: also delete all bash with the session name in key.
   - `send_message --session <name> --message <string>`: inject message instantly, turn waiting bash to backgound.
   - `interrupt_session --session <name>`
   - `cancel`: not instantly, but finish every task that can't be serialized to data, then store the pending tasks into data, the exit. next start will auto pick up those tasks.  
@@ -66,8 +60,17 @@ use `which("bash")` as bash.
   - `set_event_detail --mode <mode>`:
     mode:
       - all
-      - line: fold each non-output message block into one line, streaming keep re-write that line.
-      - one: each session's all message fold into its own block, all cmd cmd_result fold into one block, all block is single line except output message.
+      - line: fold each non-output message block into one line, streaming keep re-write/override that line.
+        - inside single line: re-write without clear text.
+        - new line: clear text.
+  - `set_event_split --split <bool>`:
+    true: split events window by session name, cmd/cmd_result use a separate single line.
+
+## Skill
+use python cripts read/write gongga home, calling server cmd.
+
+## Skill: Self Control
+do whatever user can do to the server.
 
 ## Skill: Polity
 agents play certain roles to keep context focus.

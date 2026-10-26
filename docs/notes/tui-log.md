@@ -147,19 +147,21 @@ Appends to an entry by position, which `Log::stream` does once it has resolved a
 key. A missing line is ignored rather than panicked on: losing a chunk is a
 better failure than taking the window down.
 
-## Log::set_detail
+## Log::set_detail and Log::set_split
 
 A display preference, so it lives with the front-end and not with the events:
 the same stream arrives, only the number of rows it occupies changes. Blocks
 already on screen keep the shape they were drawn in -- retro-fitting them would
 mean re-reading history nobody asked to see again -- and `open` is cleared so the
-next chunk of a key opens a block in the new mode instead of appending to one
-drawn the old way.
+next chunk of a key opens a block in the new setting instead of appending to
+one drawn under the old one. `set_split` clears the same way: which rows a
+chunk joins changed, so a key held open under the old grouping names nothing
+now.
 
 ## Log::set_detail — why `folds` lives here
 
 Which *rows a stream joins* is a question about meaning, so the command layer
-answers it: in `one` mode it hands a session's parts one key. How many rows one
+answers it: split, and it hands a session's parts one key. How many rows one
 block occupies is a question about drawing, so it is answered here. Neither layer
 has to know the other's half of the rule, and a front-end that renders events
 some other way can ignore `Sink::detail` entirely (its default is a no-op).
@@ -188,11 +190,11 @@ the only row there is. The buffer keeps its first `FOLD_KEEP` bytes -- the head 
 what a row shows -- so a thinking block that runs for an hour cannot grow the log
 without bound, and what it drops is what was already off the right edge.
 
-## Log::stream — a folded block in `one` mode
+## Log::stream — a folded block in a split window
 
 `done` seals a block, which is right for a key that names one part and wrong for
 a key that names a session: the next part arrives with `done` of its own and must
-reuse the same row. So a folded block in `one` mode stays open, and a changed tag
+reuse the same row. So a folded block under a split stays open, and a changed tag
 restarts it -- one row cannot show two events' text, and gluing them reads as a
 word that was never typed.
 

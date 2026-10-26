@@ -163,7 +163,18 @@ impl Channel {
     }
 
     /// Queues one message.
+    ///
+    /// # Invariant
+    ///
+    /// Too large is refused here, not dropped in the writer: the writer can only
+    /// log, and a caller waiting for an answer would wait forever.
     pub async fn send(&self, message: Vec<u8>) -> Result<(), ChannelError> {
+        if message.len() > self.max_message_len {
+            return Err(ChannelError::MessageTooLarge {
+                len: message.len(),
+                limit: self.max_message_len,
+            });
+        }
         self.outbound
             .send(message)
             .await
@@ -449,6 +460,9 @@ impl ChannelCore {
     }
 
     fn on_ack(&mut self, ack: u32, window: u16) {
+        if seq_lt(self.next_seq, ack) {
+            return;
+        }
         self.peer_window = window;
         if seq_le(ack, self.highest_ack) && self.highest_ack != 0 {
             if ack == self.highest_ack {
@@ -547,10 +561,10 @@ impl ChannelCore {
         }
         let done = {
             let r = self.reassembly.as_mut().unwrap();
-            if frame.frag_idx != r.next_idx {
+            if frame.frag_cnt != r.frag_cnt || frame.frag_idx != r.next_idx {
                 return Err(ChannelError::Frame(FrameError::BadFragment {
                     frag_idx: frame.frag_idx,
-                    frag_cnt: r.frag_cnt,
+                    frag_cnt: frame.frag_cnt,
                 }));
             }
             r.buf.extend_from_slice(&frame.payload);
@@ -571,6 +585,17 @@ impl ChannelCore {
     }
 
     fn on_frame(&mut self, frame: Frame, out: &mut Vec<Vec<u8>>) -> Result<(), ChannelError> {
+        // Only these two frames may carry another conn_id: a repeated initial SYN, and the
+        // SYN-ACK whose id we adopt.
+        let initial_syn = self.state == ConnState::Established
+            && frame.flags == Flags::from_bits(Flags::SYN)
+            && frame.conn_id == 0;
+        let handshake_ack = self.state == ConnState::Handshaking
+            && self.conn_id == 0
+            && frame.flags == Flags::from_bits(Flags::SYN | Flags::ACK);
+        if frame.conn_id != self.conn_id && !initial_syn && !handshake_ack {
+            return Ok(());
+        }
         self.last_recv = Instant::now();
         if frame.flags.contains(Flags::RST) {
             self.state = ConnState::Closing;
@@ -779,7 +804,7 @@ fn spawn_inner(
                     }
                 }
                 _ = ticker.tick() => {
-                    if let Err(e) = on_tick(&mut core, &io, syn_sent_at, &mut out).await {
+                    if let Err(e) = on_tick(&mut core, &io, &mut syn_sent_at, &mut out).await {
                         result = Err(e);
                         break 'outer;
                     }
@@ -850,7 +875,7 @@ fn deliver(
 async fn on_tick(
     core: &mut ChannelCore,
     io: &Sender,
-    syn_sent_at: Option<Instant>,
+    syn_sent_at: &mut Option<Instant>,
     out: &mut Vec<Vec<u8>>,
 ) -> Result<(), ChannelError> {
     let now = Instant::now();
@@ -863,6 +888,7 @@ async fn on_tick(
             }
             core.backoff += 1;
             io.send(&Frame::syn(0, core.cfg.window)).await?;
+            *syn_sent_at = Some(now);
             core.last_send = now;
         }
         return Ok(());
@@ -1050,5 +1076,159 @@ mod tests {
         let mut core = ChannelCore::new(cfg.clone(), Role::Server, 1);
         core.backoff = 100;
         assert!(core.effective_rto() <= cfg.max_rto);
+    }
+
+    #[tokio::test]
+    async fn syn_retransmission_restarts_the_handshake_timer() {
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let receiver = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let io = Sender {
+            socket,
+            peer: receiver.local_addr().unwrap(),
+        };
+        let cfg = ChannelConfig {
+            initial_rto: Duration::from_secs(60),
+            max_rto: Duration::from_secs(60),
+            ..ChannelConfig::default()
+        };
+        let mut core = ChannelCore::new(cfg, Role::Client, 0);
+        let first_sent_at = Instant::now() - core.effective_rto();
+        let mut syn_sent_at = Some(first_sent_at);
+        let mut out = Vec::new();
+
+        on_tick(&mut core, &io, &mut syn_sent_at, &mut out)
+            .await
+            .unwrap();
+        assert!(syn_sent_at.unwrap() > first_sent_at);
+        let mut buf = [0u8; 64];
+        let (n, _) = tokio::time::timeout(Duration::from_secs(1), receiver.recv_from(&mut buf))
+            .await
+            .expect("first retransmission")
+            .unwrap();
+        assert!(
+            Frame::decode(Bytes::copy_from_slice(&buf[..n]))
+                .unwrap()
+                .flags
+                .contains(Flags::SYN)
+        );
+
+        on_tick(&mut core, &io, &mut syn_sent_at, &mut out)
+            .await
+            .unwrap();
+        let second =
+            tokio::time::timeout(Duration::from_millis(50), receiver.recv_from(&mut buf)).await;
+        assert!(
+            second.is_err(),
+            "SYN was retransmitted on consecutive ticks"
+        );
+    }
+
+    #[test]
+    fn stale_frames_cannot_affect_a_new_connection() {
+        let mut core = ChannelCore::new(ChannelConfig::default(), Role::Server, 2);
+        core.next_seq = 2;
+        core.in_flight.insert(
+            1,
+            InFlight {
+                payload: Bytes::new(),
+                msg_id: 1,
+                frag_idx: 0,
+                frag_cnt: 1,
+                sent_at: Instant::now(),
+                retransmits: 0,
+                retransmitted: false,
+            },
+        );
+        let last_recv = core.last_recv;
+        let mut out = Vec::new();
+
+        core.on_frame(Frame::ack(1, 2, 1), &mut out).unwrap();
+        core.on_frame(
+            Frame::data(1, 1, 1, 1, 0, 1, 1, Bytes::from_static(b"stale")),
+            &mut out,
+        )
+        .unwrap();
+        core.on_frame(Frame::fin(1, 1, 1, 1), &mut out).unwrap();
+        core.on_frame(Frame::reset(1), &mut out).unwrap();
+
+        assert_eq!(core.state, ConnState::Established);
+        assert_eq!(core.recv_expected, 1);
+        assert!(core.in_flight.contains_key(&1));
+        assert_eq!(core.peer_window, u16::MAX);
+        assert_eq!(core.last_recv, last_recv);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn zero_conn_id_handshake_frames_remain_valid() {
+        let mut out = Vec::new();
+        let mut server = ChannelCore::new(ChannelConfig::default(), Role::Server, 7);
+        server.on_frame(Frame::syn(0, 64), &mut out).unwrap();
+        assert!(server.pending_syn_ack);
+        assert_eq!(server.state, ConnState::Established);
+
+        let mut client = ChannelCore::new(ChannelConfig::default(), Role::Client, 0);
+        client.on_frame(Frame::fin(9, 1, 1, 1), &mut out).unwrap();
+        assert_eq!(client.state, ConnState::Handshaking);
+        client.on_frame(Frame::syn_ack(7, 64), &mut out).unwrap();
+        assert_eq!(client.state, ConnState::Established);
+        assert_eq!(client.conn_id, 7);
+    }
+
+    #[test]
+    fn an_ack_cannot_confirm_unsent_sequence_numbers() {
+        let mut core = ChannelCore::new(ChannelConfig::default(), Role::Server, 1);
+        core.next_seq = 2;
+        core.in_flight.insert(
+            1,
+            InFlight {
+                payload: Bytes::new(),
+                msg_id: 1,
+                frag_idx: 0,
+                frag_cnt: 1,
+                sent_at: Instant::now(),
+                retransmits: 0,
+                retransmitted: false,
+            },
+        );
+
+        core.on_ack(3, 32);
+        assert!(core.in_flight.contains_key(&1));
+        assert_eq!(core.send_base, 1);
+        assert_eq!(core.highest_ack, 0);
+        assert_eq!(core.peer_window, u16::MAX);
+
+        core.on_ack(2, 32);
+        assert!(core.in_flight.is_empty());
+        assert_eq!(core.send_base, 2);
+    }
+
+    #[test]
+    fn reassembly_rejects_a_changed_fragment_count() {
+        let mut core = ChannelCore::new(ChannelConfig::default(), Role::Server, 1);
+        let mut out = Vec::new();
+        core.accept(
+            Frame::data(1, 1, 1, 9, 0, 2, 64, Bytes::from_static(b"ab")),
+            &mut out,
+        )
+        .unwrap();
+
+        let err = core
+            .accept(
+                Frame::data(1, 2, 1, 9, 1, 3, 64, Bytes::from_static(b"cd")),
+                &mut out,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ChannelError::Frame(FrameError::BadFragment {
+                frag_idx: 1,
+                frag_cnt: 3
+            })
+        ));
+        let reassembly = core.reassembly.as_ref().unwrap();
+        assert_eq!(reassembly.next_idx, 1);
+        assert_eq!(reassembly.buf, b"ab");
+        assert!(out.is_empty());
     }
 }

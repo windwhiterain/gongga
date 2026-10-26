@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use protocol::{Args, CommandSpec, DETAIL_MODES, Event};
+use protocol::{Args, CommandSpec, DETAIL_MODES, Event, SPLIT_VALUES};
 use serde::{Deserialize, Serialize};
 
 /// How much of each event the log shows. Client-side only.
@@ -16,8 +16,6 @@ pub enum Detail {
     All,
     /// Each block that is not content folded onto one row, rewritten as it streams.
     Line,
-    /// One row per session, and one for the command echo; content keeps its text.
-    One,
 }
 
 impl Detail {
@@ -25,7 +23,6 @@ impl Detail {
         match self {
             Detail::All => "all",
             Detail::Line => "line",
-            Detail::One => "one",
         }
     }
 
@@ -34,7 +31,6 @@ impl Detail {
         match raw.trim() {
             "all" => Ok(Detail::All),
             "line" => Ok(Detail::Line),
-            "one" => Ok(Detail::One),
             other => Err(format!(
                 "no event detail mode {other:?}; it takes {}",
                 DETAIL_MODES.join(", ")
@@ -59,6 +55,44 @@ impl Detail {
     }
 }
 
+/// Whether each session gets its own events window. Client-side only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Split(pub bool);
+
+impl Split {
+    pub fn as_str(self) -> &'static str {
+        if self.0 {
+            "true"
+        } else {
+            "false"
+        }
+    }
+
+    /// The value named, or the list of values; there is no silent default.
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim() {
+            "true" => Ok(Split(true)),
+            "false" => Ok(Split(false)),
+            other => Err(format!(
+                "no split value {other:?}; it takes {}",
+                SPLIT_VALUES.join(", ")
+            )),
+        }
+    }
+
+    /// Loads `home/cli.toml`; a missing or unreadable file is off.
+    pub fn load(home: &Path) -> Self {
+        Self(read_file(&home.join("cli.toml")).event_split)
+    }
+
+    pub fn save(self, home: &Path) -> anyhow::Result<()> {
+        let path = home.join("cli.toml");
+        let mut file = read_file(&path);
+        file.event_split = self.0;
+        write_file(&path, &file)
+    }
+}
+
 /// The pre-rename key for sticky arguments: read once, then rewritten
 /// under `sticky_cmd_arguments`.
 const OLD_STICKY_KEY: &str = "persistant_cmd_arguments";
@@ -72,6 +106,8 @@ struct File {
     event_filters: Vec<Entry>,
     #[serde(default)]
     event_detail: Option<String>,
+    #[serde(default)]
+    event_split: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -496,8 +532,26 @@ mod tests {
     #[test]
     fn an_unknown_detail_mode_lists_the_modes() {
         let why = Detail::parse("huge").unwrap_err();
-        assert!(why.contains("all, line, one"), "{why}");
-        assert_eq!(Detail::parse(" one "), Ok(Detail::One));
+        assert!(why.contains("all, line"), "{why}");
+        // `one` was a mode; splitting is a setting of its own now, so the word
+        // no longer means anything here.
+        assert!(Detail::parse(" one ").is_err(), "one is not a mode any more");
+    }
+
+    /// The setting survives a restart, and only the two words it names are taken.
+    #[test]
+    fn the_split_setting_is_remembered() {
+        let d = dir();
+        assert_eq!(Split::load(d.path()), Split(false));
+        Split(true).save(d.path()).unwrap();
+        assert_eq!(Split::load(d.path()), Split(true));
+
+        assert_eq!(Split::parse(" true "), Ok(Split(true)));
+        assert_eq!(Split::parse("no"), Err("no split value \"no\"; it takes true, false".into()));
+        // A split is saved without losing the detail mode beside it.
+        Detail::Line.save(d.path()).unwrap();
+        assert_eq!(Detail::load(d.path()), Detail::Line);
+        assert_eq!(Split::load(d.path()), Split(true));
     }
 
     #[test]

@@ -21,7 +21,7 @@ fn folds(detail: Detail, kind: LineKind) -> bool {
         Detail::All => false,
         // "Output message" is the answer; everything else is progress, including
         // a tool's own output.
-        Detail::Line | Detail::One => kind != LineKind::Assistant,
+        Detail::Line => kind != LineKind::Assistant,
     }
 }
 
@@ -344,6 +344,8 @@ pub struct Log {
     width: usize,
     /// How much of each event to show. See [`Log::set_detail`].
     detail: Detail,
+    /// Whether a session's events share one block. See [`Log::set_split`].
+    split: bool,
 }
 
 impl Log {
@@ -366,6 +368,22 @@ impl Log {
 
     pub fn detail(&self) -> Detail {
         self.detail
+    }
+
+    /// Whether a session's events share a block; flipping it invalidates the old grouping's open keys.
+    pub fn set_split(&mut self, split: bool) {
+        if self.split == split {
+            return;
+        }
+        self.split = split;
+        self.open.clear();
+        // Force the next frame to re-measure every block under the new grouping.
+        self.width = 0;
+        self.index = RowIndex::default();
+    }
+
+    pub fn split(&self) -> bool {
+        self.split
     }
 
     pub fn len(&self) -> usize {
@@ -440,9 +458,9 @@ impl Log {
                 line
             }
         };
-        // A folded `one` block belongs to the session, so the next chunk rewrites
-        // it instead of a seal here.
-        let sticky = self.entries[line].folded && detail == Detail::One;
+        // A split block belongs to the session, so the next chunk rewrites it
+        // instead of a seal here.
+        let sticky = self.entries[line].folded && self.split;
         if done && !sticky {
             self.open.remove(key);
             self.trim_tail(line);
@@ -747,17 +765,15 @@ mod tests {
         }
     }
 
-    /// The reported gap: a tool's own output folds too, in both folding modes.
+    /// The reported gap: a tool's own output folds like any other progress.
     #[test]
     fn a_tool_output_folds_like_any_other_progress() {
-        for mode in [Detail::Line, Detail::One] {
-            let mut log = Log::new();
-            log.set_detail(mode);
-            log.stream("t:c1:Stdout", LineKind::ToolOutput, "[m] ", "a\nb\nc", true);
-            let rows = shown(&mut log, 40, 10, 0);
-            assert_eq!(rows.len(), 1, "{mode:?}: {rows:?}");
-            assert_eq!(rows[0], "[m] a b c", "{mode:?}");
-        }
+        let mut log = Log::new();
+        log.set_detail(Detail::Line);
+        log.stream("t:c1:Stdout", LineKind::ToolOutput, "[m] ", "a\nb\nc", true);
+        let rows = shown(&mut log, 40, 10, 0);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0], "[m] a b c");
     }
 
     /// `line` folds progress, not content: the answer keeps its own rows.
@@ -780,12 +796,13 @@ mod tests {
         assert_eq!(shown(&mut log, 40, 10, 0), vec!["[m] a", "b"]);
     }
 
-    /// `one`: a block that is folded keeps being the same row across chunks,
-    /// even though each chunk arrives with `done`.
+    /// A split block stays one row across chunks though each arrives `done`:
+    /// the row belongs to the session, not to an event.
     #[test]
-    fn one_rewrites_one_row_for_the_whole_stream() {
+    fn a_split_stream_rewrites_one_row() {
         let mut log = Log::new();
-        log.set_detail(Detail::One);
+        log.set_detail(Detail::Line);
+        log.set_split(true);
         log.stream(
             "s:main",
             LineKind::Reasoning,
@@ -805,6 +822,29 @@ mod tests {
         assert_eq!(rows.len(), 1, "{rows:?}");
         // Rewritten, not glued: one row cannot show two events' text.
         assert_eq!(rows[0], "[main] tool: bash{ls}");
+    }
+
+    /// Unsplit, the same two chunks are two rows: each event seals its own block.
+    #[test]
+    fn an_unsplit_stream_seals_each_block() {
+        let mut log = Log::new();
+        log.set_detail(Detail::Line);
+        log.stream(
+            "s:main",
+            LineKind::Reasoning,
+            "[main] thinking: ",
+            "thinking",
+            true,
+        );
+        log.stream(
+            "s:main",
+            LineKind::ToolCall,
+            "[main] tool: ",
+            "bash{ls}",
+            true,
+        );
+        let rows = shown(&mut log, 40, 10, 0);
+        assert_eq!(rows.len(), 2, "{rows:?}");
     }
 
     /// A mode change does not reuse the open keys of the old one.

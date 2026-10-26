@@ -373,14 +373,16 @@ mod tests {
         assert_eq!(row_text(&buf, 2), "[test1] two");
     }
 
-    /// The three detail modes, drawn: they differ in how many rows a turn takes.
+    /// The detail modes and the split setting, drawn: they differ in how many rows
+    /// a turn takes.
     #[test]
     fn the_detail_modes_change_what_a_frame_shows() {
         // Long enough to wrap at this width, so folding is visible.
         let thinking = "abcdefghij klmnopqrst uvwxyz abcdefghi jklmnop";
-        let frame = |detail: Detail| {
+        let frame = |detail: Detail, split: bool| {
             let mut screen = screen_with(&[]);
             screen.log.set_detail(detail);
+            screen.log.set_split(split);
             screen.log.stream(
                 "s:main",
                 LineKind::Reasoning,
@@ -406,7 +408,7 @@ mod tests {
 
         // `all`: the thinking block wraps, so the turn takes more rows than the log
         // window has to spare.
-        let all = frame(Detail::All);
+        let all = frame(Detail::All, false);
         assert!(all[0].starts_with("[main] thinking: abcdefghij"), "{all:?}");
         assert_eq!(
             all.iter().filter(|r| r.is_empty()).count(),
@@ -415,7 +417,7 @@ mod tests {
         );
 
         // `line`: the same block is one row, showing its start.
-        let line = frame(Detail::Line);
+        let line = frame(Detail::Line, false);
         assert!(
             line[0].starts_with("[main] thinking: abcdefghij"),
             "{line:?}"
@@ -423,11 +425,11 @@ mod tests {
         assert_eq!(line[0], "[main] thinking: abcdefghij klmnopqrst");
         assert!(!line[1].is_empty(), "the tool row follows at once");
 
-        // `one`: the session's row is rewritten by the tool call, so the thinking
+        // Split: the session's row is rewritten by the tool call, so the thinking
         // text is not on screen at all.
-        let one = frame(Detail::One);
-        assert_eq!(one[0], "[main] tool: bash{ls}");
-        assert!(!one[1].is_empty(), "the answer follows at once");
+        let split = frame(Detail::Line, true);
+        assert_eq!(split[0], "[main] tool: bash{ls}");
+        assert!(!split[1].is_empty(), "the answer follows at once");
     }
 
     /// Layout, window and the rows the bottom of the log shows, without a terminal.

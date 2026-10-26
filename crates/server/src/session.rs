@@ -70,23 +70,38 @@ impl SessionHandle {
         self.inner.shells.clone()
     }
 
-    /// Ends every shell this session owns and waits for each to be reaped.
+    /// Ends every shell this session owns, retired ones included, and waits for
+    /// each to be reaped.
     ///
     /// # Invariant
     ///
     /// Called once, on the way out: a shell that never exits keeps its reaper
     /// thread and the process alive.
     pub async fn close_shells(&self) {
-        let drained: Vec<Arc<AsyncMutex<BashShell>>> = {
+        let (drained, retired): (Vec<_>, Vec<_>) = {
             let mut set = self.inner.shells.lock().unwrap_or_else(|e| e.into_inner());
-            set.drain()
+            (set.drain(), set.take_retired())
         };
-        tracing::info!(count = drained.len(), "closing shells");
+        tracing::info!(
+            count = drained.len(),
+            retired = retired.len(),
+            "closing shells"
+        );
         for handle in drained {
             // Turns are all finished by the time this runs, so this waits for a
             // lock nobody holds rather than for work.
             let mut shell = handle.lock().await;
             shell.kill().await;
+        }
+        for (pid, handle) in retired {
+            // A retired shell is held by the task reading it: the pid ends the
+            // command and that reader stops.
+            match handle.try_lock() {
+                Ok(mut shell) => shell.kill().await,
+                Err(_) => {
+                    crate::tools::detached::kill_tree(pid).await;
+                }
+            }
         }
     }
 
@@ -152,6 +167,11 @@ impl SessionHandle {
     /// Whether someone holds the gate right now; only good for deciding to log a wait.
     pub fn busy(&self) -> bool {
         self.inner.gate.clone().try_lock_owned().is_err()
+    }
+
+    /// Atomically claims the gate if it is free, before the caller spawns any work.
+    pub fn try_claim(&self) -> Option<OwnedMutexGuard<()>> {
+        self.inner.gate.clone().try_lock_owned().ok()
     }
 
     /// Waits until nothing else is reshaping this session, then holds the gate.
@@ -260,6 +280,10 @@ pub struct ShellSet {
     /// Variables every shell of this session starts with. See `BashShell::spawn`.
     env: Vec<(String, String)>,
     shells: HashMap<String, Arc<AsyncMutex<BashShell>>>,
+    /// Each live shell's pid, kept so a retired one can be ended without its lock.
+    pids: HashMap<String, u32>,
+    /// Commands handed to the background: out of `shells`, still this session's processes.
+    retired: Vec<(u32, Arc<AsyncMutex<BashShell>>)>,
 }
 
 impl ShellSet {
@@ -270,6 +294,8 @@ impl ShellSet {
             reported: Arc::new(Mutex::new(cwd)),
             env,
             shells: HashMap::new(),
+            pids: HashMap::new(),
+            retired: Vec::new(),
         }
     }
 
@@ -294,8 +320,10 @@ impl ShellSet {
         if name == DEFAULT_BASH {
             self.reported = shell.cwd_cell();
         }
+        let pid = shell.pid();
         let handle = Arc::new(AsyncMutex::new(shell));
         self.shells.insert(name.to_string(), handle.clone());
+        self.pids.insert(name.to_string(), pid);
         Ok(handle)
     }
 
@@ -312,6 +340,7 @@ impl ShellSet {
     }
 
     pub fn remove(&mut self, name: &str) -> bool {
+        self.pids.remove(name);
         self.shells.remove(name).is_some()
     }
 
@@ -319,7 +348,9 @@ impl ShellSet {
     ///
     /// # Invariant
     ///
-    /// Compare by pointer: a replaced entry is not ours to remove.
+    /// Compare by pointer: a replaced entry is not ours to remove. The retired
+    /// shell keeps running its outstanding command, so its pid is kept too: it is
+    /// still a process this session spawned, and teardown ends it.
     pub fn retire(&mut self, name: &str, handle: &Arc<AsyncMutex<BashShell>>) -> bool {
         let mine = self
             .shells
@@ -328,6 +359,9 @@ impl ShellSet {
             .unwrap_or(false);
         if mine {
             self.shells.remove(name);
+            if let Some(pid) = self.pids.remove(name) {
+                self.retired.push((pid, handle.clone()));
+            }
         }
         mine
     }
@@ -347,7 +381,19 @@ impl ShellSet {
 
     /// Takes every shell, leaving the set empty.
     pub fn drain(&mut self) -> Vec<Arc<AsyncMutex<BashShell>>> {
+        self.pids.clear();
         self.shells.drain().map(|(_, handle)| handle).collect()
+    }
+
+    /// Takes the retired shells, leaving none: each still has a process to end.
+    pub fn take_retired(&mut self) -> Vec<(u32, Arc<AsyncMutex<BashShell>>)> {
+        std::mem::take(&mut self.retired)
+    }
+
+    /// Drops `handle` once its reader has finished, so the list holds only live ones.
+    pub fn forget_retired(&mut self, handle: &Arc<AsyncMutex<BashShell>>) {
+        self.retired
+            .retain(|(_, retired)| !Arc::ptr_eq(retired, handle));
     }
 }
 
@@ -356,7 +402,8 @@ pub struct SessionManager {
     store: Store,
     bash: BashConfig,
     model: String,
-    /// Detached jobs, deliberately not owned by a session: they outlive everything.
+    /// Detached jobs outlive shell, cancel and restart; `del_session` still deletes
+    /// that session's bash.
     detached: DetachedRegistry,
     /// Variables for every session shell, so the model can reach this server via the CLI.
     shell_env: Vec<(String, String)>,
@@ -400,11 +447,14 @@ impl SessionManager {
 
     /// Creates a session, or returns the existing one unchanged.
     pub fn ensure(&self, name: &str, cwd: Option<&str>) -> anyhow::Result<SessionHandle> {
-        if let Some(h) = self.live().get(name) {
+        // Hold the live lock through the build: competing callers must not each
+        // materialise and then overwrite one name.
+        let mut live = self.live();
+        if let Some(h) = live.get(name) {
             return Ok(h.clone());
         }
         if let Some(row) = self.store.get_session(name)? {
-            return self.materialise(row);
+            return self.materialise_locked(row, &mut live);
         }
         let cwd = match cwd {
             Some(p) => PathBuf::from(p),
@@ -422,19 +472,22 @@ impl SessionManager {
                 .store
                 .set_session_tuning(id, Some(spec), None, None, &self.model);
         }
-        self.materialise(SessionRow {
-            id,
-            name: name.to_string(),
-            status: protocol::SessionStatus::Idle,
-            model: self.model.clone(),
-            llm: pinned,
-            compact_threshold: None,
-            thinking_effort: None,
-            cwd: cwd.to_string_lossy().to_string(),
-            created_at: 0,
-            updated_at: 0,
-            messages: 0,
-        })
+        self.materialise_locked(
+            SessionRow {
+                id,
+                name: name.to_string(),
+                status: protocol::SessionStatus::Idle,
+                model: self.model.clone(),
+                llm: pinned,
+                compact_threshold: None,
+                thinking_effort: None,
+                cwd: cwd.to_string_lossy().to_string(),
+                created_at: 0,
+                updated_at: 0,
+                messages: 0,
+            },
+            &mut live,
+        )
     }
 
     /// The handle if the session is already in memory, without spawning anything.
@@ -444,17 +497,30 @@ impl SessionManager {
 
     /// Looks a session up, spawning its shells on first use.
     pub fn get(&self, name: &str) -> anyhow::Result<SessionHandle> {
-        if let Some(h) = self.live().get(name) {
+        let mut live = self.live();
+        if let Some(h) = live.get(name) {
             return Ok(h.clone());
         }
         let row = self
             .store
             .get_session(name)?
             .ok_or_else(|| anyhow::anyhow!("no session named {name:?}"))?;
-        self.materialise(row)
+        self.materialise_locked(row, &mut live)
     }
 
     fn materialise(&self, row: SessionRow) -> anyhow::Result<SessionHandle> {
+        let mut live = self.live();
+        self.materialise_locked(row, &mut live)
+    }
+
+    fn materialise_locked(
+        &self,
+        row: SessionRow,
+        live: &mut HashMap<String, SessionHandle>,
+    ) -> anyhow::Result<SessionHandle> {
+        if let Some(h) = live.get(&row.name) {
+            return Ok(h.clone());
+        }
         let program = self
             .bash
             .program
@@ -496,7 +562,7 @@ impl SessionManager {
                 resumable: AtomicBool::new(false),
             }),
         };
-        self.live().insert(row.name, handle.clone());
+        live.insert(row.name, handle.clone());
         Ok(handle)
     }
 
@@ -595,8 +661,21 @@ mod tests {
         assert!(!waiting.load(Ordering::SeqCst));
     }
 
-    /// A signal sees the messages that landed after it was taken, and never the same one twice.
+    /// Pre-claiming is synchronous and keeps the gate until the guard is dropped.
     #[test]
+    fn try_claim_atomically_takes_a_free_gate() {
+        let h = handle();
+        assert!(!h.busy());
+        let first = h.try_claim().expect("the free gate can be claimed");
+        assert!(h.busy());
+        assert!(h.try_claim().is_none(), "a busy gate cannot be claimed");
+        drop(first);
+        assert!(!h.busy());
+        let second = h.try_claim().expect("dropping the guard frees the gate");
+        assert!(h.busy());
+        drop(second);
+    }
+
     /// The notice is sent once per transcript state, not once per step.
     ///
     /// # Invariant
@@ -624,6 +703,8 @@ mod tests {
         assert!(!handle.note_context_asked(7));
     }
 
+    /// A signal sees the messages that landed after it was taken, and never the same one twice.
+    #[test]
     fn an_inbox_signal_sees_only_what_arrived_after_it_was_taken() {
         let h = handle();
         let taken = h.inbox_signal();
@@ -635,6 +716,75 @@ mod tests {
         );
         // The next call takes a fresh signal, so it is not told about that one again.
         assert!(!h.inbox_signal().arrived());
+    }
+
+    /// Concurrent entry points must share both the session state and its turn gate.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_materialisation_is_single_flight() {
+        let Some(program) = crate::config::detect_git_bash() else {
+            return;
+        };
+        let dir = tempfile::tempdir().expect("creating a test directory");
+        let store = Store::open(&dir.path().join("g.db")).expect("opening the store");
+        store
+            .create_session("shared", "m", &dir.path().to_string_lossy())
+            .expect("creating the session row");
+        let row = store
+            .get_session("shared")
+            .expect("reading the session row")
+            .expect("the session row exists");
+        let detached =
+            DetachedRegistry::new(store.clone(), None, dir.path().join("detached"), vec![]);
+        let manager = SessionManager::new(
+            store,
+            BashConfig {
+                program: Some(program),
+                timeout: Duration::from_secs(1),
+                max_output_chars: 0,
+            },
+            "m".into(),
+            detached,
+            vec![],
+        );
+
+        const CALLERS: usize = 9;
+        let barrier = Arc::new(std::sync::Barrier::new(CALLERS));
+        let mut tasks = Vec::new();
+        for caller in 0..CALLERS {
+            let manager = manager.clone();
+            let barrier = barrier.clone();
+            let row = row.clone();
+            tasks.push(tokio::task::spawn_blocking(move || {
+                barrier.wait();
+                match caller % 3 {
+                    0 => manager.ensure("shared", None),
+                    1 => manager.get("shared"),
+                    _ => manager.materialise(row),
+                }
+            }));
+        }
+
+        let mut handles = Vec::new();
+        for task in tasks {
+            handles.push(
+                task.await
+                    .expect("joining a concurrent caller")
+                    .expect("materialising the session"),
+            );
+        }
+        let first = &handles[0];
+        for handle in &handles[1..] {
+            assert!(
+                Arc::ptr_eq(&first.inner, &handle.inner),
+                "every caller must receive the same SessionInner"
+            );
+            assert!(
+                Arc::ptr_eq(&first.inner.gate, &handle.inner.gate),
+                "every caller must receive the same turn gate"
+            );
+        }
+        assert_eq!(manager.live_sessions().len(), 1);
+        manager.close_shells().await;
     }
 
     /// A turn queued behind `del_session` must notice the session is gone.
@@ -682,6 +832,31 @@ mod tests {
             "reading the cwd waited {waited:?} on the command holding the shell"
         );
         assert_eq!(cwd, root, "nothing has run, so this is where it started");
+    }
+
+    /// A backgrounded command's shell still belongs to the session: teardown ends it
+    /// without waiting for its lock.
+    #[tokio::test]
+    async fn a_retired_shell_is_ended_without_waiting_for_its_lock() {
+        let Some(program) = crate::config::detect_git_bash() else {
+            return;
+        };
+        let root = std::env::temp_dir();
+        let mut shells = ShellSet::new(program, root.clone(), vec![]);
+        let shell = shells
+            .get(DEFAULT_BASH)
+            .expect("spawning the default shell");
+        // As the reader holds it: the lock is busy, so teardown kills by pid rather
+        // than waiting on the lock.
+        let held = shell.lock().await;
+        assert!(shells.retire(DEFAULT_BASH, &shell), "the shell is retired");
+        let session = session("s", shells);
+        let closed = tokio::time::timeout(Duration::from_secs(10), session.close_shells()).await;
+        assert!(
+            closed.is_ok(),
+            "teardown waited for a retired shell's lock"
+        );
+        drop(held);
     }
 
     /// The mirror has to follow the shell, or it answers with where the session

@@ -11,10 +11,11 @@ mod log;
 mod render;
 pub mod run;
 
-use std::io::{Stdout, stdout};
+use std::io::{self, Stdout, Write, stdout};
 use std::time::Duration;
 
 use anyhow::Context;
+use crossterm::cursor::Show;
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
     Event as TermEvent, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent,
@@ -121,19 +122,29 @@ pub struct Tui {
 impl Tui {
     pub fn new(completer: SharedCompleter) -> anyhow::Result<Self> {
         enable_raw_mode().context("enabling raw mode")?;
-        let mut out = stdout();
-        // Capture makes the wheel a scroll key; Alt+M gives it back. Bracketed
-        // paste makes a paste arrive as one string.
-        execute!(
-            out,
-            EnterAlternateScreen,
-            EnableMouseCapture,
-            EnableBracketedPaste
-        )
-        .context("entering alternate screen")?;
-        let mut terminal = Terminal::new(CrosstermBackend::new(out))?;
-        // A blank cell is never written to, so a dead process's last frame stays.
-        terminal.clear().context("clearing the alternate screen")?;
+        let initialized = (|| {
+            let mut out = stdout();
+            // Capture makes the wheel a scroll key; Alt+M gives it back. Bracketed
+            // paste makes a paste arrive as one string.
+            execute!(
+                out,
+                EnterAlternateScreen,
+                EnableMouseCapture,
+                EnableBracketedPaste
+            )
+            .context("entering alternate screen")?;
+            let mut terminal = Terminal::new(CrosstermBackend::new(out))?;
+            // A blank cell is never written to, so a dead process's last frame stays.
+            terminal.clear().context("clearing the alternate screen")?;
+            anyhow::Ok(terminal)
+        })();
+        let terminal = match initialized {
+            Ok(terminal) => terminal,
+            Err(error) => {
+                let _ = restore_terminal(&mut stdout());
+                return Err(error);
+            }
+        };
         Ok(Self {
             terminal,
             screen: Screen {
@@ -176,6 +187,12 @@ impl Tui {
     /// How much of each event to show, as the command layer last said.
     pub fn set_detail(&mut self, mode: Detail) {
         self.screen.log.set_detail(mode);
+        self.dirty = true;
+    }
+
+    /// Whether each session gets its own block, as the command layer last said.
+    pub fn set_split(&mut self, on: bool) {
+        self.screen.log.set_split(on);
         self.dirty = true;
     }
 
@@ -376,8 +393,14 @@ impl Tui {
         // The other modifier bindings use Alt too: a terminal that eats Ctrl+K is common.
         if key.modifiers.contains(KeyModifiers::ALT) {
             match key.code {
-                KeyCode::Char('k' | 'K') => self.screen.input.kill_to_end(),
-                KeyCode::Left => self.screen.input.word_left(),
+                KeyCode::Char('k' | 'K') => {
+                    self.close_completion();
+                    self.screen.input.kill_to_end();
+                }
+                KeyCode::Left => {
+                    self.close_completion();
+                    self.screen.input.word_left();
+                }
                 // Alt+arrows page, because PgUp/PgDn hide behind Fn on laptops;
                 // plain ↑↓ stay with history.
                 KeyCode::Up => self.screen.scroll_by(self.page_height() as i64),
@@ -389,6 +412,14 @@ impl Tui {
 
         // Ctrl+<letter> must not insert its letter where a terminal delivers it.
         if key.modifiers.contains(KeyModifiers::CONTROL) {
+            return None;
+        }
+
+        if edit_input(
+            &mut self.screen.input,
+            &mut self.screen.completion,
+            key.code,
+        ) {
             return None;
         }
 
@@ -441,11 +472,6 @@ impl Tui {
                 self.screen.input.backspace();
                 self.refresh_completion();
             }
-            KeyCode::Delete => self.screen.input.delete(),
-            KeyCode::Left => self.screen.input.left(),
-            KeyCode::Right => self.screen.input.right(),
-            KeyCode::Home => self.screen.input.home(),
-            KeyCode::End => self.screen.input.end(),
             // A page is the log window, not a fixed ten rows, so short terminals work too.
             KeyCode::PageUp => self.screen.scroll_by(self.page_height() as i64),
             KeyCode::PageDown => self.screen.scroll_by(-(self.page_height() as i64)),
@@ -639,17 +665,11 @@ impl Tui {
         if self.restored {
             return Ok(());
         }
-        self.restored = true;
-        disable_raw_mode()?;
-        // Leaving capture on would keep the wheel from the shell we return to.
-        execute!(
-            self.terminal.backend_mut(),
-            LeaveAlternateScreen,
-            DisableBracketedPaste,
-            DisableMouseCapture
-        )?;
-        self.terminal.show_cursor()?;
-        Ok(())
+        let restored = &mut self.restored;
+        let terminal = &mut self.terminal;
+        Ok(restore_once(restored, || {
+            restore_terminal(terminal.backend_mut())
+        })?)
     }
 }
 
@@ -671,6 +691,59 @@ fn log_window_height(terminal: u16, input_rows: u16) -> usize {
     terminal
         .saturating_sub(render::CHROME_ROWS + input_rows)
         .max(1) as usize
+}
+
+fn restore_terminal(out: &mut impl Write) -> io::Result<()> {
+    // Evaluate every step even when an earlier one fails; each execute! flushes separately.
+    restore_steps([
+        disable_raw_mode(),
+        execute!(out, LeaveAlternateScreen),
+        execute!(out, DisableBracketedPaste),
+        // Leaving capture on would keep the wheel from the shell we return to.
+        execute!(out, DisableMouseCapture),
+        execute!(out, Show),
+    ])
+}
+
+fn restore_steps(results: impl IntoIterator<Item = io::Result<()>>) -> io::Result<()> {
+    let mut first_error = None;
+    for result in results {
+        if let Err(error) = result {
+            if first_error.is_none() {
+                first_error = Some(error);
+            }
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+fn restore_once(restored: &mut bool, restore: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
+    if *restored {
+        return Ok(());
+    }
+    restore()?;
+    *restored = true;
+    Ok(())
+}
+
+/// Editing or moving invalidates the popup's token range, even if the key is a no-op.
+fn edit_input(input: &mut InputLine, completion: &mut Option<Completion>, key: KeyCode) -> bool {
+    if !matches!(
+        key,
+        KeyCode::Delete | KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End
+    ) {
+        return false;
+    }
+    *completion = None;
+    match key {
+        KeyCode::Delete => input.delete(),
+        KeyCode::Left => input.left(),
+        KeyCode::Right => input.right(),
+        KeyCode::Home => input.home(),
+        KeyCode::End => input.end(),
+        _ => unreachable!(),
+    }
+    true
 }
 
 /// The completer's answer for this input as a popup; bounds share its split.
@@ -754,6 +827,21 @@ mod startup {
             .expect("the constructor is where a start happens");
         assert!(new.contains(".clear()"), "{new}");
     }
+
+    #[test]
+    fn an_initialization_failure_restores_the_terminal() {
+        let source = include_str!("lib.rs");
+        let new = source
+            .split_once("pub fn new(completer: SharedCompleter)")
+            .and_then(|(_, rest)| rest.split_once("Ok(Self {"))
+            .map(|(body, _)| body)
+            .expect("the constructor is where a start happens");
+        let failure = new
+            .split_once("Err(error) =>")
+            .map(|(_, body)| body)
+            .expect("initialization has a failure branch");
+        assert!(failure.contains("restore_terminal"), "{failure}");
+    }
 }
 
 #[cfg(test)]
@@ -785,6 +873,59 @@ mod terminal_modes {
     /// # Invariant
     ///
     /// Each mode is named on the way in and on the way out.
+    #[test]
+    fn restore_attempts_every_step_and_returns_the_first_error() {
+        let mut attempted = Vec::new();
+        let result = super::restore_steps([
+            {
+                attempted.push("raw");
+                Err(std::io::Error::other("raw failed"))
+            },
+            {
+                attempted.push("screen");
+                Ok(())
+            },
+            {
+                attempted.push("paste");
+                Err(std::io::Error::other("paste failed"))
+            },
+            {
+                attempted.push("mouse");
+                Ok(())
+            },
+            {
+                attempted.push("cursor");
+                Ok(())
+            },
+        ]);
+        assert_eq!(attempted, ["raw", "screen", "paste", "mouse", "cursor"]);
+        assert_eq!(result.unwrap_err().to_string(), "raw failed");
+    }
+
+    #[test]
+    fn a_failed_restore_can_be_retried_by_drop() {
+        let mut restored = false;
+        let mut attempts = 0;
+        let result = super::restore_once(&mut restored, || {
+            attempts += 1;
+            Err(std::io::Error::other("try again"))
+        });
+        assert!(result.is_err());
+        assert!(!restored);
+
+        super::restore_once(&mut restored, || {
+            attempts += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert!(restored);
+        super::restore_once(&mut restored, || {
+            panic!("a restored terminal is not touched")
+        })
+        .unwrap();
+        assert_eq!(attempts, 2);
+    }
+
     #[test]
     fn the_terminal_modes_are_paired() {
         let source = include_str!("lib.rs");
@@ -898,6 +1039,35 @@ mod tests {
                 ];
             }
             Vec::new()
+        }
+    }
+
+    #[test]
+    fn editing_and_cursor_moves_close_completion_before_tab() {
+        let completer: SharedCompleter = std::sync::Arc::new(NoCompleter);
+        for key in [
+            KeyCode::Delete,
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::Home,
+            KeyCode::End,
+        ] {
+            let mut input = InputLine::default();
+            input.insert_str("send");
+            input.left();
+            input.left();
+            let mut completion = Some(Completion {
+                start: 0,
+                end: 4,
+                candidates: vec![Candidate::word("replacement", "")],
+                selected: 0,
+            });
+            assert!(edit_input(&mut input, &mut completion, key));
+            assert!(completion.is_none(), "{key:?} left a stale popup");
+            let edited = input.clone();
+            apply_and_continue(&mut input, &mut completion, &completer);
+            assert_eq!(input.text(), edited.text());
+            assert_eq!(input.cursor(), edited.cursor());
         }
     }
 

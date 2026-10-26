@@ -371,6 +371,7 @@ async fn leave_running(
     }
     let store = ctx.store.clone();
     let session = ctx.session.clone();
+    let shells = ctx.shells.clone();
     let output_dir = ctx.output_dir.clone();
     // Same naming rule, with `late` where the call id goes: that call has already returned.
     let label = spill_label(&session, name, task, "late");
@@ -407,6 +408,10 @@ async fn leave_running(
         );
         if let Err(e) = store.add_pending_task(&session, "inject", &json!({"message": message})) {
             tracing::warn!(session = %session, "could not queue a finished command: {e}");
+        }
+        // Read to the end: no teardown has this shell's command left to stop.
+        if let Ok(mut set) = shells.lock() {
+            set.forget_retired(&handle);
         }
     });
     ToolOutcome::ok(format!(
@@ -605,6 +610,12 @@ impl Tool for BashTool {
                     );
                 };
                 let cwd = ctx.cwd.clone();
+                if ctx.peek(name).is_some() {
+                    return ToolOutcome::err(format!(
+                        "this session already has a persistent shell named {name:?}; \
+                         `del_bash name_regex: \"^{name}$\"` discards it first"
+                    ));
+                }
                 return match ctx.detached.start(&ctx.session, name, command, &cwd).await {
                     Ok(job) => ToolOutcome::ok(format!(
                         "started detached bash `{}` (pid {}), running in {}. It outlives the \
@@ -620,6 +631,13 @@ impl Tool for BashTool {
                     )),
                     Err(e) => ToolOutcome::err(format!("{e}")),
                 };
+            }
+            // SPEC's key `{session, bash_name}` names one bash, not two.
+            if ctx.detached.holds(&ctx.session, name).await {
+                return ToolOutcome::err(format!(
+                    "this session already has a detached bash named {name:?}; end it with \
+                     `del_bash name_regex: \"^{name}$\"` or name this shell otherwise"
+                ));
             }
             if background {
                 let shell = match ctx.shell(name) {
@@ -687,6 +705,11 @@ impl Tool for BashTool {
             let cancelled = matches!(&outcome, Err(e) if e.is::<Cancelled>());
             if cancelled {
                 shell.kill().await;
+            }
+            if matches!(&outcome, Err(e) if e.is::<WaitingMessage>()) {
+                // Already streamed or queued in `rx`: clear the pump so a late
+                // completion reports only output after this call.
+                let _ = shell.take_partial_output();
             }
             // Read while the guard is held: a shell that lost its stream must not get another command.
             let healthy = shell.usable();
@@ -961,12 +984,13 @@ impl Tool for DelBashTool {
     }
 
     fn description(&self) -> &'static str {
-        "Discard persistent shells whose name matches a regex. Their working \
-         directories, exports and shell functions are lost; naming one again in \
-         `bash` starts a fresh shell in the session's directory. Background jobs \
-         go with them; detached jobs do not, because they were never the \
-         shells'. Use this when a shell is wedged or polluted, and to clean up \
-         the names a long session invented."
+        "Delete bash whose name matches a regex, either kind. A persistent shell \
+         is discarded: its working directories, exports and shell functions are \
+         lost, and naming it again in `bash` starts a fresh shell in the session's \
+         directory; the background jobs it was running go with it. A detached bash \
+         is stopped, which is the only thing that can -- its log file stays where \
+         it is. Use this when a shell is wedged or polluted, and to clean up the \
+         names a long session invented."
     }
 
     fn parameters(&self) -> Value {
@@ -1319,6 +1343,65 @@ mod tests {
             .await;
         assert!(!out.ok, "a nameless detached bash must be refused");
         assert!(out.output.contains("needs `name`"), "{}", out.output);
+    }
+
+    /// SPEC's key is `{session, bash_name}`: one name, one bash.
+    #[tokio::test]
+    async fn a_detached_bash_cannot_take_a_persistent_shells_name() {
+        let Some(program) = crate::config::detect_git_bash() else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = context_for(
+            &program,
+            dir.path(),
+            InboxSignal::around(Default::default()),
+        );
+        let reg = ToolRegistry::with_builtins(Duration::from_secs(30), 8_000);
+        let bash = reg.get("bash").expect("registered");
+        let out = bash
+            .run(
+                json!({"command": "true", "detached": true, "name": "default"}),
+                &ctx,
+            )
+            .await;
+        assert!(
+            !out.ok,
+            "one name may not end a shell and a detached process: {}",
+            out.output
+        );
+        assert!(out.output.contains("persistent shell"), "{}", out.output);
+    }
+
+    /// The same key read the other way: naming a shell cannot shadow a detached job.
+    #[tokio::test]
+    async fn a_shell_cannot_take_a_detached_bashs_name() {
+        let Some(program) = crate::config::detect_git_bash() else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = context_for(
+            &program,
+            dir.path(),
+            InboxSignal::around(Default::default()),
+        );
+        let job = ctx
+            .detached
+            .start("main", "builder", "sleep 30", dir.path())
+            .await
+            .expect("a detached bash starts");
+        let reg = ToolRegistry::with_builtins(Duration::from_secs(30), 8_000);
+        let bash = reg.get("bash").expect("registered");
+        let out = bash
+            .run(json!({"command": "true", "name": job.name}), &ctx)
+            .await;
+        assert!(!out.ok, "{}", out.output);
+        assert!(out.output.contains("detached bash"), "{}", out.output);
+        assert!(
+            ctx.peek(&job.name).is_none(),
+            "a refused call must not materialise a shell"
+        );
+        ctx.detached.stop("main", &format!("^{}$", job.name)).await;
     }
 
     /// One word for both kinds: `del_bash` deletes a shell or a detached process.
