@@ -12,6 +12,7 @@ mod prompts;
 mod providers;
 mod script;
 mod session;
+mod ship;
 mod store;
 mod tools;
 mod transport;
@@ -136,13 +137,27 @@ async fn run() -> anyhow::Result<()> {
     }
 
     let mut cfg = Config::load_with_home(args.config.as_deref(), args.home.as_deref())?;
-    // Written before `--db` applies: a flag must not be baked into the new config.
-    cfg.write_default_if_absent()?;
     if let Some(db) = args.db {
         cfg.db_path = config::expand(db);
     }
     // Claim the home before opening the database: one server per home.
     let _instance = instance::InstanceLock::acquire(&cfg.home)?;
+    // Installed before anything reads it, or writes a config: a file that
+    // arrived first would read as the reader's own.
+    let installed = ship::install(&cfg.home)?;
+    // Only reached when the install placed no config, which is a home that
+    // already had one of its own.
+    cfg.write_default_if_absent()?;
+    tracing::info!(
+        pin = %&installed.pin[..10],
+        written = installed.written,
+        updated = installed.updated,
+        merged = installed.merged,
+        removed = installed.removed,
+        conflicts = ?installed.conflicts,
+        fetched = installed.fetched,
+        "shipped content"
+    );
     // Before any request is built: the templates come from this home's config.
     let config_path = cfg.home.join("config.toml");
     prompts::install(&config_path);

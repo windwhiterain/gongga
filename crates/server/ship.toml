@@ -1,0 +1,18 @@
+# What this build of gongga ships from: the content repository whose config and
+# skills the server installs into a home. The pin is data, so changing what a
+# machine runs is an edit to this file and a rebuild -- not something that
+# drifted into a user's directory.
+#
+# `commit` is a full sha: a short one names a different commit in a repository
+# that keeps growing, and the whole point is knowing which content this binary
+# installed.
+[ship]
+url = "https://github.com/windwhiterain/gongga-ship.git"
+commit = "350e52476b565887a518d787f26ed73fa579dd66"
+# Which path in that repository is the home's config.
+config = "config/config.toml"
+
+# The split between what belongs to a home and what belongs to the machine.
+[ship.skills]
+harness = "skills/harness"
+general = "skills/general"
