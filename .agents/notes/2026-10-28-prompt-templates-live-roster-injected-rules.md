@@ -1,7 +1,9 @@
 # Prompt templates, live roster, injected rules (WIP)
 
-> Superseded on one point: `crates/server/default.config.toml` no longer exists, and
-> neither does the starter writer. See `2026-10-28-ship-is-the-only-source-of-prose.md`.
+> Superseded on two points. `crates/server/default.config.toml` no longer exists, and
+> neither does the starter writer -- see `2026-10-28-ship-is-the-only-source-of-prose.md`.
+> And requirement 2 was reversed later the same day: the server reads no rules file at
+> all now, see `2026-10-28-no-rules-file-is-read.md`.
 
 User's four requirements, decided in this session:
 
