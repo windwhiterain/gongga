@@ -16,7 +16,7 @@ use tokio::sync::mpsc;
 use crate::bus::EventBus;
 use crate::config::LlmConfig;
 use crate::llm::{LlmClient, LlmEvent};
-use crate::providers::{self, Catalog};
+use crate::providers::{self};
 use crate::session::SessionHandle;
 use crate::store::Store;
 use crate::tools::detached::DetachedRegistry;
@@ -29,12 +29,14 @@ pub struct Agent {
     pub store: Store,
     /// What a session talks to unless it named its own `--llm`.
     pub llm: Arc<LlmClient>,
-    /// The machine's roster, which is what `--llm` names are resolved against.
-    pub providers: &'static Catalog,
-    /// What a session's own entry inherits: timeouts, retries, instructions.
+    /// The machine's roster, which `--llm` names resolve against. A live view:
+    /// a reload reaches every later route.
+    pub providers: providers::Handle,
+    /// What a session's own entry inherits: timeouts and retries.
     pub llm_config: LlmConfig,
-    /// Clients for sessions that named their own entry, keyed by `provider/model`.
-    pub clients: std::sync::Mutex<std::collections::HashMap<String, Arc<LlmClient>>>,
+    /// Clients for sessions that named their own entry, keyed by `provider/model`
+    /// and by the roster read that produced it.
+    pub clients: std::sync::Mutex<std::collections::HashMap<String, (u64, Arc<LlmClient>)>>,
     /// [`Self::llm`]'s context window, for a percentage set without naming a model.
     pub default_context: Option<u64>,
     pub tools: Arc<ToolRegistry>,
@@ -142,11 +144,14 @@ impl Agent {
             self.deliver_inbox(id, &name);
             // Compress before the request is built, so the very next request is the small one.
             self.maybe_notify_context(session, id, &name, budget);
+            let cwd = session.cwd();
             tracing::info!(session = %name, step, "step start");
             let attempt = Attempt {
                 number: step,
                 llm: &llm,
                 effort: effort.as_deref(),
+                // Read again per step, like every other word of the prompt.
+                cwd: &cwd,
             };
             match self.step(id, &name, turn, &cancel, &attempt).await {
                 Ok(StepResult::Finished) => {
@@ -219,21 +224,24 @@ impl Agent {
         api_key: String,
     ) -> anyhow::Result<Arc<LlmClient>> {
         let spec = entry.spec();
+        let generation = self.providers.generation();
         let cached = self
             .clients
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&spec)
             .cloned();
-        if let Some(client) = cached {
-            return Ok(client);
+        if let Some((pinned, client)) = cached {
+            if pinned == generation {
+                return Ok(client);
+            }
         }
         // Built outside the lock: a duplicate client is cheaper than serialising turns.
         let client = Arc::new(LlmClient::new(&self.llm_config.for_entry(entry, api_key))?);
         self.clients
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(spec, client.clone());
+            .insert(spec, (generation, client.clone()));
         Ok(client)
     }
 
@@ -283,7 +291,7 @@ impl Agent {
         if !session.note_context_asked(upto) {
             return;
         }
-        let message = context_notice(name, tokens, budget, upto);
+        let message = context_notice(crate::prompts::shared(), name, tokens, budget, upto);
         if let Err(e) = self.store.add_pending_task(
             name,
             "inject",
@@ -313,11 +321,25 @@ impl Agent {
             number: step,
             llm,
             effort,
+            cwd,
         } = *attempt;
         let (summary, history) = self.store.context(id)?;
         let definitions = self.tools.definitions();
+        // Built per request, not per turn: an edited template or rule file lands
+        // on the next step.
+        let prompts = crate::prompts::shared();
+        let mut instructions = prompts.text("instructions").unwrap_or_default();
+        let rules = crate::prompts::constitution(cwd);
+        if !rules.is_empty() {
+            instructions.push_str("\n\n");
+            instructions.push_str(&rules);
+        }
+        let note = summary
+            .as_deref()
+            .map(|s| prompts.render("summary_preamble", &[("summary", s)]));
         let mut rx = llm.stream(
-            summary.as_deref(),
+            &instructions,
+            note.as_deref(),
             &history,
             &definitions,
             effort,
@@ -661,6 +683,8 @@ struct Attempt<'a> {
     llm: &'a LlmClient,
     /// How hard the model should think, when the session asked for a level.
     effort: Option<&'a str>,
+    /// Where the session works, which decides whose agent rules are read now.
+    cwd: &'a std::path::Path,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -702,6 +726,36 @@ fn retry_warning(
     format!("{session}: model request failed ({reason}); retry {attempt} {of} in {delay:?}")
 }
 
+/// The message that hands the folding decision to the agent, from the templates.
+///
+/// # Invariant
+///
+/// It names the numbers it is talking about and the two tools that act on them:
+/// a notice that says only "you are near the limit" leaves the reader to guess
+/// what is possible. See `.agents/skills/compact/`.
+fn context_notice(
+    prompts: &crate::prompts::Prompts,
+    session: &str,
+    tokens: u64,
+    budget: u64,
+    upto: i64,
+) -> String {
+    let folded = if upto == 0 {
+        prompts.text("folded_none").unwrap_or_default()
+    } else {
+        prompts.render("folded_through", &[("upto", &upto.to_string())])
+    };
+    prompts.render(
+        "context_notice",
+        &[
+            ("session", session),
+            ("tokens", &tokens.to_string()),
+            ("budget", &budget.to_string()),
+            ("folded", folded.trim()),
+        ],
+    )
+}
+
 /// The compaction threshold in input tokens, or 0 for "off".
 fn compaction_budget(configured: u64, context: Option<u64>, percent: Option<u8>) -> u64 {
     if configured == 0 {
@@ -719,40 +773,6 @@ fn compaction_budget(configured: u64, context: Option<u64>, percent: Option<u8>)
 ///
 /// The boundary is followed by a `text` or `tool_call`, never by an orphaned
 /// `tool_result`, which providers reject.
-/// The message that hands the folding decision to the agent.
-///
-/// # Invariant
-///
-/// It names the numbers it is talking about and the two tools that act on them:
-/// a notice that says only "you are near the limit" leaves the reader to guess
-/// what is possible. See `.agents/skills/compact/`.
-fn context_notice(session: &str, tokens: u64, budget: u64, upto: i64) -> String {
-    let folded = if upto == 0 {
-        "nothing has been folded yet".to_string()
-    } else {
-        format!("everything through seq {upto} is already folded into the summary")
-    };
-    format!(
-        "Context notice for `{session}`: the last request carried {tokens} input tokens, and \
-         this session's threshold is {budget}. This server does not compact for you -- the \
-         shape of the context is your decision.\n\n\
-         Right now {folded}.\n\n\
-         To fold the older part, from a shell:\n\
-         \n\
-         .agents/skills/compact/transcript.py read --session {session}\n\
-         \n\
-         that shows the messages actually being sent. Then collapse with a handover note that \
-         keeps what the work still needs:\n\
-         \n\
-         .agents/skills/compact/transcript.py collapse --session {session} --upto <seq> \\\n\
-         \x20   --summary '<what was asked, what was tried, what worked and failed, the \
-         current state, the constraints that must survive>'\n\
-         \n\
-         Folding removes nothing from the database: the messages stay readable, they just stop \
-         being sent. If the work is nearly done, or the context is fine as it is, do nothing. \
-         The `.agents/skills/compact/SKILL.md` skill has the full procedure."
-    )
-}
 
 #[cfg(test)]
 mod tests {
@@ -784,7 +804,7 @@ mod tests {
     /// on, because the script takes it as an argument.
     #[test]
     fn the_context_notice_says_what_to_do() {
-        let notice = context_notice("main", 700_000, 700_000, 0);
+        let notice = context_notice(&crate::prompts::Prompts::defaults(), "main", 700_000, 700_000, 0);
         assert!(notice.contains("700000 input tokens"), "{notice}");
         assert!(notice.contains("nothing has been folded yet"), "{notice}");
         assert!(notice.contains("--session main"), "{notice}");
@@ -816,7 +836,7 @@ mod tests {
     /// A notice for a session that already folded says where the summary ends.
     #[test]
     fn the_notice_names_what_is_already_folded() {
-        let notice = context_notice("main", 10, 20, 42);
+        let notice = context_notice(&crate::prompts::Prompts::defaults(), "main", 10, 20, 42);
         assert!(notice.contains("through seq 42"), "{notice}");
     }
 }

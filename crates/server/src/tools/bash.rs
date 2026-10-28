@@ -602,15 +602,17 @@ pub fn cap_output(text: &str, max: usize, dir: &Path, label: &str) -> String {
     let tail = ceil_boundary(text, text.len() - (max - head));
     let omitted = tail.saturating_sub(head);
     let spilled = spill(dir, label, text);
+    let omitted = omitted.to_string();
     let notice = match &spilled {
-        Some(path) => format!(
-            "\n\n[... {omitted} characters omitted ...]\n\
-             full output ({total} characters) written to {path}\n\
-             read just the part you need: `sed -n 'START,ENDp' {path}` or \
-             `grep -n PATTERN {path}` -- do not cat the whole thing again",
-            total = text.len(),
+        Some(path) => crate::prompts::shared().render(
+            "output_cap",
+            &[
+                ("omitted", omitted.as_str()),
+                ("total", &text.len().to_string()),
+                ("path", path.as_str()),
+            ],
         ),
-        None => format!("\n\n[... {omitted} characters omitted ...]"),
+        None => crate::prompts::shared().render("output_omitted", &[("omitted", omitted.as_str())]),
     };
     format!("{}{}{}", &text[..head], notice, &text[tail..])
 }

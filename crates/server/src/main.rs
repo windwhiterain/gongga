@@ -8,6 +8,7 @@ mod image;
 mod instance;
 mod llm;
 mod net;
+mod prompts;
 mod providers;
 mod script;
 mod session;
@@ -142,6 +143,15 @@ async fn run() -> anyhow::Result<()> {
     }
     // Claim the home before opening the database: one server per home.
     let _instance = instance::InstanceLock::acquire(&cfg.home)?;
+    // Before any request is built: the templates come from this home's config.
+    let config_path = cfg.home.join("config.toml");
+    prompts::install(&config_path);
+    let overridden = prompts::shared().overridden();
+    tracing::info!(
+        file = %config_path.display(),
+        overridden = ?overridden,
+        "prompt templates: the shipped defaults, plus what this home overrode"
+    );
 
     let store = store::Store::open(&cfg.db_path)?;
     let llm = Arc::new(LlmClient::new(&cfg.llm)?);
@@ -199,7 +209,7 @@ async fn run() -> anyhow::Result<()> {
         let agent = Arc::new(Agent {
             store: store.clone(),
             llm: llm.clone(),
-            providers: providers::roster(),
+            providers: providers::Handle,
             llm_config: cfg.llm.clone(),
             clients: std::sync::Mutex::new(std::collections::HashMap::new()),
             default_context: cfg.llm.context,
@@ -215,7 +225,7 @@ async fn run() -> anyhow::Result<()> {
             store: store.clone(),
             bus: bus.clone(),
             scripts: scripts.clone(),
-            providers: providers::roster(),
+            providers: providers::Handle,
             active: Arc::new(AtomicUsize::new(0)),
             shutting_down: Arc::new(AtomicBool::new(false)),
             shutdown: CancellationToken::new(),

@@ -12,10 +12,16 @@ The connection is behind a mutex and used synchronously. Every statement here is
 a sub-millisecond local write, so the simplification costs nothing in practice;
 if that stops being true the fix is `spawn_blocking`, not a redesign.
 
-## INTERRUPTED_CALL
+## interrupted_call
 
 Written as an observation rather than an error: the command may well have run to
 completion, and the model should verify rather than assume.
+
+A template, asked for at read time rather than a constant stored with the row.
+The difference matters for an old session: the placeholder is composed while the
+history is being assembled, so a wording fix reaches a conversation that started
+months ago -- and nothing in the database changes, which is the part a stored
+sentence could never do.
 
 ## migrate
 

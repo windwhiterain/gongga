@@ -207,7 +207,6 @@ mod tests {
                 context: None,
                 api_key_env: String::new(),
                 api_key: "k".into(),
-                instructions: String::new(),
                 temperature: None,
                 max_output_tokens: None,
                 store: false,
@@ -241,7 +240,7 @@ mod tests {
             let agent = Arc::new(crate::agent::Agent {
                 store: store.clone(),
                 llm,
-                providers: crate::providers::roster(),
+                providers: crate::providers::Handle,
                 llm_config: LlmConfig {
                     provider: None,
                     base_url: "http://127.0.0.1:1/v1".into(),
@@ -249,7 +248,6 @@ mod tests {
                     context: None,
                     api_key_env: String::new(),
                     api_key: "k".into(),
-                    instructions: String::new(),
                     temperature: None,
                     max_output_tokens: None,
                     store: false,
@@ -274,7 +272,7 @@ mod tests {
                 store,
                 bus,
                 scripts,
-                providers: crate::providers::roster(),
+                providers: crate::providers::Handle,
                 active: Arc::new(AtomicUsize::new(0)),
                 shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 shutdown: tokio_util::sync::CancellationToken::new(),

@@ -1,0 +1,203 @@
+# gongga server configuration -- the shipped default.
+#
+# This file is copied into a freshly created home (`gongga-server --home <dir>`)
+# with the `{{...}}` placeholders filled in for this machine, and it is also the
+# fallback every prompt reads when a home's own config says nothing about it.
+#
+# Every value can be overridden by a GONGGA_* environment variable.
+
+[server]
+bind = "{{bind}}"
+db = "{{db}}"
+key = "{{key}}"
+
+[llm]
+# Which provider to talk to. These are left commented out on purpose:
+# the roster at ~/.agents/llm.toml already says what this machine can
+# reach, and the first entry that works is a better default than a
+# name frozen into this file. Uncomment to override it.
+# provider = "{{provider}}"
+# model = "{{model}}"
+# base_url = "{{base_url}}"
+# api_key_env = "{{api_key_env}}"
+# Capabilities are NOT configured here: they belong to the model, so
+# they come from its entry in the roster (~/.agents/llm.toml):
+#
+#   [[provider.model]]
+#   id = "some-model"
+#   # What it takes in and gives back. A list without "image" makes
+#   # an attachment be refused by this entry's name instead of letting the
+#   # provider answer with an opaque 400. Omit the list and nothing is
+#   # refused: unstated is not a no.
+#   modalities = ["text", "image"]
+#   # Tools the provider runs on its own side, spelled the way that
+#   # provider spells them -- "web_search", "web_search_preview",
+#   # "web_fetch", ... Sent verbatim, so no mapping table is needed.
+#   # Omit it and none are offered: offering one a provider does not
+#   # know fails every request of every turn.
+#   builtin_tools = ["web_search"]
+store = "{{store}}"
+# A request that never answers used to park a turn forever. These
+# bound it: one request may take this long overall, and this long
+# between chunks, before it counts as broken and is retried.
+request_timeout_ms = "{{request_timeout}}"
+idle_timeout_ms = "{{idle_timeout}}"
+# Retries after a failure, a timeout, or a response with nothing in
+# it. 0 = no ceiling: retry until the turn is cancelled. The delay
+# doubles each time up to 30s: {{retry_base}}ms, then twice that.
+max_retries = "{{max_retries}}"
+retry_base_ms = "{{retry_base}}"
+
+[tools.bash]
+timeout_ms = "{{timeout}}"
+# Output longer than this is capped: head and tail come back, the
+# whole thing lands in ~/.gongga/outputs/. 0 disables the cap.
+max_output_chars = "{{max_output_chars}}"
+
+[scripts]
+# Commands a Python script registers with this server, without a Rust
+# change: every *.py here is asked for its manifest, and what it
+# declares appears in the catalog like any other command.
+dir = "{{scripts_dir}}"
+# Interpreter. Commented out: one that answers `-V` is detected.
+# program = "/usr/bin/python3"
+
+[agent]
+# No step limit: a turn runs until the work is done.
+# This server does not compact the transcript. When a request carries
+# more than this many input tokens, it injects one message telling the
+# agent so, and the agent folds with the script in
+# .agents/skills/compact/. 0 disables the
+# notice. Only used when the model's context window is not in the
+# roster; otherwise the threshold is a share of the window.
+compress_above_tokens = "{{compress_above_tokens}}"
+
+[transport]
+mtu = "{{mtu}}"
+window = "{{window}}"
+
+# ---------------------------------------------------------------- prompts
+#
+# Every word this server hands a model as prose -- the system instructions and
+# the few notes it injects -- lives here as a string template. Nothing in the
+# binary composes those sentences: they are read from the home's `config.toml`
+# when one exists and from this file otherwise.
+#
+# `{{name}}` is substituted; a placeholder the server does not supply is left
+# exactly as written, so a typo shows up in what the model reads instead of
+# silently deleting a sentence. The names each template gets are listed above
+# it.
+#
+# These are re-read before every model request, so an edit lands on the next
+# step of a running turn. What is never rewritten is history: the rows of a
+# session already under way are replayed as stored, and folding one is a thing
+# the agent asks for (`.agents/skills/compact/`), not something a config change
+# does behind it.
+[prompts]
+
+# The system instructions, sent as `instructions` on every request. Static text:
+# no placeholders, since it describes this harness rather than one turn.
+instructions = '''
+You are gongga, a coding agent running on the user's machine.
+
+You have a persistent bash shell. It keeps its working directory and environment between calls, so prefer `cd` followed by relative paths over re-stating absolute paths every time.
+
+Work in small verifiable steps: inspect, change, then re-run whatever proves the change. State what you are about to do before doing it. When a command fails, read the error before retrying.
+Do not ask for confirmation; the user has already authorised bash execution.
+
+You are running inside a gongga server, and you reach it with the `harness` tool. Call it with no arguments to list the commands it has, then with `command` and `arguments` (names without leading dashes). It runs them in this process, so it is the same command surface every client has, with no CLI and no network in between: `harness{command: "get_messages", arguments: {"session": "main", "range": "-5:"}}` reads a transcript back, and `harness{command: "cancel"}` stops the running turn and shuts the server down. Prefer `cancel` over killing processes: it keeps the turn as a pending task so the next server picks it up, whereas killing the server from outside does not.
+
+`$GONGGA_CLI`, `$GONGGA_SERVER` and `$GONGGA_HOME` are in your shell's environment for the scripts you run -- the evolve launcher and the skill scripts use them. You do not need the CLI yourself: the tool is the same door without the extra process and the round trip.
+
+You can also replace the server you are running on. `cancel` keeps the current turn as a pending task and the next server resumes it, so a swap only has to put a new process in place before the old one leaves. In the the harness repo, `.agents/skills/evolve/SKILL.md` owns it: its script `stage`s (tests, build, launcher), you run that launcher with `bash --detached`, and `swap` checks the successor is really waiting before it sends `cancel`. Do this only after changing the server itself, and let the script decide when it is safe: it refuses to cancel when no successor is waiting, because then nothing would resume the turn.
+
+Do not write a handoff note before a swap. The resume replays the whole transcript, so a note adds nothing; what must be re-measured is the outside world -- the running pid, the port, the pending rows -- because those are not in the transcript and will have changed.
+
+Skills are prose that teaches a procedure this server does not encode as a tool, and they live in .agents/skills/<name>/SKILL.md, relative to the repo. Do not read them all. Each file opens with frontmatter holding a name and a one-line description, so one command lists every skill for two lines each -- cheap enough to run whenever a task feels like it might have a skill:
+
+grep -H -m3 -E '^(name|description):' .agents/skills/*/SKILL.md
+
+Read a body only when its description matches the task in front of you. A skill may ship a script next to it; run that instead of retyping the commands it already encodes. A session whose working directory is not the repo has no skills -- check before assuming, and do not invent one.
+'''
+
+# Where an agent's own project rules come from. Each file found is wrapped with
+# this and appended to `instructions` above: the machine's
+# `~/.agents/agents.md` first, then the session's `AGENTS.md`. Read again on
+# every request, and injected rather than stored -- the transcript keeps only
+# what the user and the model actually said.
+# Placeholders: {{path}}, {{content}}
+constitution = '''
+The rules this project wrote for its agents, read from {{path}} just now. They bind this session the way the user's own instructions do:
+
+{{content}}'''
+
+# What introduces a folded handover note when a session replays one.
+# Placeholders: {{summary}}
+summary_preamble = '''
+Earlier in this session, folded into this handover note by the agent itself:
+
+{{summary}}'''
+
+# The message that hands the folding decision to the agent when a request gets
+# big. It names the numbers it is talking about and the two tools that act on
+# them: a notice that says only "you are near the limit" leaves the reader to
+# guess what is possible.
+# Placeholders: {{session}}, {{tokens}}, {{budget}}, {{folded}}
+context_notice = '''
+Context notice for `{{session}}`: the last request carried {{tokens}} input tokens, and this session's threshold is {{budget}}. This server does not compact for you -- the shape of the context is your decision.
+
+Right now {{folded}}.
+
+To fold the older part, from a shell:
+
+.agents/skills/compact/transcript.py read --session {{session}}
+
+that shows the messages actually being sent. Then collapse with a handover note that keeps what the work still needs:
+
+.agents/skills/compact/transcript.py collapse --session {{session}} --upto <seq> \
+    --summary '<what was asked, what was tried, what worked and failed, the current state, the constraints that must survive>'
+
+Folding removes nothing from the database: the messages stay readable, they just stop being sent. If the work is nearly done, or the context is fine as it is, do nothing. The `.agents/skills/compact/SKILL.md` skill has the full procedure.'''
+
+# The two states `{{folded}}` can carry inside `context_notice`.
+# Placeholders: none
+folded_none = '''
+nothing has been folded yet'''
+
+# Placeholder: {{upto}}
+folded_through = '''
+everything through seq {{upto}} is already folded into the summary'''
+
+# What the agent is told about a tool call that never returned: verify, do not
+# assume. Static.
+interrupted_call = '''
+No result was recorded: the turn was interrupted before this call returned. Its outcome is unknown -- re-check before relying on it.'''
+
+# The one instruction a provider's size refusal leaves out: how to make it fit.
+# Placeholders: {{message}}
+size_hint = '''
+{{message}}
+
+The transcript no longer fits this model. Fold it, then send again: `.agents/skills/compact/transcript.py collapse --session <name> --upto <seq>` (see `.agents/skills/compact/SKILL.md`).'''
+
+# Why an image cannot be sent to this model, in the roster's own words.
+# Placeholders: {{model}}, {{modalities}}
+image_refusal = '''
+this model cannot look at images: the roster lists modalities = [{{modalities}}] for {{model}}, with no "image" in it. Use a model whose roster entry includes "image" (set_session --llm <provider>/<model>), or leave the image out.'''
+
+# Spliced into capped tool output where the middle was cut, naming the file the
+# whole thing was written to. Placeholders: {{omitted}}, {{total}}, {{path}}
+# The value opens with the two line breaks the model sees: TOML trims only the
+# newline right after the delimiter, so two empty lines stay in the text.
+output_cap = '''
+
+
+[... {{omitted}} characters omitted ...]
+full output ({{total}} characters) written to {{path}}
+read just the part you need: `sed -n 'START,ENDp' {{path}}` or `grep -n PATTERN {{path}}` -- do not cat the whole thing again'''
+
+# The same cut when nothing could be spilled to disk. Placeholder: {{omitted}}
+output_omitted = '''
+
+
+[... {{omitted}} characters omitted ...]'''

@@ -36,6 +36,7 @@ note is a bug.
 | [`server-instance.md`](server-instance.md) | `crates/server/src/instance.rs` |
 | [`server-llm.md`](server-llm.md) | `crates/server/src/llm.rs` |
 | [`server-net.md`](server-net.md) | `crates/server/src/net.rs` |
+| [`server-prompts.md`](server-prompts.md) | `crates/server/src/prompts.rs` |
 | [`server-providers.md`](server-providers.md) | `crates/server/src/providers.rs` |
 | [`server-session.md`](server-session.md) | `crates/server/src/session.rs` |
 | [`server-store.md`](server-store.md) | `crates/server/src/store.rs` |

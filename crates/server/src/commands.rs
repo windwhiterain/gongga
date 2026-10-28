@@ -27,7 +27,7 @@ pub struct Dispatch {
     /// Commands registered by scripts, and the way to run one.
     pub scripts: Arc<crate::script::Scripts>,
     /// The machine's LLM roster: what `set_session --llm` is checked against.
-    pub providers: &'static crate::providers::Catalog,
+    pub providers: crate::providers::Handle,
     /// Turns currently running. `cancel` waits for this to drain before the
     /// process is allowed to exit.
     pub active: Arc<AtomicUsize>,

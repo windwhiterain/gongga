@@ -124,13 +124,17 @@ said no. Empty is unstated and refuses nothing -- see
 `docs/notes/server-providers.md`.
 
 `write_default_if_absent` teaches both fields in the template's comment, because
-that comment is where a reader learns there is a roster field at all.
+that comment is where a reader learns there is a roster field at all. The file it
+writes is the shipped one with this machine's values in it, so a home begins with
+every prompt visible and editable rather than with a pointer into the binary.
 
 ## LlmConfig::for_entry
 
 A session that names its own `--llm` is choosing a different brain, not a
-different protocol: timeouts, retry policy and the shell instructions stay
-exactly as configured.
+different protocol: timeouts and retry policy stay exactly as configured.
+The prose is not part of this struct any more at all -- a prompt belongs to
+the request and is rendered per step, so a model swap cannot carry an
+instruction from the model it replaced.
 
 ## toml_path
 
@@ -139,8 +143,11 @@ every Windows API accepts forward slashes anyway.
 
 ## tests::the_instructions_are_well_formed
 
-The instructions are assembled by line continuation, where a stray escape or a
-missing space is invisible until a model reads the prompt as one run-on line.
+The text was assembled by line continuation in Rust until it moved into
+`default.config.toml`, and the test stayed for the same reason: a stray escape
+or a missing space is invisible until a model reads the prompt as one run-on
+line. It now checks the shipped template, since that is what a home with no
+opinion about prompts actually sends.
 
 ## tests::the_roster_answers_what_the_config_does_not_say
 

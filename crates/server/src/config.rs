@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::prompts::Value;
 use crate::transport::TransportConfig;
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:9700";
@@ -49,8 +50,6 @@ pub struct LlmConfig {
     pub api_key_env: String,
     /// Resolved key. Empty when the variable is unset.
     pub api_key: String,
-    /// System instructions sent as `instructions` on every request.
-    pub instructions: String,
     pub temperature: Option<f32>,
     pub max_output_tokens: Option<u32>,
     /// Ask the API not to retain server-side state; we replay the transcript.
@@ -85,15 +84,17 @@ pub fn accepts_image(modalities: &[String]) -> bool {
     modalities.is_empty() || modalities.iter().any(|m| m == "image")
 }
 
-/// Why an image cannot be sent to `model`, in the roster's own words.
+/// Why an image cannot be sent to `model`: the `image_refusal` template, with the
+/// roster's own list spelt out for it.
 pub fn image_refusal(model: &str, modalities: &[String]) -> String {
     let listed = modalities
         .iter()
         .map(|m| format!("\"{m}\""))
         .collect::<Vec<_>>()
         .join(", ");
-    format!(
-        "this model cannot look at images: the roster lists modalities = [{listed}] for {model}, with no \"image\" in it. Use a model whose roster entry includes \"image\" (set_session --llm <provider>/<model>), or leave the image out."
+    crate::prompts::shared().render(
+        "image_refusal",
+        &[("model", model), ("modalities", listed.as_str())],
     )
 }
 
@@ -188,7 +189,6 @@ struct FileLlm {
     base_url: Option<String>,
     model: Option<String>,
     api_key_env: Option<String>,
-    instructions: Option<String>,
     temperature: Option<f32>,
     max_output_tokens: Option<u32>,
     store: Option<bool>,
@@ -296,7 +296,7 @@ impl Config {
         // The roster is the machine's own provider list; using it needs no config.
         let roster = crate::providers::roster();
         let entry = pick_entry(
-            roster,
+            &roster,
             env_or("GONGGA_PROVIDER").or(llm_file.provider.clone()),
             env_or("GONGGA_MODEL").or(llm_file.model.clone()),
         );
@@ -328,7 +328,6 @@ impl Config {
             context: entry.as_ref().and_then(|e| e.context),
             api_key_env,
             api_key,
-            instructions: llm_file.instructions.unwrap_or_else(default_instructions),
             temperature: llm_file.temperature,
             max_output_tokens: llm_file.max_output_tokens,
             store: llm_file.store.unwrap_or(false),
@@ -441,99 +440,29 @@ impl Config {
         if path.exists() && !is_key_only(&path)? {
             return Ok(());
         }
-        let text = format!(
-            "# gongga server configuration\n\
-             # Every value can be overridden by a GONGGA_* environment variable.\n\
-             \n\
-             [server]\n\
-             bind = \"{bind}\"\n\
-             db = \"{db}\"\n\
-             key = \"{key}\"\n\
-             \n\
-             [llm]\n\
-             # Which provider to talk to. These are left commented out on purpose:\n\
-             # the roster at ~/.agents/llm.toml already says what this machine can\n\
-             # reach, and the first entry that works is a better default than a\n\
-             # name frozen into this file. Uncomment to override it.\n\
-             # provider = \"{provider}\"\n\
-             # model = \"{model}\"\n\
-             # base_url = \"{base_url}\"\n\
-             # api_key_env = \"{api_key_env}\"\n\
-             # Capabilities are NOT configured here: they belong to the model, so\n\
-             # they come from its entry in the roster (~/.agents/llm.toml):\n\
-             #\n\
-             #   [[provider.model]]\n\
-             #   id = \"some-model\"\n\
-             #   # What it takes in and gives back. A list without \"image\" makes\n\
-             #   # an attachment be refused by this entry's name instead of letting the\n\
-             #   # provider answer with an opaque 400. Omit the list and nothing is\n\
-             #   # refused: unstated is not a no.\n\
-             #   modalities = [\"text\", \"image\"]\n\
-             #   # Tools the provider runs on its own side, spelled the way that\n\
-             #   # provider spells them -- \"web_search\", \"web_search_preview\",\n\
-             #   # \"web_fetch\", ... Sent verbatim, so no mapping table is needed.\n\
-             #   # Omit it and none are offered: offering one a provider does not\n\
-             #   # know fails every request of every turn.\n\
-             #   builtin_tools = [\"web_search\"]\n\
-             store = {store}\n\
-             # A request that never answers used to park a turn forever. These\n\
-             # bound it: one request may take this long overall, and this long\n\
-             # between chunks, before it counts as broken and is retried.\n\
-             request_timeout_ms = {request_timeout}\n\
-             idle_timeout_ms = {idle_timeout}\n\
-             # Retries after a failure, a timeout, or a response with nothing in\n\
-             # it. 0 = no ceiling: retry until the turn is cancelled. The delay\n\
-             # doubles each time up to 30s: {retry_base}ms, then twice that.\n\
-             max_retries = {max_retries}\n\
-             retry_base_ms = {retry_base}\n\
-             \n\
-             [tools.bash]\n\
-             timeout_ms = {timeout}\n\
-             # Output longer than this is capped: head and tail come back, the\n\
-             # whole thing lands in ~/.gongga/outputs/. 0 disables the cap.\n\
-             max_output_chars = {max_output_chars}\n\
-             \n\
-             [scripts]\n\
-             # Commands a Python script registers with this server, without a Rust\n\
-             # change: every *.py here is asked for its manifest, and what it\n\
-             # declares appears in the catalog like any other command.\n\
-             dir = \"{scripts_dir}\"\n\
-             # Interpreter. Commented out: one that answers `-V` is detected.\n\
-             # program = \"/usr/bin/python3\"\n\
-             \n\
-             [agent]\n\
-             # No step limit: a turn runs until the work is done.\n\
-             # This server does not compact the transcript. When a request carries\n\
-             # more than this many input tokens, it injects one message telling the\n\
-             # agent so, and the agent folds with the script in\n\
-             # .agents/skills/compact/. 0 disables the\n\
-             # notice. Only used when the model's context window is not in the\n\
-             # roster; otherwise the threshold is a share of the window.\n\
-             compress_above_tokens = {compress_above_tokens}\n\
-             \n\
-             [transport]\n\
-             mtu = {mtu}\n\
-             window = {window}\n\
-             ",
-            bind = self.bind,
-            db = toml_path(&self.db_path),
-            key = self.key,
-            provider = self.llm.provider.clone().unwrap_or_default(),
-            base_url = self.llm.base_url,
-            model = self.llm.model,
-            api_key_env = self.llm.api_key_env,
-            store = self.llm.store,
-            request_timeout = self.llm.request_timeout.as_millis(),
-            idle_timeout = self.llm.idle_timeout.as_millis(),
-            max_retries = self.llm.max_retries,
-            retry_base = self.llm.retry_base.as_millis(),
-            timeout = self.bash.timeout.as_millis(),
-            max_output_chars = self.bash.max_output_chars,
-            scripts_dir = toml_path(&self.scripts.dir),
-            compress_above_tokens = self.agent.compress_above_tokens,
-            mtu = self.transport.mtu,
-            window = self.transport.window,
-        );
+        let text = crate::prompts::starter(&[
+            ("bind", Value::text(self.bind.to_string())),
+            ("db", Value::text(toml_path(&self.db_path))),
+            ("key", Value::text(self.key.as_str())),
+            (
+                "provider",
+                Value::text(self.llm.provider.clone().unwrap_or_default()),
+            ),
+            ("model", Value::text(self.llm.model.as_str())),
+            ("base_url", Value::text(self.llm.base_url.as_str())),
+            ("api_key_env", Value::text(self.llm.api_key_env.as_str())),
+            ("scripts_dir", Value::text(toml_path(&self.scripts.dir))),
+            ("store", Value::bare(self.llm.store)),
+            ("request_timeout", Value::bare(self.llm.request_timeout.as_millis())),
+            ("idle_timeout", Value::bare(self.llm.idle_timeout.as_millis())),
+            ("max_retries", Value::bare(self.llm.max_retries)),
+            ("retry_base", Value::bare(self.llm.retry_base.as_millis())),
+            ("timeout", Value::bare(self.bash.timeout.as_millis())),
+            ("max_output_chars", Value::bare(self.bash.max_output_chars)),
+            ("compress_above_tokens", Value::bare(self.agent.compress_above_tokens)),
+            ("mtu", Value::bare(self.transport.mtu)),
+            ("window", Value::bare(self.transport.window)),
+        ]);
         std::fs::write(path, text)?;
         Ok(())
     }
@@ -591,7 +520,7 @@ fn pick_entry(
 }
 
 impl LlmConfig {
-    /// The same timeouts, retries and instructions, pointed at another entry.
+    /// The same timeouts and retries, pointed at another model.
     ///
     /// See `docs/notes/server-config.md`.
     pub fn for_entry(&self, entry: &crate::providers::Entry, api_key: String) -> Self {
@@ -669,58 +598,6 @@ pub(crate) fn expand(path: PathBuf) -> PathBuf {
     path
 }
 
-fn default_instructions() -> String {
-    "You are gongga, a coding agent running on the user's machine.\n\
-     \n\
-     You have a persistent bash shell. It keeps its working directory and \
-     environment between calls, so prefer `cd` followed by relative paths over \
-     re-stating absolute paths every time.\n\
-     \n\
-     Work in small verifiable steps: inspect, change, then re-run whatever \
-     proves the change. State what you are about to do before doing it. When a \
-     command fails, read the error before retrying.\n\
-     Do not ask for confirmation; the user has already authorised bash execution.\n\
-     \n\
-     You are running inside a gongga server, and you reach it with the \
-     `harness` tool. Call it with no arguments to list the commands it has, then \
-     with `command` and `arguments` (names without leading dashes). It runs them \
-     in this process, so it is the same command surface every client has, with \
-     no CLI and no network in between: `harness{command: \"get_messages\", \
-     arguments: {\"session\": \"main\", \"range\": \"-5:\"}}` reads a \
-     transcript back, and `harness{command: \"cancel\"}` stops the running turn \
-     and shuts the server down. Prefer `cancel` over killing processes: it keeps the turn as a \
-     pending task so the next server picks it up, whereas killing the server \
-     from outside does not.\n\
-     \n\
-     `$GONGGA_CLI`, `$GONGGA_SERVER` and `$GONGGA_HOME` are in your shell's \
-     environment for the scripts you run -- the evolve launcher and the skill \
-     scripts use them. You do not need the CLI yourself: the tool is the same \
-     door without the extra process and the round trip.\n\
-     \n\
-     You can also replace the server you are running on. `cancel` keeps the \
-     current turn as a pending task and the next server resumes it, so a swap \
-     only has to put a new process in place before the old one leaves. In the \
-     the harness repo, `.agents/skills/evolve/SKILL.md` owns it: its script \
-     `stage`s (tests, build, launcher), you run that launcher with `bash \
-     --detached`, and `swap` checks the successor is really waiting before it \
-     sends `cancel`. Do this only after changing the server itself, and let the \
-     script decide when it is safe: it refuses to cancel when no successor is \
-     waiting, because then nothing would resume the turn.\n\
-     \n\
-     Do not write a handoff note before a swap. The resume replays the whole \
-     transcript, so a note adds nothing; what must be re-measured is the \
-     outside world -- the running pid, the port, the pending rows -- because \
-     those are not in the transcript and will have changed.\n\nSkills are prose that teaches a procedure this server does not encode as a \
-     tool, and they live in .agents/skills/<name>/SKILL.md, relative to the \
-     repo. Do not read them all. Each file opens with frontmatter holding a \
-     name and a one-line description, so one command lists every skill for two \
-     lines each -- cheap enough to run whenever a task feels like it might have \
-     a skill:\n\ngrep -H -m3 -E '^(name|description):' .agents/skills/*/SKILL.md\n\nRead a body only when its description matches the task in front of you. A \
-     skill may ship a script next to it; run that instead of retyping the \
-     commands it already encodes. A session whose working directory is not the \
-     repo has no skills -- check before assuming, and do not invent one.\n"
-        .to_string()
-}
 
 /// Locates Git Bash on Windows, falling back to whatever `bash` is on PATH.
 pub(crate) fn detect_git_bash() -> Option<PathBuf> {
@@ -766,7 +643,9 @@ mod tests {
     /// Line continuations hide a stray escape until a model reads the prompt.
     #[test]
     fn the_instructions_are_well_formed() {
-        let text = default_instructions();
+        let text = crate::prompts::Prompts::defaults()
+            .text("instructions")
+            .unwrap();
         assert!(!text.contains("\\n"), "literal backslash-n leaked: {text}");
         assert!(text.contains("\n\nYou can also replace the server"));
         assert!(text.contains(".agents/skills/evolve/SKILL.md"));
@@ -779,7 +658,9 @@ mod tests {
     /// that dials back into this same server.
     #[test]
     fn the_instructions_send_the_agent_through_the_tool() {
-        let text = default_instructions();
+        let text = crate::prompts::Prompts::defaults()
+            .text("instructions")
+            .unwrap();
         assert!(text.contains("`harness` tool"), "{text}");
         assert!(
             text.contains("runs them \nin this process") || text.contains("in this process"),

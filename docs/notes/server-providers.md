@@ -177,6 +177,28 @@ Duplicate ids would make `--llm` ambiguous, and the resolution above silently
 takes the first. Keep the first and drop the rest rather than pretend both
 exist.
 
+## roster, Live, read_fresh
+
+Read once per file, not once per process: an edit to `~/.agents/llm.toml` reaches
+the next `set_session --llm` and the next `get_messages` completion list without a
+restart, which is the whole reason a roster is a file rather than a build-time
+table.
+
+The handle is an `Arc`, never a `&'static`. A `&'static` was honest while the file
+was read once; keeping it through a reload would mean the retired list stays
+alive in whatever holds it, which is worse than a copy: the server would resolve
+against a provider the user has already deleted.
+
+Each read is numbered, and `Agent::client_for` keys its cached clients by that
+number too. A cached client is the one thing a reload must invalidate, because it
+carries the base URL, the key and the model of the entry it was built from: reuse
+one after the roster moved and the request goes to the old endpoint with the new
+model name, which fails in a way no log line near the turn explains.
+
+A turn still finishes on the client it started with. That is not the reload
+failing; it is the same rule the timeouts follow, and the reason a long answer
+does not change providers mid-sentence.
+
 ## roster
 
 One file, one read: the command catalog asks for it to build completions on

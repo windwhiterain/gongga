@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use serde::Deserialize;
 
@@ -134,6 +134,8 @@ pub struct Catalog {
     providers: Vec<Provider>,
     /// Why the file could not be read, kept so startup can report it once and go on.
     problem: Option<String>,
+    /// Which read produced this list; see [`roster`].
+    generation: u64,
 }
 
 impl Catalog {
@@ -143,6 +145,7 @@ impl Catalog {
             path: Some(path.to_path_buf()),
             providers: Vec::new(),
             problem: None,
+            generation: 0,
         };
         let text = match std::fs::read_to_string(path) {
             Ok(t) => t,
@@ -164,11 +167,18 @@ impl Catalog {
             path: None,
             providers: Vec::new(),
             problem: None,
+            generation: 0,
         }
     }
 
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
+    }
+
+    /// Which read produced this list. A cached client on an older number talks
+    /// to a list that no longer exists.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     pub fn problem(&self) -> Option<&str> {
@@ -489,24 +499,190 @@ fn parse(text: &str) -> Result<Vec<Provider>, toml::de::Error> {
     Ok(providers)
 }
 
-/// The roster for this process, read once: every connect and turn asks for it.
-pub fn roster() -> &'static Catalog {
-    static ROSTER: OnceLock<Catalog> = OnceLock::new();
-    ROSTER.get_or_init(|| {
-        let path = std::env::var("GONGGA_LLM_CATALOG")
-            .ok()
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| dirs::home_dir().map(|h| h.join(DEFAULT_PATH)));
-        match path {
-            Some(p) => Catalog::load(&p),
-            None => Catalog::empty(),
+/// The file state a roster was read from: enough to notice an edit without
+/// hashing the file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Stamp {
+    size: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+impl Stamp {
+    fn of(path: &Path) -> Option<Self> {
+        let meta = std::fs::metadata(path).ok()?;
+        Some(Self {
+            size: meta.len(),
+            modified: meta.modified().ok(),
+        })
+    }
+}
+
+/// The roster in force, and the file it came from.
+struct Live {
+    /// Whether a read happened: no roster file is still an answer, and asking
+    /// twice must not re-read anything.
+    read: bool,
+    stamp: Option<Stamp>,
+    catalog: Arc<Catalog>,
+}
+
+/// A live view of the roster: every question asks the file first.
+///
+/// # Invariant
+///
+/// Nothing here holds a `Catalog`. Holding one would freeze the roster at the
+/// moment the server started -- which is exactly what a reload is meant to undo
+/// -- and the next `set_session --llm` would refuse a model the user had just
+/// written into the file.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Handle;
+
+impl Handle {
+    pub fn resolve(&self, spec: &str) -> Result<Choice, String> {
+        roster().resolve(spec)
+    }
+
+    pub fn entry(&self, spec: &str) -> Result<Entry, String> {
+        roster().entry(spec)
+    }
+
+    pub fn find_model(&self, model: &str) -> Option<Choice> {
+        roster().find_model(model)
+    }
+
+    pub fn generation(&self) -> u64 {
+        roster().generation()
+    }
+}
+
+/// Counts the reads, so a client built from a retired list is recognised as one.
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Where the roster is: an override, then the machine's own file.
+fn roster_path() -> Option<PathBuf> {
+    std::env::var("GONGGA_LLM_CATALOG")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(DEFAULT_PATH)))
+}
+
+impl Live {
+    /// Whether the roster on hand still matches the file it came from.
+    fn is_fresh(&self, path: Option<&Path>) -> bool {
+        self.read && self.stamp == path.and_then(Stamp::of)
+    }
+}
+
+/// One read of the roster file, stamped with the generation it belongs to.
+fn read_fresh(path: Option<&Path>) -> Catalog {
+    let mut catalog = match path {
+        Some(p) => Catalog::load(p),
+        None => Catalog::empty(),
+    };
+    catalog.generation = GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    catalog
+}
+
+/// The machine's roster, re-read whenever the file says it changed.
+///
+/// # Invariant
+///
+/// A caller keeps an `Arc`, never a `&'static`: a roster that is re-read must not
+/// leave the retired list in someone's hand. Which read produced a list is
+/// [`Catalog::generation`], and that is what retires a cached client.
+pub fn roster() -> Arc<Catalog> {
+    static LIVE: OnceLock<std::sync::RwLock<Live>> = OnceLock::new();
+    let live = LIVE.get_or_init(|| {
+        std::sync::RwLock::new(Live {
+            read: false,
+            stamp: None,
+            catalog: Arc::new(Catalog::empty()),
+        })
+    });
+    let path = roster_path();
+    if let Ok(guard) = live.read() {
+        if guard.is_fresh(path.as_deref()) {
+            return guard.catalog.clone();
         }
-    })
+    }
+    let catalog = Arc::new(read_fresh(path.as_deref()));
+    if let Ok(mut guard) = live.write() {
+        guard.read = true;
+        guard.stamp = path.as_deref().and_then(Stamp::of);
+        guard.catalog = catalog.clone();
+    }
+    tracing::info!(
+        roster = catalog.path().unwrap_or(Path::new("(none)")).display().to_string(),
+        providers = catalog.providers().len(),
+        generation = catalog.generation(),
+        problem = catalog.problem(),
+        "llm roster read"
+    );
+    catalog
 }
 
 #[cfg(test)]
 mod tests {
+    /// An edit to the roster lands without a restart; an untouched file is not
+    /// read twice.
+    #[test]
+    fn the_roster_is_reread_only_when_the_file_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("llm.toml");
+        std::fs::write(
+            &path,
+            r#"[[provider]]
+id = "p"
+key = "k"
+[[provider.endpoint]]
+api = "openai-responses"
+base_url = "http://127.0.0.1:1/v1"
+[[provider.model]]
+id = "m1"
+"#,
+        )
+        .unwrap();
+        let first = read_fresh(Some(&path));
+        let second = read_fresh(Some(&path));
+        assert_eq!(first.providers().len(), 1);
+        assert_eq!(second.generation(), first.generation() + 1, "each read is counted");
+        let live = Live {
+            read: true,
+            stamp: Stamp::of(&path),
+            catalog: Arc::new(first),
+        };
+        assert!(live.is_fresh(Some(&path)), "the file did not move");
+        std::fs::write(
+            &path,
+            r#"[[provider]]
+id = "p"
+key = "k"
+[[provider.endpoint]]
+api = "openai-responses"
+base_url = "http://127.0.0.1:1/v1"
+[[provider.model]]
+id = "m1"
+[[provider.model]]
+id = "m2"
+"#,
+        )
+        .unwrap();
+        assert!(!live.is_fresh(Some(&path)), "a model was added");
+        let third = read_fresh(Some(&path));
+        assert_eq!(
+            third.specs().len(),
+            2,
+            "the new roster is what the next route resolves against"
+        );
+        // The model that was not in the file at startup now resolves, key and
+        // endpoint and all.
+        let added = third
+            .entry("p/m2")
+            .unwrap_or_else(|e| panic!("the added model must resolve: {e}"));
+        assert_eq!(added.model, "m2");
+    }
+
     use super::*;
 
     const ROSTER: &str = r#"
@@ -564,7 +740,8 @@ key = "x"
 
     fn catalog() -> Catalog {
         Catalog {
-            path: None,
+                    generation: 0,
+                    path: None,
             providers: parse(ROSTER).unwrap(),
             problem: None,
         }
@@ -689,7 +866,8 @@ key = "k"
   endpoints = ["/chat/completions"]
 "#;
         let c = Catalog {
-            path: None,
+                    generation: 0,
+                    path: None,
             providers: parse(text).unwrap(),
             problem: None,
         };

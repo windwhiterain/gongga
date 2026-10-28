@@ -8,9 +8,13 @@ use protocol::SessionStatus;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::json;
 
-/// What the model is told about a tool call that never returned: verify, do not assume.
-const INTERRUPTED_CALL: &str = "No result was recorded: the turn was interrupted before this call returned. \
-     Its outcome is unknown -- re-check before relying on it.";
+/// What the model is told about a call that never returned: the
+/// `interrupted_call` template.
+fn interrupted_call() -> String {
+    crate::prompts::shared()
+        .text("interrupted_call")
+        .unwrap_or_default()
+}
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS sessions (
@@ -447,7 +451,7 @@ impl Store {
                     if !answered.contains(&call_id) {
                         out.push(HistoryItem::ToolResult {
                             call_id,
-                            output: INTERRUPTED_CALL.into(),
+                            output: interrupted_call().into(),
                             images: Vec::new(),
                         });
                     }

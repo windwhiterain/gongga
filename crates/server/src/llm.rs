@@ -20,7 +20,6 @@ pub struct LlmClient {
     base_url: String,
     api_key: String,
     model: String,
-    instructions: String,
     temperature: Option<f32>,
     max_output_tokens: Option<u32>,
     store: bool,
@@ -54,7 +53,6 @@ impl LlmClient {
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
             api_key: cfg.api_key.clone(),
             model: cfg.model.clone(),
-            instructions: cfg.instructions.clone(),
             temperature: cfg.temperature,
             max_output_tokens: cfg.max_output_tokens,
             store: cfg.store,
@@ -141,6 +139,7 @@ impl LlmClient {
     /// [`LlmEvent::Retrying`]. See `docs/notes/server-llm.md`.
     pub fn stream(
         &self,
+        instructions: &str,
         summary: Option<&str>,
         history: &[HistoryItem],
         tools: &[ToolDefinition],
@@ -148,7 +147,7 @@ impl LlmClient {
         cancel: CancellationToken,
     ) -> mpsc::Receiver<LlmEvent> {
         let (tx, rx) = mpsc::channel(256);
-        let body = self.build_body(summary, history, tools, effort);
+        let body = self.build_body(instructions, summary, history, tools, effort);
         let url = format!("{}/responses", self.base_url);
         let api_key = self.api_key.clone();
         let http = self.http.clone();
@@ -241,18 +240,19 @@ impl LlmClient {
 
     fn build_body(
         &self,
+        instructions: &str,
         summary: Option<&str>,
         history: &[HistoryItem],
         tools: &[ToolDefinition],
         effort: Option<&str>,
     ) -> Value {
         let mut input: Vec<Value> = Vec::with_capacity(history.len() + 1);
-        if let Some(s) = summary {
+        // Both are the caller's prose: this module builds requests and writes no
+        // sentence of its own.
+        if let Some(note) = summary {
             input.push(json!({
                 "role": "user",
-                "content": [{"type": "input_text", "text": format!(
-                    "Earlier in this session, folded into this handover note by the agent itself:\n\n{s}"
-                )}],
+                "content": [{"type": "input_text", "text": note}],
             }));
         }
         input.extend(history.iter().filter_map(history_item_to_input));
@@ -263,8 +263,8 @@ impl LlmClient {
             "stream": true,
             "store": self.store,
         });
-        if !self.instructions.is_empty() {
-            body["instructions"] = json!(self.instructions);
+        if !instructions.is_empty() {
+            body["instructions"] = json!(instructions);
         }
         // One array holds both kinds of tool; empty sends no key at all.
         let mut offered: Vec<Value> = tools
@@ -485,7 +485,7 @@ fn error_retryable(d: &Value) -> bool {
     )
 }
 
-/// Adds the one instruction a size refusal leaves out: how to make it fit.
+/// Adds the one instruction a size refusal leaves out, from `size_hint`.
 ///
 /// # Invariant
 ///
@@ -503,11 +503,7 @@ fn with_size_hint(message: String) -> String {
     }
     // One line, so the hint reads as a sentence rather than as a wrapped
     // fragment of the provider's message.
-    format!(
-        "{message}\n\nThe transcript no longer fits this model. Fold it, then send again: \
-         `.agents/skills/compact/transcript.py collapse --session <name> --upto <seq>` \
-         (see `.agents/skills/compact/SKILL.md`)."
-    )
+    crate::prompts::shared().render("size_hint", &[("message", message.as_str())])
 }
 
 /// What the previous attempt did, in the words the operator needs to read.
@@ -1117,7 +1113,6 @@ mod tests {
             context: None,
             api_key_env: String::new(),
             api_key: "k".to_string(),
-            instructions: String::new(),
             temperature: None,
             max_output_tokens: None,
             store: false,
@@ -1174,7 +1169,7 @@ mod tests {
         // A compacted prefix must not change what the model is offered: the
         // schema is out of band, not part of the history.
         for summary in [None, Some("earlier work, compressed")] {
-            let body = client.build_body(summary, &[], &tools, None);
+            let body = client.build_body("instructions", summary, &[], &tools, None);
             let sent = &body["tools"][0];
             assert_eq!(sent["name"], "bash");
             assert_eq!(sent["parameters"]["required"][0], "cmd");
@@ -1183,7 +1178,7 @@ mod tests {
 
         // An empty registry means no `tools` key at all, rather than an empty
         // array that some providers reject.
-        let body = client.build_body(None, &[], &[], None);
+        let body = client.build_body("instructions", None, &[], &[], None);
         assert!(body.get("tools").is_none(), "{body}");
     }
 
@@ -1578,9 +1573,9 @@ mod tests {
     #[test]
     fn a_thinking_level_rides_on_the_request() {
         let client = client_with("m", &[], &[]);
-        let body = client.build_body(None, &[], &[], Some("high"));
+        let body = client.build_body("instructions", None, &[], &[], Some("high"));
         assert_eq!(body["reasoning"]["effort"], "high");
-        let body = client.build_body(None, &[], &[], None);
+        let body = client.build_body("instructions", None, &[], &[], None);
         assert!(
             body.get("reasoning").is_none(),
             "an unset level must not become an empty reasoning object"
@@ -1597,7 +1592,7 @@ mod tests {
             description: "run".into(),
             parameters: json!({"type": "object"}),
         }];
-        let body = client.build_body(None, &[], &tools, None);
+        let body = client.build_body("instructions", None, &[], &tools, None);
         let offered = body["tools"].as_array().expect("tools");
         assert_eq!(offered.len(), 3, "{body}");
         assert_eq!(offered[0]["type"], "function");
@@ -1610,14 +1605,14 @@ mod tests {
     #[test]
     fn a_model_that_declares_no_builtin_tools_sends_none() {
         let client = client_with("m", &[], &[]);
-        let body = client.build_body(None, &[], &[], None);
+        let body = client.build_body("instructions", None, &[], &[], None);
         assert!(
             body.get("tools").is_none(),
             "an empty tools array is not the same as no tools key: {body}"
         );
         // Only a builtin tool, no local ones, still sends the key.
         let client = client_with("m", &["web_search"], &[]);
-        let body = client.build_body(None, &[], &[], None);
+        let body = client.build_body("instructions", None, &[], &[], None);
         assert_eq!(body["tools"], json!([{"type": "web_search"}]));
     }
 
