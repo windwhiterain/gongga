@@ -227,6 +227,22 @@ A retry is the only news a stalled request ever produces, so it goes to the
 operator instead of into the transcript: the turn looks alive, and the reason it
 is slow is on screen.
 
+## provider usage goes to the events ledger
+
+Every completed request appends an `events` row of kind `usage` with the model and
+`input`, `cached`, `output`, `total`, and logs the same numbers at info -- one line
+per model request, beside the `stream ended` line that is already there.
+
+The row, and not only the line, because the question outlives the log: "is the
+context this session is paying for actually cached?" gets asked days later by
+somebody reading one session back, and `events` is per-session and durable.
+`sessions.context_tokens` stays the single number the notice threshold compares
+against; the ledger is what explains it.
+
+Nothing reads it through a command. `sqlite3 $GONGGA_HOME/gongga.db "select payload
+from events where kind='usage'"` is the whole interface, and a published command
+would put a provider's billing detail into the surface the agent is prompted on.
+
 ## Attempt
 
 A bundle rather than three more parameters, because the three travel together

@@ -246,6 +246,29 @@ Text accumulated from deltas. Providers do not all return the finished text on
 `output_item.done` (MiniMax sends an empty `summary` array), so the deltas are
 the only place the readable text ever exists.
 
+## Usage, and the half of it that matters for cost
+
+`usage.input_tokens_details.cached_tokens` is the provider's own answer to a
+question this process cannot ask any other way: was this request's prefix the same
+as the one before it? The struct keeps the nested shape it arrives in and exposes
+`cached_tokens()`; `None` means the provider declined to say, and is deliberately
+not turned into a zero -- a fabricated miss reads exactly like a real one in a log,
+and the two have opposite meanings.
+
+It is worth reading because this harness re-renders its prose before every request.
+`instructions` sits in front of the whole transcript in the cached prefix, so an
+edit to `[prompts]`, or a session walking into a directory with a different
+`AGENTS.md`, costs the history behind it. Measured: a session warm at 99% dropped
+to 35% on a one-sentence edit -- the tool schemas ahead of it stayed cached, the
+conversation behind it did not -- and stayed at 35% after the sentence was put back,
+because the next request has to match the request that carried the edit.
+
+The measurement is `scripts/fake_llm.py`, which models a hit rather than inventing
+one: it splits the body into the units a prefix sees (tools, instructions, then each
+input item), compares them with the previous request's, and reports the shared
+prefix as `cached_tokens`. "We did not break the prefix" is then a number, not a
+reading of code.
+
 ## next_sse_block
 
 Takes one complete server-sent-event block off the front of `buf`.

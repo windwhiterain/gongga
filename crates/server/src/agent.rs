@@ -439,12 +439,29 @@ impl Agent {
                 LlmEvent::Completed { usage } => {
                     saw_completion = true;
                     if let Some(u) = usage {
-                        tracing::debug!(
+                        let cached = u.cached_tokens();
+                        tracing::info!(
                             session = %name,
                             input = u.input_tokens.unwrap_or(0),
+                            cached = cached.unwrap_or(0),
                             output = u.output_tokens.unwrap_or(0),
                             total = u.total_tokens.unwrap_or(0),
-                            "response completed"
+                            "provider usage"
+                        );
+                        // Whether this request's prefix was the previous one is a question
+                        // only the provider can answer, and the log line scrolls away. The
+                        // ledger is what makes "did the replay hold the cache?" answerable
+                        // after the turn, per step, with the model that answered.
+                        let _ = self.store.append_event(
+                            Some(id),
+                            "usage",
+                            &json!({
+                                "model": llm.model(),
+                                "input": u.input_tokens,
+                                "cached": cached,
+                                "output": u.output_tokens,
+                                "total": u.total_tokens,
+                            }),
                         );
                         // The provider's own count, never computed: no arithmetic matches it.
                         if let Some(input) = u.input_tokens {

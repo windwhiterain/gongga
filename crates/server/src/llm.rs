@@ -639,11 +639,29 @@ async fn stream_once(
     rx
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct Usage {
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
     pub total_tokens: Option<u64>,
+    /// How much of `input_tokens` the provider served from its own prefix cache.
+    pub input_tokens_details: Option<InputTokens>,
+}
+
+/// The nested half of `usage`, spelled the way the Responses API spells it.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct InputTokens {
+    pub cached_tokens: Option<u64>,
+}
+
+impl Usage {
+    /// Tokens billed at the cache rate, when the provider says: `None` is it
+    /// declining to say, not a miss.
+    pub fn cached_tokens(&self) -> Option<u64> {
+        self.input_tokens_details
+            .as_ref()
+            .and_then(|d| d.cached_tokens)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1555,6 +1573,27 @@ mod tests {
         // Anything else keeps the provider's words and nothing more.
         let other = with_size_hint(&prompts, "HTTP 400 Bad Request: unknown parameter".to_string());
         assert_eq!(other, "HTTP 400 Bad Request: unknown parameter");
+    }
+
+    /// The cached count is the provider's answer to "was the prefix the same?", so
+    /// reading it must not depend on which optional keys it chose to send.
+    #[test]
+    fn usage_keeps_what_the_provider_cached() {
+        let warm: Usage = serde_json::from_value(json!({
+            "input_tokens": 41200,
+            "input_tokens_details": {"cached_tokens": 38912},
+            "output_tokens": 512,
+            "total_tokens": 41712,
+        }))
+        .unwrap();
+        assert_eq!(warm.cached_tokens(), Some(38912));
+        assert_eq!(warm.input_tokens, Some(41200));
+
+        // Providers omit the details when nothing is cached: "not said" is not a zero.
+        let cold: Usage = serde_json::from_value(json!({"input_tokens": 10}))
+            .unwrap_or_default();
+        assert_eq!(cold.cached_tokens(), None);
+        assert_eq!(cold.input_tokens, Some(10));
     }
 
     #[test]

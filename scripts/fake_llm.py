@@ -10,6 +10,11 @@ Knobs, all environment variables:
 
 - `FAKE_LLM_DUMP=<path>`: append every request body received to that file, one
   JSON object per line. This is how the smoke test shows what the server sent.
+- `usage`: token counts are measured off the request, and `cached_tokens` is
+  modelled the way a prefix cache works -- the leading units (tools, instructions,
+  then input items) that are byte-identical to the previous request. So a prose or
+  schema change shows up as a lost hit, which is the only way to see it at all.
+  `FAKE_LLM_INPUT_TOKENS` overrides the measured input count.
 - `FAKE_LLM_TOOL=<name>`: emit one function call for that tool on the first
   request of a run, then a plain message. `FAKE_LLM_TOOL_ARGS` is its arguments.
 - `FAKE_LLM_WEB=1`: emit a provider-side `web_search_call` item plus a citation,
@@ -34,13 +39,45 @@ TOOL_ARGS = os.environ.get("FAKE_LLM_TOOL_ARGS") or '{"command":"echo hi-from-fa
 WEB = os.environ.get("FAKE_LLM_WEB") == "1"
 # What the fake claims the request cost, so a threshold can be crossed on purpose.
 INPUT_TOKENS = int(os.environ.get("FAKE_LLM_INPUT_TOKENS") or 0)
+# What the previous request was made of, so "cached" can mean something.
+_previous_units = []
+
+
+def units(raw):
+    """A request as the provider's prefix sees it: tools, instructions, then items."""
+    try:
+        body = json.loads(raw.decode("utf-8", "replace"))
+    except ValueError:
+        return []
+    out = [
+        json.dumps(body.get("tools") or [], sort_keys=True, ensure_ascii=False),
+        json.dumps(body.get("instructions") or "", sort_keys=True, ensure_ascii=False),
+    ]
+    out += [
+        json.dumps(item, sort_keys=True, ensure_ascii=False)
+        for item in (body.get("input") or [])
+    ]
+    return out
+
+
+def measure(units_now):
+    """(input tokens, cached tokens) for this request, versus the previous one."""
+    global _previous_units
+    chars = sum(len(u) for u in units_now)
+    hit = 0
+    for a, b in zip(_previous_units, units_now):
+        if a != b:
+            break
+        hit += len(a)
+    _previous_units = units_now
+    return (INPUT_TOKENS or max(chars // 4, 1)), (hit // 4)
 IMAGE_GEN = os.environ.get("FAKE_LLM_IMAGE_GEN") == "1"
 
 _lock = threading.Lock()
 _requests = 0
 
 
-def events(with_tool: bool, with_web: bool, with_image: bool):
+def events(with_tool: bool, with_web: bool, with_image: bool, usage=(0, 0)):
     seq = iter(range(1, 100000))
 
     def ev(kind, **payload):
@@ -123,9 +160,12 @@ def events(with_tool: bool, with_web: bool, with_image: bool):
             response={
                 "id": "resp_1",
                 "usage": {
-                    "input_tokens": INPUT_TOKENS,
+                    "input_tokens": usage[0],
+                    # Nested exactly as the Responses API spells it, because that is
+                    # the shape the harness has to read.
+                    "input_tokens_details": {"cached_tokens": usage[1]},
                     "output_tokens": 1,
-                    "total_tokens": INPUT_TOKENS + 1,
+                    "total_tokens": usage[0] + 1,
                 },
             },
         ),
@@ -167,7 +207,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
-        for e in events(first and bool(TOOL_NAME), WEB, IMAGE_GEN):
+        for e in events(first and bool(TOOL_NAME), WEB, IMAGE_GEN, measure(units(raw))):
             self.wfile.write(f"event: {e['event']}\n".encode())
             self.wfile.write(f"data: {json.dumps(e['data'])}\n\n".encode())
             self.wfile.flush()
