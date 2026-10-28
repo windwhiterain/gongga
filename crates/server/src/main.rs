@@ -12,6 +12,7 @@ mod prompts;
 mod providers;
 mod script;
 mod session;
+mod blobs;
 mod ship;
 mod store;
 mod tools;
@@ -208,6 +209,8 @@ async fn run() -> anyhow::Result<()> {
     );
     let bus = EventBus::new(4096);
 
+    // A provider's own picture is kept beside the home, not in the transcript.
+    blobs::install(&cfg.home.join("blobs"));
     // Capped output has to go somewhere the model can read it back.
     let output_dir = cfg.home.join("outputs");
     if let Err(e) = std::fs::create_dir_all(&output_dir) {

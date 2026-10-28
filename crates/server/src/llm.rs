@@ -699,18 +699,73 @@ fn is_provider_call(item_type: &str) -> bool {
 ///
 /// # Invariant
 ///
-/// A binary payload is dropped and the item marked non-replayable: base64 does
-/// not belong in the transcript, and an item without its payload is not a shape
-/// the API takes back. See `docs/notes/server-llm.md`.
+/// A generated picture does not belong in the transcript, yet the item is not a
+/// shape the API takes back without it: the bytes go beside the home and the row
+/// keeps the id they live under, and `sendable_activity` puts them back. An item
+/// whose file could not be written stays non-replayable and says so.
+/// See `docs/notes/server-blobs.md`.
 fn storable_activity(item: &Value) -> (Value, bool) {
     let mut item = item.clone();
-    // Removed, not blanked: a `null` left in its place is still a payload field
-    // the provider would read.
-    let had_binary = item
-        .as_object_mut()
-        .and_then(|o| o.remove("result"))
-        .is_some_and(|v| !v.is_null());
-    (item, !had_binary)
+    // Removed, not blanked: a `null` is still a payload field to the provider.
+    let Some(payload) = item.as_object_mut().and_then(|o| o.remove("result")) else {
+        return (item, true);
+    };
+    if payload.is_null() {
+        return (item, true);
+    }
+    let id = item
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let stored = match (crate::blobs::dir(), id.is_empty()) {
+        (Some(dir), false) => crate::blobs::put(dir, &id, &payload.to_string()).ok().map(|()| {
+            item["result_blob"] = json!(id);
+        }),
+        _ => None,
+    };
+    if stored.is_none() {
+        tracing::warn!(
+            item_type = item["type"].as_str().unwrap_or("?"),
+            item_id = %id,
+            "no blob directory to keep this provider payload in, so the item cannot be replayed"
+        );
+    }
+    (item, stored.is_some())
+}
+
+/// The item as a request should carry it, payload read back from `dir`.
+fn sendable_activity(item: &Value, replayable: bool, dir: Option<&std::path::Path>) -> Option<Value> {
+    let mut item = item.clone();
+    let blob = item
+        .get("result_blob")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    if let Some(id) = blob {
+        let value = dir
+            .and_then(|dir| crate::blobs::read(dir, &id))
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok());
+        let Some(payload) = value else {
+            tracing::warn!(
+                item_id = %id,
+                "this provider item's payload file is gone; leaving the item out of this request"
+            );
+            return None;
+        };
+        item["result"] = payload;
+        item.as_object_mut()?.remove("result_blob");
+        return Some(item);
+    }
+    if !replayable {
+        tracing::warn!(
+            item_type = item["type"].as_str().unwrap_or("?"),
+            item_id = item["id"].as_str().unwrap_or("?"),
+            "this provider tool item lost its binary payload when it was stored, \
+             so it cannot be replayed; leaving it out of this request"
+        );
+        return None;
+    }
+    Some(item)
 }
 
 struct SseEvent {
@@ -1045,18 +1100,12 @@ fn history_item_to_input(item: &HistoryItem) -> Option<Value> {
         } => {
             json!({"type":"function_call","call_id":call_id,"name":name,"arguments":arguments})
         }
-        // Back exactly as it came: it ran at the provider, so no output pairs it.
+        // Back as it came, payload read back from the file beside the home.
         HistoryItem::BuiltinCall { item, replayable } => {
-            if !replayable {
-                tracing::warn!(
-                    item_type = item["type"].as_str().unwrap_or("?"),
-                    item_id = item["id"].as_str().unwrap_or("?"),
-                    "this provider tool item lost its binary payload when it was stored, \
-                     so it cannot be replayed; leaving it out of this request"
-                );
-                return None;
+            match sendable_activity(item, *replayable, crate::blobs::dir()) {
+                Some(item) => item,
+                None => return None,
             }
-            item.clone()
         }
         HistoryItem::ToolResult {
             call_id,
@@ -1774,6 +1823,44 @@ mod tests {
         }
     }
 
+    /// A generated picture round-trips through the file beside the home.
+    #[test]
+    fn a_provider_payload_round_trips_through_the_blob_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = json!({
+            "id": "ig_1",
+            "type": "image_generation_call",
+            "result": "iVBORw0KGgoAAAANSUhEUg",
+        });
+        let (stored, replayable) = storable_activity_with(dir.path(), &raw);
+        assert!(replayable, "the file was written: {stored}");
+        assert!(stored.get("result").is_none(), "no base64 in the row");
+        assert_eq!(stored["result_blob"], json!("ig_1"));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+
+        let back = sendable_activity(&stored, replayable, Some(dir.path()))
+            .expect("the item is sendable again");
+        assert_eq!(back, raw, "byte for byte as the provider sent it");
+
+        // No file, no item -- not a half one.
+        assert!(
+            sendable_activity(&stored, replayable, None).is_none(),
+            "no directory, no payload"
+        );
+    }
+
+    /// The same, with the directory named rather than the process's.
+    fn storable_activity_with(dir: &std::path::Path, item: &Value) -> (Value, bool) {
+        let mut item = item.clone();
+        let Some(payload) = item.as_object_mut().and_then(|o| o.remove("result")) else {
+            return (item, true);
+        };
+        let id = item.get("id").and_then(Value::as_str).unwrap_or_default();
+        crate::blobs::put(dir, id, &payload.to_string()).unwrap();
+        item["result_blob"] = json!(id);
+        (item, true)
+    }
+
     /// The item goes back exactly as it came: it was executed at the provider, so
     /// there is no local output to pair it with.
     #[test]
@@ -1784,20 +1871,11 @@ mod tests {
             "status": "completed",
             "action": {"type": "search", "query": "q"}
         });
-        let replayed = history_item_to_input(&HistoryItem::BuiltinCall {
-            item: item.clone(),
-            replayable: true,
-        })
-        .expect("replayed");
+        let replayed = sendable_activity(&item, true, None).expect("replayed");
         assert_eq!(replayed, item);
-        // One that lost its payload is not a shape the API takes back.
-        assert!(
-            history_item_to_input(&HistoryItem::BuiltinCall {
-                item,
-                replayable: false
-            })
-            .is_none()
-        );
+        // One that lost its payload with nowhere to read it back from is not a
+        // shape the API takes back.
+        assert!(sendable_activity(&item, false, None).is_none());
     }
 
     /// Base64 does not go into the transcript, so an item that had it is stored

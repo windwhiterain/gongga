@@ -258,6 +258,33 @@ impl Store {
         Ok(n > 0)
     }
 
+    /// The provider payloads that only this session's rows refer to, so deleting
+    /// the session can delete their files too.
+    ///
+    /// # Invariant
+    ///
+    /// Reachability is decided here, in SQL, over every row: a file another session
+    /// still names -- an `heir` copy, a second session that asked for the same item --
+    /// has to stay. Ask before the rows go, because after them there is nothing left
+    /// to ask about.
+    pub fn orphaned_blobs(&self, name: &str) -> anyhow::Result<Vec<String>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT json_extract(content, '$.item.result_blob') FROM messages
+              WHERE session_id = (SELECT id FROM sessions WHERE name = ?1)
+                AND kind = 'builtin_call'
+                AND json_extract(content, '$.item.result_blob') IS NOT NULL
+                AND json_extract(content, '$.item.result_blob') NOT IN (
+                    SELECT json_extract(content, '$.item.result_blob') FROM messages
+                     WHERE session_id != (SELECT id FROM sessions WHERE name = ?1)
+                       AND json_extract(content, '$.item.result_blob') IS NOT NULL)",
+        )?;
+        let ids = stmt
+            .query_map(params![name], |r| r.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(ids)
+    }
+
     pub fn list_sessions(&self) -> anyhow::Result<Vec<SessionRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(&format!(
@@ -1860,6 +1887,38 @@ mod tests {
         let rows = store.messages_between(id, 1, i64::MAX).unwrap();
         assert_eq!(rows.messages.len(), 2, "the closure is a row: {:?}", rows.messages);
         assert_eq!(rows.messages[1].kind, "tool_result");
+    }
+
+    /// A payload another session still names is not this session's to take with it.
+    #[test]
+    fn only_an_unreferenced_blob_is_orphaned() {
+        let (_d, store) = temp_store();
+        let a = store.create_session("a", "m", "C:/x").unwrap();
+        let b = store.create_session("b", "m", "C:/x").unwrap();
+        let item = |id: &str| json!({"id": id, "type": "image_generation_call", "result_blob": id});
+        for (sid, id) in [(a, "ig_1"), (a, "ig_1"), (a, "ig_2"), (b, "ig_2")] {
+            store
+                .append_message(
+                    sid,
+                    "builtin_call",
+                    &json!({"item": item(id), "replayable": true}),
+                )
+                .unwrap();
+        }
+
+        let mut orphans = store.orphaned_blobs("a").unwrap();
+        orphans.sort();
+        // `ig_1` twice and nowhere else; `ig_2` is b's too.
+        assert_eq!(orphans, vec!["ig_1".to_string()]);
+        assert!(
+            store.orphaned_blobs("b").unwrap().is_empty(),
+            "b gives nothing up while a names ig_2"
+        );
+
+        store.delete_session("a").unwrap();
+        let history = store.history_since(b, 0).unwrap();
+        assert_eq!(history.len(), 1, "b's row is intact: {history:?}");
+        assert_eq!(store.orphaned_blobs("b").unwrap(), vec!["ig_2".to_string()]);
     }
 
     /// A notice is readable but never sent back to the model, or it answers the harness.

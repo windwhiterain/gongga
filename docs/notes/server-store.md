@@ -47,6 +47,17 @@ run keeps its hands off the operator's data.
 A poisoned mutex means a prior write panicked mid-transaction; the WAL keeps the
 database itself consistent, so recovering the guard is safe.
 
+## Store::orphaned_blobs
+
+A generated picture is a file, and files outlive rows unless somebody asks.
+`heir` copies a transcript into a mentor session, so one file can be named by two
+sessions; the answer has to be a query over every row, and it has to happen before
+the delete. `DISTINCT` is not decoration: a session that re-sent the same item
+would otherwise report it twice and `drop` would log a miss for the second.
+
+SQL decides, `blobs.rs` unlinks. A store that deleted files would make a filesystem
+layout part of what a database transaction means.
+
 ## Store::delete_session
 
 `events` carries no foreign key, so its rows would outlive the session. That is

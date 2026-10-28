@@ -572,7 +572,13 @@ impl SessionManager {
             handle.mark_deleted();
         }
         self.live().remove(name);
-        self.store.delete_session(name)
+        // Files go with it, if nothing else names them: ask the rows.
+        let orphans = self.store.orphaned_blobs(name).unwrap_or_default();
+        let dropped = self.store.delete_session(name)?;
+        if dropped && !orphans.is_empty() {
+            crate::blobs::drop_all(&orphans);
+        }
+        Ok(dropped)
     }
 
     pub fn list(&self) -> anyhow::Result<Vec<SessionRow>> {

@@ -204,12 +204,13 @@ back in `input[]`, exactly as it came. Dropping it rejects the transcript -- the
 API sees a turn that mentions a search nobody performed -- and so does replaying
 one that lost its payload.
 
-`image_generation_call` carries a base64 `result`. That payload is removed before
-the item reaches sqlite (the transcript stays text and small), and the item is
-marked non-replayable, because an item with the payload cut out is not a shape
-the API takes back. It is visible while it happens and dropped when it would be
-sent again; the alternative -- storing megabytes of base64 per generated picture
-in every row of every request -- is worse than the warning the drop produces.
+`image_generation_call` carries a base64 `result`. The bytes go to a file beside
+the home and the row keeps `result_blob`, so the transcript stays text and small
+*and* the item can be sent again: see `docs/notes/server-blobs.md`. What that
+replaced -- keep the item, drop the payload, warn at send time -- was cheaper to
+build and wrong to live with: a session that generated one picture could not then
+carry it in its own history, and every later request was silently shorter than the
+one before it.
 
 ## 待确认：does every provider take its own `*_call` item back?
 
@@ -323,11 +324,16 @@ of band, not part of the history.
 An empty registry means no `tools` key at all, rather than an empty array that
 some providers reject.
 
-## tests::an_activity_item_with_a_binary_payload_is_kept_but_not_replayed
+## tests::a_provider_payload_round_trips_through_the_blob_directory
 
-The payload leaves the item before it reaches sqlite, and the item is then
-refused for replay -- with its `type` and `id` in the log line, because "an item
-was dropped" is not something anyone can act on.
+Three claims in one test: the row holds no base64, the reassembled item is
+byte-equal to the one that arrived, and with no directory to read from the item
+is refused rather than sent short. The refusal keeps its `type` and `id` in the
+log line, because "an item was dropped" is not something anyone can act on.
+
+`storable_activity_with` is the same write with the directory named by the test,
+so no test depends on which home the process was started with -- the global is
+set once per process, and a test that leaned on it would be order-dependent.
 
 ## tests::builtin_tools_share_the_array_with_functions
 
@@ -352,7 +358,8 @@ A provider this server has never heard of still gets a visible line.
 
 ## tests::an_activity_item_replays_exactly_as_it_came
 
-Verbatim replay, and a payload-stripped item refused rather than sent.
+Verbatim replay of an item that never had a payload (a search), and the same
+refusal for one marked non-replayable.
 
 ## tests::a_picture_rides_in_the_tool_result_as_input_image
 

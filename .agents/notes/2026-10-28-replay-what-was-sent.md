@@ -84,16 +84,43 @@ dump file gave it away. An audit that reaches a provider spends somebody's quota
 (99%, the very next step) → 1441 again at the fold boundary. So one edit costs the
 boundary step and recovers immediately, and no step pays for a file read it did not need.
 
+## R4 is done: the payload goes to a file, and comes back
+
+`storable_activity` used to delete an `image_generation_call`'s base64 `result` and mark
+the item non-replayable forever, so a session that generated one picture could not carry
+it in its own history afterwards. It now writes the bytes to `<home>/blobs/ig_1.json`
+and keeps `result_blob: "ig_1"` in the row; `sendable_activity` puts the value back
+before the item goes into `input[]`, byte-equal to what arrived (the file holds the
+value's own JSON text, so its type survives too).
+
+Three decisions worth their comments:
+
+- **The name escapes, it does not filter.** `file_name` maps `/`, `\`, `:` to `%XX`
+  rather than to `-`, which keeps the map injective: a lossy one would put two different
+  item ids in one file, and the second write would replace another session's picture.
+- **The name is appended, not `with_extension`.** For `..json` Rust's stem is not what
+  it looks like, and the temporary file landed where no reader looked -- found by a test
+  on Windows, not by reading.
+- **The database decides reachability, `blobs.rs` unlinks.** An `heir` copy leaves a
+  mentor session naming the same bytes, so orphanhood is a query over every row
+  (`Store::orphaned_blobs`, `DISTINCT` because a re-sent item would otherwise report
+  twice) asked *before* `delete_session` and applied after it. A failure in between then
+  leaves files whose rows exist, which is recoverable.
+
+`replay_audit.py` grew the matching checks and reports `FAILURES: none` (12): the blob
+exists while the session lives, no row carries base64, each row names its file, a later
+request carries the item with its payload reattached and no `result_blob`, all 16 sent
+items are explained by the database, and `del_session` takes the file with it.
+
 ## What is left
 
-- **R4** `storable_activity` deletes `result` base64 and marks the item non-replayable
-  forever; write it to `<home>/blobs/<sha256>`, keep the reference in the row,
-  reassemble at replay, delete blobs with the session. This is the last way an item can
-  be sent that the database does not hold -- rare (only provider-side image generation),
-  but it is the same hole R5 closed.
+- A `result_blob` is an id and the bytes live in the home that made them, so copying a
+  row between homes leaves an item that refuses to send, with a warning naming it. The
+  right failure; not a solved problem.
 - A directory change lands at the next turn's first step, not mid-turn: `set_session
   --cwd` and a shell that moved are noticed at the boundary. If walking into another
   project should refresh the prompt immediately, that is a second trigger to add.
+
 
 ## The policy question is settled
 

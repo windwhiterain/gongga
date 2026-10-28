@@ -186,6 +186,13 @@ the roster has never heard of falls back to the server's own.
 Say it before the rows go, so a turn already waiting behind this deletion sees it
 and stops instead of writing into the void.
 
+Then the files. A generated picture is not a row: it is a file beside the home that a
+row names, so the delete asks the database which names belong to this session alone and
+unlinks those -- and only those, because an `heir` copy leaves a mentor session naming
+the same bytes. The order is not arbitrary. Asking first is the only way to know, and
+dropping after means a failure in between leaves files whose rows still exist, which is
+recoverable, rather than rows whose files are gone, which is not.
+
 ## SessionManager::live_sessions
 
 Used by `cancel`, which has to stop turns that are actually running rather than

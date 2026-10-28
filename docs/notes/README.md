@@ -31,6 +31,7 @@ note is a bug.
 | --- | --- |
 | [`server-main.md`](server-main.md) | `crates/server/src/main.rs` |
 | [`server-agent.md`](server-agent.md) | `crates/server/src/agent.rs` |
+| [`server-blobs.md`](server-blobs.md) | `crates/server/src/blobs.rs` |
 | [`server-commands.md`](server-commands.md) | `crates/server/src/commands.rs` |
 | [`server-config.md`](server-config.md) | `crates/server/src/config.rs` |
 | [`server-instance.md`](server-instance.md) | `crates/server/src/instance.rs` |
