@@ -102,7 +102,16 @@ to win.
 
 Read from the *reported* cwd, not the configured one: the point of the shell keeping its
 directory is that the agent has moved, and a rules file found where the session started
-would be the wrong directory's file.
+would be the wrong directory's file. It is read when a prompt row is written -- the turn's
+first step, or the step after a handover note moved -- and the joined text is stored with
+the row, so what the model was told is in the database rather than a rendering that has to
+be re-guessed later.
+
+An earlier shape of this rule was "read again for every request and never stored", which
+kept history honest about one thing (a reload never rewrote a row) while making the prompt
+itself unrecoverable: the transcript could say what the model *said*, but not what it had
+been *told*. Storing the rendered text fixes both: history is still never rewritten, and a
+request can be rebuilt from the rows.
 
 Injected into `instructions`, never stored. A transcript row is what somebody said;
 these rules are what the server reads off disk for this request, and writing them into

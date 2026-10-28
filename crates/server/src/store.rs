@@ -6,7 +6,37 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use protocol::SessionStatus;
 use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+
+/// The prose one stretch of requests was built from, stored when it was rendered.
+///
+/// # Invariant
+///
+/// What the model was told is in the database rather than a rendering to re-guess:
+/// a step sends this row, and `#[serde(default)]` keeps an older row readable.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Prompt {
+    /// The system instructions, with the project's rules already joined in.
+    #[serde(default)]
+    pub instructions: String,
+    /// The handover note as the model reads it; nothing before the first fold.
+    #[serde(default)]
+    pub summary: Option<String>,
+    /// The directory the rules were read from, so a move is noticed.
+    #[serde(default)]
+    pub cwd: String,
+    #[serde(default)]
+    pub stamp: String,
+}
+
+/// What the note is, so a fold shows up without rendering prose.
+pub fn stamp(note: Option<&str>) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    note.hash(&mut h);
+    format!("{:x}", h.finish())
+}
 
 /// What the model is told about a call that never returned: the
 /// `interrupted_call` template.
@@ -489,6 +519,8 @@ impl Store {
                 }
                 // Operator-only: feeding a notice back would put our bookkeeping in the prompt.
                 "notice" => {}
+                // This *is* the prompt: sending it back as history would double it.
+                "system" => {}
                 other => tracing::warn!("unknown message kind {other}"),
             }
         }
@@ -599,6 +631,79 @@ impl Store {
             params![tokens as i64, session_id],
         )?;
         Ok(())
+    }
+
+    /// The newest stored prompt, or nothing before a session's first request.
+    pub fn prompt(&self, session_id: i64) -> anyhow::Result<Option<Prompt>> {
+        let row = {
+            let conn = self.lock();
+            conn.query_row(
+                "SELECT content FROM messages \
+                  WHERE session_id = ?1 AND kind = 'system' ORDER BY seq DESC LIMIT 1",
+                params![session_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+        };
+        let Some(content) = row else { return Ok(None) };
+        Ok(serde_json::from_str::<Prompt>(&content).ok())
+    }
+
+    /// Stores the prompt the next request is built from, bytes and all.
+    pub fn append_prompt(&self, session_id: i64, prompt: &Prompt) -> anyhow::Result<i64> {
+        let payload = serde_json::to_value(prompt)?;
+        self.append_message(session_id, "system", &payload)
+    }
+
+    /// Closes every call that never got a result, and returns how many.
+    ///
+    /// # Invariant
+    ///
+    /// A read path must not invent an item the database does not hold: providers
+    /// reject the call without its result, so the closing row has to exist, and
+    /// writing it here is what makes the next request's array the stored rows and
+    /// not a rendering of a gap.
+    pub fn close_dangling_calls(&self, session_id: i64) -> anyhow::Result<usize> {
+        // Raw rows: history closes an unanswered call itself, and that
+        // placeholder must not hide the gap from this write.
+        let rows = {
+            let conn = self.lock();
+            let mut stmt = conn.prepare(
+                "SELECT kind, content FROM messages WHERE session_id = ?1 ORDER BY seq",
+            )?;
+            stmt.query_map(params![session_id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+        };
+        let call_id = |content: &str| {
+            serde_json::from_str::<serde_json::Value>(content)
+                .ok()
+                .and_then(|v| v.get("call_id")?.as_str().map(str::to_string))
+        };
+        let mut open: Vec<String> = Vec::new();
+        let mut answered: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (kind, content) in &rows {
+            let Some(id) = call_id(content) else { continue };
+            match kind.as_str() {
+                "tool_call" => open.push(id),
+                "tool_result" => {
+                    answered.insert(id);
+                }
+                _ => {}
+            }
+        }
+        let text = interrupted_call();
+        let mut closed = 0;
+        for call_id in open.iter().filter(|id| !answered.contains(*id)) {
+            self.append_message(
+                session_id,
+                "tool_result",
+                &json!({"call_id": call_id, "output": text, "images": []}),
+            )?;
+            closed += 1;
+        }
+        Ok(closed)
     }
 
     /// What a request is built from: the summary plus what came after it.
@@ -964,6 +1069,17 @@ impl MessageRow {
             }
             // The harness talking to the reader: no role, no answer in the model's mouth.
             "notice" => row.text = str_of("text").unwrap_or_default(),
+            // The reader sees which prompt was in force, not 10k characters of it.
+            "system" => {
+                let cwd = str_of("cwd").unwrap_or_default();
+                let chars = str_of("instructions").unwrap_or_default().chars().count();
+                let folded = value.get("summary").is_some_and(|v| !v.is_null());
+                row.text = format!(
+                    "[prompt in force] {chars} characters of instructions, \n\
+                     {}a handover note, read from {cwd}",
+                    if folded { "with " } else { "without " },
+                );
+            }
             // Something that ran at the provider, not here: it has no output to
             // show, so the line describes what it did instead.
             "builtin_call" => {
@@ -1692,6 +1808,58 @@ mod tests {
             t.messages[3].text,
             "a provider tool ran (its item was not recorded)"
         );
+    }
+
+
+    /// The prompt row is what a request is built from, not a row inside it.
+    #[test]
+    fn a_prompt_row_is_sent_and_never_repeated_as_history() {
+        let (_d, store) = temp_store();
+        let id = store.create_session("main", "m", "C:/x").unwrap();
+        store.set_summary(id, "the note", 0).unwrap();
+        let prompt = Prompt {
+            instructions: "You are gongga".into(),
+            summary: Some("Earlier in this session: the note".into()),
+            cwd: "C:/x".into(),
+            stamp: stamp(Some("the note")),
+        };
+        store.append_prompt(id, &prompt).unwrap();
+        store
+            .append_message(id, "text", &json!({"role": "user", "text": "go"}))
+            .unwrap();
+
+        let (_, history) = store.context(id).unwrap();
+        assert_eq!(history.len(), 1, "the prompt row is not history: {history:?}");
+
+        let read = store.prompt(id).unwrap().expect("the newest row reads back");
+        assert_eq!(read.instructions, "You are gongga");
+        assert_eq!(read.cwd, "C:/x");
+        assert_eq!(read.stamp, stamp(Some("the note")));
+
+        // A reader of the transcript gets the shape of it, not 10k characters.
+        let t = store.messages_between(id, 1, i64::MAX).unwrap();
+        assert!(t.messages[0].text.contains("[prompt in force]"), "{:?}", t.messages[0].text);
+        assert_eq!(t.messages[1].kind, "text");
+    }
+
+    /// A call left open by the last turn gets its result written, once.
+    #[test]
+    fn a_dangling_call_is_closed_with_a_row_not_a_fiction() {
+        let (_d, store) = temp_store();
+        let id = store.create_session("main", "m", "C:/x").unwrap();
+        store
+            .append_message(
+                id,
+                "tool_call",
+                &json!({"call_id": "c1", "name": "bash", "arguments": "{}"}),
+            )
+            .unwrap();
+
+        assert_eq!(store.close_dangling_calls(id).unwrap(), 1);
+        assert_eq!(store.close_dangling_calls(id).unwrap(), 0, "closed once is closed");
+        let rows = store.messages_between(id, 1, i64::MAX).unwrap();
+        assert_eq!(rows.messages.len(), 2, "the closure is a row: {:?}", rows.messages);
+        assert_eq!(rows.messages[1].kind, "tool_result");
     }
 
     /// A notice is readable but never sent back to the model, or it answers the harness.

@@ -204,15 +204,14 @@ pub fn shared() -> &'static Prompts {
     SHARED.get_or_init(|| Prompts::of(&[]))
 }
 
-/// The rules a project wrote for its agents, read now and wrapped for one
-/// request.
+/// The rules a project wrote for its agents, wrapped for one prompt row.
 ///
 /// # Invariant
 ///
-/// Read again for every request and never stored: these rules join the
-/// `instructions` of the next request, and no row is written to a session's
-/// transcript, so the history of a conversation under way stays exactly what
-/// the user and the model said.
+/// Read when a prompt row is written -- a turn's first step, a handover that
+/// moved, a directory that changed -- and never re-rendered for a step that
+/// stores nothing. A row in the database then says what was sent, which is the
+/// only way a transcript can be replayed.
 pub fn constitution(prompts: &Prompts, cwd: &Path) -> String {
     let mut parts = Vec::new();
     for path in machine_file().into_iter().chain(std::iter::once(cwd.join("AGENTS.md"))) {

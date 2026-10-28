@@ -216,6 +216,24 @@ the threshold follow the model instead of the other way round.
 
 It is a threshold for *asking*, not for acting: zero turns the notice off.
 
+## prompt_in_force, prompt_moved
+
+The prose a session sends is the stored row, unless something moved: this is the
+first step of a turn and the directory changed, the handover note is not the one the
+row was rendered from, or there is no row yet. Everything else -- a template edit
+noticed at three in the morning, an `AGENTS.md` saved mid-turn -- waits for the next
+turn. That is the rule the user set for this feature: 重读只重读新入库的，入库的不改.
+
+It is also the cheaper rule. Prose sits in front of the whole transcript in the
+provider's cached prefix, so re-rendering per step turns every edit into a re-billed
+history; measured against the fake, an edit costs the boundary step its hit (99% to
+35%) and the very next step recovers it. `scripts/replay_audit.py` asserts the other
+half: for every request sent, each input item is a stored row or the stored note, and
+each distinct `instructions` the provider saw is a `system` row.
+
+The `harness` tool's own commands reach the same place: `set_session --cwd` moves the
+directory, and the next turn's first step picks up that directory's rules.
+
 ## Agent::step
 
 Recorded, never computed. `input_tokens` is the provider's own count of what

@@ -114,6 +114,13 @@ impl Agent {
         }
         let (turn, cancel) = session.new_turn();
         let started = std::time::Instant::now();
+        // A call the last turn left open is closed before anything is asked:
+        // providers reject the pair.
+        match self.store.close_dangling_calls(session.id()) {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(session = %name, closed = n, "calls that never got a result"),
+            Err(e) => tracing::warn!(session = %name, error = %e, "could not close a dangling call"),
+        }
         // Resolved once: every step of a turn sends to the model it started on.
         let (llm, budget) = match self.route(&name, &session.tuning()) {
             Ok(route) => route,
@@ -308,6 +315,55 @@ impl Agent {
         });
     }
 
+    /// The prose this session sends, read from the row written when it last moved.
+    ///
+    /// # Invariant
+    ///
+    /// Templates and rule files are read at a step that *stores* something new --
+    /// the turn's first step, a handover note that moved, a directory that changed --
+    /// and never re-rendered for a step that does not. A stored row is what gets
+    /// sent, so a session's requests share one prefix and an edit lands at a
+    /// boundary instead of re-billing the whole history mid-turn.
+    fn prompt_in_force(
+        &self,
+        id: i64,
+        name: &str,
+        cwd: &std::path::Path,
+        note: Option<&str>,
+        turn_start: bool,
+    ) -> anyhow::Result<crate::store::Prompt> {
+        let stored = self.store.prompt(id)?;
+        let cwd = cwd.display().to_string();
+        let here = crate::store::stamp(note);
+        if let Some(kept) = stored.clone().filter(|p| !prompt_moved(p, &cwd, &here, turn_start)) {
+            return Ok(kept);
+        }
+        let prompts = crate::prompts::shared();
+        let mut instructions = prompts.text("instructions").unwrap_or_default();
+        let rules = crate::prompts::constitution(prompts, std::path::Path::new(&cwd));
+        if !rules.is_empty() {
+            instructions.push_str("\n\n");
+            instructions.push_str(&rules);
+        }
+        let summary = note
+            .map(|s| prompts.render("summary_preamble", &[("summary", s)]));
+        let prompt = crate::store::Prompt {
+            instructions,
+            summary,
+            cwd,
+            stamp: here,
+        };
+        // Rewritten prose is a real event: the prefix the provider cached is gone
+        // from here, and the ledger will show the miss.
+        if let Some(p) = &stored {
+            if p.instructions != prompt.instructions || p.summary != prompt.summary {
+                tracing::info!(session = %name, "the prompt in force changed: a new row is sent");
+            }
+        }
+        self.store.append_prompt(id, &prompt)?;
+        Ok(prompt)
+    }
+
     /// One model request. Returns the tool calls it asked for, if any.
     async fn step(
         &self,
@@ -325,21 +381,10 @@ impl Agent {
         } = *attempt;
         let (summary, history) = self.store.context(id)?;
         let definitions = self.tools.definitions();
-        // Built per request, not per turn: an edited template or rule file lands
-        // on the next step.
-        let prompts = crate::prompts::shared();
-        let mut instructions = prompts.text("instructions").unwrap_or_default();
-        let rules = crate::prompts::constitution(prompts, cwd);
-        if !rules.is_empty() {
-            instructions.push_str("\n\n");
-            instructions.push_str(&rules);
-        }
-        let note = summary
-            .as_deref()
-            .map(|s| prompts.render("summary_preamble", &[("summary", s)]));
+        let prompt = self.prompt_in_force(id, &name, cwd, summary.as_deref(), step == 1)?;
         let mut rx = llm.stream(
-            &instructions,
-            note.as_deref(),
+            &prompt.instructions,
+            prompt.summary.as_deref(),
             &history,
             &definitions,
             effort,
@@ -741,6 +786,18 @@ fn retry_warning(
     format!("{session}: model request failed ({reason}); retry {attempt} {of} in {delay:?}")
 }
 
+/// Whether the prose has to be rendered and stored again for this step.
+///
+/// # Invariant
+///
+/// A note that moved is content entering the store, so it is noticed at any step. A
+/// different directory is noticed only at a turn's first step, and an edited template
+/// is not noticed here at all -- it lands at the next turn. The alternative,
+/// re-rendering per step, re-bills the history that sits behind the prose.
+fn prompt_moved(stored: &crate::store::Prompt, cwd: &str, stamp: &str, turn_start: bool) -> bool {
+    stored.stamp != stamp || (turn_start && stored.cwd != cwd)
+}
+
 /// The message that hands the folding decision to the agent, from the templates.
 ///
 /// # Invariant
@@ -808,6 +865,25 @@ mod tests {
         // No window in the roster: the configured number is all there is.
         assert_eq!(compaction_budget(40_000, None, Some(50)), 40_000);
         assert_eq!(compaction_budget(40_000, None, None), 40_000);
+    }
+
+
+    /// A template edit waits for the next turn; a fold does not; a step that
+    /// stores nothing re-renders nothing.
+    #[test]
+    fn the_prompt_is_rebuilt_only_when_something_moved() {
+        let stored = crate::store::Prompt {
+            instructions: "i".into(),
+            summary: None,
+            cwd: "C:/a".into(),
+            stamp: crate::store::stamp(None),
+        };
+        let same = crate::store::stamp(None);
+        let folded = crate::store::stamp(Some("the note"));
+        assert!(!prompt_moved(&stored, "C:/a", &same, true), "nothing moved");
+        assert!(!prompt_moved(&stored, "C:/b", &same, false), "a step is not a turn");
+        assert!(prompt_moved(&stored, "C:/b", &same, true), "another directory's rules");
+        assert!(prompt_moved(&stored, "C:/a", &folded, false), "a handover is new content");
     }
 
     /// Every value the template can name has to arrive: the words are the

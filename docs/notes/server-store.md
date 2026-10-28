@@ -23,6 +23,14 @@ history is being assembled, so a wording fix reaches a conversation that started
 months ago -- and nothing in the database changes, which is the part a stored
 sentence could never do.
 
+## close_dangling_calls
+
+Read from raw rows, not from `history_since`: history closes an unanswered call with
+a placeholder of its own, and that placeholder is exactly what must not hide the gap
+from this write. Providers reject a `function_call` with no `function_call_output`, so
+the closing row has to exist; writing it at the turn boundary means the next request's
+array is the rows, and what a request sends is never partly imaginary.
+
 ## migrate
 
 `CREATE TABLE IF NOT EXISTS` cannot add a column to a table that already exists,
@@ -182,6 +190,28 @@ contents.
 
 Called with the number from `usage`, never with a computed one: the provider is
 the only party that tokenises with the tokeniser it will actually bill against.
+
+## Prompt, stamp, prompt, append_prompt
+
+A request is built from three things, and only two of them were durable: the rows,
+and the model's own answers. The prose -- the instructions and the handover note --
+was rendered fresh before every request and kept nowhere, so the database could not
+say what the model had actually been told. `Prompt` is that missing piece: the
+rendered instructions with the project's rules already joined, the rendered handover
+note, the directory the rules were read from, and a stamp of the note it was rendered
+from. It is written as a `system` row, and `Store::prompt` returns the newest one.
+
+The stamp is why the check is cheap. Comparing prose means rendering it, which means
+reading the config and two rule files; comparing a hash of the note says whether a
+fold happened without touching any prose. So a step that stores nothing re-renders
+nothing -- which is the rule this module exists to enforce: what is in the database is
+what was sent, and nothing re-decides it later.
+
+`system` is excluded from history the way `notice` is -- it *is* the prompt, and
+appending it as a row inside the transcript would send the instructions twice -- but
+`messages_between` shows it, described: how many characters, with or without a note,
+read from which directory. An operator reading a session back should see that the
+prompt changed and where, without a 10k-character row in the middle of the dialogue.
 
 ## Store::context
 

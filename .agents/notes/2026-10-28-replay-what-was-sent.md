@@ -46,26 +46,67 @@ sits *in front of* the transcript in the cached prefix, so an edit re-bills the 
 history behind it, and reverting the edit does not restore the hit -- the next request
 has to match the request that carried it.
 
-## What is left, in order
+## R1-R3 and R5 are done: the prompt is a row, and nothing is invented at send time
 
-- **R1-R3** `instructions` and the rendered `summary_preamble` become rows (`system`,
-  `summary`) written at the moment they are sent; `step()` compares the rendered text
-  with the newest row and appends only when it differs. Replay becomes byte-faithful;
-  live reload keeps working; and the cache break becomes *visible in the transcript*
-  instead of inferred.
-- **R5** stop synthesizing the closing result for an unanswered `tool_call`: write it
-  durably when the call is abandoned (and on the rebuild path after a crash), so the
-  array equals the rows.
+The user's rule, verbatim: **重读只重读新入库的，入库的不改**.
+
+- `store.rs`: `Prompt { instructions, summary, cwd, stamp }` written as a `system`
+  row; `Store::prompt` reads the newest one; `stamp(note)` is a hash of the note so a
+  fold is noticed without rendering prose. `system` is skipped when building history
+  (it *is* the prompt; sending it back would double it) and described -- not dumped --
+  in `messages_between`.
+- `agent.rs`: `prompt_in_force` sends the stored row and re-renders only when something
+  moved: no row yet, the note's stamp changed (a fold, mid-turn included), or the turn's
+  first step and the directory differs. `prompt_moved` is the pure decision, tested.
+- `close_dangling_calls` runs at the turn boundary and writes the `interrupted_call`
+  result as a real row, reading raw rows rather than `history_since` -- whose own
+  placeholder is exactly what must not hide the gap from this write.
+- Ship prose follows the new truth (`[prompts]` header, `constitution` comment): pushed
+  as `f8e504c`, re-pinned here, and verified to merge cleanly into a home already
+  installed at the previous pin (`updated=1`… `conflicts=[]`, pin advanced).
+
+`scripts/replay_audit.py` is the check that makes the claim mean something: it drives a
+real server against the fake, with a prose edit between turns and a fold mid-conversation,
+then compares every request body with the rows. Findings on this run: 4 requests, 13 sent
+items, **0 unexplained by the database**; 3 distinct `instructions` texts, 3 stored rows;
+every call has a stored result; and the guard that every request went to
+`http://127.0.0.1:8785/v1/responses`.
+
+**A rule for that script, learned the hard way:** it writes its own roster with the fake's
+URL and must never fall back to `~/.agents/llm.toml`. An earlier version of it did, and 6
+requests went to the machine's real DeepSeek endpoint with the real key before the missing
+dump file gave it away. An audit that reaches a provider spends somebody's quota; the
+`url=` guard at the end is now part of its contract.
+
+## Measured cost, again, with the boundary in place
+
+`cached` per step in that audit: 0 (cold) → 1441 (35%, the turn after the edit) → 4007
+(99%, the very next step) → 1441 again at the fold boundary. So one edit costs the
+boundary step and recovers immediately, and no step pays for a file read it did not need.
+
+## What is left
+
 - **R4** `storable_activity` deletes `result` base64 and marks the item non-replayable
   forever; write it to `<home>/blobs/<sha256>`, keep the reference in the row,
-  reassemble at replay, delete blobs with the session.
-- **Open, and now quantified**: whether a prose edit should be allowed to land mid-turn
-  at all. 99%→35% per edit says the cheapest fix is to land template changes at the
-  next fold or session boundary rather than at the next step -- which is a policy
-  choice, not an implementation detail, and needs the user.
+  reassemble at replay, delete blobs with the session. This is the last way an item can
+  be sent that the database does not hold -- rare (only provider-side image generation),
+  but it is the same hole R5 closed.
+- A directory change lands at the next turn's first step, not mid-turn: `set_session
+  --cwd` and a shell that moved are noticed at the boundary. If walking into another
+  project should refresh the prompt immediately, that is a second trigger to add.
+
+## The policy question is settled
+
+Whether a prose edit may land mid-turn was the open fork last round; the user answered
+it -- 入库的不改 -- and this is that answer in code. The cost is one boundary step, and
+the recovery is the step after it.
 
 ## Gates
 
-`cargo test --workspace` 215 server tests (one new: `usage_keeps_what_the_provider_cached`),
-`test-layout-check` 0, `comments-check` 0. Smoke servers and fakes killed; `tasklist`
-shows no `gongga-server.exe`.
+`cargo test --workspace` 218 server tests (new: `usage_keeps_what_the_provider_cached`,
+`a_prompt_row_is_sent_and_never_repeated_as_history`,
+`a_dangling_call_is_closed_with_a_row_not_a_fiction`, `the_prompt_is_rebuilt_only_when_something_moved`),
+`test-layout-check` 0, `comments-check` 0, and `python scripts/replay_audit.py` reports
+`FAILURES: none`. Smoke servers and fakes were killed by pid; `tasklist` shows no
+`gongga-server.exe` and nothing listening on the scratch ports.
+
