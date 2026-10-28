@@ -7,8 +7,27 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
-/// The config that ships with the binary: its `[prompts]` are every default.
-const SHIPPED: &str = include_str!("../default.config.toml");
+/// Every template the code asks for by name.
+///
+/// # Invariant
+///
+/// Neither this binary nor any Rust file holds the prose: it lives in the home's
+/// config and in the pinned ship content behind it. So a home whose config says
+/// nothing about prompts, and whose pinned content cannot be read, would send an
+/// empty system prompt and look healthy. Startup asks for this list instead.
+pub const REQUIRED: &[&str] = &[
+    "instructions",
+    "constitution",
+    "summary_preamble",
+    "context_notice",
+    "folded_none",
+    "folded_through",
+    "interrupted_call",
+    "size_hint",
+    "image_refusal",
+    "output_cap",
+    "output_omitted",
+];
 
 /// The one file section this module reads.
 const TABLE: &str = "prompts";
@@ -36,45 +55,61 @@ impl Stamp {
 struct Snapshot {
     stamp: Option<Stamp>,
     templates: BTreeMap<String, String>,
+    complained: bool,
 }
 
-/// The prompt prose in force: the home's `[prompts]` over the shipped defaults.
+/// The prompt prose in force: the home's `[prompts]` over the pinned defaults.
 pub struct Prompts {
     path: Option<PathBuf>,
-    shipped: BTreeMap<String, String>,
+    pinned: BTreeMap<String, String>,
     snapshot: Mutex<Snapshot>,
 }
 
 impl Prompts {
-    /// Reads `[prompts]` from `config` beside the shipped defaults, lazily.
-    pub fn new(config: &Path) -> Self {
-        Self::build(Some(config.to_path_buf()))
+    /// A fixed set of text: what a test, or any caller holding the prose, uses.
+    pub fn of(templates: &[(&str, &str)]) -> Self {
+        Self::layered(
+            None,
+            templates
+                .iter()
+                .map(|(name, text)| (name.to_string(), text.to_string()))
+                .collect(),
+        )
     }
 
-    /// The defaults alone: what a test or a tool uses when no home is in play.
-    pub fn defaults() -> Self {
-        Self::build(None)
-    }
-
-    fn build(path: Option<PathBuf>) -> Self {
+    fn layered(path: Option<PathBuf>, pinned: BTreeMap<String, String>) -> Self {
         Self {
             path,
-            shipped: read_table(SHIPPED).0,
+            pinned,
             snapshot: Mutex::new(Snapshot::default()),
         }
     }
 
-    /// Templates whose text differs from the shipped default -- a new home is a
-    /// copy of it, so only an edit counts.
+    /// Templates whose text differs from the pinned content: a home that never
+    /// mentions prompts overrides none.
     pub fn overridden(&self) -> Vec<String> {
         let mut names: Vec<String> = self
             .templates()
             .into_iter()
-            .filter(|(name, text)| self.shipped.get(name) != Some(text))
+            .filter(|(name, text)| self.pinned.get(name) != Some(text))
             .map(|(name, _)| name)
             .collect();
         names.sort();
         names
+    }
+
+    /// The required templates nobody supplied, in order: an empty list is the
+    /// proof that this server can say anything at all.
+    pub fn missing(&self) -> Vec<&'static str> {
+        REQUIRED
+            .iter()
+            .copied()
+            .filter(|name| {
+                self.text(name)
+                    .map(|t| t.trim().is_empty())
+                    .unwrap_or(true)
+            })
+            .collect()
     }
 
     /// One template's text as it stands now, or nothing when no such template exists.
@@ -82,7 +117,7 @@ impl Prompts {
         self.templates()
             .get(name)
             .cloned()
-            .or_else(|| self.shipped.get(name).cloned())
+            .or_else(|| self.pinned.get(name).cloned())
     }
 
     /// One template, with its placeholders filled.
@@ -92,7 +127,7 @@ impl Prompts {
             None => {
                 tracing::warn!(
                     prompt = %name,
-                    "no template of that name in the home config or in the shipped defaults"
+                    "no template of that name in the home config or in the pinned ship content"
                 );
                 String::new()
             }
@@ -118,16 +153,21 @@ impl Prompts {
                 tracing::warn!(
                     file = %path.display(),
                     error = %e,
-                    "cannot read the prompt templates; the shipped defaults stand"
+                    "cannot read the prompt templates; the pinned defaults stand"
                 );
                 (BTreeMap::new(), Vec::new())
             }
         };
-        for problem in problems {
-            tracing::warn!(file = %path.display(), problem = %problem, "prompt template ignored");
+        // An unreadable file yields nothing, so the pinned content stands --
+        // complained about once, not on every request.
+        if problems.is_empty() || !snapshot.complained {
+            for problem in &problems {
+                tracing::warn!(file = %path.display(), problem = %problem, "prompt template ignored");
+            }
+            snapshot.complained = !problems.is_empty();
         }
         for name in templates.keys() {
-            if !self.shipped.contains_key(name) {
+            if !self.pinned.contains_key(name) && !REQUIRED.contains(&name.as_str()) {
                 tracing::warn!(prompt = %name, "no prompt uses this template; is the name misspelled?");
             }
         }
@@ -140,14 +180,28 @@ impl Prompts {
 /// The process's templates, installed at startup from the home's config.
 static SHARED: OnceLock<Prompts> = OnceLock::new();
 
-/// Points the whole process at one home's config. Called once, at startup.
-pub fn install(config: &Path) {
-    let _ = SHARED.set(Prompts::new(config));
+/// Points the process at one home's config; startup checks what came back.
+pub fn install(config: &Path) -> Vec<&'static str> {
+    let pinned = match crate::ship::config_text() {
+        Some(text) => read_table(&text).0,
+        None => {
+            tracing::warn!(
+                commit = %crate::ship::pinned().commit,
+                "the pinned ship config is not readable here; only this home's [prompts] stand"
+            );
+            BTreeMap::new()
+        }
+    };
+    let _ = SHARED.set(Prompts::layered(Some(config.to_path_buf()), pinned));
+    let prompts = shared();
+    // Reads the home now, so the first request is not the first read.
+    let _ = prompts.templates();
+    prompts.missing()
 }
 
-/// The templates every request is built from; the defaults until `install` runs.
+/// The templates every request is built from; empty until `install` runs.
 pub fn shared() -> &'static Prompts {
-    SHARED.get_or_init(Prompts::defaults)
+    SHARED.get_or_init(|| Prompts::of(&[]))
 }
 
 /// The rules a project wrote for its agents, read now and wrapped for one
@@ -159,8 +213,7 @@ pub fn shared() -> &'static Prompts {
 /// `instructions` of the next request, and no row is written to a session's
 /// transcript, so the history of a conversation under way stays exactly what
 /// the user and the model said.
-pub fn constitution(cwd: &Path) -> String {
-    let prompts = shared();
+pub fn constitution(prompts: &Prompts, cwd: &Path) -> String {
     let mut parts = Vec::new();
     for path in machine_file().into_iter().chain(std::iter::once(cwd.join("AGENTS.md"))) {
         match std::fs::read_to_string(&path) {
@@ -211,62 +264,12 @@ pub fn substitute(text: &str, vars: &[(&str, &str)]) -> String {
     out
 }
 
-/// One machine value written into the starter config.
-#[derive(Debug, Clone)]
-pub enum Value {
-    /// Text, written between the quotes the placeholder sits in.
-    Text(String),
-    /// A number or bool, replacing the quoted placeholder whole: TOML reads
-    /// `"false"` as text and a config wants the literal.
-    Bare(String),
-}
-
-impl Value {
-    pub fn text(value: impl Into<String>) -> Self {
-        Value::Text(value.into())
-    }
-
-    pub fn bare(value: impl std::fmt::Display) -> Self {
-        Value::Bare(value.to_string())
-    }
-}
-
-/// The starter config for one home: the shipped file with this machine's values
-/// filled in.
-///
-/// # Invariant
-///
-/// Everything from the `[prompts]` header down is appended exactly as shipped:
-/// those placeholders belong to a later request, not to startup, and filling
-/// them here would freeze the templates to this one home and this one model.
-pub fn starter(vars: &[(&str, Value)]) -> String {
-    let head_end = SHIPPED
-        .find("\n[prompts]")
-        .map(|at| at + 1)
-        .unwrap_or(SHIPPED.len());
-    let mut head = SHIPPED[..head_end].to_string();
-    for (name, value) in vars {
-        let placeholder = format!("{{{{{name}}}}}");
-        let (literal, quoted) = match value {
-            Value::Text(text) => (text.as_str(), false),
-            Value::Bare(literal) => (literal.as_str(), true),
-        };
-        if quoted {
-            // The quoted form first: it is a whole value losing its quotes.
-            head = head.replace(&format!("\"{placeholder}\""), literal);
-        }
-        head = head.replace(&placeholder, literal);
-    }
-    head.push_str(&SHIPPED[head_end..]);
-    head
-}
-
 /// The `[prompts]` of a TOML text, with whatever was wrong with the rest of it.
 ///
 /// # Safety
 ///
-/// A file that does not parse yields nothing: the shipped defaults are the
-/// answer to a broken config, not a server that cannot start.
+/// A file that does not parse yields nothing: the pinned defaults are the answer
+/// to a broken config, not a server that cannot start.
 fn read_table(text: &str) -> (BTreeMap<String, String>, Vec<String>) {
     let mut out = BTreeMap::new();
     let mut problems = Vec::new();
@@ -297,25 +300,51 @@ fn read_table(text: &str) -> (BTreeMap<String, String>, Vec<String>) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
+    use super::*;
+
+    /// A template's placeholders are what the caller fills; the text around them
+    /// belongs to whoever wrote the file.
+    const NOTICE: &str = "Context notice for `{{session}}`: {{tokens}} of {{budget}}. \
+         Fold it with `transcript.py collapse --session {{session}}`.";
+
+    /// A home's file alone: what a home gets before any pinned content.
+    fn at(path: &Path) -> Prompts {
+        Prompts::layered(Some(path.to_path_buf()), BTreeMap::new())
+    }
+
+    fn layered(dir: &Path, pinned: &[(&str, &str)]) -> Prompts {
+        Prompts::layered(
+            Some(dir.join("config.toml")),
+            pinned
+                .iter()
+                .map(|(name, text)| (name.to_string(), text.to_string()))
+                .collect(),
+        )
+    }
+
     /// The project's rules reach the prompt through its template, and an
     /// edit is seen without a restart.
     #[test]
     fn the_session_rules_join_the_prompt() {
         let dir = tempfile::tempdir().unwrap();
+        let prompts = Prompts::of(&[(
+            "constitution",
+            "The rules this project wrote at {{path}}:\n\n{{content}}",
+        )]);
         std::fs::write(dir.path().join("AGENTS.md"), "- never force push\n").unwrap();
-        let said = super::constitution(dir.path());
+        let said = super::constitution(&prompts, dir.path());
         assert!(said.contains("never force push"), "{said}");
         assert!(
             said.contains("The rules this project wrote"),
             "the wrapper is part of what the model reads: {said}"
         );
         std::fs::write(dir.path().join("AGENTS.md"), "- never rebase alone\n").unwrap();
-        let again = super::constitution(dir.path());
+        let again = super::constitution(&prompts, dir.path());
         assert!(again.contains("never rebase alone"), "{again}");
         assert!(!again.contains("never force push"), "{again}");
     }
-
-    use super::*;
 
     #[test]
     fn a_placeholder_becomes_the_value_named_for_it() {
@@ -346,79 +375,66 @@ mod tests {
         assert_eq!(substitute("dangling {{session", &[("session", "main")]), "dangling {{session");
     }
 
-    /// The starter a new home gets carries this machine's values in the config
-    /// and nobody's values in the templates.
+    /// The check is only as good as the list: one name per template, no
+    /// duplicates, every name asked for.
     #[test]
-    fn the_starter_fills_values_and_leaves_the_templates_alone() {
-        let filled = starter(&[
-            ("bind", Value::text("127.0.0.1:1234")),
-            ("mtu", Value::bare(8000)),
-        ]);
-        assert!(filled.contains("bind = \"127.0.0.1:1234\""), "{filled}");
-        assert!(filled.contains("mtu = 8000"), "{filled}");
-        assert!(
-            filled.contains("Context notice for `{{session}}`"),
-            "a template is not a startup value"
-        );
-        assert!(starter(&[]).contains("mtu = \"{{mtu}}\""));
+    fn the_required_list_names_each_template_once() {
+        let unique: BTreeSet<&str> = REQUIRED.iter().copied().collect();
+        assert_eq!(unique.len(), REQUIRED.len(), "{REQUIRED:?}");
+        for name in REQUIRED {
+            assert!(
+                Prompts::of(&[]).missing().contains(name),
+                "{name} is not checked when nothing supplies it"
+            );
+        }
     }
 
-    /// Every shipped default has text, and the set is the one the code asks for.
+    /// With nothing anywhere every name is missing -- why startup refuses.
     #[test]
-    fn the_shipped_defaults_cover_every_template_the_server_asks_for() {
-        let prompts = Prompts::defaults();
-        for name in [
-            "instructions",
-            "constitution",
-            "summary_preamble",
-            "context_notice",
-            "folded_none",
-            "folded_through",
-            "interrupted_call",
-            "size_hint",
-            "image_refusal",
-            "output_cap",
-            "output_omitted",
-        ] {
-            assert!(!prompts.text(name).unwrap_or_default().is_empty(), "{name}");
-        }
-        // The shipped set is exactly what the code asks for: a template nobody
-        // reads is a template nobody maintains.
-        assert!(Prompts::defaults().overridden().is_empty());
+    fn a_server_with_no_prose_at_all_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let prompts = at(&dir.path().join("config.toml"));
+        assert_eq!(prompts.missing(), REQUIRED.to_vec());
+    }
+
+    /// The pinned content alone is enough: a home that never mentions prompts
+    /// overrides none of it.
+    #[test]
+    fn the_pinned_content_alone_answers_the_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let pinned: Vec<(&str, &str)> = REQUIRED.iter().map(|n| (*n, "x")).collect();
+        let prompts = layered(dir.path(), &pinned);
+        assert!(prompts.missing().is_empty());
+        assert!(prompts.overridden().is_empty());
     }
 
     /// The home says which templates it wrote, and nothing else counts.
     #[test]
     fn the_home_reports_what_it_overrode() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
-        std::fs::write(&path, "[prompts]\nsize_hint = \"a\"\noutput_cap = \"b\"\n").unwrap();
-        let prompts = Prompts::new(&path);
+        std::fs::write(dir.path().join("config.toml"), "[prompts]\nsize_hint = \"a\"\noutput_cap = \"b\"\n").unwrap();
+        let prompts = layered(dir.path(), &[("size_hint", "z"), ("instructions", "keep")]);
         assert_eq!(prompts.overridden(), ["output_cap".to_string(), "size_hint".to_string()]);
     }
 
-    /// A home that says nothing about prompts still gets the defaults, and a
-    /// home that overrides one keeps the rest.
+    /// A home that overrides one keeps the rest of the pinned prose.
     #[test]
     fn the_home_overrides_one_template_and_inherits_the_rest() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
         std::fs::write(
-            &path,
+            dir.path().join("config.toml"),
             "[prompts]\ninterrupted_call = \"asked {{session}}, got nothing\"\n",
         )
         .unwrap();
-        let prompts = Prompts::new(&path);
+        let prompts = layered(dir.path(), &[("instructions", "You are gongga")]);
         assert_eq!(
             prompts.render("interrupted_call", &[("session", "main")]),
             "asked main, got nothing"
         );
-        assert!(
-            prompts
-                .text("instructions")
-                .unwrap()
-                .starts_with("You are gongga"),
-            "the shipped default stands where the home is silent"
+        assert_eq!(
+            prompts.text("instructions").unwrap(),
+            "You are gongga",
+            "the pinned default stands where the home is silent"
         );
     }
 
@@ -428,42 +444,55 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "[prompts]\nsize_hint = \"first\"\n").unwrap();
-        let prompts = Prompts::new(&path);
+        let prompts = at(&path);
         assert_eq!(prompts.render("size_hint", &[("message", "m")]), "first");
         std::fs::write(&path, "[prompts]\nsize_hint = \"second {{message}}\"\n").unwrap();
         assert_eq!(prompts.render("size_hint", &[("message", "m")]), "second m");
     }
 
-    /// A file that no longer parses is damage, not a reason to stop: the
-    /// defaults answer, and the request still goes out.
+    /// A file that stopped parsing is damage, not a reason to stop.
     #[test]
-    fn a_broken_config_falls_back_to_the_defaults_it_cannot_read() {
+    fn a_broken_config_falls_back_to_the_prose_it_cannot_read() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        std::fs::write(&path, "[prompts]\nsize_hint = \"first\"\n").unwrap();
-        let prompts = Prompts::new(&path);
-        assert_eq!(prompts.render("size_hint", &[("message", "m")]), "first");
+        std::fs::write(&path, "[prompts]\nsize_hint = \"the home's own {{message}}\"\n").unwrap();
+        let prompts = layered(dir.path(), &[("size_hint", "the pinned {{message}}")]);
+        assert_eq!(prompts.render("size_hint", &[("message", "m")]), "the home's own m");
         std::fs::write(&path, "[prompts\nnot toml at all").unwrap();
-        assert!(
-            prompts
-                .render("size_hint", &[("message", "m")])
-                .contains("no longer fits")
+        assert_eq!(
+            prompts.render("size_hint", &[("message", "m")]),
+            "the pinned m",
+            "an unreadable file must not silence the server"
         );
+        // And a home that only ever had one template is still not missing it.
+        assert_eq!(prompts.render("size_hint", &[("message", "m")]), "the pinned m");
     }
 
-    /// A non-string is a mistake in the file; the default for that name stands
-    /// and the rest of the table is still read.
+    /// A non-string is a mistake in the file; the pinned text for that name
+    /// stands and the rest of the table is still read.
     #[test]
     fn a_template_that_is_not_text_is_ignored_not_fatal() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
-        std::fs::write(&path, "[prompts]\nsize_hint = 7\noutput_cap = \"kept\"\n").unwrap();
-        let prompts = Prompts::new(&path);
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[prompts]\nsize_hint = 7\noutput_cap = \"kept\"\n",
+        )
+        .unwrap();
+        let prompts = layered(dir.path(), &[("size_hint", NOTICE)]);
         assert_eq!(prompts.render("output_cap", &[("omitted", "9")]), "kept");
-        assert!(
-            prompts
-                .render("size_hint", &[("message", "m")])
-                .contains("no longer fits")
-        );
+        assert!(prompts
+            .render("size_hint", &[("message", "m")])
+            .contains("transcript.py collapse"));
+    }
+
+    /// A template the home wrote that no code asks for is a typo worth naming --
+    /// but one on the required list never is.
+    #[test]
+    fn a_template_the_server_never_asks_for_is_reported_once() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(&dir.path().join("config.toml"), "[prompts]\nsizehint = \"x\"\n").unwrap();
+        let prompts = at(&dir.path().join("config.toml"));
+        assert_eq!(prompts.text("sizehint").unwrap(), "x");
+        assert!(prompts.missing().contains(&"size_hint"));
     }
 }

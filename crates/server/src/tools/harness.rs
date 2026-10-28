@@ -170,6 +170,7 @@ impl Tool for HarnessTool {
                 text.push_str(&serde_json::to_string_pretty(&data).unwrap_or_default());
             }
             let capped = crate::tools::bash::cap_output(
+                crate::prompts::shared(),
                 &text,
                 self.max_output_chars,
                 &ctx.output_dir,

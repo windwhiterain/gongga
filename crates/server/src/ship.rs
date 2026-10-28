@@ -15,6 +15,9 @@ const MANIFEST: &str = include_str!("../ship.toml");
 /// The file naming the content a root was last reconciled against.
 const PIN_FILE: &str = ".ship-pin";
 
+/// Where a home keeps the content it fetched, so the next start needs no network.
+const CACHE: &str = "ship.git";
+
 #[derive(Debug, Deserialize)]
 struct Manifest {
     ship: Ship,
@@ -116,7 +119,7 @@ pub fn install(home: &Path) -> anyhow::Result<Report> {
 /// The same, with the roots and the pin named: what a test drives, so it never
 /// writes into a real `~/.agents`.
 pub fn install_at(roots: &Roots, ship: &Ship) -> anyhow::Result<Report> {
-    let cache = roots.home.join("ship.git");
+    let cache = roots.home.join(CACHE);
     let fetched = match fetch(&cache, &ship.url) {
         Ok(()) => true,
         Err(e) => {
@@ -146,6 +149,19 @@ pub fn install_at(roots: &Roots, ship: &Ship) -> anyhow::Result<Report> {
         reconcile(&cache, &root, &mappings, ship, &mut report)?;
     }
     Ok(report)
+}
+
+/// The pinned config's own text, read from this home's cache.
+///
+/// # Invariant
+///
+/// This is where the prompt defaults come from: the prose is not copied into
+/// this binary, so a home whose config never mentions `[prompts]` still gets the
+/// pinned text, and one whose cache cannot answer gets nothing and says so.
+pub fn config_text() -> Option<String> {
+    let ship = pinned();
+    blob(&roots().home.join(CACHE), &ship.commit, &ship.config)
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// Each root, with the repository paths that belong under it.

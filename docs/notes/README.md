@@ -39,10 +39,12 @@ note is a bug.
 | [`server-prompts.md`](server-prompts.md) | `crates/server/src/prompts.rs` |
 | [`server-providers.md`](server-providers.md) | `crates/server/src/providers.rs` |
 | [`server-session.md`](server-session.md) | `crates/server/src/session.rs` |
+| [`server-ship.md`](server-ship.md) | `crates/server/src/ship.rs` |
 | [`server-store.md`](server-store.md) | `crates/server/src/store.rs` |
 | [`server-tools-mod.md`](server-tools-mod.md) | `crates/server/src/tools/mod.rs` |
 | [`server-tools-bash.md`](server-tools-bash.md) | `crates/server/src/tools/bash.rs` |
 | [`server-tools-detached.md`](server-tools-detached.md) | `crates/server/src/tools/detached.rs` |
+| [`server-tools-index-skill.md`](server-tools-index-skill.md) | `crates/server/src/tools/index_skill.rs` |
 | [`server-tools-job.md`](server-tools-job.md) | `crates/server/src/tools/job.rs` |
 
 ### cli

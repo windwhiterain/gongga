@@ -101,6 +101,21 @@ fn cli_path() -> PathBuf {
     PathBuf::from(name)
 }
 
+/// The config as this invocation asked for it: the file, then the flags over it.
+///
+/// # Invariant
+///
+/// Read once before the shipped content is installed, for the home alone, and
+/// once after, for everything else: a value read from a file that had not
+/// arrived yet is the loader's default, not this home's.
+fn config_from(args: &Args) -> anyhow::Result<Config> {
+    let mut cfg = Config::load_with_home(args.config.as_deref(), args.home.as_deref())?;
+    if let Some(db) = &args.db {
+        cfg.db_path = config::expand(db.clone());
+    }
+    Ok(cfg)
+}
+
 fn main() -> anyhow::Result<()> {
     // Built here, not by `#[tokio::main]`, so the drop runs after `run` closed
     // every shell. See `docs/notes/server-main.md`.
@@ -136,18 +151,11 @@ async fn run() -> anyhow::Result<()> {
         }
     }
 
-    let mut cfg = Config::load_with_home(args.config.as_deref(), args.home.as_deref())?;
-    if let Some(db) = args.db {
-        cfg.db_path = config::expand(db);
-    }
+    let cfg = config_from(&args)?;
     // Claim the home before opening the database: one server per home.
     let _instance = instance::InstanceLock::acquire(&cfg.home)?;
-    // Installed before anything reads it, or writes a config: a file that
-    // arrived first would read as the reader's own.
+    // Installed before anything reads it: a config already here is the reader's.
     let installed = ship::install(&cfg.home)?;
-    // Only reached when the install placed no config, which is a home that
-    // already had one of its own.
-    cfg.write_default_if_absent()?;
     tracing::info!(
         pin = %&installed.pin[..10],
         written = installed.written,
@@ -158,12 +166,21 @@ async fn run() -> anyhow::Result<()> {
         fetched = installed.fetched,
         "shipped content"
     );
-    // Before any request is built: the templates come from this home's config.
-    let config_path = cfg.home.join("config.toml");
-    prompts::install(&config_path);
+    // Read again: the install may have just placed this home's config.
+    let cfg = config_from(&args)?;
+    // Before any request is built: templates from this config, over the pin.
+    let missing = prompts::install(&cfg.config_path);
+    if !missing.is_empty() {
+        anyhow::bail!(
+            "{} says nothing about {missing:?}, and the pinned ship content (pin {}) \
+             cannot answer either; the server would send an empty prompt",
+            cfg.config_path.display(),
+            installed.pin,
+        );
+    }
     let overridden = prompts::shared().overridden();
     tracing::info!(
-        file = %config_path.display(),
+        file = %cfg.config_path.display(),
         overridden = ?overridden,
         "prompt templates: the shipped defaults, plus what this home overrode"
     );

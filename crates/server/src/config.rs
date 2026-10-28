@@ -6,7 +6,6 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::prompts::Value;
 use crate::transport::TransportConfig;
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:9700";
@@ -25,6 +24,8 @@ pub const DEFAULT_COMPRESS_ABOVE_TOKENS: u64 = 40_000;
 /// Everything the server needs to boot.
 #[derive(Debug, Clone)]
 pub struct Config {
+    /// The file these values came from; the templates read the same path.
+    pub config_path: PathBuf,
     pub home: PathBuf,
     pub db_path: PathBuf,
     pub bind: SocketAddr,
@@ -86,14 +87,13 @@ pub fn accepts_image(modalities: &[String]) -> bool {
 
 /// Why an image cannot be sent to `model`: the `image_refusal` template, with the
 /// roster's own list spelt out for it.
-pub fn image_refusal(model: &str, modalities: &[String]) -> String {
+pub fn image_refusal(prompts: &crate::prompts::Prompts, model: &str, modalities: &[String]) -> String {
     let listed = modalities
         .iter()
         .map(|m| format!("\"{m}\""))
         .collect::<Vec<_>>()
         .join(", ");
-    crate::prompts::shared().render(
-        "image_refusal",
+    prompts.render("image_refusal",
         &[("model", model), ("modalities", listed.as_str())],
     )
 }
@@ -418,6 +418,7 @@ impl Config {
         };
 
         Ok(Self {
+            config_path: std::path::absolute(&config_path).unwrap_or(config_path),
             home,
             db_path,
             bind,
@@ -428,45 +429,6 @@ impl Config {
             agent,
             transport,
         })
-    }
-
-    /// Writes a commented starter config into a home that has none.
-    ///
-    /// # Invariant
-    ///
-    /// A file that exists is left alone. The key used to make this rule awkward --
-    /// a first start left a file holding nothing but a key, which was not the
-    /// reader's yet -- and now that the key is its own file, "absent" is the only
-    /// condition. See `docs/notes/server-config.md`.
-    pub fn write_default_if_absent(&self) -> anyhow::Result<()> {
-        let path = self.home.join("config.toml");
-        if path.exists() {
-            return Ok(());
-        }
-        let text = crate::prompts::starter(&[
-            ("bind", Value::text(self.bind.to_string())),
-            ("db", Value::text(toml_path(&self.db_path))),
-            (
-                "provider",
-                Value::text(self.llm.provider.clone().unwrap_or_default()),
-            ),
-            ("model", Value::text(self.llm.model.as_str())),
-            ("base_url", Value::text(self.llm.base_url.as_str())),
-            ("api_key_env", Value::text(self.llm.api_key_env.as_str())),
-            ("scripts_dir", Value::text(toml_path(&self.scripts.dir))),
-            ("store", Value::bare(self.llm.store)),
-            ("request_timeout", Value::bare(self.llm.request_timeout.as_millis())),
-            ("idle_timeout", Value::bare(self.llm.idle_timeout.as_millis())),
-            ("max_retries", Value::bare(self.llm.max_retries)),
-            ("retry_base", Value::bare(self.llm.retry_base.as_millis())),
-            ("timeout", Value::bare(self.bash.timeout.as_millis())),
-            ("max_output_chars", Value::bare(self.bash.max_output_chars)),
-            ("compress_above_tokens", Value::bare(self.agent.compress_above_tokens)),
-            ("mtu", Value::bare(self.transport.mtu)),
-            ("window", Value::bare(self.transport.window)),
-        ]);
-        std::fs::write(path, text)?;
-        Ok(())
     }
 }
 
@@ -529,13 +491,6 @@ impl LlmConfig {
         cfg.modalities = entry.modalities.clone();
         cfg
     }
-}
-
-/// Renders a path as a TOML basic string; `\` becomes `/` so it is no escape.
-fn toml_path(path: &Path) -> String {
-    path.to_string_lossy()
-        .replace('\\', "/")
-        .replace('"', "\\\"")
 }
 
 /// A 128-bit random key, hex encoded.
@@ -634,42 +589,6 @@ pub(crate) fn shell_program(program: PathBuf) -> PathBuf {
 mod tests {
     use super::*;
 
-    /// Line continuations hide a stray escape until a model reads the prompt.
-    #[test]
-    fn the_instructions_are_well_formed() {
-        let text = crate::prompts::Prompts::defaults()
-            .text("instructions")
-            .unwrap();
-        assert!(!text.contains("\\n"), "literal backslash-n leaked: {text}");
-        assert!(text.contains("\n\nYou can also replace the server"));
-        assert!(text.contains(".agents/skills/evolve/SKILL.md"));
-        assert!(text.contains("grep -H -m3 -E '^(name|description):'"));
-        assert!(text.ends_with("do not invent one.\n"));
-        assert!(!text.contains("  "), "double space: {text}");
-    }
-
-    /// The agent reaches the harness through the tool, not by spawning a client
-    /// that dials back into this same server.
-    #[test]
-    fn the_instructions_send_the_agent_through_the_tool() {
-        let text = crate::prompts::Prompts::defaults()
-            .text("instructions")
-            .unwrap();
-        assert!(text.contains("`harness` tool"), "{text}");
-        assert!(
-            text.contains("runs them \nin this process") || text.contains("in this process"),
-            "{text}"
-        );
-        // Teaching `$GONGGA_CLI <command>` as the way the agent drives the
-        // harness is what this replaced.
-        assert!(
-            !text.contains("drive it from bash with the gongga CLI"),
-            "the CLI is for scripts, not for the agent: {text}"
-        );
-        // It is still true that scripts get it, so it must still be mentioned.
-        assert!(text.contains("$GONGGA_CLI"), "{text}");
-    }
-
     #[test]
     fn parses_a_minimal_config() {
         let cfg: FileConfig = toml::from_str("[llm]\nmodel = \"x\"\n").unwrap();
@@ -717,34 +636,8 @@ mod tests {
         std::fs::write(&path, "[server]\nkey = \"abc\"\n").unwrap();
         let cfg = Config::load_with_home(Some(&path), Some(d.path())).unwrap();
         assert_eq!(cfg.key, "abc", "the old place is still read");
-        cfg.write_default_if_absent().unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "[server]\nkey = \"abc\"\n");
         assert!(!d.path().join("server.key").exists(), "nothing was minted to replace a key that was already there");
-    }
-
-    /// A home with no config gets the starter, which says nothing about keys:
-    /// those belong to the file beside it.
-    #[test]
-    fn a_new_home_gets_the_starter_without_a_key_in_it() {
-        let d = tempfile::tempdir().unwrap();
-        let path = d.path().join("config.toml");
-        let cfg = Config::load_with_home(Some(&path), Some(d.path())).unwrap();
-        cfg.write_default_if_absent().unwrap();
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert!(!text.contains("key = \""), "the key is not a config field: {text}");
-        assert!(text.contains("[prompts]"), "{text}");
-    }
-
-    /// A file the reader has edited is left alone, even if it says very little.
-    #[test]
-    fn the_template_never_rewrites_a_file_someone_edited() {
-        let d = tempfile::tempdir().unwrap();
-        let path = d.path().join("config.toml");
-        let written = "[server]\nkey = \"abc\"\nbind = \"127.0.0.1:9999\"\n";
-        std::fs::write(&path, written).unwrap();
-        let cfg = Config::load_with_home(Some(&path), Some(d.path())).unwrap();
-        cfg.write_default_if_absent().unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), written);
     }
 
     /// The four ways a config names a provider, and a typo that must not stop

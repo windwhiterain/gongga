@@ -1,5 +1,8 @@
 # Prompt templates, live roster, injected rules (WIP)
 
+> Superseded on one point: `crates/server/default.config.toml` no longer exists, and
+> neither does the starter writer. See `2026-10-28-ship-is-the-only-source-of-prose.md`.
+
 User's four requirements, decided in this session:
 
 1. `~/.agents/llm.toml` reloads live.

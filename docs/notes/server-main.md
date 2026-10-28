@@ -49,12 +49,14 @@ consults.
 `SAFETY`: this runs before any thread is spawned, so the process is effectively
 single-threaded and no other code can observe these writes.
 
-## run (starter config)
+## run (install, then read again)
 
-The starter config is written from what the *file* said, before the flag is
-applied: `--db /tmp/x.db` is this run's database, and baking it into a config.toml
-that this run happened to create would quietly move every later run to that path
-as well.
+The config is loaded twice: once to learn the home, which is what the lock and the
+install both need, and once after the install, which is what everything else runs
+on. A value from the first read is the loader's guess at a file that had not been
+placed yet. `config_from` exists so the flags win in both reads -- `--db` on the
+first keeps the lock and the home agreeing, and on the second keeps being this
+run's database rather than moving every later run to it.
 
 ## run (instance lock)
 

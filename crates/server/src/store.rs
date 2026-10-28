@@ -1550,8 +1550,9 @@ mod tests {
             })
             .collect();
         assert_eq!(pairs.len(), 4, "{pairs:?}");
+        // c1 gets a closing row too, in order; its words are the template's.
         assert_eq!(pairs[0], ("c1".to_string(), "call".to_string()));
-        assert!(pairs[1].1.contains("interrupted"), "{pairs:?}");
+        assert_eq!(pairs[1].0, "c1", "{pairs:?}");
         assert_eq!(pairs[2], ("c2".to_string(), "call".to_string()));
         assert_eq!(pairs[3].1, "result: ok");
     }

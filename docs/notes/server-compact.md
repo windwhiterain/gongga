@@ -2,7 +2,8 @@
 
 There is no compaction code in this server. `Agent::maybe_notify_context` measures
 the context the provider reported, and when it crosses the threshold it queues one
-message saying so. Everything else lives in `.agents/skills/compact/`.
+message saying so. Everything else lives in the `compact` skill, installed at
+`$GONGGA_HOME/skills/compact/`.
 
 ## Why it left the loop
 

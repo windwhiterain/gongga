@@ -127,7 +127,13 @@ impl ToolContext {
     /// Caps one command's output, spilling the rest to a file named after where it came from.
     fn cap(&self, shell: &str, task: Option<&str>, text: String, max: usize) -> String {
         let label = spill_label(&self.session, shell, task, &self.call_id);
-        crate::tools::bash::cap_output(&text, max, &self.output_dir, &label)
+        crate::tools::bash::cap_output(
+            crate::prompts::shared(),
+            &text,
+            max,
+            &self.output_dir,
+            &label,
+        )
     }
 }
 
@@ -393,7 +399,13 @@ async fn leave_running(
             }
             text.push_str(&stderr);
         }
-        let text = crate::tools::bash::cap_output(&text, cap, &output_dir, &label);
+        let text = crate::tools::bash::cap_output(
+            crate::prompts::shared(),
+            &text,
+            cap,
+            &output_dir,
+            &label,
+        );
         let text = if text.is_empty() {
             "(no output)".to_string()
         } else {

@@ -271,8 +271,8 @@ impl Agent {
     ///
     /// The loop never folds the transcript itself. Folding is a judgement about
     /// work only the agent has seen, so the server measures and asks: the agent
-    /// decides what the next stretch of context should contain. See
-    /// `.agents/skills/compact/` and `docs/notes/server-agent.md`.
+    /// decides what the next stretch of context should contain. See the
+    /// `compact` skill and `docs/notes/server-agent.md`.
     fn maybe_notify_context(&self, session: &SessionHandle, id: i64, name: &str, budget: u64) {
         if budget == 0 {
             return;
@@ -329,7 +329,7 @@ impl Agent {
         // on the next step.
         let prompts = crate::prompts::shared();
         let mut instructions = prompts.text("instructions").unwrap_or_default();
-        let rules = crate::prompts::constitution(cwd);
+        let rules = crate::prompts::constitution(prompts, cwd);
         if !rules.is_empty() {
             instructions.push_str("\n\n");
             instructions.push_str(&rules);
@@ -589,7 +589,7 @@ impl Agent {
                 cancel: cancel.clone(),
                 store: self.store.clone(),
                 cwd: session.cwd(),
-                vision: llm.vision(),
+                vision: llm.vision(crate::prompts::shared()),
                 inbox: session.inbox_signal(),
             };
             let started = std::time::Instant::now();
@@ -732,7 +732,7 @@ fn retry_warning(
 ///
 /// It names the numbers it is talking about and the two tools that act on them:
 /// a notice that says only "you are near the limit" leaves the reader to guess
-/// what is possible. See `.agents/skills/compact/`.
+/// what is possible. See the `compact` skill.
 fn context_notice(
     prompts: &crate::prompts::Prompts,
     session: &str,
@@ -795,23 +795,27 @@ mod tests {
         assert_eq!(compaction_budget(40_000, None, None), 40_000);
     }
 
-    /// The notice names the numbers, the session, and the two commands.
-    ///
-    /// # Invariant
-    ///
-    /// A notice that says only "you are near the limit" leaves the reader to
-    /// guess what is possible; one that does not name the session cannot be acted
-    /// on, because the script takes it as an argument.
+    /// Every value the template can name has to arrive: the words are the
+    /// config's, the numbers are this function's.
     #[test]
     fn the_context_notice_says_what_to_do() {
-        let notice = context_notice(&crate::prompts::Prompts::defaults(), "main", 700_000, 700_000, 0);
+        let notice = context_notice(&notice_prompts(), "main", 700_000, 700_000, 0);
         assert!(notice.contains("700000 input tokens"), "{notice}");
-        assert!(notice.contains("nothing has been folded yet"), "{notice}");
+        assert!(notice.contains("Nothing has been folded yet."), "{notice}");
         assert!(notice.contains("--session main"), "{notice}");
         assert!(notice.contains("transcript.py read"), "{notice}");
         assert!(notice.contains("transcript.py collapse"), "{notice}");
         // And it says the messages are not lost, the fear that stops folding.
         assert!(notice.contains("stay readable"), "{notice}");
+        assert!(!notice.contains("{{"), "a placeholder nobody filled: {notice}");
+    }
+
+    fn notice_prompts() -> crate::prompts::Prompts {
+        crate::prompts::Prompts::of(&[
+            ("context_notice", "Context notice for `{{session}}`: {{tokens}} input tokens of {{budget}}. {{folded}} Read `transcript.py read --session {{session}}`, fold `transcript.py collapse --session {{session}}`; the messages stay readable."),
+            ("folded_none", "Nothing has been folded yet."),
+            ("folded_through", "The summary runs through seq {{upto}}."),
+        ])
     }
 
     /// The warning names the cause: "failed or came back empty" is what made
@@ -836,7 +840,8 @@ mod tests {
     /// A notice for a session that already folded says where the summary ends.
     #[test]
     fn the_notice_names_what_is_already_folded() {
-        let notice = context_notice(&crate::prompts::Prompts::defaults(), "main", 10, 20, 42);
+        let notice = context_notice(&notice_prompts(), "main", 10, 20, 42);
         assert!(notice.contains("through seq 42"), "{notice}");
+        assert!(!notice.contains("{{"), "{notice}");
     }
 }

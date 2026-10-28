@@ -71,7 +71,7 @@ versa.
 ## main (redial)
 
 Reconnecting is the bridge's job, not the platform's calling loop's: the harness
-is replaced on purpose (`.agents/skills/evolve/evolve.sh swap`), while the platform connection
+is replaced on purpose (`$GONGGA_HOME/skills/evolve/evolve.sh swap`), while the platform connection
 is meant to stay up for days. A bridge that exited with the old server took the
 whole chat integration down and needed a human to start it again.
 

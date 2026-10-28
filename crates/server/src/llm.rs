@@ -74,11 +74,6 @@ impl LlmClient {
         crate::config::accepts_image(&self.modalities)
     }
 
-    /// Why it cannot, naming the roster entry that says so.
-    pub fn image_refusal(&self) -> String {
-        crate::config::image_refusal(&self.model, &self.modalities)
-    }
-
     /// Mints a provider-side id for one picture, so the request carries that
     /// instead of the bytes.
     ///
@@ -123,10 +118,11 @@ impl LlmClient {
         })
     }
 
-    pub fn vision(&self) -> Vision {
+    /// What this turn's model can see, with the refusal rendered from `prompts`.
+    pub fn vision(&self, prompts: &crate::prompts::Prompts) -> Vision {
         Vision {
             accepts_image: self.accepts_image(),
-            refusal: self.image_refusal(),
+            refusal: crate::config::image_refusal(prompts, &self.model, &self.modalities),
         }
     }
 
@@ -196,7 +192,7 @@ impl LlmClient {
                     if let Some((message, again)) = failure {
                         let _ = tx
                             .send(LlmEvent::Failed {
-                                message: with_size_hint(message),
+                                message: with_size_hint(crate::prompts::shared(), message),
                                 retryable: again,
                             })
                             .await;
@@ -491,7 +487,7 @@ fn error_retryable(d: &Value) -> bool {
 ///
 /// The provider says "too long" and stops there; the fix is a shell command the
 /// reader has to know about. Anything that is not about size keeps its words.
-fn with_size_hint(message: String) -> String {
+fn with_size_hint(prompts: &crate::prompts::Prompts, message: String) -> String {
     let lower = message.to_ascii_lowercase();
     let about_size = lower.contains("context length")
         || lower.contains("maximum context")
@@ -503,7 +499,7 @@ fn with_size_hint(message: String) -> String {
     }
     // One line, so the hint reads as a sentence rather than as a wrapped
     // fragment of the provider's message.
-    crate::prompts::shared().render("size_hint", &[("message", message.as_str())])
+    prompts.render("size_hint", &[("message", message.as_str())])
 }
 
 /// What the previous attempt did, in the words the operator needs to read.
@@ -1545,14 +1541,19 @@ mod tests {
     /// part only this side knows.
     #[test]
     fn a_size_refusal_says_how_to_fold() {
+        let prompts = crate::prompts::Prompts::of(&[(
+            "size_hint",
+            "{{message}} -- fold it: `transcript.py collapse --session main`",
+        )]);
         let said = with_size_hint(
+            &prompts,
             "HTTP 400 Bad Request: This model's maximum context length is 131072 tokens"
                 .to_string(),
         );
-        assert!(said.contains(".agents/skills/compact/transcript.py collapse"));
-        assert!(said.starts_with("HTTP 400 Bad Request"));
+        assert!(said.contains("transcript.py collapse"), "{said}");
+        assert!(said.starts_with("HTTP 400 Bad Request"), "{said}");
         // Anything else keeps the provider's words and nothing more.
-        let other = with_size_hint("HTTP 400 Bad Request: unknown parameter".to_string());
+        let other = with_size_hint(&prompts, "HTTP 400 Bad Request: unknown parameter".to_string());
         assert_eq!(other, "HTTP 400 Bad Request: unknown parameter");
     }
 
@@ -1833,9 +1834,13 @@ mod tests {
     /// The roster's `modalities` is the whole of the image question.
     #[test]
     fn a_text_only_model_reports_why_it_cannot_look() {
+        let prompts = crate::prompts::Prompts::of(&[(
+            "image_refusal",
+            "{{model}} takes only {{modalities}}",
+        )]);
         let blind = client_with("roster/text-only", &[], &["text"]);
         assert!(!blind.accepts_image());
-        let vision = blind.vision();
+        let vision = blind.vision(&prompts);
         assert!(!vision.accepts_image);
         assert!(vision.refusal.contains("roster/text-only"), "{vision:?}");
         assert!(vision.refusal.contains("\"text\""), "{vision:?}");

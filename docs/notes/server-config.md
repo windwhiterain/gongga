@@ -130,10 +130,10 @@ capabilities of a *model*, not of the server: a session pointed at another
 said no. Empty is unstated and refuses nothing -- see
 `docs/notes/server-providers.md`.
 
-`write_default_if_absent` teaches both fields in the template's comment, because
-that comment is where a reader learns there is a roster field at all. The file it
-writes is the shipped one with this machine's values in it, so a home begins with
-every prompt visible and editable rather than with a pointer into the binary.
+Both fields are taught in the shipped config's comments, which is the file a home
+actually receives -- see `docs/notes/server-ship.md`. Nothing here writes a config:
+a value the loader invented would have to be copied into a file to be edited, and
+the copy is how this project lost the argument about which of the two was true.
 
 ## LlmConfig::for_entry
 
@@ -143,18 +143,25 @@ The prose is not part of this struct any more at all -- a prompt belongs to
 the request and is rendered per step, so a model swap cannot carry an
 instruction from the model it replaced.
 
-## toml_path
+## prose this module no longer owns
 
-Windows separators are normalised to `/`: TOML would read `\` as an escape, and
-every Windows API accepts forward slashes anyway.
+Two tests used to read the system instructions out of a compiled-in file and
+complain about a stray escape or a missing space. The prose left the binary, so
+the tests left with it: a Rust test that asserts a sentence in another repository
+is a build-order dependency disguised as a test. What is still checked in Rust is
+the shape of the hand-over -- that `image_refusal` receives the roster's own
+modality list and that an unstated list refuses nothing -- which is this module's
+claim, not the config's wording.
 
-## tests::the_instructions_are_well_formed
+## Config::config_path
 
-The text was assembled by line continuation in Rust until it moved into
-`default.config.toml`, and the test stayed for the same reason: a stray escape
-or a missing space is invisible until a model reads the prompt as one run-on
-line. It now checks the shipped template, since that is what a home with no
-opinion about prompts actually sends.
+`Config::config_path` is the file the loader actually read, kept on the struct so the
+prompt templates are read from that same path. A server started with `--config
+/tmp/other.toml` would otherwise take its values from that file and its prose from
+`<home>/config.toml`, which is two answers to one question -- and the second one is
+where a test home's edits would silently never land. It is made absolute for the same
+reason `home` is: a relative path means something different to whatever child reads it
+next.
 
 ## tests::the_roster_answers_what_the_config_does_not_say
 
@@ -170,14 +177,14 @@ the same thing -- "not here" -- so a half-written key file falls through to the
 next source instead of authenticating with an empty string, which would be the
 same hole as having no key at all.
 
-## write_default_if_absent
+## who writes config.toml
 
-"A file that exists is left alone" used to need a qualifier: the first start
-minted a key into config.toml, so by the time the template writer ran the file
-already existed, and the one document that explains the fields never reached the
-disk. The exception judged a file as untouched when it held only that key. With
-the key next door there is nothing left to excuse: absent means write, and
-anything else is the reader's.
+Not this module. The install in `ship.rs` places the pinned file into a home that
+has none and merges into one that does, so "absent means write, anything else is
+the reader's" is enforced by the same rule that governs the skills. The historical
+qualifier -- a first start minted a key into config.toml, so the file that had to
+explain the fields always looked already-answered -- died with the key moving next
+door to `server.key`.
 
 ## tests::a_key_left_in_the_config_still_works_and_buys_its_file_quietly
 
@@ -185,7 +192,7 @@ The old place is not a migration project: a home that has the key in its config
 resolves it, is not rewritten, and is not handed a second key file it will never
 use. Two answers to "where is the key" are worse than the old one.
 
-## tests::the_template_never_rewrites_a_file_someone_edited
+## tests::a_key_left_in_the_config_still_works_and_buys_its_file_quietly
 
 One field is enough to count as edited. A configuration that was written by hand
 is not ours to replace with a commented example.

@@ -18,10 +18,11 @@
   ```
 ## 自我进化（改服务端之后怎么让自己用上）
 
-整套流程在 `.agents/skills/evolve/SKILL.md`，脚本是 `.agents/skills/evolve/evolve.sh`：
+整套流程在 `evolve` skill（`$GONGGA_HOME/skills/evolve/SKILL.md`），脚本是它旁边的
+`evolve.sh`：
 
 ```bash
-S=.agents/skills/evolve/evolve.sh
+S=$GONGGA_HOME/skills/evolve/evolve.sh
 $S stage        # 跑测试 + 构建 + 暂存 + 生成 launcher（不重启任何东西，先报磁盘）
 $S stage --clean # 同上，并让继任者在旧服务端退出后跑 cargo clean（磁盘紧张时用）
 # 然后用 bash --detached 启动它打印的 launcher
@@ -38,36 +39,34 @@ $S clean        # 收掉没人会 swap 的旧继任者（--artifacts 连旧暂�
 - **换完看继任者自己的日志**有没有 `replaying a turn ... resumed=true`，那才是"接上了"。
 
 ## 技能
-skill 是"任务相关才读"的散文 + 脚本，放在 `.agents/skills/<name>/SKILL.md`。**别全读**，
-先列索引，命中才读正文：
+skill 是"任务相关才读"的散文 + 脚本，**不在这个仓库里**：它们由独立的内容仓库
+ship，服务端 pin 一个 commit，启动时装进两个根——harness 桶进 `$GONGGA_HOME/skills/`，
+通用桶进 `~/.agents/skills/`。
 
-```bash
-grep -H -m3 -E '^(name|description):' .agents/skills/*/SKILL.md
-```
+**别全读，也别 grep 目录**：调用 `index_skill` 工具，它返回 name / description / path /
+bucket 一张表，命中才按它给的路径读正文。列表本身不写在这里——写在这里就等于每加一个
+skill 都要改一次这个文件，而读的人手上已经有那张表。
 
-- `self-control`：控制自己的回合 / 进程 / 上下文 / 服务端。
-- `web-search`：查实时网页、读 URL 正文（DeepSeek REST，不花模型轮次，任何模型都能用）。
-- `evolve`：换掉正在跑自己的服务端（改完 server 代码之后）。
-- `image`：让模型真看到一张图。用 `.agents/skills/image/show` 打印 `@路径`，harness
-  自动上传到 Files API 并作为 `input_image` 交给模型——不要自己拼 base64。
-- `proxy`：两层。`.agents/skills/proxy/proxy` 是自实现的纯标准库分流代理（HTTP/SOCKS5/直连
+要改 skill 的散文，去内容仓库改并重新 pin；在这里改 `.agents/skills/` 是改一个已经不
+存在的地方。
+- `proxy`：两层。`~/.agents/skills/proxy/proxy` 是自实现的纯标准库分流代理（HTTP/SOCKS5/直连
   上游，用户可接任何 API 端点）：先 `doctor`，`upstream add` 加上游，`add host --via` 定规则，
   `check host` 看代理自己记下的去向。出口 IP 只在两条路由相同时才说明问题——`check` 会明说。
   改配置后要重启 `serve`。`proxy core …` 直接驱动跑着的 mihomo/clash core：`groups` /
   `nodes` / `use GROUP NODE` 换节点、`bench [--throughput]` 测延迟和吞吐、`mode` 切
   rule/global/direct、`reload` 热重载。控制器自己从 core 的 config.yaml 找（不依赖任何
   客户端），`doctor` 会打印用的是哪一条来源。**换节点不用 flm；只有刷新订阅那一步需要账号。**
-- `computer_use`：用鼠标键盘操作真实桌面。`.agents/skills/computer_use/cu` 先跑 `doctor`，
+- `computer_use`：用鼠标键盘操作真实桌面。`~/.agents/skills/computer_use/cu` 先跑 `doctor`，
   然后 `shot` 看屏 → `tree` 拿控件矩形 → `click`/`type`/`key`（都带 `--window`）。
   `cu.py` + 每平台一个后端（Windows ctypes/UIA 已实测，macOS/Linux 已写未实测），
   uv 解析内联依赖，不需要 pyautogui/pywinauto。这是用户的真实桌面，打字前先确认目标窗口，
   截图会把屏幕上的密钥一起带走。
-- `remote`：在另一台机器上跑命令、搬文件。`.agents/skills/remote/remote` 是纯标准库的 SSH
+- `remote`：在另一台机器上跑命令、搬文件。`~/.agents/skills/remote/remote` 是纯标准库的 SSH
   外壳，目标由 `add` 记住（host/port/user/key），**不读 ~/.ssh/config，不依赖任何本地约定或
   第三方 CLI**。先 `doctor` 证明这条链每环（退出码/UTF-8/二进制/传输），再 `run`。脚本走
   base64 落盘执行、输出按 base64 分帧——所以引号、GBK、退出码这三个坑不存在。会话复用一条
   ssh（~390ms vs 一次性 ~800ms）；带 `--runner`（如 Windows 上跑 Git Bash）的目标没有会话，
   自动走一次性。传文件用 `put`/`get`，默认读回大小核对——sftp 会报告成功而文件没到。
 - `compact`：折叠自己的上下文。收到 `Context notice` 时读它，用
-  `.agents/skills/compact/transcript.py`（脚本，不是服务端工具）——服务端只测量和提醒，
-  不再替你压缩。read 读的是消息（模型输出 + 注入），工具调用与 reasoning 被过滤掉。
+  `$GONGGA_HOME/skills/compact/transcript.py`（脚本，不是服务端工具）——服务端只测量和
+  提醒，不再替你压缩。read 读的是消息（模型输出 + 注入），工具调用与 reasoning 被过滤掉。

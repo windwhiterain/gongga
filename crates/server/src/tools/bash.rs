@@ -593,7 +593,7 @@ fn pid_alive(_pid: u32) -> bool {
 /// Caps tool output: the head and the tail survive, the rest is spilled to disk.
 ///
 /// See `docs/notes/server-tools-bash.md`.
-pub fn cap_output(text: &str, max: usize, dir: &Path, label: &str) -> String {
+pub fn cap_output(prompts: &crate::prompts::Prompts, text: &str, max: usize, dir: &Path, label: &str) -> String {
     if max == 0 || text.len() <= max {
         return text.to_string();
     }
@@ -603,16 +603,17 @@ pub fn cap_output(text: &str, max: usize, dir: &Path, label: &str) -> String {
     let omitted = tail.saturating_sub(head);
     let spilled = spill(dir, label, text);
     let omitted = omitted.to_string();
+    let total = text.len().to_string();
     let notice = match &spilled {
-        Some(path) => crate::prompts::shared().render(
+        Some(path) => prompts.render(
             "output_cap",
             &[
                 ("omitted", omitted.as_str()),
-                ("total", &text.len().to_string()),
+                ("total", total.as_str()),
                 ("path", path.as_str()),
             ],
         ),
-        None => crate::prompts::shared().render("output_omitted", &[("omitted", omitted.as_str())]),
+        None => prompts.render("output_omitted", &[("omitted", omitted.as_str())]),
     };
     format!("{}{}{}", &text[..head], notice, &text[tail..])
 }
@@ -703,10 +704,19 @@ mod tests {
     /// a hang is reported instead of inherited.
     const WAIT: Duration = Duration::from_secs(10);
 
+    /// The notice these tests read: the words belong to the config, the numbers
+    /// to `cap_output`.
+    fn cap_prompts() -> crate::prompts::Prompts {
+        crate::prompts::Prompts::of(&[
+            ("output_cap", "\n[... {{omitted}} characters omitted ...]\nfull output ({{total}} characters) written to {{path}}\nread the part you need with `sed -n '1,10p' {{path}}`"),
+            ("output_omitted", "\n[{{omitted}} characters omitted]\n"),
+        ])
+    }
+
     #[test]
     fn short_output_is_returned_untouched() {
         let dir = tempfile::tempdir().unwrap();
-        let out = cap_output("hello", 8_000, dir.path(), "s-call");
+        let out = cap_output(&cap_prompts(), "hello", 8_000, dir.path(), "s-call");
         assert_eq!(out, "hello");
     }
 
@@ -757,7 +767,7 @@ mod tests {
     fn a_cap_of_zero_means_no_cap() {
         let dir = tempfile::tempdir().unwrap();
         let text = "x".repeat(50);
-        assert_eq!(cap_output(&text, 0, dir.path(), "s-call"), text);
+        assert_eq!(cap_output(&cap_prompts(), &text, 0, dir.path(), "s-call"), text);
     }
 
     #[test]
@@ -766,7 +776,7 @@ mod tests {
         let text: String = (0..2000)
             .map(|i| char::from(b'a' + (i % 26) as u8))
             .collect();
-        let out = cap_output(&text, 500, dir.path(), "sess-call1");
+        let out = cap_output(&cap_prompts(), &text, 500, dir.path(), "sess-call1");
 
         assert!(out.len() < text.len(), "expected the output to be capped");
         assert!(out.starts_with(&text[..300]), "head must be kept");
@@ -795,7 +805,7 @@ mod tests {
     fn capping_respects_utf8_boundaries() {
         let dir = tempfile::tempdir().unwrap();
         let text: String = "é".repeat(5000);
-        let out = cap_output(&text, 400, dir.path(), "s-call");
+        let out = cap_output(&cap_prompts(), &text, 400, dir.path(), "s-call");
         assert!(out.len() < text.len());
         assert!(out.contains("characters omitted"));
     }
