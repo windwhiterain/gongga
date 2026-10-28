@@ -646,7 +646,12 @@ id = "m1"
         let first = read_fresh(Some(&path));
         let second = read_fresh(Some(&path));
         assert_eq!(first.providers().len(), 1);
-        assert_eq!(second.generation(), first.generation() + 1, "each read is counted");
+        // Forward, not exactly one: the counter is one per process, so a read
+        // from another test's thread is counted here too.
+        assert!(
+            second.generation() > first.generation(),
+            "each read is counted"
+        );
         let live = Live {
             read: true,
             stamp: Stamp::of(&path),

@@ -31,6 +31,19 @@ exists when called without one -- from `Dispatch::catalog`, the same list every
 client gets in its greeting. Baking the names in here would recreate the second
 list this refactor removed.
 
+The description used to do exactly that: it named `cancel`, `set_session`,
+`send_message`, `interrupt_session`, `del_session` and `get_messages`. A tool
+description is not free -- it rides in the `tools` array of every request, so six
+names became six tokens paid per step, and the list went stale the moment a script
+registered a seventh command that only the listing knew about. Now the description
+states the rule and the listing carries the facts, which is the same division
+`index_skill` uses for skills: one cheap call that says what exists, and nothing in
+the standing context that can disagree with it.
+
+`arguments: {"session": "main"}` survived as the only example, because it teaches
+the *shape* -- names without dashes, values as strings or numbers -- and names no
+command.
+
 ## Arguments
 
 `arguments` is a JSON object keyed by argument name without dashes. Values are

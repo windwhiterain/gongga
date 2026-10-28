@@ -109,10 +109,9 @@ impl Tool for HarnessTool {
     }
 
     fn description(&self) -> &'static str {
-        "Run a gongga harness command in this server. Without `command`, lists what exists. \
-         This is the same command surface the CLI has, reached in-process: `cancel`, \
-         `set_session`, `send_message`, `interrupt_session`, `del_session`, `get_messages`, \
-         and anything a script registered."
+        "Run a gongga harness command in this server. Omit `command` and it lists every \
+         command the server publishes -- the ones it was built with and any a script \
+         registered -- with the arguments each takes, so this description names none."
     }
 
     fn parameters(&self) -> Value {
@@ -121,8 +120,8 @@ impl Tool for HarnessTool {
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "Command to run, without a leading `/`, e.g. `cancel`. \
-                                    Omit to list the commands and their arguments."
+                    "description": "Command to run, without a leading `/`. Omit it to get \
+                                    the list, and what each command takes."
                 },
                 "arguments": {
                     "type": "object",
