@@ -47,8 +47,12 @@ ship，服务端 pin 一个 commit，启动时装进两个根——harness 桶�
 bucket 一张表，命中才按它给的路径读正文。列表本身不写在这里——写在这里就等于每加一个
 skill 都要改一次这个文件，而读的人手上已经有那张表。
 
-要改 skill 的散文，去内容仓库改并重新 pin；在这里改 `.agents/skills/` 是改一个已经不
-存在的地方。
+内容仓库现在是这个仓库的 **submodule**，就在 `ship/`——所以「改 skill / 改默认 config」
+和「重新 pin」是同一件事：在 `ship/` 里改、在那边提交并 push，然后 `git add ship`（记下
+新的 commit）+ 把 `crates/server/ship.toml` 的 `commit` 改成同一个 sha。两处不一致时服务端
+装的是 `ship.toml` 里那个 commit，不是你工作树里的那个。
+在这里改 `.agents/skills/` 是改一个已经不存在的地方；改 `$GONGGA_HOME/skills/` 里的已安装
+副本会被下一次合并判成「读者自己写的」而不再更新。
 - `proxy`：两层。`~/.agents/skills/proxy/proxy` 是自实现的纯标准库分流代理（HTTP/SOCKS5/直连
   上游，用户可接任何 API 端点）：先 `doctor`，`upstream add` 加上游，`add host --via` 定规则，
   `check host` 看代理自己记下的去向。出口 IP 只在两条路由相同时才说明问题——`check` 会明说。
@@ -67,6 +71,9 @@ skill 都要改一次这个文件，而读的人手上已经有那张表。
   base64 落盘执行、输出按 base64 分帧——所以引号、GBK、退出码这三个坑不存在。会话复用一条
   ssh（~390ms vs 一次性 ~800ms）；带 `--runner`（如 Windows 上跑 Git Bash）的目标没有会话，
   自动走一次性。传文件用 `put`/`get`，默认读回大小核对——sftp 会报告成功而文件没到。
-- `compact`：折叠自己的上下文。收到 `Context notice` 时读它，用
-  `$GONGGA_HOME/skills/compact/transcript.py`（脚本，不是服务端工具）——服务端只测量和
-  提醒，不再替你压缩。read 读的是消息（模型输出 + 注入），工具调用与 reasoning 被过滤掉。
+- `heir`：把上下文交接出去。收到 `Context notice` 时读它，用
+  `$GONGGA_HOME/skills/heir/transcript`（脚本，不是服务端工具）——服务端只测量和提醒。
+  两条路：`collapse` 把旧的一段折成笔记（行还在库里，`read --after 0` 能捞回来）；
+  `heir` 先把整份 transcript 拷进一个 mentor 会话、逐行校验副本，然后**删空自己**，再注入
+  一条引导消息——之后卡住了用 `get_messages` 读 mentor、用 `send_message` 问 mentor。
+  read 读的是消息（模型输出 + 注入），工具调用与 reasoning 被过滤掉。

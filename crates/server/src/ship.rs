@@ -550,10 +550,10 @@ mod tests {
     /// A repository holding shipped content, shaped like the real one.
     fn content_repo(dir: &Path, config: &str, skill: &str) -> String {
         std::fs::create_dir_all(dir.join("config")).unwrap();
-        std::fs::create_dir_all(dir.join("skills/harness/compact")).unwrap();
+        std::fs::create_dir_all(dir.join("skills/harness/heir")).unwrap();
         std::fs::create_dir_all(dir.join("skills/general/remote")).unwrap();
         std::fs::write(dir.join("config/config.toml"), config).unwrap();
-        std::fs::write(dir.join("skills/harness/compact/SKILL.md"), skill).unwrap();
+        std::fs::write(dir.join("skills/harness/heir/SKILL.md"), skill).unwrap();
         std::fs::write(dir.join("skills/general/remote/remote.py"), skill).unwrap();
         git_in(dir, &["init", "-q", "-b", "main"]);
         git_in(dir, &["add", "-A"]);
@@ -659,7 +659,7 @@ mod tests {
             std::fs::read_to_string(f.home().join("config.toml")).unwrap(),
             "instructions here\n"
         );
-        assert!(f.home().join("skills/compact/SKILL.md").exists());
+        assert!(f.home().join("skills/heir/SKILL.md").exists());
         assert!(f.machine().join("skills/remote/remote.py").exists());
         assert_eq!(report.written, 3, "{report:?}");
         assert!(report.conflicts.is_empty(), "{report:?}");
@@ -723,7 +723,7 @@ mod tests {
         assert_eq!(report.kept, vec!["config/config.toml".to_string()], "{report:?}");
         assert!(!f.home().join(PIN_FILE).exists(), "nothing was reconciled");
         // The skills it never had still arrive.
-        assert!(f.home().join("skills/compact/SKILL.md").exists());
+        assert!(f.home().join("skills/heir/SKILL.md").exists());
     }
 
     #[test]
@@ -773,12 +773,12 @@ mod tests {
         let first = content_repo(&f.content, "c\n", "skill text\n");
         f.install(&first).unwrap();
 
-        std::fs::remove_file(f.content.join("skills/harness/compact/SKILL.md")).unwrap();
+        std::fs::remove_file(f.content.join("skills/harness/heir/SKILL.md")).unwrap();
         git_in(&f.content, &["add", "-A"]);
         git_in(&f.content, &["commit", "-q", "-m", "drop a skill"]);
         let report = f.at();
 
-        assert!(!f.home().join("skills/compact/SKILL.md").exists());
+        assert!(!f.home().join("skills/heir/SKILL.md").exists());
         assert_eq!(report.removed, 1, "{report:?}");
     }
 
@@ -788,20 +788,20 @@ mod tests {
         let f = fixture(d.path());
         let first = content_repo(&f.content, "c\n", "skill text\n");
         f.install(&first).unwrap();
-        std::fs::write(f.home().join("skills/compact/SKILL.md"), "mine now\n").unwrap();
+        std::fs::write(f.home().join("skills/heir/SKILL.md"), "mine now\n").unwrap();
 
-        std::fs::remove_file(f.content.join("skills/harness/compact/SKILL.md")).unwrap();
+        std::fs::remove_file(f.content.join("skills/harness/heir/SKILL.md")).unwrap();
         git_in(&f.content, &["add", "-A"]);
         git_in(&f.content, &["commit", "-q", "-m", "drop a skill"]);
         let report = f.at();
 
         assert_eq!(
-            std::fs::read_to_string(f.home().join("skills/compact/SKILL.md")).unwrap(),
+            std::fs::read_to_string(f.home().join("skills/heir/SKILL.md")).unwrap(),
             "mine now\n"
         );
         assert_eq!(
             report.kept,
-            vec!["skills/harness/compact/SKILL.md (kept: removed upstream)".to_string()],
+            vec!["skills/harness/heir/SKILL.md (kept: removed upstream)".to_string()],
             "{report:?}"
         );
         assert!(report.conflicts.is_empty(), "{report:?}");

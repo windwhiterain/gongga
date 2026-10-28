@@ -187,8 +187,9 @@ it.
 
 The loop measures and asks; it never folds. Folding is a judgement about work
 only the agent has seen -- which failure was decisive, which output is still
-needed -- so the agent folds with `$GONGGA_HOME/skills/compact/transcript.py`
-(see `server-compact.md`).
+needed -- so the agent acts with `$GONGGA_HOME/skills/heir/transcript`:
+`collapse` folds a stretch out of the request, `heir` copies the whole transcript
+into a mentor session and empties this one (see `server-compact.md`).
 
 How full the context is, as the provider last measured it. Not an estimate and
 not derived from text length: `usage.input_tokens` already covers the

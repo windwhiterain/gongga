@@ -272,7 +272,7 @@ impl Agent {
     /// The loop never folds the transcript itself. Folding is a judgement about
     /// work only the agent has seen, so the server measures and asks: the agent
     /// decides what the next stretch of context should contain. See the
-    /// `compact` skill and `docs/notes/server-agent.md`.
+    /// `heir` skill and `docs/notes/server-agent.md`.
     fn maybe_notify_context(&self, session: &SessionHandle, id: i64, name: &str, budget: u64) {
         if budget == 0 {
             return;
@@ -732,7 +732,7 @@ fn retry_warning(
 ///
 /// It names the numbers it is talking about and the two tools that act on them:
 /// a notice that says only "you are near the limit" leaves the reader to guess
-/// what is possible. See the `compact` skill.
+/// what is possible. See the `heir` skill.
 fn context_notice(
     prompts: &crate::prompts::Prompts,
     session: &str,

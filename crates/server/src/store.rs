@@ -26,8 +26,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     -- Set once context compression has folded the older part of the transcript
-    -- into a summary. The transcript itself is never rewritten: `summarised_upto`
-    -- only says where the summary takes over when building a request.
+    -- into a summary: `summarised_upto` says where the summary takes over when
+    -- building a request. Nothing here rewrites a row. The rows can still be
+    -- deleted -- by the agent, from a shell, through the `heir` skill, and only
+    -- after the whole transcript has been copied into a mentor session and the
+    -- copy checked row for row. The server's own hands stay off the transcript.
     summary    TEXT,
     summarised_upto INTEGER NOT NULL DEFAULT 0,
     -- Per-session overrides given by `set_session`. NULL means "the server's

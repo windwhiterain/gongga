@@ -1,9 +1,9 @@
-# Compaction: the agent folds, the server only measures
+# Compaction: the agent folds or hands over, the server only measures
 
 There is no compaction code in this server. `Agent::maybe_notify_context` measures
 the context the provider reported, and when it crosses the threshold it queues one
-message saying so. Everything else lives in the `compact` skill, installed at
-`$GONGGA_HOME/skills/compact/`.
+message saying so. Everything else lives in the `heir` skill, installed at
+`$GONGGA_HOME/skills/heir/`.
 
 ## Why it left the loop
 
@@ -97,9 +97,60 @@ request carried the prefix just folded. Leaving it alone would make the new cont
 look full, and the next notice would fire immediately -- on every step. This is the
 one line in the script that must not be forgotten.
 
+## heir: the copy is the archive, and emptying is the point
+
+`collapse` changes what a session *sends*. `heir` changes what a session *has*: it
+copies every row into another session, verifies the copy, deletes its own rows, and
+injects one message saying where the past went. The rows are gone from SQLite.
+
+Three things make that acceptable rather than dangerous:
+
+- **The archive is a session, not a file.** A mentor needs no new command, no export
+  format and no sync protocol: `get_messages` reads it and `send_message` answers from
+  it, which is what every client already does. An archive nobody can query is a file
+  with extra steps.
+- **The copy is verified before anything is deleted, in the same transaction.** Every
+  row is re-read from the mentor and compared on `(kind, content)`; one mismatch rolls
+  the whole thing back, including the `sessions` update. So the failure mode "the
+  archive is half-written and the original is empty" cannot be reached -- the script
+  exits non-zero and the transcript is untouched.
+- **Seq restarts, so `summarised_upto` must go to 0.** `seq` is `max(seq)+1` over the
+  rows that exist, so an emptied session's first new row is seq 1. A summary left
+  claiming it covers through the old last seq would fold that row before it was ever
+  sent -- the session would look alive and answer as if it had amnesia about
+  everything after the handover, including the next message from the user.
+
+## "The transcript is never rewritten" meant the server
+
+That sentence was the user's own rule about live templates and injected rules: reloading
+`config.toml` or `AGENTS.md` must not reach into a conversation already under way and
+edit what was said. It is still true, and the `#[cfg(test)]` on `set_summary` is still
+its proof in code. What was wrong was reading it as *nothing may ever delete a row*.
+
+The difference is who acts and when. A config reload rewrites the past without being
+asked, mid-conversation, invisibly. `heir` is asked, by the agent that owns the context,
+in one step where it also writes the note the next step will run on, and it names the
+archive it just made. The server's hands stay off the transcript either way -- which is
+why this is a script and not a tool: the tool surface is what the server will do to you,
+and the shell is what you chose to do.
+
+## transcript.py — the heir refusals
+
+| Refusal | What it prevents |
+|---|---|
+| `--session` and `--mentor` name the same session | the copy and the delete cancel each other: the archive is the thing removed |
+| an empty `--summary` | the session is emptied with nothing left to send, which is memory loss, not compaction |
+| a session with no rows | reports instead of writing a mentor whose only content is a marker |
+| a copied row that does not match | rolls everything back; the originals survive and stderr names the seq |
+
+A mentor that already has rows is appended to, never overwritten -- a second handover
+into the same mentor is a continuation of the archive, and the first handover's marker
+row is what tells them apart.
+
 ## What the server still owns
 
 Reading a summary stays in Rust: `Store::summary` feeds the request, and
 `history_item_to_input` puts it in front of the transcript. Writing one is
 test-only (`#[cfg(test)]` on `set_summary`), which is the invariant in code form:
-**this server never folds.**
+**this server never folds.** Deleting rows is not in this file's vocabulary at all;
+the only `DELETE FROM messages` that touches a session's own rows is in the skill.
