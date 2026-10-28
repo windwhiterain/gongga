@@ -17,13 +17,13 @@ use serde_json::json;
 /// a step sends this row, and `#[serde(default)]` keeps an older row readable.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Prompt {
-    /// The system instructions, with the project's rules already joined in.
+    /// The system instructions this session was sent under, verbatim.
     #[serde(default)]
     pub instructions: String,
     /// The handover note as the model reads it; nothing before the first fold.
     #[serde(default)]
     pub summary: Option<String>,
-    /// The directory the rules were read from, so a move is noticed.
+    /// The directory the shell stood in, so a move is noticed.
     #[serde(default)]
     pub cwd: String,
     #[serde(default)]

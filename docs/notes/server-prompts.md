@@ -85,39 +85,30 @@ trusted by the time the first request is built.
 
 ## Prompts::of, and who takes a `&Prompts`
 
-`cap_output`, `image_refusal`, `vision`, `with_size_hint`, `context_notice` and
-`constitution` all take the templates as an argument. Not for tidiness: each of them
+`cap_output`, `image_refusal`, `vision`, `with_size_hint`, `context_notice` all take
+the templates as an argument. Not for tidiness: each of them
 used to read prose off a compiled-in file inside a unit test, which stopped being
 possible the moment the prose left the binary. A parameter keeps the test honest about
 the mechanism it owns -- that the numbers arrive, that the spill path is named, that the
 provider's own sentence survives -- while the words themselves are the config's to say.
 
-## constitution
+## no rules file is read
 
-Two files, in order: the machine's `~/.agents/agents.md`, then `AGENTS.md` beside where
-the session works. The first is this machine's rules for every project, the second the
-project's rules for this directory -- the pair `AGENTS.md` means in practice, and the
-reason the session's file comes last is that the nearer rule is the one a reader expects
-to win.
+The server reads no `AGENTS.md`. Two used to be joined into `instructions` when a prompt
+row was written -- the machine's `~/.agents/agents.md`, then `AGENTS.md` beside the
+session's directory -- and both reads are gone, along with the `constitution` template
+that wrapped them. Standing rules now live where this machine keeps every other
+procedure: a skill under `~/.agents/skills/`, listed by `index_skill`, read when a task
+matches its description.
 
-Read from the *reported* cwd, not the configured one: the point of the shell keeping its
-directory is that the agent has moved, and a rules file found where the session started
-would be the wrong directory's file. It is read when a prompt row is written -- the turn's
-first step, or the step after a handover note moved -- and the joined text is stored with
-the row, so what the model was told is in the database rather than a rendering that has to
-be re-guessed later.
+That is the same argument the skill root already makes, applied to the one prose that
+ignored it. A rules file was in every request whether or not the turn needed it, and an
+edit to it changed what the model was told without any row recording that the user said
+it. A skill costs a name and a description until the work asks for the body.
 
-An earlier shape of this rule was "read again for every request and never stored", which
-kept history honest about one thing (a reload never rewrote a row) while making the prompt
-itself unrecoverable: the transcript could say what the model *said*, but not what it had
-been *told*. Storing the rendered text fixes both: history is still never rewritten, and a
-request can be rebuilt from the rows.
-
-Injected into `instructions`, never stored. A transcript row is what somebody said;
-these rules are what the server reads off disk for this request, and writing them into
-history would make an edit to a file look like a statement the user made three turns
-ago -- and would be the one way this module could damage history rather than leave it
-alone.
+What stays is the boundary the reads used to sit on: `prompt_moved` still notices a
+different directory at a turn's first step, because the row records where the shell
+stood, and a template edit still lands at the next turn rather than the next step.
 
 ## where the prose comes from, and why not from here
 

@@ -258,11 +258,14 @@ and the two have opposite meanings.
 
 It is worth reading because this harness re-renders its prose before every request.
 `instructions` sits in front of the whole transcript in the cached prefix, so an
-edit to `[prompts]`, or a session walking into a directory with a different
-`AGENTS.md`, costs the history behind it. Measured: a session warm at 99% dropped
+edit to `[prompts]` costs the history behind it. Measured: a session warm at 99% dropped
 to 35% on a one-sentence edit -- the tool schemas ahead of it stayed cached, the
 conversation behind it did not -- and stayed at 35% after the sentence was put back,
 because the next request has to match the request that carried the edit.
+
+Walking into another directory does not cost it any more. The row still records where
+the shell stood, but nothing is read off disk into the prose, so the prefix bytes are
+the same on either side of a move.
 
 The measurement is `scripts/fake_llm.py`, which models a hit rather than inventing
 one: it splits the body into the units a prefix sees (tools, instructions, then each

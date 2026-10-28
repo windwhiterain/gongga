@@ -221,8 +221,8 @@ It is a threshold for *asking*, not for acting: zero turns the notice off.
 The prose a session sends is the stored row, unless something moved: this is the
 first step of a turn and the directory changed, the handover note is not the one the
 row was rendered from, or there is no row yet. Everything else -- a template edit
-noticed at three in the morning, an `AGENTS.md` saved mid-turn -- waits for the next
-turn. That is the rule the user set for this feature: 重读只重读新入库的，入库的不改.
+noticed at three in the morning -- waits for the next turn. That is the rule the
+user set for this feature: 重读只重读新入库的，入库的不改.
 
 It is also the cheaper rule. Prose sits in front of the whole transcript in the
 provider's cached prefix, so re-rendering per step turns every edit into a re-billed

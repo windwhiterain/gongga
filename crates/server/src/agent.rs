@@ -339,12 +339,7 @@ impl Agent {
             return Ok(kept);
         }
         let prompts = crate::prompts::shared();
-        let mut instructions = prompts.text("instructions").unwrap_or_default();
-        let rules = crate::prompts::constitution(prompts, std::path::Path::new(&cwd));
-        if !rules.is_empty() {
-            instructions.push_str("\n\n");
-            instructions.push_str(&rules);
-        }
+        let instructions = prompts.text("instructions").unwrap_or_default();
         let summary = note
             .map(|s| prompts.render("summary_preamble", &[("summary", s)]));
         let prompt = crate::store::Prompt {
@@ -743,7 +738,7 @@ struct Attempt<'a> {
     llm: &'a LlmClient,
     /// How hard the model should think, when the session asked for a level.
     effort: Option<&'a str>,
-    /// Where the session works, which decides whose agent rules are read now.
+    /// Where the session's shell stands, which the row records so a move is seen.
     cwd: &'a std::path::Path,
 }
 
@@ -882,7 +877,7 @@ mod tests {
         let folded = crate::store::stamp(Some("the note"));
         assert!(!prompt_moved(&stored, "C:/a", &same, true), "nothing moved");
         assert!(!prompt_moved(&stored, "C:/b", &same, false), "a step is not a turn");
-        assert!(prompt_moved(&stored, "C:/b", &same, true), "another directory's rules");
+        assert!(prompt_moved(&stored, "C:/b", &same, true), "the row names the directory");
         assert!(prompt_moved(&stored, "C:/a", &folded, false), "a handover is new content");
     }
 

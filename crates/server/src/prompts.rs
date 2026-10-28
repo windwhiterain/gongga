@@ -17,7 +17,6 @@ use std::time::SystemTime;
 /// empty system prompt and look healthy. Startup asks for this list instead.
 pub const REQUIRED: &[&str] = &[
     "instructions",
-    "constitution",
     "summary_preamble",
     "context_notice",
     "folded_none",
@@ -204,37 +203,6 @@ pub fn shared() -> &'static Prompts {
     SHARED.get_or_init(|| Prompts::of(&[]))
 }
 
-/// The rules a project wrote for its agents, wrapped for one prompt row.
-///
-/// # Invariant
-///
-/// Read when a prompt row is written -- a turn's first step, a handover that
-/// moved, a directory that changed -- and never re-rendered for a step that
-/// stores nothing. A row in the database then says what was sent, which is the
-/// only way a transcript can be replayed.
-pub fn constitution(prompts: &Prompts, cwd: &Path) -> String {
-    let mut parts = Vec::new();
-    for path in machine_file().into_iter().chain(std::iter::once(cwd.join("AGENTS.md"))) {
-        match std::fs::read_to_string(&path) {
-            Ok(text) if !text.trim().is_empty() => parts.push(prompts.render(
-                "constitution",
-                &[("path", path.display().to_string().as_str()), ("content", text.trim())],
-            )),
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => {
-                tracing::warn!(file = %path.display(), error = %e, "cannot read the project's agent rules")
-            }
-        }
-    }
-    parts.join("\n\n")
-}
-
-/// Where the machine's own rules live, beside the roster it also keeps.
-fn machine_file() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".agents/agents.md"))
-}
-
 /// Fills `{{name}}` in one template.
 ///
 /// # Invariant
@@ -321,28 +289,6 @@ mod tests {
                 .map(|(name, text)| (name.to_string(), text.to_string()))
                 .collect(),
         )
-    }
-
-    /// The project's rules reach the prompt through its template, and an
-    /// edit is seen without a restart.
-    #[test]
-    fn the_session_rules_join_the_prompt() {
-        let dir = tempfile::tempdir().unwrap();
-        let prompts = Prompts::of(&[(
-            "constitution",
-            "The rules this project wrote at {{path}}:\n\n{{content}}",
-        )]);
-        std::fs::write(dir.path().join("AGENTS.md"), "- never force push\n").unwrap();
-        let said = super::constitution(&prompts, dir.path());
-        assert!(said.contains("never force push"), "{said}");
-        assert!(
-            said.contains("The rules this project wrote"),
-            "the wrapper is part of what the model reads: {said}"
-        );
-        std::fs::write(dir.path().join("AGENTS.md"), "- never rebase alone\n").unwrap();
-        let again = super::constitution(&prompts, dir.path());
-        assert!(again.contains("never rebase alone"), "{again}");
-        assert!(!again.contains("never force push"), "{again}");
     }
 
     #[test]

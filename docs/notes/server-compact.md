@@ -123,7 +123,7 @@ Three things make that acceptable rather than dangerous:
 ## "The transcript is never rewritten" meant the server
 
 That sentence was the user's own rule about live templates and injected rules: reloading
-`config.toml` or `AGENTS.md` must not reach into a conversation already under way and
+`config.toml` must not reach into a conversation already under way and
 edit what was said. It is still true, and the `#[cfg(test)]` on `set_summary` is still
 its proof in code. What was wrong was reading it as *nothing may ever delete a row*.
 
