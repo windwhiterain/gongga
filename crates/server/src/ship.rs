@@ -136,6 +136,7 @@ pub fn install_at(roots: &Roots, ship: &Ship) -> anyhow::Result<Report> {
             }
         }
     };
+    let _ = ROOTS.set(roots.clone());
     let mut report = Report {
         pin: ship.commit.clone(),
         fetched,
@@ -481,6 +482,21 @@ fn has_commit(cache: &Path, commit: &str) -> bool {
         .output()
         .map(|out| out.status.success())
         .unwrap_or(false)
+}
+
+/// The roots this process installed into.
+static ROOTS: OnceLock<Roots> = OnceLock::new();
+
+/// Where the skills are: the roots of the last install, or the home this process
+/// would have used if it had installed.
+pub fn roots() -> &'static Roots {
+    ROOTS.get_or_init(|| {
+        let home = std::env::var_os("GONGGA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| dirs::home_dir().map(|h| h.join(".gongga")))
+            .unwrap_or_else(|| PathBuf::from(".gongga"));
+        Roots::of(&home)
+    })
 }
 
 /// `git` by name: it is what the machine has, and a path resolved at build time

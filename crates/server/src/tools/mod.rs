@@ -22,6 +22,7 @@ use crate::tools::detached::DetachedRegistry;
 pub mod bash;
 pub mod detached;
 pub mod harness;
+pub mod index_skill;
 #[cfg(windows)]
 pub mod job;
 #[cfg(test)]
@@ -181,6 +182,7 @@ impl ToolRegistry {
                 Box::new(CheckBashTool { max_output_chars }),
                 Box::new(DelBashTool),
                 Box::new(ListBashTool),
+                Box::new(index_skill::IndexSkillTool),
             ],
         }
     }
@@ -1175,7 +1177,9 @@ mod tests {
         let reg = ToolRegistry::with_builtins(Duration::from_secs(30), 8_000);
         assert_eq!(
             reg.names(),
-            vec!["bash", "check_bash", "del_bash", "list_bash"]
+            // SPEC's four bash verbs, and the skill index that replaces the
+            // prompt's instruction to go and grep for them.
+            vec!["bash", "check_bash", "del_bash", "list_bash", "index_skill"]
         );
         // Added by the server, which owns the dispatch it calls through.
         assert!(reg.get("harness").is_none());
