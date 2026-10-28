@@ -64,8 +64,8 @@ impl Prompts {
         }
     }
 
-    /// The templates whose text differs from the shipped default: a new home is
-    /// a copy of that file, so only a wording someone changed counts.
+    /// Templates whose text differs from the shipped default -- a new home is a
+    /// copy of it, so only an edit counts.
     pub fn overridden(&self) -> Vec<String> {
         let mut names: Vec<String> = self
             .templates()

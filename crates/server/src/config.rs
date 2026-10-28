@@ -280,11 +280,8 @@ impl Config {
             .unwrap_or_else(|| DEFAULT_BIND.to_string())
             .parse()?;
 
-        // No key means anyone on the network drives this shell; mint one and store it.
-        // The key is its own file, not a line in `config.toml`: that file is shipped
-        // content a reader edits and the harness merges, and a secret must not ride in
-        // something two parties rewrite. An old home keeps working -- the section there
-        // is still read.
+        // No key means anyone on the network drives this shell: mint one into
+        // `server.key`, not into the merged config.toml.
         let key_path = home.join("server.key");
         let key = env_or("GONGGA_KEY")
             .or_else(|| read_key_file(&key_path))
@@ -689,8 +686,8 @@ mod tests {
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
-    /// The key file holds the key and nothing else, which is what lets the config
-    /// beside it be installed, edited and merged without a secret riding along.
+    /// The key file holds the key alone, so the config beside it can be merged
+    /// without a secret riding along.
     #[test]
     fn the_key_is_a_file_of_its_own() {
         let d = tempfile::tempdir().unwrap();
@@ -725,8 +722,8 @@ mod tests {
         assert!(!d.path().join("server.key").exists(), "nothing was minted to replace a key that was already there");
     }
 
-    /// A home with no config at all gets the starter, and the starter says nothing about
-    /// keys -- that is the file beside it's business.
+    /// A home with no config gets the starter, which says nothing about keys:
+    /// those belong to the file beside it.
     #[test]
     fn a_new_home_gets_the_starter_without_a_key_in_it() {
         let d = tempfile::tempdir().unwrap();

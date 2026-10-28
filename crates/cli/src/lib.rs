@@ -1109,8 +1109,8 @@ fn resolve_server_with(args: &Connection, env: &Env) -> anyhow::Result<SocketAdd
     Ok(DEFAULT_SERVER.parse().unwrap())
 }
 
-/// `--key`, then `GONGGA_KEY`, then `<home>/server.key`, then the `[server] key`
-/// a pre-split home still keeps in its config.toml.
+/// `--key`, then `GONGGA_KEY`, then `<home>/server.key`, then a `[server] key`
+/// a pre-split home still has.
 fn resolve_key(args: &Connection) -> Option<String> {
     resolve_key_with(args, &process_env)
 }
