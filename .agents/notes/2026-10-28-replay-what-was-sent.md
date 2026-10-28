@@ -101,12 +101,32 @@ Whether a prose edit may land mid-turn was the open fork last round; the user an
 it -- 入库的不改 -- and this is that answer in code. The cost is one boundary step, and
 the recovery is the step after it.
 
+## The release step is a script now
+
+Two names have to agree for a pin to mean anything -- the commit `ship/` points at and
+the `commit` in `crates/server/ship.toml` -- and forgetting the second half fails
+silently: a home installs the old prose and the log line looks fine. `scripts/ship.sh`
+commits, pushes, writes the sha, stages the submodule, and then checks that ship HEAD,
+the remote's `main` and the manifest are the same commit. It refuses to push when the
+remote has commits `ship/` does not (never force), requires `-m` when there are changes,
+and in `--check` mode distinguishes "ahead, not published yet" from "diverged".
+`--push-main` is opt-in because publishing this repository is a separate decision.
+
+`scripts/ship_selftest.sh` proves it against a throwaway bare remote in `/tmp`, on a
+clone of this repo, with no network: 12 checks covering an untouched clone (detached at
+the pin, so `--check` agrees), `--dry-run` writing nothing, the missing-`-m` guard, a
+full publish (the prose reaches the remote, the manifest matches, both are staged), and
+both drift cases. Verified here too: `scripts/ship.sh --check` against GitHub reports
+`in agreement` at f8e504c.
+
 ## Gates
 
-`cargo test --workspace` 218 server tests (new: `usage_keeps_what_the_provider_cached`,
-`a_prompt_row_is_sent_and_never_repeated_as_history`,
-`a_dangling_call_is_closed_with_a_row_not_a_fiction`, `the_prompt_is_rebuilt_only_when_something_moved`),
-`test-layout-check` 0, `comments-check` 0, and `python scripts/replay_audit.py` reports
-`FAILURES: none`. Smoke servers and fakes were killed by pid; `tasklist` shows no
+`cargo test --workspace` 218 server tests (new:
+`usage_keeps_what_the_provider_cached`, `a_prompt_row_is_sent_and_never_repeated_as_history`,
+`a_dangling_call_is_closed_with_a_row_not_a_fiction`,
+`the_prompt_is_rebuilt_only_when_something_moved`), `test-layout-check` 0,
+`comments-check` 0, `python scripts/replay_audit.py` and `bash scripts/ship_selftest.sh`
+both `FAILURES: none`. Smoke servers and fakes were killed by pid; `tasklist` shows no
 `gongga-server.exe` and nothing listening on the scratch ports.
+
 

@@ -16,6 +16,24 @@
   cargo install --git https://github.com/windwhiterain/comments-test comments-check --locked
   comments-check --config comments-check.toml
   ```
+## 发布（改过 ship 内容之后）
+
+`ship/` 是内容仓库在本仓库里的 submodule，所以「发布」有两个名字要一致：远端的 commit 和
+`crates/server/ship.toml` 的 `commit`。`scripts/ship.sh` 一次做完，并校验三处一致：
+
+```bash
+scripts/ship.sh --check                # ship HEAD / 远端 main / ship.toml 是否说的是同一个 commit
+scripts/ship.sh --dry-run -m "..."     # 会做什么（不写不推）
+scripts/ship.sh -m "..."               # 提交 + push ship + 把 sha 写进 ship.toml + 这里 git add
+scripts/ship.sh -m "..." --push-main  # 再把本仓库的 pin 提交并 push
+```
+
+- 有改动时 `-m` 必填：脚本不替你编一条发布说明。
+- 远端 main 上有 ship/ 没有的提交就拒绝 push，从不 force-push；`--check` 会把这种漂移说清楚。
+- pin 是 `include_str!`，所以改完要 `cargo build -p gongga-server` 才生效，运行中的服务端还得 `evolve`。
+- 它自己有测试：`bash scripts/ship_selftest.sh` 拿一个临时 bare 仓库当远端，跑通提交、push、写 pin、
+  漂移拒绝全过程，不碰 GitHub。
+
 ## 自我进化（改服务端之后怎么让自己用上）
 
 整套流程在 `evolve` skill（`$GONGGA_HOME/skills/evolve/SKILL.md`），脚本是它旁边的
