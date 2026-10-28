@@ -448,10 +448,8 @@ impl Agent {
                             total = u.total_tokens.unwrap_or(0),
                             "provider usage"
                         );
-                        // Whether this request's prefix was the previous one is a question
-                        // only the provider can answer, and the log line scrolls away. The
-                        // ledger is what makes "did the replay hold the cache?" answerable
-                        // after the turn, per step, with the model that answered.
+                        // The row outlives the log line: "did the replay hold the
+                        // cache?" is asked after the turn, per step.
                         let _ = self.store.append_event(
                             Some(id),
                             "usage",

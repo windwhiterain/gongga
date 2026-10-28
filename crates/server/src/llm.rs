@@ -1575,8 +1575,8 @@ mod tests {
         assert_eq!(other, "HTTP 400 Bad Request: unknown parameter");
     }
 
-    /// The cached count is the provider's answer to "was the prefix the same?", so
-    /// reading it must not depend on which optional keys it chose to send.
+    /// Which optional keys the provider chose to send must not decide whether the
+    /// cached count is read.
     #[test]
     fn usage_keeps_what_the_provider_cached() {
         let warm: Usage = serde_json::from_value(json!({
