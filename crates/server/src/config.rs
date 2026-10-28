@@ -281,13 +281,19 @@ impl Config {
             .parse()?;
 
         // No key means anyone on the network drives this shell; mint one and store it.
+        // The key is its own file, not a line in `config.toml`: that file is shipped
+        // content a reader edits and the harness merges, and a secret must not ride in
+        // something two parties rewrite. An old home keeps working -- the section there
+        // is still read.
+        let key_path = home.join("server.key");
         let key = env_or("GONGGA_KEY")
+            .or_else(|| read_key_file(&key_path))
             .or_else(|| file.server.as_ref().and_then(|s| s.key.clone()))
             .filter(|v| !v.is_empty())
             .unwrap_or_else(|| {
                 let generated = generate_key();
-                if let Err(e) = persist_key(&config_path, &generated) {
-                    tracing::warn!(error = %e, "could not save the generated key; it is only valid for this run");
+                if let Err(e) = persist_key(&key_path, &generated) {
+                    tracing::warn!(file = %key_path.display(), error = %e, "could not save the generated key; it is only valid for this run");
                 }
                 generated
             });
@@ -427,23 +433,22 @@ impl Config {
         })
     }
 
-    /// Writes a commented starter config if none exists yet.
+    /// Writes a commented starter config into a home that has none.
     ///
     /// # Invariant
     ///
-    /// A file the reader has touched is never rewritten: "untouched" means the
-    /// key and nothing else, which is all a first start leaves behind. Anything
-    /// else in the file is the reader's, and the template is not worth an edit.
-    /// See `docs/notes/server-config.md`.
+    /// A file that exists is left alone. The key used to make this rule awkward --
+    /// a first start left a file holding nothing but a key, which was not the
+    /// reader's yet -- and now that the key is its own file, "absent" is the only
+    /// condition. See `docs/notes/server-config.md`.
     pub fn write_default_if_absent(&self) -> anyhow::Result<()> {
         let path = self.home.join("config.toml");
-        if path.exists() && !is_key_only(&path)? {
+        if path.exists() {
             return Ok(());
         }
         let text = crate::prompts::starter(&[
             ("bind", Value::text(self.bind.to_string())),
             ("db", Value::text(toml_path(&self.db_path))),
-            ("key", Value::text(self.key.as_str())),
             (
                 "provider",
                 Value::text(self.llm.provider.clone().unwrap_or_default()),
@@ -468,15 +473,6 @@ impl Config {
     }
 }
 
-/// Whether a config file holds only the key minted at first start.
-fn is_key_only(path: &Path) -> anyhow::Result<bool> {
-    let file = read_file(path)?;
-    let key_only = file
-        .server
-        .as_ref()
-        .is_some_and(|s| s.key.is_some() && s.home.is_none() && s.db.is_none() && s.bind.is_none());
-    Ok(key_only && file.llm.is_none() && file.tools.is_none() && file.agent.is_none())
-}
 
 /// Picks the roster entry the server should talk to.
 ///
@@ -550,21 +546,22 @@ fn generate_key() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
 
-/// Writes `key` back into config.toml, preserving everything else in it.
+/// Writes the key as the whole contents of its own file.
 fn persist_key(path: &Path, key: &str) -> anyhow::Result<()> {
-    let mut file = if path.exists() {
-        read_file(path).unwrap_or_default()
-    } else {
-        FileConfig::default()
-    };
-    let mut server = file.server.take().unwrap_or_default();
-    server.key = Some(key.to_string());
-    file.server = Some(server);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, toml::to_string_pretty(&file)?)?;
+    std::fs::write(path, format!("{key}\n"))?;
     Ok(())
+}
+
+/// The key file, trimmed; no file and an empty file both mean "not here", so
+/// the next source still gets its turn.
+fn read_key_file(path: &Path) -> Option<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|t| t.trim().to_string())
+        .filter(|v| !v.is_empty())
 }
 
 fn read_file(path: &Path) -> anyhow::Result<FileConfig> {
@@ -692,34 +689,53 @@ mod tests {
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
+    /// The key file holds the key and nothing else, which is what lets the config
+    /// beside it be installed, edited and merged without a secret riding along.
     #[test]
-    fn persisting_a_key_keeps_the_rest_of_the_file() {
+    fn the_key_is_a_file_of_its_own() {
         let d = tempfile::tempdir().unwrap();
-        let path = d.path().join("config.toml");
-        std::fs::write(&path, "[llm]\nmodel = \"keep\"\n").unwrap();
-        persist_key(&path, "abc").unwrap();
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("model = \"keep\""), "{text}");
-        let cfg = read_file(&path).unwrap();
-        assert_eq!(cfg.server.unwrap().key.as_deref(), Some("abc"));
+        let config = d.path().join("config.toml");
+        std::fs::write(&config, "[llm]\nmodel = \"keep\"\n").unwrap();
+        let key = d.path().join("server.key");
+        persist_key(&key, "abc").unwrap();
+        assert_eq!(std::fs::read_to_string(&key).unwrap(), "abc\n");
+        assert_eq!(read_key_file(&key).as_deref(), Some("abc"));
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            "[llm]\nmodel = \"keep\"\n",
+            "saving a key must not touch the config"
+        );
+        // An absent file and an empty one both mean the next source gets its turn.
+        assert_eq!(read_key_file(&d.path().join("nothing.key")), None);
+        std::fs::write(&key, "\n").unwrap();
+        assert_eq!(read_key_file(&key), None);
     }
 
-    /// The template replaces a first start's key-only file; the fields it teaches matter.
+    /// A home whose key predates the separate file still works, and its config is not
+    /// rewritten under it.
     #[test]
-    fn the_template_replaces_a_file_holding_only_the_generated_key() {
+    fn a_key_left_in_the_config_still_works_and_buys_its_file_quietly() {
         let d = tempfile::tempdir().unwrap();
         let path = d.path().join("config.toml");
         std::fs::write(&path, "[server]\nkey = \"abc\"\n").unwrap();
         let cfg = Config::load_with_home(Some(&path), Some(d.path())).unwrap();
+        assert_eq!(cfg.key, "abc", "the old place is still read");
+        cfg.write_default_if_absent().unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[server]\nkey = \"abc\"\n");
+        assert!(!d.path().join("server.key").exists(), "nothing was minted to replace a key that was already there");
+    }
+
+    /// A home with no config at all gets the starter, and the starter says nothing about
+    /// keys -- that is the file beside it's business.
+    #[test]
+    fn a_new_home_gets_the_starter_without_a_key_in_it() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("config.toml");
+        let cfg = Config::load_with_home(Some(&path), Some(d.path())).unwrap();
         cfg.write_default_if_absent().unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("key = \"abc\""), "the key is kept: {text}");
-        assert!(
-            text.contains("builtin_tools"),
-            "the roster fields are taught: {text}"
-        );
-        assert!(text.contains("modalities"), "{text}");
-        assert!(text.contains("[agent]"), "{text}");
+        assert!(!text.contains("key = \""), "the key is not a config field: {text}");
+        assert!(text.contains("[prompts]"), "{text}");
     }
 
     /// A file the reader has edited is left alone, even if it says very little.

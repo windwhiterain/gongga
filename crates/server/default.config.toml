@@ -4,12 +4,13 @@
 # with the `{{...}}` placeholders filled in for this machine, and it is also the
 # fallback every prompt reads when a home's own config says nothing about it.
 #
-# Every value can be overridden by a GONGGA_* environment variable.
+# Every value can be overridden by a GONGGA_* environment variable. The connection
+# key is not one of them: it lives beside this file in `server.key`, so this file
+# can be installed, edited and merged without a secret riding along in it.
 
 [server]
 bind = "{{bind}}"
 db = "{{db}}"
-key = "{{key}}"
 
 [llm]
 # Which provider to talk to. These are left commented out on purpose:

@@ -270,8 +270,8 @@ async fn run() -> anyhow::Result<()> {
         "llm roster imported"
     );
     tracing::info!(
-        key = %cfg.home.join("config.toml").display(),
-        "clients must present the [server] key from this file (or pass --key)"
+        key = %cfg.home.join("server.key").display(),
+        "clients must present the key from this file (or pass --key)"
     );
     tracing::info!(
         home = %cfg.home.display(),

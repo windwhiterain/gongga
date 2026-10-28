@@ -78,6 +78,13 @@ one field, which is why there is nothing else to override.
 Without a key anyone on the network could drive this machine's shell, so an
 unconfigured server mints one and writes it down rather than starting open.
 
+It writes it to `server.key`, beside the config and not inside it. A config file
+is content the harness ships, a reader edits, and the two merge; a minted secret
+has no business in a document with two authors, because the merge would either
+overwrite the secret or be blocked by it. A home that predates the split keeps
+working: `[server] key` in its config.toml is still read, after the key file and
+before a fresh mint, so no home is told its own clients are suddenly wrong.
+
 ## Config::load_with_home (roster)
 
 The roster (`~/.agents/llm.toml`) is the machine's own list of providers,
@@ -155,23 +162,28 @@ The roster is what makes "no `[llm]` section" work. These are the four ways a
 configuration can name something, and the one way it can be wrong: a typo must
 not stop the server from starting.
 
-## is_key_only
+## persist_key, read_key_file
 
-A first start mints a key and writes it, and that was the whole of config.toml:
-the annotated template never appeared, because the file already existed by the
-time the template writer ran. So the one document that explains the fields was
-unreachable on a fresh home.
+One line, the key, nothing else: the file is read with a trim, so an editor's
+trailing newline is not part of the secret. An absent file and an empty file mean
+the same thing -- "not here" -- so a half-written key file falls through to the
+next source instead of authenticating with an empty string, which would be the
+same hole as having no key at all.
 
-"Untouched" is now the test: a file whose only content is the generated key is
-replaced by the template (with the same key), and a file with any other field in
-it is left exactly as it is. The distinction is the reader's own edit, not a
-guess about intent.
+## write_default_if_absent
 
-## tests::the_template_replaces_a_file_holding_only_the_generated_key
+"A file that exists is left alone" used to need a qualifier: the first start
+minted a key into config.toml, so by the time the template writer ran the file
+already existed, and the one document that explains the fields never reached the
+disk. The exception judged a file as untouched when it held only that key. With
+the key next door there is nothing left to excuse: absent means write, and
+anything else is the reader's.
 
-The template is the documentation users actually read, so it has to reach the
-disk on a first start -- and the key it already generated has to survive, or the
-next start would mint another one and every client's key would go stale.
+## tests::a_key_left_in_the_config_still_works_and_buys_its_file_quietly
+
+The old place is not a migration project: a home that has the key in its config
+resolves it, is not rewritten, and is not handed a second key file it will never
+use. Two answers to "where is the key" are worse than the old one.
 
 ## tests::the_template_never_rewrites_a_file_someone_edited
 

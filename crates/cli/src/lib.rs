@@ -1109,7 +1109,8 @@ fn resolve_server_with(args: &Connection, env: &Env) -> anyhow::Result<SocketAdd
     Ok(DEFAULT_SERVER.parse().unwrap())
 }
 
-/// `--key`, then `GONGGA_KEY`, then `[server] key` in config.toml.
+/// `--key`, then `GONGGA_KEY`, then `<home>/server.key`, then the `[server] key`
+/// a pre-split home still keeps in its config.toml.
 fn resolve_key(args: &Connection) -> Option<String> {
     resolve_key_with(args, &process_env)
 }
@@ -1119,6 +1120,13 @@ fn resolve_key_with(args: &Connection, env: &Env) -> Option<String> {
         return Some(k.clone());
     }
     if let Some(k) = env("GONGGA_KEY") {
+        return Some(k);
+    }
+    if let Some(k) = std::fs::read_to_string(home_dir(args.home.as_deref()).join("server.key"))
+        .ok()
+        .map(|t| t.trim().to_string())
+        .filter(|v| !v.is_empty())
+    {
         return Some(k);
     }
     config_value(args, |c| c.server.as_ref().and_then(|s| s.key.clone()))
