@@ -36,6 +36,13 @@ goodbye floods the log.
 Clone the sender out and drop the lock before awaiting: a slow peer must not
 stall the loop that every other peer also goes through.
 
+Every lock on `conns` takes a poisoned guard as its data
+(`unwrap_or_else(|e| e.into_inner())`), which is what the rest of this server
+already does. This map is the address table the accept loop reads on every
+datagram: an `unwrap` here would let one panic anywhere in the process become
+the network thread dying as well, and every client would then see the exact
+silence `catch_unwind` was added to the turn for.
+
 ## serve (stale sender)
 
 The connection task is on its way out and will release the entry itself. Only

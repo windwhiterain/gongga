@@ -69,6 +69,18 @@ impl ChannelConfig {
     pub fn payload_capacity(&self) -> usize {
         self.mtu.saturating_sub(HEADER_LEN).max(1)
     }
+
+    /// The bounds the timer arithmetic assumes: `clamp` wants `min <= max`, and
+    /// `interval` wants a non-zero period.
+    fn normalized(mut self) -> Self {
+        if self.min_rto > self.max_rto {
+            std::mem::swap(&mut self.min_rto, &mut self.max_rto);
+        }
+        if self.tick.is_zero() {
+            self.tick = Self::default().tick;
+        }
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -320,6 +332,7 @@ struct ChannelCore {
 
 impl ChannelCore {
     fn new(cfg: ChannelConfig, role: Role, conn_id: u32) -> Self {
+        let cfg = cfg.normalized();
         let rto = cfg.initial_rto;
         let window = cfg.window;
         Self {
@@ -527,14 +540,18 @@ impl ChannelCore {
     }
 
     fn effective_rto(&self) -> Duration {
-        let doubled = self.rto * 2u32.saturating_pow(self.backoff.min(8));
+        let doubled = self
+            .rto
+            .saturating_mul(2u32.saturating_pow(self.backoff.min(8)));
         doubled.clamp(self.cfg.min_rto, self.cfg.max_rto)
     }
 
     /// Per-packet RTO; per-channel backoff would stall all other packets on one loss.
     fn packet_rto(&self, retransmits: u32) -> Duration {
         let factor = 1u32 << retransmits.min(5);
-        (self.rto * factor).clamp(self.cfg.min_rto, self.cfg.max_rto)
+        self.rto
+            .saturating_mul(factor)
+            .clamp(self.cfg.min_rto, self.cfg.max_rto)
     }
 
     /// Delivers a data frame that has arrived in sequence order.

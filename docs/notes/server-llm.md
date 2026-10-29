@@ -50,6 +50,15 @@ An unknown streamed error kind stays retryable: providers invent their own
 spellings, and giving up on one this code has not heard of is worse than one
 extra try.
 
+A panic is one attempt's failure, not the stream's end. Reading a response runs
+inside `catch_unwind`, so a beat this code cannot survive arrives as a retryable
+failure rather than unwinding past the loop. Before that, a panicking read
+dropped the event channel, the caller saw a stream that had merely stopped, and
+the turn ended in `Error` with no retry and no reason for either. A stream that
+ends with neither a completion nor a failure reports itself the same way.
+Whether it gets tried again is still the produced rule: text already forwarded
+cannot be unsaid, so an attempt that spoke keeps its partial answer and fails.
+
 ## LlmClient::build_body
 
 The Responses API's spelling for "how hard to think", which the roster records

@@ -27,6 +27,16 @@ The defaults are sized for a LAN/Internet link between a single CLI and a single
 server, where round trips are a few milliseconds and messages are at most a few
 hundred kilobytes.
 
+Every field of `ChannelConfig` is public and the struct is what each front end
+builds with `..ChannelConfig::default()`, so a caller can hand over bounds that
+the arithmetic was written to assume are sane. `ChannelCore::new` settles the two
+it cannot check: `clamp` panics when `min_rto > max_rto`, so the pair is taken in
+whichever order it arrived, and `tokio::time::interval` asserts a non-zero
+period, so a zero `tick` becomes the default one. Settled at construction rather
+than at each use, because the task that would notice is the channel's own I/O
+task -- it has no caller to report to. Backing off multiplies the RTO, so
+`effective_rto` and `packet_rto` saturate for the same reason.
+
 ## Inbound
 
 Two things must not live in the I/O task: how far behind the caller is, and the

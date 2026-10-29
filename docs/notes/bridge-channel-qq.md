@@ -36,6 +36,10 @@ Go/Python/Node/Java；QQ 的 gateway 是 WebSocket 上的 JSON，`tokio-tungsten
 
 提前一分钟过期：一个在请求中途过期的 token，会变成一个事后没人能查明白的 401。
 
+ttl 大到时钟加不出那个时刻时，不写缓存：`Instant + Duration` 溢出是 panic，而 panic 发生在这把
+锁还握着的时候 -- 之后每一次取 token 都会跟着炸，bridge 就此永久废掉。留空等于下次重新要一个，
+和一个已经过期的 token 走的是同一条路。
+
 ## Inbox::last_s
 
 最后见到的 sequence number。随心跳一起发出去，平台据此区分「活着但安静」的连接和已经死掉的连接。
@@ -44,6 +48,9 @@ Go/Python/Node/Java；QQ 的 gateway 是 WebSocket 上的 JSON，`tokio-tungsten
 
 连上、说 hello、identify。这里的错误由 [`recv`](Self::recv) 重试，所以网络抖动不会弄死
 bridge。
+
+心跳间隔取自 op 10 hello，是平台直接给的一个数：大到时钟排不下的间隔，和没有间隔一样不可用，
+按 30 秒处理。这里不夹取，因为 `Instant + Duration` 越界会 panic，而 panic 只是把坏值藏起来。
 
 ## Outbox::send
 

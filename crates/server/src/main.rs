@@ -159,7 +159,7 @@ async fn run() -> anyhow::Result<()> {
     // Installed before anything reads it: a config already here is the reader's.
     let installed = ship::install(&cfg.home)?;
     tracing::info!(
-        pin = %&installed.pin[..10],
+        pin = %installed.pin.get(..10).unwrap_or(installed.pin.as_str()),
         written = installed.written,
         updated = installed.updated,
         merged = installed.merged,

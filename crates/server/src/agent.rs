@@ -754,7 +754,7 @@ enum TurnOutcome {
 }
 
 /// What a panicking task carries, as text.
-fn panic_message(payload: &(dyn Any + Send)) -> String {
+pub(crate) fn panic_message(payload: &(dyn Any + Send)) -> String {
     if let Some(text) = payload.downcast_ref::<&str>() {
         (*text).to_string()
     } else if let Some(text) = payload.downcast_ref::<String>() {

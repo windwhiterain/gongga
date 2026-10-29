@@ -77,13 +77,17 @@ pub async fn serve(cfg: Arc<Config>, d: Arc<Dispatch>, bus: EventBus) -> anyhow:
 
         // Clone the sender, drop the lock: a slow peer must not stall the loop.
         // A full inbox is ARQ's to retry.
-        let known = conns.lock().unwrap().get(&peer).map(|p| p.tx.clone());
+        let known = conns
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&peer)
+            .map(|p| p.tx.clone());
         if let Some(tx) = known {
             match tx.try_send(frame) {
                 Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {}
                 Err(mpsc::error::TrySendError::Closed(_)) => {
                     // Evict only if the address still maps to this sender, not a reconnect.
-                    let mut map = conns.lock().unwrap();
+                    let mut map = conns.lock().unwrap_or_else(|e| e.into_inner());
                     let stale = map
                         .get(&peer)
                         .map(|p| p.tx.same_channel(&tx))
@@ -109,7 +113,10 @@ pub async fn serve(cfg: Arc<Config>, d: Arc<Dispatch>, bus: EventBus) -> anyhow:
             continue;
         }
         let conn_id = next_id.fetch_add(1, Ordering::Relaxed);
-        conns.lock().unwrap().insert(peer, Peer { tx, conn_id });
+        conns
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(peer, Peer { tx, conn_id });
         let channel = protocol::accept(
             socket.clone(),
             peer,
@@ -127,7 +134,7 @@ pub async fn serve(cfg: Arc<Config>, d: Arc<Dispatch>, bus: EventBus) -> anyhow:
             handle_connection(channel, d, bus, cfg, peer, conn_id).await;
             // Release the peer here: a client that merely vanishes is noticed
             // nowhere else. See `docs/notes/server-net.md`.
-            let mut map = conns.lock().unwrap();
+            let mut map = conns.lock().unwrap_or_else(|e| e.into_inner());
             let mine = map
                 .get(&peer)
                 .map(|p| p.conn_id == conn_id)

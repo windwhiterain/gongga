@@ -3,9 +3,10 @@
 //! See `docs/notes/server-llm.md`.
 
 use std::collections::HashMap;
+use std::panic::AssertUnwindSafe;
 use std::time::{Duration, Instant};
 
-use futures_util::StreamExt;
+use futures_util::{FutureExt, StreamExt};
 use protocol::ResponsePart;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -132,7 +133,9 @@ impl LlmClient {
     ///
     /// A failed, timed-out, or empty attempt is retried with a doubling delay:
     /// the caller always sees one stream, and each retry is announced as
-    /// [`LlmEvent::Retrying`]. See `docs/notes/server-llm.md`.
+    /// [`LlmEvent::Retrying`]. A panic inside one attempt is that attempt's
+    /// failure and enters the same loop, so it never ends this stream by
+    /// unwinding past it. See `docs/notes/server-llm.md`.
     pub fn stream(
         &self,
         instructions: &str,
@@ -184,6 +187,11 @@ impl LlmClient {
                 }
                 if completed && produced {
                     return;
+                }
+                // No completion, no failure: the read stopped short or died, and a
+                // retry needs a reason to announce.
+                if !completed && failure.is_none() {
+                    failure = Some((retry_reason(&None, false, produced), true));
                 }
                 // Empty completion or cut-short stream: both are retryable, so
                 // long as nothing said this attempt can never work.
@@ -540,103 +548,136 @@ async fn stream_once(
     let http = http.clone();
 
     tokio::spawn(async move {
-        let chars = body.to_string().len();
-        let started = Instant::now();
-        tracing::info!(%url, chars, "model request: sending");
-        let request = http
-            .post(&url)
-            .header("Accept", "text/event-stream")
-            .bearer_auth(api_key)
-            .json(&body);
-
-        let response = match request.send().await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(error = %e, elapsed = ?started.elapsed(), "model request: send failed");
-                let _ = tx
-                    .send(LlmEvent::Failed {
-                        message: format!("{e}"),
-                        retryable: true,
-                    })
-                    .await;
-                return;
-            }
-        };
-        tracing::info!(
-            status = %response.status(),
-            elapsed = ?started.elapsed(),
-            "model request: headers"
-        );
-        if !response.status().is_success() {
-            let status = response.status();
-            let text = response.text().await.unwrap_or_default();
-            tracing::warn!(%status, body = %summarise_error(&text), "model request: rejected");
+        let outcome = AssertUnwindSafe(read_stream(
+            &http,
+            &url,
+            &api_key,
+            &body,
+            idle_timeout,
+            &cancel,
+            &tx,
+        ))
+        .catch_unwind()
+        .await;
+        if let Err(payload) = outcome {
+            let message = crate::agent::panic_message(&*payload);
+            tracing::error!(error = %message, "model request: reading the stream panicked");
             let _ = tx
                 .send(LlmEvent::Failed {
-                    message: format!("HTTP {status}: {}", summarise_error(&text)),
-                    retryable: status_retryable(status),
+                    message: format!("reading the response panicked: {message}"),
+                    retryable: true,
+                })
+                .await;
+        }
+    });
+
+    rx
+}
+
+/// Reads one streamed response into events until it ends, is cancelled, or goes quiet.
+async fn read_stream(
+    http: &reqwest::Client,
+    url: &str,
+    api_key: &str,
+    body: &Value,
+    idle_timeout: Duration,
+    cancel: &CancellationToken,
+    tx: &mpsc::Sender<LlmEvent>,
+) {
+    let chars = body.to_string().len();
+    let started = Instant::now();
+    tracing::info!(%url, chars, "model request: sending");
+    let request = http
+        .post(url)
+        .header("Accept", "text/event-stream")
+        .bearer_auth(api_key)
+        .json(body);
+
+    let response = match request.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, elapsed = ?started.elapsed(), "model request: send failed");
+            let _ = tx
+                .send(LlmEvent::Failed {
+                    message: format!("{e}"),
+                    retryable: true,
                 })
                 .await;
             return;
         }
+    };
+    tracing::info!(
+        status = %response.status(),
+        elapsed = ?started.elapsed(),
+        "model request: headers"
+    );
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        tracing::warn!(%status, body = %summarise_error(&text), "model request: rejected");
+        let _ = tx
+            .send(LlmEvent::Failed {
+                message: format!("HTTP {status}: {}", summarise_error(&text)),
+                retryable: status_retryable(status),
+            })
+            .await;
+        return;
+    }
 
-        let mut stream = response.bytes_stream();
-        let mut buf = String::new();
-        // item_id -> output item metadata, so deltas can be attributed.
-        let mut items: HashMap<String, ItemMeta> = HashMap::new();
-        // Idle silence is failure: no error, no EOF, nothing else wakes the turn.
-        let idle = tokio::time::sleep(idle_timeout);
-        tokio::pin!(idle);
+    let mut stream = response.bytes_stream();
+    let mut buf = String::new();
+    // item_id -> output item metadata, so deltas can be attributed.
+    let mut items: HashMap<String, ItemMeta> = HashMap::new();
+    // Idle silence is failure: no error, no EOF, nothing else wakes the turn.
+    let idle = tokio::time::sleep(idle_timeout);
+    tokio::pin!(idle);
 
-        loop {
-            tokio::select! {
-                _ = cancel.cancelled() => {
-                    let _ = tx.send(LlmEvent::Cancelled).await;
-                    return;
-                }
-                _ = &mut idle => {
-                    tracing::warn!(idle = ?idle_timeout, elapsed = ?started.elapsed(), "model request: no data");
-                    let _ = tx.send(LlmEvent::Failed {
-                        message: format!("no response data for {idle_timeout:?}"),
-                        retryable: true,
-                    }).await;
-                    return;
-                }
-                next = stream.next() => {
-                    let Some(chunk) = next else { break };
-                    idle.as_mut().reset(tokio::time::Instant::now() + idle_timeout);
-                    match chunk {
-                        Ok(bytes) => {
-                            buf.push_str(&String::from_utf8_lossy(&bytes));
-                            while let Some(block) = next_sse_block(&mut buf) {
-                                if let Some(event) = parse_sse_block(&block) {
-                                    if let Err(e) = handle(event, &mut items, &tx).await {
-                                        tracing::debug!(error = %e, "llm stream closed early");
-                                        return;
-                                    }
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => {
+                let _ = tx.send(LlmEvent::Cancelled).await;
+                return;
+            }
+            _ = &mut idle => {
+                tracing::warn!(idle = ?idle_timeout, elapsed = ?started.elapsed(), "model request: no data");
+                let _ = tx.send(LlmEvent::Failed {
+                    message: format!("no response data for {idle_timeout:?}"),
+                    retryable: true,
+                }).await;
+                return;
+            }
+            next = stream.next() => {
+                let Some(chunk) = next else { break };
+                idle.as_mut().reset(tokio::time::Instant::now() + idle_timeout);
+                match chunk {
+                    Ok(bytes) => {
+                        buf.push_str(&String::from_utf8_lossy(&bytes));
+                        while let Some(block) = next_sse_block(&mut buf) {
+                            if let Some(event) = parse_sse_block(&block) {
+                                if let Err(e) = handle(event, &mut items, tx).await {
+                                    tracing::debug!(error = %e, "llm stream closed early");
+                                    return;
                                 }
                             }
                         }
-                        Err(e) => {
-                            let _ = tx.send(LlmEvent::Failed { message: format!("{e}"), retryable: true }).await;
-                            return;
-                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(LlmEvent::Failed { message: format!("{e}"), retryable: true }).await;
+                        return;
                     }
                 }
             }
         }
-        // Flush the tail: a stream may end without its blank line, still holding
-        // a final event.
-        let tail = buf.trim_end_matches('\r').trim();
-        if !tail.is_empty() {
-            if let Some(event) = parse_sse_block(tail) {
-                let _ = handle(event, &mut items, &tx).await;
-            }
+    }
+    // Flush the tail: a stream may end without its blank line, still holding
+    // a final event.
+    let tail = buf.trim_end_matches('\r').trim();
+    if !tail.is_empty() {
+        if let Some(event) = parse_sse_block(tail) {
+            let _ = handle(event, &mut items, tx).await;
         }
-        tracing::info!(elapsed = ?started.elapsed(), "model request: stream ended");
-    });
-
-    rx
+    }
+    tracing::info!(elapsed = ?started.elapsed(), "model request: stream ended");
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

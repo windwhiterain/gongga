@@ -22,6 +22,9 @@ use crate::config::Qq as Config;
 const INTENTS: u32 = 1 << 25;
 
 const TOKEN_URL: &str = "https://bots.qq.com/app/getAppAccessToken";
+/// What to fall back to when hello names no heartbeat interval, or names one no
+/// clock can add to `now`.
+const DEFAULT_HEARTBEAT: Duration = Duration::from_secs(30);
 const LIVE_API: &str = "https://api.sgroup.qq.com";
 const SANDBOX_API: &str = "https://sandbox.api.sgroup.qq.com";
 
@@ -80,7 +83,7 @@ impl Token {
 
     async fn get(&self) -> anyhow::Result<String> {
         // Guard dropped before the await: a std mutex held across one deadlocks.
-        let cached = { self.cache.lock().unwrap().clone() };
+        let cached = { self.cache.lock().unwrap_or_else(|e| e.into_inner()).clone() };
         if let Some((token, until)) = cached {
             if Instant::now() < until {
                 return Ok(token);
@@ -110,10 +113,9 @@ impl Token {
         let ttl = loose_u64(&body["expires_in"]).unwrap_or(7200);
         // A minute early: a token that expires mid-request is a 401 for no
         // reason anyone can debug later.
-        *self.cache.lock().unwrap() = Some((
-            token.clone(),
-            Instant::now() + Duration::from_secs(ttl.saturating_sub(60)),
-        ));
+        let expires_at = Instant::now().checked_add(Duration::from_secs(ttl.saturating_sub(60)));
+        *self.cache.lock().unwrap_or_else(|e| e.into_inner()) =
+            expires_at.map(|until| (token.clone(), until));
         Ok(token)
     }
 }
@@ -159,9 +161,11 @@ impl Inbox {
 
         // op 10 hello carries the interval the platform wants to hear from us.
         let hello = self.read_frame().await.context("waiting for op 10 hello")?;
+        // An interval no clock can schedule is as unusable as the hello not naming one.
         self.heartbeat = loose_u64(&hello["d"]["heartbeat_interval"])
             .map(Duration::from_millis)
-            .unwrap_or(Duration::from_secs(30));
+            .filter(|every| Instant::now().checked_add(*every).is_some())
+            .unwrap_or(DEFAULT_HEARTBEAT);
         self.next_ping = Instant::now() + self.heartbeat;
 
         let identify = json!({
