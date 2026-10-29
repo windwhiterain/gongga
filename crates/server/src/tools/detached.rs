@@ -334,7 +334,11 @@ impl DetachedRegistry {
         registry.next_job += 1;
         let job = registry.next_job;
         let log = registry.logs.join(format!("{session}-{job}.log"));
-        let mut launched = DetachedJob::launch(&program, cwd, cmd, &log, &registry.env)?;
+        // A job outlives the shell that started it, so its session is a fact
+        // nothing inside it can learn any other way.
+        let mut env = registry.env.clone();
+        env.push(("GONGGA_SESSION".to_string(), session.to_string()));
+        let mut launched = DetachedJob::launch(&program, cwd, cmd, &log, &env)?;
         let id = match registry.store.add_detached_job(&DetachedRow {
             id: 0,
             session: session.to_string(),

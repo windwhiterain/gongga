@@ -40,6 +40,7 @@ note is a bug.
 | [`server-prompts.md`](server-prompts.md) | `crates/server/src/prompts.rs` |
 | [`server-providers.md`](server-providers.md) | `crates/server/src/providers.rs` |
 | [`server-session.md`](server-session.md) | `crates/server/src/session.rs` |
+| [`server-shell-command.md`](server-shell-command.md) | `crates/server/src/shell_command.rs` |
 | [`server-ship.md`](server-ship.md) | `crates/server/src/ship.rs` |
 | [`server-store.md`](server-store.md) | `crates/server/src/store.rs` |
 | [`server-tools-mod.md`](server-tools-mod.md) | `crates/server/src/tools/mod.rs` |
@@ -53,6 +54,7 @@ note is a bug.
 | note | source |
 | --- | --- |
 | [`cli-lib.md`](cli-lib.md) | `crates/cli/src/lib.rs` |
+| [`cli-bin-gongga.md`](cli-bin-gongga.md) | `crates/cli/src/bin/gongga.rs` |
 | [`cli-catalog.md`](cli-catalog.md) | `crates/cli/src/catalog.rs` |
 | [`cli-complete.md`](cli-complete.md) | `crates/cli/src/complete.rs` |
 | [`cli-commands.md`](cli-commands.md) | `crates/cli/src/commands.rs` |

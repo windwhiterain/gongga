@@ -8,8 +8,8 @@
 Cargo.toml                  workspace，resolver 3，edition 2024
 crates/protocol/  gongga-protocol   别名 protocol —— 帧、可靠 UDP 通道、消息词汇
 crates/server/    gongga-server     别名 server
-crates/cli/       gongga-cli        别名 cli —— 命令层（库，无二进制）
-crates/tui/       gongga-tui        别名 tui —— 终端前端 + `gongga` 二进制
+crates/cli/       gongga-cli        别名 cli —— 命令层（库，外加 `gongga` 命令行程序）
+crates/tui/       gongga-tui        别名 tui —— 终端前端 + `gongga-tui` 二进制
 crates/bridge/    gongga-bridge     别名 bridge —— IM 桥接器，见 §9
 ```
 
@@ -26,22 +26,25 @@ ratatui 与 crossterm 拖进了**每一个**只想发一条命令的调用：脚
 
 | crate | 是 | 不是 |
 |---|---|---|
-| `cli` | 命令目录、sticky、参数解析/渲染、`Client` 状态机、链路 `Link`、`LineKind` | 任何终端、任何二进制 |
-| `tui` | 终端渲染、输入行、补全弹窗、交互循环、`gongga` 二进制 | 命令是什么、协议长什么样 |
+| `cli` | 命令目录、sticky、参数解析/渲染、`Client` 状态机、链路 `Link`、`LineKind`、`gongga` 命令行 | 任何终端 |
+| `tui` | 终端渲染、输入行、补全弹窗、交互循环、`gongga-tui` 二进制 | 命令是什么、协议长什么样 |
 
-`gongga` 二进制因此落在 `tui` 里：它是**组装点**，也是唯一同时需要两半的程序。它只做三件事
-—— 按 `cli` 的定义解析命令行、把「没有命令」交给交互循环、把有命令的交给 `cli::run`。
-它不认识任何命令名，所以「加一条命令要改 tui」这件事不成立（SPEC 的
-「tui: transparent cli wrapper, do not know cmd」就是这条）。
+两个程序，各归一半。`gongga` 是命令层自己的 front-end：argv 进来，这条命令的事件出去，视野里
+没有终端；不带命令时它打印服务端在问候语里发布的那份目录。窗口是 `gongga-tui`，它是**组装点**，
+也是唯一同时需要两半的程序 —— 按 `cli` 的定义解析命令行、把「没有命令」交给交互循环、把有命令
+的交给 `cli::run`。两者都不认识任何命令名，所以「加一条命令要改前端」这件事不成立（SPEC 的
+「tui: transparent cli wrapper, do not know cmd」就是这条）。把自己叫什么也交给调用者：
+`cli::parse_argv(name, about)`，于是 `gongga --help` 与 `gongga-tui --help` 说的都是被运行的
+那个东西。
 
 **为什么 `tui` 连协议也不认识**：交互循环要收包发包，但它拿到的是 `Link::recv()` 给的字节和
 `Client::handle_bytes()` 的结果；问候语是一个不透明的 `Greeting`，应用它的是 `cli`。所以 `tui`
 的依赖里没有 `protocol` ——「线长什么样」仍然只有命令层知道。代价是 `cli` 多了三个薄封装
 （`Link::send/recv/goodbye`、`Client::handle_bytes`、`Greeting::apply`）。
 
-**方向有测试钉着**：`cli` 里断言「依赖里不得出现 tui/ratatui/crossterm，且自己不产二进制」，
-`tui` 里断言「必须依赖 cli」。两者都读 `include_str!("../Cargo.toml")`，谁把箭头调回去，
-测试会先红。
+**方向有测试钉着**：`cli` 里断言「依赖里不得出现 tui/ratatui/crossterm，且它的程序就是命令行
+那一个 `gongga`」，`tui` 里断言「必须依赖 cli」。两者都读 `include_str!("../Cargo.toml")`，
+谁把箭头调回去，测试会先红。
 
 **`tui` 的边界**：SPEC 说「tui: transparent cli wrapper, do not know cmd」。所以 tui 只认识
 「行」「候选词」「按键」，不认识命令、不认识协议。词汇本身由命令层定义、tui 拿来用
@@ -482,11 +485,14 @@ Shell **按 `session_name/bash_name` 建键**，所以一个会话持有的是�
   这个 shell，不受影响。
   这样超时不再是「活儿最多干多久」的预算 —— 长构建、长测试只是换了个地方继续跑，模型拿到
   新 shell 立刻可以干别的。
-- 每个 shell 启动时注入 `GONGGA_SERVER` / `GONGGA_HOME` / `GONGGA_CLI`（重建时同样注入）。
-  这是**模型驱动自己的唯一通道**：`bash` 跑在服务端的子进程里，不告诉它这些，它就既不知道
-  服务端的地址、也不知道客户端在哪，想取消或重启只剩从外面 `taskkill` 这一条路。
-  三个变量正好是 CLI 的两个 fallback 加一个可执行文件路径，所以 `$GONGGA_CLI cancel`、
-  `$GONGGA_CLI send_message --message hi --session main` 都不需要任何额外参数。
+- 每个 shell 启动时注入 `GONGGA_SERVER` / `GONGGA_HOME` / `GONGGA_CLI` / `GONGGA_SESSION`
+  和一条 POSIX 形态的 `PATH`（重建时同样注入）。这是**模型驱动自己的通道**：`bash` 跑在服务端的
+  子进程里，不告诉它这些，它就既不知道服务端的地址、也不知道自己属于哪个会话，想取消或重启只剩从
+  外面 `taskkill` 这一条路。`GONGGA_HOME` 与 `GONGGA_SERVER` 正好是 CLI 自己读的两个 fallback，
+  `PATH` 首位是服务端刚写进 `<home>/bin` 的那个 `gongga`，所以按名字调用就行：
+  `gongga cancel`、`gongga send_message --message hi --session $GONGGA_SESSION` 都不需要额外
+  参数。`$GONGGA_CLI` 是同一个程序的绝对路径，留给脚本和 launcher —— 它们不该依赖那条 `PATH`。
+  脚本的 env 也只有那三个变量：POSIX 化的 `PATH` 是给 shell 读的，解释器要的是原生那一条。
 
 `bash{command, name, background, detached}` 的三种跑法：
 
@@ -1299,6 +1305,10 @@ home 就空着，没有进程去 resume 这个回合 ���— 一次失败�
    而 `dev.sh server` 只把服务端复制进 `.dev/`，同级就没有 `gongga`，于是回退成裸名
    `gongga.exe` —— 不在 `PATH` 上，agent 拿到的是一条必死的命令。现在依次尝试
    同级 → `../target/debug/` → `PATH`，都没有才用裸名并 **warn**（否则这个死胡同无人可诊断）。
+   今天这条已经不只是补救：`cli_path()` 定出的绝对路径被写进 `<home>/bin/gongga` 这个 shim，
+   该目录排在每条 shell 的 `PATH` 首位，agent 按名字敲 `gongga <命令>` 就够了；`GONGGA_CLI`
+   仍是同一个路径，给脚本用。理由与两个坑（原生 `PATH` 被 Git Bash 改写、`cmd` 这个名字已经是
+   Windows 自己的 shell）在 `docs/notes/server-shell-command.md`。
 
 ### 仍然存在的风险（**未做**，需要你定）
 

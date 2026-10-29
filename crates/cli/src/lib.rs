@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, anyhow};
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches, Parser};
 use protocol::{
     ChannelConfig, ClientInfo, ClientMessage, Event, LogLevel, MessageEvent, ResponseEvent,
     ResponsePart, ServerMessage, SessionStatus, SessionSummary, ToolAnswerEvent, ToolStream,
@@ -61,7 +61,7 @@ impl Connection {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "gongga", about = "Gongga harness terminal client", version)]
+#[command(name = "gongga", version)]
 pub struct Args {
     #[command(flatten)]
     pub conn: Connection,
@@ -107,9 +107,14 @@ pub enum Sub {
     Cmd(Vec<String>),
 }
 
-/// Parses the command line, the one way both binaries do it.
-pub fn parse_argv() -> Args {
-    Args::parse()
+/// Parses the command line, one way for both binaries, each naming itself.
+pub fn parse_argv(name: &'static str, about: &'static str) -> Args {
+    let matches = Args::command()
+        .name(name)
+        .about(about)
+        .version(env!("CARGO_PKG_VERSION"))
+        .get_matches();
+    Args::from_arg_matches(&matches).expect("clap already rejected what it could not parse")
 }
 
 // Where rendered output goes
@@ -360,6 +365,11 @@ impl Client {
     /// The completion source for the input line, shared rather than copied.
     pub fn completer(&self) -> crate::SharedCompleter {
         Arc::new(self.catalog.clone())
+    }
+
+    /// The commands the server published, as published.
+    pub fn commands(&self) -> Vec<protocol::CommandSpec> {
+        self.catalog.commands()
     }
 
     fn handle(&mut self, msg: ServerMessage, sink: &mut dyn Sink) {
@@ -1116,6 +1126,53 @@ async fn run_once(client: &mut Client, link: &mut Link, command: &[String]) -> a
     }
 }
 
+/// Headless: the commands the server publishes, then exit.
+///
+/// # Invariant
+///
+/// The list is the greeting's, never a copy kept here: a script can register a
+/// command, and a front-end that named the built-in six would hide the seventh.
+pub async fn list_commands(args: &Args) -> anyhow::Result<()> {
+    let (client, link) = connect(args).await?;
+    let commands = client.commands();
+    link.goodbye().await;
+    println!(
+        "{} command(s); run one with `gongga <command> --<arg> <value>`.",
+        commands.len()
+    );
+    for command in commands {
+        // Who runs it is the reader's business: a client command is the
+        // operator's own, and a script's is not built in.
+        let target = match command.target {
+            protocol::CommandTarget::Server => String::new(),
+            protocol::CommandTarget::ServerScript => " [script]".to_string(),
+            protocol::CommandTarget::Client => " [client-side]".to_string(),
+        };
+        println!(
+            "{}{} -- {}\n    takes: {}",
+            command.name,
+            target,
+            command.summary,
+            signature(&command.args),
+        );
+    }
+    Ok(())
+}
+
+/// `--a (required), --b (optional)`, or `nothing` when a command takes none.
+fn signature(args: &[protocol::ArgSpec]) -> String {
+    if args.is_empty() {
+        return "nothing".to_string();
+    }
+    args.iter()
+        .map(|a| {
+            let needed = if a.required { "required" } else { "optional" };
+            format!("--{} ({needed})", a.name)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 // Connection
 
 /// A resolved address and key, fixed for the life of the process.
@@ -1452,11 +1509,10 @@ mod tests {
                 "the command layer must not depend on {forbidden}:\n{deps}"
             );
         }
-        // And no `[[bin]]` either: the binary is the composition root, compared
-        // as a whole line so a comment cannot match.
+        // Its one program is the command line; the terminal is another crate.
         assert!(
-            !manifest.lines().any(|l| l.trim() == "[[bin]]"),
-            "{manifest}"
+            manifest.lines().any(|l| l.trim() == "name = \"gongga\""),
+            "the command layer's own binary is the command line:\n{manifest}"
         );
     }
 

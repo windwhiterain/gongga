@@ -814,25 +814,6 @@ async fn del_session(d: &Dispatch, args: &Args) -> Outcome {
     finish_delete(d, &name, was_busy, dropped).await
 }
 
-/// Defers only self-deletion until the calling turn has released its gate.
-pub fn delete_own_session(d: &Arc<Dispatch>, args: &Args, caller: &str) -> Option<Outcome> {
-    if args.get("session").map(String::as_str) != Some(caller) {
-        return None;
-    }
-    let name = caller.to_string();
-    let (was_busy, dropped) = prepare_delete(d, &name);
-    let d = d.clone();
-    tokio::spawn(async move {
-        let outcome = finish_delete(&d, &name, was_busy, dropped).await;
-        if !outcome.ok {
-            tracing::error!(session = %name, error = %outcome.message, "deferred session deletion failed");
-        }
-    });
-    Some(Outcome::ok(format!(
-        "deleting session {caller} after the current turn, including all of its bash"
-    )))
-}
-
 /// Stops one session's turn and drops its pending rows, unlike `cancel`.
 fn interrupt(d: &Dispatch, name: &str) -> (bool, usize) {
     let Some(session) = d.sessions.peek(name) else {

@@ -16,15 +16,18 @@ instance lock all live under it. Overrides `[server] home`, which overrides
 
 ## cli_path
 
-The server and the client ship together, so the usual answer is the sibling of
-this executable. That is not the only layout in use, though: `dev.sh` copies the
-server into `.dev/` *alone*, so the sibling is missing there and the agent ends
-up with a `GONGGA_CLI` that is not on `PATH` -- the one thing it needs in order to
-drive (or replace) the server it is running on.
+The server and the command line ship together, so the usual answer is the sibling
+of this executable -- `gongga`, the command layer's own binary, not the window.
+That is not the only layout in use, though: `dev.sh` copies the server into
+`.dev/` *alone*, so the sibling is missing there and the agent ends up with a
+`GONGGA_CLI` that is not on `PATH` -- the one thing it needs in order to drive (or
+replace) the server it is running on.
 
 So: sibling, then the `target/debug` a staged copy sits under, then `PATH`, and
 only as a last resort the bare name -- announced, because a bare name that is not
-on `PATH` is a dead end the agent cannot diagnose.
+on `PATH` is a dead end the agent cannot diagnose. Whatever comes out is also what
+`shell_command::install` puts in the shell's `gongga` command, so the two cannot
+disagree about which binary is being driven.
 
 ## main
 
@@ -68,12 +71,16 @@ pending turn and drive the same session twice.
 Detached jobs live next to the database: they outlive this process, so their logs
 have to outlive it too.
 
-How the model drives itself. `bash` runs inside this process's children, so the
-server address and the CLI that speaks to it have to be handed down rather than
-discovered: without them an agent that wants to cancel or restart has no better
-option than killing its own server from outside. `GONGGA_HOME` and
-`GONGGA_SERVER` are exactly the two fallbacks the CLI reads, so
-`$GONGGA_CLI '<command>'` works with no flags at all.
+How the model drives itself, which is what this vec is for. `bash` runs inside
+this process's children, so the server address, the CLI that speaks to it and the
+session it belongs to have to be handed down rather than discovered: without them
+an agent that wants to cancel or restart has no better option than killing its own
+server from outside. `GONGGA_HOME` and `GONGGA_SERVER` are exactly the two
+fallbacks the CLI reads, so a command needs no flags of its own. `PATH` is what
+turns `$GONGGA_CLI` into `gongga` -- see `server-shell-command.md` -- and
+`GONGGA_SESSION` is added where a session's shells are made, because that name
+belongs to a session and not to the server. A script gets the three variables and
+keeps the native `PATH` it was started with.
 
 ## run (detached adoption)
 

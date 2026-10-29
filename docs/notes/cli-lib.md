@@ -16,7 +16,8 @@ argv is already tokens.
 
 It knows nothing about terminals. That is the point of the split: anything that
 can present `Sink` events can drive it, and the interactive client is one such
-thing (the `gongga` binary in `crates/tui`). Nothing here names a rendering
+thing (the window is `gongga-tui` in `crates/tui`, and the command line is
+`gongga`, this crate's own `src/bin/gongga.rs`). Nothing here names a rendering
 crate, so the command layer builds into a script, a test, or a UI without
 dragging a terminal along.
 
@@ -498,22 +499,26 @@ would drag a terminal into every script and every test that only wants to send a
 command, and the cycle would come back the moment the front-end needed a command
 name.
 
-## the_command_layer_does_not_depend_on_a_front_end — no binary
+## the_command_layer_does_not_depend_on_a_front_end — one program, no terminal
 
-And it ships no program of its own: the binary is the composition root, which
-lives where both halves are available. The *comment* in the manifest says the
-same thing, so match a real section header rather than the substring.
+It ships exactly one program, and that program is the command line: argv in, the
+command's events out. What it must not ship is a dependency on a front-end -- a
+terminal dragged into every script and test that only wants to send a command. The
+assertion therefore reads the manifest for the `gongga` binary this crate owns,
+matching a real section line so a comment cannot satisfy it.
 
 ## no_env
 
-The real one is not empty -- the harness exports GONGGA_SERVER/GONGGA_KEY so the
-agent can drive itself -- so every precedence test states its environment
-explicitly.
+The real one is not empty -- the harness exports `GONGGA_SERVER`, `GONGGA_HOME`,
+`GONGGA_CLI`, `GONGGA_SESSION` and a shell-shaped `PATH`, and never the key, which
+stays in the home's `server.key` -- so every precedence test states its
+environment explicitly.
 
 ## the_environment_beats_the_config_file
 
-The harness sets both of these for every tool call, so this is the ordinary
-case, not an exotic one: the shell beats the config file.
+The harness sets the address and points at the home the key is read from for every
+shell it starts, so this is the ordinary case, not an exotic one: the shell beats
+the config file.
 
 ## client_with
 

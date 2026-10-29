@@ -13,6 +13,7 @@ mod prompts;
 mod providers;
 mod script;
 mod session;
+mod shell_command;
 mod ship;
 mod store;
 mod tools;
@@ -96,8 +97,8 @@ fn cli_path() -> PathBuf {
     }
     tracing::warn!(
         ?tried,
-        "cannot find the gongga CLI; the model will not be able to drive this server \
-         with $GONGGA_CLI. Build it (cargo build -p gongga-cli) or put it on PATH."
+        "cannot find the gongga CLI; the `gongga` command installed in this home would run \
+         nothing. Build it (cargo build -p gongga-cli) or put it on PATH."
     );
     PathBuf::from(name)
 }
@@ -188,12 +189,16 @@ async fn run() -> anyhow::Result<()> {
 
     let store = store::Store::open(&cfg.db_path)?;
     let llm = Arc::new(LlmClient::new(&cfg.llm)?);
-    // Jobs live beside the database; the agent is handed the CLI, not guesses.
-    let shell_env = vec![
+    // Jobs live beside the database; the agent is handed a command it can type.
+    let cli = cli_path();
+    let server_env = vec![
         ("GONGGA_SERVER".to_string(), cfg.bind.to_string()),
         ("GONGGA_HOME".to_string(), cfg.home.display().to_string()),
-        ("GONGGA_CLI".to_string(), cli_path().display().to_string()),
+        ("GONGGA_CLI".to_string(), cli.display().to_string()),
     ];
+    // A shell this server starts reads a POSIX `PATH`; a script interpreter does not.
+    let mut shell_env = server_env.clone();
+    shell_env.push(("PATH".to_string(), shell_command::install(&cfg.home, &cli)?));
     let detached = DetachedRegistry::new(
         store.clone(),
         cfg.bash.program.clone(),
@@ -221,11 +226,7 @@ async fn run() -> anyhow::Result<()> {
     let scripts = script::Scripts::new(
         cfg.scripts.dir.clone(),
         cfg.scripts.interpreter(),
-        vec![
-            ("GONGGA_SERVER".to_string(), cfg.bind.to_string()),
-            ("GONGGA_HOME".to_string(), cfg.home.display().to_string()),
-            ("GONGGA_CLI".to_string(), cli_path().display().to_string()),
-        ],
+        server_env,
     );
     if let Err(e) = std::fs::create_dir_all(&cfg.scripts.dir) {
         tracing::warn!(dir = %cfg.scripts.dir.display(), error = %e, "cannot create the scripts directory");
@@ -235,36 +236,31 @@ async fn run() -> anyhow::Result<()> {
         tracing::warn!(problem = %problem, "a script could not be read");
     }
 
-    // Cyclic on purpose: the `harness` tool drives the dispatch that owns it.
-    let dispatch = Arc::new_cyclic(|weak| {
-        let tools = Arc::new(
-            ToolRegistry::with_builtins(cfg.bash.timeout, cfg.bash.max_output_chars)
-                .with_harness(weak.clone(), cfg.bash.max_output_chars),
-        );
-        let agent = Arc::new(Agent {
+    let dispatch = Arc::new(Dispatch {
+        agent: Arc::new(Agent {
             store: store.clone(),
             llm: llm.clone(),
             providers: providers::Handle,
             llm_config: cfg.llm.clone(),
             clients: std::sync::Mutex::new(std::collections::HashMap::new()),
             default_context: cfg.llm.context,
-            tools,
+            tools: Arc::new(ToolRegistry::with_builtins(
+                cfg.bash.timeout,
+                cfg.bash.max_output_chars,
+            )),
             bus: bus.clone(),
             compress_above_tokens: cfg.agent.compress_above_tokens,
             output_dir: output_dir.clone(),
             detached: detached.clone(),
-        });
-        Dispatch {
-            agent,
-            sessions: sessions.clone(),
-            store: store.clone(),
-            bus: bus.clone(),
-            scripts: scripts.clone(),
-            providers: providers::Handle,
-            active: Arc::new(AtomicUsize::new(0)),
-            shutting_down: Arc::new(AtomicBool::new(false)),
-            shutdown: CancellationToken::new(),
-        }
+        }),
+        sessions: sessions.clone(),
+        store: store.clone(),
+        bus: bus.clone(),
+        scripts: scripts.clone(),
+        providers: providers::Handle,
+        active: Arc::new(AtomicUsize::new(0)),
+        shutting_down: Arc::new(AtomicBool::new(false)),
+        shutdown: CancellationToken::new(),
     });
 
     // Whatever was in flight when the server last stopped is owed work.

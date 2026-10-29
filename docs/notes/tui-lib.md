@@ -15,8 +15,9 @@ reverse. A command layer that knew about terminals could not be used from a
 script; a front-end that knew about commands would have to change every time one
 is added.
 
-The `gongga` binary lives here because it is the composition root: the only
-program that needs both halves, and linking them is what a binary is for.
+The `gongga-tui` binary lives here because the window is the only program that
+needs both halves, and linking them is what a binary is for. The command line is
+`gongga`, in the crate this one depends on.
 
 ## cli re-exports
 

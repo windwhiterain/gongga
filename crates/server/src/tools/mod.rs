@@ -21,7 +21,6 @@ use crate::tools::detached::DetachedRegistry;
 
 pub mod bash;
 pub mod detached;
-pub mod harness;
 pub mod index_skill;
 #[cfg(windows)]
 pub mod job;
@@ -191,25 +190,6 @@ impl ToolRegistry {
                 Box::new(index_skill::IndexSkillTool),
             ],
         }
-    }
-
-    /// Adds the tool that drives the harness itself.
-    ///
-    /// # Invariant
-    ///
-    /// Registered separately because it needs the dispatch that owns this
-    /// registry: the caller builds the dispatch first, then hands its weak
-    /// reference back here. See `main`.
-    pub fn with_harness(
-        mut self,
-        dispatch: std::sync::Weak<crate::commands::Dispatch>,
-        max_output_chars: usize,
-    ) -> Self {
-        self.tools.push(Box::new(harness::HarnessTool::new(
-            dispatch,
-            max_output_chars,
-        )));
-        self
     }
 
     pub fn get(&self, name: &str) -> Option<&dyn Tool> {
@@ -1193,8 +1173,6 @@ mod tests {
             // prompt's instruction to go and grep for them.
             vec!["bash", "check_bash", "del_bash", "list_bash", "index_skill"]
         );
-        // Added by the server, which owns the dispatch it calls through.
-        assert!(reg.get("harness").is_none());
         assert!(reg.get("bash").is_some());
         assert!(reg.get("nope").is_none());
     }

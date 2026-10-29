@@ -231,8 +231,9 @@ history; measured against the fake, an edit costs the boundary step its hit (99%
 half: for every request sent, each input item is a stored row or the stored note, and
 each distinct `instructions` the provider saw is a `system` row.
 
-The `harness` tool's own commands reach the same place: `set_session --cwd` moves the
-directory, and the next turn's first step picks up that directory's rules.
+A command the agent runs from its own shell reaches the same place:
+`set_session --cwd` moves the directory, and the next turn's first step picks up
+that directory's rules.
 
 ## Agent::step
 

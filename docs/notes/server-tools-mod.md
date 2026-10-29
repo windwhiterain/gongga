@@ -10,12 +10,11 @@ explicit way to be stopped. Shells are keyed `session_name/bash_name`, so two
 sessions never share one and a single session can keep several independent
 ones.
 
-## ToolRegistry::with_harness
-
-The tool that drives the harness is added separately, by `main`, because it
-needs a reference to the dispatch that owns this registry: the registry is built
-first, and the dispatch is built around it. `ToolRegistry::with_builtins` alone
-therefore has no `harness`, which its test pins.
+Nothing here drives the harness. There was a `harness` tool that called the
+dispatch in-process, and a tool call cannot be piped, looped or written into a
+script, so the agent's commands are a line it types in `bash` instead -- see
+`server-shell-command.md`. `with_builtins` is the whole registry: four bash verbs
+and the skill index.
 
 ## ToolContext::detached
 

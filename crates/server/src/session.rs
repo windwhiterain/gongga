@@ -532,7 +532,10 @@ impl SessionManager {
         } else {
             std::env::current_dir()?
         };
-        let mut shells = ShellSet::new(program, cwd.clone(), self.shell_env.clone());
+        let mut env = self.shell_env.clone();
+        // A shell cannot learn its own session's name from the outside.
+        env.push(("GONGGA_SESSION".to_string(), row.name.clone()));
+        let mut shells = ShellSet::new(program, cwd.clone(), env);
         // The default shell is part of the session's identity, so it exists
         // before anything asks for it.
         shells.get(DEFAULT_BASH)?;

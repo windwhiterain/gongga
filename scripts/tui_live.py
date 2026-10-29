@@ -3,7 +3,7 @@ r"""Watch the real gongga TUI render, from a pseudo-terminal, as text frames.
 
 An agent cannot look at a window, so this harness gives it the bytes instead:
 it starts the fake endpoint, a server whose home lives inside this worktree, and
-`gongga.exe` attached to a ConPTY; it types into that terminal; it decodes every
+`gongga-tui.exe` attached to a ConPTY; it types into that terminal; it decodes every
 byte the client writes into a terminal grid; and it emits one text frame per
 repaint with timing -- so streaming smoothness, screen jumps, flicker and
 repaint cost can all be judged from a file.
@@ -2119,7 +2119,7 @@ def build_parser():
     parser.add_argument("--model", default="fake/stream-model")
     parser.add_argument("--server-log", default="info")
     parser.add_argument("--server-exe", default=os.path.join(ROOT, "target", "debug", "gongga-server.exe"))
-    parser.add_argument("--client-exe", default=os.path.join(ROOT, "target", "debug", "gongga.exe"))
+    parser.add_argument("--client-exe", default=os.path.join(ROOT, "target", "debug", "gongga-tui.exe"))
     parser.add_argument("--bash", default=_find_bash())
     parser.add_argument("--reasoning-lines", default=json.dumps(REASONING_LINES))
     parser.add_argument("--answer-lines", default=json.dumps(ANSWER_LINES))
