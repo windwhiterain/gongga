@@ -4,7 +4,10 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use protocol::{Args, CommandSpec, CommandTarget, CompletionSource, Event, MessageEvent};
+use protocol::{
+    Args, CommandSpec, CommandTarget, CompletionSource, Event, LogLevel, REPLAY_TURN,
+    ResponseEvent, ResponsePart, ToolAnswerEvent, ToolStream,
+};
 use serde_json::json;
 use std::time::Duration;
 
@@ -13,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::Agent;
 use crate::bus::EventBus;
 use crate::session::SessionManager;
-use crate::store::{PendingTask, Store, Transcript};
+use crate::store::{MessageRow, PendingTask, Store, Transcript};
 
 /// How long `cancel` waits before pulling the plug, so the acknowledgement
 /// still reaches whoever asked for it.
@@ -300,7 +303,7 @@ pub fn server_catalog() -> Vec<CommandSpec> {
             target: CommandTarget::Server,
             name: "get_messages".into(),
             summary: "Read the transcript: a range of sequence numbers, oldest first. \
-                     Each row arrives as a `message` event before the result."
+                     Each row arrives as the event it was published as, before the result."
                 .into(),
             args: vec![
                 arg(
@@ -737,16 +740,7 @@ fn transcript_outcome(name: &str, t: Transcript) -> Outcome {
     let events = t
         .messages
         .iter()
-        .map(|row| {
-            Event::Message(MessageEvent {
-                session: name.to_string(),
-                seq: row.seq,
-                kind: row.kind.clone(),
-                role: row.role.clone(),
-                name: row.name.clone(),
-                text: row.text.clone(),
-            })
-        })
+        .filter_map(|row| row_event(name, row))
         .collect();
     // The rows are the events; a long read is many small messages, not one that
     // cannot be carried.
@@ -759,6 +753,51 @@ fn transcript_outcome(name: &str, t: Transcript) -> Outcome {
         }),
     )
     .with_events(events)
+}
+
+/// A stored row goes back out as the event it was published as when it arrived.
+///
+/// # Invariant
+///
+/// The shape is not this function's to invent, or a read could show a line no
+/// front-end drew live. Nothing to show is nothing to send, and `REPLAY_TURN`
+/// keeps a re-sent row out of the block a running turn is still writing.
+fn row_event(name: &str, row: &MessageRow) -> Option<Event> {
+    if row.text.trim().is_empty() {
+        return None;
+    }
+    // A tool's output is addressed by the call that asked for it, never by a turn.
+    if row.kind == "tool_result" {
+        return Some(Event::ToolAnswer(ToolAnswerEvent {
+            session: name.to_string(),
+            call_id: row.call_id.clone().unwrap_or_default(),
+            tool: row.name.clone().unwrap_or_default(),
+            stream: ToolStream::Stdout,
+            text: row.text.clone(),
+            done: true,
+        }));
+    }
+    let part = match row.kind.as_str() {
+        "reasoning" => ResponsePart::Reasoning,
+        "tool_call" => ResponsePart::ToolCall,
+        "builtin_call" => ResponsePart::Activity,
+        "text" => ResponsePart::Output,
+        // A notice and the prompt in force are the harness, not the model:
+        // they travel as a log line.
+        _ => {
+            return Some(Event::Log {
+                level: LogLevel::Info,
+                message: row.text.clone(),
+            });
+        }
+    };
+    Some(Event::Response(ResponseEvent {
+        session: name.to_string(),
+        turn: REPLAY_TURN,
+        part,
+        text: row.text.clone(),
+        done: true,
+    }))
 }
 
 fn prepare_delete(d: &Dispatch, name: &str) -> (bool, usize) {
@@ -1460,28 +1499,21 @@ mod tests {
                 data.get("messages").is_none(),
                 "a read that is also a blob has two answers: {data}"
             );
+            // A text row is an output part, sent whole and closed on arrival.
             let rows: Vec<&str> = out
                 .events
                 .iter()
                 .map(|event| match event {
-                    Event::Message(row) => row.text.as_str(),
+                    Event::Response(e) => {
+                        assert_eq!(e.turn, REPLAY_TURN, "a read is not a live turn");
+                        assert_eq!(e.part, ResponsePart::Output);
+                        assert!(e.done, "a stored row streams no further chunk");
+                        e.text.as_str()
+                    }
                     other => panic!("a read answers with rows, not {other:?}"),
                 })
                 .collect();
             assert_eq!(rows, vec!["hi", "done"], "{rows:?}");
-            let seqs: Vec<i64> = out
-                .events
-                .iter()
-                .map(|event| match event {
-                    Event::Message(row) => row.seq,
-                    other => panic!("{other:?}"),
-                })
-                .collect();
-            assert_eq!(
-                seqs,
-                vec![1, 2],
-                "oldest first, each saying which row it is"
-            );
         }
 
         // An empty window still says what the session is doing: that is the state a

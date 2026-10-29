@@ -21,13 +21,11 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 
 use crate::channel::{ChatId, Incoming, MsgRef, Outbox, Outgoing};
-use crate::chat::{ChatState, Dedupe, Pending, Row, clip, final_reply, since};
+use crate::chat::{ChatState, Dedupe, Pending, Row, clip, final_reply};
 use crate::config::{Bridge as BridgeCfg, Config};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_SERVER: &str = "127.0.0.1:9700";
-/// The tail window a read-back asks for; a longer turn only loses a tool name.
-const READ_RANGE: &str = "-500:";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -212,6 +210,7 @@ impl Bridge {
             state.waiting.push_back(Pending {
                 chat: incoming.chat.clone(),
                 reply: incoming.reply.clone(),
+                text: incoming.text.clone(),
             });
             if self.ack {
                 let _ = deliver(out, &incoming.chat, &incoming.reply, 1, "收到，正在跑…").await;
@@ -268,11 +267,12 @@ impl Bridge {
             return Ok(());
         };
         match event {
-            Event::Message(event) => {
-                // Addressed to this connection, so every row here is an answer to a
-                // read this bridge made.
+            Event::Response(event) if event.turn == protocol::REPLAY_TURN => {
+                // A read sends its rows to the connection that asked and no
+                // further: every part here answers one of our reads.
                 let session = event.session.clone();
-                self.rows.entry(session).or_default().push(Row::from(event));
+                let row = Row::of(event.part, &event.text);
+                self.rows.entry(session).or_default().push(row);
                 Ok(())
             }
             Event::CmdResult {
@@ -290,7 +290,7 @@ impl Bridge {
                 SessionStatus::Error => self.on_error(&session, detail, out).await,
                 SessionStatus::Running => Ok(()),
             },
-            // Reasoning, tool output and the command echo are for a human
+            // A live stream, tool output and the command echo are for a human
             // watching a terminal; a chat window is not one.
             _ => Ok(()),
         }
@@ -349,14 +349,8 @@ impl Bridge {
             }
             // The rows came in as events before this result; take what was read.
             let rows = self.rows.remove(&session).unwrap_or_default();
-            // The window may reach back past this turn; the cursor is what says
-            // which rows are still owed an answer.
-            let cursor = self
-                .chats
-                .get(&session)
-                .and_then(|state| state.last_seq)
-                .unwrap_or(0);
-            let text = clip(&final_reply(&since(&rows, cursor)), self.max_chars);
+            // The read started at the cursor, so everything in these rows is owed.
+            let text = clip(&final_reply(&rows, &pending.text), self.max_chars);
             let last = data.as_ref().and_then(|value| value["last_seq"].as_i64());
             // Delivery commits the turn: on failure the pending reply and cursor
             // stay for recovery to settle.
@@ -384,12 +378,14 @@ impl Bridge {
         if state.waiting.is_empty() {
             return Ok(());
         }
-        // The server answers a range; which rows are still owed is our question.
+        // The server answers a range: from the row after the cursor on is exactly
+        // what this chat is still owed an answer for.
+        let from = format!("{}:", state.last_seq.unwrap_or(0) + 1);
         let id = self
             .command(
                 sink,
                 "get_messages",
-                args_of(&[("session", session), ("range", READ_RANGE)]),
+                args_of(&[("session", session), ("range", from.as_str())]),
             )
             .await?;
         self.reads.insert(id, session.to_string());
@@ -746,6 +742,7 @@ mod tests {
         Pending {
             chat: incoming.chat,
             reply: incoming.reply,
+            text: incoming.text,
         }
     }
 

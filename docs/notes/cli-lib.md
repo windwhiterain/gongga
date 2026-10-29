@@ -91,6 +91,8 @@ the same shape `Event::Status` already uses for `[<session>] idle`. The stream
 key keeps the session for routing (`r:<session>:<turn>:<part>`) and does not
 depend on the tag being shown.
 
+A row `get_messages` reads back arrives on this same path, under `REPLAY_TURN`.
+
 Shown for a single session too. The tag costs one line start per stream, while
 turning it on by session count would change how the lines of a session already
 on screen look the moment another session is created -- and a prefix must stay
@@ -143,29 +145,21 @@ flag, because the front-end has to know the names and their order anyway -- and 
 would leave it inventing a naming rule the command layer already owns. The lines carry
 their window either way: the announcement says what a frame shows, never what is held.
 
-## Client::handle_message
+## A read's rows need no handler
 
-A read answers with rows on the stream, one event each, before the result that says how
-many. Each becomes its own block (`m:<session>:<seq>`) in its session's window, sealed
-as it arrives: a read is about the past, so nothing about that row is still to come.
+`get_messages` answers with rows on the stream, one event each, before the result that
+says how many -- and each is the event that row was published as when it arrived, so
+`handle_response` and `handle_tool_answer` draw them and `Event::Log` prints them. The
+command layer has no third path for a line, which is the whole argument for reusing the
+vocabulary instead of adding a row event: a `message` event was one more shape every
+front-end had to learn, and the shapes are where a replay and a live stream drift apart.
 
-The row keeps its `seq` in the label. It is the only place a reader can see which
-position the transcript was read at, and a read that cannot be pointed at is a wall of
-text that happens to quote the session back.
-
-This replaced `rows_of`, which rendered `data.messages` off a command result: only
-one-shot mode showed them, because it printed the whole event, while the log drew the
-result's message and dropped the rows -- a read looked like a count with nothing behind
-it.
-
-Rendering them belongs here rather than in the front-end: the TUI is a transparent
-wrapper that must not learn which command asked. What this function reads is a
-*shape* (`messages` is an array), not a name, so a second command that returns rows
-is rendered by the same code -- and a result without that shape still renders as
-its message alone.
-
-The seq and the session go in the tag: a transcript line out of context is a
-sentence with no speaker, and one that repeats cannot be paged back.
+What the replay loses is the row's `seq`, which used to sit in the label. A reader who
+wants to know where the transcript was read asks with a range and is told by the
+result's `last_seq`; the position was never something the eye needed per line. What it
+keeps is the turn: `REPLAY_TURN` says a part is a row rather than a stream, and that is
+the difference between a block of its own and text appended to the answer a running
+turn is still writing.
 
 ## Client::handle_tool_answer
 

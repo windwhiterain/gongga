@@ -20,9 +20,9 @@ use std::time::Duration;
 use anyhow::{Context, anyhow};
 use clap::{CommandFactory, FromArgMatches, Parser};
 use protocol::{
-    ChannelConfig, ClientInfo, ClientMessage, Event, LogLevel, MessageEvent, ResponseEvent,
-    ResponsePart, ServerMessage, SessionStatus, SessionSummary, ToolAnswerEvent, ToolStream,
-    decode_server, encode_client,
+    ChannelConfig, ClientInfo, ClientMessage, Event, LogLevel, ResponseEvent, ResponsePart,
+    ServerMessage, SessionStatus, SessionSummary, ToolAnswerEvent, ToolStream, decode_server,
+    encode_client,
 };
 use tokio::net::UdpSocket;
 
@@ -448,11 +448,6 @@ impl Client {
                     }
                 }
             }
-            Event::Message(e) => {
-                if shown {
-                    self.handle_message(e, sink);
-                }
-            }
             Event::Response(e) => {
                 if shown {
                     self.handle_response(e, sink);
@@ -519,20 +514,6 @@ impl Client {
         let prefix = self.tag(&e.session, label);
         let window = e.session.clone();
         sink.stream(&window, &key, kind, &prefix, &e.text, e.done);
-    }
-
-    /// A transcript row read back is its own block, in its session's window.
-    fn handle_message(&self, e: MessageEvent, sink: &mut dyn Sink) {
-        let kind = row_kind(&e.kind, e.role.as_deref());
-        // The number is the point of a read: it is what a cursor compares to.
-        let label = match (e.name.as_deref(), kind) {
-            // A tool call is arguments; the name is what makes them legible.
-            (Some(name), LineKind::ToolCall) => format!("{name}: "),
-            _ => String::new(),
-        };
-        let tag = format!("[{} {}] {label}", e.session, e.seq);
-        let key = format!("m:{}:{}", e.session, e.seq);
-        sink.stream(&e.session, &key, kind, &tag, &e.text, true);
     }
 
     fn handle_tool_answer(&self, e: ToolAnswerEvent, sink: &mut dyn Sink) {
@@ -1005,17 +986,6 @@ impl Client {
 }
 
 /// Which colour a stored row is drawn in; unknown kinds are context, not errors.
-fn row_kind(kind: &str, role: Option<&str>) -> LineKind {
-    match (kind, role) {
-        ("text", Some("user")) => LineKind::User,
-        ("text", _) => LineKind::Assistant,
-        ("reasoning", _) => LineKind::Reasoning,
-        ("tool_call", _) | ("builtin_call", _) => LineKind::ToolCall,
-        ("tool_result", _) => LineKind::ToolOutput,
-        _ => LineKind::System,
-    }
-}
-
 fn pairs(pairs: &[(String, String)]) -> String {
     pairs
         .iter()
@@ -2117,41 +2087,48 @@ mod tests {
         assert_eq!(s.0, vec!["session is now main"; 3]);
     }
 
-    /// A read answers on the stream: each row is a block in its session's window.
+    /// A read's row is the event it was published as, in its session's window.
     #[test]
     fn a_read_back_row_is_a_block_in_its_session_window() {
         let d = tempfile::tempdir().unwrap();
         let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
+
+        // A stored tool call reads like the live stream of one: same part, same label.
+        let mut s = StreamSink::default();
+        let mut call = response("main", ResponsePart::ToolCall, "{\"command\":\"ls\"}");
+        call.turn = protocol::REPLAY_TURN;
+        call.done = true;
+        c.handle_event(Event::Response(call), &mut s);
+        assert_eq!(s.windows, vec!["main"]);
+        assert_eq!(s.lines, vec!["[main] tool: {\"command\":\"ls\"}"]);
+
+        // Turn 0 keeps two rows of one part in separate blocks, and out of the
+        // answer a running turn is still writing.
+        let mut s = StreamSink::default();
+        let mut first = response("main", ResponsePart::Output, "first row");
+        first.turn = protocol::REPLAY_TURN;
+        first.done = true;
+        let mut second = first.clone();
+        second.text = "second row".into();
+        c.handle_event(Event::Response(first), &mut s);
+        c.handle_event(Event::Response(second), &mut s);
+        assert_eq!(
+            s.lines,
+            vec!["[main] first row", "[main] second row"],
+            "one block per row, in the order the store keeps them"
+        );
+
+        // A notice is a line the harness wrote, so it travels as a diagnostic.
         let mut s = StreamSink::default();
         c.handle_event(
-            Event::Message(MessageEvent {
-                session: "main".into(),
-                seq: 7,
-                kind: "tool_call".into(),
-                role: None,
-                name: Some("bash".into()),
-                text: "{\"command\":\"ls\"}".into(),
-            }),
-            &mut s,
-        );
-        assert_eq!(s.windows, vec!["main"]);
-        assert_eq!(s.keys, vec!["m:main:7"], "the row is its own block");
-        assert_eq!(s.lines, vec!["[main 7] bash: {\"command\":\"ls\"}"]);
-
-        // An unknown kind is context, not an error, and still gets its row.
-        let mut s = StreamSink::default();
-        c.handle_message(
-            MessageEvent {
-                session: "main".into(),
-                seq: 8,
-                kind: "mystery".into(),
-                role: None,
-                name: None,
-                text: "what is this".into(),
+            Event::Log {
+                level: LogLevel::Info,
+                message: "failed to run the turn: boom".into(),
             },
             &mut s,
         );
-        assert_eq!(s.lines, vec!["[main 8] what is this"]);
+        assert_eq!(s.windows, vec!["cmd"]);
+        assert_eq!(s.lines, vec!["failed to run the turn: boom"]);
     }
 
     /// A result says how many rows it answered with; the rows are not in it.

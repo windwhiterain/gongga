@@ -165,6 +165,13 @@ that connection before the `cmd_result`. Only `get_messages` uses it today. It i
 the bus: a broadcast would tell every client on the machine what one client read, and
 the read is a private question.
 
+`row_event` picks which event each stored row is, and the rule is what the server
+published when that row arrived: `response` for the parts of an answer, `tool_answer`
+for a tool's output (addressed by the call that asked for it, so the block is exactly
+the one the live stream sealed), `log` for a notice or the prompt in force -- the
+harness talking to the reader, which `error` already sends that way. A row with nothing
+to show sends nothing.
+
 The result keeps `session`, `status` and `last_seq` and drops the rows, so there is one
 way to get a row rather than two. `last_seq` stays because a poller advances its cursor
 with it, and the snapshot rule -- rows, status and end from one read -- still holds.
@@ -177,9 +184,10 @@ and a truncation policy is not something a terminal should hold: it silently
 answers a different question than the one asked, and the caller cannot tell.
 Both are gone.
 
-A caller with a cursor (the IM bridge) asks for a tail window and drops the rows
-it already answered with its own `since`; that judgement belongs where the
-cursor is. A caller reading a part of the transcript asks for exactly that part.
+A caller with a cursor (the IM bridge) asks from the row after it on: `12:` is
+"what I have not been answered for yet", which is the range's own words rather
+than a tail window filtered after it arrived. A caller reading a part of the
+transcript asks for exactly that part.
 
 The range is required, as SPEC spells it: a caller always says which rows it
 wants. There is no row limit any more, and no default to guess at.

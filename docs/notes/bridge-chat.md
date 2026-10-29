@@ -20,7 +20,8 @@ cost of being wrong here is one duplicated turn per restart, not lost work.
 
 ## ChatState::last_seq
 
-`None` until the first message: the bridge asks the server where the transcript
+`None` until the first message. It is both the probe's answer and the cursor the next
+read asks from: the bridge asks the server where the transcript
 ends before it writes to it, otherwise the first turn's read-back would return
 the conversation's entire history and the bridge would relay an old answer as if
 it were new.
@@ -29,28 +30,36 @@ it were new.
 
 The same order the server runs its turns in (it queues, it does not interrupt).
 
-## since
+## The read asks for exactly what is owed
 
-The bridge asks the server for a tail window, and the window can reach back into
-the turn before: the rows are a fixed range, not "my turn". `since` is what
-turns the window into this turn's rows, using the cursor the bridge keeps.
-
-Without it a turn that only ran a tool would relay the *previous* answer as if it
-were new -- `final_reply` picks the last assistant text, and that text would
-belong to the turn before.
+`get_messages` takes a range, and `on_idle` asks from the row after its cursor on:
+which rows are still owed is answered by the query rather than by filtering a tail
+window after it arrives. A fixed tail reaches back into the turn before, and that is
+how a tool-only turn used to relay the *previous* answer as if it were new.
 
 ## final_reply
 
 The last assistant text, not a concatenation: a turn that used tools says "let me
 look at that" before the tool call and the actual answer after it, and pasting
-both reads like the bot is talking to itself. Rows are scoped to one turn by
-`since`, not by the query: which rows are still owed is the bridge's question.
+both reads like the bot is talking to itself.
 
-## READ_RANGE
+Rows arrive oldest first and the channel keeps the store's order, so "last" needs
+no sorting. What no field says any more is which text row came from the model and
+which from the user: a read re-sends a stored row as the part it was streamed as,
+and a user's message is stored as an output part too. So `Pending` keeps the words
+it handed over and they are excluded here -- a read-back window starts with that
+message, and echoing a question back is the one reply a chat user never deserves.
 
-The tail window the read-back asks for. A turn longer than this loses its head,
-which only `final_reply`'s "it called a tool" fallback notices; the answer itself
-is at the tail, so the relay is unaffected.
+## Row
+
+A read-back row is a streamed part with the session taken off. The part says which
+kind of row the store wrote (`text`, `reasoning`, `tool_call`, `builtin_call`), and
+that is the only distinction `final_reply` makes: an answer is a `text` row, and a
+turn that produced none is a silent one.
+
+A tool's output arrives as a `tool_answer`, which is addressed by its call and not
+by a turn -- so it carries no mark that would tell a read's copy from a live one, and
+the bridge has no use for either: it relays answers, not stdout.
 
 ## final_reply (ordering)
 

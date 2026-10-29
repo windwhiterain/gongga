@@ -73,17 +73,25 @@ two sources say "complete against that list" without shipping the list, which is
 the same arrangement as `Sessions` -- the server names where a value comes from,
 and the side that owns it fills it in.
 
-## Event::Message
+## REPLAY_TURN
 
-A transcript row read back is an event, not a field of a result. Two things follow,
-and both are the point: delivery is **addressed** -- it goes to the connection whose
-`get_messages` asked, the way `cmd` and `cmd_result` do, so a read stays a read -- and
-the shape is **ordinary**, so every front-end renders it through the path it already
-has for a streamed block. A replay that arrived as a special envelope would be a second
-way to show a line, and the second way is where the two drift.
+A transcript row read back is an event, not a field of a result, and it is one of the
+events the row was published as while it arrived: `response` for the parts an answer
+has, `tool_answer` for a tool's output, `log` for what the harness told the reader.
+Two things follow, and both are the point: delivery is **addressed** -- it goes to the
+connection whose `get_messages` asked, the way `cmd` and `cmd_result` do, so a read
+stays a read -- and the shape is **ordinary**, so every front-end renders it through
+the path it already has for a streamed block. A replay that arrived as a special
+envelope would be a second way to show a line, and the second way is where the two drift.
 
-`seq` is on the event because it is the row's identity in the transcript: a reader
-advances by it, and never by counting what happened to arrive.
+What a live stream has and a stored row does not is a turn that is still being written.
+Turns count from 1, so `REPLAY_TURN` -- `0` -- is the mark a re-sent row carries: it
+opens its own block instead of appending to the answer a running turn is writing under
+the same part. It is also the only sign a front-end has that this part answers its own
+read, which is what lets the bridge tell a read-back row from a live delta.
+
+The row's `seq` stays off the wire: a reader advances by the `last_seq` the result
+reports, and the range it asked for is what says which rows those were.
 
 ## BLOCK_SIZES
 

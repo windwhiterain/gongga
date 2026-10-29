@@ -4,6 +4,8 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
+use protocol::ResponsePart;
+
 use crate::channel::{ChatId, MsgRef};
 
 /// How long a delivered message id is remembered; platforms retry deliveries.
@@ -69,6 +71,8 @@ impl Dedupe {
 pub struct Pending {
     pub chat: ChatId,
     pub reply: MsgRef,
+    /// The words handed to the harness, which the read-back window starts with.
+    pub text: String,
 }
 
 /// What the bridge remembers about one conversation.
@@ -86,77 +90,49 @@ pub struct ChatState {
     pub waiting: VecDeque<Pending>,
 }
 
-/// One row of a transcript read-back: a `message` event without the session the read
-/// was already about.
-#[derive(Debug, Clone, serde::Deserialize)]
+/// One row of a transcript read-back: a response part, without the session the
+/// read was already about.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
-    pub seq: i64,
-    pub kind: String,
-    #[serde(default)]
-    pub role: Option<String>,
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
+    /// The store's own word for the row, which the part it arrived as says.
+    pub kind: &'static str,
     pub text: String,
 }
 
-impl From<protocol::MessageEvent> for Row {
-    fn from(row: protocol::MessageEvent) -> Self {
+impl Row {
+    /// The row this streamed part was stored as.
+    pub fn of(part: ResponsePart, text: &str) -> Self {
         Self {
-            seq: row.seq,
-            kind: row.kind,
-            role: row.role,
-            name: row.name,
-            text: row.text,
+            kind: match part {
+                ResponsePart::Output => "text",
+                ResponsePart::Reasoning => "reasoning",
+                ResponsePart::ToolCall => "tool_call",
+                ResponsePart::Activity => "builtin_call",
+            },
+            text: text.to_string(),
         }
     }
-}
-
-/// The rows this bridge still owes a reply for: those after its cursor.
-///
-/// # Invariant
-///
-/// A read-back window can reach an earlier turn, whose answer is not this one.
-pub fn since(rows: &[Row], cursor: i64) -> Vec<Row> {
-    rows.iter()
-        .filter(|row| row.seq > cursor)
-        .cloned()
-        .collect()
 }
 
 /// Picks the sentence a chat user should receive from one turn's rows.
 ///
 /// # Invariant
 ///
-/// Only the last assistant text is relayed; a turn's earlier "let me look"
-/// lines are never concatenated in, or the bot reads as talking to itself.
-pub fn final_reply(rows: &[Row]) -> String {
-    // Sort by seq: "the last thing it said" is a claim about time, not wire order.
-    let mut ordered: Vec<&Row> = rows.iter().collect();
-    ordered.sort_by_key(|row| row.seq);
-
-    let mut last_tool: Option<&str> = None;
-    let mut said: Vec<&str> = Vec::new();
-    for row in ordered {
-        match row.kind.as_str() {
-            "tool_call" => last_tool = row.name.as_deref(),
-            "text" if row.role.as_deref() == Some("assistant") => {
-                let text = row.text.trim();
-                if !text.is_empty() {
-                    said.push(text);
-                }
-            }
-            _ => {}
+/// Only the last assistant text is relayed, and the message the bridge handed
+/// over is never its own answer: the read window starts at that message and the
+/// store sends oldest first, which is the order the channel keeps.
+pub fn final_reply(rows: &[Row], sent: &str) -> String {
+    for row in rows.iter().rev() {
+        let text = row.text.trim();
+        if row.kind == "text" && !text.is_empty() && text != sent {
+            return text.to_string();
         }
     }
-    if let Some(text) = said.last() {
-        return (*text).to_string();
-    }
     // A silent turn still needs a sentence; silence reads as a crash.
-    match last_tool {
-        Some(tool) => format!("跑完了，但只调用了工具 `{tool}`，没有文字回答。"),
-        None => "跑完了，但没有任何输出。".to_string(),
+    if rows.iter().any(|row| row.kind == "tool_call") {
+        return "跑完了，但只调用了工具，没有文字回答。".to_string();
     }
+    "跑完了，但没有任何输出。".to_string()
 }
 
 /// Truncates to `max_chars` **characters**, then says so.
@@ -184,12 +160,9 @@ pub fn clip(text: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
 
-    fn row(seq: i64, kind: &str, role: Option<&str>, name: Option<&str>, text: &str) -> Row {
+    fn row(kind: &'static str, text: &str) -> Row {
         Row {
-            seq,
-            kind: kind.to_string(),
-            role: role.map(str::to_string),
-            name: name.map(str::to_string),
+            kind,
             text: text.to_string(),
         }
     }
@@ -230,29 +203,20 @@ mod tests {
         );
     }
 
+    /// The last thing the model said is the answer; its errands are not.
     #[test]
     fn the_last_assistant_text_wins() {
         let rows = vec![
-            row(1, "text", Some("user"), None, "run the tests"),
-            row(2, "reasoning", None, None, "thinking about it"),
-            row(3, "text", Some("assistant"), None, "let me run them"),
-            row(
-                4,
-                "tool_call",
-                None,
-                Some("bash"),
-                r#"{"cmd":"cargo test"}"#,
-            ),
-            row(5, "tool_result", None, None, "ok. 65 passed"),
-            row(
-                6,
-                "text",
-                Some("assistant"),
-                None,
-                "65 passed, nothing broken.",
-            ),
+            row("text", "run the tests"),
+            row("reasoning", "thinking about it"),
+            row("text", "let me run them"),
+            row("tool_call", r#"{"cmd":"cargo test"}"#),
+            row("text", "65 passed, nothing broken."),
         ];
-        assert_eq!(final_reply(&rows), "65 passed, nothing broken.");
+        assert_eq!(
+            final_reply(&rows, "run the tests"),
+            "65 passed, nothing broken."
+        );
     }
 
     /// A turn that only ran a command has nothing to quote; saying nothing at
@@ -260,68 +224,37 @@ mod tests {
     #[test]
     fn a_silent_turn_explains_itself() {
         let rows = vec![
-            row(1, "text", Some("user"), None, "build it"),
-            row(
-                2,
-                "tool_call",
-                None,
-                Some("bash"),
-                r#"{"cmd":"cargo build"}"#,
-            ),
-            row(3, "tool_result", None, None, "ok"),
+            row("text", "build it"),
+            row("tool_call", r#"{"cmd":"cargo build"}"#),
         ];
-        let reply = final_reply(&rows);
-        assert!(reply.contains("bash"), "{reply}");
+        let reply = final_reply(&rows, "build it");
+        assert!(reply.contains("工具"), "{reply}");
     }
 
-    /// A tool-only turn must not relay the previous answer as its own.
-    #[test]
-    fn a_silent_turn_does_not_repeat_the_earlier_answer() {
-        let rows = vec![
-            row(1, "text", Some("assistant"), None, "the earlier answer"),
-            row(2, "text", Some("user"), None, "check it"),
-            row(3, "tool_call", None, Some("bash"), r#"{"cmd":"ls"}"#),
-            row(4, "tool_result", None, None, "a.txt"),
-        ];
-        let fresh = since(&rows, 2);
-        assert_eq!(fresh.iter().map(|r| r.seq).collect::<Vec<_>>(), vec![3, 4]);
-        // What the user is owed is an explanation, not the previous answer again.
-        assert!(
-            final_reply(&fresh).contains("bash"),
-            "{}",
-            final_reply(&fresh)
-        );
-        assert_eq!(final_reply(&rows), "the earlier answer");
-    }
-
-    /// A turn that does answer relays its own words, filtered or not.
-    #[test]
-    fn rows_before_the_cursor_are_dropped() {
-        let rows = vec![
-            row(1, "text", Some("assistant"), None, "the earlier answer"),
-            row(2, "text", Some("user"), None, "do it again"),
-            row(3, "text", Some("assistant"), None, "this turn's answer"),
-        ];
-        let fresh = since(&rows, 2);
-        assert_eq!(fresh.iter().map(|r| r.seq).collect::<Vec<_>>(), vec![3]);
-        assert_eq!(final_reply(&fresh), "this turn's answer");
-    }
-
-    /// A cursor at the tail means the turn said nothing yet, not "send it all".
-    #[test]
-    fn a_cursor_at_the_tail_leaves_nothing_owed() {
-        let rows = vec![row(1, "text", Some("assistant"), None, "old")];
-        assert!(since(&rows, 1).is_empty());
-        assert!(since(&[], 0).is_empty());
-        // A silent turn still gets a sentence rather than an empty message.
-        assert!(!final_reply(&since(&rows, 1)).is_empty());
-    }
-
-    /// The user's own words must never be echoed back as the answer.
+    /// Echoing the question back is the one reply a chat user never deserves.
     #[test]
     fn the_users_message_is_not_the_reply() {
-        let rows = vec![row(1, "text", Some("user"), None, "hello there")];
-        assert_ne!(final_reply(&rows), "hello there");
+        let rows = vec![row("text", "hello there")];
+        assert_ne!(final_reply(&rows, "hello there"), "hello there");
+    }
+
+    /// A read re-sends a row as the part it was streamed as, which is how the
+    /// bridge tells an errand from an answer.
+    #[test]
+    fn a_response_part_is_the_row_it_was_stored_as() {
+        assert_eq!(Row::of(ResponsePart::Output, "hi"), row("text", "hi"));
+        assert_eq!(
+            Row::of(ResponsePart::Reasoning, "hm"),
+            row("reasoning", "hm")
+        );
+        assert_eq!(
+            Row::of(ResponsePart::ToolCall, r#"{"cmd":"ls"}"#),
+            row("tool_call", r#"{"cmd":"ls"}"#)
+        );
+        assert_eq!(
+            Row::of(ResponsePart::Activity, "cited"),
+            row("builtin_call", "cited")
+        );
     }
 
     #[test]
