@@ -24,7 +24,7 @@ a real `~/.agents`.
 ## Roots, machine_root
 
 Two roots, because the two buckets have different lifetimes. The harness bucket
-speaks about *this server* -- `compact`, `evolve`, `image`, `self-control` -- so it
+speaks about *this server* -- `evolve`, `heir`, `image`, `self-control` -- so it
 belongs beside the database and follows the home. The general bucket speaks about
 *this machine* -- `proxy`, `remote`, `computer_use`, `web-search`, `latency` -- so
 it lives in `~/.agents/skills`, beside `llm.toml`, which the server

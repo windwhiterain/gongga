@@ -42,7 +42,7 @@ pub enum ServerMessage {
         protocol: u32,
         server: ServerInfo,
         commands: Vec<CommandSpec>,
-        sessions: Vec<SessionSummary>,
+        sessions: Vec<SessionInfo>,
     },
     /// The key was wrong. The connection is closed right after this.
     Denied { reason: String },
@@ -78,7 +78,7 @@ pub enum Event {
     /// Streamed tool output (bash stdout/stderr).
     ToolAnswer(ToolAnswerEvent),
     /// The set of sessions changed.
-    Sessions { sessions: Vec<SessionSummary> },
+    Sessions { sessions: Vec<SessionInfo> },
     /// A session's run state changed.
     Status {
         session: String,
@@ -148,7 +148,7 @@ pub enum SessionStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionSummary {
+pub struct SessionInfo {
     pub name: String,
     pub status: SessionStatus,
     pub created_at: i64,
@@ -179,7 +179,7 @@ pub struct CmdArg {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommandSpec {
     pub name: String,
-    pub summary: String,
+    pub description: String,
     pub args: Vec<ArgSpec>,
     /// Who runs it. Published by the server, so no front-end keeps a list.
     #[serde(default)]
@@ -339,9 +339,9 @@ pub fn client_commands() -> Vec<CommandSpec> {
         ),
     ]
     .into_iter()
-    .map(|(name, summary, args)| CommandSpec {
+    .map(|(name, description, args)| CommandSpec {
         name: name.into(),
-        summary: summary.into(),
+        description: description.into(),
         args,
         target: CommandTarget::Client,
     })
@@ -351,14 +351,14 @@ pub fn client_commands() -> Vec<CommandSpec> {
 /// One argument of a published command.
 fn spec_arg(
     name: &str,
-    summary: &str,
+    description: &str,
     required: bool,
     value_hint: Option<&str>,
     completions: CompletionSource,
 ) -> ArgSpec {
     ArgSpec {
         name: name.into(),
-        summary: summary.into(),
+        description: description.into(),
         required,
         value_hint: value_hint.map(str::to_string),
         completions,
@@ -369,7 +369,7 @@ fn spec_arg(
 pub struct ArgSpec {
     /// Name without leading dashes, e.g. `message`.
     pub name: String,
-    pub summary: String,
+    pub description: String,
     pub required: bool,
     /// Shown as the value placeholder during completion.
     pub value_hint: Option<String>,
@@ -434,7 +434,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn events_are_tagged_compactly() {
+    fn events_are_tagged_tightly() {
         let e = Event::Status {
             session: "main".into(),
             status: SessionStatus::Running,
@@ -467,7 +467,7 @@ mod tests {
     fn a_command_spec_says_who_runs_it() {
         let mut spec = CommandSpec {
             name: "echo".into(),
-            summary: "Say it back.".into(),
+            description: "Say it back.".into(),
             args: vec![],
             target: CommandTarget::ServerScript,
         };
@@ -481,7 +481,7 @@ mod tests {
 
         // Absent means server: that is what every older entry said.
         let short: CommandSpec =
-            serde_json::from_str(r#"{"name":"cancel","summary":"Stop.","args":[]}"#).unwrap();
+            serde_json::from_str(r#"{"name":"cancel","description":"Stop.","args":[]}"#).unwrap();
         assert_eq!(short.target, CommandTarget::Server);
     }
 

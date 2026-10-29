@@ -376,12 +376,12 @@ UI 上流式看到的仍是完整输出，但进 transcript 的不会反复计�
   - 兼容层不返回 `usage` 时，这个数一直是 0，压缩不会触发 —— 这是唯一诚实的失败方式，
     总比用一个假比率把上下文撑爆、然后被 provider 400 强。
 - **阈值从哪来**：模型有 `context`（`~/.agents/llm.toml`）时就是它的 70%
-  （`compact_threshold` 可改百分比）；没有 `context` 时退回 `agent.compress_above_tokens`
+  （`context_limit` 可改百分比）；没有 `context` 时退回 `agent.compress_above_tokens`
   （默认 40000）。0 一律表示关闭，包括全局配置和百分比两条路。
 
-- **非破坏性**：`sessions.summary` + `sessions.summarised_upto` 只标记「摘要覆盖到哪里」，
+- **非破坏性**：`sessions.handover` + `sessions.handover_upto` 只标记「笔记覆盖到哪里」，
   一行消息都不删 —— transcript 是记录不是缓存，删了就没了，且 UI 仍能回放全部历史。
-  请求 = 一条 user 消息（摘要前缀）+ `seq > summarised_upto` 的消息。
+  请求 = 一条 user 消息（笔记前缀）+ `seq > handover_upto` 的消息。
 - **切点只放在能独立站立的位置**：`function_call_output` 前面必须有 `function_call`，
   否则 API 直接拒；reasoning 前面被挖空也会白占空间。所以切点只会落在 `text` 或 `tool_call`
   之前，最近 N 条（默认 30）原样保留。若整个窗口都找不到安全位置，这次就不压。
@@ -460,7 +460,7 @@ UI 上流式看到的仍是完整输出，但进 transcript 的不会反复计�
 
 `--llm <provider/model>`（也接受裸 model id）就是在这份名单里点名：
 在 `set_session` 时解析，**错了当场报错并列出可选项**，而不是留到下一轮才失败。
-`--compact_threshold 30%` 就是 `context` 的 30%，直接是一个 token 数，没有任何换算。
+`--context_limit 30%` 就是 `context` 的 30%，直接是一个 token 数，没有任何换算。
 模型没有 `context` 时这个百分比没有大小，所以命令会直接拒绝，而不是悄悄退回旧预算。
 
 **会话有自己的模型，不跟服务端的默认走**：reasoning 项里那份加密块只有产出它的 provider
@@ -668,7 +668,7 @@ Windows 上 Git Bash 会**在程序启动之前**把 `/x` 改写成 `C:/.../Git/
 ### 命令（SPEC 的 5 条服务端命令 + `get_messages` + 2 条客户端命令）
 
 服务端：`send_message --message <m> --session <s>`、
-`set_session --session <s> [--cwd <path>] [--llm <provider/model>] [--compact_threshold <n%>]`、
+`set_session --session <s> [--cwd <path>] [--llm <provider/model>] [--context_limit <n%>]`、
 `del_session --session <s>`、`interrupt_session --session <s>`、`cancel`、
 `get_messages --session <s> --range <a:b>`。
 - **会话名一律叫 `--session`**。以前 `set_session` / `del_session` / `interrupt_session` 写的是
@@ -677,7 +677,7 @@ Windows 上 Git Bash 会**在程序启动之前**把 `/x` 改写成 `C:/.../Git/
   --value main` 对每条命令都生效。
 - `set_session` 同时承担创建与配置：命名是唯一得到会话的方式，拒绝创建会让它没用。
   **它不再设置任何「当前会话」** —— 想要默认值就用客户端的 sticky `session`。
-  `--llm` 与 `--compact_threshold` 可以随时改，改的是**下一轮**用什么，不动正在跑的 turn。
+  `--llm` 与 `--context_limit` 可以随时改，改的是**下一轮**用什么，不动正在跑的 turn。
 - `send_message --session` 是**必填**的。缺了就在客户端被拒（目录里标了 required），
   服务端也再查一次，不给自己留隐式落点。
 - `interrupt_session` 停**一个**会话的 turn，并且**丢掉**它没干完的活（连排在同一会话后面
@@ -745,7 +745,7 @@ TUI 是一种实现（带样式的行），非交互模式是另一种（什么�
 
 - **补全目录 = 服务端目录 + 客户端目录**。三个位置都补：命令名、`--` 后的参数名、
   参数值。值只在目录声明了来源时才补，来源有五种：`Sessions`（活着的会话）、
-  `Static`（固定集合：`--llm` 的名单条目、`--compact_threshold` 的百分位）、
+  `Static`（固定集合：`--llm` 的名单条目、`--context_limit` 的百分位）、
   `Arguments`（目录里所有参数名，给 `set_sticky_cmd_argument --name`）、
   `Paths`（客户端这台机器的文件系统，给 `--cwd`）、`OfNamedArgument`（见下）。
   `del_sticky_cmd_argument --name` 的候选来自当前 sticky 参数名，随 sticky 变化重建。
@@ -885,7 +885,7 @@ Ctrl+C 和 Ctrl+X 都删了：一手 `Ctrl+C` 的老习惯在 TUI 里意味着�
 - `idle_timeout_ms`（默认 60s）：SSE 两个 chunk 之间的静默上限 —— **连接开着但不发数据就是坏
   掉**，这正是卡死那次的形态。
 - `max_retries`（默认 3）/ `retry_base_ms`（默认 1000）：失败、超时、或**完成了但一个字都没有**
-  的空响应，以及**读流读到一半 panic**，都会退避重试，延迟翻倍（1s → 2s → 4s，封顶 30s）。压缩（summarise）那条请求同样受保护。
+  的空响应，以及**读流读到一半 panic**，都会退避重试，延迟翻倍（1s → 2s → 4s，封顶 30s）。
 - 只有「本次尝试一个字都没说」才允许重试：已经说过话再问一次，会给出第二个互相矛盾的答案。
 - 重试会发一条 warn 到 TUI（`retry 1/3 in 1s`），所以慢的时候看得到是在重试，而不是在思考。
 
@@ -1059,12 +1059,12 @@ Git Bash 自动探测常见安装路径，找不到再退回 PATH 上的 `bash`�
 | 名单自动导入：`~/.agents/llm.toml` 15 个 provider，启动即用 | 通过（`llm roster imported ... providers=15`）|
 | 无配置时按名单选默认条目：`deepseek-official/deepseek-flash`，`/v1/responses` 可用 | 通过（真实 DeepSeek，609ms 一轮）|
 | `set_session --llm`：`deepseek-official/deepseek-v4-pro` 一轮答对；`minimax-cn/MiniMax-M3.1-Flash` 一轮答对 | 通过（两条都真跑，密钥链各自命中）|
-| `set_session --compact_threshold 30%`：日志 `budget=300000`（1M × 30%，单位是 token） | 通过 |
+| `set_session --context_limit 30%`：日志 `budget=300000`（1M × 30%，单位是 token） | 通过 |
 | `--llm` 打错：列出 15 个可用 provider | 通过 |
 | 老会话不被默认值带走：`test1` 仍按 `minimax-cn/MiniMax-M3.1-Flash` 路由 | 通过（`llm` 列为空时用 `model` 反查名单）|
 | 中断在工具调用中间的 transcript 能继续用：造一条无结果的 `tool_call` 再追问 | 通过（真实 DeepSeek 答「结果未知，本轮被中断」；修复前同一份历史整条 400）|
-| `--name` 被拒并列出 `--session/--cwd/--llm/--compact_threshold` | 通过 |
-| 值补全：`--session` 列会话、`--llm` 列 44 个名单条目、`--compact_threshold` 列 0–90% | 通过（单测 5 个 + 目录过线测试）|
+| `--name` 被拒并列出 `--session/--cwd/--llm/--context_limit` | 通过 |
+| 值补全：`--session` 列会话、`--llm` 列 44 个名单条目、`--context_limit` 列 0–90% | 通过（单测 5 个 + 目录过线测试）|
 | 值补全：`set_sticky_cmd_argument --name` 列全部参数名；`--name session --value` 列会话 | 通过（单测）|
 | 值补全：`--cwd` 列目录，目录补成 `src/` 不带空格、再按 Tab 能进下一层 | 通过（单测，真 TTY 未验证）|
 | 工具输出上限：22KB `cat` → 2004 字符 + 落盘（真实 provider） | 通过 |
@@ -1133,7 +1133,7 @@ job(s) keep running -- they outlive the server, stop them with del_bash`）→ �
 14. **压缩后 reasoning 链可能断**（见 §4 闸二）：保留区间里的加密块引用的前文已经变成
     摘要，provider 是否还消费它，目前没有直接证据。
 15. **一次压缩 ~32s**：实测压缩请求 32s（2000 token 上限、非流式）。它不是每步都发生 ——
-    `context()` 只统计 `summarised_upto` 之后的部分，而 `choose_cut` 要求 live 多于
+    `context()` 只统计 `handover_upto` 之后的部分，而 `choose_cut` 要求 live 多于
     `keep_recent`(30) 条才切，压完 live 就只剩那 30 条，闸门直接关上（实测压完后再发消息：
     `step start` 前没有任何 compression，turn 1.1s 结束）。
     曾经浪费一次：启动 resume 的 turn 和新发的 turn 各自判了一次超预算，同一份上下文被压

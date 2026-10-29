@@ -563,11 +563,11 @@ mod tests {
         let spec = CommandSpec {
             target: protocol::CommandTarget::Server,
             name: "send_message".into(),
-            summary: String::new(),
+            description: String::new(),
             args: vec![
                 ArgSpec {
                     name: "session".into(),
-                    summary: String::new(),
+                    description: String::new(),
                     required: true,
                     value_hint: None,
                     completions: protocol::CompletionSource::None,
@@ -576,7 +576,7 @@ mod tests {
                 // gap for a sticky value to fill.
                 ArgSpec {
                     name: "cwd".into(),
-                    summary: String::new(),
+                    description: String::new(),
                     required: false,
                     value_hint: None,
                     completions: protocol::CompletionSource::None,

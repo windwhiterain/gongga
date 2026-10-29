@@ -36,7 +36,7 @@ pub struct Endpoint {
 pub struct Model {
     pub id: String,
     pub name: String,
-    /// Input+output ceiling when published; a `--compact_threshold` percent is of it.
+    /// Input+output ceiling when published; a `--context_limit` percent is of it.
     pub context: Option<u64>,
     /// Request paths this model accepts; empty means unstated, assume OpenAI.
     pub endpoints: Vec<String>,

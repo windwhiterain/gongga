@@ -53,7 +53,7 @@ what the operator asked and what came back, not a place to read a transcript. It
 row cannot scroll, so `Alt+Y` copying it takes that row alone.
 
 A command that named a session is *not* drawn there: its echo, its rows and its
-summary are read in that session's view, where the transcript they came from already
+result line are read in that session's view, where the transcript they came from already
 is. The line keeps the commands that named nobody -- `set_event_ui`, `cancel`, a
 refusal.
 

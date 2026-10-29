@@ -31,7 +31,7 @@ terminal default, `T` truecolour), then `b`/`i`/`d`/`v` for bold/italic/dim/
 inverse, then `@<letter>` for a background. Reasoning is `ki` (dark gray italic),
 the answer `W`, a tool call `Y`, tool output `b`, the header bar `K@C`.
 
-Then a summary: frames, frames per second over the busiest one-second window,
+Then a report: frames, frames per second over the busiest one-second window,
 the largest bytes-arrived-to-frame-emitted gap, blank frames, collapse frames
 (one showing under a quarter of what the frame before it showed), how many
 frames erased the page, and row-loss frames. Those are the flicker numbers.
@@ -1262,7 +1262,7 @@ class FrameWriter:
                 if previous[row][col] != snapshot[row][col]
             )
         filled = terminal.filled_cells()
-        modes = _mode_summary(terminal)
+        modes = _mode_report(terminal)
         self.stream.write(
             "\n=== frame %d  t=+%.0fms  %d cells changed of %dx%d  cur=%d:%d%s  in:%d  erase:%d/%d  %s\n"
             % (
@@ -1312,7 +1312,7 @@ class FrameWriter:
             pass
 
 
-def _mode_summary(terminal):
+def _mode_report(terminal):
     if not terminal.modes:
         return "no-modes"
     return "modes " + ",".join(
@@ -1320,7 +1320,7 @@ def _mode_summary(terminal):
     )
 
 
-def summarise(records, terminal, wall_seconds, frames_path, raw_path):
+def report(records, terminal, wall_seconds, frames_path, raw_path):
     lines = ["frames: %d" % len(records), "wall: %.2fs" % wall_seconds]
     lines.append("frames file: %s" % frames_path)
     lines.append("byte tape: %s" % raw_path)
@@ -2060,7 +2060,7 @@ def run_live(options, script):
     return (
         (3 if driver.error else 0) if writer.records else 1,
         terminal,
-        summarise(writer.records, terminal, time.perf_counter() - root, frames_path, raw_path)
+        report(writer.records, terminal, time.perf_counter() - root, frames_path, raw_path)
         + (["script stopped: %s" % driver.error] if driver.error else []),
         run_dir,
         frames_path,
@@ -2086,7 +2086,7 @@ def replay(options):
     terminal.feed(decoder.decode(b"", True))
     writer.emit(terminal, previous, None, None, 0)
     writer.close()
-    lines = summarise(writer.records, terminal, time.perf_counter() - root, frames_path, options.replay)
+    lines = report(writer.records, terminal, time.perf_counter() - root, frames_path, options.replay)
     return 0, terminal, lines
 
 

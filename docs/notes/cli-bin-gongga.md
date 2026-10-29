@@ -16,7 +16,7 @@ libraries already drew, applied to the last place it had not been applied.
 ## A bare call lists what exists
 
 With no command, `gongga` prints the catalog the server sent in its greeting --
-one line per command, its summary, the arguments it takes and whether each is
+one line per command, its description, the arguments it takes and whether each is
 required, and a marker for the commands that run in the client rather than here.
 
 The list is never a copy kept in this crate. A script can register a command, so a

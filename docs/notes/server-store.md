@@ -84,14 +84,14 @@ the caller knows.
 ## Store::history
 
 This doc comment used to carry three overlapping openings (`Loads the transcript
-in the order the model should see it`, the summary replacement rule, and the
-test-only note). The surviving statements:
+in the order the model should see it`, the note replacement rule, and the
+fact that no writer exists). The surviving statements:
 
-A summary, once written, stands in for everything up to its `summarised_upto`, so
+A handover note, once written, stands in for everything up to its `handover_upto`, so
 that is all a request needs. The rows themselves are never deleted -- the full
 transcript stays available to `history` and to anything that wants to audit it.
 
-Production code always has a lower bound (a summary) or both (compaction), and a
+Production code always has a lower bound (a note) or both (a fold), and a
 method nobody calls is a second way to ask the same question.
 
 ## HistoryItem::ToolResult — images
@@ -109,8 +109,8 @@ it.
 The cost, stated plainly: **the file is the state**. If the working directory is
 cleaned, the branch is switched, or the temp file is deleted, the replay is
 missing that picture. `crates/server/src/llm.rs` degrades it to a sentence naming
-the path instead of failing the request, and compaction writes "an image was
-shown here: <path>" into the summary, so the model is never reasoning on as if it
+the path instead of failing the request, and a fold writes "an image was
+shown here: <path>" into the note, so the model is never reasoning on as if it
 had seen something that is now gone.
 
 ## MessageRow::parse — builtin_call
@@ -121,13 +121,13 @@ returned to it, because it ran at the provider. Leaving `text` empty made
 through to the `unknown message kind` warning, so every read of the transcript
 logged a complaint about a kind this server writes itself.
 
-So the row gets a summary instead: `web_search "rust async book"`,
+So the row gets a one-line description instead: `web_search "rust async book"`,
 `web_fetch https://...`, `image_generation "a red cube on a table"`. It comes
-from `activity_summary`, which is also what the live line uses (via
+from `activity_brief`, which is also what the live line uses (via
 `activity_name` / `activity_detail`), so the transcript and the stream never
 describe the same event differently.
 
-## activity_summary
+## activity_brief
 
 Kind name plus whatever the item says about itself, and nothing invented: a
 missing query, missing URL and missing prompt are all left out rather than
@@ -154,10 +154,10 @@ itself.
 
 ## Store::history_between
 
-Compaction needs both bounds, and it needs them as one query: the mapping inside
+A fold needs both bounds, and it needs them as one query: the mapping inside
 is not one-to-one with rows -- a `notice` row is skipped, an unanswered tool call
 gains a placeholder -- so "how many items does the old half hold" cannot be
-answered by counting rows, which is how the summary used to cover a range that
+answered by counting rows, which is how the note used to cover a range that
 was not the one it was asked for.
 
 A call whose result never got recorded -- the turn was interrupted between asking
@@ -194,7 +194,7 @@ that was seen.
 
 ## Store::message_index
 
-Compression needs the seqs to decide where a summary may take over, not just the
+A fold needs the seqs to decide where the note may take over, not just the
 contents.
 
 ## Store::set_context_tokens
@@ -253,7 +253,7 @@ the next start adopts rather than a process nobody knows about.
 `None` means "whatever the server is configured with", which is what most
 sessions are.
 
-## SessionRow::compact_threshold
+## SessionRow::context_limit
 
 `None` means the server-wide budget. The original line said "character budget";
 the config field is `compress_above_tokens`, so the wording may be stale.
@@ -279,18 +279,23 @@ Two messages queued on one session used to share a fate: the first turn cleared
 the session's pending rows wholesale and took the second message's row with it,
 so a crash before the second turn ran lost the message from both places at once.
 
-## a_summary_shrinks_the_request_without_touching_the_transcript
+## a_folded_prefix_shrinks_the_request_without_touching_the_transcript
 
 The transcript is a record, not a cache, and deleting the rows would lose the
 only copy of what the session actually did.
 
+The test folds through `fold_from_outside`: a second connection issuing the same
+statement the skill issues. There is no setter to reach for, not even behind
+`#[cfg(test)]`, because a method the store owns would be exactly the capability
+this design takes away from the server.
+
 ## session_tuning_round_trips
 
-`set_session --llm` and `--compact_threshold` have to survive a restart like
+`set_session --llm` and `--context_limit` have to survive a restart like
 everything else. `model` follows the entry, because that is the column list views
 read.
 
-The two halves of a compaction have to add up to the transcript. Splitting by
+The two halves of a fold have to add up to the transcript. Splitting by
 sequence does that by construction; counting rows did not, because a `notice` is
 skipped and an unanswered tool call gains a placeholder.
 
@@ -301,7 +306,7 @@ wrong way to find the cut.
 Clearing the entry goes back to the server's own, model included: the caller
 passes what that is, because only it knows.
 
-## opening_an_old_database_adds_the_summary_columns
+## opening_an_old_database_adds_the_new_columns
 
 A database written before compression existed has to grow the columns rather than
 fail to open, or every existing session would be stranded.

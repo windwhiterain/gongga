@@ -212,7 +212,7 @@ async fn handle_connection(
                 .list()
                 .unwrap_or_default()
                 .iter()
-                .map(|r| protocol::SessionSummary {
+                .map(|r| protocol::SessionInfo {
                     name: r.name.clone(),
                     status: r.status,
                     created_at: r.created_at,

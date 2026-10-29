@@ -21,7 +21,7 @@ use anyhow::{Context, anyhow};
 use clap::{CommandFactory, FromArgMatches, Parser};
 use protocol::{
     ChannelConfig, ClientInfo, ClientMessage, Event, LogLevel, NO_SESSION, ResponseEvent,
-    ResponsePart, ServerMessage, SessionStatus, SessionSummary, ToolAnswerEvent, ToolStream,
+    ResponsePart, ServerMessage, SessionStatus, SessionInfo, ToolAnswerEvent, ToolStream,
     decode_server, encode_client,
 };
 use tokio::net::UdpSocket;
@@ -239,7 +239,7 @@ pub struct Client {
     /// Where `set_session` / `del_session` land, once the server says yes.
     /// See `docs/notes/cli-lib.md`.
     follows: Vec<(u64, String, String)>,
-    sessions: Vec<SessionSummary>,
+    sessions: Vec<SessionInfo>,
     model: String,
     next_id: u64,
     /// Whether a link is open right now; while false, all server knowledge is
@@ -1156,7 +1156,7 @@ pub async fn list_commands(args: &Args) -> anyhow::Result<()> {
             "{}{} -- {}\n    takes: {}",
             command.name,
             target,
-            command.summary,
+            command.description,
             signature(&command.args),
         );
     }
@@ -1607,7 +1607,7 @@ mod tests {
         c.connected = true;
         c.sessions = sessions
             .into_iter()
-            .map(|n| SessionSummary {
+            .map(|n| SessionInfo {
                 name: n.into(),
                 status: SessionStatus::Idle,
                 created_at: 0,
@@ -1633,18 +1633,18 @@ mod tests {
         cat.set_commands(vec![protocol::CommandSpec {
             target: protocol::CommandTarget::Server,
             name: "send_message".into(),
-            summary: "s".into(),
+            description: "s".into(),
             args: vec![
                 protocol::ArgSpec {
                     name: "message".into(),
-                    summary: "s".into(),
+                    description: "s".into(),
                     required: true,
                     value_hint: None,
                     completions: protocol::CompletionSource::None,
                 },
                 protocol::ArgSpec {
                     name: "session".into(),
-                    summary: "s".into(),
+                    description: "s".into(),
                     required: false,
                     value_hint: None,
                     completions: protocol::CompletionSource::None,
@@ -1868,18 +1868,18 @@ mod tests {
         cat.set_commands(vec![protocol::CommandSpec {
             target: protocol::CommandTarget::Server,
             name: "send_message".into(),
-            summary: "s".into(),
+            description: "s".into(),
             args: vec![
                 protocol::ArgSpec {
                     name: "message".into(),
-                    summary: "s".into(),
+                    description: "s".into(),
                     required: true,
                     value_hint: None,
                     completions: protocol::CompletionSource::None,
                 },
                 protocol::ArgSpec {
                     name: "session".into(),
-                    summary: "s".into(),
+                    description: "s".into(),
                     required: true,
                     value_hint: None,
                     completions: protocol::CompletionSource::None,
@@ -2211,7 +2211,7 @@ mod tests {
             &mut s,
         );
         assert_eq!(s.lines, vec!["2 row(s) at seq 1..2 in main"]);
-        assert!(s.keys.is_empty(), "the summary is not a row: {:?}", s.keys);
+        assert!(s.keys.is_empty(), "the description is not a row: {:?}", s.keys);
     }
 
     #[test]
@@ -2248,10 +2248,10 @@ mod tests {
         cat.set_commands(vec![protocol::CommandSpec {
             target: protocol::CommandTarget::Server,
             name: "del_session".into(),
-            summary: "s".into(),
+            description: "s".into(),
             args: vec![protocol::ArgSpec {
                 name: "session".into(),
-                summary: "s".into(),
+                description: "s".into(),
                 required: true,
                 value_hint: None,
                 completions: protocol::CompletionSource::None,
@@ -2384,10 +2384,10 @@ mod tests {
         cat.set_commands(vec![protocol::CommandSpec {
             target: protocol::CommandTarget::Server,
             name: "set_session".into(),
-            summary: "s".into(),
+            description: "s".into(),
             args: vec![protocol::ArgSpec {
                 name: "session".into(),
-                summary: "s".into(),
+                description: "s".into(),
                 required: true,
                 value_hint: None,
                 completions: protocol::CompletionSource::None,
@@ -2417,10 +2417,10 @@ mod tests {
         cat.set_commands(vec![protocol::CommandSpec {
             target: protocol::CommandTarget::Server,
             name: "set_session".into(),
-            summary: "s".into(),
+            description: "s".into(),
             args: vec![protocol::ArgSpec {
                 name: "session".into(),
-                summary: "s".into(),
+                description: "s".into(),
                 required: true,
                 value_hint: None,
                 completions: protocol::CompletionSource::None,
@@ -2444,10 +2444,10 @@ mod tests {
         cat.set_commands(vec![protocol::CommandSpec {
             target: protocol::CommandTarget::Server,
             name: "del_session".into(),
-            summary: "s".into(),
+            description: "s".into(),
             args: vec![protocol::ArgSpec {
                 name: "session".into(),
-                summary: "s".into(),
+                description: "s".into(),
                 required: true,
                 value_hint: None,
                 completions: protocol::CompletionSource::None,
@@ -2515,10 +2515,10 @@ mod tests {
         cat.set_commands(vec![protocol::CommandSpec {
             target: protocol::CommandTarget::Server,
             name: "del_session".into(),
-            summary: "s".into(),
+            description: "s".into(),
             args: vec![protocol::ArgSpec {
                 name: "name".into(),
-                summary: "s".into(),
+                description: "s".into(),
                 required: true,
                 value_hint: None,
                 completions: protocol::CompletionSource::None,

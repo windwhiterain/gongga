@@ -180,7 +180,7 @@ pub fn server_catalog() -> Vec<CommandSpec> {
         CommandSpec {
             target: CommandTarget::Server,
             name: "send_message".into(),
-            summary: "Send a message to a session and run a turn.".into(),
+            description: "Send a message to a session and run a turn.".into(),
             args: vec![
                 arg(
                     "message",
@@ -201,7 +201,7 @@ pub fn server_catalog() -> Vec<CommandSpec> {
         CommandSpec {
             target: CommandTarget::Server,
             name: "set_session".into(),
-            summary: "Create the session if it does not exist, and apply the given settings to \
+            description: "Create the session if it does not exist, and apply the given settings to \
                       it. Settings omitted now are left as they are."
                 .into(),
             args: vec![
@@ -230,9 +230,9 @@ pub fn server_catalog() -> Vec<CommandSpec> {
                     CompletionSource::Static(crate::providers::roster().specs()),
                 ),
                 arg(
-                    "compact_threshold",
-                    "Compact the transcript once it fills this much of the model's context, e.g. \
-                     `30%`. 0 turns compaction off. Defaults to a share of the \
+                    "context_limit",
+                    "The context level at which this session gets a `Context notice`, e.g. \
+                     `30%`. 0 never notices. Defaults to a share of the \
                      model's context window, or the server's token budget when the \
                      window is unknown.",
                     false,
@@ -268,7 +268,7 @@ pub fn server_catalog() -> Vec<CommandSpec> {
         CommandSpec {
             target: CommandTarget::Server,
             name: "del_session".into(),
-            summary: "Delete a session, its shells and its transcript.".into(),
+            description: "Delete a session, its shells and its transcript.".into(),
             args: vec![arg(
                 "session",
                 "Session to delete.",
@@ -280,7 +280,7 @@ pub fn server_catalog() -> Vec<CommandSpec> {
         CommandSpec {
             target: CommandTarget::Server,
             name: "interrupt_session".into(),
-            summary: "Stop the turn one session is running. The turn is dropped, not resumed on \
+            description: "Stop the turn one session is running. The turn is dropped, not resumed on \
                       the next start. Detached jobs keep running."
                 .into(),
             args: vec![arg(
@@ -294,7 +294,7 @@ pub fn server_catalog() -> Vec<CommandSpec> {
         CommandSpec {
             target: CommandTarget::Server,
             name: "cancel".into(),
-            summary: "Stop running turns, save what is left undone, and shut the server down. \
+            description: "Stop running turns, save what is left undone, and shut the server down. \
                       Detached jobs are left running."
                 .into(),
             args: vec![],
@@ -302,7 +302,7 @@ pub fn server_catalog() -> Vec<CommandSpec> {
         CommandSpec {
             target: CommandTarget::Server,
             name: "get_messages".into(),
-            summary: "Read the transcript: a range of sequence numbers, oldest first. \
+            description: "Read the transcript: a range of sequence numbers, oldest first. \
                      Each row arrives as the event it was published as, before the result."
                 .into(),
             args: vec![
@@ -330,14 +330,14 @@ pub fn server_catalog() -> Vec<CommandSpec> {
 
 fn arg(
     name: &str,
-    summary: &str,
+    description: &str,
     required: bool,
     value_hint: Option<&str>,
     completions: CompletionSource,
 ) -> protocol::ArgSpec {
     protocol::ArgSpec {
         name: name.into(),
-        summary: summary.into(),
+        description: description.into(),
         required,
         value_hint: value_hint.map(str::to_string),
         completions,
@@ -470,7 +470,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             Err(e) => return Outcome::err(e),
         },
     };
-    let threshold = match args.get("compact_threshold") {
+    let threshold = match args.get("context_limit") {
         None => None,
         Some(raw) => match parse_percent(raw) {
             Ok(v) => Some(v),
@@ -484,7 +484,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         .unwrap_or(d.agent.default_context);
     if let (Some(percent), None) = (threshold, context) {
         return Outcome::err(format!(
-            "--compact_threshold {percent}% needs a context window to be a percentage of, and \
+            "--context_limit {percent}% needs a context window to be a percentage of, and \
              no model involved here has one on record{}",
             match &entry {
                 Some(e) => format!(" ({} is not in the roster with a `context`)", e.spec()),
@@ -526,7 +526,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         changed = true;
     }
     if let Some(percent) = threshold {
-        tuning.compact_threshold = Some(percent);
+        tuning.context_limit = Some(percent);
         changed = true;
     }
     if changed {
@@ -534,7 +534,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         if let Err(e) = d.store.set_session_tuning(
             session.id(),
             tuning.llm.as_deref(),
-            tuning.compact_threshold,
+            tuning.context_limit,
             tuning.thinking_effort.as_deref(),
             // The model the session will actually run on: the entry's, or the
             // server's own when it has none of its own.
@@ -558,14 +558,14 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     if let Some(level) = &tuning.thinking_effort {
         notes.push(format!("thinking {level}"));
     }
-    if let Some(percent) = tuning.compact_threshold {
+    if let Some(percent) = tuning.context_limit {
         let budget = context.map(|c| crate::providers::tokens_for_percent(c, percent));
         notes.push(match (percent, budget) {
-            // 0 is how the agent spells "never compact"; saying "0 tokens"
+            // 0 is how the agent spells "never notice"; saying "0 tokens"
             // would read as the opposite.
-            (0, _) => "compaction off".to_string(),
-            (percent, Some(tokens)) => format!("compacting at {percent}% ({tokens} tokens)"),
-            (percent, None) => format!("compacting at {percent}%"),
+            (0, _) => "no notice".to_string(),
+            (percent, Some(tokens)) => format!("noticing at {percent}% ({tokens} tokens)"),
+            (percent, None) => format!("noticing at {percent}%"),
         });
     }
     if !notes.is_empty() {
@@ -577,7 +577,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             "session": name,
             "cwd": cwd,
             "llm": tuning.llm,
-            "compact_threshold": tuning.compact_threshold,
+            "context_limit": tuning.context_limit,
             "thinking_effort": tuning.thinking_effort,
         }),
     )
@@ -591,15 +591,15 @@ fn resolve_llm(d: &Dispatch, spec: &str) -> Result<crate::providers::Entry, Stri
     }
 }
 
-/// `30%`, `30`, or `0` for "never compact"; anything else is refused, not rounded.
+/// `30%`, `30`, or `0` for "never notice"; anything else is refused, not rounded.
 fn parse_percent(raw: &str) -> Result<u8, String> {
     let trimmed = raw.trim().trim_end_matches('%').trim();
     let value: u16 = trimmed
         .parse()
-        .map_err(|_| format!("--compact_threshold takes a percentage like `30%`, got {raw:?}"))?;
+        .map_err(|_| format!("--context_limit takes a percentage like `30%`, got {raw:?}"))?;
     if value > 100 {
         return Err(format!(
-            "--compact_threshold is a percentage of the context window, so it cannot exceed 100%; \
+            "--context_limit is a percentage of the context window, so it cannot exceed 100%; \
              got {raw}"
         ));
     }
@@ -1001,7 +1001,7 @@ pub fn publish_sessions(d: &Dispatch) {
         d.bus.publish(Event::Sessions {
             sessions: rows
                 .iter()
-                .map(|r| protocol::SessionSummary {
+                .map(|r| protocol::SessionInfo {
                     name: r.name.clone(),
                     status: r.status,
                     created_at: r.created_at,
@@ -1163,7 +1163,7 @@ mod tests {
         let mut all = published();
         all.push(CommandSpec {
             name: "weather".into(),
-            summary: "Registered by a script.".into(),
+            description: "Registered by a script.".into(),
             args: vec![arg(
                 "city",
                 "Which city.",
@@ -1280,7 +1280,7 @@ mod tests {
             CompletionSource::Paths
         ));
         assert!(matches!(
-            source("set_session", "compact_threshold"),
+            source("set_session", "context_limit"),
             CompletionSource::Static(_)
         ));
         // Free-form text stays free-form: the catalogue says nothing, and the
@@ -1291,7 +1291,7 @@ mod tests {
         ));
     }
 
-    /// `set_session` chooses model and compaction, so both flags must complete.
+    /// `set_session` chooses the model and the notice level, so both flags must complete.
     #[test]
     fn set_session_offers_the_roster_and_a_percentage() {
         let spec = server_catalog()
@@ -1307,7 +1307,7 @@ mod tests {
         let threshold = spec
             .args
             .iter()
-            .find(|a| a.name == "compact_threshold")
+            .find(|a| a.name == "context_limit")
             .unwrap();
         assert!(!threshold.required);
         // The valid range is wide, but the points worth tabbing to are few.
@@ -1316,7 +1316,7 @@ mod tests {
                 assert!(values.iter().any(|v| v == "0"), "{values:?}");
                 assert!(values.iter().any(|v| v == "50%"), "{values:?}");
             }
-            other => panic!("--compact_threshold should offer values, got {other:?}"),
+            other => panic!("--context_limit should offer values, got {other:?}"),
         }
         // `--cwd` is the one value the catalog cannot list itself: it has to ask
         // the filesystem the client is sitting on.

@@ -22,8 +22,8 @@ use crate::store::Store;
 use crate::tools::detached::DetachedRegistry;
 use crate::tools::{ToolContext, ToolRegistry};
 
-/// Share of the window compaction fills; the rest is headroom for one step's output.
-const DEFAULT_COMPACT_PERCENT: u8 = 70;
+/// Share of the window the notice is sent at; the rest is headroom for one step's output.
+const DEFAULT_CONTEXT_LIMIT_PERCENT: u8 = 70;
 
 pub struct Agent {
     pub store: Store,
@@ -193,7 +193,7 @@ impl Agent {
         outcome
     }
 
-    /// Where this turn sends, and how many input tokens it may carry before compacting.
+    /// Where this turn sends, and how many input tokens it may carry before it is worth a notice.
     fn route(
         &self,
         name: &str,
@@ -210,11 +210,11 @@ impl Agent {
                 (client, choice.entry.context)
             }
         };
-        let budget = self.budget(name, context, tuning.compact_threshold);
+        let budget = self.budget(name, context, tuning.context_limit);
         Ok((llm, budget))
     }
 
-    /// The compaction threshold in input tokens; zero means off without exception.
+    /// The notice threshold in input tokens; zero means off without exception.
     fn budget(&self, name: &str, context: Option<u64>, percent: Option<u8>) -> u64 {
         // A percentage has no size without a window; warn rather than guess.
         if self.compress_above_tokens != 0 && context.is_none() && percent.is_some() {
@@ -223,7 +223,7 @@ impl Agent {
                 "no context window is known for this model; using the configured token budget"
             );
         }
-        compaction_budget(self.compress_above_tokens, context, percent)
+        notice_budget(self.compress_above_tokens, context, percent)
     }
 
     /// The client for one roster entry, built once and shared.
@@ -293,7 +293,7 @@ impl Agent {
         if tokens < budget {
             return;
         }
-        let Ok((_, upto)) = self.store.summary(id) else {
+        let Ok((_, upto)) = self.store.handover(id) else {
             return;
         };
         // Once per state of the transcript: nagging every step teaches nothing.
@@ -345,17 +345,17 @@ impl Agent {
         }
         let prompts = crate::prompts::shared();
         let instructions = prompts.text("instructions").unwrap_or_default();
-        let summary = note.map(|s| prompts.render("summary_preamble", &[("summary", s)]));
+        let handover = note.map(|s| prompts.render("handover_preamble", &[("handover", s)]));
         let prompt = crate::store::Prompt {
             instructions,
-            summary,
+            handover,
             cwd,
             stamp: here,
         };
         // Rewritten prose is a real event: the prefix the provider cached is gone
         // from here, and the ledger will show the miss.
         if let Some(p) = &stored {
-            if p.instructions != prompt.instructions || p.summary != prompt.summary {
+            if p.instructions != prompt.instructions || p.handover != prompt.handover {
                 tracing::info!(session = %name, "the prompt in force changed: a new row is sent");
             }
         }
@@ -378,12 +378,12 @@ impl Agent {
             effort,
             cwd,
         } = *attempt;
-        let (summary, history) = self.store.context(id)?;
+        let (note, history) = self.store.context(id)?;
         let definitions = self.tools.definitions();
-        let prompt = self.prompt_in_force(id, &name, cwd, summary.as_deref(), step == 1)?;
+        let prompt = self.prompt_in_force(id, &name, cwd, note.as_deref(), step == 1)?;
         let mut rx = llm.stream(
             &prompt.instructions,
-            prompt.summary.as_deref(),
+            prompt.handover.as_deref(),
             &history,
             &definitions,
             effort,
@@ -827,18 +827,18 @@ fn context_notice(
     )
 }
 
-/// The compaction threshold in input tokens, or 0 for "off".
-fn compaction_budget(configured: u64, context: Option<u64>, percent: Option<u8>) -> u64 {
+/// The notice threshold in input tokens, or 0 for "off".
+fn notice_budget(configured: u64, context: Option<u64>, percent: Option<u8>) -> u64 {
     if configured == 0 {
         return 0;
     }
     let Some(window) = context.filter(|w| *w > 0) else {
         return configured;
     };
-    providers::tokens_for_percent(window, percent.unwrap_or(DEFAULT_COMPACT_PERCENT))
+    providers::tokens_for_percent(window, percent.unwrap_or(DEFAULT_CONTEXT_LIMIT_PERCENT))
 }
 
-/// Where a summary may take over: up to and including the seq is compressed.
+/// Where the note takes over: up to and including the seq is folded out.
 ///
 /// # Invariant
 ///
@@ -850,20 +850,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_zero_config_turns_compaction_off_whatever_the_window_is() {
-        assert_eq!(compaction_budget(0, Some(1_000_000), Some(50)), 0);
-        assert_eq!(compaction_budget(0, Some(1_000_000), None), 0);
-        assert_eq!(compaction_budget(0, None, None), 0);
+    fn a_zero_config_turns_the_notice_off_whatever_the_window_is() {
+        assert_eq!(notice_budget(0, Some(1_000_000), Some(50)), 0);
+        assert_eq!(notice_budget(0, Some(1_000_000), None), 0);
+        assert_eq!(notice_budget(0, None, None), 0);
     }
 
     /// A known window decides the threshold, so a bigger model needs no retuning.
     #[test]
     fn a_known_window_beats_the_configured_number() {
-        assert_eq!(compaction_budget(40_000, Some(1_000_000), None), 700_000);
-        assert_eq!(compaction_budget(40_000, Some(200_000), Some(50)), 100_000);
+        assert_eq!(notice_budget(40_000, Some(1_000_000), None), 700_000);
+        assert_eq!(notice_budget(40_000, Some(200_000), Some(50)), 100_000);
         // No window in the roster: the configured number is all there is.
-        assert_eq!(compaction_budget(40_000, None, Some(50)), 40_000);
-        assert_eq!(compaction_budget(40_000, None, None), 40_000);
+        assert_eq!(notice_budget(40_000, None, Some(50)), 40_000);
+        assert_eq!(notice_budget(40_000, None, None), 40_000);
     }
 
     /// A template edit waits for the next turn; a fold does not; a step that
@@ -872,7 +872,7 @@ mod tests {
     fn the_prompt_is_rebuilt_only_when_something_moved() {
         let stored = crate::store::Prompt {
             instructions: "i".into(),
-            summary: None,
+            handover: None,
             cwd: "C:/a".into(),
             stamp: crate::store::stamp(None),
         };
@@ -918,7 +918,7 @@ mod tests {
                 "Context notice for `{{session}}`: {{tokens}} input tokens of {{budget}}. {{folded}} Read `transcript.py read --session {{session}}`, fold `transcript.py collapse --session {{session}}`; the messages stay readable.",
             ),
             ("folded_none", "Nothing has been folded yet."),
-            ("folded_through", "The summary runs through seq {{upto}}."),
+            ("folded_through", "The note runs through seq {{upto}}."),
         ])
     }
 
@@ -941,7 +941,7 @@ mod tests {
         assert!(said.contains("retry 1 of 3"), "{said}");
     }
 
-    /// A notice for a session that already folded says where the summary ends.
+    /// A notice for a session that already folded says where the note ends.
     #[test]
     fn the_notice_names_what_is_already_folded() {
         let notice = context_notice(&notice_prompts(), "main", 10, 20, 42);

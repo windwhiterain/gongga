@@ -147,7 +147,7 @@ impl Completer for Catalog {
                 // again hides the flags still missing.
                 .filter(|a| !used.contains(a.name.as_str()))
                 .filter(|a| a.name.starts_with(prefix))
-                .map(|a| Candidate::word(format!("--{}", a.name), a.summary.clone()))
+                .map(|a| Candidate::word(format!("--{}", a.name), a.description.clone()))
                 .collect();
         }
 
@@ -157,7 +157,7 @@ impl Completer for Catalog {
             return all
                 .iter()
                 .filter(|c| c.name.starts_with(prefix))
-                .map(|c| Candidate::word(format!("/{}", c.name), c.summary.clone()))
+                .map(|c| Candidate::word(format!("/{}", c.name), c.description.clone()))
                 .collect();
         }
 
@@ -351,14 +351,14 @@ fn directory(cwd: &Path, typed: &str) -> PathBuf {
 #[cfg(test)]
 fn arg(
     name: &str,
-    summary: &str,
+    description: &str,
     required: bool,
     value_hint: Option<&str>,
     completions: CompletionSource,
 ) -> ArgSpec {
     ArgSpec {
         name: name.into(),
-        summary: summary.into(),
+        description: description.into(),
         required,
         value_hint: value_hint.map(str::to_string),
         completions,
@@ -380,7 +380,7 @@ mod tests {
             CommandSpec {
                 target: CommandTarget::Server,
                 name: "send_message".into(),
-                summary: "Send a message.".into(),
+                description: "Send a message.".into(),
                 args: vec![
                     arg("message", "The text.", true, None, CompletionSource::None),
                     arg(
@@ -395,7 +395,7 @@ mod tests {
             CommandSpec {
                 target: CommandTarget::Server,
                 name: "set_session".into(),
-                summary: "Create or configure.".into(),
+                description: "Create or configure.".into(),
                 args: vec![
                     arg("session", "Target.", true, None, CompletionSource::Sessions),
                     arg("cwd", "Directory.", false, None, CompletionSource::Paths),

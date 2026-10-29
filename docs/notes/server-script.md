@@ -19,7 +19,7 @@ client follows -- completion, `--help`, validation and all.
                                               -> {"ok": true, "message": ..., "data": ...}
 
 A declared command carries the same fields the built-in ones carry: `name`,
-`summary`, `args`, and per argument `name`, `summary`, `required`, `value_hint`
+`description`, `args`, and per argument `name`, `description`, `required`, `value_hint`
 and `completions` (`sessions`, `paths`, or omitted). That is deliberate: a
 script command is validated and completed by exactly the code a built-in is, so
 there is no second, weaker path.

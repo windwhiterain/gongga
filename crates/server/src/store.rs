@@ -22,7 +22,7 @@ pub struct Prompt {
     pub instructions: String,
     /// The handover note as the model reads it; nothing before the first fold.
     #[serde(default)]
-    pub summary: Option<String>,
+    pub handover: Option<String>,
     /// The directory the shell stood in, so a move is noticed.
     #[serde(default)]
     pub cwd: String,
@@ -55,19 +55,19 @@ CREATE TABLE IF NOT EXISTS sessions (
     cwd        TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
-    -- Set once context compression has folded the older part of the transcript
-    -- into a summary: `summarised_upto` says where the summary takes over when
-    -- building a request. Nothing here rewrites a row. The rows can still be
+    -- Set once the agent has folded the older part of the transcript into a
+    -- handover note: `handover_upto` says where that note takes over when a
+    -- request is built. Nothing here rewrites a row. The rows can still be
     -- deleted -- by the agent, from a shell, through the `heir` skill, and only
     -- after the whole transcript has been copied into a mentor session and the
     -- copy checked row for row. The server's own hands stay off the transcript.
-    summary    TEXT,
-    summarised_upto INTEGER NOT NULL DEFAULT 0,
+    handover TEXT,
+    handover_upto INTEGER NOT NULL DEFAULT 0,
     -- Per-session overrides given by `set_session`. NULL means "the server's
     -- configuration", so a session that never asked is indistinguishable from
     -- one created before these columns existed.
     llm TEXT,
-    compact_threshold INTEGER,
+    context_limit INTEGER,
     -- How hard the model should think, in the roster's spelling. NULL means the
     -- model's own default, which is what a session that never asked should get.
     thinking_effort TEXT,
@@ -149,27 +149,30 @@ fn add_column_if_missing(
     column: &str,
     ddl: &str,
 ) -> rusqlite::Result<()> {
-    let exists = conn
-        .prepare(&format!("SELECT {column} FROM {table} LIMIT 1"))
-        .is_ok();
-    if !exists {
+    if !has_column(conn, table, column) {
         conn.execute(ddl, [])?;
     }
     Ok(())
 }
 
+/// Whether `table` already answers a select on `column`.
+fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
+    conn.prepare(&format!("SELECT {column} FROM {table} LIMIT 1"))
+        .is_ok()
+}
+
 /// Adds columns a `CREATE TABLE IF NOT EXISTS` cannot add to an old database.
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     for (column, ddl) in [
-        ("summary", "ALTER TABLE sessions ADD COLUMN summary TEXT"),
+        ("handover", "ALTER TABLE sessions ADD COLUMN handover TEXT"),
         (
-            "summarised_upto",
-            "ALTER TABLE sessions ADD COLUMN summarised_upto INTEGER NOT NULL DEFAULT 0",
+            "handover_upto",
+            "ALTER TABLE sessions ADD COLUMN handover_upto INTEGER NOT NULL DEFAULT 0",
         ),
         ("llm", "ALTER TABLE sessions ADD COLUMN llm TEXT"),
         (
-            "compact_threshold",
-            "ALTER TABLE sessions ADD COLUMN compact_threshold INTEGER",
+            "context_limit",
+            "ALTER TABLE sessions ADD COLUMN context_limit INTEGER",
         ),
         (
             "context_tokens",
@@ -305,7 +308,7 @@ impl Store {
     const SESSION_SELECT: &'static str = "SELECT s.id, s.name, s.status, s.model, s.cwd,
                     s.created_at, s.updated_at,
                     (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS messages,
-                    s.llm, s.compact_threshold, s.thinking_effort
+                    s.llm, s.context_limit, s.thinking_effort
              FROM sessions s";
 
     /// One session, in the same shape the list returns, by name rather than by scan.
@@ -327,7 +330,7 @@ impl Store {
             updated_at: r.get(6)?,
             messages: r.get::<_, i64>(7)? as u64,
             llm: r.get(8)?,
-            compact_threshold: r.get::<_, Option<i64>>(9)?.map(|v| v as u8),
+            context_limit: r.get::<_, Option<i64>>(9)?.map(|v| v as u8),
             thinking_effort: r.get(10)?,
         })
     }
@@ -341,21 +344,21 @@ impl Store {
         &self,
         id: i64,
         llm: Option<&str>,
-        compact_threshold: Option<u8>,
+        context_limit: Option<u8>,
         thinking_effort: Option<&str>,
         model: &str,
     ) -> anyhow::Result<()> {
         self.lock().execute(
             "UPDATE sessions
                 SET llm = ?1,
-                    compact_threshold = ?2,
+                    context_limit = ?2,
                     thinking_effort = ?3,
                     model = ?4,
                     updated_at = ?5
               WHERE id = ?6",
             params![
                 llm,
-                compact_threshold.map(|v| v as i64),
+                context_limit.map(|v| v as i64),
                 thinking_effort,
                 model,
                 now_millis(),
@@ -621,25 +624,15 @@ impl Store {
         Ok(rows)
     }
 
-    /// The compressed prefix, if there is one: its text and the seq it covers.
-    pub fn summary(&self, session_id: i64) -> anyhow::Result<(Option<String>, i64)> {
+    /// The folded prefix, if there is one: its note and the seq it covers.
+    pub fn handover(&self, session_id: i64) -> anyhow::Result<(Option<String>, i64)> {
         let conn = self.lock();
         let row = conn.query_row(
-            "SELECT summary, summarised_upto FROM sessions WHERE id = ?1",
+            "SELECT handover, handover_upto FROM sessions WHERE id = ?1",
             params![session_id],
             |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i64>(1)?)),
         )?;
         Ok(row)
-    }
-
-    /// Records a summary through `upto`. Test-only: the server never folds.
-    #[cfg(test)]
-    pub fn set_summary(&self, session_id: i64, summary: &str, upto: i64) -> anyhow::Result<()> {
-        self.lock().execute(
-            "UPDATE sessions SET summary = ?1, summarised_upto = ?2 WHERE id = ?3",
-            params![summary, upto, session_id],
-        )?;
-        Ok(())
     }
 
     /// Input tokens the provider reported for the last request, or 0 if this
@@ -735,11 +728,11 @@ impl Store {
         Ok(closed)
     }
 
-    /// What a request is built from: the summary plus what came after it.
+    /// What a request is built from: the handover note plus what came after it.
     pub fn context(&self, session_id: i64) -> anyhow::Result<(Option<String>, Vec<HistoryItem>)> {
-        let (summary, upto) = self.summary(session_id)?;
+        let (note, upto) = self.handover(session_id)?;
         let items = self.history_since(session_id, upto)?;
-        Ok((summary, items))
+        Ok((note, items))
     }
 
     // -- tool calls --------------------------------------------------------
@@ -1042,8 +1035,9 @@ pub struct SessionRow {
     pub model: String,
     /// Roster entry this session talks to, when `set_session --llm` gave it one.
     pub llm: Option<String>,
-    /// Compaction point as a share of the window, when the session was given one.
-    pub compact_threshold: Option<u8>,
+    /// The context level a notice is sent at, as a share of the window, when the
+    /// session was given one.
+    pub context_limit: Option<u8>,
     /// Reasoning level in the roster's spelling, when the session was given
     /// one. `None` means the model's own default.
     pub thinking_effort: Option<String>,
@@ -1116,7 +1110,7 @@ impl MessageRow {
             "system" => {
                 let cwd = str_of("cwd").unwrap_or_default();
                 let chars = str_of("instructions").unwrap_or_default().chars().count();
-                let folded = value.get("summary").is_some_and(|v| !v.is_null());
+                let folded = value.get("handover").is_some_and(|v| !v.is_null());
                 row.text = format!(
                     "[prompt in force] {chars} characters of instructions, \n\
                      {}a handover note, read from {cwd}",
@@ -1127,7 +1121,7 @@ impl MessageRow {
             // show, so the line describes what it did instead.
             "builtin_call" => {
                 let item = value.get("item").unwrap_or(&serde_json::Value::Null);
-                row.text = activity_summary(item);
+                row.text = activity_brief(item);
             }
             other => tracing::warn!("unknown message kind {other}"),
         }
@@ -1200,7 +1194,7 @@ pub(crate) fn activity_detail(item: &serde_json::Value) -> String {
 /// An absent field is left out, never rendered as `{}` and never guessed at:
 /// this line is what `get_messages` shows, and a blank one reads as "nothing
 /// happened here". See `docs/notes/server-store.md`.
-pub(crate) fn activity_summary(item: &serde_json::Value) -> String {
+pub(crate) fn activity_brief(item: &serde_json::Value) -> String {
     let Some(kind) = item["type"].as_str() else {
         return "a provider tool ran (its item was not recorded)".to_string();
     };
@@ -1282,6 +1276,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&dir.path().join("g.db")).unwrap();
         (dir, store)
+    }
+
+    /// Folds like the `heir` skill: a second connection, the same statement.
+    /// The store owns no writer for a handover.
+    fn fold_from_outside(dir: &std::path::Path, session_id: i64, note: &str, upto: i64) {
+        let conn = rusqlite::Connection::open(dir.join("g.db")).unwrap();
+        conn.execute(
+            "UPDATE sessions SET handover = ?1, handover_upto = ?2 WHERE id = ?3",
+            params![note, upto, session_id],
+        )
+        .unwrap();
     }
 
     /// `--db <path>` brings its directory, and `:memory:` must not become a directory.
@@ -1490,10 +1495,10 @@ mod tests {
         assert!(matches!(h[2], HistoryItem::ToolResult { .. }));
     }
 
-    /// A summary shrinks the request but never touches the transcript rows.
+    /// A handover note shrinks the request but never touches the transcript rows.
     #[test]
-    fn a_summary_shrinks_the_request_without_touching_the_transcript() {
-        let (_d, store) = temp_store();
+    fn a_folded_prefix_shrinks_the_request_without_touching_the_transcript() {
+        let (d, store) = temp_store();
         let id = store.create_session("s", "m", "C:/x").unwrap();
         for i in 0..5 {
             store
@@ -1504,13 +1509,13 @@ mod tests {
                 )
                 .unwrap();
         }
-        assert_eq!(store.summary(id).unwrap(), (None, 0));
+        assert_eq!(store.handover(id).unwrap(), (None, 0));
 
-        store.set_summary(id, "the first three", 3).unwrap();
+        fold_from_outside(d.path(), id, "the first three", 3);
 
-        let (summary, items) = store.context(id).unwrap();
-        assert_eq!(summary.as_deref(), Some("the first three"));
-        assert_eq!(items.len(), 2, "only what came after the summary is sent");
+        let (note, items) = store.context(id).unwrap();
+        assert_eq!(note.as_deref(), Some("the first three"));
+        assert_eq!(items.len(), 2, "only what came after the note is sent");
         // The full transcript is still there.
         assert_eq!(store.history(id).unwrap().len(), 5);
         assert_eq!(store.message_index(id).unwrap().len(), 5);
@@ -1525,7 +1530,7 @@ mod tests {
             .unwrap();
         let row = store.get_session("s").unwrap().unwrap();
         assert_eq!(row.llm, None, "a session starts on the server's own entry");
-        assert_eq!(row.compact_threshold, None);
+        assert_eq!(row.context_limit, None);
         assert_eq!(row.thinking_effort, None, "no level means the model's own");
 
         store
@@ -1539,7 +1544,7 @@ mod tests {
             .unwrap();
         let row = store.get_session("s").unwrap().unwrap();
         assert_eq!(row.llm.as_deref(), Some("deepseek-official/deepseek-flash"));
-        assert_eq!(row.compact_threshold, Some(30));
+        assert_eq!(row.context_limit, Some(30));
         assert_eq!(row.thinking_effort.as_deref(), Some("high"));
         assert_eq!(row.model, "deepseek-flash");
 
@@ -1583,13 +1588,13 @@ mod tests {
             .unwrap();
         let row = store.get_session("s").unwrap().unwrap();
         assert_eq!(row.llm, None);
-        assert_eq!(row.compact_threshold, None);
+        assert_eq!(row.context_limit, None);
         assert_eq!(row.model, "MiniMax-M3.1-Flash");
     }
 
-    /// A database written before compression existed must grow columns, not fail.
+    /// A database written before the note had a column must grow, not fail.
     #[test]
-    fn opening_an_old_database_adds_the_summary_columns() {
+    fn opening_an_old_database_adds_the_new_columns() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("g.db");
         {
@@ -1602,7 +1607,7 @@ mod tests {
             .unwrap();
         }
         let store = Store::open(&path).unwrap();
-        assert_eq!(store.summary(1).unwrap_or((None, 0)), (None, 0));
+        assert_eq!(store.handover(1).unwrap_or((None, 0)), (None, 0));
         // The tuning columns arrive the same way; a session that predates them
         // reads as "no overrides", not as an error.
         assert!(store.list_sessions().is_ok());
@@ -1881,12 +1886,12 @@ mod tests {
     /// The prompt row is what a request is built from, not a row inside it.
     #[test]
     fn a_prompt_row_is_sent_and_never_repeated_as_history() {
-        let (_d, store) = temp_store();
+        let (d, store) = temp_store();
         let id = store.create_session("main", "m", "C:/x").unwrap();
-        store.set_summary(id, "the note", 0).unwrap();
+        fold_from_outside(d.path(), id, "the note", 0);
         let prompt = Prompt {
             instructions: "You are gongga".into(),
-            summary: Some("Earlier in this session: the note".into()),
+            handover: Some("Earlier in this session: the note".into()),
             cwd: "C:/x".into(),
             stamp: stamp(Some("the note")),
         };

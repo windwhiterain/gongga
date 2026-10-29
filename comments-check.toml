@@ -32,7 +32,7 @@ applies_to = [
 root = "on"
 
 # The prose before the first heading, and the whole comment when it has no
-# heading at all. Sized for a summary line plus one pointer, which is what an
+# heading at all. Sized for one claim line plus one pointer, which is what an
 # unheaded comment is allowed to be.
 [[template.section]]
 path = ""

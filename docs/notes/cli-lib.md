@@ -125,7 +125,7 @@ take the command line's window.
 ## Client::command_line — where a command is read
 
 A command that named a session is read in that session's view: its echo, the rows a
-read returned, and its summary belong next to the transcript they came from. The
+read returned, and its result line belong next to the transcript they came from. The
 command line keeps the commands that named nobody, which is what it is for -- a ticker
 of what the operator asked the *client*.
 

@@ -17,7 +17,7 @@ use std::time::SystemTime;
 /// empty system prompt and look healthy. Startup asks for this list instead.
 pub const REQUIRED: &[&str] = &[
     "instructions",
-    "summary_preamble",
+    "handover_preamble",
     "context_notice",
     "folded_none",
     "folded_through",

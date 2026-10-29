@@ -95,7 +95,7 @@ is how people write it.
 ## CompletionSource::SessionsOrNone
 
 A filter's value space is the live session list plus the word that turns the filter
-off. It is a source of its own rather than `Sessions` plus a note in the summary,
+off. It is a source of its own rather than `Sessions` plus a note in the description,
 because a popup that offers every name and not `none` teaches half the argument.
 
 ## client_specs

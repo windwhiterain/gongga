@@ -102,7 +102,7 @@ reports, and the range it asked for is what says which rows those were.
 
 `--block_size` is a count of lines: any number is a valid answer, so the list here
 is what is worth offering at a Tab, not the set that is allowed. The server's
-`--compact_threshold` does the same thing with percentages, and for the same reason
+`--context_limit` does the same thing with percentages, and for the same reason
 -- a completion popup that offers nothing for a free-form number teaches the operator
 nothing about what the number is for.
 

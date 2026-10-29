@@ -108,7 +108,7 @@ impl LlmClient {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         if !status.is_success() {
-            anyhow::bail!("HTTP {status} from {url}: {}", summarise_error(&body));
+            anyhow::bail!("HTTP {status} from {url}: {}", shorten_body(&body));
         }
         let value: Value = serde_json::from_str(&body)?;
         value["id"].as_str().map(str::to_string).ok_or_else(|| {
@@ -127,7 +127,7 @@ impl LlmClient {
         }
     }
 
-    /// Streams one model request; `summary`, when present, is sent first.
+    /// Streams one model request; `handover`, when present, is sent first.
     ///
     /// # Invariant
     ///
@@ -139,14 +139,14 @@ impl LlmClient {
     pub fn stream(
         &self,
         instructions: &str,
-        summary: Option<&str>,
+        handover: Option<&str>,
         history: &[HistoryItem],
         tools: &[ToolDefinition],
         effort: Option<&str>,
         cancel: CancellationToken,
     ) -> mpsc::Receiver<LlmEvent> {
         let (tx, rx) = mpsc::channel(256);
-        let body = self.build_body(instructions, summary, history, tools, effort);
+        let body = self.build_body(instructions, handover, history, tools, effort);
         let url = format!("{}/responses", self.base_url);
         let api_key = self.api_key.clone();
         let http = self.http.clone();
@@ -245,7 +245,7 @@ impl LlmClient {
     fn build_body(
         &self,
         instructions: &str,
-        summary: Option<&str>,
+        handover: Option<&str>,
         history: &[HistoryItem],
         tools: &[ToolDefinition],
         effort: Option<&str>,
@@ -253,7 +253,7 @@ impl LlmClient {
         let mut input: Vec<Value> = Vec::with_capacity(history.len() + 1);
         // Both are the caller's prose: this module builds requests and writes no
         // sentence of its own.
-        if let Some(note) = summary {
+        if let Some(note) = handover {
             input.push(json!({
                 "role": "user",
                 "content": [{"type": "input_text", "text": note}],
@@ -614,10 +614,10 @@ async fn read_stream(
     if !response.status().is_success() {
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
-        tracing::warn!(%status, body = %summarise_error(&text), "model request: rejected");
+        tracing::warn!(%status, body = %shorten_body(&text), "model request: rejected");
         let _ = tx
             .send(LlmEvent::Failed {
-                message: format!("HTTP {status}: {}", summarise_error(&text)),
+                message: format!("HTTP {status}: {}", shorten_body(&text)),
                 retryable: status_retryable(status),
             })
             .await;
@@ -1199,7 +1199,7 @@ fn history_item_to_input(item: &HistoryItem) -> Option<Value> {
 /// turn that cannot see one image is still a turn. See
 /// `docs/notes/server-llm.md`.
 /// Pulls a readable message out of an error body, tolerating plain text.
-fn summarise_error(body: &str) -> String {
+fn shorten_body(body: &str) -> String {
     match serde_json::from_str::<Value>(body) {
         Ok(v) => v["error"]["message"]
             .as_str()
@@ -1264,7 +1264,7 @@ mod tests {
         );
     }
 
-    /// The tool schema is out of band, so compaction cannot drop it -- and this
+    /// The tool schema is out of band, so a fold cannot drop it -- and this
     /// pins that every request still carries it.
     #[test]
     fn every_request_carries_the_tool_schema() {
@@ -1276,10 +1276,10 @@ mod tests {
             parameters: params,
         }];
 
-        // A compacted prefix must not change what the model is offered: the
+        // A folded prefix must not change what the model is offered: the
         // schema is out of band, not part of the history.
-        for summary in [None, Some("earlier work, compressed")] {
-            let body = client.build_body("instructions", summary, &[], &tools, None);
+        for handover in [None, Some("earlier work, folded out")] {
+            let body = client.build_body("instructions", handover, &[], &tools, None);
             let sent = &body["tools"][0];
             assert_eq!(sent["name"], "bash");
             assert_eq!(sent["parameters"]["required"][0], "cmd");

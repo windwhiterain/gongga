@@ -25,7 +25,7 @@ and it is only used in messages.
 
 ## LlmConfig::context
 
-Context window of `model`, when something told us. `--compact_threshold` is a
+Context window of `model`, when something told us. `--context_limit` is a
 percentage of this, so without it a percentage has no meaning.
 
 ## LlmConfig::request_timeout
@@ -62,9 +62,9 @@ for it again.
 
 ## AgentConfig::compress_above_tokens
 
-Fold the older transcript into a summary once a request would carry more than
-this many input tokens. `0` disables compression, which will eventually hit the
-provider's context limit.
+Send the context notice once a request would carry more than this many input
+tokens. `0` disables the notice, which will eventually hit the provider's context
+limit.
 
 ## Config::load_with_home
 

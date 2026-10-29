@@ -135,23 +135,23 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         skill(
             d.path(),
-            "compact",
-            "---\nname: compact\ndescription: fold a session's context\n---\n\nbody\n",
+            "heir",
+            "---\nname: heir\ndescription: fold a session's context\n---\n\nbody\n",
         );
         let rows = listed(HARNESS, d.path());
         assert_eq!(rows.len(), 1, "{rows:?}");
-        assert_eq!(rows[0]["name"], "compact");
+        assert_eq!(rows[0]["name"], "heir");
         assert_eq!(rows[0]["description"], "fold a session's context");
         assert_eq!(rows[0]["bucket"], "harness");
         assert!(
             rows[0]["path"]
                 .as_str()
                 .unwrap_or_default()
-                .ends_with("compact/SKILL.md")
+                .ends_with("heir/SKILL.md")
                 || rows[0]["path"]
                     .as_str()
                     .unwrap_or_default()
-                    .ends_with("compact\\SKILL.md"),
+                    .ends_with("heir\\SKILL.md"),
             "{rows:?}"
         );
     }

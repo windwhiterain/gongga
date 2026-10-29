@@ -357,8 +357,8 @@ fn parse_manifest(reply: &Value, script: &Path) -> Result<Vec<CommandSpec>, Stri
             .get("name")
             .and_then(Value::as_str)
             .ok_or_else(|| format!("a command in {} has no `name`", script.display()))?;
-        let summary = entry
-            .get("summary")
+        let description = entry
+            .get("description")
             .and_then(Value::as_str)
             .unwrap_or("Registered by a script.")
             .to_string();
@@ -369,7 +369,7 @@ fn parse_manifest(reply: &Value, script: &Path) -> Result<Vec<CommandSpec>, Stri
             .unwrap_or_default();
         out.push(CommandSpec {
             name: name.to_string(),
-            summary,
+            description,
             args,
             target: CommandTarget::ServerScript,
         });
@@ -386,8 +386,8 @@ fn parse_arg(raw: &Value) -> Option<ArgSpec> {
     };
     Some(ArgSpec {
         name: name.to_string(),
-        summary: raw
-            .get("summary")
+        description: raw
+            .get("description")
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string(),
@@ -418,11 +418,11 @@ req = json.load(sys.stdin)
 if req["op"] == "manifest":
     print(json.dumps({"commands": [{
         "name": "weather",
-        "summary": "Ask a script about the weather.",
+        "description": "Ask a script about the weather.",
         "args": [
-            {"name": "city", "summary": "Which city.", "required": True,
+            {"name": "city", "description": "Which city.", "required": True,
              "value_hint": "city"},
-            {"name": "session", "summary": "Where to report.", "required": False,
+            {"name": "session", "description": "Where to report.", "required": False,
              "completions": "sessions"}
         ]
     }]}))

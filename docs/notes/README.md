@@ -2,7 +2,7 @@
 
 The reasoning behind the comments in `crates/`, one file per source file.
 
-`comments-check` holds a comment to 120 characters: a summary states the claim,
+`comments-check` holds a comment to 120 characters: the first line states the claim,
 and only an `# Invariant` or `# Safety` section may add to it. Everything that
 used to sit in a paragraph next to the code — why this shape, what was tried and
 rejected, which bug it fixed — lives here instead, in the order the comments

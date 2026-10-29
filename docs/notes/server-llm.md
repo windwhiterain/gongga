@@ -24,8 +24,8 @@ fact rather than something to infer from the transcript.
 
 ## LlmClient::stream
 
-`summary`, when present, stands in for the part of the transcript that has
-been compressed away; it is sent as the first item so the model reads it
+`handover`, when present, stands in for the part of the transcript that has
+been folded out; it is sent as the first item so the model reads it
 before anything else.
 
 A request that fails, times out, or completes with nothing in it is retried
@@ -64,21 +64,6 @@ cannot be unsaid, so an attempt that spoke keeps its partial answer and fails.
 The Responses API's spelling for "how hard to think", which the roster records
 per model as `reasoning_field.responses`. It is the only surface this server
 speaks, so there is nothing to switch on.
-
-## LlmClient::summarise
-
-Asks for a plain-text answer: no tools, no streaming. Used only to compress old
-context, which must never itself trigger a tool call.
-
-Retried on the same terms as a stream: an empty summary is not a summary, and a
-provider that swallowed the request once often answers the second time.
-`max_retries == 0` is no ceiling, so the turn's `cancel` is what stops it --
-compression must never outlive the turn that asked for it.
-
-## SUMMARY_MAX_TOKENS
-
-Budget for a compression request. The summary stands in for tens of kilobytes,
-so it only has to be a page or so itself.
 
 ## extract_text
 
@@ -326,11 +311,11 @@ separator lands.
 
 ## tests::every_request_carries_the_tool_schema
 
-The tool schema is not part of the transcript, so nothing a compaction does can
+The tool schema is not part of the transcript, so nothing a fold does can
 remove it -- but that also means nothing would notice if the body stopped
 carrying it. It is rebuilt from the registry every request, and this pins that.
 
-A compacted prefix must not change what the model is offered: the schema is out
+A folded prefix must not change what the model is offered: the schema is out
 of band, not part of the history.
 
 An empty registry means no `tools` key at all, rather than an empty array that

@@ -26,7 +26,7 @@ so `--llm` and the server's own default read the same answer.
 ## Model::context
 
 Input+output ceiling, when the provider publishes one. This is what a
-`--compact_threshold` percentage is a percentage *of*.
+`--context_limit` percentage is a percentage *of*.
 
 ## Model::endpoints
 

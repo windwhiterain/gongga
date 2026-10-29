@@ -45,7 +45,7 @@ pub struct LlmConfig {
     /// Base URL of an OpenAI-compatible Responses API. Defaults to MiniMax CN.
     pub base_url: String,
     pub model: String,
-    /// Context window of `model`; `--compact_threshold` is a percentage of it.
+    /// Context window of `model`; `--context_limit` is a percentage of it.
     pub context: Option<u64>,
     /// Name of the environment variable holding the API key.
     pub api_key_env: String,

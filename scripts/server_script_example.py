@@ -26,13 +26,13 @@ def manifest():
         "commands": [
             {
                 "name": "script_echo",
-                "summary": "Say back what was passed, from a script.",
+                "description": "Say back what was passed, from a script.",
                 # The same argument shape every other command uses: the server
                 # validates it and every client completes it.
                 "args": [
                     {
                         "name": "message",
-                        "summary": "What to echo.",
+                        "description": "What to echo.",
                         "required": True,
                         "value_hint": "text",
                     },
@@ -40,17 +40,17 @@ def manifest():
             },
             {
                 "name": "script_say",
-                "summary": "Send a message through the CLI, from a script.",
+                "description": "Send a message through the CLI, from a script.",
                 "args": [
                     {
                         "name": "message",
-                        "summary": "What to say.",
+                        "description": "What to say.",
                         "required": True,
                         "value_hint": "text",
                     },
                     {
                         "name": "session",
-                        "summary": "Which session hears it.",
+                        "description": "Which session hears it.",
                         "required": True,
                         "completions": "sessions",
                     },

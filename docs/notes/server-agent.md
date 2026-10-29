@@ -9,10 +9,9 @@ steps until the model stops asking for tools or the user cancels; there is no
 step ceiling. After every step the transcript is already durable, so a crash
 mid-turn leaves a replayable session rather than a hole.
 
-## DEFAULT_COMPACT_PERCENT
+## DEFAULT_CONTEXT_LIMIT_PERCENT
 
-Share of a model's context window that compaction fills before folding the
-transcript. The rest is headroom for what a step adds after the check: the
+Share of a model's context window at which the server sends the notice. The rest is headroom for what a step adds after the check: the
 request's own output, and the tool results it asks for.
 
 ## Agent::clients
@@ -79,7 +78,7 @@ The wait was behind a `del_session`. There is nothing to write to any more, and
 writing would resurrect rows the operator asked to be gone.
 
 Which model this turn talks to, and how much transcript it may carry before
-compaction. Resolved once, at the top: a session can be pointed at a different
+a notice. Resolved once, at the top: a session can be pointed at a different
 provider between turns, but every step of one turn has to agree on where it is
 sending.
 
@@ -128,11 +127,11 @@ which is why the window travels with the model.
 ## Agent::budget
 
 Zero means "off", everywhere and without exception, so a server that wants no
-compaction can say so and be obeyed rather than being second guessed by a
+notice can say so and be obeyed rather than being second guessed by a
 default percentage.
 
 Without a context window a percentage has no size. Saying so beats quietly
-compacting at a different point than the one that was asked for.
+noticing at a different point than the one that was asked for.
 
 ## Agent::client_for
 
@@ -189,11 +188,11 @@ The loop measures and asks; it never folds. Folding is a judgement about work
 only the agent has seen -- which failure was decisive, which output is still
 needed -- so the agent acts with `$GONGGA_HOME/skills/heir/transcript`:
 `collapse` folds a stretch out of the request, `heir` copies the whole transcript
-into a mentor session and empties this one (see `server-compact.md`).
+into a mentor session and empties this one (see `server-handover.md`).
 
 How full the context is, as the provider last measured it. Not an estimate and
 not derived from text length: `usage.input_tokens` already covers the
-instructions, the tool schemas, the summary and the whole transcript, tokenised
+instructions, the tool schemas, the note and the whole transcript, tokenised
 by the party that will bill for it.
 
 The notice names the numbers and the two tools, because a bare "you are near the
@@ -202,13 +201,13 @@ limit" leaves the reader to guess what is possible.
 Sent once per transcript state, not once per step: a turn that stays above the
 threshold takes many steps, and repeating the notice on each would bury the work
 it is asking about. `SessionHandle::note_context_asked` remembers the
-`summarised_upto` it last spoke about, so folding something -- which changes that
+`handover_upto` it last spoke about, so folding something -- which changes that
 number -- is what earns a second notice.
 
 The notice is queued as an `inject` row and does not touch the inbox signal, so
 it never ends a running command's wait the way an operator's message does.
 
-## compaction_budget
+## notice_budget
 
 `configured` is the server's own number, used only when the roster does not say
 how big the model's window is. A known window is the better measure: it makes
@@ -238,7 +237,7 @@ that directory's rules.
 ## Agent::step
 
 Recorded, never computed. `input_tokens` is the provider's own count of what
-this request carried -- instructions, tool schemas, summary and transcript --
+this request carried -- instructions, tool schemas, note and transcript --
 measured by the tokeniser that will also measure the next request. No arithmetic
 over text length lands on that number for every provider we speak to.
 

@@ -11,17 +11,17 @@ created on first use and removed by the `del_bash` tool.
 ## Tuning
 
 Kept beside the session rather than in the agent because it is per-session state:
-two sessions on one server can run different models at different compaction
+two sessions on one server can run different models at different notice
 points, and a turn reads this when it starts so a change applies to the next turn
 instead of restarting anything.
 
-## Tuning::compact_threshold
+## Tuning::context_limit
 
-`None` is the default percentage, not "off" and not a token count:/n`compaction_budget` multiplies the percentage by the window the chosen model
-publishes, defaulting to `DEFAULT_COMPACT_PERCENT` when the session set none.
+`None` is the default percentage, not "off" and not a token count:/n`notice_budget` multiplies the percentage by the window the chosen model
+publishes, defaulting to `DEFAULT_CONTEXT_LIMIT_PERCENT` when the session set none.
 When no window is known for the model the percentage has nothing to be a
 percentage of, so the configured `compress_above_tokens` is used and a warning is
-logged. `0` is the only value that turns compaction off.
+logged. `0` is the only value that turns the notice off.
 
 ## Tuning::thinking_effort
 
@@ -49,8 +49,7 @@ reacting to the same message again.
 ## SessionInner::gate
 
 Two turns used to run side by side: both measured the transcript, both decided it
-was over budget, and both compressed the same thing -- twice the cost for one
-summary. A turn and `del_session` had the same problem from a different angle.
+was over budget, and both did the same work -- twice the cost for one result. A turn and `del_session` had the same problem from a different angle.
 Tokio's mutex is first-in-first-out, so this is a queue rather than a
 free-for-all: whoever asks first goes first.
 

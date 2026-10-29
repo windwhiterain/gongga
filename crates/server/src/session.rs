@@ -23,8 +23,9 @@ pub const DEFAULT_BASH: &str = "default";
 pub struct Tuning {
     /// A roster entry, `provider/model`. `None` means "the server's own".
     pub llm: Option<String>,
-    /// Compaction point as a percentage of the window; `None` is the default percent.
-    pub compact_threshold: Option<u8>,
+    /// The context level a notice is sent at, as a percentage of the window;
+    /// `None` means the default share.
+    pub context_limit: Option<u8>,
     /// How hard the model should think, in the roster's spelling; `None` is its default.
     pub thinking_effort: Option<String>,
 }
@@ -44,7 +45,7 @@ struct SessionInner {
     cancels: AtomicU64,
     /// Shared rather than embedded: every tool call waiting holds a copy of the count.
     inbox: Arc<AtomicU64>,
-    /// The `summarised_upto` a notice was last sent for, plus one; 0 is never.
+    /// The `handover_upto` a notice was last sent for, plus one; 0 is never.
     context_asked: AtomicU64,
     /// What every operation that reshapes this session queues behind, FIFO.
     gate: Arc<AsyncMutex<()>>,
@@ -479,7 +480,7 @@ impl SessionManager {
                 status: protocol::SessionStatus::Idle,
                 model: self.model.clone(),
                 llm: pinned,
-                compact_threshold: None,
+                context_limit: None,
                 thinking_effort: None,
                 cwd: cwd.to_string_lossy().to_string(),
                 created_at: 0,
@@ -558,7 +559,7 @@ impl SessionManager {
                             .find_model_entry(&row.model)
                             .map(|e| e.spec())
                     }),
-                    compact_threshold: row.compact_threshold,
+                    context_limit: row.context_limit,
                     thinking_effort: row.thinking_effort,
                 }),
                 deleted: AtomicBool::new(false),

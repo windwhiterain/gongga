@@ -343,7 +343,7 @@ out would make Tab silently offer nothing.
 
 ## set_session_offers_the_roster_and_a_percentage
 
-`set_session` is where a session's model and compaction point are chosen, so both
+`set_session` is where a session's model and notice point are chosen, so both
 flags have to be described well enough to complete.
 
 ## a_seq_slice_is_parsed_like_a_python_slice

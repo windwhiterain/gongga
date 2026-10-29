@@ -98,7 +98,7 @@ def main():
         sid = db.execute("select id from sessions where name='audit'").fetchone()["id"]
         last = db.execute(
             "select coalesce(max(seq),0) from messages where session_id=?", (sid,)).fetchone()[0]
-        db.execute("update sessions set summary='一份交接笔记', summarised_upto=? where id=?",
+        db.execute("update sessions set handover='一份交接笔记', handover_upto=? where id=?",
                    (last, sid))
         db.commit()
         db.close()
@@ -140,7 +140,7 @@ def main():
           len(stored_texts) == len(sent_texts) and len(prompts) >= 2,
           f"{len(prompts)} rows")
 
-    notes = {p.get("summary") for p in prompts if p.get("summary")}
+    notes = {p.get("handover") for p in prompts if p.get("handover")}
 
     def flat(item):
         c = item.get("content")

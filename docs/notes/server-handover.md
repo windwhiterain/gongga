@@ -1,15 +1,15 @@
-# Compaction: the agent folds or hands over, the server only measures
+# Handover: the agent folds or hands over, the server only measures
 
-There is no compaction code in this server. `Agent::maybe_notify_context` measures
+There is no folding code in this server. `Agent::maybe_notify_context` measures
 the context the provider reported, and when it crosses the threshold it queues one
 message saying so. Everything else lives in the `heir` skill, installed at
 `$GONGGA_HOME/skills/heir/`.
 
 ## Why it left the loop
 
-Compaction used to live in `Agent::maybe_compress`: at a token threshold the server
-called a model of its own with a generated prompt, wrote the summary and moved
-`summarised_upto`. That summary was written by a process that had not done the
+Folding used to live in `Agent::maybe_compress`: at a token threshold the server
+called a model of its own with a generated prompt, wrote the note and moved
+`handover_upto`. That note was written by a process that had not done the
 work — it could not tell a decisive failure from a retry it was about to abandon.
 
 The threshold still exists, because somebody has to notice. The judgement does not.
@@ -19,7 +19,7 @@ The threshold still exists, because somebody has to notice. The judgement does n
 Folding is two statements:
 
 ```sql
-update sessions set summary = ?, summarised_upto = ? where id = ?;
+update sessions set handover = ?, handover_upto = ? where id = ?;
 update sessions set context_tokens = 0 where id = ?;
 ```
 
@@ -38,7 +38,7 @@ Measures and asks; never folds.
 
 How full the context is, as the provider last measured it. Not an estimate and not
 derived from text length: `usage.input_tokens` already covers the instructions, the
-tool schemas, the summary and the whole transcript, tokenised by the party that
+tool schemas, the note and the whole transcript, tokenised by the party that
 will bill for it.
 
 The notice names the session, the numbers, and the two exact commands. A notice
@@ -49,13 +49,13 @@ argument.
 Sent once per transcript state, not once per step: a turn that stays above the
 threshold takes many steps, and repeating the notice on each would bury the work
 it is asking about. `SessionHandle::note_context_asked` remembers the
-`summarised_upto` it last spoke about, so folding something -- which changes that
+`handover_upto` it last spoke about, so folding something -- which changes that
 number -- is what earns a second notice.
 
 The notice is queued as an `inject` row and does not touch the inbox signal, so it
 never ends a running command's wait the way an operator's message does.
 
-## compaction_budget
+## notice_budget
 
 `configured` is the server's own number, used only when the roster does not say how
 big the model's window is. A known window is the better measure: it makes the
@@ -84,8 +84,8 @@ request:
 | Refusal | What it prevents |
 |---|---|
 | would leave a `tool_result` without its `tool_call` | the provider rejects the whole request, and it looks like a broken session |
-| `--upto` behind the current summary | already-folded rows come back into every request, and nothing errors |
-| empty summary | that stretch leaves every later request while the transcript still looks complete |
+| `--upto` behind the current note | already-folded rows come back into every request, and nothing errors |
+| empty note | that stretch leaves every later request while the transcript still looks complete |
 
 The first names the boundary that would work: the nearest earlier message, which is
 a `seq` the caller has actually seen.
@@ -114,8 +114,8 @@ Three things make that acceptable rather than dangerous:
   the whole thing back, including the `sessions` update. So the failure mode "the
   archive is half-written and the original is empty" cannot be reached -- the script
   exits non-zero and the transcript is untouched.
-- **Seq restarts, so `summarised_upto` must go to 0.** `seq` is `max(seq)+1` over the
-  rows that exist, so an emptied session's first new row is seq 1. A summary left
+- **Seq restarts, so `handover_upto` must go to 0.** `seq` is `max(seq)+1` over the
+  rows that exist, so an emptied session's first new row is seq 1. A note left
   claiming it covers through the old last seq would fold that row before it was ever
   sent -- the session would look alive and answer as if it had amnesia about
   everything after the handover, including the next message from the user.
@@ -124,8 +124,9 @@ Three things make that acceptable rather than dangerous:
 
 That sentence was the user's own rule about a live template: reloading
 `config.toml` must not reach into a conversation already under way and
-edit what was said. It is still true, and the `#[cfg(test)]` on `set_summary` is still
-its proof in code. What was wrong was reading it as *nothing may ever delete a row*.
+edit what was said. It is still true, and the proof is that the store exposes no
+writer for a handover at all. What was wrong was reading it as *nothing may ever delete
+a row*.
 
 The difference is who acts and when. A config reload rewrites the past without being
 asked, mid-conversation, invisibly. `heir` is asked, by the agent that owns the context,
@@ -139,7 +140,7 @@ and the shell is what you chose to do.
 | Refusal | What it prevents |
 |---|---|
 | `--session` and `--mentor` name the same session | the copy and the delete cancel each other: the archive is the thing removed |
-| an empty `--summary` | the session is emptied with nothing left to send, which is memory loss, not compaction |
+| an empty `--note` | the session is emptied with nothing left to send, which is memory loss, not a fold |
 | a session with no rows | reports instead of writing a mentor whose only content is a marker |
 | a copied row that does not match | rolls everything back; the originals survive and stderr names the seq |
 
@@ -149,8 +150,9 @@ row is what tells them apart.
 
 ## What the server still owns
 
-Reading a summary stays in Rust: `Store::summary` feeds the request, and
-`history_item_to_input` puts it in front of the transcript. Writing one is
-test-only (`#[cfg(test)]` on `set_summary`), which is the invariant in code form:
-**this server never folds.** Deleting rows is not in this file's vocabulary at all;
+Reading the note stays in Rust: `Store::handover` feeds the request, and
+`history_item_to_input` puts it in front of the transcript. Writing one has no method
+at all, not even behind `#[cfg(test)]`: the tests that need a folded session use
+`fold_from_outside`, a second connection issuing the same statement the skill issues.
+That is the invariant in code form: **this server never folds.** Deleting rows is not in this file's vocabulary at all;
 the only `DELETE FROM messages` that touches a session's own rows is in the skill.
