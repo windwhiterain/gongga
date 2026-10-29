@@ -8,7 +8,7 @@
 # installed.
 [ship]
 url = "https://github.com/windwhiterain/gongga-ship.git"
-commit = "d2586ca3eefe7eb1793fc9bafb90bae38d5f679e"
+commit = "bb80d83b93958ab4a63b0aa5813136f50535a046"
 # Which path in that repository is the home's config.
 config = "config/config.toml"
 
