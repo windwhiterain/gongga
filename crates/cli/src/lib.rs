@@ -21,7 +21,7 @@ use anyhow::{Context, anyhow};
 use clap::{CommandFactory, FromArgMatches, Parser};
 use protocol::{
     ChannelConfig, ClientInfo, ClientMessage, Event, LogLevel, NO_SESSION, ResponseEvent,
-    ResponsePart, ServerMessage, SessionStatus, SessionInfo, ToolAnswerEvent, ToolStream,
+    ResponsePart, ServerMessage, SessionInfo, SessionStatus, ToolAnswerEvent, ToolStream,
     decode_server, encode_client,
 };
 use tokio::net::UdpSocket;
@@ -2211,7 +2211,11 @@ mod tests {
             &mut s,
         );
         assert_eq!(s.lines, vec!["2 row(s) at seq 1..2 in main"]);
-        assert!(s.keys.is_empty(), "the description is not a row: {:?}", s.keys);
+        assert!(
+            s.keys.is_empty(),
+            "the description is not a row: {:?}",
+            s.keys
+        );
     }
 
     #[test]

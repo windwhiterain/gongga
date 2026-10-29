@@ -137,3 +137,10 @@ is actually on `PATH`.
 SPEC: "database path can be specified at server start." Checked by parsing rather
 than by reading the source, so that renaming the flag breaks a test instead of
 someone's runbook.
+
+## the_log_is_json_when_a_tool_reads_it
+
+`--log-format json` writes one object per line, and the text format now
+colours only a terminal: escapes inside `outcome=Done` made a finished turn
+look like one that never ended, and every measurement was a regex away from
+being wrong.

@@ -24,7 +24,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 use clap::Parser;
+use std::io::IsTerminal;
 use tokio_util::sync::CancellationToken;
+
 use tracing_subscriber::EnvFilter;
 
 use crate::agent::Agent;
@@ -60,6 +62,21 @@ struct Args {
     /// Log filter, e.g. `gongga_server=debug`.
     #[arg(long, default_value = "info")]
     log: String,
+    /// How each log line is written: text for a reader, json for a tool.
+    #[arg(long, value_enum, default_value = "text")]
+    log_format: LogFormat,
+}
+
+/// The shape of one log line.
+///
+/// `json` exists because everything a benchmark wants to know -- a step, a
+/// request's latency, a retry, a turn's outcome -- was already in the log and
+/// only reachable by matching prose that carries colour escapes. A tool should
+/// never have to parse that.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum LogFormat {
+    Text,
+    Json,
 }
 
 /// Where the CLI that can talk to this server lives.
@@ -134,11 +151,20 @@ fn main() -> anyhow::Result<()> {
 async fn run() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&args.log)),
-        )
-        .init();
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&args.log));
+    match args.log_format {
+        LogFormat::Json => tracing_subscriber::fmt()
+            .json()
+            .with_env_filter(filter)
+            .init(),
+        // Colour only for a terminal. Written to a file, the escapes landed
+        // inside the tokens, and a reader matching `outcome=Done` saw a
+        // finished turn as one that never ended.
+        LogFormat::Text => tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_ansi(std::io::stdout().is_terminal())
+            .init(),
+    }
 
     // Flags win; SAFETY: no thread yet, so nothing observes these writes.
     unsafe {

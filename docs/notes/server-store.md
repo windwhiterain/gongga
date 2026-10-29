@@ -359,3 +359,11 @@ the way the agent writes it.
 Four damaged or minimal items, none of which may produce a blank row or leak a
 JSON shape into the transcript: the display side must never be the place where a
 reader learns nothing happened.
+
+## the_report_reads_the_schema_so_a_tool_does_not
+
+`Store::report` is the only place that joins `sessions`, `events`,
+`messages` and `tool_calls` for a reader. A number it cannot find is reported
+as zero: nothing is estimated, and a renamed column is a change here rather
+than in every tool that reads a home.
+

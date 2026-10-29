@@ -59,11 +59,12 @@ impl Agent {
         epoch: u64,
         gate: tokio::sync::OwnedMutexGuard<()>,
     ) {
+        let started = std::time::Instant::now();
         let outcome = AssertUnwindSafe(self.turn_inner(session, epoch, gate))
             .catch_unwind()
             .await;
-        let outcome = match outcome {
-            Ok(outcome) => outcome,
+        let (outcome, steps) = match outcome {
+            Ok(pair) => pair,
             Err(payload) => {
                 let message = panic_message(&payload);
                 tracing::error!(session = %session.name(), "turn panicked: {message}");
@@ -71,9 +72,20 @@ impl Agent {
                     level: LogLevel::Error,
                     message: format!("{}: turn panicked: {message}", session.name()),
                 });
-                TurnOutcome::Failed
+                (TurnOutcome::Failed, 0)
             }
         };
+        // The turn's outcome as a row, not only as a line: a reader that has the
+        // database should not have to match prose to learn why a run stopped.
+        let _ = self.store.append_event(
+            Some(session.id()),
+            "turn_end",
+            &serde_json::json!({
+                "outcome": outcome.label(),
+                "steps": steps,
+                "elapsed_ms": started.elapsed().as_millis() as u64,
+            }),
+        );
         let (status, detail) = match outcome {
             TurnOutcome::Done => (SessionStatus::Idle, None),
             TurnOutcome::Cancelled => (SessionStatus::Idle, Some("cancelled".to_string())),
@@ -100,17 +112,17 @@ impl Agent {
         session: &SessionHandle,
         epoch: u64,
         _gate: tokio::sync::OwnedMutexGuard<()>,
-    ) -> TurnOutcome {
+    ) -> (TurnOutcome, u32) {
         let name = session.name().to_string();
         let id = session.id();
         if session.cancel_epoch() != epoch {
             // Cancelled while queued: running looks like the interrupt did nothing.
             tracing::info!(session = %name, "turn dropped: cancelled while queued");
-            return TurnOutcome::Cancelled;
+            return (TurnOutcome::Cancelled, 0);
         }
         if session.is_deleted() {
             tracing::info!(session = %name, "turn dropped: session was deleted before starting");
-            return TurnOutcome::Cancelled;
+            return (TurnOutcome::Cancelled, 0);
         }
         let (turn, cancel) = session.new_turn();
         let started = std::time::Instant::now();
@@ -128,7 +140,7 @@ impl Agent {
             Ok(route) => route,
             Err(e) => {
                 self.error(id, &name, "resolving the session's llm", e);
-                return TurnOutcome::Failed;
+                return (TurnOutcome::Failed, 0);
             }
         };
         // Read once, like the route: every step sends the level this turn began with.
@@ -147,7 +159,7 @@ impl Agent {
 
         let outcome = loop {
             if cancel.is_cancelled() {
-                break TurnOutcome::Cancelled;
+                break (TurnOutcome::Cancelled, step);
             }
             // Step boundary: a user line between a call and its result is rejected, so inject here.
             self.deliver_inbox(id, &name);
@@ -169,20 +181,20 @@ impl Agent {
                         step = step.wrapping_add(1);
                         continue;
                     }
-                    break TurnOutcome::Done;
+                    break (TurnOutcome::Done, step);
                 }
                 Ok(StepResult::RanTools) => {}
-                Ok(StepResult::Stopped) => break TurnOutcome::Cancelled,
+                Ok(StepResult::Stopped) => break (TurnOutcome::Cancelled, step),
                 Err(e) => {
                     self.error(id, &name, "model request", e);
-                    break TurnOutcome::Failed;
+                    break (TurnOutcome::Failed, step);
                 }
             }
             // Wrapping, not saturating: the counter is only a log label.
             step = step.wrapping_add(1);
         };
 
-        tracing::info!(session = %name, outcome = ?outcome, elapsed = ?started.elapsed(), "turn end");
+        tracing::info!(session = %name, outcome = ?outcome.0, elapsed = ?started.elapsed(), "turn end");
         outcome
     }
 
@@ -302,6 +314,11 @@ impl Agent {
             self.error(id, name, "queueing the context notice", e);
             return;
         }
+        let _ = self.store.append_event(
+            Some(id),
+            "context_notice",
+            &json!({"tokens": tokens, "limit": budget, "handover_upto": upto}),
+        );
         self.bus.publish(Event::Log {
             level: LogLevel::Info,
             message: format!(
@@ -375,6 +392,9 @@ impl Agent {
         let (note, history) = self.store.context(id)?;
         let definitions = self.tools.definitions();
         let prompt = self.prompt_in_force(id, &name, cwd, note.as_deref(), step == 1)?;
+        // One number for "how long the model took": the whole stream, retries
+        // inside it included, because that is what the wall clock paid.
+        let requested = std::time::Instant::now();
         let mut rx = llm.stream(
             &prompt.instructions,
             prompt.handover.as_deref(),
@@ -497,6 +517,8 @@ impl Agent {
                             "usage",
                             &json!({
                                 "model": llm.model(),
+                                "step": step,
+                                "latency_ms": requested.elapsed().as_millis() as u64,
                                 "input": u.input_tokens,
                                 "cached": cached,
                                 "output": u.output_tokens,
@@ -742,6 +764,17 @@ enum TurnOutcome {
     Done,
     Cancelled,
     Failed,
+}
+
+impl TurnOutcome {
+    /// The word a durable row uses, so a reader never parses a debug format.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Done => "done",
+            Self::Cancelled => "cancelled",
+            Self::Failed => "failed",
+        }
+    }
 }
 
 /// What a panicking task carries, as text.

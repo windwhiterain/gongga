@@ -374,3 +374,10 @@ and the one a caller learns first is the one it will keep using.
 Reading is scoped to a session and paged by sequence number: an IM bridge asks
 "what appeared after the seq I left off at", so a wrong default here would make
 it resend old answers.
+
+## a_report_is_one_document
+
+A tool that wants to know what a run cost asks `report` and reads one
+document. The alternative is what every adapter did before it: four ad-hoc
+queries against tables whose column names are the server's business, which
+is how a rename (`summary` to `handover`) broke a benchmark mid-run.

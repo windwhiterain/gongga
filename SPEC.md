@@ -46,6 +46,7 @@ use `which("bash")` as bash.
   - `send_message --session <name> --message <string>`: inject message instantly, turn waiting bash to backgound.
   - `interrupt_session --session <name>`
   - `cancel`: not instantly, but finish every task that can't be serialized to data, then store the pending tasks into data, the exit. next start will auto pick up those tasks.  
+  - `report --session <name>`: one session's ledger as a JSON document -- turns and how each ended, requests, input/cached/output tokens, cache share, peak context, request latency, context notices, the handover, tool calls.
 - server_script: that registered by external python scripts
   - `get_messages --session <name> --range <begin:end>`: return the rows in that closed range `range` (negative number to count from end).
 - client:

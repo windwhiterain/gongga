@@ -288,3 +288,22 @@ bigger budget without anyone retuning the config.
 
 The line names the cause it now carries, and a ceiling of zero reads as
 "until cancelled".
+
+## a_turn_leaves_its_outcome_as_a_row
+
+`events.kind = turn_end` carries the outcome, the step count and the
+elapsed time, so "did it finish, and why not" is a query rather than a
+match against a log line that carries colour escapes.
+
+## a_request_records_what_it_cost_and_how_long
+
+The `usage` row carries the step it belonged to and the wall time the stream
+took, retries inside it included: tokens and milliseconds are one experiment,
+and neither is derivable from the other.
+
+## a_context_notice_is_a_row
+
+The notice is a decision the server made, so it is recorded as
+`events.kind = context_notice` with the numbers it quoted. Counting the
+injected sentence instead made the count depend on the template's wording.
+
