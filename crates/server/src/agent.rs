@@ -151,7 +151,7 @@ impl Agent {
             }
             // Step boundary: a user line between a call and its result is rejected, so inject here.
             self.deliver_inbox(id, &name);
-            // Compress before the request is built, so the very next request is the small one.
+            // Ask before the request is built, so this is the step that hears it.
             self.maybe_notify_context(session, id, &name, budget);
             let cwd = session.cwd();
             tracing::info!(session = %name, step, "step start");
@@ -162,7 +162,7 @@ impl Agent {
                 // Read again per step, like every other word of the prompt.
                 cwd: &cwd,
             };
-            match self.step(id, &name, turn, &cancel, &attempt).await {
+            match self.step(session, id, &name, turn, &cancel, &attempt).await {
                 Ok(StepResult::Finished) => {
                     // Something may have landed while it finished; deliver it and go round again.
                     if self.deliver_inbox(id, &name) > 0 {
@@ -171,14 +171,7 @@ impl Agent {
                     }
                     break TurnOutcome::Done;
                 }
-                Ok(StepResult::NeedsTools(calls)) => {
-                    if self
-                        .run_tools(session, id, &name, &cancel, &llm, calls)
-                        .await
-                    {
-                        break TurnOutcome::Cancelled;
-                    }
-                }
+                Ok(StepResult::RanTools) => {}
                 Ok(StepResult::Stopped) => break TurnOutcome::Cancelled,
                 Err(e) => {
                     self.error(id, &name, "model request", e);
@@ -363,9 +356,10 @@ impl Agent {
         Ok(prompt)
     }
 
-    /// One model request. Returns the tool calls it asked for, if any.
+    /// One model request. Runs each tool call the moment it arrives.
     async fn step(
         &self,
+        session: &SessionHandle,
         id: i64,
         name: &str,
         turn: u64,
@@ -390,7 +384,7 @@ impl Agent {
             cancel.clone(),
         );
 
-        let mut calls: Vec<ToolCall> = Vec::new();
+        let mut ran_tools = false;
         let mut failure: Option<String> = None;
         let mut saw_completion = false;
 
@@ -462,6 +456,8 @@ impl Agent {
                         );
                     }
                 }
+                // Run it here, not after the stream: the call in flight is then
+                // always the last row.
                 LlmEvent::ToolCall {
                     call_id,
                     name: tool,
@@ -474,11 +470,13 @@ impl Agent {
                         &json!({"call_id": call_id, "name": tool, "arguments": arguments}),
                     );
                     let _ = self.store.start_tool_call(id, &call_id, &tool, &arguments);
-                    calls.push(ToolCall {
-                        call_id,
-                        tool,
-                        arguments,
-                    });
+                    if self
+                        .run_one_call(session, id, name, cancel, llm, call_id, tool, arguments)
+                        .await
+                    {
+                        return Ok(StepResult::Stopped);
+                    }
+                    ran_tools = true;
                 }
                 LlmEvent::Completed { usage } => {
                     saw_completion = true;
@@ -544,11 +542,11 @@ impl Agent {
         if cancel.is_cancelled() {
             return Ok(StepResult::Stopped);
         }
-        if calls.is_empty() {
+        if !ran_tools {
             return Ok(StepResult::Finished);
         }
-        tracing::debug!(session = %name, step, calls = calls.len(), "step produced tool calls");
-        Ok(StepResult::NeedsTools(calls))
+        tracing::debug!(session = %name, step, "step ran its calls as they arrived");
+        Ok(StepResult::RanTools)
     }
 
     /// Turns `@<path>` mentions in a tool's output into attachments.
@@ -609,92 +607,92 @@ impl Agent {
         out
     }
 
-    /// Executes the tool calls for a step. Returns true if the turn was cancelled.
-    async fn run_tools(
+    /// Runs the one call the model just asked for. Returns true if the turn was cancelled.
+    async fn run_one_call(
         &self,
         session: &SessionHandle,
         id: i64,
         name: &str,
         cancel: &tokio_util::sync::CancellationToken,
         llm: &LlmClient,
-        calls: Vec<ToolCall>,
+        call_id: String,
+        tool: String,
+        arguments_given: String,
     ) -> bool {
-        for call in calls {
-            if cancel.is_cancelled() {
-                return true;
-            }
-            let arguments: serde_json::Value =
-                serde_json::from_str(&call.arguments).unwrap_or_else(|_| json!({}));
-
-            // Forward streamed tool output onto the bus, tagging each chunk with
-            // the tool name the context does not know.
-            let (tx, mut rx) = mpsc::channel::<ToolAnswerEvent>(256);
-            let bus = self.bus.clone();
-            let tool_label = call.tool.clone();
-            let forwarder = tokio::spawn(async move {
-                while let Some(mut e) = rx.recv().await {
-                    e.tool = tool_label.clone();
-                    bus.publish(Event::ToolAnswer(e));
-                }
-            });
-
-            let ctx = ToolContext {
-                session: name.to_string(),
-                call_id: call.call_id.clone(),
-                output_dir: self.output_dir.clone(),
-                shells: session.shells(),
-                detached: self.detached.clone(),
-                events: Some(tx),
-                cancel: cancel.clone(),
-                store: self.store.clone(),
-                cwd: session.cwd(),
-                vision: llm.vision(crate::prompts::shared()),
-                inbox: session.inbox_signal(),
-            };
-            let started = std::time::Instant::now();
-            tracing::info!(session = %name, tool = %call.tool, "tool start");
-            let outcome = self.tools.run(&call.tool, arguments, &ctx).await;
-            let scanned = self.attach_references(&ctx, &outcome.output, llm).await;
-            drop(ctx);
-            let _ = forwarder.await;
-            tracing::info!(
-                session = %name,
-                tool = %call.tool,
-                ok = outcome.ok,
-                elapsed = ?started.elapsed(),
-                "tool end"
-            );
-
-            self.bus.publish(Event::ToolAnswer(ToolAnswerEvent {
-                session: name.to_string(),
-                call_id: call.call_id.clone(),
-                tool: call.tool.clone(),
-                stream: ToolStream::Stdout,
-                text: String::new(),
-                done: true,
-            }));
-
-            let status = if outcome.ok { "ok" } else { "error" };
-            // A command that printed `@shot.png` names a picture: it becomes an
-            // attachment, uploaded once per file.
-            let images: Vec<_> = scanned
-                .iter()
-                .map(crate::image::ImageRef::to_json)
-                .collect();
-            let _ = self.store.append_message(
-                id,
-                "tool_result",
-                &json!({"call_id": call.call_id, "output": outcome.output, "images": images}),
-            );
-            let _ = self
-                .store
-                .finish_tool_call(id, &call.call_id, &outcome.output, status);
-            let _ = self.store.append_event(
-                Some(id),
-                "tool_result",
-                &json!({"tool": call.tool, "call_id": call.call_id, "status": status}),
-            );
+        if cancel.is_cancelled() {
+            return true;
         }
+        let arguments: serde_json::Value =
+            serde_json::from_str(&arguments_given).unwrap_or_else(|_| json!({}));
+
+        // Forward streamed tool output onto the bus, tagging each chunk with
+        // the tool name the context does not know.
+        let (tx, mut rx) = mpsc::channel::<ToolAnswerEvent>(256);
+        let bus = self.bus.clone();
+        let tool_label = tool.clone();
+        let forwarder = tokio::spawn(async move {
+            while let Some(mut e) = rx.recv().await {
+                e.tool = tool_label.clone();
+                bus.publish(Event::ToolAnswer(e));
+            }
+        });
+
+        let ctx = ToolContext {
+            session: name.to_string(),
+            call_id: call_id.clone(),
+            output_dir: self.output_dir.clone(),
+            shells: session.shells(),
+            detached: self.detached.clone(),
+            events: Some(tx),
+            cancel: cancel.clone(),
+            store: self.store.clone(),
+            cwd: session.cwd(),
+            vision: llm.vision(crate::prompts::shared()),
+            inbox: session.inbox_signal(),
+        };
+        let started = std::time::Instant::now();
+        tracing::info!(session = %name, tool = %tool, "tool start");
+        let outcome = self.tools.run(&tool, arguments, &ctx).await;
+        let scanned = self.attach_references(&ctx, &outcome.output, llm).await;
+        drop(ctx);
+        let _ = forwarder.await;
+        tracing::info!(
+            session = %name,
+            tool = %tool,
+            ok = outcome.ok,
+            elapsed = ?started.elapsed(),
+            "tool end"
+        );
+
+        self.bus.publish(Event::ToolAnswer(ToolAnswerEvent {
+            session: name.to_string(),
+            call_id: call_id.clone(),
+            tool: tool.clone(),
+            stream: ToolStream::Stdout,
+            text: String::new(),
+            done: true,
+        }));
+
+        let status = if outcome.ok { "ok" } else { "error" };
+        // A command that printed `@shot.png` names a picture: it becomes an
+        // attachment, uploaded once per file.
+        let images: Vec<_> = scanned
+            .iter()
+            .map(crate::image::ImageRef::to_json)
+            .collect();
+        let _ = self.store.append_message(
+            id,
+            "tool_result",
+            &json!({"call_id": call_id, "output": outcome.output, "images": images}),
+        );
+        let _ = self
+            .store
+            .finish_tool_call(id, &call_id, &outcome.output, status);
+        let _ = self.store.append_event(
+            Some(id),
+            "tool_result",
+            &json!({"tool": tool, "call_id": call_id, "status": status}),
+        );
         false
     }
 
@@ -719,18 +717,11 @@ impl Agent {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct ToolCall {
-    pub call_id: String,
-    pub tool: String,
-    pub arguments: String,
-}
-
 enum StepResult {
     /// The model answered without asking for tools.
     Finished,
-    /// The model wants tools run before it continues.
-    NeedsTools(Vec<ToolCall>),
+    /// The model asked for tools, and this step ran each one as it arrived.
+    RanTools,
     /// Cancellation or an aborted stream.
     Stopped,
 }

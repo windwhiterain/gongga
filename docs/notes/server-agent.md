@@ -175,12 +175,24 @@ process dies in between.
 A row with no message cannot be delivered; leaving it would block the queue
 forever, and its kind is not one this loop knows how to replay.
 
-How long a boundary takes to arrive is not up to this loop. `run_tools` hands
+How long a boundary takes to arrive is not up to this loop. `run_one_call` hands
 each call a fresh `inbox_signal`, so whichever call is waiting when the operator
 speaks can end its wait instead of sitting out the command -- see
 `BashTool::run (a message arriving mid-command)` in `server-tools-mod.md`. One
 fresh copy per call is what keeps the same message from waking every call after
 it.
+
+## one call at a time, run where it lands
+
+`step` does not collect the calls a response streams and run them after the
+stream: each one is executed the moment its `ToolCall` event arrives, so the
+transcript never holds a call waiting on a later one, and the call in flight is
+always the last row. That ordering is what lets a script that folds or empties
+the session keep exactly one row -- its own -- and still leave a request the
+provider accepts. A result without its call is a rejected request, so cutting
+inside a pair is the one thing no writer may do; `history_between` drops a
+result whose call is gone as the backstop, and `close_dangling_calls` closes the
+other way round.
 
 ## Agent::maybe_notify_context
 

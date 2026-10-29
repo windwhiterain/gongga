@@ -100,10 +100,10 @@ one line in the script that must not be forgotten.
 ## heir: the copy is the archive, and emptying is the point
 
 `collapse` changes what a session *sends*. `heir` changes what a session *has*: it
-copies every row into another session, verifies the copy, deletes its own rows, and
-injects one message saying where the past went. The rows are gone from SQLite.
+copies every row into another session, verifies the copy, and deletes its own rows --
+all but the one this command is running on. The rows are gone from SQLite.
 
-Three things make that acceptable rather than dangerous:
+Four things make that acceptable rather than dangerous:
 
 - **The archive is a session, not a file.** A mentor needs no new command, no export
   format and no sync protocol: `get_messages` reads it and `send_message` answers from
@@ -114,11 +114,25 @@ Three things make that acceptable rather than dangerous:
   the whole thing back, including the `sessions` update. So the failure mode "the
   archive is half-written and the original is empty" cannot be reached -- the script
   exits non-zero and the transcript is untouched.
-- **Seq restarts, so `handover_upto` must go to 0.** `seq` is `max(seq)+1` over the
-  rows that exist, so an emptied session's first new row is seq 1. A note left
-  claiming it covers through the old last seq would fold that row before it was ever
-  sent -- the session would look alive and answer as if it had amnesia about
-  everything after the handover, including the next message from the user.
+- **The kept row is the rule, not an exception.** The server runs a call the moment it
+  streams (see `server-agent.md`), so the session's last row is this command's own
+  `tool_call`, and its result can only exist after the process returns. Deleting the
+  call would leave that result at the head of the next request, and a provider rejects
+  an output whose call is absent -- the whole transcript would fail to send, forever.
+  So the cut stops before the pair, `handover_upto` names where it stopped, and the
+  instruction the emptied session needs is **not injected as a forged user turn**: it
+  is the text this command prints, which arrives as that call's result.
+- **The mentor is answered too.** The archive holds the learner's `tool_call`, so the
+  script appends the `tool_result` that closes it, and that row is what tells the
+  mentor what it has become: read when asked, answer when asked, fold nothing of its
+  own -- the notice template repeats the same branch, because a mentor can hit a
+  threshold too.
+- **Seq restarts when nothing is kept.** `seq` is `max(seq)+1` over the rows that
+  exist. When an operator empties a session from a shell there is no call in flight,
+  every row goes, and the next one is seq 1 -- so the note must claim to cover nothing
+  and `handover_upto` goes to 0. A note left claiming the old last seq would fold
+  every row the session ever sends: it would look alive and answer as if it had
+  amnesia about everything after the handover.
 
 ## "The transcript is never rewritten" meant the server
 

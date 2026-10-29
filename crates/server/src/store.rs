@@ -464,6 +464,21 @@ impl Store {
                     })
             })
             .collect();
+        // The same rule backwards: a result whose call is not in this window is a
+        // lone output, and the provider rejects that.
+        let called: std::collections::HashSet<String> = rows
+            .iter()
+            .filter(|(kind, _)| kind == "tool_call")
+            .filter_map(|(_, content)| {
+                serde_json::from_str::<serde_json::Value>(content)
+                    .ok()
+                    .and_then(|v| {
+                        v.get("call_id")
+                            .and_then(|c| c.as_str())
+                            .map(str::to_string)
+                    })
+            })
+            .collect();
         for (kind, content) in rows {
             let value: serde_json::Value =
                 serde_json::from_str(&content).unwrap_or(serde_json::Value::Null);
@@ -522,19 +537,26 @@ impl Store {
                         });
                     }
                 }
-                "tool_result" => out.push(HistoryItem::ToolResult {
-                    call_id: value
+                "tool_result" => {
+                    let call_id = value
                         .get("call_id")
                         .and_then(|v| v.as_str())
                         .unwrap_or_default()
-                        .to_string(),
-                    output: value
-                        .get("output")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                    images: images_of(&value),
-                }),
+                        .to_string();
+                    if called.contains(&call_id) {
+                        out.push(HistoryItem::ToolResult {
+                            call_id,
+                            output: value
+                                .get("output")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default()
+                                .to_string(),
+                            images: images_of(&value),
+                        });
+                    } else {
+                        tracing::debug!(call_id, "a tool result lost its call: not sent");
+                    }
+                }
                 "builtin_call" => {
                     let item = value
                         .get("item")
@@ -1386,6 +1408,13 @@ mod tests {
         store
             .append_message(
                 id,
+                "tool_call",
+                &json!({"call_id": "c1", "name": "read_image", "arguments": "{}"}),
+            )
+            .unwrap();
+        store
+            .append_message(
+                id,
                 "tool_result",
                 &json!({
                     "call_id": "c1",
@@ -1395,7 +1424,7 @@ mod tests {
             )
             .unwrap();
         let history = store.history(id).unwrap();
-        match &history[0] {
+        match &history[1] {
             HistoryItem::ToolResult { output, images, .. } => {
                 assert_eq!(output, "looked at it");
                 assert_eq!(images, &vec![ImageRef::new("C:/w/shot.png", "image/png")]);
@@ -1410,9 +1439,16 @@ mod tests {
         let (_d, store) = temp_store();
         let id = store.create_session("main", "m", "C:/x").unwrap();
         store
+            .append_message(
+                id,
+                "tool_call",
+                &json!({"call_id": "c1", "name": "bash", "arguments": "{}"}),
+            )
+            .unwrap();
+        store
             .append_message(id, "tool_result", &json!({"call_id": "c1", "output": "ok"}))
             .unwrap();
-        match &store.history(id).unwrap()[0] {
+        match &store.history(id).unwrap()[1] {
             HistoryItem::ToolResult { images, .. } => assert!(images.is_empty()),
             other => panic!("unexpected {other:?}"),
         }
@@ -1493,6 +1529,42 @@ mod tests {
         assert!(matches!(h[0], HistoryItem::Text { .. }));
         assert!(matches!(h[1], HistoryItem::ToolCall { .. }));
         assert!(matches!(h[2], HistoryItem::ToolResult { .. }));
+    }
+
+    /// A result whose call is gone is not sent: a lone output is rejected.
+    #[test]
+    fn a_result_without_its_call_is_not_sent() {
+        let (_d, store) = temp_store();
+        let id = store.create_session("s", "m", "C:/x").unwrap();
+        store
+            .append_message(id, "text", &json!({"role":"user","text":"ask"}))
+            .unwrap();
+        store
+            .append_message(
+                id,
+                "tool_result",
+                &json!({"call_id":"call_gone","output":"rows moved"}),
+            )
+            .unwrap();
+        let (_, items) = store.context(id).unwrap();
+        assert_eq!(items.len(), 1, "the orphan is dropped: {items:?}");
+
+        store
+            .append_message(
+                id,
+                "tool_call",
+                &json!({"call_id":"call_here","name":"bash","arguments":"{}"}),
+            )
+            .unwrap();
+        store
+            .append_message(
+                id,
+                "tool_result",
+                &json!({"call_id":"call_here","output":"ok"}),
+            )
+            .unwrap();
+        let (_, items) = store.context(id).unwrap();
+        assert_eq!(items.len(), 3, "text, call, result: {items:?}");
     }
 
     /// A handover note shrinks the request but never touches the transcript rows.
