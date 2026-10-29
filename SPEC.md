@@ -57,12 +57,8 @@ use `which("bash")` as bash.
     - auto set `--session` after `set_session`
   - `del_event_filter --name <name>`
     - auto del `--session` after `del_session`
-  - `set_event_detail --mode <mode>`:
-    mode:
-      - all
-      - line: fold each non-output message block into one line, streaming keep re-write/override that line.
-        - inside single line: re-write without clear text.
-        - new line: clear text.
+  - `set_event_ui [--block_size <line>]`:
+    - `block_size`: max line count of a block, auto scroll.
   - `set_event_split --split <bool>`:
     true: split events window by session name, cmd/cmd_result use a separate single line.
 

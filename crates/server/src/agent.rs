@@ -80,9 +80,9 @@ impl Agent {
             TurnOutcome::Failed => (SessionStatus::Error, Some("see log".to_string())),
         };
         let preserve = session.take_resumable();
-        if let Err(e) = self
-            .store
-            .finish_turn(session.id(), session.name(), &tasks, status, preserve)
+        if let Err(e) =
+            self.store
+                .finish_turn(session.id(), session.name(), &tasks, status, preserve)
         {
             tracing::error!(session = %session.name(), error = %e, "could not finish the durable turn");
         }
@@ -119,7 +119,9 @@ impl Agent {
         match self.store.close_dangling_calls(session.id()) {
             Ok(0) => {}
             Ok(n) => tracing::info!(session = %name, closed = n, "calls that never got a result"),
-            Err(e) => tracing::warn!(session = %name, error = %e, "could not close a dangling call"),
+            Err(e) => {
+                tracing::warn!(session = %name, error = %e, "could not close a dangling call")
+            }
         }
         // Resolved once: every step of a turn sends to the model it started on.
         let (llm, budget) = match self.route(&name, &session.tuning()) {
@@ -335,13 +337,15 @@ impl Agent {
         let stored = self.store.prompt(id)?;
         let cwd = cwd.display().to_string();
         let here = crate::store::stamp(note);
-        if let Some(kept) = stored.clone().filter(|p| !prompt_moved(p, &cwd, &here, turn_start)) {
+        if let Some(kept) = stored
+            .clone()
+            .filter(|p| !prompt_moved(p, &cwd, &here, turn_start))
+        {
             return Ok(kept);
         }
         let prompts = crate::prompts::shared();
         let instructions = prompts.text("instructions").unwrap_or_default();
-        let summary = note
-            .map(|s| prompts.render("summary_preamble", &[("summary", s)]));
+        let summary = note.map(|s| prompts.render("summary_preamble", &[("summary", s)]));
         let prompt = crate::store::Prompt {
             instructions,
             summary,
@@ -862,7 +866,6 @@ mod tests {
         assert_eq!(compaction_budget(40_000, None, None), 40_000);
     }
 
-
     /// A template edit waits for the next turn; a fold does not; a step that
     /// stores nothing re-renders nothing.
     #[test]
@@ -876,9 +879,18 @@ mod tests {
         let same = crate::store::stamp(None);
         let folded = crate::store::stamp(Some("the note"));
         assert!(!prompt_moved(&stored, "C:/a", &same, true), "nothing moved");
-        assert!(!prompt_moved(&stored, "C:/b", &same, false), "a step is not a turn");
-        assert!(prompt_moved(&stored, "C:/b", &same, true), "the row names the directory");
-        assert!(prompt_moved(&stored, "C:/a", &folded, false), "a handover is new content");
+        assert!(
+            !prompt_moved(&stored, "C:/b", &same, false),
+            "a step is not a turn"
+        );
+        assert!(
+            prompt_moved(&stored, "C:/b", &same, true),
+            "the row names the directory"
+        );
+        assert!(
+            prompt_moved(&stored, "C:/a", &folded, false),
+            "a handover is new content"
+        );
     }
 
     /// Every value the template can name has to arrive: the words are the
@@ -893,12 +905,18 @@ mod tests {
         assert!(notice.contains("transcript.py collapse"), "{notice}");
         // And it says the messages are not lost, the fear that stops folding.
         assert!(notice.contains("stay readable"), "{notice}");
-        assert!(!notice.contains("{{"), "a placeholder nobody filled: {notice}");
+        assert!(
+            !notice.contains("{{"),
+            "a placeholder nobody filled: {notice}"
+        );
     }
 
     fn notice_prompts() -> crate::prompts::Prompts {
         crate::prompts::Prompts::of(&[
-            ("context_notice", "Context notice for `{{session}}`: {{tokens}} input tokens of {{budget}}. {{folded}} Read `transcript.py read --session {{session}}`, fold `transcript.py collapse --session {{session}}`; the messages stay readable."),
+            (
+                "context_notice",
+                "Context notice for `{{session}}`: {{tokens}} input tokens of {{budget}}. {{folded}} Read `transcript.py read --session {{session}}`, fold `transcript.py collapse --session {{session}}`; the messages stay readable.",
+            ),
             ("folded_none", "Nothing has been folded yet."),
             ("folded_through", "The summary runs through seq {{upto}}."),
         ])

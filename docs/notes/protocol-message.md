@@ -72,3 +72,15 @@ client's state: which sticky arguments exist, which event filters exist. These
 two sources say "complete against that list" without shipping the list, which is
 the same arrangement as `Sessions` -- the server names where a value comes from,
 and the side that owns it fills it in.
+
+## BLOCK_SIZES
+
+`--block_size` is a count of lines: any number is a valid answer, so the list here
+is what is worth offering at a Tab, not the set that is allowed. The server's
+`--compact_threshold` does the same thing with percentages, and for the same reason
+-- a completion popup that offers nothing for a free-form number teaches the operator
+nothing about what the number is for.
+
+`0` is in the list first because it is the only word for "no cap". There is no mode
+name to remember: the setting that replaced this one (`set_event_detail --mode`) had
+to name a behaviour, and its two names differed only by whether a block folded.

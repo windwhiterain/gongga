@@ -132,7 +132,10 @@ mod tests {
     fn a_missing_payload_is_said_not_guessed() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(read(dir.path(), "never_was"), None);
-        assert!(!drop(dir.path(), "never_was"), "nothing was there to remove");
+        assert!(
+            !drop(dir.path(), "never_was"),
+            "nothing was there to remove"
+        );
         put(dir.path(), "ig_2", "\"x\"").unwrap();
         assert!(drop(dir.path(), "ig_2"));
         assert_eq!(read(dir.path(), "ig_2"), None);
@@ -144,14 +147,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         put(dir.path(), "ig_3", "\"whole\"").unwrap();
         // The new bytes are still under .part, so the old ones answer.
-        std::fs::write(dir.path().join(file_name("ig_3")).with_extension("part"), "\"partial\"")
-            .unwrap();
+        std::fs::write(
+            dir.path().join(file_name("ig_3")).with_extension("part"),
+            "\"partial\"",
+        )
+        .unwrap();
         assert_eq!(read(dir.path(), "ig_3").as_deref(), Some("\"whole\""));
-        assert!(!std::fs::read_dir(dir.path())
-            .unwrap()
-            .flatten()
-            .any(|e| e.path().extension().is_some_and(|x| x == "part")
-                && read(dir.path(), "anything").is_some()));
+        assert!(
+            !std::fs::read_dir(dir.path()).unwrap().flatten().any(|e| e
+                .path()
+                .extension()
+                .is_some_and(|x| x == "part")
+                && read(dir.path(), "anything").is_some())
+        );
     }
 
     fn json_text(value: &serde_json::Value) -> String {

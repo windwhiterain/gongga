@@ -252,7 +252,10 @@ impl Store {
         };
         // These tables have no session foreign key; none may leak into a reused name.
         tx.execute("DELETE FROM events WHERE session_id = ?1", params![id])?;
-        tx.execute("DELETE FROM pending_tasks WHERE session = ?1", params![name])?;
+        tx.execute(
+            "DELETE FROM pending_tasks WHERE session = ?1",
+            params![name],
+        )?;
         let n = tx.execute("DELETE FROM sessions WHERE name = ?1", params![name])?;
         tx.commit()?;
         Ok(n > 0)
@@ -695,9 +698,8 @@ impl Store {
         // placeholder must not hide the gap from this write.
         let rows = {
             let conn = self.lock();
-            let mut stmt = conn.prepare(
-                "SELECT kind, content FROM messages WHERE session_id = ?1 ORDER BY seq",
-            )?;
+            let mut stmt = conn
+                .prepare("SELECT kind, content FROM messages WHERE session_id = ?1 ORDER BY seq")?;
             stmt.query_map(params![session_id], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
             })?
@@ -834,10 +836,19 @@ impl Store {
         tx.execute(
             "INSERT INTO pending_tasks (session, kind, payload, created_at)
              VALUES (?1, 'turn', ?2, ?3)",
-            params![session, serde_json::to_string(&json!({"session": session}))?, now_millis()],
+            params![
+                session,
+                serde_json::to_string(&json!({"session": session}))?,
+                now_millis()
+            ],
         )?;
         let id = tx.last_insert_rowid();
-        Self::append_message_conn(&tx, session_id, "text", &json!({"role": "user", "text": message}))?;
+        Self::append_message_conn(
+            &tx,
+            session_id,
+            "text",
+            &json!({"role": "user", "text": message}),
+        )?;
         tx.commit()?;
         Ok(id)
     }
@@ -863,7 +874,12 @@ impl Store {
                 .get("message")
                 .and_then(serde_json::Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("pending inject {id} has no string message"))?;
-            Self::append_message_conn(&tx, session_id, "text", &json!({"role": "user", "text": message}))?;
+            Self::append_message_conn(
+                &tx,
+                session_id,
+                "text",
+                &json!({"role": "user", "text": message}),
+            )?;
             tx.execute("DELETE FROM pending_tasks WHERE id = ?1", params![id])?;
         }
         tx.commit()?;
@@ -1309,7 +1325,13 @@ mod tests {
         assert_eq!(rows.messages[0].kind, "text");
 
         assert!(store.begin_turn(i64::MAX, "broken", "rollback").is_err());
-        assert!(!store.pending_tasks().unwrap().iter().any(|t| t.session == "broken"));
+        assert!(
+            !store
+                .pending_tasks()
+                .unwrap()
+                .iter()
+                .any(|t| t.session == "broken")
+        );
     }
 
     #[test]
@@ -1317,19 +1339,38 @@ mod tests {
         let (_d, store) = temp_store();
         let id = store.create_session("main", "m", "C:/x").unwrap();
         let turn = store.begin_turn(id, "main", "first").unwrap();
-        store.add_pending_task("main", "inject", &json!({"message": "second"})).unwrap();
-        store.add_pending_task("main", "inject", &json!({"message": "third"})).unwrap();
+        store
+            .add_pending_task("main", "inject", &json!({"message": "second"}))
+            .unwrap();
+        store
+            .add_pending_task("main", "inject", &json!({"message": "third"}))
+            .unwrap();
 
         assert_eq!(store.deliver_pending(id, "main").unwrap(), 2);
         assert_eq!(store.deliver_pending(id, "main").unwrap(), 0);
         let pending = store.pending_tasks().unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id, turn);
-        assert_eq!(store.messages_between(id, 0, i64::MAX).unwrap().messages.len(), 3);
+        assert_eq!(
+            store
+                .messages_between(id, 0, i64::MAX)
+                .unwrap()
+                .messages
+                .len(),
+            3
+        );
 
-        store.add_pending_task("main", "inject", &json!({"message": "kept"})).unwrap();
+        store
+            .add_pending_task("main", "inject", &json!({"message": "kept"}))
+            .unwrap();
         assert!(store.deliver_pending(i64::MAX, "main").is_err());
-        assert!(store.pending_tasks().unwrap().iter().any(|t| t.kind == "inject"));
+        assert!(
+            store
+                .pending_tasks()
+                .unwrap()
+                .iter()
+                .any(|t| t.kind == "inject")
+        );
     }
 
     /// A picture is a path in the row, not bytes: the request reads the file.
@@ -1837,7 +1878,6 @@ mod tests {
         );
     }
 
-
     /// The prompt row is what a request is built from, not a row inside it.
     #[test]
     fn a_prompt_row_is_sent_and_never_repeated_as_history() {
@@ -1856,16 +1896,27 @@ mod tests {
             .unwrap();
 
         let (_, history) = store.context(id).unwrap();
-        assert_eq!(history.len(), 1, "the prompt row is not history: {history:?}");
+        assert_eq!(
+            history.len(),
+            1,
+            "the prompt row is not history: {history:?}"
+        );
 
-        let read = store.prompt(id).unwrap().expect("the newest row reads back");
+        let read = store
+            .prompt(id)
+            .unwrap()
+            .expect("the newest row reads back");
         assert_eq!(read.instructions, "You are gongga");
         assert_eq!(read.cwd, "C:/x");
         assert_eq!(read.stamp, stamp(Some("the note")));
 
         // A reader of the transcript gets the shape of it, not 10k characters.
         let t = store.messages_between(id, 1, i64::MAX).unwrap();
-        assert!(t.messages[0].text.contains("[prompt in force]"), "{:?}", t.messages[0].text);
+        assert!(
+            t.messages[0].text.contains("[prompt in force]"),
+            "{:?}",
+            t.messages[0].text
+        );
         assert_eq!(t.messages[1].kind, "text");
     }
 
@@ -1883,9 +1934,18 @@ mod tests {
             .unwrap();
 
         assert_eq!(store.close_dangling_calls(id).unwrap(), 1);
-        assert_eq!(store.close_dangling_calls(id).unwrap(), 0, "closed once is closed");
+        assert_eq!(
+            store.close_dangling_calls(id).unwrap(),
+            0,
+            "closed once is closed"
+        );
         let rows = store.messages_between(id, 1, i64::MAX).unwrap();
-        assert_eq!(rows.messages.len(), 2, "the closure is a row: {:?}", rows.messages);
+        assert_eq!(
+            rows.messages.len(),
+            2,
+            "the closure is a row: {:?}",
+            rows.messages
+        );
         assert_eq!(rows.messages[1].kind, "tool_result");
     }
 

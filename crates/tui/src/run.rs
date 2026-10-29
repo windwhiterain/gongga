@@ -3,7 +3,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use cli::{Detail, DialFailure, Greeting, LineKind, Link, Sink};
+use cli::{DialFailure, Greeting, Layout, LineKind, Link, Sink};
 use tokio::time::Duration;
 
 use crate::{Tui, UiEvent};
@@ -21,12 +21,20 @@ const RECONNECT_MAX: Duration = Duration::from_secs(5);
 struct TuiSink<'a>(&'a mut Tui);
 
 impl Sink for TuiSink<'_> {
-    fn line(&mut self, kind: LineKind, text: &str) {
-        self.0.push(kind, text);
+    fn line(&mut self, window: &str, kind: LineKind, text: &str) {
+        self.0.push(window, kind, text);
     }
 
-    fn stream(&mut self, key: &str, kind: LineKind, prefix: &str, text: &str, done: bool) {
-        self.0.stream(key, kind, prefix, text, done);
+    fn stream(
+        &mut self,
+        window: &str,
+        key: &str,
+        kind: LineKind,
+        prefix: &str,
+        text: &str,
+        done: bool,
+    ) {
+        self.0.stream(window, key, kind, prefix, text, done);
     }
 
     fn status(&mut self, text: &str) {
@@ -37,17 +45,25 @@ impl Sink for TuiSink<'_> {
         self.0.set_footer(text);
     }
 
-    fn detail(&mut self, mode: Detail) {
-        self.0.set_detail(mode);
+    fn block_size(&mut self, lines: usize) {
+        self.0.set_block_size(lines);
     }
 
-    fn split(&mut self, on: bool) {
-        self.0.set_split(on);
+    fn layout(&mut self, layout: &Layout) {
+        self.0.set_layout(layout);
+    }
+}
+
+impl TuiSink<'_> {
+    /// A line this front-end says about itself, in the window for lines that name
+    /// no session.
+    fn say(&mut self, kind: LineKind, text: &str) {
+        self.0.say(kind, text);
     }
 }
 
 /// One input line: `/` starts a command, anything else is a message to the agent.
-fn submission(client: &mut cli::Client, line: &str, sink: &mut dyn Sink) -> cli::Submission {
+fn submission(client: &mut cli::Client, line: &str, sink: &mut TuiSink) -> cli::Submission {
     let trimmed = line.trim();
     if trimmed.is_empty() {
         return cli::Submission::Rejected;
@@ -56,7 +72,7 @@ fn submission(client: &mut cli::Client, line: &str, sink: &mut dyn Sink) -> cli:
         Some(command) => match shell_words::split(command) {
             Ok(tokens) => client.command(tokens, sink),
             Err(e) => {
-                sink.line(LineKind::Error, &format!("unparsable input: {e}"));
+                sink.say(LineKind::Error, &format!("unparsable input: {e}"));
                 cli::Submission::Rejected
             }
         },
@@ -127,7 +143,7 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                             if let Err(e) = open.send(msg).await {
                                 // Its end went unnoticed, so the line may not have
                                 // arrived: report it rather than re-queue it.
-                                TuiSink(&mut ui).line(
+                                TuiSink(&mut ui).say(
                                     LineKind::Error,
                                     &format!(
                                         "connection dropped while sending ({e}); \
@@ -149,7 +165,7 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
             Step::Wire(Some(bytes)) => {
                 // Decoding stays in the command layer; this crate never names a protocol type.
                 if let Err(e) = client.handle_bytes(&bytes, &mut TuiSink(&mut ui)) {
-                    TuiSink(&mut ui).line(LineKind::Error, &format!("bad message: {e}"));
+                    TuiSink(&mut ui).say(LineKind::Error, &format!("bad message: {e}"));
                 }
             }
             Step::Wire(None) => {
@@ -158,7 +174,7 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                 attempts = 0;
                 next_try = tokio::time::Instant::now();
                 client.set_offline(0, &mut TuiSink(&mut ui));
-                TuiSink(&mut ui).line(LineKind::System, "server connection lost — reconnecting");
+                TuiSink(&mut ui).say(LineKind::System, "server connection lost — reconnecting");
             }
             Step::Dial => {
                 attempts += 1;
@@ -179,7 +195,7 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                         client.set_offline(attempts, &mut TuiSink(&mut ui));
                         // Once per outage: the status line already carries "attempt N".
                         if attempts == 1 {
-                            TuiSink(&mut ui).line(
+                            TuiSink(&mut ui).say(
                                 LineKind::Error,
                                 &format!(
                                     "{} — retrying in the background, Alt+Q still leaves",

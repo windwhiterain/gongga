@@ -77,10 +77,9 @@ opens a block, then appends later chunks of the same key bare. So anything that
 belongs at the start of a block -- and nothing that belongs in its body -- is a
 prefix.
 
-The prefix is the block's first row, so a block long enough to outgrow the window
-shows its newest rows without the tag. That is the simple model's cost: it keeps
-one block one line and reserves space for nobody, at the price of the label
-scrolling off with the head while a single block streams.
+The label is kept *out* of the text and printed on the block's top visible row, so a
+block that grew past its cap still says what it is. It used to be the block's first
+row, which meant a capped block showed its newest rows and no label at all.
 
 ## Client::handle_response
 
@@ -96,24 +95,52 @@ turning it on by session count would change how the lines of a session already
 on screen look the moment another session is created -- and a prefix must stay
 fixed for the life of its key.
 
-## Client::handle_response — the key under a split
+## Client::handle_response — one part, one block, one window
 
-Which rows a stream joins is meaning, so it is decided here and not in the
-front-end: split, and every part of a session but the answer shares
-`s:<session>`, so a front-end can fold them onto one row, while the answer keeps
-`o:<session>:<turn>` and its own rows. Unsplit, one key names one part, which is
-what makes a block per part.
+A part of a response is its own block (`r:<session>:<turn>:<part>`), and the
+*window* is what keeps sessions apart. The older rule folded a session's non-answer
+parts onto one shared key so a front-end could draw them as one row; that grouping
+was a workaround for having one window for everybody. With one window per session the
+key has nothing left to do, and the answer no longer needs a key of its own.
 
-The rule is expressed as a key rather than as a flag because a key is already
-what a front-end groups by; a flag saying "fold these together" would be the same
-information with a second way to spell it.
+Dropping it also drops the front-end's rewrite-on-new-label hack: a block is one
+label's text, so a chunk wearing another label opens a new block where the old one
+was sealed. Two events can never be glued onto one row.
 
-## Sink::detail and Sink::split
+## Client::tag, Client::session_window, Client::command_window
 
-Both default to a no-op: a front-end that does not fold has to know neither mode
-nor grouping exists, and the one-shot sink must not start rendering. Both are
+The label says which part of an answer this is; the window says whose answer it is.
+In a split area the window header already names the session, so the tag drops the
+`[<session>] ` prefix -- keeping it would print the same name twice, one column
+shorter. In the one window it stays, because nothing else says who is speaking.
+
+`command_window` is the window for a line that names no session: the server's log
+lines, every refusal the client makes, and the commands addressed to no one.
+Its name grows a space if a session already owns it, so a session named `cmd` cannot
+take the command line's window.
+
+## Client::command_line — where a command is read
+
+A command that named a session is read in that session's view: its echo, the rows a
+read returned, and its summary belong next to the transcript they came from. The
+command line keeps the commands that named nobody, which is what it is for -- a ticker
+of what the operator asked the *client*.
+
+The result event carries only the command's id, so the window is decided when the echo
+arrives and remembered until the answer does (`Client::results`). A link that dies
+mid-command forgets the map: an answer that will never arrive has nowhere to go.
+
+## Sink::block_size and Sink::layout
+
+Both default to a no-op: a front-end that shows every row in one window has to know
+neither setting exists, and the one-shot sink must not start rendering. Both are
 pushed on every `refresh`, which is how a window that attached after the client
 learned it still hears about it.
+
+The layout is announced (`Layout::Merged` or `Layout::Split`) rather than a `split`
+flag, because the front-end has to know the names and their order anyway -- and a flag
+would leave it inventing a naming rule the command layer already owns. The lines carry
+their window either way: the announcement says what a frame shows, never what is held.
 
 ## rows_of
 

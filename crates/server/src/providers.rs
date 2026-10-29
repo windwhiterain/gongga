@@ -613,7 +613,11 @@ pub fn roster() -> Arc<Catalog> {
         guard.catalog = catalog.clone();
     }
     tracing::info!(
-        roster = catalog.path().unwrap_or(Path::new("(none)")).display().to_string(),
+        roster = catalog
+            .path()
+            .unwrap_or(Path::new("(none)"))
+            .display()
+            .to_string(),
         providers = catalog.providers().len(),
         generation = catalog.generation(),
         problem = catalog.problem(),
@@ -745,8 +749,8 @@ key = "x"
 
     fn catalog() -> Catalog {
         Catalog {
-                    generation: 0,
-                    path: None,
+            generation: 0,
+            path: None,
             providers: parse(ROSTER).unwrap(),
             problem: None,
         }
@@ -871,8 +875,8 @@ key = "k"
   endpoints = ["/chat/completions"]
 "#;
         let c = Catalog {
-                    generation: 0,
-                    path: None,
+            generation: 0,
+            path: None,
             providers: parse(text).unwrap(),
             problem: None,
         };

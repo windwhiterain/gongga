@@ -39,25 +39,45 @@ variant: the field names are the names in the wire JSON (`session`, `part`,
 event variant does not need a new filtering branch. A hidden event still returns
 `true` for everything else -- see `Client::handle_event`.
 
-## Detail
+## BlockSize
 
-`set_event_detail --mode` is a display preference, so it is client state: the
+`set_event_ui --block_size` is a display preference, so it is client state: the
 server sends the same events either way. It lives in `cli.toml` beside the sticky
-arguments and the filters, through the same read-modify-write, so the three
-writers still do not clobber each other.
+arguments and the filters, through the same read-modify-write, so the writers still
+do not clobber each other.
 
-An unknown mode is refused with the list, and an unknown value already in the file
-falls back to `all` -- a hand-edited file is not a reason for a client to refuse to
-start. Its own parse failure is different from the file's: the first is someone
-typing, the second is damage.
+It is one number, not a mode list. The setting it replaces (`set_event_detail
+--mode all|line`) had to name a *kind* of behaviour per mode, and the two names
+only ever differed by whether a block folded; a count of lines says the same thing
+with no vocabulary to memorise, and `0` is the only word for "no cap".
+
+Without `--block_size` the command is a read: it prints the current number and
+changes nothing. Clearing the cap is `--block_size 0`, said on purpose -- a command
+that both reads and resets depending on how much you type is the kind of thing an
+operator learns the hard way.
+
+An unparseable value is refused with the way to say one, and an unknown value
+already in the file falls back to `0` -- a hand-edited file is not a reason for a
+client to refuse to start. Its own parse failure is different from the file's: the
+first is someone typing, the second is damage.
 
 ## Split
 
-`set_event_split --split` is the other half of the same preference: it says whether
-a session's events share one window, not how much of each is shown. It is client
-state for the same reason -- the server sends the same events either way -- and it
-is saved in the same `cli.toml`, so a detail change and a split change cannot
-overwrite each other.
+`set_event_split --split` is the other half of the same preference: it says how many
+events windows there are, not how tall a block in one may be. It is client state for
+the same reason -- the server sends the same events either way -- and it is saved in
+the same `cli.toml`, so a size change and a split change cannot overwrite each other.
+
+Splitting is decided here, in the command layer, because which line belongs to which
+window is a question about meaning: a session's own events go to that session's
+window, and `cmd`/`cmd_result` go to the line the operator's commands live on. The
+front-end is handed the list (`Sink::windows`) and only lays it out -- see
+`docs/notes/cli-lib.md`.
+
+A session can be named `cmd`. The command line's window therefore grows a space until
+no session owns the name: two windows with one name would show a session's answers in
+the command line, which is the kind of thing that reads as a bug in the log rather
+than as a naming collision.
 
 ## EVENT_FIELDS
 

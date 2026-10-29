@@ -593,7 +593,13 @@ fn pid_alive(_pid: u32) -> bool {
 /// Caps tool output: the head and the tail survive, the rest is spilled to disk.
 ///
 /// See `docs/notes/server-tools-bash.md`.
-pub fn cap_output(prompts: &crate::prompts::Prompts, text: &str, max: usize, dir: &Path, label: &str) -> String {
+pub fn cap_output(
+    prompts: &crate::prompts::Prompts,
+    text: &str,
+    max: usize,
+    dir: &Path,
+    label: &str,
+) -> String {
     if max == 0 || text.len() <= max {
         return text.to_string();
     }
@@ -708,7 +714,10 @@ mod tests {
     /// to `cap_output`.
     fn cap_prompts() -> crate::prompts::Prompts {
         crate::prompts::Prompts::of(&[
-            ("output_cap", "\n[... {{omitted}} characters omitted ...]\nfull output ({{total}} characters) written to {{path}}\nread the part you need with `sed -n '1,10p' {{path}}`"),
+            (
+                "output_cap",
+                "\n[... {{omitted}} characters omitted ...]\nfull output ({{total}} characters) written to {{path}}\nread the part you need with `sed -n '1,10p' {{path}}`",
+            ),
             ("output_omitted", "\n[{{omitted}} characters omitted]\n"),
         ])
     }
@@ -767,7 +776,10 @@ mod tests {
     fn a_cap_of_zero_means_no_cap() {
         let dir = tempfile::tempdir().unwrap();
         let text = "x".repeat(50);
-        assert_eq!(cap_output(&cap_prompts(), &text, 0, dir.path(), "s-call"), text);
+        assert_eq!(
+            cap_output(&cap_prompts(), &text, 0, dir.path(), "s-call"),
+            text
+        );
     }
 
     #[test]

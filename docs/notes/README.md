@@ -65,6 +65,7 @@ note is a bug.
 | [`tui-lib.md`](tui-lib.md) | `crates/tui/src/lib.rs` |
 | [`tui-input.md`](tui-input.md) | `crates/tui/src/input.rs` |
 | [`tui-log.md`](tui-log.md) | `crates/tui/src/log.rs` |
+| [`tui-panes.md`](tui-panes.md) | `crates/tui/src/panes.rs` |
 | [`tui-render.md`](tui-render.md) | `crates/tui/src/render.rs` |
 | [`tui-run.md`](tui-run.md) | `crates/tui/src/run.rs` |
 | [`tui-frame_cost.md`](tui-frame_cost.md) | `crates/tui/examples/frame_cost.rs` |

@@ -47,6 +47,36 @@ break, and a row that reaches `width` columns continues on the next one.
 The last row always exists, so an empty input -- or one that ends with a newline
 -- has somewhere for the cursor to sit.
 
+## draw_panes
+
+The panes take the events area in announced order; each gets a header naming it and
+the share of rows its neighbours do not use. The header only appears for a window
+with a name, so the unsplit area -- whose one window is named nothing -- looks exactly
+like it did before splitting existed.
+
+## draw_command
+
+One row, between the footer and the prompt, and only when the command layer
+announced a command window. It is drawn by the same code as a pane's body, so its
+rows carry the same colours and the same clipping.
+
+## areas
+
+The layout a frame is made of, in one function, because three callers need it: the
+renderer, the copy (`Screen::visible_rows`) and the mouse hit-test. `CHROME_ROWS`
+plus the command row plus the input's own rows is the whole arithmetic; a second
+place that computed it is how a copy ends up including rows the screen never drew.
+
+## pane_slots
+
+Equal shares, with what the division leaves over going to the focused pane: the
+operator is reading that one, so it should be the taller one. A pane that cannot get
+a row is not drawn and counts towards `hidden`, which the last drawn header says out
+loud -- silently dropping a session's window is how a user decides the log is broken.
+
+Headers give up before rows do: if the area cannot cover a header plus one row per
+pane, the headers go first, because a pane showing nothing is not a pane at all.
+
 ## draw_log
 
 Draws the log window.

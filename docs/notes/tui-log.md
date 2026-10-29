@@ -39,6 +39,17 @@ the whole block again. A block is the unit the window allocates in: a streaming
 response or tool output is one block, and it keeps growing in place until it is
 sealed.
 
+## Entry::tag
+
+The label the block opened with, kept *out* of `text`. Two reasons, and both are
+about cutting: a cap hides a block's head rows, and a renderer clips a row at the
+window's edge -- either one would take the label with the text if the label were
+part of the text. So `text` is what the model or the shell said, and the label is
+put back at draw time (see `Entry::view_row`).
+
+It used to be glued onto the first chunk (`format!("{tag}{text}")`), which is how
+a block whose label had scrolled off the top ended up unnamed on screen.
+
 ## Entry::starts
 
 Byte offset of the first character of each wrapped row. The length of this list
@@ -66,6 +77,10 @@ width it actually has.
 A line always has at least one row, even when it is empty: that is what makes an
 empty line a blank row rather than nothing at all.
 
+The row the label is printed on starts `tag.width()` columns in, so the text after
+it wraps where it would have wrapped with the label glued in front. The label is
+not in the text; the room it takes is in the wrap.
+
 ## Entry::row
 
 The row runs from its own start to the next row's start, which is one byte past
@@ -74,12 +89,20 @@ the difference between the two offsets. That is also why a trailing newline
 yields a final empty row: it starts at the end of the text and has nothing after
 it.
 
+## Entry::view_row
+
+The label goes on the block's own first row, or -- when a cap hid that row -- on the
+first row the cap left. A window that cuts a paragraph in the middle is not the cap's
+doing, and printing the label there put `[peer]` in front of a row that was never the
+start of anything. Either way the label has to be *somewhere* the frame shows, or a
+capped block stops saying what it is.
+
+Prepending the label to a wrapped row pushes its tail past the window's edge, and
+the renderer clips it. That clip loses nothing: a wrapped row's tail is the start
+of the row below it, which is also on screen -- except for the newest row, whose
+tail is text that has not got to the window yet anyway.
+
 ## Wrap
-
-The greedy wrap state machine, movable so an append can pick it up mid-line.
-
-Greedy wrapping only depends on the current row's column count, which is why this
-is one number and why streaming a long line stays linear rather than quadratic.
 
 ## Wrap::feed
 
@@ -147,56 +170,69 @@ Appends to an entry by position, which `Log::stream` does once it has resolved a
 key. A missing line is ignored rather than panicked on: losing a chunk is a
 better failure than taking the window down.
 
-## Log::set_detail and Log::set_split
+## View and Ledger
 
-A display preference, so it lives with the front-end and not with the events:
-the same stream arrives, only the number of rows it occupies changes. Blocks
-already on screen keep the shape they were drawn in -- retro-fitting them would
-mean re-reading history nobody asked to see again -- and `open` is cleared so the
-next chunk of a key opens a block in the new setting instead of appending to
-one drawn under the old one. `set_split` clears the same way: which rows a
-chunk joins changed, so a key held open under the old grouping names nothing
-now.
+One `Log` holds the blocks; a `Ledger` is one way of reading them -- the merged one,
+which holds every block in arrival order, or one window's own. A ledger is a list of
+block indices plus a row index over them, so "which block holds row N" is answered
+per view in O(log blocks) and a frame never walks the log for anybody's benefit.
 
-## Log::set_detail — why `folds` lives here
+The same block is counted twice, once per ledger that holds it, and the two counts can
+differ: a window may cap its blocks apart from the rest (the command line's are single
+rows), so `contributions` returns both and every mutation moves both sums.
 
-Which *rows a stream joins* is a question about meaning, so the command layer
-answers it: split, and it hands a session's parts one key. How many rows one
-block occupies is a question about drawing, so it is answered here. Neither layer
-has to know the other's half of the rule, and a front-end that renders events
-some other way can ignore `Sink::detail` entirely (its default is a no-op).
+## Log::set_block_size
 
-Only the answer keeps its text. Everything else folds, including a tool's own
-output: the first version left `ToolOutput` unfolded in `line` mode, and in use
-that was the row that stayed three screens tall between two folded ones. SPEC's
-"non-output message block" means the assistant's output, not a tool's.
+`set_event_ui --block_size <lines>`: how many rows one block may fill. A display
+preference, so it lives with the front-end and not with the events -- the same
+stream arrives either way, only the number of rows it occupies changes.
 
-## Entry::reflow_folded
+The rows past the cap are not in the row index at all. That is what makes the
+block *auto-scroll* in the SPEC's sense: it stops pushing the blocks below it up,
+and it stops pushing the blocks above it off the screen. It also means those rows
+cannot be scrolled back to in this window, which is the deliberate half of the
+deal: the transcript is the database's job (`get_messages`), the screen is a live
+view.
 
-One row, always, showing the **head** of the text and nothing else: no ellipsis,
-because the row is the text itself up to the edge of the window, and a marker
-would both eat a column and be one more thing to misread.
+`0` caps nothing, and it is the only way to say so. The setting it replaces had a
+mode list, and the list was two words for "fold" and "do not fold".
 
-Showing the tail was the first version and it was wrong in use: as text streamed
-the visible window slid, so a row being written read as a row scrolling. Keeping
-the start fixed is what makes it read as one line filling up.
+Changing it rebuilds the index and re-wraps nothing: a cap counts rows, and a
+block's rows are measured by width alone. The old `set_detail` had to clear every
+open key because the mode changed which rows a chunk joined; a number of rows does
+not, so an open block stays open across the change.
 
-The tag is kept out of `text` so the cut cannot take the label with it.
+## Log::room — the exemption
 
-## Entry::append_folded
+One kind is never capped: the assistant's answer. It is what the operator came to
+read, and a cap on it would hide the middle of a sentence with no way to get it
+back. Everything else -- reasoning, a tool call, a tool's own output, a command's
+echo -- is progress, and progress is worth keeping short.
 
-A break inside a folded block becomes a space, because the row it lands on is
-the only row there is. The buffer keeps its first `FOLD_KEEP` bytes -- the head is
-what a row shows -- so a thinking block that runs for an hour cannot grow the log
-without bound, and what it drops is what was already off the right edge.
+That is the same rule the folded mode had, learned the hard way: the first version
+left `ToolOutput` alone, and in use that was the block that stayed three screens
+tall between two short ones. SPEC's "non-output message" means the assistant's
+output, not a tool's.
 
-## Log::stream — a folded block in a split window
+## The byte budget that went with the fold
 
-`done` seals a block, which is right for a key that names one part and wrong for
-a key that names a session: the next part arrives with `done` of its own and must
-reuse the same row. So a folded block under a split stays open, and a changed tag
-restarts it -- one row cannot show two events' text, and gluing them reads as a
-word that was never typed.
+Keeping only the head of a folded block was a limit (`FOLD_KEEP = 4096`) written
+into the code, and this repository forbids limits an operator cannot lift. It
+existed because the head-fixed row could only ever show the front of the text.
+A capped block keeps its whole text like any other block and simply counts fewer
+of its rows, so there is nothing to discard and no budget to set.
+
+## Log::stream — one label, one block
+
+A chunk wearing a label the open block does not carry seals that block and opens a
+new one. Two events cannot share a row: glued together they read as a word nobody
+typed.
+
+The older rule was the reverse -- a shared block rewrote its one row in place, and
+it stayed open across `done` because it belonged to a session rather than to a
+part. Both halves are gone: the grouping that made a block belong to a session was
+a workaround for having one window for every session, and windows now do that
+properly (see `docs/notes/tui-panes.md`).
 
 ## Log::window
 
@@ -213,17 +249,17 @@ history below it and a frame still costs what one screen holds.
 ## Log::window — the window is the tail of the log
 
 No block is reserved space and none is cut out: the window is the last `height`
-rows, full stop. A block is one line however long it grows, so a growing block
-simply pushes older rows above the window, and they come back when the operator
-scrolls. The walk starts at the block holding the first visible row
-(`RowIndex::line_at`, O(log blocks)), so a frame still costs what one screen
-holds.
+rows of the *shown* rows, full stop. A block grows and its older rows leave the
+index -- either above the window, or past its cap and gone from this view -- so the
+walk starts at the block holding the first visible row (`RowIndex::line_at`, O(log
+blocks)) and a frame still costs what one screen holds.
 
-The cost of that simplicity: a block taller than the window shows its newest rows
-without the session label, because the label is on the block's first row and that
-row is above the window. Keeping a block short -- which agent output mostly does
--- is what keeps it named.
+A capped block contributes `min(rows, cap)` and the window's rows of it are its
+last ones: the head is skipped, not trimmed. That skip is per-block, so the window
+is not a tail of text but a tail of *blocks* -- which is what makes two sessions
+streaming at once readable side by side.
 
+## Log::stream — a blank chunk opens nothing
 ## Log::stream — a blank chunk opens nothing
 
 The shell writes one empty line before every exit sentinel, on both streams. The
@@ -298,10 +334,44 @@ scrolling back finds them.
 
 ## a_long_block_shows_its_tail
 
-The tail of a block taller than the window, with no label repeated. This is the
-simple model's cost, stated as a test so it stays a decision rather than a
-surprise.
+A block taller than the window shows its newest rows and repeats its label on the
+first row the window holds. Stated as a test so the label rule stays a decision
+rather than a surprise.
 
+## a_capped_block_shows_its_newest_rows
+
+The cap is a height, not a rewrite: the block keeps growing in place, `Log::rows`
+counts only what it may show, and the rows past the cap are the *older* ones.
+
+## a_capped_block_follows_its_newest_text
+
+What "auto scroll" means in one row of a wrapped block: the row shown is the last
+one, not the first. The folded mode kept the head on purpose -- a row that moved as
+text arrived read as scrolling rather than writing -- and the SPEC asked for the
+moving. Both cannot be kept, so the row is the tail and the block stops shoving
+neighbours away.
+
+## the_rows_a_cap_took_are_not_scrollable
+
+Scrolling back finds the block above, never the capped block's own head. Cheap to
+state and the one operators ask about; the answer is that the full text is a
+`get_messages` away.
+
+## the_cap_leaves_the_answer_alone
+
+`LineKind::Assistant` keeps every row it grows, at any `block_size`.
+
+## a_new_label_opens_a_new_block
+
+Two parts of a turn, two labels, two blocks -- and the first block took nothing
+more after it was sealed, even though the key stayed the same.
+
+## a_capped_block_stays_capped_at_any_width
+
+A cap counts rows of the width being measured, so a resize cannot leave a block
+taller than its cap.
+
+## a_blank_chunk_opens_no_block
 ## a_blank_chunk_opens_no_block
 
 The sentinel's empty line must not become a row. Without this, one blank row per

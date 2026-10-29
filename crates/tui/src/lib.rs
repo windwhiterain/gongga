@@ -8,6 +8,7 @@
 mod clipboard;
 mod input;
 mod log;
+mod panes;
 mod render;
 pub mod run;
 
@@ -28,13 +29,18 @@ use crossterm::terminal::{
 use futures_util::StreamExt;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use ratatui::layout::Rect;
 
 pub use crate::input::{InputLine, apply_completion};
 pub use crate::log::Log;
+pub use crate::panes::Panes;
 pub use crate::run::interactive;
 
 // The vocabulary is the command layer's, re-exported so this crate can name it.
-pub use cli::{Candidate, Completer, Completion, Detail, LineKind, SharedCompleter, token_bounds};
+pub use crate::log::View;
+pub use cli::{
+    Candidate, Completer, Completion, Layout, LineKind, SharedCompleter, Window, token_bounds,
+};
 
 /// How long a keystroke waits to see whether the next one is part of a paste.
 ///
@@ -78,24 +84,89 @@ pub enum UiEvent {
 
 /// Everything the renderer reads, separate from the terminal it draws to.
 pub struct Screen {
-    /// The scrollback: a frame may not walk it. See [`crate::log`].
-    pub log: Log,
+    /// The windows the events area is split into: a frame may not walk their logs.
+    pub panes: Panes,
+    /// The pane the keyboard scrolls: the wheel points at a pane, and a frame
+    /// clamps each pane against its own bound.
+    pub focus: String,
     pub completion: Option<Completion>,
     pub input: InputLine,
     pub status: String,
     pub footer: String,
     pub placeholder: String,
-    /// Scroll offset in wrapped rows: 0 is the newest line, `n` is `n` rows up.
-    pub scroll: usize,
-    /// Scroll bound, written back by the renderer; the keys clamp against it.
-    pub max_scroll: usize,
 }
 
 impl Screen {
-    /// Positive scrolls into the past, negative towards the newest line; clamped.
+    /// Positive scrolls into the past, negative towards the newest line.
     pub fn scroll_by(&mut self, rows: i64) {
-        let next = (self.scroll as i64 + rows).clamp(0, self.max_scroll as i64);
-        self.scroll = next as usize;
+        let focus = self.focus.clone();
+        self.panes.scroll_by(&focus, rows);
+    }
+
+    /// The panes as a terminal this size lays them out, in its row numbers.
+    fn slots(&self, width: u16, height: u16) -> Vec<render::Slot> {
+        let area = Rect::new(0, 0, width, height);
+        let input = render::input_rows(self.input.text(), width, height);
+        let chunks = render::areas(area, input, self.panes.command().is_some());
+        render::pane_slots(chunks[1], &self.panes, &self.focus).0
+    }
+
+    /// Where a pane's rows come from and how far it is scrolled.
+    fn pane_at(&self, name: &str) -> Option<(String, bool, usize)> {
+        let pane = self.panes.get(name)?;
+        Some((pane.name.clone(), pane.merged, pane.scroll))
+    }
+
+    /// The pane covering terminal row `row`, which is where the wheel landed.
+    pub fn pane_at_row(&self, width: u16, height: u16, row: u16) -> Option<String> {
+        render::pane_at(&self.slots(width, height), row).map(str::to_string)
+    }
+
+    /// Every row the panes show, top to bottom, in the order the frame draws them.
+    ///
+    /// # Invariant
+    ///
+    /// This is the layout `draw` uses, so a copy takes exactly what was on the
+    /// screen and nothing that was not.
+    pub fn visible_rows(&mut self, width: u16, height: u16) -> Vec<String> {
+        let slots = self.slots(width, height);
+        // One column short, as the renderer measures.
+        let log_width = width.saturating_sub(1).max(1) as usize;
+        let mut names: Vec<(String, usize)> = slots
+            .iter()
+            .map(|slot| (slot.name.clone(), slot.body.height as usize))
+            .collect();
+        if let Some(pane) = self.panes.command() {
+            names.push((pane.name.clone(), render::COMMAND_ROWS as usize));
+        }
+        let mut rows = Vec::new();
+        for (name, height) in names {
+            rows.extend(self.rows_of(&name, log_width, height.max(1)));
+        }
+        rows
+    }
+
+    /// The rows one pane shows, borrowed for no longer than the copy needs them.
+    fn rows_of(&mut self, name: &str, width: usize, height: usize) -> Vec<String> {
+        let Some((name, merged, scroll)) = self.pane_at(name) else {
+            return Vec::new();
+        };
+        let view = if merged {
+            View::All
+        } else {
+            View::Window(&name)
+        };
+        let window = self.panes.window(view, width, height, scroll);
+        window.rows.iter().map(|(_, row)| row.to_string()).collect()
+    }
+
+    /// The rows the focused pane gets in a frame this size: what a page means.
+    pub fn page_height(&self, width: u16, height: u16) -> usize {
+        self.slots(width, height)
+            .iter()
+            .find(|slot| slot.name == self.focus)
+            .map(|slot| slot.body.height as usize)
+            .unwrap_or(1)
     }
 }
 
@@ -148,14 +219,13 @@ impl Tui {
         Ok(Self {
             terminal,
             screen: Screen {
-                log: Log::new(),
+                panes: Panes::new(),
+                focus: String::new(),
                 completion: None,
                 input: InputLine::default(),
                 status: "connecting".to_string(),
                 footer: String::new(),
                 placeholder: "message the agent, or / for a command (Tab completes)".to_string(),
-                scroll: 0,
-                max_scroll: 0,
             },
             completer,
             history: Vec::new(),
@@ -184,15 +254,19 @@ impl Tui {
         }
     }
 
-    /// How much of each event to show, as the command layer last said.
-    pub fn set_detail(&mut self, mode: Detail) {
-        self.screen.log.set_detail(mode);
+    /// How tall one block may get, as the command layer last said.
+    pub fn set_block_size(&mut self, lines: usize) {
+        self.screen.panes.set_block_size(lines);
         self.dirty = true;
     }
 
-    /// Whether each session gets its own block, as the command layer last said.
-    pub fn set_split(&mut self, on: bool) {
-        self.screen.log.set_split(on);
+    /// How the events area is divided, as the command layer last said.
+    pub fn set_layout(&mut self, layout: &Layout) {
+        self.screen.panes.layout(layout);
+        // A focus the new division dropped is no focus: point at what is there.
+        if self.screen.panes.get(&self.screen.focus).is_none() {
+            self.screen.focus = self.screen.panes.first_name();
+        }
         self.dirty = true;
     }
 
@@ -204,9 +278,16 @@ impl Tui {
         }
     }
 
-    /// Adds a finished line.
-    pub fn push(&mut self, kind: LineKind, text: impl Into<String>) {
-        self.screen.log.push(kind, text);
+    /// A line this front-end says about itself, in the window for lines naming no
+    /// session.
+    pub fn say(&mut self, kind: LineKind, text: impl Into<String>) {
+        let window = self.command_window();
+        self.push(&window, kind, text);
+    }
+
+    /// Adds a finished line to the window `name` names.
+    pub fn push(&mut self, name: &str, kind: LineKind, text: impl Into<String>) {
+        self.screen.panes.line(name, kind, text);
         self.dirty = true;
     }
 
@@ -219,11 +300,19 @@ impl Tui {
         self.dirty = true;
     }
 
-    /// Appends to the block `key` names, opening it on first use.
-    ///
-    /// Two blocks streaming at once both keep growing.
-    pub fn stream(&mut self, key: &str, kind: LineKind, prefix: &str, text: &str, done: bool) {
-        self.screen.log.stream(key, kind, prefix, text, done);
+    /// Appends to the block `key` names, in the window `name` names.
+    pub fn stream(
+        &mut self,
+        name: &str,
+        key: &str,
+        kind: LineKind,
+        prefix: &str,
+        text: &str,
+        done: bool,
+    ) {
+        self.screen
+            .panes
+            .stream(name, key, kind, prefix, text, done);
         self.dirty = true;
     }
 
@@ -457,7 +546,7 @@ impl Tui {
                 }
                 self.screen.input.clear();
                 self.close_completion();
-                self.screen.scroll = 0;
+                self.screen.panes.pin_newest();
                 if self.history.last().map(String::as_str) != Some(raw.as_str()) {
                     self.history.push(raw.clone());
                 }
@@ -480,12 +569,35 @@ impl Tui {
         None
     }
 
-    /// The wheel: a notch is three rows, Shift makes it one. See `docs/notes/tui-lib.md`.
+    /// The mouse points at a pane: a notch scrolls it three rows, Shift one. See
+    /// `docs/notes/tui-lib.md`.
     fn handle_mouse(&mut self, mouse: MouseEvent) {
-        if let Some(rows) = Self::wheel_rows(&mouse) {
-            self.screen.scroll_by(rows);
-            self.dirty = true;
+        let rows = Self::wheel_rows(&mouse);
+        let pressed = matches!(mouse.kind, MouseEventKind::Down(_));
+        if rows.is_none() && !pressed {
+            return;
         }
+        let Ok(size) = self.terminal.size() else {
+            return;
+        };
+        let Some(name) = self.screen.pane_at_row(size.width, size.height, mouse.row) else {
+            return;
+        };
+        // A press inside the pane that already has the focus changes nothing to draw.
+        self.dirty |= self.screen.focus != name || rows.is_some();
+        self.screen.focus = name;
+        if let Some(rows) = rows {
+            self.screen.scroll_by(rows);
+        }
+    }
+
+    /// The window a line of this front-end's own belongs to.
+    pub fn command_window(&self) -> String {
+        self.screen
+            .panes
+            .command()
+            .map(|pane| pane.name.clone())
+            .unwrap_or_default()
     }
 
     /// Rows a wheel event scrolls, positive into the past; `None` for anything else.
@@ -502,16 +614,12 @@ impl Tui {
         }
     }
 
-    /// What one page-up should move: the rows of the log window itself.
+    /// What one page-up should move: the rows of the pane being scrolled.
     fn page_height(&self) -> usize {
         let Ok(size) = self.terminal.size() else {
             return 1;
         };
-        // Measured against the rows left over, since the input's height varies.
-        let input = render::input_rows(self.screen.input.text(), size.width, size.height);
-        size.height
-            .saturating_sub(render::CHROME_ROWS + input)
-            .max(1) as usize
+        self.screen.page_height(size.width, size.height)
     }
 
     /// Breaks the line instead of sending it.
@@ -545,36 +653,22 @@ impl Tui {
     /// Copies the rows the operator can see, which is what "copy that" means.
     fn copy_visible(&mut self) {
         let Ok(size) = self.terminal.size() else {
-            self.push(LineKind::Error, "copy: the terminal has no size to read");
+            self.say(LineKind::Error, "copy: the terminal has no size to read");
             return;
         };
-        // One column short and minus the input box, as the renderer measures.
-        let width = size.width.saturating_sub(1).max(1) as usize;
-        let input = render::input_rows(self.screen.input.text(), size.width, size.height);
-        let height = log_window_height(size.height, input);
-        let view = self
-            .screen
-            .log
-            .window(width, height.max(1), self.screen.scroll);
-        let text = view
-            .rows
-            .iter()
-            .map(|(_, row)| row.as_ref())
-            .collect::<Vec<_>>()
-            .join("\n");
-        drop(view);
+        let text = self.screen.visible_rows(size.width, size.height).join("\n");
         match clipboard::copy(&text) {
-            clipboard::Copied::Ok { chars, tool } => self.push(
+            clipboard::Copied::Ok { chars, tool } => self.say(
                 LineKind::System,
                 format!("copied {chars} characters ({tool})"),
             ),
-            clipboard::Copied::Empty => self.push(LineKind::System, "copy: the window is empty"),
-            clipboard::Copied::NoTool => self.push(
+            clipboard::Copied::Empty => self.say(LineKind::System, "copy: the window is empty"),
+            clipboard::Copied::NoTool => self.say(
                 LineKind::Error,
                 "copy: no clipboard tool here; Alt+M frees the mouse so the terminal can select",
             ),
             clipboard::Copied::Failed(why) => {
-                self.push(LineKind::Error, format!("copy failed: {why}"))
+                self.say(LineKind::Error, format!("copy failed: {why}"))
             }
         }
     }
@@ -593,18 +687,18 @@ impl Tui {
             execute!(self.terminal.backend_mut(), DisableMouseCapture)
         };
         match result {
-            Ok(()) if self.mouse_captured => self.push(
+            Ok(()) if self.mouse_captured => self.say(
                 LineKind::System,
                 "mouse: the app scrolls (Alt+M releases it for selecting)",
             ),
-            Ok(()) => self.push(
+            Ok(()) => self.say(
                 LineKind::System,
                 "mouse: the terminal selects; drag to copy, Alt+M gives scrolling back",
             ),
             Err(e) => {
                 // The flag must match reality, or the next toggle lies.
                 self.mouse_captured = !self.mouse_captured;
-                self.push(LineKind::Error, format!("mouse: {e}"));
+                self.say(LineKind::Error, format!("mouse: {e}"));
             }
         }
     }
@@ -678,19 +772,6 @@ impl Drop for Tui {
         // A panicking caller must not leave the terminal in raw mode.
         let _ = self.restore();
     }
-}
-
-/// Rows the log window covers, which is what a copy may take.
-///
-/// # Invariant
-///
-/// Must agree with the layout in `render::draw`: header, footer and help take one
-/// row each, and the input box takes as many as its text needs. A copy that
-/// assumed more would include rows the screen never drew.
-fn log_window_height(terminal: u16, input_rows: u16) -> usize {
-    terminal
-        .saturating_sub(render::CHROME_ROWS + input_rows)
-        .max(1) as usize
 }
 
 fn restore_terminal(out: &mut impl Write) -> io::Result<()> {
@@ -971,16 +1052,34 @@ mod tests {
         fn new() -> Self {
             Self {
                 screen: Screen {
-                    log: Log::new(),
+                    panes: Panes::new(),
+                    focus: String::new(),
                     completion: None,
                     input: InputLine::default(),
                     status: String::new(),
                     footer: String::new(),
                     placeholder: String::new(),
-                    scroll: 0,
-                    max_scroll: 0,
                 },
             }
+        }
+
+        /// The scroll a pane is at, which is where the keyboard put it.
+        fn pane_scroll(&self, name: &str) -> usize {
+            self.screen
+                .panes
+                .get(name)
+                .expect("the pane is there")
+                .scroll
+        }
+
+        /// What the renderer would have written back for this pane's window.
+        fn measure(&mut self, name: &str, rows: usize) {
+            let max_scroll = self.screen.panes.window(View::All, 200, rows, 0).max_scroll;
+            self.screen
+                .panes
+                .get_mut(name)
+                .expect("the pane is there")
+                .max_scroll = max_scroll;
         }
 
         /// The same normalization `Tui::paste` does, on this stand-in's input.
@@ -990,14 +1089,16 @@ mod tests {
 
         /// The same call `Tui::stream` makes, so a test drives the real path.
         fn stream(&mut self, key: &str, kind: LineKind, prefix: &str, text: &str, done: bool) {
-            self.screen.log.stream(key, kind, prefix, text, done);
+            self.screen
+                .panes
+                .stream("main", key, kind, prefix, text, done);
         }
 
-        /// Every row the log holds, unwrapped at a width these cases never reach.
+        /// Every row the merged view holds, unwrapped at a width these cases reach.
         fn rows(&mut self) -> Vec<String> {
             self.screen
-                .log
-                .window(200, 100, 0)
+                .panes
+                .window(View::All, 200, 100, 0)
                 .rows
                 .iter()
                 .map(|(_, text)| text.to_string())
@@ -1295,7 +1396,7 @@ mod tests {
             false,
         );
         // Two rows: the peer block is cut to its tail and repeats its tag.
-        let rows = h.screen.log.window(40, 2, 0).rows;
+        let rows = h.screen.panes.window(View::All, 40, 2, 0).rows;
         let shown: Vec<String> = rows.iter().map(|(_, t)| t.to_string()).collect();
         assert_eq!(shown, vec!["[peer] aaaccc", "[test1] bbb"]);
     }
@@ -1421,16 +1522,19 @@ mod tests {
     #[test]
     fn scrolling_stops_at_both_ends() {
         let mut h = Headless::new();
-        // What the renderer would have worked out for this content.
-        h.screen.max_scroll = 20;
+        for i in 0..30 {
+            h.screen.panes.line("", LineKind::System, format!("L{i}"));
+        }
+        // What the renderer works out and writes back for a pane of this size.
+        h.measure("", 10);
         h.screen.scroll_by(3);
-        assert_eq!(h.screen.scroll, 3);
+        assert_eq!(h.pane_scroll(""), 3);
         h.screen.scroll_by(100);
-        assert_eq!(h.screen.scroll, 20);
+        assert_eq!(h.pane_scroll(""), 20);
         h.screen.scroll_by(-5);
-        assert_eq!(h.screen.scroll, 15);
+        assert_eq!(h.pane_scroll(""), 15);
         h.screen.scroll_by(-100);
-        assert_eq!(h.screen.scroll, 0);
+        assert_eq!(h.pane_scroll(""), 0);
     }
 
     #[test]

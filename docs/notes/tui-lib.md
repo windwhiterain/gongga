@@ -49,29 +49,34 @@ A `Submit` may contain newlines: a message with paragraphs is still one message.
 Everything the renderer reads. Kept separate so drawing never borrows the
 terminal while the caller is mutating state.
 
-## Screen::log
+## Screen::panes
 
-The scrollback. Its own type because a frame must not be allowed to walk it: see
-`crate::log` for why that is the difference between a usable window and a frozen
-one.
+The scrollback of every window the command layer named, each with its own scroll.
+See `docs/notes/tui-panes.md`. The crate stays ignorant of what a window *means*: it
+holds the names it was handed. A `Log` is still its own type because a frame must not
+be allowed to walk it -- that is the difference between a usable window and a frozen
+one, and it is now a rule per pane rather than for the whole area.
 
-## Screen::scroll
+## Screen::focus
 
-How far the log is scrolled: 0 is pinned to the newest line, `n` is `n` wrapped
-rows up into the past.
+Which pane the keyboard scrolls. The wheel sets it by hitting a pane's rectangle; an
+announcement that dropped the focused name moves the focus to the first window still
+there. A focus is a name rather than an index because the list changes length under it.
 
-## Screen::max_scroll
+## Screen::slots, Screen::visible_rows, Screen::page_height
 
-How far up the log *can* be scrolled right now, written back by the renderer,
-which is the only place that knows how many rows the lines wrap into and how
-tall the log window is. Scrolling keys clamp against it so a page-up cannot
-strand the view past the top.
+The layout questions a frame, a copy and a key all ask, answered by the same
+`render::areas` and `render::pane_slots` the renderer uses -- so what a copy takes and
+what a page moves are what was on the screen. They live on `Screen` rather than on
+`Tui` because they need no terminal, which is also what makes them testable.
 
 ## Screen::scroll_by
 
-Positive scrolls into the past, negative back towards the newest line, and both
-stop at the ends. The upper bound is the renderer's, since only it knows how many
-rows the lines wrap into.
+Positive scrolls into the past, negative back towards the newest line, and both stop
+at the ends. It moves the focused pane only: an operator reading an older answer in
+one session should not lose their place in another that is still streaming. The
+upper bound is the renderer's, since only it knows how many rows the lines wrap into
+and how tall this pane's window is.
 
 ## Tui::dirty
 
@@ -204,9 +209,11 @@ tell whether a wheel scroll or a terminal selection will happen next.
 
 ## Tui::copy_visible
 
-Copies the rows currently drawn, measured exactly as `render::draw_log` measures
-them — one column short, without the chrome rows. A copy that took a different
-width would put back text the screen had wrapped differently.
+Copies the rows currently drawn, in the order the frame drew them, by the same
+layout (`Screen::visible_rows`) -- one column short, pane by pane, command line
+last. A copy that took a different width would put back text the screen had wrapped
+differently, and a copy that took one pane would drop the answer the operator was
+looking at in another.
 
 ## Tui::toggle_mouse
 
@@ -222,9 +229,11 @@ holds the mouse, the terminal never sees a drag and cannot select — which is w
 
 ## Tui::handle_mouse
 
-The wheel is the scroll control everybody tries first. A notch is three rows;
-Shift slows it to one, the way a terminal's own scrollback behaves. Nothing else
-the mouse does is wired to anything: clicks are not actions in a command line.
+The mouse is the pointer the split needs: a notch is three rows, Shift slows it to
+one, and the pane under it -- hit through the same rectangle the renderer filled --
+takes the focus the keyboard scrolls. A press points without moving anything, which
+is the only reason a click does anything at all here: no click is an action on the
+conversation, because everything that changes state is a command.
 
 ## Tui::wheel_rows
 
@@ -233,9 +242,9 @@ everything else the mouse can report, none of which is an action here.
 
 ## Tui::page_height
 
-The input's height depends on what has been typed into it, so the log's does too:
-a page has to be measured against the window that is left, not against a
-constant.
+The input's height depends on what has been typed into it, so a pane's does too, and
+with a split the page is one pane's rows rather than the area's: a page of scrolling
+should land where the operator is looking, not a screenful of the whole area.
 
 ## Tui::newline
 

@@ -46,12 +46,16 @@ start_window() {
 
 # Kills only what this script started, after checking the pid still belongs to
 # a gongga binary. Never touches anything else.
+#
+# The image name is the staged copy's (`server-<stamp>.exe`), not the crate's, so
+# both spellings count: matching only `gongga` would leave every staged server
+# running and its home locked.
 stop_one() {
   local name="$1"
   local pidf="$RUN/$name.pid"
   [ -f "$pidf" ] || { echo "$name: not running"; return 0; }
   local pid; pid="$(cat "$pidf")"
-  if ! tasklist //FI "PID eq $pid" //NH 2>/dev/null | grep -qi gongga; then
+  if ! tasklist //FI "PID eq $pid" //NH 2>/dev/null | grep -qiE "gongga|^$name-"; then
     echo "$name: pid $pid is not a gongga process anymore; clearing"
     rm -f "$pidf"
     return 0

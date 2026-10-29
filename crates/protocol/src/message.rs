@@ -188,8 +188,12 @@ pub const EVENT_FIELDS: &[&str] = &[
     "session", "sessions", "status", "stream", "t", "text", "tool", "turn",
 ];
 
-/// The modes `set_event_detail --mode` takes, in the order it lists them.
-pub const DETAIL_MODES: &[&str] = &["all", "line"];
+/// The lines `set_event_ui --block_size` offers, in the order it lists them.
+///
+/// # Invariant
+///
+/// Any number is accepted; this is the set worth offering, not the set allowed.
+pub const BLOCK_SIZES: &[&str] = &["0", "1", "2", "3", "5"];
 
 /// The values `set_event_split --split` takes.
 pub const SPLIT_VALUES: &[&str] = &["true", "false"];
@@ -285,15 +289,16 @@ pub fn client_commands() -> Vec<CommandSpec> {
             )],
         ),
         (
-            "set_event_detail",
-            "How much of each event the log shows: all, or one line per block.",
+            "set_event_ui",
+            "How tall one block may get; with no argument, the current setting.",
             vec![spec_arg(
-                "mode",
-                "`all` shows every block in full; `line` folds each block that is not \
-                 content onto one rewritten row.",
-                true,
-                Some("mode"),
-                CompletionSource::Static(DETAIL_MODES.iter().map(|m| m.to_string()).collect()),
+                "block_size",
+                "`0` caps nothing. Otherwise a block shows at most this many wrapped rows \
+                 and keeps the newest of them, so a long stream scrolls inside its own \
+                 block instead of pushing other blocks away. An answer is never capped.",
+                false,
+                Some("lines"),
+                CompletionSource::Static(BLOCK_SIZES.iter().map(|m| m.to_string()).collect()),
             )],
         ),
         (
@@ -301,8 +306,8 @@ pub fn client_commands() -> Vec<CommandSpec> {
             "Split the events window by session name.",
             vec![spec_arg(
                 "split",
-                "`true` gives each session its own block and puts `cmd`/`cmd_result` on \
-                 a line of their own; `false` keeps every event part on its own block.",
+                "`true` gives each session its own window and puts `cmd`/`cmd_result` on \
+                 a line of their own; `false` keeps one window for everything.",
                 true,
                 Some("split"),
                 CompletionSource::Static(SPLIT_VALUES.iter().map(|v| v.to_string()).collect()),

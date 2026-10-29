@@ -2,7 +2,7 @@
 
 use std::time::Instant;
 
-use gongga_tui::{LineKind, Log};
+use gongga_tui::{LineKind, Log, View};
 
 /// The renderer as it was: wrap everything, allocate every row, then slice.
 fn old_frame(lines: &[String], width: usize, height: usize) -> usize {
@@ -52,9 +52,9 @@ fn main() {
             .collect();
         let mut log = Log::new();
         for text in &texts {
-            log.push(LineKind::Assistant, text.clone());
+            log.push("w", LineKind::Assistant, text.clone());
         }
-        log.rows(width);
+        log.rows(View::All, width);
 
         let time = |f: &mut dyn FnMut()| {
             let start = Instant::now();
@@ -68,11 +68,11 @@ fn main() {
             std::hint::black_box(old_frame(&texts, width, height));
         });
         let pinned = time(&mut || {
-            std::hint::black_box(log.window(width, height, 0));
+            std::hint::black_box(log.window(View::All, width, height, 0));
         });
-        let total = log.rows(width);
+        let total = log.rows(View::All, width);
         let scrolled = time(&mut || {
-            std::hint::black_box(log.window(width, height, total / 2));
+            std::hint::black_box(log.window(View::All, width, height, total / 2));
         });
 
         println!(

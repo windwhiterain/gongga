@@ -858,10 +858,7 @@ mod tests {
         assert!(shells.retire(DEFAULT_BASH, &shell), "the shell is retired");
         let session = session("s", shells);
         let closed = tokio::time::timeout(Duration::from_secs(10), session.close_shells()).await;
-        assert!(
-            closed.is_ok(),
-            "teardown waited for a retired shell's lock"
-        );
+        assert!(closed.is_ok(), "teardown waited for a retired shell's lock");
         drop(held);
     }
 

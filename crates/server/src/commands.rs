@@ -86,18 +86,21 @@ fn spawn_turn(d: &Dispatch, work: TurnWork) {
 
 /// Claims one idle session; an inject-only recovery gets a durable turn row before
 /// its inbox is delivered.
-fn claim_recovery(d: &Dispatch, session: crate::session::SessionHandle, mut tasks: Vec<i64>) -> Option<TurnWork> {
+fn claim_recovery(
+    d: &Dispatch,
+    session: crate::session::SessionHandle,
+    mut tasks: Vec<i64>,
+) -> Option<TurnWork> {
     let epoch = session.cancel_epoch();
     let gate = session.try_claim()?;
     if session.is_deleted() {
         return None;
     }
     if tasks.is_empty() {
-        match d.store.add_pending_task(
-            session.name(),
-            "turn",
-            &json!({"session": session.name()}),
-        ) {
+        match d
+            .store
+            .add_pending_task(session.name(), "turn", &json!({"session": session.name()}))
+        {
             Ok(id) => tasks.push(id),
             Err(e) => {
                 tracing::warn!(session = %session.name(), error = %e, "could not record recovered turn");
@@ -105,7 +108,12 @@ fn claim_recovery(d: &Dispatch, session: crate::session::SessionHandle, mut task
             }
         }
     }
-    Some(TurnWork { session, tasks, epoch, gate })
+    Some(TurnWork {
+        session,
+        tasks,
+        epoch,
+        gate,
+    })
 }
 
 /// The result of one command, sent back as a `cmd_result` event.
@@ -401,7 +409,15 @@ async fn send_message(d: &Dispatch, args: &Args) -> Outcome {
         // inject, never spawn a competing turn.
         match d.store.begin_turn(session.id(), &name, &message) {
             Ok(task) => {
-                spawn_turn(d, TurnWork { session, tasks: vec![task], epoch, gate });
+                spawn_turn(
+                    d,
+                    TurnWork {
+                        session,
+                        tasks: vec![task],
+                        epoch,
+                        gate,
+                    },
+                );
                 Outcome::ok(format!("message accepted by {name}"))
             }
             Err(e) => Outcome::err(format!("could not record the pending turn: {e}")),
@@ -740,7 +756,10 @@ async fn finish_delete(d: &Dispatch, name: &str, was_busy: bool, dropped: usize)
             publish_sessions(d);
             let mut message = format!("deleted session {name}");
             if stopped.stopped > 0 {
-                message.push_str(&format!(" and stopped {} detached bash(es)", stopped.stopped));
+                message.push_str(&format!(
+                    " and stopped {} detached bash(es)",
+                    stopped.stopped
+                ));
             }
             if was_busy {
                 message.push_str(" (interrupted the running turn)");
@@ -847,7 +866,9 @@ async fn cancel(d: &Dispatch) -> Outcome {
     ))
 }
 
-fn recovery_groups(tasks: Vec<PendingTask>) -> std::collections::BTreeMap<String, Vec<PendingTask>> {
+fn recovery_groups(
+    tasks: Vec<PendingTask>,
+) -> std::collections::BTreeMap<String, Vec<PendingTask>> {
     let mut groups = std::collections::BTreeMap::<String, Vec<PendingTask>>::new();
     for task in tasks {
         if matches!(task.kind.as_str(), "turn" | "inject") {
@@ -1035,9 +1056,9 @@ mod tests {
             vec![
                 "del_event_filter",
                 "del_sticky_cmd_argument",
-                "set_event_detail",
                 "set_event_filter",
                 "set_event_split",
+                "set_event_ui",
                 "set_sticky_cmd_argument"
             ]
         );
@@ -1071,8 +1092,8 @@ mod tests {
     fn a_client_command_is_refused_with_a_reason() {
         let out = resolve(
             &published(),
-            "set_event_detail",
-            &Args::from([("mode".to_string(), "line".to_string())]),
+            "set_event_ui",
+            &Args::from([("block_size".to_string(), "3".to_string())]),
         )
         .unwrap_err();
         assert!(!out.ok);

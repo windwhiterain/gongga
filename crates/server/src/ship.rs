@@ -217,7 +217,9 @@ fn reconcile(
             continue;
         };
         let ours = std::fs::read(&file.dest).ok();
-        let base = old.as_deref().and_then(|pin| blob(cache, pin, &file.source));
+        let base = old
+            .as_deref()
+            .and_then(|pin| blob(cache, pin, &file.source));
         match decide(ours.as_deref(), base.as_deref(), &theirs) {
             Decision::Place => {
                 put(&file.dest, &theirs, file.exec)?;
@@ -246,7 +248,10 @@ fn reconcile(
         if new.iter().any(|kept| kept.source == file.source) {
             continue;
         }
-        let Some(base) = old.as_deref().and_then(|pin| blob(cache, pin, &file.source)) else {
+        let Some(base) = old
+            .as_deref()
+            .and_then(|pin| blob(cache, pin, &file.source))
+        else {
             continue;
         };
         match std::fs::read(&file.dest).ok() {
@@ -255,7 +260,9 @@ fn reconcile(
                 report.removed += 1;
             }
             Some(_) => {
-                report.kept.push(format!("{} (kept: removed upstream)", file.source));
+                report
+                    .kept
+                    .push(format!("{} (kept: removed upstream)", file.source));
             }
             None => {}
         }
@@ -282,8 +289,7 @@ fn collect(cache: &Path, commit: &str, mappings: &[Mapping], root: &Path) -> Vec
     for mapping in mappings {
         for (path, exec) in listed(cache, commit, &mapping.source) {
             let dest = if mapping.tree {
-                let Some(rel) = under(&mapping.source, &path).and_then(|r| safe_relpath(&r))
-                else {
+                let Some(rel) = under(&mapping.source, &path).and_then(|r| safe_relpath(&r)) else {
                     tracing::warn!(path = %path, "a shipped path is not installable; skipped");
                     continue;
                 };
@@ -291,7 +297,11 @@ fn collect(cache: &Path, commit: &str, mappings: &[Mapping], root: &Path) -> Vec
             } else {
                 root.join(&mapping.target)
             };
-            out.push(Planned { source: path, dest, exec });
+            out.push(Planned {
+                source: path,
+                dest,
+                exec,
+            });
         }
     }
     out
@@ -445,7 +455,9 @@ fn put(dest: &Path, bytes: &[u8], exec: bool) -> anyhow::Result<()> {
     #[cfg(unix)]
     if exec {
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(dest).map(|m| m.permissions().mode()).unwrap_or(0o644);
+        let mode = std::fs::metadata(dest)
+            .map(|m| m.permissions().mode())
+            .unwrap_or(0o644);
         let _ = std::fs::set_permissions(dest, std::fs::Permissions::from_mode(mode | 0o111));
     }
     #[cfg(not(unix))]
@@ -587,10 +599,7 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         std::fs::create_dir_all(&machine).unwrap();
         Fixture {
-            roots: Roots {
-                home,
-                machine,
-            },
+            roots: Roots { home, machine },
             content,
         }
     }
@@ -720,7 +729,11 @@ mod tests {
             std::fs::read_to_string(f.home().join("config.toml")).unwrap(),
             "mine\n"
         );
-        assert_eq!(report.kept, vec!["config/config.toml".to_string()], "{report:?}");
+        assert_eq!(
+            report.kept,
+            vec!["config/config.toml".to_string()],
+            "{report:?}"
+        );
         assert!(!f.home().join(PIN_FILE).exists(), "nothing was reconciled");
         // The skills it never had still arrive.
         assert!(f.home().join("skills/heir/SKILL.md").exists());
@@ -763,7 +776,10 @@ mod tests {
         assert_eq!(f.pin(f.home()), first, "the merge base has to stay");
 
         let again = f.install(&second).unwrap();
-        assert_eq!(again.conflicts, report.conflicts, "it asks again, not decides");
+        assert_eq!(
+            again.conflicts, report.conflicts,
+            "it asks again, not decides"
+        );
     }
 
     #[test]
@@ -847,7 +863,13 @@ mod tests {
             safe_relpath("skills/a/SKILL.md").unwrap(),
             PathBuf::from("skills/a/SKILL.md")
         );
-        for escape in ["../evil", "skills/../../evil", "/etc/passwd", "C:/Windows", "."] {
+        for escape in [
+            "../evil",
+            "skills/../../evil",
+            "/etc/passwd",
+            "C:/Windows",
+            ".",
+        ] {
             assert!(safe_relpath(escape).is_none(), "{escape} installed anyway");
         }
     }

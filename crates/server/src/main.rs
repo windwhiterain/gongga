@@ -1,6 +1,7 @@
 //! `gongga-server`: the harness backend.
 
 mod agent;
+mod blobs;
 mod bus;
 mod commands;
 mod config;
@@ -12,7 +13,6 @@ mod prompts;
 mod providers;
 mod script;
 mod session;
-mod blobs;
 mod ship;
 mod store;
 mod tools;

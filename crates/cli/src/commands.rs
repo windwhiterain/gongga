@@ -5,52 +5,44 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use protocol::{Args, CommandSpec, DETAIL_MODES, Event, SPLIT_VALUES};
+use protocol::{Args, BLOCK_SIZES, CommandSpec, Event, SPLIT_VALUES};
 use serde::{Deserialize, Serialize};
 
-/// How much of each event the log shows. Client-side only.
+/// How many wrapped rows one block may fill. Client-side only.
+///
+/// # Invariant
+///
+/// `0` caps nothing, and it is the only way to say so: a front-end never has to
+/// recognise a sentinel mode or a magic mode name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Detail {
-    /// Every block in full; the default.
-    #[default]
-    All,
-    /// Each block that is not content folded onto one row, rewritten as it streams.
-    Line,
-}
+pub struct BlockSize(pub usize);
 
-impl Detail {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Detail::All => "all",
-            Detail::Line => "line",
-        }
-    }
-
-    /// The mode named, or the list of modes; there is no silent default.
+impl BlockSize {
+    /// A size, or the way to name one; there is no silent default.
     pub fn parse(raw: &str) -> Result<Self, String> {
-        match raw.trim() {
-            "all" => Ok(Detail::All),
-            "line" => Ok(Detail::Line),
-            other => Err(format!(
-                "no event detail mode {other:?}; it takes {}",
-                DETAIL_MODES.join(", ")
+        match raw.trim().parse::<usize>() {
+            Ok(lines) => Ok(Self(lines)),
+            Err(_) => Err(format!(
+                "no block size {raw:?}: `0` caps nothing, any other number is the most rows \
+                 one block fills; the settings worth typing are {}",
+                BLOCK_SIZES.join(", ")
             )),
         }
     }
 
-    /// Loads `home/cli.toml`; a missing or unreadable file is the default mode.
+    /// Loads `home/cli.toml`; a missing or unreadable file caps nothing.
     pub fn load(home: &Path) -> Self {
         read_file(&home.join("cli.toml"))
-            .event_detail
+            .block_size
             .as_deref()
-            .and_then(|raw| Detail::parse(raw).ok())
+            .and_then(|raw| BlockSize::parse(raw).ok())
             .unwrap_or_default()
     }
 
     pub fn save(self, home: &Path) -> anyhow::Result<()> {
         let path = home.join("cli.toml");
         let mut file = read_file(&path);
-        file.event_detail = Some(self.as_str().to_string());
+        file.block_size = Some(self.0.to_string());
         write_file(&path, &file)
     }
 }
@@ -61,11 +53,7 @@ pub struct Split(pub bool);
 
 impl Split {
     pub fn as_str(self) -> &'static str {
-        if self.0 {
-            "true"
-        } else {
-            "false"
-        }
+        if self.0 { "true" } else { "false" }
     }
 
     /// The value named, or the list of values; there is no silent default.
@@ -105,7 +93,7 @@ struct File {
     #[serde(default)]
     event_filters: Vec<Entry>,
     #[serde(default)]
-    event_detail: Option<String>,
+    block_size: Option<String>,
     #[serde(default)]
     event_split: bool,
 }
@@ -515,27 +503,30 @@ mod tests {
         assert!(!filters.allows(&event(protocol::ResponsePart::Reasoning)));
     }
 
-    /// The mode survives a restart; an unknown one on disk falls back rather
+    /// The size survives a restart; an unknown one on disk falls back rather
     /// than refusing to start.
     #[test]
-    fn the_detail_mode_is_remembered() {
+    fn the_block_size_is_remembered() {
         let d = dir();
-        assert_eq!(Detail::load(d.path()), Detail::All);
-        Detail::Line.save(d.path()).unwrap();
-        assert_eq!(Detail::load(d.path()), Detail::Line);
+        assert_eq!(BlockSize::load(d.path()), BlockSize(0));
+        BlockSize(3).save(d.path()).unwrap();
+        assert_eq!(BlockSize::load(d.path()), BlockSize(3));
 
         // Hand-written rubbish is not a reason to fail to start.
-        std::fs::write(d.path().join("cli.toml"), "event_detail = \"huge\"\n").unwrap();
-        assert_eq!(Detail::load(d.path()), Detail::All);
+        std::fs::write(d.path().join("cli.toml"), "block_size = \"huge\"\n").unwrap();
+        assert_eq!(BlockSize::load(d.path()), BlockSize(0));
     }
 
     #[test]
-    fn an_unknown_detail_mode_lists_the_modes() {
-        let why = Detail::parse("huge").unwrap_err();
-        assert!(why.contains("all, line"), "{why}");
-        // `one` was a mode; splitting is a setting of its own now, so the word
-        // no longer means anything here.
-        assert!(Detail::parse(" one ").is_err(), "one is not a mode any more");
+    fn an_unknown_block_size_says_how_to_name_one() {
+        let why = BlockSize::parse("huge").unwrap_err();
+        assert!(why.contains("caps nothing"), "{why}");
+        // A mode name was the old spelling; a number of lines is the setting now.
+        assert!(
+            BlockSize::parse(" all ").is_err(),
+            "all is not a size any more"
+        );
+        assert_eq!(BlockSize::parse(" 2 "), Ok(BlockSize(2)));
     }
 
     /// The setting survives a restart, and only the two words it names are taken.
@@ -547,10 +538,13 @@ mod tests {
         assert_eq!(Split::load(d.path()), Split(true));
 
         assert_eq!(Split::parse(" true "), Ok(Split(true)));
-        assert_eq!(Split::parse("no"), Err("no split value \"no\"; it takes true, false".into()));
-        // A split is saved without losing the detail mode beside it.
-        Detail::Line.save(d.path()).unwrap();
-        assert_eq!(Detail::load(d.path()), Detail::Line);
+        assert_eq!(
+            Split::parse("no"),
+            Err("no split value \"no\"; it takes true, false".into())
+        );
+        // A split is saved without losing the block size beside it.
+        BlockSize(3).save(d.path()).unwrap();
+        assert_eq!(BlockSize::load(d.path()), BlockSize(3));
         assert_eq!(Split::load(d.path()), Split(true));
     }
 

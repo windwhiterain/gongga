@@ -7,8 +7,10 @@ pub mod commands;
 pub mod complete;
 
 pub use crate::catalog::Catalog;
-pub use crate::commands::{Detail, Split, Sticky};
+pub use crate::commands::{BlockSize, Split, Sticky};
 pub use crate::complete::{Candidate, Completer, Completion, SharedCompleter, token_bounds};
+
+use std::collections::HashMap;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -126,18 +128,50 @@ pub enum LineKind {
     Error,
 }
 
+/// One events window, as the command layer decided it belongs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Window {
+    /// What a line carries to say it belongs here.
+    pub name: String,
+    /// The single line holding `cmd` and its result: not one of the windows that
+    /// share the events area's rows.
+    pub command: bool,
+}
+
+/// How the events area is divided.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Layout {
+    /// One window holding every line in the order it arrived.
+    Merged,
+    /// One window per name, in this order.
+    Split(Vec<Window>),
+}
+
+/// What the command line's window is called.
+pub const COMMAND_WINDOW: &str = "cmd";
+
 /// Everything the client can ask a front-end to show; neither implementation
 /// knows what produced the text.
 pub trait Sink {
-    fn line(&mut self, kind: LineKind, text: &str);
-    fn stream(&mut self, key: &str, kind: LineKind, prefix: &str, text: &str, done: bool);
+    /// A finished line, in the window `window` names.
+    fn line(&mut self, window: &str, kind: LineKind, text: &str);
+    /// A streamed block, in the window `window` names.
+    fn stream(
+        &mut self,
+        window: &str,
+        key: &str,
+        kind: LineKind,
+        prefix: &str,
+        text: &str,
+        done: bool,
+    );
     fn status(&mut self, text: &str);
     fn footer(&mut self, text: &str);
-    /// How much of each event to show. A front-end that does not fold ignores it.
-    fn detail(&mut self, _mode: Detail) {}
-    /// Whether each session has its own window. A front-end that does not split
-    /// ignores it.
-    fn split(&mut self, _on: bool) {}
+    /// How tall one block may get, in wrapped rows; 0 caps nothing. A front-end
+    /// that shows every row ignores it.
+    fn block_size(&mut self, _lines: usize) {}
+    /// How the events area is divided. A front-end that ignores it shows one window.
+    fn layout(&mut self, _layout: &Layout) {}
 }
 
 /// The one-shot mode's sink: it prints nothing, but it remembers what went
@@ -154,12 +188,21 @@ impl NullSink {
 }
 
 impl Sink for NullSink {
-    fn line(&mut self, kind: LineKind, text: &str) {
+    fn line(&mut self, _window: &str, kind: LineKind, text: &str) {
         if matches!(kind, LineKind::Error) {
             self.errors.push(text.to_string());
         }
     }
-    fn stream(&mut self, _key: &str, _kind: LineKind, _prefix: &str, _text: &str, _done: bool) {}
+    fn stream(
+        &mut self,
+        _window: &str,
+        _key: &str,
+        _kind: LineKind,
+        _prefix: &str,
+        _text: &str,
+        _done: bool,
+    ) {
+    }
     fn status(&mut self, _text: &str) {}
     fn footer(&mut self, _text: &str) {}
 }
@@ -182,9 +225,12 @@ pub struct Client {
     catalog: Catalog,
     sticky: Sticky,
     filters: EventFilters,
-    detail: Detail,
+    /// How tall one block may get, in wrapped rows.
+    block_size: BlockSize,
     /// Whether each session gets its own events window.
     split: Split,
+    /// Which window each accepted command's result belongs to, from its echo.
+    results: HashMap<u64, String>,
     /// Where `set_session` / `del_session` land, once the server says yes.
     /// See `docs/notes/cli-lib.md`.
     follows: Vec<(u64, String, String)>,
@@ -208,19 +254,63 @@ enum Echo<'a> {
     Message(&'a str),
 }
 
-impl Echo<'_> {
-    fn show(&self, sink: &mut dyn Sink, tokens: &[String]) {
-        match self {
-            Echo::Command => sink.line(LineKind::System, &format!("/{}", tokens.join(" "))),
-            Echo::Message(text) => sink.line(LineKind::User, text),
+impl Client {
+    /// Echoes what the operator typed into the window its command named.
+    fn show(&self, sink: &mut dyn Sink, echo: &Echo<'_>, tokens: &[String], session: Option<&str>) {
+        let window = self.command_line(session);
+        match echo {
+            Echo::Command => {
+                sink.line(&window, LineKind::System, &format!("/{}", tokens.join(" ")))
+            }
+            Echo::Message(text) => sink.line(&window, LineKind::User, text),
         }
     }
-}
 
-impl Client {
+    /// The window for a line that names no session, named so no session can take it.
+    fn command_window(&self) -> String {
+        let mut name = COMMAND_WINDOW.to_string();
+        while self.sessions.iter().any(|s| s.name == name) {
+            name.push(' ');
+        }
+        name
+    }
+
+    /// Where a command's echo and its result are read: a command that named a
+    /// session belongs with that session's own lines.
+    fn command_line(&self, session: Option<&str>) -> String {
+        match session {
+            Some(name) => name.to_string(),
+            None => self.command_window(),
+        }
+    }
+
+    /// What a block opens with: the window says who, the label says which part.
+    fn tag(&self, session: &str, label: &str) -> String {
+        format!("[{session}] {label}")
+    }
+
+    /// How to divide the events area: one window, or one per session.
+    fn layout(&self) -> Layout {
+        if !self.split.0 {
+            return Layout::Merged;
+        }
+        let mut windows: Vec<Window> = self
+            .sessions
+            .iter()
+            .map(|s| Window {
+                name: s.name.clone(),
+                command: false,
+            })
+            .collect();
+        windows.push(Window {
+            name: self.command_window(),
+            command: true,
+        });
+        Layout::Split(windows)
+    }
     fn new(catalog: Catalog, sticky: Sticky) -> Self {
         let filters = EventFilters::load(sticky.home());
-        let detail = Detail::load(sticky.home());
+        let block_size = BlockSize::load(sticky.home());
         let split = Split::load(sticky.home());
         catalog.set_sticky_names(&sticky.names());
         catalog.set_filter_names(&filters.names());
@@ -228,9 +318,10 @@ impl Client {
             catalog,
             sticky,
             filters,
-            detail,
+            block_size,
             split,
             follows: Vec::new(),
+            results: HashMap::new(),
             sessions: Vec::new(),
             model: "-".to_string(),
             next_id: Self::seed_command_id(),
@@ -289,13 +380,18 @@ impl Client {
                 self.connected = true;
                 self.attempts = 0;
                 sink.line(
+                    &self.command_window(),
                     LineKind::System,
                     &format!("connected to gongga-server (model {})", self.model),
                 );
                 self.refresh(sink);
             }
             ServerMessage::Denied { reason } => {
-                sink.line(LineKind::Error, &format!("connection refused: {reason}"));
+                sink.line(
+                    &self.command_window(),
+                    LineKind::Error,
+                    &format!("connection refused: {reason}"),
+                );
             }
             ServerMessage::Event(event) => self.handle_event(event, sink),
         }
@@ -305,10 +401,13 @@ impl Client {
         // Filters hide lines, not state: a hidden `Status` still updates the list.
         let shown = self.filters.allows(&event);
         match event {
-            Event::Cmd { name, args, .. } => {
+            Event::Cmd { id, name, args } => {
+                let window = self.command_line(args.get("session").map(String::as_str));
+                // The result carries only the id, so say now where its answer goes.
+                self.results.insert(id, window.clone());
                 if shown {
                     let line = format!("$ {name}{}", render_args(&args));
-                    sink.line(LineKind::System, &line);
+                    sink.line(&window, LineKind::System, &line);
                 }
             }
             Event::CmdResult {
@@ -321,9 +420,16 @@ impl Client {
                 self.settle_follow(id, ok, sink);
                 if shown {
                     // A result may carry rows: the transcript a read answered with.
+                    let window = self.results.remove(&id).unwrap_or_else(|| {
+                        self.command_line(
+                            data.as_ref()
+                                .and_then(|d| d.get("session"))
+                                .and_then(|s| s.as_str()),
+                        )
+                    });
                     if let Some(data) = &data {
                         for (kind, line) in rows_of(data) {
-                            sink.line(kind, &line);
+                            sink.line(&window, kind, &line);
                         }
                     }
                     if !message.is_empty() {
@@ -332,7 +438,7 @@ impl Client {
                         } else {
                             LineKind::Error
                         };
-                        sink.line(kind, &message);
+                        sink.line(&window, kind, &message);
                     }
                 }
             }
@@ -366,7 +472,13 @@ impl Client {
                         SessionStatus::Error => "error",
                     };
                     let suffix = detail.map(|d| format!(" ({d})")).unwrap_or_default();
-                    sink.line(LineKind::System, &format!("[{session}] {label}{suffix}"));
+                    let window = session.clone();
+                    let prefix = self.tag(&session, "");
+                    sink.line(
+                        &window,
+                        LineKind::System,
+                        &format!("{prefix}{label}{suffix}"),
+                    );
                 }
                 self.refresh(sink);
             }
@@ -376,22 +488,15 @@ impl Client {
                         LogLevel::Debug | LogLevel::Info => LineKind::System,
                         LogLevel::Warn | LogLevel::Error => LineKind::Error,
                     };
-                    sink.line(kind, &message);
+                    sink.line(&self.command_window(), kind, &message);
                 }
             }
         }
     }
 
     fn handle_response(&self, e: ResponseEvent, sink: &mut dyn Sink) {
-        // Which rows a stream joins is meaning, so it is decided here; how a
-        // block is drawn is the front-end's.
-        let key = match (self.split, e.part) {
-            // A split window folds a session's messages together; the answer keeps
-            // its text.
-            (Split(true), ResponsePart::Output) => format!("o:{}:{}", e.session, e.turn),
-            (Split(true), _) => format!("s:{}", e.session),
-            _ => format!("r:{}:{}:{:?}", e.session, e.turn, e.part),
-        };
+        // One part is one block: the window already keeps the sessions apart.
+        let key = format!("r:{}:{}:{:?}", e.session, e.turn, e.part);
         let (kind, label) = match e.part {
             ResponsePart::Reasoning => (LineKind::Reasoning, "thinking: "),
             ResponsePart::ToolCall => (LineKind::ToolCall, "tool: "),
@@ -399,9 +504,10 @@ impl Client {
             ResponsePart::Activity => (LineKind::ToolCall, "provider: "),
             ResponsePart::Output => (LineKind::Assistant, ""),
         };
-        // The tag rides on the prefix: a prefix is printed once per key.
-        let prefix = format!("[{}] {label}", e.session);
-        sink.stream(&key, kind, &prefix, &e.text, e.done);
+        // The tag says which part of the answer this is; the window says who speaks.
+        let prefix = self.tag(&e.session, label);
+        let window = e.session.clone();
+        sink.stream(&window, &key, kind, &prefix, &e.text, e.done);
     }
 
     fn handle_tool_answer(&self, e: ToolAnswerEvent, sink: &mut dyn Sink) {
@@ -410,9 +516,10 @@ impl Client {
             ToolStream::Stdout => LineKind::ToolOutput,
             ToolStream::Stderr => LineKind::ToolError,
         };
-        // Same shape as a `Status` line: who is speaking, then the output.
-        let prefix = format!("[{}] ", e.session);
-        sink.stream(&key, kind, &prefix, &e.text, e.done);
+        // A tool's output is its own block, in the window of the session that ran it.
+        let prefix = self.tag(&e.session, "");
+        let window = e.session.clone();
+        sink.stream(&window, &key, kind, &prefix, &e.text, e.done);
     }
 
     fn session_names(&self) -> Vec<String> {
@@ -429,8 +536,8 @@ impl Client {
     /// See `docs/notes/cli-lib.md`.
     pub fn refresh(&self, sink: &mut dyn Sink) {
         // Told on every refresh, so a front-end attached late still learns it.
-        sink.detail(self.detail);
-        sink.split(self.split.0);
+        sink.block_size(self.block_size.0);
+        sink.layout(&self.layout());
         let facts = if self.connected {
             format!("model {} | {} session(s)", self.model, self.sessions.len())
         } else if self.attempts == 0 {
@@ -449,8 +556,8 @@ impl Client {
         if !filters.is_empty() {
             footer.push_str(&format!("  | filters: {filters}"));
         }
-        if self.detail != Detail::All {
-            footer.push_str(&format!("  | detail: {}", self.detail.as_str()));
+        if self.block_size.0 > 0 {
+            footer.push_str(&format!("  | block_size: {}", self.block_size.0));
         }
         if self.split.0 {
             footer.push_str(&format!("  | split: {}", self.split.as_str()));
@@ -461,6 +568,7 @@ impl Client {
     /// Records that there is no link, and how many dials have failed since.
     pub fn set_offline(&mut self, attempts: u32, sink: &mut dyn Sink) {
         self.connected = false;
+        self.results.clear();
         self.attempts = attempts;
         self.refresh(sink);
     }
@@ -495,6 +603,7 @@ impl Client {
         // commands alone.
         if !self.connected && !self.catalog.is_client_command(&head) {
             sink.line(
+                &self.command_window(),
                 LineKind::Error,
                 &format!("{head}: not connected to the server, nothing was sent"),
             );
@@ -520,6 +629,7 @@ impl Client {
                 }
                 if self.catalog.command(name).is_some() {
                     sink.line(
+                        &self.command_window(),
                         LineKind::Error,
                         &format!(
                             "`{head}` is not a command name: it ends in `{name}`, and a `/` \
@@ -550,7 +660,11 @@ impl Client {
             } else {
                 format!("this server publishes: {}", known.join(", "))
             };
-            sink.line(LineKind::Error, &format!("unknown command {head:?}; {why}"));
+            sink.line(
+                &self.command_window(),
+                LineKind::Error,
+                &format!("unknown command {head:?}; {why}"),
+            );
             return Submission::Rejected;
         };
 
@@ -558,7 +672,7 @@ impl Client {
         let mut args = match parse_args(&tokens[1..]) {
             Ok(a) => a,
             Err(e) => {
-                sink.line(LineKind::Error, &e.to_string());
+                sink.line(&self.command_window(), LineKind::Error, &e.to_string());
                 return Submission::Rejected;
             }
         };
@@ -572,6 +686,7 @@ impl Client {
         if !unknown.is_empty() {
             let known: Vec<String> = spec.args.iter().map(|a| format!("--{}", a.name)).collect();
             sink.line(
+                &self.command_window(),
                 LineKind::Error,
                 &format!(
                     "{head} has no argument {}; it takes {}",
@@ -589,8 +704,14 @@ impl Client {
             .map(|a| a.name.as_str())
             .collect();
         if !missing.is_empty() {
-            echo.show(sink, &tokens);
+            self.show(
+                sink,
+                &echo,
+                &tokens,
+                args.get("session").map(String::as_str),
+            );
             sink.line(
+                &self.command_window(),
                 LineKind::Error,
                 &format!(
                     "{head} is missing required argument(s): {}",
@@ -600,7 +721,12 @@ impl Client {
             return Submission::Rejected;
         }
 
-        echo.show(sink, &tokens);
+        self.show(
+            sink,
+            &echo,
+            &tokens,
+            args.get("session").map(String::as_str),
+        );
         if spec.target == protocol::CommandTarget::Client {
             self.run_client_command(&head, &args, sink);
             return Submission::Local;
@@ -653,7 +779,11 @@ impl Client {
             _ => return,
         };
         if let Err(e) = saved {
-            sink.line(LineKind::Error, &format!("could not save: {e}"));
+            sink.line(
+                &self.command_window(),
+                LineKind::Error,
+                &format!("could not save: {e}"),
+            );
         }
         self.after_sticky_change(sink);
     }
@@ -662,79 +792,131 @@ impl Client {
     fn run_client_command(&mut self, name: &str, args: &protocol::Args, sink: &mut dyn Sink) {
         let arg_name = args.get("name").cloned().unwrap_or_default();
         match name {
-            "set_event_detail" => {
-                let Some(raw) = args.get("mode").cloned() else {
-                    sink.line(LineKind::Error, "set_event_detail requires --mode");
+            "set_event_ui" => {
+                // No size is a read, not a reset: the setting lives on disk, and the
+                // operator asked what the window is doing with it.
+                let Some(raw) = args.get("block_size").cloned() else {
+                    sink.line(
+                        &self.command_window(),
+                        LineKind::Result,
+                        &format!("block_size = {}", self.block_size.0),
+                    );
                     return;
                 };
-                let mode = match Detail::parse(&raw) {
-                    Ok(m) => m,
+                let size = match BlockSize::parse(&raw) {
+                    Ok(s) => s,
                     Err(e) => {
-                        sink.line(LineKind::Error, &e);
+                        sink.line(&self.command_window(), LineKind::Error, &e);
                         return;
                     }
                 };
-                match mode.save(self.sticky.home()) {
+                match size.save(self.sticky.home()) {
                     Ok(()) => {
-                        self.detail = mode;
-                        sink.line(LineKind::Result, &format!("detail = {}", mode.as_str()));
+                        self.block_size = size;
+                        sink.line(
+                            &self.command_window(),
+                            LineKind::Result,
+                            &format!("block_size = {}", size.0),
+                        );
                         self.after_sticky_change(sink);
                     }
-                    Err(e) => sink.line(LineKind::Error, &format!("could not save: {e}")),
+                    Err(e) => sink.line(
+                        &self.command_window(),
+                        LineKind::Error,
+                        &format!("could not save: {e}"),
+                    ),
                 }
             }
             "set_event_split" => {
                 let Some(raw) = args.get("split").cloned() else {
-                    sink.line(LineKind::Error, "set_event_split requires --split");
+                    sink.line(
+                        &self.command_window(),
+                        LineKind::Error,
+                        "set_event_split requires --split",
+                    );
                     return;
                 };
                 let on = match Split::parse(&raw) {
                     Ok(s) => s,
                     Err(e) => {
-                        sink.line(LineKind::Error, &e);
+                        sink.line(&self.command_window(), LineKind::Error, &e);
                         return;
                     }
                 };
                 match on.save(self.sticky.home()) {
                     Ok(()) => {
                         self.split = on;
-                        sink.line(LineKind::Result, &format!("split = {}", on.as_str()));
+                        sink.line(
+                            &self.command_window(),
+                            LineKind::Result,
+                            &format!("split = {}", on.as_str()),
+                        );
                         self.after_sticky_change(sink);
                     }
-                    Err(e) => sink.line(LineKind::Error, &format!("could not save: {e}")),
+                    Err(e) => sink.line(
+                        &self.command_window(),
+                        LineKind::Error,
+                        &format!("could not save: {e}"),
+                    ),
                 }
             }
             "set_sticky_cmd_argument" => {
                 let Some(value) = args.get("value").cloned() else {
-                    sink.line(LineKind::Error, "set_sticky_cmd_argument requires --value");
+                    sink.line(
+                        &self.command_window(),
+                        LineKind::Error,
+                        "set_sticky_cmd_argument requires --value",
+                    );
                     return;
                 };
                 match self.sticky.set(&arg_name, &value) {
                     Ok(()) => {
-                        sink.line(LineKind::Result, &format!("{arg_name} = {value}"));
+                        sink.line(
+                            &self.command_window(),
+                            LineKind::Result,
+                            &format!("{arg_name} = {value}"),
+                        );
                         self.after_sticky_change(sink);
                     }
-                    Err(e) => sink.line(LineKind::Error, &format!("could not save: {e}")),
+                    Err(e) => sink.line(
+                        &self.command_window(),
+                        LineKind::Error,
+                        &format!("could not save: {e}"),
+                    ),
                 }
             }
             "del_sticky_cmd_argument" => match self.sticky.del(&arg_name) {
                 Ok(true) => {
-                    sink.line(LineKind::Result, &format!("cleared {arg_name}"));
+                    sink.line(
+                        &self.command_window(),
+                        LineKind::Result,
+                        &format!("cleared {arg_name}"),
+                    );
                     self.after_sticky_change(sink);
                 }
                 Ok(false) => sink.line(
+                    &self.command_window(),
                     LineKind::Error,
                     &format!("no sticky argument named {arg_name:?}"),
                 ),
-                Err(e) => sink.line(LineKind::Error, &format!("could not save: {e}")),
+                Err(e) => sink.line(
+                    &self.command_window(),
+                    LineKind::Error,
+                    &format!("could not save: {e}"),
+                ),
             },
             "set_event_filter" => {
                 let Some(value) = args.get("value").cloned() else {
-                    sink.line(LineKind::Error, "set_event_filter requires --value");
+                    sink.line(
+                        &self.command_window(),
+                        LineKind::Error,
+                        "set_event_filter requires --value",
+                    );
                     return;
                 };
                 if !EVENT_FIELDS.contains(&arg_name.as_str()) {
                     sink.line(
+                        &self.command_window(),
                         LineKind::Error,
                         &format!(
                             "no event field named {arg_name:?}; it takes {}",
@@ -745,25 +927,43 @@ impl Client {
                 }
                 match self.filters.set(&arg_name, &value) {
                     Ok(()) => {
-                        sink.line(LineKind::Result, &format!("{arg_name} = {value}"));
+                        sink.line(
+                            &self.command_window(),
+                            LineKind::Result,
+                            &format!("{arg_name} = {value}"),
+                        );
                         self.after_sticky_change(sink);
                     }
-                    Err(e) => sink.line(LineKind::Error, &format!("could not save: {e}")),
+                    Err(e) => sink.line(
+                        &self.command_window(),
+                        LineKind::Error,
+                        &format!("could not save: {e}"),
+                    ),
                 }
             }
             "del_event_filter" => match self.filters.del(&arg_name) {
                 Ok(true) => {
-                    sink.line(LineKind::Result, &format!("cleared filter {arg_name}"));
+                    sink.line(
+                        &self.command_window(),
+                        LineKind::Result,
+                        &format!("cleared filter {arg_name}"),
+                    );
                     self.after_sticky_change(sink);
                 }
                 Ok(false) => sink.line(
+                    &self.command_window(),
                     LineKind::Error,
                     &format!("no event filter named {arg_name:?}"),
                 ),
-                Err(e) => sink.line(LineKind::Error, &format!("could not save: {e}")),
+                Err(e) => sink.line(
+                    &self.command_window(),
+                    LineKind::Error,
+                    &format!("could not save: {e}"),
+                ),
             },
             // Published as a client command this build cannot run: say so.
             other => sink.line(
+                &self.command_window(),
                 LineKind::Error,
                 &format!(
                     "the server publishes {other:?} as a client command, but this client \
@@ -1414,33 +1614,58 @@ mod tests {
     struct VecSink(Vec<String>);
 
     impl Sink for VecSink {
-        fn line(&mut self, _kind: LineKind, text: &str) {
+        fn line(&mut self, _window: &str, _kind: LineKind, text: &str) {
             self.0.push(text.to_string());
         }
-        fn stream(&mut self, _k: &str, _kind: LineKind, _p: &str, text: &str, _d: bool) {
+        fn stream(
+            &mut self,
+            _window: &str,
+            _k: &str,
+            _kind: LineKind,
+            _p: &str,
+            text: &str,
+            _d: bool,
+        ) {
             self.0.push(text.to_string());
         }
         fn status(&mut self, _t: &str) {}
         fn footer(&mut self, _t: &str) {}
     }
 
-    /// Keeps the prefix, which `VecSink` drops: it reads the text alone.
+    /// Keeps the window and the prefix, which `VecSink` drops: routing is what the
+    /// event tests are about.
     #[derive(Default)]
     struct StreamSink {
+        windows: Vec<String>,
         keys: Vec<String>,
         lines: Vec<String>,
+        /// The last announcement, which is what a front-end lays out from.
+        announced: Option<Layout>,
     }
 
     impl Sink for StreamSink {
-        fn line(&mut self, _kind: LineKind, text: &str) {
+        fn line(&mut self, window: &str, _kind: LineKind, text: &str) {
+            self.windows.push(window.to_string());
             self.lines.push(text.to_string());
         }
-        fn stream(&mut self, key: &str, _kind: LineKind, prefix: &str, text: &str, _done: bool) {
+        fn stream(
+            &mut self,
+            window: &str,
+            key: &str,
+            _kind: LineKind,
+            prefix: &str,
+            text: &str,
+            _done: bool,
+        ) {
+            self.windows.push(window.to_string());
             self.keys.push(key.to_string());
             self.lines.push(format!("{prefix}{text}"));
         }
         fn status(&mut self, _t: &str) {}
         fn footer(&mut self, _t: &str) {}
+        fn layout(&mut self, layout: &Layout) {
+            self.announced = Some(layout.clone());
+        }
     }
 
     /// One response event, as the server sends it.
@@ -1538,8 +1763,17 @@ mod tests {
     }
 
     impl Sink for StatusSink {
-        fn line(&mut self, _kind: LineKind, _text: &str) {}
-        fn stream(&mut self, _k: &str, _kind: LineKind, _p: &str, _text: &str, _d: bool) {}
+        fn line(&mut self, _window: &str, _kind: LineKind, _text: &str) {}
+        fn stream(
+            &mut self,
+            _window: &str,
+            _k: &str,
+            _kind: LineKind,
+            _p: &str,
+            _text: &str,
+            _d: bool,
+        ) {
+        }
         fn status(&mut self, t: &str) {
             self.status = t.to_string();
         }
@@ -1552,12 +1786,13 @@ mod tests {
     #[test]
     fn one_shot_sink_keeps_errors_and_nothing_else() {
         let mut s = NullSink::default();
-        s.line(LineKind::System, "connected to gongga-server");
+        s.line("", LineKind::System, "connected to gongga-server");
         s.line(
+            "",
             LineKind::Error,
             "send_message is missing required argument(s): session",
         );
-        s.stream("k", LineKind::Assistant, "", "hello", true);
+        s.stream("", "k", LineKind::Assistant, "", "hello", true);
         s.status("model x | 1 session(s)");
         s.footer("Tab completes");
         assert_eq!(
@@ -1618,10 +1853,9 @@ mod tests {
         }
     }
 
-    /// Split groups a session's messages under one key so the front-end can fold them;
-    /// unsplit keeps a key per part.
+    /// Split puts every part of a session into that session's window.
     #[test]
-    fn split_groups_a_sessions_messages_under_one_key() {
+    fn split_routes_each_part_of_a_session_into_its_window() {
         let d = tempfile::tempdir().unwrap();
         let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
         c.split = Split(true);
@@ -1629,26 +1863,103 @@ mod tests {
         c.handle_response(response("main", ResponsePart::Reasoning, "a"), &mut s);
         c.handle_response(response("main", ResponsePart::ToolCall, "b"), &mut s);
         c.handle_response(response("main", ResponsePart::Output, "c"), &mut s);
-        // Reasoning and tool calls share the session's row; the answer has its own.
-        assert_eq!(s.keys, vec!["s:main", "s:main", "o:main:1"]);
+        assert_eq!(s.windows, vec!["main", "main", "main"], "{:?}", s.windows);
+        assert_eq!(
+            s.keys,
+            vec!["r:main:1:Reasoning", "r:main:1:ToolCall", "r:main:1:Output"],
+            "a part is its own block in the session's window"
+        );
+        // The label always names the speaker: the merged view has no header.
+        assert_eq!(
+            s.lines,
+            vec!["[main] thinking: a", "[main] tool: b", "[main] c"]
+        );
     }
 
-    /// In the other modes a part is a block of its own, so nothing is glued.
+    /// Unsplit is the same traffic with one window and the speaker in the label.
     #[test]
-    fn all_and_line_keep_one_key_per_part() {
+    fn unsplit_puts_everything_in_one_window_and_names_the_speaker() {
         let d = tempfile::tempdir().unwrap();
-        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
-        for mode in [Detail::All, Detail::Line] {
-            c.detail = mode;
-            let mut s = StreamSink::default();
-            c.handle_response(response("main", ResponsePart::Reasoning, "a"), &mut s);
-            c.handle_response(response("main", ResponsePart::ToolCall, "b"), &mut s);
-            assert_eq!(
-                s.keys,
-                vec!["r:main:1:Reasoning", "r:main:1:ToolCall"],
-                "{mode:?}"
-            );
-        }
+        let c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
+        let mut s = StreamSink::default();
+        c.handle_response(response("main", ResponsePart::Reasoning, "a"), &mut s);
+        // Unsplit is a *view*, not a rewrite of the lines: the window is still named.
+        assert_eq!(s.windows, vec!["main"]);
+        assert_eq!(s.lines, vec!["[main] thinking: a"]);
+    }
+
+    /// The front-end is told what to lay out: one window per session plus the line
+    /// the command and its result share.
+    #[test]
+    fn the_announcement_is_one_window_per_session_plus_the_command_line() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main", "peer"]);
+        let mut s = StreamSink::default();
+        c.refresh(&mut s);
+        assert_eq!(s.announced, Some(Layout::Merged), "unsplit is one window");
+
+        c.split = Split(true);
+        c.refresh(&mut s);
+        let named: Vec<(String, bool)> = match s.announced.clone() {
+            Some(Layout::Split(windows)) => windows
+                .iter()
+                .map(|w| (w.name.clone(), w.command))
+                .collect(),
+            other => panic!("expected a split layout, got {other:?}"),
+        };
+        assert_eq!(
+            named,
+            vec![
+                ("main".to_string(), false),
+                ("peer".to_string(), false),
+                ("cmd".to_string(), true)
+            ],
+            "{named:?}"
+        );
+    }
+
+    /// A session may be called `cmd`; that is not a reason to lose the command line.
+    #[test]
+    fn a_session_named_cmd_does_not_take_the_commands_window() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["cmd"]);
+        c.split = Split(true);
+        let mut s = StreamSink::default();
+        c.handle_event(
+            Event::Cmd {
+                id: 1,
+                name: "get_messages".into(),
+                args: protocol::Args::default(),
+            },
+            &mut s,
+        );
+        assert_eq!(
+            s.windows,
+            vec!["cmd "],
+            "the line grows a space: {:?}",
+            s.windows
+        );
+        c.refresh(&mut s);
+        let names: Vec<String> = match s.announced.clone() {
+            Some(Layout::Split(windows)) => windows.iter().map(|w| w.name.clone()).collect(),
+            other => panic!("expected a split layout, got {other:?}"),
+        };
+        assert_eq!(names, vec!["cmd", "cmd "]);
+    }
+
+    /// Unsplit, a part is a block of its own, so nothing is glued.
+    #[test]
+    fn unsplit_keeps_one_key_per_part() {
+        let d = tempfile::tempdir().unwrap();
+        let c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
+        let mut s = StreamSink::default();
+        c.handle_response(response("main", ResponsePart::Reasoning, "a"), &mut s);
+        c.handle_response(response("main", ResponsePart::ToolCall, "b"), &mut s);
+        assert_eq!(
+            s.keys,
+            vec!["r:main:1:Reasoning", "r:main:1:ToolCall"],
+            "a part names its own block"
+        );
     }
 
     /// Split keeps the command echo and its result on their own lines: they name
@@ -1678,11 +1989,13 @@ mod tests {
         );
         assert!(s.keys.is_empty(), "{:?}", s.keys);
         assert_eq!(s.lines, vec!["$ get_messages", "3 rows"]);
+        // Both are on the command line, not inside a session's window.
+        assert_eq!(s.windows, vec!["cmd", "cmd"]);
     }
 
-    /// The mode is a client setting: it persists and the front-end is told.
+    /// The size is a client setting: it persists and the front-end is told.
     #[test]
-    fn set_event_detail_saves_and_tells_the_front_end() {
+    fn set_event_ui_saves_and_tells_the_front_end() {
         let d = tempfile::tempdir().unwrap();
         let cat = published_catalog();
         cat.set_sticky_names(&[]);
@@ -1690,20 +2003,29 @@ mod tests {
         let mut c = client_with(cat, Sticky::load(d.path()), vec!["main"]);
         let mut s = VecSink(Vec::new());
         assert!(matches!(
-            c.command(argv("set_event_detail --mode line"), &mut s),
+            c.command(argv("set_event_ui --block_size 3"), &mut s),
             Submission::Local
         ));
-        assert_eq!(c.detail, Detail::Line);
-        assert_eq!(Detail::load(d.path()), Detail::Line);
+        assert_eq!(c.block_size, BlockSize(3));
+        assert_eq!(BlockSize::load(d.path()), BlockSize(3));
 
-        // A mode nothing answers to is refused, and the list says what does.
+        // A size nothing answers to is refused, and the answer says what to type.
         assert!(matches!(
-            c.command(argv("set_event_detail --mode huge"), &mut s),
+            c.command(argv("set_event_ui --block_size huge"), &mut s),
             Submission::Local
         ));
-        assert_eq!(c.detail, Detail::Line);
+        assert_eq!(c.block_size, BlockSize(3));
         let said = s.0.join("\n");
-        assert!(said.contains("all, line"), "{said}");
+        assert!(said.contains("caps nothing"), "{said}");
+
+        // Without an argument it is a read: the setting is reported, not reset.
+        s.0.clear();
+        assert!(matches!(
+            c.command(argv("set_event_ui"), &mut s),
+            Submission::Local
+        ));
+        assert_eq!(c.block_size, BlockSize(3));
+        assert_eq!(s.0, vec!["/set_event_ui", "block_size = 3"]);
     }
 
     /// Splitting is a client setting too: it persists and the front-end is told.

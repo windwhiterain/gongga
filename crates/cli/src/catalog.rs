@@ -484,7 +484,15 @@ mod tests {
         let got = values(&c, "/set_sticky_cmd_argument --name ");
         assert_eq!(
             got,
-            vec!["cwd", "message", "mode", "name", "session", "split", "value"]
+            vec![
+                "block_size",
+                "cwd",
+                "message",
+                "name",
+                "session",
+                "split",
+                "value"
+            ]
         );
     }
 
@@ -587,22 +595,29 @@ mod tests {
 
     /// The new command completes like every other one: name, argument, values.
     #[test]
-    fn the_detail_command_completes_name_argument_and_modes() {
+    fn the_event_ui_command_completes_name_argument_and_sizes() {
         let c = catalog();
         // Order follows the catalog, which is not what this is about.
         let mut both = values(&c, "/set_event");
         both.sort();
         assert_eq!(
             both,
-            vec!["/set_event_detail", "/set_event_filter", "/set_event_split"]
+            vec!["/set_event_filter", "/set_event_split", "/set_event_ui"]
         );
-        assert_eq!(values(&c, "/set_event_det"), vec!["/set_event_detail"]);
-        assert_eq!(values(&c, "/set_event_detail --"), vec!["--mode"]);
-        assert_eq!(values(&c, "/set_event_detail --mode "), vec!["all", "line"]);
-        // `one` was a mode; splitting is a command of its own now.
-        assert!(values(&c, "/set_event_detail --mode o").is_empty());
+        assert_eq!(values(&c, "/set_event_u"), vec!["/set_event_ui"]);
+        assert_eq!(values(&c, "/set_event_ui --"), vec!["--block_size"]);
+        assert_eq!(
+            values(&c, "/set_event_ui --block_size "),
+            vec!["0", "1", "2", "3", "5"]
+        );
+        // Any number is a size: the list above is what is worth offering, not the
+        // set that is allowed.
+        assert_eq!(values(&c, "/set_event_ui --block_size 1"), vec!["1"]);
         assert_eq!(values(&c, "/set_event_split --"), vec!["--split"]);
-        assert_eq!(values(&c, "/set_event_split --split "), vec!["true", "false"]);
+        assert_eq!(
+            values(&c, "/set_event_split --split "),
+            vec!["true", "false"]
+        );
     }
 
     #[test]

@@ -87,13 +87,18 @@ pub fn accepts_image(modalities: &[String]) -> bool {
 
 /// Why an image cannot be sent to `model`: the `image_refusal` template, with the
 /// roster's own list spelt out for it.
-pub fn image_refusal(prompts: &crate::prompts::Prompts, model: &str, modalities: &[String]) -> String {
+pub fn image_refusal(
+    prompts: &crate::prompts::Prompts,
+    model: &str,
+    modalities: &[String],
+) -> String {
     let listed = modalities
         .iter()
         .map(|m| format!("\"{m}\""))
         .collect::<Vec<_>>()
         .join(", ");
-    prompts.render("image_refusal",
+    prompts.render(
+        "image_refusal",
         &[("model", model), ("modalities", listed.as_str())],
     )
 }
@@ -432,7 +437,6 @@ impl Config {
     }
 }
 
-
 /// Picks the roster entry the server should talk to.
 ///
 /// # Invariant
@@ -547,7 +551,6 @@ pub(crate) fn expand(path: PathBuf) -> PathBuf {
     path
 }
 
-
 /// Locates Git Bash on Windows, falling back to whatever `bash` is on PATH.
 pub(crate) fn detect_git_bash() -> Option<PathBuf> {
     if cfg!(windows) {
@@ -636,8 +639,14 @@ mod tests {
         std::fs::write(&path, "[server]\nkey = \"abc\"\n").unwrap();
         let cfg = Config::load_with_home(Some(&path), Some(d.path())).unwrap();
         assert_eq!(cfg.key, "abc", "the old place is still read");
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[server]\nkey = \"abc\"\n");
-        assert!(!d.path().join("server.key").exists(), "nothing was minted to replace a key that was already there");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[server]\nkey = \"abc\"\n"
+        );
+        assert!(
+            !d.path().join("server.key").exists(),
+            "nothing was minted to replace a key that was already there"
+        );
     }
 
     /// The four ways a config names a provider, and a typo that must not stop

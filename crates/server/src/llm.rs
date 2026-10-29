@@ -719,9 +719,11 @@ fn storable_activity(item: &Value) -> (Value, bool) {
         .unwrap_or_default()
         .to_string();
     let stored = match (crate::blobs::dir(), id.is_empty()) {
-        (Some(dir), false) => crate::blobs::put(dir, &id, &payload.to_string()).ok().map(|()| {
-            item["result_blob"] = json!(id);
-        }),
+        (Some(dir), false) => crate::blobs::put(dir, &id, &payload.to_string())
+            .ok()
+            .map(|()| {
+                item["result_blob"] = json!(id);
+            }),
         _ => None,
     };
     if stored.is_none() {
@@ -735,7 +737,11 @@ fn storable_activity(item: &Value) -> (Value, bool) {
 }
 
 /// The item as a request should carry it, payload read back from `dir`.
-fn sendable_activity(item: &Value, replayable: bool, dir: Option<&std::path::Path>) -> Option<Value> {
+fn sendable_activity(
+    item: &Value,
+    replayable: bool,
+    dir: Option<&std::path::Path>,
+) -> Option<Value> {
     let mut item = item.clone();
     let blob = item
         .get("result_blob")
@@ -1620,7 +1626,10 @@ mod tests {
         assert!(said.contains("transcript.py collapse"), "{said}");
         assert!(said.starts_with("HTTP 400 Bad Request"), "{said}");
         // Anything else keeps the provider's words and nothing more.
-        let other = with_size_hint(&prompts, "HTTP 400 Bad Request: unknown parameter".to_string());
+        let other = with_size_hint(
+            &prompts,
+            "HTTP 400 Bad Request: unknown parameter".to_string(),
+        );
         assert_eq!(other, "HTTP 400 Bad Request: unknown parameter");
     }
 
@@ -1639,8 +1648,7 @@ mod tests {
         assert_eq!(warm.input_tokens, Some(41200));
 
         // Providers omit the details when nothing is cached: "not said" is not a zero.
-        let cold: Usage = serde_json::from_value(json!({"input_tokens": 10}))
-            .unwrap_or_default();
+        let cold: Usage = serde_json::from_value(json!({"input_tokens": 10})).unwrap_or_default();
         assert_eq!(cold.cached_tokens(), None);
         assert_eq!(cold.input_tokens, Some(10));
     }

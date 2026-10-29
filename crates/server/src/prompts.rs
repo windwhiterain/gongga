@@ -103,11 +103,7 @@ impl Prompts {
         REQUIRED
             .iter()
             .copied()
-            .filter(|name| {
-                self.text(name)
-                    .map(|t| t.trim().is_empty())
-                    .unwrap_or(true)
-            })
+            .filter(|name| self.text(name).map(|t| t.trim().is_empty()).unwrap_or(true))
             .collect()
     }
 
@@ -139,10 +135,7 @@ impl Prompts {
             return BTreeMap::new();
         };
         let stamp = Stamp::of(path);
-        let mut snapshot = self
-            .snapshot
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut snapshot = self.snapshot.lock().unwrap_or_else(|e| e.into_inner());
         if snapshot.stamp == stamp && stamp.is_some() {
             return snapshot.templates.clone();
         }
@@ -294,11 +287,10 @@ mod tests {
     #[test]
     fn a_placeholder_becomes_the_value_named_for_it() {
         assert_eq!(
-            substitute("for {{session}} at {{tokens}}/{{budget}}", &[
-                ("session", "main"),
-                ("tokens", "41"),
-                ("budget", "40"),
-            ]),
+            substitute(
+                "for {{session}} at {{tokens}}/{{budget}}",
+                &[("session", "main"), ("tokens", "41"), ("budget", "40"),]
+            ),
             "for main at 41/40"
         );
     }
@@ -307,7 +299,10 @@ mod tests {
     /// deleting the sentence around it.
     #[test]
     fn an_unsupplied_placeholder_stays_in_the_text() {
-        assert_eq!(substitute("fold {{session}} now", &[]), "fold {{session}} now");
+        assert_eq!(
+            substitute("fold {{session}} now", &[]),
+            "fold {{session}} now"
+        );
         assert_eq!(
             substitute("a {{session}} b", &[("other", "x")]),
             "a {{session}} b"
@@ -317,7 +312,10 @@ mod tests {
     /// A placeholder with no closing pair is text, not a hole to fill.
     #[test]
     fn a_placeholder_with_no_end_is_kept_as_written() {
-        assert_eq!(substitute("dangling {{session", &[("session", "main")]), "dangling {{session");
+        assert_eq!(
+            substitute("dangling {{session", &[("session", "main")]),
+            "dangling {{session"
+        );
     }
 
     /// The check is only as good as the list: one name per template, no
@@ -357,9 +355,16 @@ mod tests {
     #[test]
     fn the_home_reports_what_it_overrode() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.toml"), "[prompts]\nsize_hint = \"a\"\noutput_cap = \"b\"\n").unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[prompts]\nsize_hint = \"a\"\noutput_cap = \"b\"\n",
+        )
+        .unwrap();
         let prompts = layered(dir.path(), &[("size_hint", "z"), ("instructions", "keep")]);
-        assert_eq!(prompts.overridden(), ["output_cap".to_string(), "size_hint".to_string()]);
+        assert_eq!(
+            prompts.overridden(),
+            ["output_cap".to_string(), "size_hint".to_string()]
+        );
     }
 
     /// A home that overrides one keeps the rest of the pinned prose.
@@ -400,9 +405,16 @@ mod tests {
     fn a_broken_config_falls_back_to_the_prose_it_cannot_read() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        std::fs::write(&path, "[prompts]\nsize_hint = \"the home's own {{message}}\"\n").unwrap();
+        std::fs::write(
+            &path,
+            "[prompts]\nsize_hint = \"the home's own {{message}}\"\n",
+        )
+        .unwrap();
         let prompts = layered(dir.path(), &[("size_hint", "the pinned {{message}}")]);
-        assert_eq!(prompts.render("size_hint", &[("message", "m")]), "the home's own m");
+        assert_eq!(
+            prompts.render("size_hint", &[("message", "m")]),
+            "the home's own m"
+        );
         std::fs::write(&path, "[prompts\nnot toml at all").unwrap();
         assert_eq!(
             prompts.render("size_hint", &[("message", "m")]),
@@ -410,7 +422,10 @@ mod tests {
             "an unreadable file must not silence the server"
         );
         // And a home that only ever had one template is still not missing it.
-        assert_eq!(prompts.render("size_hint", &[("message", "m")]), "the pinned m");
+        assert_eq!(
+            prompts.render("size_hint", &[("message", "m")]),
+            "the pinned m"
+        );
     }
 
     /// A non-string is a mistake in the file; the pinned text for that name
@@ -425,9 +440,11 @@ mod tests {
         .unwrap();
         let prompts = layered(dir.path(), &[("size_hint", NOTICE)]);
         assert_eq!(prompts.render("output_cap", &[("omitted", "9")]), "kept");
-        assert!(prompts
-            .render("size_hint", &[("message", "m")])
-            .contains("transcript.py collapse"));
+        assert!(
+            prompts
+                .render("size_hint", &[("message", "m")])
+                .contains("transcript.py collapse")
+        );
     }
 
     /// A template the home wrote that no code asks for is a typo worth naming --
@@ -435,7 +452,11 @@ mod tests {
     #[test]
     fn a_template_the_server_never_asks_for_is_reported_once() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(&dir.path().join("config.toml"), "[prompts]\nsizehint = \"x\"\n").unwrap();
+        std::fs::write(
+            &dir.path().join("config.toml"),
+            "[prompts]\nsizehint = \"x\"\n",
+        )
+        .unwrap();
         let prompts = at(&dir.path().join("config.toml"));
         assert_eq!(prompts.text("sizehint").unwrap(), "x");
         assert!(prompts.missing().contains(&"size_hint"));
