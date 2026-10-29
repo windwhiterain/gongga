@@ -3,7 +3,7 @@
 ## Crate Structure
 all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, live inside directory "crates/xxx". 
 - protocol
-- server
+- server: embedde a cli for agents.
 - cli: cmd fully documented and diagnosed, transparent server cmd wrapper, do not know server cmd.
 - tui: transparent cli wrapper.
 - ...: more crates may be added, with the same naming and layout.
@@ -36,7 +36,7 @@ use `which("bash")` as bash.
 - cmd_input: perfix select, auto complete.
   - `/<cmd>`
   - `<pure text>` expand to `/send_message --message "<pure text>"`: need escape.
-- sticky_cmd_arguments[{name, value}]: auto fill in cmd argument if not provided.
+- sticky_cmd_arguments[{name, value}]: auto fill in cmd argument if required but not provided.
 ## Cmd
 - invocation: `gongga <cmd> [--arg <v> ...]` -- argv is already tokens, so a command line
   carries no `/` and no prose form. `/` belongs to `cmd_input` only.
@@ -53,14 +53,10 @@ use `which("bash")` as bash.
     - auto set `--session` after `set_session`
   - `del_sticky_cmd_argument --name <name>`
     - auto del `--session` after `del_session`
-  - `set_event_filter --name <name> --value<value>`
-    - auto set `--session` after `set_session`
-  - `del_event_filter --name <name>`
-    - auto del `--session` after `del_session`
-  - `set_event_ui [--block_size <line>]`:
-    - `block_size`: max line count of a block, auto scroll.
-  - `set_event_split --split <bool>`:
-    true: split events window by session name, cmd/cmd_result use a separate single line.
+  - `set_event_ui [--block_size <line>] [--session <name|none>] [--split <bool>]`:
+    - `block_size`: max line count of non-output block, auto scroll.
+    - `session`: filter the rendered events by session name.
+    - `split` whether split events window by session name, cmd/cmd_result use a separate single line.
 
 ## Skill
 use python cripts read/write gongga home, calling server cmd.
