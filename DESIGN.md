@@ -701,13 +701,17 @@ Windows 上 Git Bash 会**在程序启动之前**把 `/x` 改写成 `C:/.../Git/
   调用方推进游标要的是「读到哪儿了」，不是行。
 
 客户端（本地执行，不上线）：`set_sticky_cmd_argument --name --value`、
-`del_sticky_cmd_argument --name`。这两个本来就在客户端，名字按 SPEC 统一为 sticky 拼法。
-另有 `set_event_filter --name --value` / `del_event_filter --name`。
+`del_sticky_cmd_argument --name`，和 SPEC 那条
+`set_event_ui [--block_size] [--session] [--split]`——三个可选参数一条命令。
+另有 `set_event_filter --name --value` / `del_event_filter --name`：SPEC 现在只写了会话
+过滤（`set_event_ui --session`），通用的按字段过滤先留着，和它共用同一份状态。
 
-### 事件过滤器（`set_event_filter` / `del_event_filter`）
+### 事件过滤器（`set_event_ui --session` / `set_event_filter`）
 
 多会话时日志是交错的一条流，sticky `session` 解决的是「发给谁」，不解决「看谁的」。
 过滤器补上后一半，和 sticky 参数一样存在 `~/.gongga/cli.toml` 的 `event_filters` 段：
+SPEC 给这一半起的名字是 `set_event_ui --session <name|none>`，它写进的就是这里的
+`session` 一条；`--name/--value` 那两条是能按任何字段收窄的通用形状，暂时不进 SPEC。
 两个写入方各改各的段，互不覆盖（以前 `Sticky::save` 直接整文件重写，加一个写入方就会
 把对方删掉，所以先改成「读盘 → 改自己那段 → 写回」）。
 
@@ -794,22 +798,36 @@ Paragraph 自动换行（那样拿不到换行后的总行数）。`scroll` 的�
 滚动键和渲染各 clamp 一次，所以行被删掉或窗口变高时视图不会停在空白处。分屏之后这套是
 **每个面板一份**：`scroll`/`max_scroll` 长在面板上，键盘只作用于「焦点面板」。
 
-两个显示设置都只有一条命令，都是客户端状态（服务端发的事件一模一样）：
+三个显示设置是**一条命令的三个参数**，都是客户端状态（服务端发的事件一模一样）：
+`set_event_ui [--block_size <line>] [--session <name|none>] [--split <bool>]`。
+给几个参数改几个，一个都不给就是**只读**：打印当前三项。但**先全部解析、再全部落盘**——
+`--block_size 9 --split sideways` 整条被拒，不会留下半套配置，也不会顺手报告它没动过的
+那一项；而不管写入还是读取，答案都是完整的一行 `block_size = 3  session = main  split = false`，
+因为一条命令给三个答复就是让人自己拼。
 
-- `set_event_ui --block_size <line>`：一个块最多占几行，超出的**跟着尾部走**——块显示它
-  最新的几行，更早的行不再进滚动范围（全文在库里，用 `get_messages` 读）。`0` 就是不限高。
-  只有助手的回答不受限：它是操作者来读的东西，其余（thinking / tool call / 工具输出 /
-  命令回显）都是进度，值得收。这一条取代了原来的 `set_event_detail --mode all|line`：
-  一个数字不必记词汇，而旧的「折成一行且固定头部」在真实流式里读起来像一行在原地不动、
-  字从右边漏掉，`auto scroll` 说的是相反的那件事。它带来的 `FOLD_KEEP` 字节上限也一并删掉
-  （AGENTS.md 禁止设上限）。不带参数是**只读**：打印当前值，`--block_size 0` 才是取消。
-- `set_event_split --split true`：events 区按会话名切成独立面板，各自滚动、各自贴自己的
-  最新行。分屏是**视图**的切换而不是数据的搬迁：一条行只存一份，合并视图与各个会话视图是同
-  一批块的两读法，所以切来切去历史都还在（先做成「每个面板一份日志」时被真终端帧打回来了：
-  切过去之后每个面板只剩切换之后到达的行，还在流的那条从半句话接起来）。
-  带了 `--session` 的命令（回显、读回来的行、回执）进那个会话的面板；只有没点会话名的命令
-  走 footer 与输入框之间那一线，且那一线每块固定一行。会话恰好叫 `cmd` 时命令行窗口往后加
-  一个空格，不会被会话抢走。
+- `--block_size <line>`：一个块最多占几行，超出的**跟着尾部走**——块显示它最新的几行，
+  更早的行不再进滚动范围（全文在库里，用 `get_messages` 读）。`0` 就是不限高。SPEC 的措辞是
+  "max line count of a **non-output** block"：助手的回答不受限，因为它是操作者来读的东西，
+  其余（thinking / tool call / 工具输出 / 命令回显）都是进度，值得收。这一条取代了原来的
+  `set_event_detail --mode all|line`：一个数字不必记词汇，而旧的「折成一行且固定头部」在真实
+  流式里读起来像一行在原地不动、字从右边漏掉，`auto scroll` 说的是相反的那件事。它带来的
+  `FOLD_KEEP` 字节上限也一并删掉（AGENTS.md 禁止设上限）。取消限高是 `--block_size 0`，说出口。
+- `--session <name|none>`：只渲染那个会话的事件行；`none` 是「全都渲染」那个词，不是有个会话
+  叫 none。它写的就是 `event_filters` 里 `session` 那一条，和 `set_event_filter --name session
+  --value …` 同一个存储，所以两种拼法不会为「屏幕上是什么」各说一套。分屏时**面板跟着行一起
+  收窄**：过滤到 main 却给 peer 留一块空面板，是操作者没要过的布局。这是**渲染的过滤**，不是
+  接收的过滤——事件照旧到达、状态照旧更新（被隐藏的 `status` 仍然刷新会话列表），只是不画。
+- `--split <bool>`：events 区按会话名切成独立面板，各自滚动、各自贴自己的最新行。分屏是**视图**
+  的切换而不是数据的搬迁：一条行只存一份，合并视图与各个会话视图是同一批块的两读法，所以切来
+  切去历史都还在（先做成「每个面板一份日志」时被真终端帧打回来了：切过去之后每个面板只剩切换
+  之后到达的行，还在流的那条从半句话接起来）。带了 `--session` 的命令（回显、读回来的行、回执）
+  进那个会话的面板；只有没点会话名的命令走 footer 与输入框之间那一线，且那一线每块固定一行。
+  会话恰好叫 `cmd` 时命令行窗口往后加一个空格，不会被会话抢走。
+
+`set_session` 从此**不再改动渲染**：它只把 `session` 记成 sticky 参数（决定「发给谁」），不管
+「在看谁」。两处一起变了：以前那条「`set_event_filter` auto set `--session` after `set_session`」
+随命令合并从 SPEC 里消失；而 sticky 现在**只填必填参数**——`set_event_ui --session` 是可选的，
+被 sticky 填上就等于「改一下块高，顺带偷偷换了你在看哪个会话」。要看谁的会话，说出口。
 
 翻事件历史的键位：↑↓ 先归补全弹窗、再归输入框里的上一行/下一行、最后才是命令历史
 （shell 习惯，也是人手先试的那两个）；←→ 是光标。所以翻页落在 **Alt+↑↓（一页）/

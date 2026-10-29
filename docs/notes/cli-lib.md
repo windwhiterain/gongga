@@ -142,7 +142,10 @@ learned it still hears about it.
 
 The layout is announced (`Layout::Merged` or `Layout::Split`) rather than a `split`
 flag, because the front-end has to know the names and their order anyway -- and a flag
-would leave it inventing a naming rule the command layer already owns. The lines carry
+would leave it inventing a naming rule the command layer already owns. A session filter
+narrows the announced windows with the lines it narrows: splitting into three panes
+while rendering one session is a layout nobody asked for, and a pane that shows nothing
+is not a pane. The lines carry
 their window either way: the announcement says what a frame shows, never what is held.
 
 ## A read's rows need no handler
@@ -241,12 +244,29 @@ same rules in every implementation.
 JSON object each, and a filtered `cmd_result` would leave it waiting for an
 acknowledgement that was never printed.
 
+## Client::run_event_ui
+
+`set_event_ui`'s three arguments are three settings, so the command is a loop over
+them rather than three commands with one name. Two rules make that legible:
+
+- **Everything parses before anything saves.** `--block_size 9 --split sideways` is
+  refused whole, because half an applied command is an events area nobody configured
+  on purpose -- and the refusal does not report the setting it left alone.
+- **The answer is the whole setting**, on a write as on a read: `block_size = 3
+  session = main split = false` in one line, because three answers to one command is
+  an argument.
+
+`--session` is the filter, and `none` is the word that clears it -- not a session
+named none. It writes the same `EventFilters` map `set_event_filter --name session`
+addresses, so the two spellings cannot disagree about what is on screen.
+
 ## Client::follow_session_command
 
-The two SPEC rules about `set_session` and `del_session` are one behaviour: the
-session you name is the one this client follows. Naming a session sets both the
-sticky `session` (so the argument can be omitted) and its event filter (so the
-log is that session's), because those are the same intention spelled twice.
+The SPEC rule about `set_session` is one behaviour: the session you name is the one
+later commands act on, so it becomes the sticky `session`. It is *not* what this
+client renders -- which session's lines are drawn is `set_event_ui --session`'s to
+say, and a client that retargeted its view as a side effect of a send would be
+hiding a display setting inside a server call.
 
 `del_session` only clears them when it deletes the session they point at.
 Deleting some other session must not silently retarget a client that is watching

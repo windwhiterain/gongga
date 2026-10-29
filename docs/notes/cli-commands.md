@@ -3,8 +3,8 @@
 ## commands.rs
 
 `persistant_cmd_arguments[{name, value}]` is a client-side idea: the CLI keeps
-them, fills them into every command before it goes out, and never tells the
-server. They persist in `~/.gongga/cli.toml`, so a restarted client still knows
+them, fills them into a command that requires the argument and does not carry
+it, and never tells the server. They persist in `~/.gongga/cli.toml`, so a restarted client still knows
 which session you were talking to -- the file, not a running server, is what
 remembers.
 
@@ -33,6 +33,11 @@ that usable:
   operator who typed it. Dropping it would hide the command that caused the
   output still being shown.
 
+`set_event_ui --session <name|none>` writes and clears this map's `session`
+entry; it is not a second filter beside the one it names. SPEC gives the session case
+its own argument because that is the choice an operator makes constantly, and the
+general form -- any field an event carries -- stays here, unwritten in SPEC for now.
+
 `allows` compares through the serialised event rather than a `match` over every
 variant: the field names are the names in the wire JSON (`session`, `part`,
 `level`), so a filter value is what a `jq` selector would call it, and adding an
@@ -51,10 +56,14 @@ It is one number, not a mode list. The setting it replaces (`set_event_detail
 only ever differed by whether a block folded; a count of lines says the same thing
 with no vocabulary to memorise, and `0` is the only word for "no cap".
 
-Without `--block_size` the command is a read: it prints the current number and
-changes nothing. Clearing the cap is `--block_size 0`, said on purpose -- a command
-that both reads and resets depending on how much you type is the kind of thing an
-operator learns the hard way.
+SPEC words the cap as one on a *non-output* block: an answer is never capped, so
+the number carries its own exception and the setting stays one number rather than
+two switches that can disagree.
+
+Without an argument the command is a read: it prints the size, the session filter and
+the split, and changes nothing. Clearing the cap is `--block_size 0`, said on purpose
+-- a command that both reads and resets depending on how much you type is the kind of
+thing an operator learns the hard way.
 
 An unparseable value is refused with the way to say one, and an unknown value
 already in the file falls back to `0` -- a hand-edited file is not a reason for a
@@ -63,7 +72,7 @@ first is someone typing, the second is damage.
 
 ## Split
 
-`set_event_split --split` is the other half of the same preference: it says how many
+`set_event_ui --split` is the other half of the same preference: it says how many
 events windows there are, not how tall a block in one may be. It is client state for
 the same reason -- the server sends the same events either way -- and it is saved in
 the same `cli.toml`, so a size change and a split change cannot overwrite each other.
@@ -78,6 +87,15 @@ A session can be named `cmd`. The command line's window therefore grows a space 
 no session owns the name: two windows with one name would show a session's answers in
 the command line, which is the kind of thing that reads as a bug in the log rather
 than as a naming collision.
+
+## Sticky::fill
+
+Only a *required* argument is filled. An argument the command makes optional is a
+question the caller answered by leaving it out, and `set_event_ui` -- which now takes
+`--session` beside `--block_size` and `--split` -- is the case that proves the rule: a
+sticky `session` filling it would make every change of block height silently change
+what is on screen. `send_message --session` is required, so the sticky value still
+routes every message the way SPEC's auto-set line says.
 
 ## EVENT_FIELDS
 

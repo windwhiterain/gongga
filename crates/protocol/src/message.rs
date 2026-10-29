@@ -204,8 +204,16 @@ pub const EVENT_FIELDS: &[&str] = &[
 /// Any number is accepted; this is the set worth offering, not the set allowed.
 pub const BLOCK_SIZES: &[&str] = &["0", "1", "2", "3", "5"];
 
-/// The values `set_event_split --split` takes.
+/// The values `set_event_ui --split` takes.
 pub const SPLIT_VALUES: &[&str] = &["true", "false"];
+
+/// The word `set_event_ui --session` takes to mean "show every session".
+///
+/// # Invariant
+///
+/// It is not a session name: naming a session sets the filter, naming this clears
+/// it, so one argument carries both directions.
+pub const NO_SESSION: &str = "none";
 
 /// Where a command runs.
 ///
@@ -299,28 +307,35 @@ pub fn client_commands() -> Vec<CommandSpec> {
         ),
         (
             "set_event_ui",
-            "How tall one block may get; with no argument, the current setting.",
-            vec![spec_arg(
-                "block_size",
-                "`0` caps nothing. Otherwise a block shows at most this many wrapped rows \
-                 and keeps the newest of them, so a long stream scrolls inside its own \
-                 block instead of pushing other blocks away. An answer is never capped.",
-                false,
-                Some("lines"),
-                CompletionSource::Static(BLOCK_SIZES.iter().map(|m| m.to_string()).collect()),
-            )],
-        ),
-        (
-            "set_event_split",
-            "Split the events window by session name.",
-            vec![spec_arg(
-                "split",
-                "`true` gives each session its own window and puts `cmd`/`cmd_result` on \
-                 a line of their own; `false` keeps one window for everything.",
-                true,
-                Some("split"),
-                CompletionSource::Static(SPLIT_VALUES.iter().map(|v| v.to_string()).collect()),
-            )],
+            "How the events area is drawn; with no argument, all three settings.",
+            vec![
+                spec_arg(
+                    "block_size",
+                    "`0` caps nothing. Otherwise a non-answer block shows at most this many \
+                     wrapped rows and keeps the newest of them, so a long stream scrolls \
+                     inside its own block instead of pushing other blocks away.",
+                    false,
+                    Some("lines"),
+                    CompletionSource::Static(BLOCK_SIZES.iter().map(|m| m.to_string()).collect()),
+                ),
+                spec_arg(
+                    "session",
+                    "Render only this session's events; `none` renders every session's. \
+                     Nothing is dropped on the way in: an unseen line is a line not drawn, \
+                     not a line not received.",
+                    false,
+                    Some("name|none"),
+                    CompletionSource::SessionsOrNone,
+                ),
+                spec_arg(
+                    "split",
+                    "`true` gives each session its own window and puts `cmd`/`cmd_result` on \
+                     a line of their own; `false` keeps one window for everything.",
+                    false,
+                    Some("bool"),
+                    CompletionSource::Static(SPLIT_VALUES.iter().map(|v| v.to_string()).collect()),
+                ),
+            ],
         ),
     ]
     .into_iter()
@@ -391,6 +406,9 @@ pub enum CompletionSource {
     StickyArguments,
     /// Complete against the client's event-filter names, same shape.
     EventFilters,
+    /// Complete against the live session list plus `none`, which clears a filter.
+    /// See `docs/notes/protocol-message.md`.
+    SessionsOrNone,
 }
 
 // Encoding helpers

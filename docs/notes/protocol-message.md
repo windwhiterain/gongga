@@ -65,13 +65,18 @@ runnable with no client change at all.
 An entry that omits the field reads as `server`: that is what every entry meant
 before it existed, so an older catalog decodes with its meaning intact.
 
-## CompletionSource::StickyArguments and ::EventFilters
+## CompletionSource::StickyArguments, ::EventFilters and ::SessionsOrNone
 
 The server publishes the client's own commands, but the candidate values are the
 client's state: which sticky arguments exist, which event filters exist. These
 two sources say "complete against that list" without shipping the list, which is
 the same arrangement as `Sessions` -- the server names where a value comes from,
 and the side that owns it fills it in.
+
+`SessionsOrNone` is `Sessions` plus `NO_SESSION`. The list is the server's to know
+and the word is the argument's own, so neither half can be a static list: naming a
+session sets the filter, naming `none` clears it, and a popup that offers only names
+hides the direction that turns rendering back on for everybody.
 
 ## REPLAY_TURN
 

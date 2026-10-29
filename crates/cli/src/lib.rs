@@ -20,9 +20,9 @@ use std::time::Duration;
 use anyhow::{Context, anyhow};
 use clap::{CommandFactory, FromArgMatches, Parser};
 use protocol::{
-    ChannelConfig, ClientInfo, ClientMessage, Event, LogLevel, ResponseEvent, ResponsePart,
-    ServerMessage, SessionStatus, SessionSummary, ToolAnswerEvent, ToolStream, decode_server,
-    encode_client,
+    ChannelConfig, ClientInfo, ClientMessage, Event, LogLevel, NO_SESSION, ResponseEvent,
+    ResponsePart, ServerMessage, SessionStatus, SessionSummary, ToolAnswerEvent, ToolStream,
+    decode_server, encode_client,
 };
 use tokio::net::UdpSocket;
 
@@ -295,13 +295,20 @@ impl Client {
     }
 
     /// How to divide the events area: one window, or one per session.
+    ///
+    /// # Invariant
+    ///
+    /// A session filter narrows the panes with the lines, so a session whose events
+    /// are not rendered does not keep an empty window on the screen.
     fn layout(&self) -> Layout {
         if !self.split.0 {
             return Layout::Merged;
         }
+        let only = self.filters.get("session");
         let mut windows: Vec<Window> = self
             .sessions
             .iter()
+            .filter(|s| only.is_none_or(|name| s.name == name))
             .map(|s| Window {
                 name: s.name.clone(),
                 command: false,
@@ -763,24 +770,19 @@ impl Client {
         }
     }
 
-    /// `set_session` sets a sticky `session` and its filter; `del_session` clears
-    /// them only when it names that session.
+    /// `set_session` sets a sticky `session`; `del_session` clears it when it names
+    /// that one.
+    ///
+    /// # Invariant
+    ///
+    /// The events area is not touched: which session is rendered is a choice the
+    /// operator makes with `set_event_ui --session`, not a consequence of which
+    /// session a command was sent to.
     fn follow_session_command(&mut self, name: &str, session: &str, sink: &mut dyn Sink) {
         let saved = match name {
-            "set_session" => self
-                .sticky
-                .set("session", session)
-                .and_then(|()| self.filters.set("session", session)),
-            "del_session" => {
-                let sticky = match self.sticky.get("session") == Some(session) {
-                    true => self.sticky.del("session"),
-                    false => Ok(false),
-                };
-                let filters = match self.filters.get("session") == Some(session) {
-                    true => self.filters.del("session"),
-                    false => Ok(false),
-                };
-                sticky.and(filters).map(|_| ())
+            "set_session" => self.sticky.set("session", session),
+            "del_session" if self.sticky.get("session") == Some(session) => {
+                self.sticky.del("session").map(|_| ())
             }
             _ => return,
         };
@@ -798,74 +800,7 @@ impl Client {
     fn run_client_command(&mut self, name: &str, args: &protocol::Args, sink: &mut dyn Sink) {
         let arg_name = args.get("name").cloned().unwrap_or_default();
         match name {
-            "set_event_ui" => {
-                // No size is a read, not a reset: the setting lives on disk, and the
-                // operator asked what the window is doing with it.
-                let Some(raw) = args.get("block_size").cloned() else {
-                    sink.line(
-                        &self.command_window(),
-                        LineKind::Result,
-                        &format!("block_size = {}", self.block_size.0),
-                    );
-                    return;
-                };
-                let size = match BlockSize::parse(&raw) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        sink.line(&self.command_window(), LineKind::Error, &e);
-                        return;
-                    }
-                };
-                match size.save(self.sticky.home()) {
-                    Ok(()) => {
-                        self.block_size = size;
-                        sink.line(
-                            &self.command_window(),
-                            LineKind::Result,
-                            &format!("block_size = {}", size.0),
-                        );
-                        self.after_sticky_change(sink);
-                    }
-                    Err(e) => sink.line(
-                        &self.command_window(),
-                        LineKind::Error,
-                        &format!("could not save: {e}"),
-                    ),
-                }
-            }
-            "set_event_split" => {
-                let Some(raw) = args.get("split").cloned() else {
-                    sink.line(
-                        &self.command_window(),
-                        LineKind::Error,
-                        "set_event_split requires --split",
-                    );
-                    return;
-                };
-                let on = match Split::parse(&raw) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        sink.line(&self.command_window(), LineKind::Error, &e);
-                        return;
-                    }
-                };
-                match on.save(self.sticky.home()) {
-                    Ok(()) => {
-                        self.split = on;
-                        sink.line(
-                            &self.command_window(),
-                            LineKind::Result,
-                            &format!("split = {}", on.as_str()),
-                        );
-                        self.after_sticky_change(sink);
-                    }
-                    Err(e) => sink.line(
-                        &self.command_window(),
-                        LineKind::Error,
-                        &format!("could not save: {e}"),
-                    ),
-                }
-            }
+            "set_event_ui" => self.run_event_ui(args, sink),
             "set_sticky_cmd_argument" => {
                 let Some(value) = args.get("value").cloned() else {
                     sink.line(
@@ -977,6 +912,105 @@ impl Client {
                 ),
             ),
         }
+    }
+
+    /// Runs `set_event_ui`: each argument changes one thing about the events area.
+    ///
+    /// # Invariant
+    ///
+    /// Every argument parses before any of them saves, so a typo cannot leave the
+    /// area configured by half a command, and no argument at all is a read of the
+    /// whole setting rather than a reset of it.
+    fn run_event_ui(&mut self, args: &protocol::Args, sink: &mut dyn Sink) {
+        let mut size = None;
+        if let Some(raw) = args.get("block_size") {
+            match BlockSize::parse(raw) {
+                Ok(parsed) => size = Some(parsed),
+                Err(e) => {
+                    sink.line(&self.command_window(), LineKind::Error, &e);
+                    return;
+                }
+            }
+        }
+        let mut split = None;
+        if let Some(raw) = args.get("split") {
+            match Split::parse(raw) {
+                Ok(parsed) => split = Some(parsed),
+                Err(e) => {
+                    sink.line(&self.command_window(), LineKind::Error, &e);
+                    return;
+                }
+            }
+        }
+        // A name narrows the lines to that session; `none` renders every one; an
+        // empty name is neither.
+        let mut session: Option<Option<String>> = None;
+        if let Some(raw) = args.get("session") {
+            if raw.trim().is_empty() {
+                sink.line(
+                    &self.command_window(),
+                    LineKind::Error,
+                    "set_event_ui --session takes a session name, or `none` to render every one",
+                );
+                return;
+            }
+            session = Some(if raw.trim() == NO_SESSION {
+                None
+            } else {
+                Some(raw.clone())
+            });
+        }
+
+        // Nothing named is the question "what is the events area doing?".
+        if size.is_none() && split.is_none() && session.is_none() {
+            let report = self.event_ui_report();
+            sink.line(&self.command_window(), LineKind::Result, &report);
+            return;
+        }
+
+        let home = self.sticky.home().to_path_buf();
+        let mut failed: Vec<String> = Vec::new();
+        if let Some(parsed) = size {
+            match parsed.save(&home) {
+                Ok(()) => self.block_size = parsed,
+                Err(e) => failed.push(e.to_string()),
+            }
+        }
+        if let Some(parsed) = split {
+            match parsed.save(&home) {
+                Ok(()) => self.split = parsed,
+                Err(e) => failed.push(e.to_string()),
+            }
+        }
+        if let Some(wanted) = session {
+            let saved = match wanted.as_deref() {
+                Some(name) => self.filters.set("session", name),
+                None => self.filters.del("session").map(|_| ()),
+            };
+            if let Err(e) = saved {
+                failed.push(e.to_string());
+            }
+        }
+        for e in failed {
+            sink.line(
+                &self.command_window(),
+                LineKind::Error,
+                &format!("could not save: {e}"),
+            );
+        }
+        let report = self.event_ui_report();
+        sink.line(&self.command_window(), LineKind::Result, &report);
+        self.after_sticky_change(sink);
+    }
+
+    /// The setting as one line, because three answers to one command is an argument.
+    fn event_ui_report(&self) -> String {
+        format!(
+            "block_size = {}  session = {}  split = {}",
+            self.block_size.0,
+            self.filters.get("session").unwrap_or(NO_SESSION),
+            self.split.as_str(),
+        )
     }
 
     fn after_sticky_change(&self, sink: &mut dyn Sink) {
@@ -1846,7 +1880,7 @@ mod tests {
                 protocol::ArgSpec {
                     name: "session".into(),
                     summary: "s".into(),
-                    required: false,
+                    required: true,
                     value_hint: None,
                     completions: protocol::CompletionSource::None,
                 },
@@ -1925,6 +1959,18 @@ mod tests {
             ],
             "{named:?}"
         );
+
+        // A session filter narrows the panes with the lines: a window that renders
+        // nothing is not a window.
+        let mut filters = EventFilters::load(d.path());
+        filters.set("session", "main").unwrap();
+        c.filters = filters;
+        c.refresh(&mut s);
+        let names: Vec<String> = match s.announced.clone() {
+            Some(Layout::Split(windows)) => windows.iter().map(|w| w.name.clone()).collect(),
+            other => panic!("expected a split layout, got {other:?}"),
+        };
+        assert_eq!(names, vec!["main", "cmd"], "{names:?}");
     }
 
     /// A session may be called `cmd`; that is not a reason to lose the command line.
@@ -2002,7 +2048,7 @@ mod tests {
         assert_eq!(s.windows, vec!["cmd", "cmd"]);
     }
 
-    /// The size is a client setting: it persists and the front-end is told.
+    /// One command's three arguments: each persists, and the answer is the setting.
     #[test]
     fn set_event_ui_saves_and_tells_the_front_end() {
         let d = tempfile::tempdir().unwrap();
@@ -2018,14 +2064,40 @@ mod tests {
         assert_eq!(c.block_size, BlockSize(3));
         assert_eq!(BlockSize::load(d.path()), BlockSize(3));
 
-        // A size nothing answers to is refused, and the answer says what to type.
+        // Split and the session filter are its other two arguments, and one line
+        // answers all three.
         assert!(matches!(
-            c.command(argv("set_event_ui --block_size huge"), &mut s),
+            c.command(argv("set_event_ui --split true --session main"), &mut s),
             Submission::Local
         ));
-        assert_eq!(c.block_size, BlockSize(3));
+        assert_eq!(c.split, Split(true));
+        assert_eq!(Split::load(d.path()), Split(true));
+        assert_eq!(c.filters.get("session"), Some("main"));
+        assert_eq!(
+            s.0.last().map(String::as_str),
+            Some("block_size = 3  session = main  split = true"),
+            "{:?}",
+            s.0
+        );
+
+        // A value nothing answers to is refused, and the answer says what to type.
+        s.0.clear();
+        c.command(argv("set_event_ui --block_size huge"), &mut s);
         let said = s.0.join("\n");
         assert!(said.contains("caps nothing"), "{said}");
+
+        // One bad argument vetoes the good one beside it: half an applied command
+        // is an area nobody chose.
+        s.0.clear();
+        c.command(argv("set_event_ui --block_size 9 --split sideways"), &mut s);
+        assert_eq!(c.block_size, BlockSize(3), "the bad split vetoed the size");
+        assert_eq!(c.split, Split(true));
+        let said = s.0.join("\n");
+        assert!(said.contains("true, false"), "{said}");
+        assert!(
+            !said.contains("block_size ="),
+            "a refused setting is not reported: {said}"
+        );
 
         // Without an argument it is a read: the setting is reported, not reset.
         s.0.clear();
@@ -2034,33 +2106,24 @@ mod tests {
             Submission::Local
         ));
         assert_eq!(c.block_size, BlockSize(3));
-        assert_eq!(s.0, vec!["/set_event_ui", "block_size = 3"]);
-    }
+        assert_eq!(
+            s.0,
+            vec![
+                "/set_event_ui",
+                "block_size = 3  session = main  split = true"
+            ]
+        );
 
-    /// Splitting is a client setting too: it persists and the front-end is told.
-    #[test]
-    fn set_event_split_saves_and_tells_the_front_end() {
-        let d = tempfile::tempdir().unwrap();
-        let cat = published_catalog();
-        cat.set_sticky_names(&[]);
-        cat.set_filter_names(&[]);
-        let mut c = client_with(cat, Sticky::load(d.path()), vec!["main"]);
-        let mut s = VecSink(Vec::new());
+        // `none` is the word that stops filtering, not a session called none.
         assert!(matches!(
-            c.command(argv("set_event_split --split true"), &mut s),
+            c.command(argv("set_event_ui --session none"), &mut s),
             Submission::Local
         ));
-        assert_eq!(c.split, Split(true));
-        assert_eq!(Split::load(d.path()), Split(true));
-
-        // A value that is neither word is refused, and the setting stays.
-        assert!(matches!(
-            c.command(argv("set_event_split --split sideways"), &mut s),
-            Submission::Local
-        ));
-        assert_eq!(c.split, Split(true));
-        let said = s.0.join("\n");
-        assert!(said.contains("true, false"), "{said}");
+        assert_eq!(c.filters.get("session"), None);
+        assert_eq!(
+            s.0.last().map(String::as_str),
+            Some("block_size = 3  session = none  split = true")
+        );
     }
 
     /// Every other result keeps its old look: one line, no invented content.
@@ -2313,9 +2376,9 @@ mod tests {
         );
     }
 
-    /// Naming a session is what makes it the one this client watches.
+    /// Naming a session is what later commands act on -- not what this client renders.
     #[test]
-    fn set_session_leaves_a_sticky_session_and_its_filter() {
+    fn set_session_is_a_target_not_a_filter() {
         let d = tempfile::tempdir().unwrap();
         let cat = Catalog::new();
         cat.set_commands(vec![protocol::CommandSpec {
@@ -2338,7 +2401,11 @@ mod tests {
         ));
         ack(&mut c, true, &mut s);
         assert_eq!(c.sticky.get("session"), Some("main"));
-        assert_eq!(c.filters.get("session"), Some("main"));
+        assert_eq!(
+            c.filters.get("session"),
+            None,
+            "which session to render is `set_event_ui --session`'s to say"
+        );
     }
 
     /// A refused `set_session` must not leave the client watching a session that
@@ -2402,7 +2469,9 @@ mod tests {
         c.command(argv("del_session --session main"), &mut s);
         ack(&mut c, true, &mut s);
         assert_eq!(c.sticky.get("session"), None);
-        assert_eq!(c.filters.get("session"), None);
+        // An operator set that filter, not this command: it stays until
+        // `set_event_ui --session none` says otherwise.
+        assert_eq!(c.filters.get("session"), Some("main"));
     }
 
     /// A field no event carries would filter nothing; say so instead of

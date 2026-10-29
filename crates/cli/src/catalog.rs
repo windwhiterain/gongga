@@ -223,21 +223,34 @@ fn resolve(
         CompletionSource::EventFilters => {
             pick(ctx.filters.iter().map(String::as_str), token, "filter")
         }
+        CompletionSource::SessionsOrNone => {
+            // The word that clears the filter is offered beside the names it filters to.
+            let mut got = pick(ctx.sessions.iter().map(String::as_str), token, "session");
+            got.extend(pick([protocol::NO_SESSION].into_iter(), token, "value"));
+            got
+        }
         CompletionSource::OfNamedArgument if depth < 2 => {
             let Some(named) = flag_value(words, "name") else {
                 return Vec::new();
             };
-            let found = ctx
+            let shaped: Vec<&protocol::ArgSpec> = ctx
                 .all
                 .iter()
                 .flat_map(|c| c.args.iter())
-                .find(|a| {
+                .filter(|a| {
                     a.name == named
                         && !matches!(
                             a.completions,
                             CompletionSource::None | CompletionSource::OfNamedArgument
                         )
                 })
+                .collect();
+            // The required spelling of a name is its target: that is what a
+            // mirrored value completes against.
+            let found = shaped
+                .iter()
+                .find(|a| a.required)
+                .or_else(|| shaped.first())
                 .map(|a| a.completions.clone());
             match found {
                 Some(source) => resolve(&source, token, ctx, words, depth + 1),
@@ -593,19 +606,19 @@ mod tests {
         assert_eq!(values(&c, "/del_event_filter --name "), vec!["session"]);
     }
 
-    /// The new command completes like every other one: name, argument, values.
+    /// One command, three arguments, each completing the way its own value does.
     #[test]
     fn the_event_ui_command_completes_name_argument_and_sizes() {
         let c = catalog();
         // Order follows the catalog, which is not what this is about.
         let mut both = values(&c, "/set_event");
         both.sort();
-        assert_eq!(
-            both,
-            vec!["/set_event_filter", "/set_event_split", "/set_event_ui"]
-        );
+        assert_eq!(both, vec!["/set_event_filter", "/set_event_ui"]);
         assert_eq!(values(&c, "/set_event_u"), vec!["/set_event_ui"]);
-        assert_eq!(values(&c, "/set_event_ui --"), vec!["--block_size"]);
+        assert_eq!(
+            values(&c, "/set_event_ui --"),
+            vec!["--block_size", "--session", "--split"]
+        );
         assert_eq!(
             values(&c, "/set_event_ui --block_size "),
             vec!["0", "1", "2", "3", "5"]
@@ -613,10 +626,17 @@ mod tests {
         // Any number is a size: the list above is what is worth offering, not the
         // set that is allowed.
         assert_eq!(values(&c, "/set_event_ui --block_size 1"), vec!["1"]);
-        assert_eq!(values(&c, "/set_event_split --"), vec!["--split"]);
+        // The filter completes to the sessions and to the word that clears it.
         assert_eq!(
-            values(&c, "/set_event_split --split "),
-            vec!["true", "false"]
+            values(&c, "/set_event_ui --session "),
+            vec!["main", "scratch", "none"]
+        );
+        assert_eq!(values(&c, "/set_event_ui --session n"), vec!["none"]);
+        assert_eq!(values(&c, "/set_event_ui --split "), vec!["true", "false"]);
+        // An argument the line already carries is not offered again.
+        assert_eq!(
+            values(&c, "/set_event_ui --split true --"),
+            vec!["--block_size", "--session"]
         );
     }
 

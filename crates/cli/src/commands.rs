@@ -161,11 +161,17 @@ impl Sticky {
         write_file(&self.path, &file)
     }
 
-    /// Fills in any argument the caller omitted, when a sticky value exists.
+    /// Fills in a required argument the caller omitted, when a sticky value exists.
+    ///
+    /// # Invariant
+    ///
+    /// An optional argument is left alone, because absence there is a decision:
+    /// `set_event_ui` with no `--session` means "keep the filter as it is", and a
+    /// sticky value would make every other setting change it.
     pub fn fill(&self, spec: Option<&CommandSpec>, args: &mut Args) {
         let Some(spec) = spec else { return };
         for a in &spec.args {
-            if !args.contains_key(&a.name) {
+            if a.required && !args.contains_key(&a.name) {
                 if let Some(v) = self.args.get(&a.name) {
                     args.insert(a.name.clone(), v.clone());
                 }
@@ -553,21 +559,37 @@ mod tests {
         let d = dir();
         let mut s = Sticky::load(d.path());
         s.set("session", "main").unwrap();
+        s.set("cwd", "/tmp/scratch").unwrap();
         let spec = CommandSpec {
             target: protocol::CommandTarget::Server,
             name: "send_message".into(),
             summary: String::new(),
-            args: vec![ArgSpec {
-                name: "session".into(),
-                summary: String::new(),
-                required: false,
-                value_hint: None,
-                completions: protocol::CompletionSource::None,
-            }],
+            args: vec![
+                ArgSpec {
+                    name: "session".into(),
+                    summary: String::new(),
+                    required: true,
+                    value_hint: None,
+                    completions: protocol::CompletionSource::None,
+                },
+                // Leaving an optional argument out is the caller's decision, not a
+                // gap for a sticky value to fill.
+                ArgSpec {
+                    name: "cwd".into(),
+                    summary: String::new(),
+                    required: false,
+                    value_hint: None,
+                    completions: protocol::CompletionSource::None,
+                },
+            ],
         };
         let mut args = Args::new();
         s.fill(Some(&spec), &mut args);
         assert_eq!(args["session"], "main");
+        assert!(
+            !args.contains_key("cwd"),
+            "a sticky value does not fill what the command made optional: {args:?}"
+        );
         let mut args = Args::from([("session".to_string(), "scratch".to_string())]);
         s.fill(Some(&spec), &mut args);
         assert_eq!(args["session"], "scratch");

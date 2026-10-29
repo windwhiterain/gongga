@@ -1111,7 +1111,6 @@ mod tests {
                 "del_event_filter",
                 "del_sticky_cmd_argument",
                 "set_event_filter",
-                "set_event_split",
                 "set_event_ui",
                 "set_sticky_cmd_argument"
             ]
