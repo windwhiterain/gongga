@@ -46,6 +46,16 @@ would read back and relay an answer to a question the user just withdrew.
 `set_session` doubles as creation and is idempotent, so every message ensures its
 session rather than tracking which ones exist.
 
+## Bridge::rows
+
+A read no longer hands back `data.messages`: each row is a `message` event on this
+connection, sent before the result. The bridge buffers them per session and takes the
+buffer when the result for that read lands, so what to relay is still decided by
+`since(cursor)` and `final_reply`.
+
+The buffer is reset when a read is issued, not when it is answered: a probe reads a row
+too, and rows left from a question nobody is asking are not history.
+
 ## Bridge::on_idle
 
 Idle also fires for turns this bridge did not start (a resumed turn, or someone

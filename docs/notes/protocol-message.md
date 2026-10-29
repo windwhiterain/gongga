@@ -73,6 +73,18 @@ two sources say "complete against that list" without shipping the list, which is
 the same arrangement as `Sessions` -- the server names where a value comes from,
 and the side that owns it fills it in.
 
+## Event::Message
+
+A transcript row read back is an event, not a field of a result. Two things follow,
+and both are the point: delivery is **addressed** -- it goes to the connection whose
+`get_messages` asked, the way `cmd` and `cmd_result` do, so a read stays a read -- and
+the shape is **ordinary**, so every front-end renders it through the path it already
+has for a streamed block. A replay that arrived as a special envelope would be a second
+way to show a line, and the second way is where the two drift.
+
+`seq` is on the event because it is the row's identity in the transcript: a reader
+advances by it, and never by counting what happened to arrive.
+
 ## BLOCK_SIZES
 
 `--block_size` is a count of lines: any number is a valid answer, so the list here

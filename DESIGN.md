@@ -135,7 +135,7 @@ JSON over 上述通道（可读性 > 字节数；这是人机速的事件流）�
 ```text
 ClientMessage: Hello{client,key} | Command{id,name,args} | Bye
 ServerMessage: Hello{protocol,server,commands,sessions} | Denied{reason} | Event(event)   # 相邻标签 {t,v}
-Event:         Cmd | CmdResult | Response | ToolAnswer | Sessions | Status | Log
+Event:         Cmd | CmdResult | Response | ToolAnswer | Message | Sessions | Status | Log
 ```
 
 `ServerMessage` 用**相邻标签**（`tag="t", content="v"`）而不是内部标签：
@@ -158,6 +158,14 @@ enum ResponsePart { Reasoning, ToolCall, Output }
 `session` 也是一条子流。
 
 `turn` 从 1 递增，客户端可据此丢弃 cancel 之后到达的陈旧 delta。
+
+`message{session, seq, kind, role, name, text}` 是**读回来的行**：`get_messages` 不再把
+transcript 塞进 `cmd_result.data`，而是把每一行按原样重发成一条事件。它和 `cmd`/`cmd_result`
+一样是**定向投递**的（只发给发起读取的那条连接，`net.rs` 的 `run_commands` 在结果之前把它
+写完），所以别的客户端不会看见你的读取；但它是词汇表里的普通事件，任何前端都用渲染别的事件
+那条路画它 —— 于是读回来的行自然落进那个会话的面板，颜色、块、限高、滚动全都一致。
+附带解掉一个老限制：一条回执太大就整条发不出去（`net.rs:361-374` 会回 `ok:false`），
+拆成一行一条之后，读 `-500:` 不再被体积打死。
 
 ## 4. 服务端
 
@@ -675,7 +683,8 @@ Windows 上 Git Bash 会**在程序启动之前**把 `/x` 改写成 `C:/.../Git/
   （两端都含、负数从末尾数，`-500:` 就是尾巴），顺手把 `last_seq` 和会话 `status`
   带回来 —— 调用方据此推进游标，不许多跑一趟，也不会因为「这一轮只有工具调用」
   而判断不出该从哪继续。**只读就不排队**：它不拿会话门，因为读一份正在被追加的
-  transcript 正是 TUI 回放在做的事，两者都没有东西要写。
+  transcript 正是 TUI 回放在做的事，两者都没有东西要写。行本身走 `message` 事件，
+  `data` 只留 `session`/`status`/`last_seq`——调用方推进游标要的是「读到哪儿了」，不是行。
 
 客户端（本地执行，不上线）：`set_sticky_cmd_argument --name --value`、
 `del_sticky_cmd_argument --name`。这两个本来就在客户端，名字按 SPEC 统一为 sticky 拼法。

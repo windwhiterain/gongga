@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use protocol::{Args, CommandSpec, CommandTarget, CompletionSource, Event};
+use protocol::{Args, CommandSpec, CommandTarget, CompletionSource, Event, MessageEvent};
 use serde_json::json;
 use std::time::Duration;
 
@@ -117,11 +117,18 @@ fn claim_recovery(
 }
 
 /// The result of one command, sent back as a `cmd_result` event.
+///
+/// # Invariant
+///
+/// `events` go to the requesting connection before the result, and nowhere else:
+/// they are the command's answer in the vocabulary every client already renders,
+/// not a broadcast about it.
 #[derive(Debug)]
 pub struct Outcome {
     pub ok: bool,
     pub message: String,
     pub data: Option<serde_json::Value>,
+    pub events: Vec<Event>,
 }
 
 impl Outcome {
@@ -130,6 +137,7 @@ impl Outcome {
             ok: true,
             message: message.into(),
             data: None,
+            events: Vec::new(),
         }
     }
 
@@ -138,6 +146,7 @@ impl Outcome {
             ok: true,
             message: message.into(),
             data: Some(data),
+            events: Vec::new(),
         }
     }
 
@@ -146,7 +155,14 @@ impl Outcome {
             ok: false,
             message: message.into(),
             data: None,
+            events: Vec::new(),
         }
+    }
+
+    /// Attaches the rows this command answers with, oldest first.
+    pub fn with_events(mut self, events: Vec<Event>) -> Self {
+        self.events = events;
+        self
     }
 }
 
@@ -283,7 +299,9 @@ pub fn server_catalog() -> Vec<CommandSpec> {
         CommandSpec {
             target: CommandTarget::Server,
             name: "get_messages".into(),
-            summary: "Read the transcript: a range of sequence numbers, oldest first.".into(),
+            summary: "Read the transcript: a range of sequence numbers, oldest first. \
+                     Each row arrives as a `message` event before the result."
+                .into(),
             args: vec![
                 arg(
                     "session",
@@ -716,15 +734,31 @@ fn transcript_outcome(name: &str, t: Transcript) -> Outcome {
             t.last_seq
         )
     };
+    let events = t
+        .messages
+        .iter()
+        .map(|row| {
+            Event::Message(MessageEvent {
+                session: name.to_string(),
+                seq: row.seq,
+                kind: row.kind.clone(),
+                role: row.role.clone(),
+                name: row.name.clone(),
+                text: row.text.clone(),
+            })
+        })
+        .collect();
+    // The rows are the events; a long read is many small messages, not one that
+    // cannot be carried.
     Outcome::ok_with(
         message,
         json!({
             "session": name,
             "status": t.status,
             "last_seq": t.last_seq,
-            "messages": t.messages,
         }),
     )
+    .with_events(events)
 }
 
 fn prepare_delete(d: &Dispatch, name: &str) -> (bool, usize) {
@@ -1404,7 +1438,7 @@ mod tests {
         );
     }
 
-    /// The reply is the rows, `last_seq`, and the session's `status`.
+    /// The reply is the rows as events, plus `last_seq` and the session's `status`.
     ///
     /// # Invariant
     ///
@@ -1440,7 +1474,33 @@ mod tests {
             );
             assert_eq!(data["last_seq"], 2);
             assert_eq!(data["session"], "main");
-            assert_eq!(data["messages"].as_array().unwrap().len(), 2);
+            // The rows are not in the result: each one is its own event, sent first.
+            assert!(
+                data.get("messages").is_none(),
+                "a read that is also a blob has two answers: {data}"
+            );
+            let rows: Vec<&str> = out
+                .events
+                .iter()
+                .map(|event| match event {
+                    Event::Message(row) => row.text.as_str(),
+                    other => panic!("a read answers with rows, not {other:?}"),
+                })
+                .collect();
+            assert_eq!(rows, vec!["hi", "done"], "{rows:?}");
+            let seqs: Vec<i64> = out
+                .events
+                .iter()
+                .map(|event| match event {
+                    Event::Message(row) => row.seq,
+                    other => panic!("{other:?}"),
+                })
+                .collect();
+            assert_eq!(
+                seqs,
+                vec![1, 2],
+                "oldest first, each saying which row it is"
+            );
         }
 
         // An empty window still says what the session is doing: that is the state a
@@ -1455,7 +1515,7 @@ mod tests {
         );
         let data = out.data.unwrap();
         assert_eq!(data["status"], "running");
-        assert_eq!(data["messages"].as_array().unwrap().len(), 0);
+        assert!(out.events.is_empty(), "no rows, no events");
         assert!(
             out.message.contains("transcript ends at seq 7"),
             "the sentence still says where the transcript ends: {}",

@@ -158,6 +158,17 @@ Read-only and cheap: one indexed range scan. It does not claim the session gate,
 because reading a transcript while a turn appends to it is exactly what the TUI's
 replay does, and neither has anything to write.
 
+## get_messages answers with events
+
+`Outcome` carries an `events` list beside the result, and `run_commands` writes it to
+that connection before the `cmd_result`. Only `get_messages` uses it today. It is not
+the bus: a broadcast would tell every client on the machine what one client read, and
+the read is a private question.
+
+The result keeps `session`, `status` and `last_seq` and drops the rows, so there is one
+way to get a row rather than two. `last_seq` stays because a poller advances its cursor
+with it, and the snapshot rule -- rows, status and end from one read -- still holds.
+
 ## get_messages --range
 
 There is one way to name rows: a range. The old `--after_seq` + `--limit` pair

@@ -77,6 +77,8 @@ pub enum Event {
     Response(ResponseEvent),
     /// Streamed tool output (bash stdout/stderr).
     ToolAnswer(ToolAnswerEvent),
+    /// One stored row, re-read on request. See `docs/notes/protocol-message.md`.
+    Message(MessageEvent),
     /// The set of sessions changed.
     Sessions { sessions: Vec<SessionSummary> },
     /// A session's run state changed.
@@ -118,6 +120,30 @@ pub struct ResponseEvent {
 pub enum ToolStream {
     Stdout,
     Stderr,
+}
+
+/// A row of a session's transcript, sent as it is stored rather than as the field
+/// of a command result.
+///
+/// # Invariant
+///
+/// It is addressed, not broadcast: only the connection whose `get_messages` asked
+/// for the row receives it, so a read stays a read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageEvent {
+    pub session: String,
+    /// The row's position in the transcript, which is how a reader advances.
+    pub seq: i64,
+    /// What the row is, in the store's own words: `text`, `reasoning`, `tool_call`.
+    pub kind: String,
+    /// Who spoke, when the kind alone does not say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// The tool a call names, which is what makes its arguments legible.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The row as the store rendered it.
+    pub text: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

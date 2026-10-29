@@ -20,9 +20,9 @@ use std::time::Duration;
 use anyhow::{Context, anyhow};
 use clap::Parser;
 use protocol::{
-    ChannelConfig, ClientInfo, ClientMessage, Event, LogLevel, ResponseEvent, ResponsePart,
-    ServerMessage, SessionStatus, SessionSummary, ToolAnswerEvent, ToolStream, decode_server,
-    encode_client,
+    ChannelConfig, ClientInfo, ClientMessage, Event, LogLevel, MessageEvent, ResponseEvent,
+    ResponsePart, ServerMessage, SessionStatus, SessionSummary, ToolAnswerEvent, ToolStream,
+    decode_server, encode_client,
 };
 use tokio::net::UdpSocket;
 
@@ -419,7 +419,8 @@ impl Client {
             } => {
                 self.settle_follow(id, ok, sink);
                 if shown {
-                    // A result may carry rows: the transcript a read answered with.
+                    // The rows a read answered with arrived as events before this;
+                    // what is left to say is the sentence about them.
                     let window = self.results.remove(&id).unwrap_or_else(|| {
                         self.command_line(
                             data.as_ref()
@@ -427,11 +428,6 @@ impl Client {
                                 .and_then(|s| s.as_str()),
                         )
                     });
-                    if let Some(data) = &data {
-                        for (kind, line) in rows_of(data) {
-                            sink.line(&window, kind, &line);
-                        }
-                    }
                     if !message.is_empty() {
                         let kind = if ok {
                             LineKind::Result
@@ -440,6 +436,11 @@ impl Client {
                         };
                         sink.line(&window, kind, &message);
                     }
+                }
+            }
+            Event::Message(e) => {
+                if shown {
+                    self.handle_message(e, sink);
                 }
             }
             Event::Response(e) => {
@@ -508,6 +509,20 @@ impl Client {
         let prefix = self.tag(&e.session, label);
         let window = e.session.clone();
         sink.stream(&window, &key, kind, &prefix, &e.text, e.done);
+    }
+
+    /// A transcript row read back is its own block, in its session's window.
+    fn handle_message(&self, e: MessageEvent, sink: &mut dyn Sink) {
+        let kind = row_kind(&e.kind, e.role.as_deref());
+        // The number is the point of a read: it is what a cursor compares to.
+        let label = match (e.name.as_deref(), kind) {
+            // A tool call is arguments; the name is what makes them legible.
+            (Some(name), LineKind::ToolCall) => format!("{name}: "),
+            _ => String::new(),
+        };
+        let tag = format!("[{} {}] {label}", e.session, e.seq);
+        let key = format!("m:{}:{}", e.session, e.seq);
+        sink.stream(&e.session, &key, kind, &tag, &e.text, true);
     }
 
     fn handle_tool_answer(&self, e: ToolAnswerEvent, sink: &mut dyn Sink) {
@@ -979,42 +994,10 @@ impl Client {
     }
 }
 
-/// The rows a command result carries, as lines: the transcript a read returned.
-///
-/// # Invariant
-///
-/// Empty unless `data.messages` is an array: a result without rows renders as its
-/// message alone, as every other command's does.
-fn rows_of(data: &serde_json::Value) -> Vec<(LineKind, String)> {
-    let Some(rows) = data.get("messages").and_then(|v| v.as_array()) else {
-        return Vec::new();
-    };
-    let session = data.get("session").and_then(|v| v.as_str());
-    rows.iter()
-        .filter_map(|row| {
-            let text = row.get("text")?.as_str()?;
-            let kind = row_kind(row);
-            let tag = match (session, row.get("seq").and_then(|s| s.as_i64())) {
-                (Some(session), Some(seq)) => format!("[{session} {seq}] "),
-                (Some(session), None) => format!("[{session}] "),
-                (None, Some(seq)) => format!("[{seq}] "),
-                (None, None) => String::new(),
-            };
-            let label = match row.get("name").and_then(|v| v.as_str()) {
-                // A tool call is arguments; the name is what makes them legible.
-                Some(name) if kind == LineKind::ToolCall => format!("{name}: "),
-                _ => String::new(),
-            };
-            Some((kind, format!("{tag}{label}{text}")))
-        })
-        .collect()
-}
-
 /// Which colour a stored row is drawn in; unknown kinds are context, not errors.
-fn row_kind(row: &serde_json::Value) -> LineKind {
-    let field = |key: &str| row.get(key).and_then(|v| v.as_str()).unwrap_or_default();
-    match (field("kind"), field("role")) {
-        ("text", "user") => LineKind::User,
+fn row_kind(kind: &str, role: Option<&str>) -> LineKind {
+    match (kind, role) {
+        ("text", Some("user")) => LineKind::User,
         ("text", _) => LineKind::Assistant,
         ("reasoning", _) => LineKind::Reasoning,
         ("tool_call", _) | ("builtin_call", _) => LineKind::ToolCall,
@@ -2054,40 +2037,6 @@ mod tests {
         assert!(said.contains("true, false"), "{said}");
     }
 
-    /// A read answers with rows: before, `data` was dropped and only the summary
-    /// was visible.
-    #[test]
-    fn a_result_with_rows_shows_them_and_then_its_summary() {
-        let d = tempfile::tempdir().unwrap();
-        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
-        let mut s = VecSink(Vec::new());
-        let data = serde_json::json!({
-            "session": "main",
-            "last_seq": 7,
-            "messages": [
-                {"seq": 6, "kind": "text", "role": "user", "text": "check it"},
-                {"seq": 7, "kind": "tool_call", "call_id": "c1", "name": "bash", "text": "{\"cmd\":\"ls\"}"}
-            ]
-        });
-        c.handle_event(
-            Event::CmdResult {
-                id: 1,
-                ok: true,
-                message: "2 row(s) at seq 6..7 in main".into(),
-                data: Some(data),
-            },
-            &mut s,
-        );
-        assert_eq!(
-            s.0,
-            vec![
-                "[main 6] check it",
-                "[main 7] bash: {\"cmd\":\"ls\"}",
-                "2 row(s) at seq 6..7 in main",
-            ]
-        );
-    }
-
     /// Every other result keeps its old look: one line, no invented content.
     #[test]
     fn a_result_without_rows_is_just_its_message() {
@@ -2112,20 +2061,61 @@ mod tests {
         assert_eq!(s.0, vec!["session is now main"; 3]);
     }
 
-    /// A row with no text is not a line, and an unknown kind is not an error.
+    /// A read answers on the stream: each row is a block in its session's window.
     #[test]
-    fn a_row_the_client_does_not_understand_is_still_printable() {
-        let data = serde_json::json!({
-            "messages": [
-                {"seq": 1, "kind": "mystery", "text": "what is this"},
-                {"seq": 2, "kind": "text", "role": "assistant"}
-            ]
-        });
-        assert_eq!(
-            rows_of(&data),
-            vec![(LineKind::System, "[1] what is this".to_string())]
+    fn a_read_back_row_is_a_block_in_its_session_window() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
+        let mut s = StreamSink::default();
+        c.handle_event(
+            Event::Message(MessageEvent {
+                session: "main".into(),
+                seq: 7,
+                kind: "tool_call".into(),
+                role: None,
+                name: Some("bash".into()),
+                text: "{\"command\":\"ls\"}".into(),
+            }),
+            &mut s,
         );
-        assert!(rows_of(&serde_json::json!({})).is_empty());
+        assert_eq!(s.windows, vec!["main"]);
+        assert_eq!(s.keys, vec!["m:main:7"], "the row is its own block");
+        assert_eq!(s.lines, vec!["[main 7] bash: {\"command\":\"ls\"}"]);
+
+        // An unknown kind is context, not an error, and still gets its row.
+        let mut s = StreamSink::default();
+        c.handle_message(
+            MessageEvent {
+                session: "main".into(),
+                seq: 8,
+                kind: "mystery".into(),
+                role: None,
+                name: None,
+                text: "what is this".into(),
+            },
+            &mut s,
+        );
+        assert_eq!(s.lines, vec!["[main 8] what is this"]);
+    }
+
+    /// A result says how many rows it answered with; the rows are not in it.
+    #[test]
+    fn a_result_that_answered_with_rows_says_only_how_many() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
+        c.split = Split(true);
+        let mut s = StreamSink::default();
+        c.handle_event(
+            Event::CmdResult {
+                id: 1,
+                ok: true,
+                message: "2 row(s) at seq 1..2 in main".into(),
+                data: Some(serde_json::json!({"session": "main", "last_seq": 2})),
+            },
+            &mut s,
+        );
+        assert_eq!(s.lines, vec!["2 row(s) at seq 1..2 in main"]);
+        assert!(s.keys.is_empty(), "the summary is not a row: {:?}", s.keys);
     }
 
     #[test]

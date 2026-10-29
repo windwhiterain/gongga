@@ -71,6 +71,8 @@ struct Bridge {
     probes: HashMap<u64, Incoming>,
     /// Read-backs: command id -> the session being read.
     reads: HashMap<u64, String>,
+    /// The rows of the read each session asked for, as they arrive.
+    rows: HashMap<String, Vec<Row>>,
     next_id: u64,
 }
 
@@ -87,6 +89,7 @@ impl Bridge {
             queue: VecDeque::new(),
             probes: HashMap::new(),
             reads: HashMap::new(),
+            rows: HashMap::new(),
             next_id: Self::seed_command_id(),
         }
     }
@@ -182,6 +185,8 @@ impl Bridge {
                     )
                     .await?;
                 self.queue.pop_front();
+                // A probe reads one row too: start its window clean.
+                self.rows.insert(session.clone(), Vec::new());
                 self.probes.insert(id, incoming);
                 continue;
             }
@@ -263,6 +268,13 @@ impl Bridge {
             return Ok(());
         };
         match event {
+            Event::Message(event) => {
+                // Addressed to this connection, so every row here is an answer to a
+                // read this bridge made.
+                let session = event.session.clone();
+                self.rows.entry(session).or_default().push(Row::from(event));
+                Ok(())
+            }
             Event::CmdResult {
                 id,
                 ok,
@@ -335,11 +347,8 @@ impl Bridge {
                 }
                 return Ok(());
             }
-            let rows: Vec<Row> = data
-                .as_ref()
-                .map(|value| value["messages"].clone())
-                .and_then(|value| serde_json::from_value(value).ok())
-                .unwrap_or_default();
+            // The rows came in as events before this result; take what was read.
+            let rows = self.rows.remove(&session).unwrap_or_default();
             // The window may reach back past this turn; the cursor is what says
             // which rows are still owed an answer.
             let cursor = self
@@ -384,6 +393,8 @@ impl Bridge {
             )
             .await?;
         self.reads.insert(id, session.to_string());
+        // Whatever arrives from now on belongs to this read.
+        self.rows.insert(session.to_string(), Vec::new());
         Ok(())
     }
 

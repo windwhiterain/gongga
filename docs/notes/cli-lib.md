@@ -142,12 +142,20 @@ flag, because the front-end has to know the names and their order anyway -- and 
 would leave it inventing a naming rule the command layer already owns. The lines carry
 their window either way: the announcement says what a frame shows, never what is held.
 
-## rows_of
+## Client::handle_message
 
-A command result can carry rows -- `data.messages`, the shape a transcript read
-answers with. Only one-shot mode showed them, because it prints the whole event;
-the log drew `message` and dropped `data`, so a read looked like a count with
-nothing behind it.
+A read answers with rows on the stream, one event each, before the result that says how
+many. Each becomes its own block (`m:<session>:<seq>`) in its session's window, sealed
+as it arrives: a read is about the past, so nothing about that row is still to come.
+
+The row keeps its `seq` in the label. It is the only place a reader can see which
+position the transcript was read at, and a read that cannot be pointed at is a wall of
+text that happens to quote the session back.
+
+This replaced `rows_of`, which rendered `data.messages` off a command result: only
+one-shot mode showed them, because it printed the whole event, while the log drew the
+result's message and dropped the rows -- a read looked like a count with nothing behind
+it.
 
 Rendering them belongs here rather than in the front-end: the TUI is a transparent
 wrapper that must not learn which command asked. What this function reads is a

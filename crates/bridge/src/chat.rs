@@ -86,7 +86,8 @@ pub struct ChatState {
     pub waiting: VecDeque<Pending>,
 }
 
-/// One row of `get_messages`' reply.
+/// One row of a transcript read-back: a `message` event without the session the read
+/// was already about.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct Row {
     pub seq: i64,
@@ -97,6 +98,18 @@ pub struct Row {
     pub name: Option<String>,
     #[serde(default)]
     pub text: String,
+}
+
+impl From<protocol::MessageEvent> for Row {
+    fn from(row: protocol::MessageEvent) -> Self {
+        Self {
+            seq: row.seq,
+            kind: row.kind,
+            role: row.role,
+            name: row.name,
+            text: row.text,
+        }
+    }
 }
 
 /// The rows this bridge still owes a reply for: those after its cursor.

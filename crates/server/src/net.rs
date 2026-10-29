@@ -282,6 +282,18 @@ async fn run_commands(
 ) {
     while let Some(command) = queued.recv().await {
         let outcome = dispatch(&d, &command.name, &command.args).await;
+        // A command's own events first: they are the answer, and the result that
+        // follows is the sentence about it.
+        let mut broken = false;
+        for event in outcome.events {
+            if send_event(&sink, event).await.is_err() {
+                broken = true;
+                break;
+            }
+        }
+        if broken {
+            break;
+        }
         let result = Event::CmdResult {
             id: command.id,
             ok: outcome.ok,
