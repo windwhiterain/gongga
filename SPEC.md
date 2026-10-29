@@ -41,7 +41,7 @@ use `which("bash")` as bash.
 - invocation: `gongga <cmd> [--arg <v> ...]` -- argv is already tokens, so a command line
   carries no `/` and no prose form. `/` belongs to `cmd_input` only.
 - server:
-  - `set_session --session <name> [--cwd <path>] [--llm <provider/model>] [--compact_threshold <n%>] [--thinking_effort <level>]`
+  - `set_session --session <name> [--cwd <path>] [--llm <provider/model>] [--context_limit <n%>] [--thinking_effort <level>]`
   - `del_session --session <name>`: also delete all bash with the session name in key.
   - `send_message --session <name> --message <string>`: inject message instantly, turn waiting bash to backgound.
   - `interrupt_session --session <name>`
