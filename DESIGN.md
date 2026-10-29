@@ -885,7 +885,7 @@ Ctrl+C 和 Ctrl+X 都删了：一手 `Ctrl+C` 的老习惯在 TUI 里意味着�
 - `idle_timeout_ms`（默认 60s）：SSE 两个 chunk 之间的静默上限 —— **连接开着但不发数据就是坏
   掉**，这正是卡死那次的形态。
 - `max_retries`（默认 3）/ `retry_base_ms`（默认 1000）：失败、超时、或**完成了但一个字都没有**
-  的空响应，都会退避重试，延迟翻倍（1s → 2s → 4s，封顶 30s）。压缩（summarise）那条请求同样受保护。
+  的空响应，以及**读流读到一半 panic**，都会退避重试，延迟翻倍（1s → 2s → 4s，封顶 30s）。压缩（summarise）那条请求同样受保护。
 - 只有「本次尝试一个字都没说」才允许重试：已经说过话再问一次，会给出第二个互相矛盾的答案。
 - 重试会发一条 warn 到 TUI（`retry 1/3 in 1s`），所以慢的时候看得到是在重试，而不是在思考。
 
@@ -898,6 +898,11 @@ Ctrl+C 和 Ctrl+X 都删了：一手 `Ctrl+C` 的老习惯在 TUI 里意味着�
    没有日志，和「provider 不答了」一模一样。现在按字符切（`char_indices`），并有单测守着。
 2. turn 现在整体包在 `catch_unwind` 里：再 panic 也会落到 `Error` 状态并打一条 error 日志，
    而不是永远 running。
+3. 那只解决了「永远 running」，没解决「不重试」：panic 在 `stream_once` 自己的 task 里，把 event
+   channel 一起带走，外层只看见一条「停了但没完成」的流 —— 没有 `Failed` 可据此重试，也没有人说出
+   原因。现在**每次尝试各自包一层** `catch_unwind`，panic 就是那一次尝试的失败，回到本来就有的重试环；
+   一条既没 `Completed` 也没 `Failed` 就结束的流同样自己报上原因。能不能再试一次，仍然由第 4 条
+   「本次尝试一个字都没说」决定。
 
 排查这类问题的抓手是分段日志（INFO 级，带 elapsed）：`turn start/end`、`step start`、
 `tool start/end`、`model request: sending/headers/stream ended`、`compression request done`。
