@@ -60,7 +60,7 @@ that is neither on `REQUIRED` nor in the pinned content.
 
 `{{name}}` and nothing else: no conditionals, no loops, no filters. A prompt that needs
 a conditional is a prompt with two shapes, and two shapes are two templates named by the
-code -- which is what `context_notice` plus `folded_none` and `folded_through` do. A real
+code -- which is what `context_notice` does on its own. A real
 template language would buy those two cases with a dependency and a second syntax to
 learn about the harness.
 

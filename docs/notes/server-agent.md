@@ -210,11 +210,11 @@ by the party that will bill for it.
 The notice names the numbers and the two tools, because a bare "you are near the
 limit" leaves the reader to guess what is possible.
 
-Sent once per transcript state, not once per step: a turn that stays above the
-threshold takes many steps, and repeating the notice on each would bury the work
-it is asking about. `SessionHandle::note_context_asked` remembers the
-`handover_upto` it last spoke about, so folding something -- which changes that
-number -- is what earns a second notice.
+Sent once per crossing, not once per step: a turn that stays above the threshold
+takes many steps, and repeating the notice on each would bury the work it is
+asking about. `SessionHandle::note_context_asked` remembers the size it last spoke
+at, so two things earn another notice: growing a quarter of the budget past that
+size, and a handover, which empties the session and therefore re-arms it.
 
 The notice is queued as an `inject` row and does not touch the inbox signal, so
 it never ends a running command's wait the way an operator's message does.

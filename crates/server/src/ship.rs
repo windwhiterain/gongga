@@ -421,7 +421,7 @@ fn safe_relpath(path: &str) -> Option<PathBuf> {
     (!out.as_os_str().is_empty()).then_some(out)
 }
 
-fn blob(cache: &Path, commit: &str, path: &str) -> Option<Vec<u8>> {
+pub fn blob(cache: &Path, commit: &str, path: &str) -> Option<Vec<u8>> {
     Command::new(git())
         .arg("--git-dir")
         .arg(cache)

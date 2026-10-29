@@ -45,7 +45,7 @@ struct SessionInner {
     cancels: AtomicU64,
     /// Shared rather than embedded: every tool call waiting holds a copy of the count.
     inbox: Arc<AtomicU64>,
-    /// The `handover_upto` a notice was last sent for, plus one; 0 is never.
+    /// The measured context a notice was last sent at; 0 is never.
     context_asked: AtomicU64,
     /// What every operation that reshapes this session queues behind, FIFO.
     gate: Arc<AsyncMutex<()>>,
@@ -135,18 +135,24 @@ impl SessionHandle {
     /// True only once per `upto`: the agent is told when the threshold is crossed,
     /// not on every step that stays above it, and it is told again only after it
     /// has folded something -- the point at which the advice changed.
-    pub fn note_context_asked(&self, upto: i64) -> bool {
-        // Stored plus one, so a fresh session (0) is distinguishable from "told
-        // something that covered nothing".
-        let wanted = upto.saturating_add(1) as u64;
+    pub fn note_context_asked(&self, tokens: u64, budget: u64) -> bool {
+        // A quarter of the budget is the granule: small enough that a session
+        // still drifting upward is told again before it doubles, large enough
+        // that a turn spent just over the line is not nagged on every step.
+        let granule = (budget / 4).max(1);
         let mut current = self.inner.context_asked.load(Ordering::SeqCst);
         loop {
-            if current == wanted {
+            // Never told, or told at a size this has since fallen well below:
+            // a handover empties the session and re-arms the notice.
+            let fresh = current == 0 || tokens.saturating_add(granule) < current;
+            // Or it has grown a granule past what was announced.
+            let grown = tokens > current.saturating_add(granule);
+            if !fresh && !grown {
                 return false;
             }
             match self.inner.context_asked.compare_exchange(
                 current,
-                wanted,
+                tokens,
                 Ordering::SeqCst,
                 Ordering::SeqCst,
             ) {
@@ -691,26 +697,34 @@ mod tests {
     /// # Invariant
     ///
     /// A turn that stays above the threshold takes several steps; repeating the
-    /// notice on each one would bury the work it is asking about. Folding
-    /// something is the only thing that earns a second notice.
+    /// notice on each one would bury the work it is asking about. Three things
+    /// earn another one: growth of a quarter of the budget, a handover that
+    /// empties the session, and a context that was cut back below the last size.
     #[test]
-    fn a_context_notice_is_sent_once_per_state() {
+    fn a_context_notice_is_sent_once_per_crossing() {
         let shells = ShellSet::new(PathBuf::from("bash"), std::env::temp_dir(), vec![]);
         let handle = session("s", shells);
+        let budget = 200;
         assert!(
-            handle.note_context_asked(0),
+            handle.note_context_asked(budget, budget),
             "the first crossing is announced"
         );
         assert!(
-            !handle.note_context_asked(0),
-            "the same state is not announced twice"
+            !handle.note_context_asked(budget + 10, budget),
+            "the same crossing is not announced twice"
         );
-        assert!(!handle.note_context_asked(0));
         assert!(
-            handle.note_context_asked(7),
-            "after the agent folds through 7, the advice changed"
+            handle.note_context_asked(budget + 60, budget),
+            "a quarter past the announced size is a new crossing"
         );
-        assert!(!handle.note_context_asked(7));
+        assert!(
+            !handle.note_context_asked(budget + 61, budget),
+            "and only once"
+        );
+        assert!(
+            handle.note_context_asked(budget, budget),
+            "a handover empties the session, which re-arms the notice"
+        );
     }
 
     /// A signal sees the messages that landed after it was taken, and never the same one twice.

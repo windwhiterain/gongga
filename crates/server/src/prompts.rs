@@ -19,8 +19,6 @@ pub const REQUIRED: &[&str] = &[
     "instructions",
     "handover_preamble",
     "context_notice",
-    "folded_none",
-    "folded_through",
     "interrupted_call",
     "size_hint",
     "image_refusal",

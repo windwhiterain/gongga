@@ -1,6 +1,7 @@
-# Handover: the agent folds or hands over, the server only measures
+# Handover: the agent hands the transcript over, the server only measures
 
-There is no folding code in this server. `Agent::maybe_notify_context` measures
+There is no compaction code in this server: no fold, no boundary column, nothing
+that slices a transcript. `Agent::maybe_notify_context` measures
 the context the provider reported, and when it crosses the threshold it queues one
 message saying so. Everything else lives in the `heir` skill, installed at
 `$GONGGA_HOME/skills/heir/`.
@@ -9,18 +10,18 @@ message saying so. Everything else lives in the `heir` skill, installed at
 
 Folding used to live in `Agent::maybe_compress`: at a token threshold the server
 called a model of its own with a generated prompt, wrote the note and moved
-`handover_upto`. That note was written by a process that had not done the
+a boundary column. That note was written by a process that had not done the
 work — it could not tell a decisive failure from a retry it was about to abandon.
 
 The threshold still exists, because somebody has to notice. The judgement does not.
 
 ## Why a script and not a tool
 
-Folding is two statements:
+A handover is two statements:
 
 ```sql
-update sessions set handover = ?, handover_upto = ? where id = ?;
-update sessions set context_tokens = 0 where id = ?;
+update sessions set handover = ?, context_tokens = 0 where id = ?;
+delete from messages where session_id = ?;
 ```
 
 Reading is one `select` over `kind = 'text'`. A server-side tool for that means a
@@ -48,9 +49,9 @@ argument.
 
 Sent once per transcript state, not once per step: a turn that stays above the
 threshold takes many steps, and repeating the notice on each would bury the work
-it is asking about. `SessionHandle::note_context_asked` remembers the
-`handover_upto` it last spoke about, so folding something -- which changes that
-number -- is what earns a second notice.
+it is asking about. `SessionHandle::note_context_asked` remembers the size it last
+spoke at, so two things earn another notice: growing a quarter of the budget past
+that size, and a handover, which empties the session and therefore re-arms it.
 
 The notice is queued as an `inject` row and does not touch the inbox signal, so it
 never ends a running command's wait the way an operator's message does.
@@ -76,26 +77,23 @@ Forty messages with their whole text is about 3k tokens, so the body is returned
 full and there is no preview by default — this is the conversation, and it is what
 a handover note has to be written from.
 
-## transcript.py — the three refusals
+## Why there is no partial fold
 
-`collapse` refuses rather than adjusts, because each of these silently corrupts a
-request:
+Version 1 removed `collapse` and the column that recorded where a note took
+over, because a boundary the agent has to pick is a boundary it can pick wrong,
+and a wrong one is silent. A run in this benchmark folded six times, was told
+six times that it had worked, and stayed over its budget for two hours: each
+attempt aimed past the end (`--upto 800`), the script refused because the cut
+would orphan a `tool_result`, its advice named the boundary the note already
+covered, and the retry that followed folded the same prefix again -- the command
+reported *folded 756 row(s), 262 row(s) still sent* and nothing moved. The note
+grew on every no-op, so every later request carried a longer note than the one
+before it.
 
-| Refusal | What it prevents |
-|---|---|
-| would leave a `tool_result` without its `tool_call` | the provider rejects the whole request, and it looks like a broken session |
-| `--upto` behind the current note | already-folded rows come back into every request, and nothing errors |
-| empty note | that stretch leaves every later request while the transcript still looks complete |
-
-The first names the boundary that would work: the nearest earlier message, which is
-a `seq` the caller has actually seen.
-
-## A fold resets the measurement
-
-`context_tokens` is what the provider counted for the last request, and that
-request carried the prefix just folded. Leaving it alone would make the new context
-look full, and the next notice would fire immediately -- on every step. This is the
-one line in the script that must not be forgotten.
+With the fold gone there is nothing to choose: a row is either here or in the
+mentor. The measurement is still reset by the handover (`context_tokens = 0`),
+because it counted a transcript that no longer exists; leaving it would make the
+next notice fire immediately on every step.
 
 ## heir: the copy is the archive, and emptying is the point
 
@@ -119,7 +117,7 @@ Four things make that acceptable rather than dangerous:
   `tool_call`, and its result can only exist after the process returns. Deleting the
   call would leave that result at the head of the next request, and a provider rejects
   an output whose call is absent -- the whole transcript would fail to send, forever.
-  So the cut stops before the pair, `handover_upto` names where it stopped, and the
+  So the call stays, the archive gets the result that closes it, and the
   instruction the emptied session needs is **not injected as a forged user turn**: it
   is the text this command prints, which arrives as that call's result.
 - **The mentor is answered too.** The archive holds the learner's `tool_call`, so the
@@ -129,10 +127,18 @@ Four things make that acceptable rather than dangerous:
   threshold too.
 - **Seq restarts when nothing is kept.** `seq` is `max(seq)+1` over the rows that
   exist. When an operator empties a session from a shell there is no call in flight,
-  every row goes, and the next one is seq 1 -- so the note must claim to cover nothing
-  and `handover_upto` goes to 0. A note left claiming the old last seq would fold
-  every row the session ever sends: it would look alive and answer as if it had
-  amnesia about everything after the handover.
+  every row goes, and the next one is seq 1. There is nothing to record about where
+  the note ends: every row that is here is sent, so a session that was emptied sends
+  its note and whatever came after it.
+
+## the handover is also a row
+
+The script writes one `events` row per handover -- mechanism, mentor, rows moved,
+the seq it covers, the call left in flight, the note's size, and the size the
+context was measured at -- in the same transaction as the action. Nothing reads it
+to decide what to send: it exists so "how many times did this session compact" is
+a count instead of an inference from two columns and a mentor's name, and so a
+failed handover cannot leave a row claiming it happened.
 
 ## "The transcript is never rewritten" meant the server
 
@@ -166,7 +172,7 @@ row is what tells them apart.
 
 Reading the note stays in Rust: `Store::handover` feeds the request, and
 `history_item_to_input` puts it in front of the transcript. Writing one has no method
-at all, not even behind `#[cfg(test)]`: the tests that need a folded session use
+at all, not even behind `#[cfg(test)]`: the tests that need a handover use
 `fold_from_outside`, a second connection issuing the same statement the skill issues.
-That is the invariant in code form: **this server never folds.** Deleting rows is not in this file's vocabulary at all;
+That is the invariant in code form: **this server never compacts.** Deleting rows is not in this file's vocabulary at all;
 the only `DELETE FROM messages` that touches a session's own rows is in the skill.

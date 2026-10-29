@@ -55,14 +55,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     cwd        TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
-    -- Set once the agent has folded the older part of the transcript into a
-    -- handover note: `handover_upto` says where that note takes over when a
-    -- request is built. Nothing here rewrites a row. The rows can still be
+    -- Set once the agent has handed the transcript to a mentor and woken up to
+    -- this note: a row is either here or in the mentor, so there is no boundary
+    -- to record. Nothing here rewrites a row. The rows can still be
     -- deleted -- by the agent, from a shell, through the `heir` skill, and only
     -- after the whole transcript has been copied into a mentor session and the
     -- copy checked row for row. The server's own hands stay off the transcript.
     handover TEXT,
-    handover_upto INTEGER NOT NULL DEFAULT 0,
     -- Per-session overrides given by `set_session`. NULL means "the server's
     -- configuration", so a session that never asked is indistinguishable from
     -- one created before these columns existed.
@@ -177,10 +176,6 @@ fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     for (column, ddl) in [
         ("handover", "ALTER TABLE sessions ADD COLUMN handover TEXT"),
-        (
-            "handover_upto",
-            "ALTER TABLE sessions ADD COLUMN handover_upto INTEGER NOT NULL DEFAULT 0",
-        ),
         ("llm", "ALTER TABLE sessions ADD COLUMN llm TEXT"),
         (
             "context_limit",
@@ -658,15 +653,15 @@ impl Store {
         Ok(rows)
     }
 
-    /// The folded prefix, if there is one: its note and the seq it covers.
-    pub fn handover(&self, session_id: i64) -> anyhow::Result<(Option<String>, i64)> {
+    /// The handover note, if the agent has written one.
+    pub fn handover(&self, session_id: i64) -> anyhow::Result<Option<String>> {
         let conn = self.lock();
-        let row = conn.query_row(
-            "SELECT handover, handover_upto FROM sessions WHERE id = ?1",
+        let note = conn.query_row(
+            "SELECT handover FROM sessions WHERE id = ?1",
             params![session_id],
-            |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i64>(1)?)),
+            |r| r.get::<_, Option<String>>(0),
         )?;
-        Ok(row)
+        Ok(note)
     }
 
     /// Input tokens the provider reported for the last request, or 0 if this
@@ -693,7 +688,7 @@ impl Store {
         let conn = self.lock();
         let session = conn
             .query_row(
-                "SELECT id, status, model, llm, context_limit, context_tokens,                         handover_upto, length(handover)                    FROM sessions WHERE name = ?1",
+                "SELECT id, status, model, llm, context_limit, context_tokens,                         length(handover)                    FROM sessions WHERE name = ?1",
                 params![name],
                 |r| {
                     Ok(serde_json::json!({
@@ -703,8 +698,7 @@ impl Store {
                         "llm": r.get::<_, Option<String>>(3)?,
                         "context_limit": r.get::<_, Option<i64>>(4)?,
                         "context_tokens": r.get::<_, i64>(5)?,
-                        "handover_upto": r.get::<_, i64>(6)?,
-                        "handover_chars": r.get::<_, Option<i64>>(7)?,
+                        "handover_chars": r.get::<_, Option<i64>>(6)?,
                     }))
                 },
             )
@@ -816,7 +810,7 @@ impl Store {
             "llm": session["llm"],
             "context_limit": session["context_limit"],
             "context_tokens": session["context_tokens"],
-            "handover_upto": session["handover_upto"],
+            "handovers": payloads("handover")?.len(),
             "handover_chars": session["handover_chars"],
             "turns": turns,
             "requests": requests.len(),
@@ -913,10 +907,13 @@ impl Store {
         Ok(closed)
     }
 
-    /// What a request is built from: the handover note plus what came after it.
+    /// What a request is built from: the handover note plus every row still here.
+    ///
+    /// A handover leaves the note and nothing else -- the rows that explained it
+    /// are in the mentor -- so there is no boundary to cut at.
     pub fn context(&self, session_id: i64) -> anyhow::Result<(Option<String>, Vec<HistoryItem>)> {
-        let (note, upto) = self.handover(session_id)?;
-        let items = self.history_since(session_id, upto)?;
+        let note = self.handover(session_id)?;
+        let items = self.history_since(session_id, 0)?;
         Ok((note, items))
     }
 
@@ -1465,11 +1462,11 @@ mod tests {
 
     /// Folds like the `heir` skill: a second connection, the same statement.
     /// The store owns no writer for a handover.
-    fn fold_from_outside(dir: &std::path::Path, session_id: i64, note: &str, upto: i64) {
+    fn fold_from_outside(dir: &std::path::Path, session_id: i64, note: &str) {
         let conn = rusqlite::Connection::open(dir.join("g.db")).unwrap();
         conn.execute(
-            "UPDATE sessions SET handover = ?1, handover_upto = ?2 WHERE id = ?3",
-            params![note, upto, session_id],
+            "UPDATE sessions SET handover = ?1 WHERE id = ?2",
+            params![note, session_id],
         )
         .unwrap();
     }
@@ -1744,14 +1741,15 @@ mod tests {
                 )
                 .unwrap();
         }
-        assert_eq!(store.handover(id).unwrap(), (None, 0));
+        assert_eq!(store.handover(id).unwrap(), None);
 
-        fold_from_outside(d.path(), id, "the first three", 3);
+        fold_from_outside(d.path(), id, "the first three");
 
+        // A handover leaves the note behind and nothing else: the rows it
+        // covered are in the mentor, so every row still here is sent.
         let (note, items) = store.context(id).unwrap();
         assert_eq!(note.as_deref(), Some("the first three"));
-        assert_eq!(items.len(), 2, "only what came after the note is sent");
-        // The full transcript is still there.
+        assert_eq!(items.len(), 5, "everything the session still holds");
         assert_eq!(store.history(id).unwrap().len(), 5);
         assert_eq!(store.message_index(id).unwrap().len(), 5);
     }
@@ -1842,7 +1840,8 @@ mod tests {
             .unwrap();
         }
         let store = Store::open(&path).unwrap();
-        assert_eq!(store.handover(1).unwrap_or((None, 0)), (None, 0));
+        // No such session yet: the read fails, and "no note" is the honest answer.
+        assert_eq!(store.handover(1).unwrap_or(None), None);
         // The tuning columns arrive the same way; a session that predates them
         // reads as "no overrides", not as an error.
         assert!(store.list_sessions().is_ok());
@@ -2123,7 +2122,7 @@ mod tests {
     fn a_prompt_row_is_sent_and_never_repeated_as_history() {
         let (d, store) = temp_store();
         let id = store.create_session("main", "m", "C:/x").unwrap();
-        fold_from_outside(d.path(), id, "the note", 0);
+        fold_from_outside(d.path(), id, "the note");
         let prompt = Prompt {
             instructions: "You are gongga".into(),
             handover: Some("Earlier in this session: the note".into()),

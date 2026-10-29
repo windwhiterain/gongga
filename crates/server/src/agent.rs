@@ -298,14 +298,12 @@ impl Agent {
         if tokens < budget {
             return;
         }
-        let Ok((_, upto)) = self.store.handover(id) else {
-            return;
-        };
-        // Once per state of the transcript: nagging every step teaches nothing.
-        if !session.note_context_asked(upto) {
+        // Once per crossing: nagging every step teaches nothing, and a context
+        // that was cut back is a new crossing.
+        if !session.note_context_asked(tokens, budget) {
             return;
         }
-        let message = context_notice(crate::prompts::shared(), name, tokens, budget, upto);
+        let message = context_notice(crate::prompts::shared(), name, tokens, budget);
         if let Err(e) = self.store.add_pending_task(
             name,
             "inject",
@@ -317,7 +315,7 @@ impl Agent {
         let _ = self.store.append_event(
             Some(id),
             "context_notice",
-            &json!({"tokens": tokens, "limit": budget, "handover_upto": upto}),
+            &json!({"tokens": tokens, "limit": budget}),
         );
         self.bus.publish(Event::Log {
             level: LogLevel::Info,
@@ -833,20 +831,13 @@ fn context_notice(
     session: &str,
     tokens: u64,
     budget: u64,
-    upto: i64,
 ) -> String {
-    let folded = if upto == 0 {
-        prompts.text("folded_none").unwrap_or_default()
-    } else {
-        prompts.render("folded_through", &[("upto", &upto.to_string())])
-    };
     prompts.render(
         "context_notice",
         &[
             ("session", session),
             ("tokens", &tokens.to_string()),
             ("budget", &budget.to_string()),
-            ("folded", folded.trim()),
         ],
     )
 }
@@ -921,14 +912,11 @@ mod tests {
     /// config's, the numbers are this function's.
     #[test]
     fn the_context_notice_says_what_to_do() {
-        let notice = context_notice(&notice_prompts(), "main", 700_000, 700_000, 0);
+        let notice = context_notice(&notice_prompts(), "main", 700_000, 700_000);
         assert!(notice.contains("700000 input tokens"), "{notice}");
-        assert!(notice.contains("Nothing has been folded yet."), "{notice}");
         assert!(notice.contains("--session main"), "{notice}");
         assert!(notice.contains("transcript.py read"), "{notice}");
-        assert!(notice.contains("transcript.py collapse"), "{notice}");
-        // And it says the messages are not lost, the fear that stops folding.
-        assert!(notice.contains("stay readable"), "{notice}");
+        assert!(notice.contains("transcript.py heir"), "{notice}");
         assert!(
             !notice.contains("{{"),
             "a placeholder nobody filled: {notice}"
@@ -936,14 +924,10 @@ mod tests {
     }
 
     fn notice_prompts() -> crate::prompts::Prompts {
-        crate::prompts::Prompts::of(&[
-            (
-                "context_notice",
-                "Context notice for `{{session}}`: {{tokens}} input tokens of {{budget}}. {{folded}} Read `transcript.py read --session {{session}}`, fold `transcript.py collapse --session {{session}}`; the messages stay readable.",
-            ),
-            ("folded_none", "Nothing has been folded yet."),
-            ("folded_through", "The note runs through seq {{upto}}."),
-        ])
+        crate::prompts::Prompts::of(&[(
+            "context_notice",
+            "Context notice for `{{session}}`: {{tokens}} input tokens of {{budget}}.              Read `transcript.py read --session {{session}}`, hand over with              `transcript.py heir --session {{session}} --mentor <name> --note <text>`.",
+        )])
     }
 
     /// The warning names the cause: "failed or came back empty" is what made
@@ -965,11 +949,12 @@ mod tests {
         assert!(said.contains("retry 1 of 3"), "{said}");
     }
 
-    /// A notice for a session that already folded says where the note ends.
+    /// The notice names the two numbers it is talking about and nothing it cannot
+    /// know: the measured size and the budget. There is no boundary to quote.
     #[test]
-    fn the_notice_names_what_is_already_folded() {
-        let notice = context_notice(&notice_prompts(), "main", 10, 20, 42);
-        assert!(notice.contains("through seq 42"), "{notice}");
+    fn the_notice_names_the_size_and_the_budget() {
+        let notice = context_notice(&notice_prompts(), "main", 10, 20);
+        assert!(notice.contains("10 input tokens of 20"), "{notice}");
         assert!(!notice.contains("{{"), "{notice}");
     }
 }

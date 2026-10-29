@@ -87,12 +87,13 @@ This doc comment used to carry three overlapping openings (`Loads the transcript
 in the order the model should see it`, the note replacement rule, and the
 fact that no writer exists). The surviving statements:
 
-A handover note, once written, stands in for everything up to its `handover_upto`, so
-that is all a request needs. The rows themselves are never deleted -- the full
-transcript stays available to `history` and to anything that wants to audit it.
+A handover note, once written, stands in for everything that is no longer here, so
+that is all a request needs. The server never deletes a row: only the `heir` skill
+does, and only after it has copied every row into a mentor and compared the copy
+row for row.
 
-Production code always has a lower bound (a note) or both (a fold), and a
-method nobody calls is a second way to ask the same question.
+Production code always has a lower bound (a note), and a method nobody calls is a
+second way to ask the same question.
 
 ## HistoryItem::ToolResult — images
 

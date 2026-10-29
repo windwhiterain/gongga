@@ -8,6 +8,7 @@ mod config;
 mod image;
 mod instance;
 mod llm;
+mod migrate;
 mod net;
 mod prompts;
 mod providers;
@@ -212,6 +213,19 @@ async fn run() -> anyhow::Result<()> {
         overridden = ?overridden,
         "prompt templates: the shipped defaults, plus what this home overrode"
     );
+
+    // Before the store reads it: a home one version behind is migrated into the
+    // shape this build queries. The step runs outside the server, exits zero,
+    // and only then moves the version file.
+    let migrated = migrate::bring_forward(&cfg.home, &cfg.db_path)?;
+    if !migrated.steps.is_empty() {
+        tracing::info!(
+            from = migrated.from,
+            to = migrate::VERSION,
+            steps = ?migrated.steps,
+            "home migrated"
+        );
+    }
 
     let store = store::Store::open(&cfg.db_path)?;
     let llm = Arc::new(LlmClient::new(&cfg.llm)?);
