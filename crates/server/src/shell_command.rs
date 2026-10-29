@@ -25,8 +25,11 @@ pub fn install(home: &Path, cli: &Path) -> anyhow::Result<String> {
         .with_context(|| format!("writing the `{COMMAND}` command for {}", cli.display()))?;
     // MSYS treats every file on NTFS as runnable; a real filesystem does not.
     #[cfg(unix)]
-    std::fs::set_permissions(bin.join(COMMAND), std::fs::Permissions::from_mode(0o755))
-        .with_context(|| format!("making the `{COMMAND}` command runnable"))?;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(bin.join(COMMAND), std::fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("making the `{COMMAND}` command runnable"))?;
+    }
     Ok(path_with(&bin))
 }
 
