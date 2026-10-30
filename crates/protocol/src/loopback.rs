@@ -1,9 +1,5 @@
 //! End-to-end exercise of the reliable channel over a real UDP socket.
 //!
-//! Compiled only for tests, and inside the crate rather than as a second test
-//! binary: a `tests/` file would link the whole stack a second time to run the
-//! same six proofs.
-//!
 //! See `docs/notes/protocol-loopback.md`.
 
 use std::collections::HashMap;
