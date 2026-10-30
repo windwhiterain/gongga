@@ -31,6 +31,26 @@ what a *shell* can run: `scripts/server_script_example.py` drives the harness wi
 `#!/bin/sh` file on Windows. `None` only when the operating system cannot name the
 running process; the variable is then left out rather than pointing at nothing.
 
+## Why not one name for both worlds
+
+Inheriting the environment is not the problem -- a script the model runs from its
+bash gets all of it. What it inherits is a *name* that resolves to a shell script,
+and a native process cannot use that: measured here, `subprocess.run(["gongga"])`
+with `<home>/bin` first on `PATH` fails with `WinError 2`, because Windows appends
+`.exe` and nothing else when a command has no extension.
+
+A per-platform launcher does not close the gap either. A `gongga.cmd` beside the
+`gongga` script runs fine when the caller spells it (`["gongga.cmd"]` works, from a
+native process, no shell), but the bare name still finds nothing -- and a shell
+looks for `gongga`, not `gongga.cmd`. One name that both can run would have to be
+`gongga.exe` in the home, which is the copy this design refuses.
+
+So the split is by caller, and it is the same split the operating system makes:
+a **shell** gets a name (`gongga`, on `PATH`), a **program** gets a path
+(`GONGGA_CLI`). It also keeps a script away from whatever else answers to that
+name: this machine had a month-old `gongga.exe` in `~/.cargo/bin`, and a bare-name
+lookup is exactly what finds it.
+
 ## Why the `PATH` is rebuilt rather than inherited
 
 A value named `PATH` handed to Git Bash in the native shape (`C:\a;C:\b`) is
