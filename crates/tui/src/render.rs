@@ -352,7 +352,8 @@ pub fn caret(s: &Screen, area: Rect) -> (u16, u16) {
     (x, y)
 }
 
-/// The input area as `draw` lays it out, so a caller can find the row to re-anchor.
+/// The input area as `draw` lays it out, for a test that asks.
+#[cfg(test)]
 pub fn input_area(area: Rect, s: &Screen) -> Rect {
     areas(
         area,

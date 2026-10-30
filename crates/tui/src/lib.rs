@@ -798,11 +798,14 @@ impl Drop for Tui {
 /// frame that writes the events area must not leave the console caret there, and
 /// a caret that blinks on every repaint is what an IME follows. See
 /// `docs/notes/tui-lib.md`.
-fn present(
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+fn present<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
     screen: &mut Screen,
     typed: bool,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     terminal.autoresize()?;
     let input = {
         // The renderer writes the scroll bound back, hence `&mut`.
@@ -1095,6 +1098,58 @@ mod layering {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The ink an IME puts on the console, which no frame of ours ever drew.
+    ///
+    /// # Invariant
+    ///
+    /// A repaint that follows typing takes it back: the columns it lands in are
+    /// ones the frame drew blank, so erasing there cannot lose our own text. See
+    /// `docs/notes/tui-lib.md`.
+    #[test]
+    fn a_repaint_after_typing_takes_back_console_ink() {
+        use ratatui::backend::TestBackend;
+        use ratatui::buffer::Cell;
+
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        let mut screen = Screen {
+            panes: Panes::new(),
+            focus: String::new(),
+            completion: None,
+            input: InputLine::default(),
+            status: String::new(),
+            footer: String::new(),
+            placeholder: String::new(),
+        };
+        screen.input.insert_str("hi");
+        present(&mut terminal, &mut screen, false).unwrap();
+
+        let area = Rect::new(0, 0, 40, 12);
+        let row = render::input_area(area, &screen).y;
+        // The composition a console-level IME would leave behind, past our text.
+        let ink = Cell::from('拼');
+        ratatui::backend::Backend::draw(
+            terminal.backend_mut(),
+            std::iter::once((20u16, row, &ink)),
+        )
+        .unwrap();
+        assert_eq!(
+            terminal.backend().buffer()[(20, row)].symbol(),
+            "拼",
+            "the ink was written"
+        );
+
+        // One keystroke later, the row past its text is said again.
+        screen.input.insert('!');
+        present(&mut terminal, &mut screen, true).unwrap();
+        assert_eq!(
+            terminal.backend().buffer()[(20, row)].symbol(),
+            " ",
+            "the composition's tail was left on the prompt"
+        );
+        // And the text itself is untouched.
+        assert_eq!(terminal.backend().buffer()[(2, row)].symbol(), "h");
+    }
 
     /// Drives the key handler without a terminal: the only part with real logic.
     struct Headless {

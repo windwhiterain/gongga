@@ -293,6 +293,13 @@ enum Echo<'a> {
 
 impl Client {
     /// Echoes what the operator typed into the window its command named.
+    /// Echoes the line where its answer will be read.
+    ///
+    /// # Invariant
+    ///
+    /// A command that acts on this window answers on the command line, so its echo
+    /// goes there too: an answer without its question reads as a line of somebody
+    /// else's transcript that landed in the wrong place.
     fn show(&self, sink: &mut dyn Sink, echo: &Echo<'_>, tokens: &[String], session: Option<&str>) {
         let window = self.command_line(session);
         match echo {
@@ -783,12 +790,13 @@ impl Client {
             return Submission::Rejected;
         }
 
-        self.show(
-            sink,
-            &echo,
-            &tokens,
-            args.get("session").map(String::as_str),
-        );
+        // A client command is echoed where it answers: the command line.
+        let window = if spec.target == protocol::CommandTarget::Client {
+            None
+        } else {
+            args.get("session").map(String::as_str)
+        };
+        self.show(sink, &echo, &tokens, window);
         if spec.target == protocol::CommandTarget::Client {
             self.run_client_command(&head, &args, sink);
             return Submission::Local;
@@ -2684,6 +2692,28 @@ mod tests {
         c.command(argv("set_session --session typo"), &mut s);
         ack(&mut c, false, &mut s);
         assert_eq!(c.sticky.get("session"), Some("main"));
+    }
+
+    /// A client command is echoed on the command line, where it answers.
+    #[test]
+    fn a_window_command_is_echoed_where_it_answers() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(
+            published_catalog(),
+            Sticky::load(d.path()),
+            vec!["main", "peer"],
+        );
+        c.split = Split(true);
+        let mut s = StreamSink::default();
+        c.command(argv("hide_session --session peer"), &mut s);
+        assert_eq!(
+            s.windows,
+            vec![COMMAND_WINDOW, COMMAND_WINDOW],
+            "the echo and the answer, both on the command line: {:?}",
+            s.windows
+        );
+        // The session's pane is not given a line about the window's own settings.
+        assert!(!s.windows.iter().any(|w| w == "peer"), "{:?}", s.windows);
     }
 
     /// The whole reason the follow exists: after `set_session` is accepted, a
