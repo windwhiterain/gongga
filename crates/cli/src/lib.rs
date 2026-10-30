@@ -22,13 +22,13 @@ use std::time::Duration;
 use anyhow::{Context, anyhow};
 use clap::{CommandFactory, FromArgMatches, Parser};
 use protocol::{
-    ChannelConfig, ClientInfo, ClientMessage, Event, LogLevel, NO_SESSION, ResponseEvent,
-    ResponsePart, ServerMessage, SessionInfo, SessionStatus, ToolAnswerEvent, ToolStream,
-    decode_server, encode_client,
+    ChannelConfig, ClientInfo, ClientMessage, Event, LogLevel, ResponseEvent, ResponsePart,
+    ServerMessage, SessionInfo, SessionStatus, ToolAnswerEvent, ToolStream, decode_server,
+    encode_client,
 };
 use tokio::net::UdpSocket;
 
-use crate::commands::{EventFilters, parse_args, render_args};
+use crate::commands::{EventFilters, HiddenSessions, parse_args, render_args};
 use protocol::EVENT_FIELDS;
 
 const DEFAULT_SERVER: &str = "127.0.0.1:9700";
@@ -173,8 +173,9 @@ pub struct Window {
 /// How the events area is divided.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Layout {
-    /// One window holding every line in the order it arrived.
-    Merged,
+    /// One window holding every line in the order it arrived, but the ones the
+    /// hidden sessions carried.
+    Merged { hidden: Vec<String> },
     /// One window per name, in this order.
     Split(Vec<Window>),
 }
@@ -261,11 +262,10 @@ pub struct Client {
     block_size: BlockSize,
     /// Whether each session gets its own events window.
     split: Split,
+    /// The sessions the events area leaves out.
+    hidden: HiddenSessions,
     /// Which window each accepted command's result belongs to, from its echo.
     results: HashMap<u64, String>,
-    /// Where `set_session` / `del_session` land, once the server says yes.
-    /// See `docs/notes/cli-lib.md`.
-    follows: Vec<(u64, String, String)>,
     sessions: Vec<SessionInfo>,
     model: String,
     next_id: u64,
@@ -327,17 +327,17 @@ impl Client {
     ///
     /// # Invariant
     ///
-    /// A session filter narrows the panes with the lines, so a session whose events
-    /// are not rendered does not keep an empty window on the screen.
+    /// A hidden session narrows the panes with the lines, and the merged window is
+    /// told to leave it out too: a window that draws nothing is not a window.
     fn layout(&self) -> Layout {
+        let hidden = self.hidden.names();
         if !self.split.0 {
-            return Layout::Merged;
+            return Layout::Merged { hidden };
         }
-        let only = self.filters.get("session");
         let mut windows: Vec<Window> = self
             .sessions
             .iter()
-            .filter(|s| only.is_none_or(|name| s.name == name))
+            .filter(|s| !self.hidden.contains(&s.name))
             .map(|s| Window {
                 name: s.name.clone(),
                 command: false,
@@ -353,6 +353,7 @@ impl Client {
         let filters = EventFilters::load(sticky.home());
         let block_size = BlockSize::load(sticky.home());
         let split = Split::load(sticky.home());
+        let hidden = HiddenSessions::load(sticky.home());
         catalog.set_sticky_names(&sticky.names());
         catalog.set_filter_names(&filters.names());
         Self {
@@ -361,7 +362,7 @@ impl Client {
             filters,
             block_size,
             split,
-            follows: Vec::new(),
+            hidden,
             results: HashMap::new(),
             sessions: Vec::new(),
             model: "-".to_string(),
@@ -474,7 +475,6 @@ impl Client {
                 data,
                 ..
             } => {
-                self.settle_follow(id, ok, sink);
                 if shown {
                     // The rows a read answered with arrived as events before this;
                     // what is left to say is the sentence about them.
@@ -614,6 +614,10 @@ impl Client {
         }
         if self.split.0 {
             footer.push_str(&format!("  | split: {}", self.split.as_str()));
+        }
+        let hidden = self.hidden.names();
+        if !hidden.is_empty() {
+            footer.push_str(&format!("  | hidden: {}", hidden.join(",")));
         }
         sink.footer(&footer);
     }
@@ -786,11 +790,6 @@ impl Client {
         }
 
         let id = self.next_id();
-        if let Some(session) = args.get("session") {
-            if matches!(head.as_str(), "set_session" | "del_session") {
-                self.follows.push((id, head.clone(), session.clone()));
-            }
-        }
         Submission::Send(ClientMessage::Command {
             id,
             name: head,
@@ -831,44 +830,6 @@ impl Client {
         }
     }
 
-    /// A refusal has to leave the client where it was, so this runs on the
-    /// acknowledgement, not on the submission.
-    fn settle_follow(&mut self, id: u64, ok: bool, sink: &mut dyn Sink) {
-        let Some(at) = self.follows.iter().position(|(i, ..)| *i == id) else {
-            return;
-        };
-        let (_, name, session) = self.follows.remove(at);
-        if ok {
-            self.follow_session_command(&name, &session, sink);
-        }
-    }
-
-    /// `set_session` sets a sticky `session`; `del_session` clears it when it names
-    /// that one.
-    ///
-    /// # Invariant
-    ///
-    /// The events area is not touched: which session is rendered is a choice the
-    /// operator makes with `set_event_ui --session`, not a consequence of which
-    /// session a command was sent to.
-    fn follow_session_command(&mut self, name: &str, session: &str, sink: &mut dyn Sink) {
-        let saved = match name {
-            "set_session" => self.sticky.set("session", session),
-            "del_session" if self.sticky.get("session") == Some(session) => {
-                self.sticky.del("session").map(|_| ())
-            }
-            _ => return,
-        };
-        if let Err(e) = saved {
-            sink.line(
-                &self.command_window(),
-                LineKind::Error,
-                &format!("could not save: {e}"),
-            );
-        }
-        self.after_sticky_change(sink);
-    }
-
     /// Runs one client command, whose args the spec already validated.
     fn run_client_command(&mut self, name: &str, args: &protocol::Args, sink: &mut dyn Sink) {
         let arg_name = args.get("name").cloned().unwrap_or_default();
@@ -882,6 +843,9 @@ impl Client {
                 "serve takes over the process; run it in a shell: `gongga serve --port <port>`",
             ),
             "set_event_ui" => self.run_event_ui(args, sink),
+            "show_session" | "hide_session" => {
+                self.run_session_visibility(name == "show_session", args, sink)
+            }
             "set_sticky_cmd_argument" => {
                 let Some(value) = args.get("value").cloned() else {
                     sink.line(
@@ -1023,27 +987,8 @@ impl Client {
                 }
             }
         }
-        // A name narrows the lines to that session; `none` renders every one; an
-        // empty name is neither.
-        let mut session: Option<Option<String>> = None;
-        if let Some(raw) = args.get("session") {
-            if raw.trim().is_empty() {
-                sink.line(
-                    &self.command_window(),
-                    LineKind::Error,
-                    "set_event_ui --session takes a session name, or `none` to render every one",
-                );
-                return;
-            }
-            session = Some(if raw.trim() == NO_SESSION {
-                None
-            } else {
-                Some(raw.clone())
-            });
-        }
-
         // Nothing named is the question "what is the events area doing?".
-        if size.is_none() && split.is_none() && session.is_none() {
+        if size.is_none() && split.is_none() {
             let report = self.event_ui_report();
             sink.line(&self.command_window(), LineKind::Result, &report);
             return;
@@ -1063,15 +1008,6 @@ impl Client {
                 Err(e) => failed.push(e.to_string()),
             }
         }
-        if let Some(wanted) = session {
-            let saved = match wanted.as_deref() {
-                Some(name) => self.filters.set("session", name),
-                None => self.filters.del("session").map(|_| ()),
-            };
-            if let Err(e) = saved {
-                failed.push(e.to_string());
-            }
-        }
         for e in failed {
             sink.line(
                 &self.command_window(),
@@ -1084,14 +1020,48 @@ impl Client {
         self.after_sticky_change(sink);
     }
 
-    /// The setting as one line, because three answers to one command is an argument.
+    /// The setting as one line, because two answers to one command is an argument.
     fn event_ui_report(&self) -> String {
         format!(
-            "block_size = {}  session = {}  split = {}",
+            "block_size = {}  split = {}",
             self.block_size.0,
-            self.filters.get("session").unwrap_or(NO_SESSION),
             self.split.as_str(),
         )
+    }
+
+    /// Runs `show_session` / `hide_session`: which sessions the events area draws.
+    fn run_session_visibility(&mut self, show: bool, args: &protocol::Args, sink: &mut dyn Sink) {
+        let name = args.get("session").cloned().unwrap_or_default();
+        let saved = if show {
+            self.hidden.show(&name)
+        } else {
+            self.hidden.hide(&name)
+        };
+        match saved {
+            Ok(_) => {
+                sink.line(
+                    &self.command_window(),
+                    LineKind::Result,
+                    &self.hidden_report(),
+                );
+                self.after_sticky_change(sink);
+            }
+            Err(e) => sink.line(
+                &self.command_window(),
+                LineKind::Error,
+                &format!("could not save: {e}"),
+            ),
+        }
+    }
+
+    /// Which sessions are not drawn, as one line: the command's own answer.
+    fn hidden_report(&self) -> String {
+        let hidden = self.hidden.names();
+        if hidden.is_empty() {
+            "hidden = (none)".to_string()
+        } else {
+            format!("hidden = {}", hidden.join(","))
+        }
     }
 
     fn after_sticky_change(&self, sink: &mut dyn Sink) {
@@ -2144,7 +2114,11 @@ mod tests {
         let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main", "peer"]);
         let mut s = StreamSink::default();
         c.refresh(&mut s);
-        assert_eq!(s.announced, Some(Layout::Merged), "unsplit is one window");
+        assert_eq!(
+            s.announced,
+            Some(Layout::Merged { hidden: Vec::new() }),
+            "unsplit is one window"
+        );
 
         c.split = Split(true);
         c.refresh(&mut s);
@@ -2165,17 +2139,29 @@ mod tests {
             "{named:?}"
         );
 
-        // A session filter narrows the panes with the lines: a window that renders
+        // A hidden session narrows the panes with the lines: a window that draws
         // nothing is not a window.
-        let mut filters = EventFilters::load(d.path());
-        filters.set("session", "main").unwrap();
-        c.filters = filters;
+        let mut hidden = HiddenSessions::load(d.path());
+        hidden.hide("peer").unwrap();
+        c.hidden = hidden;
         c.refresh(&mut s);
         let names: Vec<String> = match s.announced.clone() {
             Some(Layout::Split(windows)) => windows.iter().map(|w| w.name.clone()).collect(),
             other => panic!("expected a split layout, got {other:?}"),
         };
         assert_eq!(names, vec!["main", "cmd"], "{names:?}");
+
+        // Unsplit there is one window to name, and it is told what not to draw: the
+        // lines of a hidden session are not in this frame.
+        c.split = Split(false);
+        c.refresh(&mut s);
+        assert_eq!(
+            s.announced,
+            Some(Layout::Merged {
+                hidden: vec!["peer".to_string()]
+            }),
+            "the merged window leaves the hidden session out"
+        );
     }
 
     /// A session may be called `cmd`; that is not a reason to lose the command line.
@@ -2253,7 +2239,7 @@ mod tests {
         assert_eq!(s.windows, vec!["cmd", "cmd"]);
     }
 
-    /// One command's three arguments: each persists, and the answer is the setting.
+    /// One command's two arguments: each persists, and one line answers both.
     #[test]
     fn set_event_ui_saves_and_tells_the_front_end() {
         let d = tempfile::tempdir().unwrap();
@@ -2269,18 +2255,16 @@ mod tests {
         assert_eq!(c.block_size, BlockSize(3));
         assert_eq!(BlockSize::load(d.path()), BlockSize(3));
 
-        // Split and the session filter are its other two arguments, and one line
-        // answers all three.
+        // Split is the other argument, and one line answers both.
         assert!(matches!(
-            c.command(argv("set_event_ui --split true --session main"), &mut s),
+            c.command(argv("set_event_ui --split true"), &mut s),
             Submission::Local
         ));
         assert_eq!(c.split, Split(true));
         assert_eq!(Split::load(d.path()), Split(true));
-        assert_eq!(c.filters.get("session"), Some("main"));
         assert_eq!(
             s.0.last().map(String::as_str),
-            Some("block_size = 3  session = main  split = true"),
+            Some("block_size = 3  split = true"),
             "{:?}",
             s.0
         );
@@ -2311,23 +2295,64 @@ mod tests {
             Submission::Local
         ));
         assert_eq!(c.block_size, BlockSize(3));
-        assert_eq!(
-            s.0,
-            vec![
-                "/set_event_ui",
-                "block_size = 3  session = main  split = true"
-            ]
-        );
+        assert_eq!(s.0, vec!["/set_event_ui", "block_size = 3  split = true"]);
+    }
 
-        // `none` is the word that stops filtering, not a session called none.
+    /// `show_session` / `hide_session`: which sessions the events area draws.
+    #[test]
+    fn show_and_hide_name_the_sessions_the_events_area_leaves_out() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(
+            published_catalog(),
+            Sticky::load(d.path()),
+            vec!["main", "peer"],
+        );
+        c.split = Split(true);
+        let mut s = VecSink(Vec::new());
         assert!(matches!(
-            c.command(argv("set_event_ui --session none"), &mut s),
+            c.command(argv("hide_session --session peer"), &mut s),
             Submission::Local
         ));
-        assert_eq!(c.filters.get("session"), None);
+        assert_eq!(c.hidden.names(), vec!["peer".to_string()]);
+        assert_eq!(HiddenSessions::load(d.path()).names(), vec!["peer"]);
         assert_eq!(
             s.0.last().map(String::as_str),
-            Some("block_size = 3  session = none  split = true")
+            Some("hidden = peer"),
+            "{:?}",
+            s.0
+        );
+
+        // The panes went with it: a window that draws nothing is not a window.
+        let mut announced = StreamSink::default();
+        c.refresh(&mut announced);
+        let names: Vec<String> = match announced.announced.clone() {
+            Some(Layout::Split(windows)) => windows.iter().map(|w| w.name.clone()).collect(),
+            other => panic!("expected a split layout, got {other:?}"),
+        };
+        assert_eq!(names, vec!["main", "cmd"], "{names:?}");
+
+        // Unsplit, the one window is told the same thing: those lines are not drawn.
+        c.split = Split(false);
+        let mut announced = StreamSink::default();
+        c.refresh(&mut announced);
+        assert_eq!(
+            announced.announced,
+            Some(Layout::Merged {
+                hidden: vec!["peer".to_string()]
+            })
+        );
+
+        s.0.clear();
+        assert!(matches!(
+            c.command(argv("show_session --session peer"), &mut s),
+            Submission::Local
+        ));
+        assert_eq!(c.hidden.names(), Vec::<String>::new());
+        assert_eq!(
+            s.0.last().map(String::as_str),
+            Some("hidden = (none)"),
+            "{:?}",
+            s.0
         );
     }
 
@@ -2555,23 +2580,7 @@ mod tests {
         assert_ne!(a, 0, "0 is a fine id only if it cannot be a seed");
     }
 
-    /// A result addressed to another client settles nothing here.
-    #[test]
-    fn a_result_for_another_client_is_not_ours() {
-        let d = tempfile::tempdir().unwrap();
-        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
-        let id = c.next_id();
-        // The pending follow belongs to *our* id; a stranger's must not clear it.
-        c.follows
-            .push((id, "set_session".to_string(), "main".to_string()));
-        let mut s = VecSink(Vec::new());
-        c.settle_follow(id + 1, true, &mut s);
-        assert_eq!(c.follows.len(), 1, "a foreign id settled our follow");
-        c.settle_follow(id, true, &mut s);
-        assert!(c.follows.is_empty());
-    }
-
-    /// The acknowledgement of the command just sent, so `settle_follow` sees it.
+    /// The acknowledgement of the command just sent, so a test can answer one.
     fn ack(c: &mut Client, ok: bool, sink: &mut dyn Sink) {
         let id = c.next_id - 1;
         c.handle_event(
@@ -2585,9 +2594,11 @@ mod tests {
         );
     }
 
-    /// Naming a session is what later commands act on -- not what this client renders.
+    /// Naming a session writes nothing: SPEC keeps the target in the sticky
+    /// argument, and a side effect there would be a display setting hidden in a
+    /// server call.
     #[test]
-    fn set_session_is_a_target_not_a_filter() {
+    fn set_session_writes_no_sticky_argument() {
         let d = tempfile::tempdir().unwrap();
         let cat = Catalog::new();
         cat.set_commands(vec![protocol::CommandSpec {
@@ -2609,78 +2620,8 @@ mod tests {
             Submission::Send(_)
         ));
         ack(&mut c, true, &mut s);
-        assert_eq!(c.sticky.get("session"), Some("main"));
-        assert_eq!(
-            c.filters.get("session"),
-            None,
-            "which session to render is `set_event_ui --session`'s to say"
-        );
-    }
-
-    /// A refused `set_session` must not leave the client watching a session that
-    /// was never created.
-    #[test]
-    fn a_refused_set_session_leaves_the_client_where_it_was() {
-        let d = tempfile::tempdir().unwrap();
-        let cat = Catalog::new();
-        cat.set_commands(vec![protocol::CommandSpec {
-            target: protocol::CommandTarget::Server,
-            name: "set_session".into(),
-            description: "s".into(),
-            args: vec![protocol::ArgSpec {
-                name: "session".into(),
-                description: "s".into(),
-                required: true,
-                value_hint: None,
-                completions: protocol::CompletionSource::None,
-            }],
-        }]);
-        let mut sticky = Sticky::load(d.path());
-        sticky.set("session", "main").unwrap();
-        let mut c = client_with(cat, sticky, vec!["main"]);
-        let mut s = VecSink(Vec::new());
-        c.command(argv("set_session --session typo"), &mut s);
-        ack(&mut c, false, &mut s);
-        assert_eq!(c.sticky.get("session"), Some("main"));
-        assert_eq!(c.filters.get("session"), None);
-    }
-
-    /// Deleting another session must not retarget the client.
-    #[test]
-    fn del_session_only_clears_the_session_it_names() {
-        let d = tempfile::tempdir().unwrap();
-        let cat = Catalog::new();
-        cat.set_commands(vec![protocol::CommandSpec {
-            target: protocol::CommandTarget::Server,
-            name: "del_session".into(),
-            description: "s".into(),
-            args: vec![protocol::ArgSpec {
-                name: "session".into(),
-                description: "s".into(),
-                required: true,
-                value_hint: None,
-                completions: protocol::CompletionSource::None,
-            }],
-        }]);
-        let mut sticky = Sticky::load(d.path());
-        sticky.set("session", "main").unwrap();
-        let mut filters = EventFilters::load(d.path());
-        filters.set("session", "main").unwrap();
-        let mut c = client_with(cat, sticky, vec!["main", "scratch"]);
-        c.filters = filters;
-
-        let mut s = VecSink(Vec::new());
-        c.command(argv("del_session --session scratch"), &mut s);
-        ack(&mut c, true, &mut s);
-        assert_eq!(c.sticky.get("session"), Some("main"));
-        assert_eq!(c.filters.get("session"), Some("main"));
-
-        c.command(argv("del_session --session main"), &mut s);
-        ack(&mut c, true, &mut s);
         assert_eq!(c.sticky.get("session"), None);
-        // An operator set that filter, not this command: it stays until
-        // `set_event_ui --session none` says otherwise.
-        assert_eq!(c.filters.get("session"), Some("main"));
+        assert_eq!(c.hidden.names(), Vec::<String>::new());
     }
 
     /// A field no event carries would filter nothing; say so instead of

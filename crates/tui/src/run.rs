@@ -95,6 +95,17 @@ enum Step {
 /// A dial kept alive between loop iterations, boxed so the loop never blocks.
 type Dialing = Pin<Box<dyn Future<Output = Result<(Link, Greeting), DialFailure>>>>;
 
+/// Whether this failed dial is the one that starts a server here.
+///
+/// # Invariant
+///
+/// Only a cold start spawns one: once this window has been linked, a server that
+/// is not there is the operator's doing -- a `cancel`, a stop -- and raising it
+/// back from the dead is a window nobody can stop. `--client_only` refuses here.
+fn starts_a_server(cold: bool, attempts: u32, client_only: bool) -> bool {
+    cold && attempts == 1 && !client_only
+}
+
 /// One attempt, resolving afresh: `connect_server` moves the address.
 async fn dial_now(conn: cli::Connection) -> Result<(Link, Greeting), DialFailure> {
     let endpoint = conn.endpoint().map_err(DialFailure::Temporary)?;
@@ -115,6 +126,9 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
     let mut next_try = tokio::time::Instant::now();
     let mut backoff = RECONNECT_MIN;
     let mut attempts: u32 = 0;
+    // Until the first link, a server that is not there is this window's to
+    // start. See `docs/notes/tui-run.md`.
+    let mut cold = true;
 
     let result = loop {
         // Every arm keeps the keyboard branch, so no state stops it answering keys.
@@ -205,13 +219,16 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                         greeting.apply(&mut client, &mut TuiSink(&mut ui));
                         link = Some(open);
                         backoff = RECONNECT_MIN;
+                        // From here on this window is a client: it dials, it does
+                        // not start anything.
+                        cold = false;
                     }
                     Err(failure) if failure.is_fatal() => break Err(failure.into_error()),
                     Err(failure) => {
                         client.set_offline(attempts, &mut TuiSink(&mut ui));
                         // Once per outage: start what is not there, and the
                         // loop keeps dialing while the task does it.
-                        let starting = if attempts == 1 && !args.client_only {
+                        let starting = if starts_a_server(cold, attempts, args.client_only) {
                             cli::server_of(&args.conn)
                                 .ok()
                                 .filter(|addr| cli::starts_here(addr))
@@ -226,9 +243,8 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                         }
                         // Once per outage: the status line already carries "attempt N".
                         if attempts == 1 {
-                            // A cold start is not a fault. Nothing is listening
-                            // yet, and the server about to come up is the answer
-                            // -- so it is said as news, not as an error.
+                            // A cold start is not a fault: nothing is
+                            // listening yet, and the server coming up is news.
                             let (kind, line) = match (failure.nothing_listening(), starting) {
                                 (true, Some(_)) => (
                                     LineKind::System,
@@ -259,4 +275,24 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
 
     ui.restore()?;
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A server is started once, at the start, and never to undo a `cancel`.
+    #[test]
+    fn only_a_cold_start_starts_a_server() {
+        assert!(
+            starts_a_server(true, 1, false),
+            "nothing there yet: start one"
+        );
+        assert!(
+            !starts_a_server(false, 1, false),
+            "we were linked once already"
+        );
+        assert!(!starts_a_server(true, 2, false), "one start per outage");
+        assert!(!starts_a_server(true, 1, true), "--client_only");
+    }
 }

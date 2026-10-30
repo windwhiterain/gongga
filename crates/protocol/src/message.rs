@@ -207,14 +207,6 @@ pub const BLOCK_SIZES: &[&str] = &["0", "1", "2", "3", "5"];
 /// The values `set_event_ui --split` takes.
 pub const SPLIT_VALUES: &[&str] = &["true", "false"];
 
-/// The word `set_event_ui --session` takes to mean "show every session".
-///
-/// # Invariant
-///
-/// It is not a session name: naming a session sets the filter, naming this clears
-/// it, so one argument carries both directions.
-pub const NO_SESSION: &str = "none";
-
 /// Where a command runs.
 ///
 /// # Invariant
@@ -307,7 +299,7 @@ pub fn client_commands() -> Vec<CommandSpec> {
         ),
         (
             "set_event_ui",
-            "How the events area is drawn; with no argument, all three settings.",
+            "How the events area is drawn; with no argument, both settings.",
             vec![
                 spec_arg(
                     "block_size",
@@ -319,15 +311,6 @@ pub fn client_commands() -> Vec<CommandSpec> {
                     CompletionSource::Static(BLOCK_SIZES.iter().map(|m| m.to_string()).collect()),
                 ),
                 spec_arg(
-                    "session",
-                    "Render only this session's events; `none` renders every session's. \
-                     Nothing is dropped on the way in: an unseen line is a line not drawn, \
-                     not a line not received.",
-                    false,
-                    Some("name|none"),
-                    CompletionSource::SessionsOrNone,
-                ),
-                spec_arg(
                     "split",
                     "`true` gives each session its own window and puts `cmd`/`cmd_result` on \
                      a line of their own; `false` keeps one window for everything.",
@@ -336,6 +319,28 @@ pub fn client_commands() -> Vec<CommandSpec> {
                     CompletionSource::Static(SPLIT_VALUES.iter().map(|v| v.to_string()).collect()),
                 ),
             ],
+        ),
+        (
+            "show_session",
+            "Render this session's events again; its lines were held all along.",
+            vec![spec_arg(
+                "session",
+                "The session whose lines the events area shows again.",
+                true,
+                Some("name"),
+                CompletionSource::Sessions,
+            )],
+        ),
+        (
+            "hide_session",
+            "Leave this session's events out of the events area.",
+            vec![spec_arg(
+                "session",
+                "The session whose lines the events area stops drawing.",
+                true,
+                Some("name"),
+                CompletionSource::Sessions,
+            )],
         ),
         (
             "connect_server",
@@ -437,9 +442,6 @@ pub enum CompletionSource {
     StickyArguments,
     /// Complete against the client's event-filter names, same shape.
     EventFilters,
-    /// Complete against the live session list plus `none`, which clears a filter.
-    /// See `docs/notes/protocol-message.md`.
-    SessionsOrNone,
 }
 
 // Encoding helpers

@@ -34,6 +34,8 @@ struct Entry {
     sealed: bool,
     /// Where this block sits among the blocks of its own window.
     at: usize,
+    /// Where it sits in the merged view, or `None` when a hidden window holds it.
+    merged_at: Option<usize>,
 }
 
 impl Entry {
@@ -52,6 +54,7 @@ impl Entry {
             col: 0,
             sealed: false,
             at: 0,
+            merged_at: None,
         };
         // Width 0 means "not measured yet": the first draw reflows at its own width.
         if width > 0 {
@@ -273,7 +276,7 @@ struct Ledger {
 #[derive(Default)]
 pub struct Log {
     entries: Vec<Entry>,
-    /// The view over everything; its `blocks` is `0..entries.len()`.
+    /// The merged view: every block whose window is not hidden, in arrival order.
     all: Ledger,
     /// One ledger per window name a line has carried.
     views: HashMap<String, Ledger>,
@@ -283,6 +286,8 @@ pub struct Log {
     width: usize,
     /// How many rows one block may fill. See [`Log::set_block_size`].
     block_size: usize,
+    /// Windows the merged view does not read. See [`Log::set_hidden`].
+    hidden: Vec<String>,
 }
 
 /// The rows of a block that fills every row it has.
@@ -313,6 +318,20 @@ impl Log {
             return;
         }
         ledger.cap = lines;
+        self.rebuild();
+    }
+
+    /// Leaves these windows out of the merged view; an empty list shows every one.
+    ///
+    /// # Invariant
+    ///
+    /// Nothing is dropped: a hidden window's blocks stay in the log, so showing it
+    /// again is a rebuild rather than a re-read of the server.
+    pub fn set_hidden(&mut self, hidden: &[String]) {
+        if self.hidden == hidden {
+            return;
+        }
+        self.hidden = hidden.to_vec();
         self.rebuild();
     }
 
@@ -357,9 +376,11 @@ impl Log {
 
     /// Moves both views' sums by what a change to one block did to them.
     fn shift(&mut self, at: usize, before: (usize, usize), after: (usize, usize)) {
-        self.all
-            .index
-            .shift(at, after.0 as isize - before.0 as isize);
+        if let Some(pos) = self.entries[at].merged_at {
+            self.all
+                .index
+                .shift(pos, after.0 as isize - before.0 as isize);
+        }
         let window = self.entries[at].window.clone();
         let pos = self.entries[at].at;
         if let Some(ledger) = self.views.get_mut(&window) {
@@ -381,8 +402,16 @@ impl Log {
     fn attach(&mut self, at: usize) {
         let (merged, own) = self.contributions(at);
         let window = self.entries[at].window.clone();
-        self.all.blocks.push(at);
-        self.all.index.push(merged);
+        let shown = !self.hidden.contains(&window);
+        let merged_at = if shown {
+            let pos = self.all.blocks.len();
+            self.all.blocks.push(at);
+            self.all.index.push(merged);
+            Some(pos)
+        } else {
+            None
+        };
+        self.entries[at].merged_at = merged_at;
         self.views.entry(window.clone()).or_default();
         let pos = {
             let ledger = self
@@ -1010,6 +1039,54 @@ mod tests {
             "a window nobody wrote to"
         );
         assert_eq!(log.rows(View::All, 40), 2, "and the merged view holds both");
+    }
+
+    /// Hiding is a reading, not a deletion: the blocks stay, and so does every
+    /// line they carry.
+    #[test]
+    fn a_hidden_session_leaves_the_merged_view_and_comes_back_whole() {
+        let mut log = Log::new();
+        log.stream("main", "k1", LineKind::Assistant, "[main] ", "one", true);
+        log.stream("peer", "k2", LineKind::Assistant, "[peer] ", "two", true);
+        assert_eq!(shown(&mut log, 40, 10, 0), vec!["[main] one", "[peer] two"]);
+
+        log.set_hidden(&["peer".to_string()]);
+        assert_eq!(shown(&mut log, 40, 10, 0), vec!["[main] one"]);
+        assert_eq!(
+            log.rows(View::Window("peer"), 40),
+            1,
+            "the window's own view still holds it"
+        );
+
+        // What a hidden session says is kept and not drawn: no row moves.
+        log.stream("peer", "k3", LineKind::Assistant, "[peer] ", "three", true);
+        assert_eq!(shown(&mut log, 40, 10, 0), vec!["[main] one"]);
+
+        log.set_hidden(&[]);
+        assert_eq!(
+            shown(&mut log, 40, 10, 0),
+            vec!["[main] one", "[peer] two", "[peer] three"],
+            "showing the session again is its whole history"
+        );
+    }
+
+    /// A block growing while hidden keeps the rows around it in place.
+    #[test]
+    fn a_hidden_block_that_grows_does_not_move_the_rows_around_it() {
+        let mut log = Log::new();
+        log.set_hidden(&["peer".to_string()]);
+        log.stream("main", "k1", LineKind::Assistant, "[main] ", "one", false);
+        log.stream("peer", "k2", LineKind::Assistant, "[peer] ", "two", false);
+        log.stream("peer", "k2", LineKind::Assistant, "[peer] ", " more", false);
+        assert_eq!(shown(&mut log, 40, 10, 0), vec!["[main] one"]);
+        log.stream("main", "k1", LineKind::Assistant, "[main] ", "!", false);
+        assert_eq!(shown(&mut log, 40, 10, 0), vec!["[main] one!"]);
+
+        log.set_hidden(&[]);
+        assert_eq!(
+            shown(&mut log, 40, 10, 0),
+            vec!["[main] one!", "[peer] two more"]
+        );
     }
 
     /// A window can cap its blocks apart from the rest.
