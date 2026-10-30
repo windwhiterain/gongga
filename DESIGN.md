@@ -1089,15 +1089,16 @@ Windows 给**每个**控制台子进程开一个新窗口 —— 而服务端启
 `[llm]` 这一段**基本不用写**：provider / base_url / key / 上下文都来自 `~/.agents/providers.toml`
 （见 §4「名单」），这里只用来**覆盖**它。`GONGGA_PROVIDERS_CATALOG` 可以把名单指到别的路径。
 
-库路径也能在启动时直接给（SPEC「database path can be specified at server start」）：
+库路径**不能**在启动时单独给：`--db` 与 `[server] db` 已删除，数据库恒为 `<home>/gongga.db`。
 
 ```sh
 gongga --home /tmp/scratch serve --port 9700     # 另一个 home，整个状态都在它下面
-GONGGA_DB=:memory: gongga serve --port 9701       # 一次性库，碰不到真实数据
 ```
 
-`--db` 在**写完默认 config 之后**才生效：这次顺手生成的 `config.toml` 记的是 home 下的默认路径，
-不会被一次性的 `--db` 烤进去、再让以后每次启动都跑去那个路径。
+一次性的运行 = 一次性的 **home**：库、日志、blob、作业记录、实例锁一起搬走。
+它们以前可以分开搬，事故就是这么来的——锁按 home、库按 config，两者可以各说各话，
+于是 scratch home 的服务端骑到了真库上，而没有任何一方看得见第二个写者。
+（这里原先还写着 `GONGGA_DB=:memory:`，那个环境变量从来不存在。）
 
 `max_output_chars = 0` 关掉输出上限，`compress_above_tokens = 0` 关掉压缩。
 
@@ -1169,7 +1170,7 @@ Git Bash 自动探测常见安装路径，找不到再退回 PATH 上的 `bash`�
 | 补全：已填的 `--flag` 不再列出；Tab 完 flag 自动接上它的值列表 | 通过（catalog 单测 3 个 + tui 的 `apply_and_continue` 单测）|
 | 长日志的一帧成本与日志长度无关（20k 行 156ns / 旧 8.1ms）| 通过（`examples/frame_cost`）+ 单测 `a_frame_touches_only_a_screenful` |
 | 流式追加 = 整行重排（折行偏移一致）| 通过（单测 `appending_equals_rewrapping_from_the_top`，9 组 × 6 种宽度）|
-| `--db <path>`：覆盖 `[server] db`、自动建目录、`:memory:`、不写回 config.toml | 通过（单测 + 真启动两次：`db=:memory:`、嵌套新目录被创建）|
+| 数据库恒为 `<home>/gongga.db`：`--db`、`[server] db` 都已删除，scratch home 不可能骑到真库上 | 通过（230 个 lib 单测；真启动一次 scratch home，`server.lock` 与 `gongga.db` 同目录）|
 
 端到端实录（真实 provider，会话 `demo`）：reasoning 流式 → tool-call 参数流式 →
 `bash` 真实执行 `echo hello-from-gongga && pwd` 返回

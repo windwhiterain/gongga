@@ -17,9 +17,6 @@ struct Command {
     /// UDP address to listen on. Overrides `[server] bind`.
     #[arg(long)]
     bind: Option<String>,
-    /// SQLite path; missing dirs created, `:memory:` throwaway, beats `[server] db`.
-    #[arg(long, value_name = "PATH")]
-    db: Option<PathBuf>,
     /// Model name. Overrides `[llm] model`.
     #[arg(long)]
     model: Option<String>,
@@ -42,7 +39,6 @@ impl From<Command> for Args {
         Self {
             config: c.config,
             bind: c.bind,
-            db: c.db,
             model: c.model,
             bash: c.bash,
             home: c.home,

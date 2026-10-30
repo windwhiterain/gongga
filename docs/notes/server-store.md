@@ -39,8 +39,8 @@ and a running harness must not lose its transcript just because the schema grew.
 ## Store::open
 
 `:memory:` is taken literally: it has no directory to create, and creating one
-called `:` would be the wrong answer to `--db :memory:`, which is how a throwaway
-run keeps its hands off the operator's data.
+called `:` would be the wrong answer to a caller that asked SQLite for a database
+that never touches disk.
 
 ## Store::lock
 
@@ -283,10 +283,11 @@ one column is enough to display any row.
 
 ## the_database_path_brings_its_directory
 
-`--db <path>` has to bring its directory with it, and `--db :memory:` has to be
-taken literally: that is how a throwaway run keeps its hands off the operator's
-real database, and creating a directory called `:` would be the wrong answer to
-it.
+A path handed to `Store::open` has to bring its directory with it, and `:memory:`
+has to be taken literally: creating a directory called `:` would be the wrong
+answer to a caller that asked SQLite for a database that never touches disk. The
+server itself can no longer be pointed at a database outside its home, so this is
+the library's own contract rather than a command line's.
 
 ## finishing_one_pending_task_leaves_the_others
 
