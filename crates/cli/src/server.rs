@@ -100,6 +100,9 @@ async fn answers(home: &Path, addr: SocketAddr) -> bool {
 fn start(home: &Path, addr: SocketAddr) -> anyhow::Result<()> {
     let server = server_program(home)?;
     std::fs::create_dir_all(home).with_context(|| format!("creating {}", home.display()))?;
+    // Before the server exists, because the server cannot do it: its own
+    // `current_exe()` is `gongga-server`, not what a shell should type.
+    install_commands(home, &server);
     let log = log_path(home);
     let out = std::fs::OpenOptions::new()
         .create(true)

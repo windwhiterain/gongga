@@ -56,10 +56,14 @@ there" is a question only the wire can answer.
 **A refusal counts as an answer.** A server that says no is there, and starting a
 second one on the same home would be exactly the split this design refuses.
 
-It installs nothing itself: the pair in `<home>/bin` is placed by whoever starts
-the server (`install_commands`), because that is the one place that knows both
-programs and the home. A window that starts one, or finds one already answering,
-leaves the home's `bin` alone either way.
+It places the pair before spawning (`install_commands`), and that is not
+bookkeeping: the spawned process is `gongga-server`, whose own `current_exe()` is
+the wrong answer to "what should a shell type", so the server cannot install its
+own command. Before the split the child *was* `gongga serve`, which installed
+itself on the way up; a window-started home now depends on this line.
+
+A window that finds a server already answering still leaves the home's `bin`
+alone.
 
 It does not wait for the server to come up. The window is already retrying with a
 backoff, and a second waiter would only duplicate that loop with a worse error
