@@ -198,12 +198,12 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let llm = Arc::new(LlmClient::new(&cfg.llm)?);
     // The command itself is the cli's to install (`cli::server`); this server
     // only names where it lives.
-    let command = shell_command::command_path(&cfg.home);
+    let command = shell_command::command(&cfg.home);
     let mut server_env = vec![
         ("GONGGA_SERVER".to_string(), cfg.bind.to_string()),
         ("GONGGA_HOME".to_string(), cfg.home.display().to_string()),
     ];
-    if command.is_file() {
+    if let Some(command) = command {
         server_env.push((
             "GONGGA_CLI".to_string(),
             command.display().to_string(),

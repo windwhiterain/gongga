@@ -17,6 +17,14 @@ keeps the agent's `PATH` from resolving whatever else happens to be in a build
 output. It also keeps the server from having to know where that directory is --
 it is always `<home>/bin`, whatever staged the binaries.
 
+## command
+
+The command is not always a script. A home where only the window was installed has
+the same program under its own name there instead (`cli-server.md`), so this asks
+which shape is present and names that one for `GONGGA_CLI` -- a variable pointing
+at a file that does not exist is worse than no variable, and a server that warned
+"no command here yet" about a command it could see would be wrong.
+
 ## Why the `PATH` is rebuilt rather than inherited
 
 A value named `PATH` handed to Git Bash in the native shape (`C:\a;C:\b`) is

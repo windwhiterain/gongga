@@ -127,17 +127,26 @@ fn start(home: &Path, addr: SocketAddr) -> anyhow::Result<()> {
 ///
 /// # Invariant
 ///
-/// The script carries an absolute path and points at the command layer, never at
-/// a terminal front-end: an agent that types `gongga` must not be handed a window.
+/// What lands here is the command layer and never a terminal front-end: an agent
+/// that types `gongga` must not be handed a window. When the only program
+/// around is the window, it is installed *under the command's name* -- the same
+/// file, answering to a second name, which is the whole reason this crate can be
+/// carried by a front-end (see `docs/notes/tui-main.md`).
 pub fn install_command(home: &Path) {
-    let Some(cli) = cli_binary() else {
+    let Some(program) = cli_binary() else {
         eprintln!(
-            "warning: no `{COMMAND}` next to this program or on `PATH`; a shell this home \
-             starts would have no command to drive the server with"
+            "warning: cannot find the program running now, so no `{COMMAND}` can be installed \
+             in {}; a shell this home starts would have no command to drive the server with",
+            home.display()
         );
         return;
     };
-    if let Err(e) = write_shim(home, &cli) {
+    let installed = if is_command(&program) {
+        write_shim(home, &program)
+    } else {
+        write_named(home, &program)
+    };
+    if let Err(e) = installed {
         eprintln!(
             "warning: cannot install `{COMMAND}` in {}: {e}",
             home.display()
@@ -145,11 +154,11 @@ pub fn install_command(home: &Path) {
     }
 }
 
-/// Where the command layer's own program is: this process, then its sibling,
-/// then `PATH`.
+/// Where the command layer's own program is: this process if it already answers
+/// to that name, then its sibling, then `PATH`, then this process anyway.
 fn cli_binary() -> Option<PathBuf> {
     let me = std::env::current_exe().ok()?;
-    if me.file_name().is_some_and(|name| name == command_name()) {
+    if is_command(&me) {
         return Some(me);
     }
     let sibling = me.parent()?.join(command_name());
@@ -166,12 +175,22 @@ fn cli_binary() -> Option<PathBuf> {
     if staged.is_file() {
         return Some(staged);
     }
-    which::which(command_name()).ok()
+    // Last: whatever is running. A program that carries the command layer under
+    // another name is still the command layer when it is started as one.
+    which::which(command_name()).ok().or(Some(me))
 }
 
 /// The command's file name on this platform.
 fn command_name() -> &'static str {
     if cfg!(windows) { "gongga.exe" } else { "gongga" }
+}
+
+/// Whether this program is the command layer, by the name it answers to.
+fn is_command(program: &Path) -> bool {
+    program
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case(command_name()))
 }
 
 /// Writes the two-line `exec` a shell reads, through a rename.
@@ -181,6 +200,11 @@ fn write_shim(home: &Path, cli: &Path) -> std::io::Result<PathBuf> {
     let bin = home.join("bin");
     std::fs::create_dir_all(&bin)?;
     let target = bin.join(COMMAND);
+    // One directory holds one answer to the lookup it does. The other shape is
+    // only possible where a program's name carries an extension.
+    if command_name() != COMMAND {
+        let _ = std::fs::remove_file(bin.join(command_name()));
+    }
     // Written beside it, then renamed: a shell may be reading the old script,
     // and half a `#!/bin/sh` is a syntax error.
     let temp = bin.join(format!(".{COMMAND}.{}", std::process::id()));
@@ -195,6 +219,56 @@ fn write_shim(home: &Path, cli: &Path) -> std::io::Result<PathBuf> {
     }
     std::fs::rename(&temp, &target)?;
     Ok(target)
+}
+
+/// Installs a program that is not named `gongga` *under* that name: the same
+/// file, second name -- which is how a program that only carries the command
+/// layer can still be one.
+///
+/// See `docs/notes/cli-server.md`.
+fn write_named(home: &Path, program: &Path) -> std::io::Result<PathBuf> {
+    let bin = home.join("bin");
+    std::fs::create_dir_all(&bin)?;
+    let target = bin.join(command_name());
+    if command_name() != COMMAND {
+        let _ = std::fs::remove_file(bin.join(COMMAND));
+    }
+    // Already this program: a link is the same file, and a symlink always is.
+    if current(&target, program) {
+        return Ok(target);
+    }
+    let _ = std::fs::remove_file(&target);
+    link_or_copy(program, &target)?;
+    Ok(target)
+}
+
+/// Whether `installed` is already `program`, byte for byte and build for build.
+fn current(installed: &Path, program: &Path) -> bool {
+    let (Ok(installed), Ok(program)) = (std::fs::metadata(installed), std::fs::metadata(program))
+    else {
+        return false;
+    };
+    // A hard link shares the file, so a rebuilt program has a newer one and this
+    // is how a stale link is noticed.
+    installed.len() == program.len() && installed.modified().ok() == program.modified().ok()
+}
+
+/// Puts `program` at `target`, by the cheapest means the platform offers.
+#[cfg(windows)]
+fn link_or_copy(program: &Path, target: &Path) -> std::io::Result<()> {
+    // A hard link needs no privilege and copies nothing; a copy is the answer
+    // only when the two are on different volumes.
+    std::fs::hard_link(program, target).or_else(|_| std::fs::copy(program, target).map(|_| ()))
+}
+
+/// Puts `program` at `target`, by the cheapest means the platform offers.
+#[cfg(unix)]
+fn link_or_copy(program: &Path, target: &Path) -> std::io::Result<()> {
+    // A symlink follows a rebuild by itself; a hard link copies nothing; a copy
+    // is what is left when the two are on different volumes.
+    std::os::unix::fs::symlink(program, target)
+        .or_else(|_| std::fs::hard_link(program, target))
+        .or_else(|_| std::fs::copy(program, target).map(|_| ()))
 }
 
 /// One path the way a shell reads it: Git Bash spells a drive as `/c/...`.
@@ -293,5 +367,53 @@ mod tests {
         )
         .unwrap();
         assert_eq!(crate::key_from_home(dir.path()).as_deref(), Some("c0ffee"));
+    }
+
+    /// A program that only *carries* the command layer is installed under the
+    /// command's own name: that name is how it answers as the command layer.
+    #[test]
+    fn a_program_with_another_name_is_installed_under_the_command_s() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("gongga-tui");
+        std::fs::write(&program, "the window").unwrap();
+        let home = dir.path().join("home");
+        let path = write_named(&home, &program).unwrap();
+        assert_eq!(path.file_name().unwrap(), command_name());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "the window");
+        // Nothing to do the second time, and the link has to survive that.
+        write_named(&home, &program).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "the window");
+    }
+
+    /// A rebuild replaces the file, leaving the link naming the old one -- and a
+    /// link nothing refreshes is a shell running last week's command layer.
+    #[test]
+    fn a_rebuilt_program_replaces_the_link_that_named_the_old_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("gongga-tui");
+        std::fs::write(&program, "v1").unwrap();
+        let home = dir.path().join("home");
+        let path = write_named(&home, &program).unwrap();
+        // The way a build writes: a new file, not through the old one.
+        std::fs::remove_file(&program).unwrap();
+        std::fs::write(&program, "second build").unwrap();
+        assert!(!current(&path, &program), "a stale link looked current");
+        write_named(&home, &program).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "second build");
+    }
+
+    /// Only the command's own name, in either spelling, is the command layer.
+    #[test]
+    fn another_program_is_not_the_command_layer() {
+        if cfg!(windows) {
+            assert!(is_command(std::path::Path::new("gongga.exe")));
+            assert!(is_command(std::path::Path::new(r"C:\h\bin\GONGGA.EXE")));
+            // The script in `bin` is a shim for it, not the program itself.
+            assert!(!is_command(std::path::Path::new("gongga")));
+        } else {
+            assert!(is_command(std::path::Path::new("/h/bin/gongga")));
+        }
+        assert!(!is_command(std::path::Path::new("gongga-tui")));
+        assert!(!is_command(std::path::Path::new("gongga-tui.exe")));
     }
 }
