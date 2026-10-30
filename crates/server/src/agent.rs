@@ -352,7 +352,9 @@ impl Agent {
             return Ok(kept);
         }
         let prompts = crate::prompts::shared();
-        let instructions = prompts.text("instructions").unwrap_or_default();
+        // Rendered per session, not per turn: the name never changes for a
+        // session, so the row this writes stays valid across steps.
+        let instructions = prompts.render("instructions", &[("session", name)]);
         let handover = note.map(|s| prompts.render("handover_preamble", &[("handover", s)]));
         let prompt = crate::store::Prompt {
             instructions,

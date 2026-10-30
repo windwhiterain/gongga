@@ -10,6 +10,9 @@ actually reading what the agent said.
 
 Nothing here holds the prose. A home's `config.toml` is the file a reader edits, and
 the pinned ship content behind it is what answers when the home says nothing; both
+`instructions` is the one template rendered per **session**: `{{session}}` is the name
+that session answers to, so the prose can address it without the reader having to
+discover it first. Everything else is rendered per event.
 are read from disk. The one list this module does own is `REQUIRED`, because the code
 is the only party that knows which names it asks for.
 
