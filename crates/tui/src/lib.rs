@@ -49,7 +49,8 @@ pub fn main(args: cli::Args) -> anyhow::Result<()> {
 // The vocabulary is the command layer's, re-exported so this crate can name it.
 pub use crate::log::View;
 pub use cli::{
-    Candidate, Completer, Completion, Layout, LineKind, SharedCompleter, Window, token_bounds,
+    Candidate, Completer, Completion, Layout, LineKind, Listed, RenderMode, SharedCompleter,
+    token_bounds,
 };
 
 /// How long a keystroke waits to see whether the next one is part of a paste.
@@ -104,27 +105,47 @@ pub struct Screen {
     pub status: String,
     pub footer: String,
     pub placeholder: String,
+    /// The session the sticky `session` argument names: what the keys scroll
+    /// and what a click sets.
+    pub sticky_session: Option<String>,
 }
 
 impl Screen {
-    /// Positive scrolls into the past, negative towards the newest line.
+    /// Positive scrolls into the past, negative towards the newest line, on the
+    /// sticky session -- which is SPEC's rule.
     pub fn scroll_by(&mut self, rows: i64) {
-        let focus = self.focus.clone();
-        self.panes.scroll_by(&focus, rows);
+        let Some(target) = self.sticky_session.clone() else {
+            return;
+        };
+        self.panes.scroll_by(&target, rows);
+    }
+
+    /// Shift+Down: back to the newest line, which is where a window starts.
+    pub fn scroll_to_bottom(&mut self) {
+        let Some(target) = self.sticky_session.clone() else {
+            return;
+        };
+        self.panes.pin(&target);
     }
 
     /// The panes as a terminal this size lays them out, in its row numbers.
     fn slots(&self, width: u16, height: u16) -> Vec<render::Slot> {
         let area = Rect::new(0, 0, width, height);
         let input = render::input_rows(self.input.text(), width, height);
-        let chunks = render::areas(area, input, self.panes.command().is_some());
-        render::pane_slots(chunks[1], &self.panes, &self.focus).0
+        let chunks = render::areas(
+            area,
+            input,
+            self.panes.command().is_some(),
+            self.panes.of_kind(crate::panes::Kind::Line).count(),
+        );
+        let (_, panes) = render::body(chunks[1], width);
+        render::pane_slots(panes, &self.panes, &self.focus).0
     }
 
     /// Where a pane's rows come from and how far it is scrolled.
-    fn pane_at(&self, name: &str) -> Option<(String, bool, usize)> {
+    fn pane_at(&self, name: &str) -> Option<(String, usize)> {
         let pane = self.panes.get(name)?;
-        Some((pane.name.clone(), pane.merged, pane.scroll))
+        Some((pane.name.clone(), pane.scroll))
     }
 
     /// The pane covering terminal row `row`, which is where the wheel landed.
@@ -158,15 +179,12 @@ impl Screen {
 
     /// The rows one pane shows, borrowed for no longer than the copy needs them.
     fn rows_of(&mut self, name: &str, width: usize, height: usize) -> Vec<String> {
-        let Some((name, merged, scroll)) = self.pane_at(name) else {
+        let Some((name, scroll)) = self.pane_at(name) else {
             return Vec::new();
         };
-        let view = if merged {
-            View::All
-        } else {
-            View::Window(&name)
-        };
-        let window = self.panes.window(view, width, height, scroll);
+        let window = self
+            .panes
+            .window(View::Window(&name), width, height, scroll);
         window.rows.iter().map(|(_, row)| row.to_string()).collect()
     }
 
@@ -201,6 +219,9 @@ pub struct Tui {
     /// The input as the last frame saw it: typing may have put console ink on
     /// the row.
     input_seen: Option<(usize, usize)>,
+    /// A click on a session, as the command line it asks for, waiting for the loop
+    /// to take it. See `docs/notes/tui-lib.md`.
+    clicked: Option<String>,
 }
 
 impl Tui {
@@ -239,11 +260,13 @@ impl Tui {
                 status: "connecting".to_string(),
                 footer: String::new(),
                 placeholder: "message the agent, or / for a command (Tab completes)".to_string(),
+                sticky_session: None,
             },
             completer,
             history: Vec::new(),
             history_pos: None,
             input_seen: None,
+            clicked: None,
             events: EventStream::new(),
             mouse_captured: true,
             restored: false,
@@ -281,6 +304,17 @@ impl Tui {
         if self.screen.panes.get(&self.screen.focus).is_none() {
             self.screen.focus = self.screen.panes.first_name();
         }
+        self.dirty = true;
+    }
+
+    /// The session the sticky `session` argument names, as the command layer said.
+    pub fn set_sticky_session(&mut self, name: Option<&str>) {
+        let name = name.map(str::to_string);
+        if self.screen.sticky_session == name {
+            return;
+        }
+        // The target moved, so the view starts at its own newest line.
+        self.screen.sticky_session = name;
         self.dirty = true;
     }
 
@@ -347,6 +381,11 @@ impl Tui {
     /// Waits for the operator, painting a frame before every wait.
     pub async fn next_event(&mut self) -> Option<UiEvent> {
         loop {
+            // A click is a command, and commands go through the loop that already
+            // knows how to send one.
+            if let Some(line) = self.clicked.take() {
+                return Some(UiEvent::Submit(line));
+            }
             if self.draw().is_err() {
                 return None;
             }
@@ -548,7 +587,8 @@ impl Tui {
             }
             KeyCode::Down => {
                 if key.modifiers.contains(KeyModifiers::SHIFT) {
-                    self.screen.scroll_by(-1);
+                    // Shift+Down is SPEC's "back to the newest line".
+                    self.screen.scroll_to_bottom();
                 } else if let Some(c) = self.screen.completion.as_mut() {
                     c.move_selection(1);
                 } else if !self.screen.input.down() {
@@ -599,12 +639,19 @@ impl Tui {
         let Some(name) = self.screen.pane_at_row(size.width, size.height, mouse.row) else {
             return;
         };
-        // A press inside the pane that already has the focus changes nothing to draw.
-        self.dirty |= self.screen.focus != name || rows.is_some();
         self.screen.focus = name;
         if let Some(rows) = rows {
             self.screen.scroll_by(rows);
+            self.dirty = true;
+            return;
         }
+        // SPEC: a click sets the sticky session, asked for as the command that
+        // does it, so the command layer owns the rule.
+        self.dirty = true;
+        self.clicked = Some(format!(
+            "set_sticky --name session --value {}",
+            self.screen.focus
+        ));
     }
 
     /// The window a line of this front-end's own belongs to.
@@ -1120,6 +1167,7 @@ mod tests {
             status: String::new(),
             footer: String::new(),
             placeholder: String::new(),
+            sticky_session: None,
         };
         screen.input.insert_str("hi");
         present(&mut terminal, &mut screen, false).unwrap();
@@ -1158,15 +1206,28 @@ mod tests {
 
     impl Headless {
         fn new() -> Self {
+            let mut panes = Panes::new();
+            // One session drawn as a pane, which is the shape these keys were
+            // written for.
+            panes.layout(&Layout {
+                listed: vec![Listed {
+                    name: "main".to_string(),
+                    status: "idle".to_string(),
+                }],
+                full: vec!["main".to_string()],
+                line: Vec::new(),
+                command: "cmd".to_string(),
+            });
             Self {
                 screen: Screen {
-                    panes: Panes::new(),
+                    panes,
                     focus: String::new(),
                     completion: None,
                     input: InputLine::default(),
                     status: String::new(),
                     footer: String::new(),
                     placeholder: String::new(),
+                    sticky_session: None,
                 },
             }
         }
@@ -1182,7 +1243,11 @@ mod tests {
 
         /// What the renderer would have written back for this pane's window.
         fn measure(&mut self, name: &str, rows: usize) {
-            let max_scroll = self.screen.panes.window(View::All, 200, rows, 0).max_scroll;
+            let max_scroll = self
+                .screen
+                .panes
+                .window(View::Window(name), 200, rows, 0)
+                .max_scroll;
             self.screen
                 .panes
                 .get_mut(name)
@@ -1631,18 +1696,38 @@ mod tests {
     fn scrolling_stops_at_both_ends() {
         let mut h = Headless::new();
         for i in 0..30 {
-            h.screen.panes.line("", LineKind::System, format!("L{i}"));
+            h.screen
+                .panes
+                .line("main", LineKind::System, format!("L{i}"));
         }
+        // SPEC: the keyboard scrolls the sticky session, so that is what a page
+        // acts on.
+        h.screen.sticky_session = Some("main".to_string());
         // What the renderer works out and writes back for a pane of this size.
-        h.measure("", 10);
+        h.measure("main", 10);
         h.screen.scroll_by(3);
-        assert_eq!(h.pane_scroll(""), 3);
+        assert_eq!(h.pane_scroll("main"), 3);
         h.screen.scroll_by(100);
-        assert_eq!(h.pane_scroll(""), 20);
+        assert_eq!(h.pane_scroll("main"), 20);
         h.screen.scroll_by(-5);
-        assert_eq!(h.pane_scroll(""), 15);
-        h.screen.scroll_by(-100);
-        assert_eq!(h.pane_scroll(""), 0);
+        assert_eq!(h.pane_scroll("main"), 15);
+        // Shift+Down is "back to the newest line", whatever the offset was.
+        h.screen.scroll_to_bottom();
+        assert_eq!(h.pane_scroll("main"), 0);
+    }
+
+    /// With no sticky session there is nothing for a page to scroll.
+    #[test]
+    fn a_page_with_no_sticky_session_scrolls_nothing() {
+        let mut h = Headless::new();
+        for i in 0..30 {
+            h.screen
+                .panes
+                .line("main", LineKind::System, format!("L{i}"));
+        }
+        h.measure("main", 10);
+        h.screen.scroll_by(3);
+        assert_eq!(h.pane_scroll("main"), 0);
     }
 
     #[test]

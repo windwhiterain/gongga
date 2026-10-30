@@ -255,19 +255,33 @@ them rather than three commands with one name. Two rules make that legible:
 - **The answer is the whole setting**, on a write as on a read: `block_size = 3
   split = false` in one line, because two answers to one command is an argument.
 
-## Client::run_session_visibility
+## Client::run_render_session
 
-`show_session` and `hide_session` change what the events area draws, and nothing
-else: they write `HiddenSessions`, they answer with the whole set, and they ask
-for a frame. The blocks are untouched, so `show_session` is a view change and not
-a re-read -- which is the same rule the split follows.
+`set_render_session` writes `RenderModes` and answers with the mode it wrote, or --
+with no `--mode` -- the mode that session has now. A mode is a view change: the
+blocks are untouched, so `full` after `none` brings the whole history back.
 
 ## Client::layout
 
-Which panes exist, and -- since a session can be hidden while the area is merged
--- which window the one pane does *not* read. Both spellings of "not on screen"
-come from the same set, so they cannot disagree: a session that is hidden is a
-session with no pane and with no lines in the merged view.
+SPEC's three lists, from one place: the session list (every session, whatever its
+mode -- the list is how a mode changes), the sessions drawn as panes, and the ones
+drawn as a line each. A session is in exactly one of the last two, or neither.
+
+The mode is read off each session rather than off the file's entries, because a
+session nobody set is `full`: reading the map would leave a new session with no
+pane at all.
+
+## Client::drawn
+
+Which events are drawn, which is not which events are kept. A `Status` for a
+session drawn as `none` still updates the list, or the list would lie about the
+mode it is in.
+
+## Sink::sticky_session
+
+The session the sticky `session` argument names, told on every refresh. It is what
+the window's keyboard scrolls and what a click on a pane sets; the argument itself
+stays in `Sticky`, so there is one place that knows it.
 
 ## Client::settle_follow
 
@@ -283,8 +297,13 @@ say, and the SPEC sentence about it names only `set_session`.
 
 ## Client::submit_tokens
 
-Nothing else is followed: naming a session writes no filter, and `show_session` /
-`hide_session` are the only commands that change what the events area draws.
+Nothing else is followed: naming a session writes no render mode, and
+`set_render_session` is the only command that changes what the events area draws.
+
+One echo per command. A client command is drawn where it answers -- the command
+line. A server command is drawn from the `cmd` event the server sends, which is
+the same line with the arguments the sticky filled in; drawing the typed line as
+well put every command on the screen twice.
 
 ## Client::refresh
 

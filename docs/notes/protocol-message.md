@@ -84,8 +84,9 @@ two sources say "complete against that list" without shipping the list, which is
 the same arrangement as `Sessions` -- the server names where a value comes from,
 and the side that owns it fills it in.
 
-`show_session` and `hide_session` take a session name and nothing else, so they
-complete through `Sessions` like every other session argument.
+`set_render_session --mode` completes through a static list, because the three modes
+are the protocol's own words (`RENDER_MODES`), not the client's state. Its
+`--session` completes through `Sessions` like every other session argument.
 
 ## REPLAY_TURN
 

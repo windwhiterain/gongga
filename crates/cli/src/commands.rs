@@ -1,11 +1,11 @@
-//! Sticky arguments and event filters: the client's own state in `cli.toml`.
+//! Sticky arguments and render modes: the client's own state in `cli.toml`.
 //!
 //! See `docs/notes/cli-commands.md`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use protocol::{Args, BLOCK_SIZES, CommandSpec, Event, SPLIT_VALUES};
+use protocol::{Args, BLOCK_SIZES, CommandSpec};
 use serde::{Deserialize, Serialize};
 
 /// How many wrapped rows one block may fill. Client-side only.
@@ -47,90 +47,65 @@ impl BlockSize {
     }
 }
 
-/// Whether each session gets its own events window. Client-side only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Split(pub bool);
-
-impl Split {
-    pub fn as_str(self) -> &'static str {
-        if self.0 { "true" } else { "false" }
-    }
-
-    /// The value named, or the list of values; there is no silent default.
-    pub fn parse(raw: &str) -> Result<Self, String> {
-        match raw.trim() {
-            "true" => Ok(Split(true)),
-            "false" => Ok(Split(false)),
-            other => Err(format!(
-                "no split value {other:?}; it takes {}",
-                SPLIT_VALUES.join(", ")
-            )),
-        }
-    }
-
-    /// Loads `home/cli.toml`; a missing or unreadable file is off.
-    pub fn load(home: &Path) -> Self {
-        Self(read_file(&home.join("cli.toml")).event_split)
-    }
-
-    pub fn save(self, home: &Path) -> anyhow::Result<()> {
-        let path = home.join("cli.toml");
-        let mut file = read_file(&path);
-        file.event_split = self.0;
-        write_file(&path, &file)
-    }
-}
-
-/// The sessions whose events are not drawn: `hide_session` and `show_session`.
+/// How each session is drawn: `set_render_session --mode`.
 ///
 /// # Invariant
 ///
-/// Hiding is a reading, not a deletion: the blocks stay in the log, so showing a
-/// session again brings back every line it ever carried.
-#[derive(Default)]
-pub struct HiddenSessions {
+/// It is a view, never a deletion: a session in mode `none` keeps every block it
+/// ever carried, so giving it `full` or `line` brings the whole history back.
+/// A session nobody set is `full`: a window has to show something.
+pub struct RenderModes {
     path: PathBuf,
-    names: std::collections::BTreeSet<String>,
+    modes: BTreeMap<String, crate::RenderMode>,
 }
 
-impl HiddenSessions {
-    /// Loads `home/cli.toml`; a missing or unreadable file hides nothing.
+impl RenderModes {
+    /// Loads `home/cli.toml`; a missing or unreadable file draws nothing.
     pub fn load(home: &Path) -> Self {
         let path = home.join("cli.toml");
-        let names = read_file(&path).hidden_sessions.into_iter().collect();
-        Self { path, names }
+        let modes = read_file(&path)
+            .render_session
+            .into_iter()
+            .filter_map(|e| crate::RenderMode::parse(&e.value).ok().map(|m| (e.name, m)))
+            .collect();
+        Self { path, modes }
     }
 
-    /// The hidden names, sorted, which is the order a list is read in.
-    pub fn names(&self) -> Vec<String> {
-        self.names.iter().cloned().collect()
+    /// The sessions in this mode, sorted, which is the order a list is read in.
+    pub fn named(&self, mode: crate::RenderMode) -> Vec<String> {
+        self.modes
+            .iter()
+            .filter(|(_, m)| **m == mode)
+            .map(|(name, _)| name.clone())
+            .collect()
     }
 
-    pub fn contains(&self, name: &str) -> bool {
-        self.names.contains(name)
+    /// What this session is drawn as; a session nobody set is `none`.
+    pub fn mode_of(&self, name: &str) -> crate::RenderMode {
+        self.modes.get(name).copied().unwrap_or_default()
     }
 
-    /// Returns whether the session was not hidden already.
-    pub fn hide(&mut self, name: &str) -> anyhow::Result<bool> {
-        if !self.names.insert(name.to_string()) {
-            return Ok(false);
-        }
-        self.save().map(|()| true)
-    }
-
-    /// Returns whether the session was hidden.
-    pub fn show(&mut self, name: &str) -> anyhow::Result<bool> {
-        if !self.names.remove(name) {
-            return Ok(false);
-        }
-        self.save().map(|()| true)
+    pub fn set(&mut self, name: &str, mode: crate::RenderMode) -> anyhow::Result<()> {
+        self.modes.insert(name.to_string(), mode);
+        self.save()
     }
 
     fn save(&self) -> anyhow::Result<()> {
         let mut file = read_file(&self.path);
-        file.hidden_sessions = self.names.iter().cloned().collect();
+        file.render_session = entries_mode(&self.modes);
         write_file(&self.path, &file)
     }
+}
+
+/// The modes as the file spells them, sorted by session so a diff reads.
+fn entries_mode(modes: &BTreeMap<String, crate::RenderMode>) -> Vec<Entry> {
+    modes
+        .iter()
+        .map(|(name, mode)| Entry {
+            name: name.clone(),
+            value: mode.as_str().to_string(),
+        })
+        .collect()
 }
 
 /// The pre-rename key for sticky arguments: read once, then rewritten
@@ -143,13 +118,10 @@ struct File {
     #[serde(default)]
     sticky_cmd_arguments: Vec<Entry>,
     #[serde(default)]
-    event_filters: Vec<Entry>,
-    #[serde(default)]
     block_size: Option<String>,
+    /// `set_render_session`: the mode each named session is drawn in.
     #[serde(default)]
-    event_split: bool,
-    #[serde(default)]
-    hidden_sessions: Vec<String>,
+    render_session: Vec<Entry>,
     /// Where `connect_server` last pointed this client.
     #[serde(default)]
     connection: Option<Stored>,
@@ -249,7 +221,14 @@ impl Sticky {
 
     fn save(&self) -> anyhow::Result<()> {
         let mut file = read_file(&self.path);
-        file.sticky_cmd_arguments = entries(&self.args);
+        file.sticky_cmd_arguments = self
+            .args
+            .iter()
+            .map(|(name, value)| Entry {
+                name: name.clone(),
+                value: value.clone(),
+            })
+            .collect();
         write_file(&self.path, &file)
     }
 
@@ -270,96 +249,6 @@ impl Sticky {
             }
         }
     }
-}
-
-/// A display filter: each pair narrows the events that carry that field.
-pub struct EventFilters {
-    path: PathBuf,
-    filters: BTreeMap<String, String>,
-}
-
-impl EventFilters {
-    /// Loads from `home/cli.toml`; a missing or unreadable file yields none.
-    pub fn load(home: &Path) -> Self {
-        let path = home.join("cli.toml");
-        let filters = read_file(&path)
-            .event_filters
-            .into_iter()
-            .map(|e| (e.name, e.value))
-            .collect();
-        Self { path, filters }
-    }
-
-    pub fn names(&self) -> Vec<String> {
-        self.filters.keys().cloned().collect()
-    }
-
-    pub fn pairs(&self) -> Vec<(String, String)> {
-        self.filters
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect()
-    }
-
-    pub fn get(&self, name: &str) -> Option<&str> {
-        self.filters.get(name).map(String::as_str)
-    }
-
-    pub fn set(&mut self, name: &str, value: &str) -> anyhow::Result<()> {
-        self.filters.insert(name.to_string(), value.to_string());
-        self.save()
-    }
-
-    /// Returns false when there was nothing to remove.
-    pub fn del(&mut self, name: &str) -> anyhow::Result<bool> {
-        match self.filters.remove(name) {
-            Some(_) => self.save().map(|()| true),
-            None => Ok(false),
-        }
-    }
-
-    /// An event without the named field is left alone: `session` filters the
-    /// streams, not the command echo.
-    pub fn allows(&self, event: &Event) -> bool {
-        if self.filters.is_empty() {
-            return true;
-        }
-        let Ok(serde_json::Value::Object(fields)) = serde_json::to_value(event) else {
-            return true;
-        };
-        self.filters
-            .iter()
-            .all(|(name, want)| match fields.get(name) {
-                None => true,
-                Some(actual) => scalar(actual).as_deref() == Some(want.as_str()),
-            })
-    }
-
-    fn save(&self) -> anyhow::Result<()> {
-        let mut file = read_file(&self.path);
-        file.event_filters = entries(&self.filters);
-        write_file(&self.path, &file)
-    }
-}
-
-/// The JSON scalar as the string a filter value is written with.
-fn scalar(value: &serde_json::Value) -> Option<String> {
-    match value {
-        serde_json::Value::String(s) => Some(s.clone()),
-        serde_json::Value::Number(n) => Some(n.to_string()),
-        serde_json::Value::Bool(b) => Some(b.to_string()),
-        serde_json::Value::Null => Some("null".to_string()),
-        _ => None,
-    }
-}
-
-fn entries(args: &BTreeMap<String, String>) -> Vec<Entry> {
-    args.iter()
-        .map(|(name, value)| Entry {
-            name: name.clone(),
-            value: value.clone(),
-        })
-        .collect()
 }
 
 /// Reads what is on disk so one writer keeps the other's section.
@@ -522,8 +411,8 @@ mod tests {
     ///
     /// # Invariant
     ///
-    /// Every argument stays intact -- including through an event-filter write,
-    /// which never touched the sticky pairs.
+    /// Every argument stays intact -- including through a render-mode write, which
+    /// never touched the sticky pairs.
     #[test]
     fn any_save_migrates_the_old_key_without_dropping_arguments() {
         let d = dir();
@@ -532,73 +421,49 @@ mod tests {
             format!("[[{OLD_STICKY_KEY}]]\nname = \"session\"\nvalue = \"test1\"\n"),
         )
         .unwrap();
-        let mut filters = EventFilters::load(d.path());
-        filters.set("part", "output").unwrap();
+        let mut modes = RenderModes::load(d.path());
+        modes.set("main", crate::RenderMode::Full).unwrap();
 
         let text = std::fs::read_to_string(d.path().join("cli.toml")).unwrap();
         assert!(!text.contains(OLD_STICKY_KEY), "{text}");
         assert_eq!(Sticky::load(d.path()).get("session"), Some("test1"));
-        assert_eq!(EventFilters::load(d.path()).get("part"), Some("output"));
+        assert_eq!(
+            RenderModes::load(d.path()).mode_of("main"),
+            crate::RenderMode::Full
+        );
     }
 
     /// The two writers share one file, so each has to keep the other's rows.
     #[test]
-    fn event_filters_persist_beside_sticky_arguments() {
+    fn render_modes_persist_beside_sticky_arguments() {
         let d = dir();
         let mut sticky = Sticky::load(d.path());
         sticky.set("session", "main").unwrap();
-        let mut filters = EventFilters::load(d.path());
-        filters.set("session", "main").unwrap();
+        let mut modes = RenderModes::load(d.path());
+        modes.set("peer", crate::RenderMode::Line).unwrap();
 
         let sticky = Sticky::load(d.path());
-        let filters = EventFilters::load(d.path());
+        let modes = RenderModes::load(d.path());
         assert_eq!(sticky.get("session"), Some("main"));
-        assert_eq!(filters.get("session"), Some("main"));
+        assert_eq!(modes.mode_of("peer"), crate::RenderMode::Line);
+        assert_eq!(
+            modes.mode_of("nobody"),
+            crate::RenderMode::Full,
+            "a session nobody set is drawn in full"
+        );
     }
 
-    /// A session filter narrows the streams; a command has no session to match.
+    /// The modes are a view: setting one, then another, keeps them apart.
     #[test]
-    fn a_session_filter_hides_other_sessions_but_not_commands() {
+    fn each_session_keeps_its_own_mode() {
         let d = dir();
-        let mut filters = EventFilters::load(d.path());
-        filters.set("session", "main").unwrap();
-
-        let response = |session: &str| {
-            protocol::Event::Response(protocol::ResponseEvent {
-                session: session.into(),
-                turn: 1,
-                part: protocol::ResponsePart::Output,
-                text: "hi".into(),
-                done: false,
-            })
-        };
-        assert!(filters.allows(&response("main")));
-        assert!(!filters.allows(&response("other")));
-        assert!(filters.allows(&protocol::Event::Cmd {
-            id: 1,
-            name: "send_message".into(),
-            args: Args::new(),
-        }));
-    }
-
-    /// Every filter has to match: one session filter plus one level filter.
-    #[test]
-    fn every_filter_has_to_match() {
-        let d = dir();
-        let mut filters = EventFilters::load(d.path());
-        filters.set("session", "main").unwrap();
-        filters.set("part", "output").unwrap();
-        let event = |part| {
-            protocol::Event::Response(protocol::ResponseEvent {
-                session: "main".into(),
-                turn: 1,
-                part,
-                text: "x".into(),
-                done: false,
-            })
-        };
-        assert!(filters.allows(&event(protocol::ResponsePart::Output)));
-        assert!(!filters.allows(&event(protocol::ResponsePart::Reasoning)));
+        let mut modes = RenderModes::load(d.path());
+        modes.set("main", crate::RenderMode::Full).unwrap();
+        modes.set("peer", crate::RenderMode::Line).unwrap();
+        let modes = RenderModes::load(d.path());
+        assert_eq!(modes.named(crate::RenderMode::Full), vec!["main"]);
+        assert_eq!(modes.named(crate::RenderMode::Line), vec!["peer"]);
+        assert!(modes.named(crate::RenderMode::None).is_empty());
     }
 
     /// The size survives a restart; an unknown one on disk falls back rather
@@ -627,23 +492,35 @@ mod tests {
         assert_eq!(BlockSize::parse(" 2 "), Ok(BlockSize(2)));
     }
 
-    /// The setting survives a restart, and only the two words it names are taken.
+    /// A mode survives a restart, and the three words it takes are the whole list.
     #[test]
-    fn the_split_setting_is_remembered() {
+    fn a_render_mode_round_trips() {
         let d = dir();
-        assert_eq!(Split::load(d.path()), Split(false));
-        Split(true).save(d.path()).unwrap();
-        assert_eq!(Split::load(d.path()), Split(true));
-
-        assert_eq!(Split::parse(" true "), Ok(Split(true)));
         assert_eq!(
-            Split::parse("no"),
-            Err("no split value \"no\"; it takes true, false".into())
+            RenderModes::load(d.path()).mode_of("main"),
+            crate::RenderMode::Full
         );
-        // A split is saved without losing the block size beside it.
+        let mut modes = RenderModes::load(d.path());
+        modes.set("main", crate::RenderMode::Full).unwrap();
+        assert_eq!(
+            RenderModes::load(d.path()).mode_of("main"),
+            crate::RenderMode::Full
+        );
+        assert_eq!(
+            crate::RenderMode::parse(" line "),
+            Ok(crate::RenderMode::Line)
+        );
+        assert_eq!(
+            crate::RenderMode::parse("sideways"),
+            Err("no render mode \"sideways\"; it takes none, line, full".into())
+        );
+        // A mode is saved without losing the block size beside it.
         BlockSize(3).save(d.path()).unwrap();
         assert_eq!(BlockSize::load(d.path()), BlockSize(3));
-        assert_eq!(Split::load(d.path()), Split(true));
+        assert_eq!(
+            RenderModes::load(d.path()).mode_of("main"),
+            crate::RenderMode::Full
+        );
     }
 
     #[test]

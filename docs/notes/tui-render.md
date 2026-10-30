@@ -2,9 +2,9 @@
 
 ## CHROME_ROWS
 
-Rows the layout spends on everything that is not the log or the input: header,
-footer and help. The input's own height varies with its text, so it is asked for
-separately (see `input_rows`).
+Rows the layout spends on everything that is not the log or the input: the header
+and the sticky line. The input's own height varies with its text, so it is asked
+for separately (see `input_rows`), and the line groups get one row each.
 
 ## PREFIX
 
@@ -64,6 +64,31 @@ break, and a row that reaches `width` columns continues on the next one.
 
 The last row always exists, so an empty input -- or one that ends with a newline
 -- has somewhere for the cursor to sit.
+
+## draw_list
+
+SPEC's session list, on the left of the body: one row per session the command layer
+announced, whatever its render mode -- the list is how a mode gets changed, so
+hiding a session from it would hide the way back. The sticky session is marked with
+`▸` and a highlighted row, which is also the row the keyboard scrolls.
+
+## draw_lines
+
+The sessions drawn as `line`, below the panes: one row per event, shared out
+between the groups. This is a ticker of what each session is doing, not a place to
+read a transcript -- the whole text is still in the log, one `set_render_session`
+away.
+
+## draw_stickys
+
+The sticky arguments, and the render modes that are not the default, on one row.
+A session drawn as `none` has to be visible somewhere, or the log reads as broken.
+
+## body
+
+The body split into the session list and the panes beside it. The list keeps
+`LIST_WIDTH` unless the window is too narrow to leave the panes any columns -- then
+the panes keep their share, because a pane with no columns shows nothing.
 
 ## draw_panes
 

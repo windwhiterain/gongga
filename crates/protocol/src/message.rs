@@ -186,26 +186,16 @@ pub struct CommandSpec {
     pub target: CommandTarget,
 }
 
-/// The event fields an event filter's `--name` may select.
-///
-/// # Invariant
-///
-/// It lives here, not in a front-end: the server publishes `set_event_filter`,
-/// so the list is catalog data.
-pub const EVENT_FIELDS: &[&str] = &[
-    "args", "call_id", "data", "detail", "done", "id", "level", "message", "name", "ok", "part",
-    "session", "sessions", "status", "stream", "t", "text", "tool", "turn",
-];
-
-/// The lines `set_event_ui --block_size` offers, in the order it lists them.
+/// The lines `set_render --block_size` offers, in the order it lists them.
 ///
 /// # Invariant
 ///
 /// Any number is accepted; this is the set worth offering, not the set allowed.
 pub const BLOCK_SIZES: &[&str] = &["0", "1", "2", "3", "5"];
 
-/// The values `set_event_ui --split` takes.
-pub const SPLIT_VALUES: &[&str] = &["true", "false"];
+/// The ways one session's events can be drawn, as `set_render_session --mode`
+/// spells them.
+pub const RENDER_MODES: &[&str] = &["none", "line", "full"];
 
 /// Where a command runs.
 ///
@@ -235,8 +225,8 @@ pub enum CommandTarget {
 pub fn client_commands() -> Vec<CommandSpec> {
     [
         (
-            "set_sticky_cmd_argument",
-            "Set a sticky argument applied to every later command.",
+            "set_sticky",
+            "Set a sticky argument, applied to every later command.",
             vec![
                 spec_arg(
                     "name",
@@ -256,7 +246,7 @@ pub fn client_commands() -> Vec<CommandSpec> {
             ],
         ),
         (
-            "del_sticky_cmd_argument",
+            "del_sticky",
             "Remove a sticky argument.",
             vec![spec_arg(
                 "name",
@@ -267,80 +257,38 @@ pub fn client_commands() -> Vec<CommandSpec> {
             )],
         ),
         (
-            "set_event_filter",
-            "Show only events whose named field has this value.",
+            "set_render",
+            "How the events are drawn; with no argument, the setting it has.",
+            vec![spec_arg(
+                "block_size",
+                "`0` caps nothing. Otherwise a non-answer block shows at most this many \
+                 wrapped rows and keeps the newest of them, so a long stream scrolls \
+                 inside its own block instead of pushing other blocks away.",
+                false,
+                Some("lines"),
+                CompletionSource::Static(BLOCK_SIZES.iter().map(|m| m.to_string()).collect()),
+            )],
+        ),
+        (
+            "set_render_session",
+            "How one session's events are drawn; with no `--mode`, what it has now.",
             vec![
                 spec_arg(
-                    "name",
-                    "Event field, e.g. `session`.",
+                    "session",
+                    "The session whose rendering this sets.",
                     true,
                     Some("name"),
-                    CompletionSource::Static(EVENT_FIELDS.iter().map(|f| f.to_string()).collect()),
+                    CompletionSource::Sessions,
                 ),
                 spec_arg(
-                    "value",
-                    "Value the field must have. Completes the way the named argument does.",
-                    true,
-                    Some("value"),
-                    CompletionSource::OfNamedArgument,
+                    "mode",
+                    "`full` gives the session a pane of its own; `line` pastes its events \
+                     as one line each below the panes; `none` draws nothing of it.",
+                    false,
+                    Some("none|line|full"),
+                    CompletionSource::Static(RENDER_MODES.iter().map(|m| m.to_string()).collect()),
                 ),
             ],
-        ),
-        (
-            "del_event_filter",
-            "Remove an event filter.",
-            vec![spec_arg(
-                "name",
-                "Filter name to remove.",
-                true,
-                Some("name"),
-                CompletionSource::EventFilters,
-            )],
-        ),
-        (
-            "set_event_ui",
-            "How the events area is drawn; with no argument, both settings.",
-            vec![
-                spec_arg(
-                    "block_size",
-                    "`0` caps nothing. Otherwise a non-answer block shows at most this many \
-                     wrapped rows and keeps the newest of them, so a long stream scrolls \
-                     inside its own block instead of pushing other blocks away.",
-                    false,
-                    Some("lines"),
-                    CompletionSource::Static(BLOCK_SIZES.iter().map(|m| m.to_string()).collect()),
-                ),
-                spec_arg(
-                    "split",
-                    "`true` gives each session its own window and puts `cmd`/`cmd_result` on \
-                     a line of their own; `false` keeps one window for everything.",
-                    false,
-                    Some("bool"),
-                    CompletionSource::Static(SPLIT_VALUES.iter().map(|v| v.to_string()).collect()),
-                ),
-            ],
-        ),
-        (
-            "show_session",
-            "Render this session's events again; its lines were held all along.",
-            vec![spec_arg(
-                "session",
-                "The session whose lines the events area shows again.",
-                true,
-                Some("name"),
-                CompletionSource::Sessions,
-            )],
-        ),
-        (
-            "hide_session",
-            "Leave this session's events out of the events area.",
-            vec![spec_arg(
-                "session",
-                "The session whose lines the events area stops drawing.",
-                true,
-                Some("name"),
-                CompletionSource::Sessions,
-            )],
         ),
         (
             "connect_server",

@@ -28,42 +28,24 @@ Tolerating a missing or unreadable file is deliberate: a client that cannot
 remember its defaults is still usable, and refusing to start over a corrupt
 `cli.toml` would make the file a single point of failure for the whole harness.
 
-## EventFilters
+## RenderModes
 
-Each pair says "an event carrying `name` must have value `value`". Two rules make
-that usable:
+`set_render_session --session <name> [--mode none|line|full]` is the client's answer
+to SPEC's UI section, in `cli.toml` beside the sticky arguments: one mode per
+session name.
 
-- **Every pair has to match.** Narrowing to `session=main` and then to
-  `part=output` should show main's answers, not main's everything plus every
-  other session's answers.
-- **An event without that field passes.** `--name session` is about the streams
-  that belong to a session; a `cmd` echo has no session and belongs to the
-  operator who typed it. Dropping it would hide the command that caused the
-  output still being shown.
+A mode is a *reading*, never a deletion. `none` keeps every block the session ever
+carried, so `line` or `full` after it brings the whole history back -- which is the
+property the old session filter did not have, because it dropped the lines on the
+way in.
 
-`show_session` / `hide_session` are *not* this map: a session is hidden from the
-render, not filtered out of the arrival, and the two are different questions. A
-field filter drops what comes in (and a hidden event still updates state); a
-hidden session keeps arriving and is simply not drawn -- which is what makes
-`show_session` bring back the lines it said while it was hidden. SPEC names the
-session case and leaves the general form here, unwritten for now.
+A session nobody set is `full`. SPEC lists the three modes and does not name a
+default; a window that opens on nothing, with no line saying why, reads as a broken
+server, so the default is the one that shows the work.
 
-`allows` compares through the serialised event rather than a `match` over every
-variant: the field names are the names in the wire JSON (`session`, `part`,
-`level`), so a filter value is what a `jq` selector would call it, and adding an
-event variant does not need a new filtering branch. A hidden event still returns
-`true` for everything else -- see `Client::handle_event`.
-
-## HiddenSessions
-
-The sessions the events area leaves out, in `cli.toml` beside the other display
-state. It is a set, not a single name: `hide_session peer` and `hide_session
-scratch` both hold, and `show_session` clears one of them.
-
-Nothing is deleted when a session is hidden. The log holds one copy of every line,
-so the view is what changes: `Client::layout` drops the session from the panes and
-the merged window is told the same list, which is why a session that is hidden
-loses even the lines it drew before the command.
+`named(mode)` is only for the file's own entries. The announcement does not use it:
+a session with no entry is `full`, so `Client::layout` reads the mode off each
+session instead of reading the map.
 
 ## BlockSize
 
@@ -90,24 +72,6 @@ An unparseable value is refused with the way to say one, and an unknown value
 already in the file falls back to `0` -- a hand-edited file is not a reason for a
 client to refuse to start. Its own parse failure is different from the file's: the
 first is someone typing, the second is damage.
-
-## Split
-
-`set_event_ui --split` is the other half of the same preference: it says how many
-events windows there are, not how tall a block in one may be. It is client state for
-the same reason -- the server sends the same events either way -- and it is saved in
-the same `cli.toml`, so a size change and a split change cannot overwrite each other.
-
-Splitting is decided here, in the command layer, because which line belongs to which
-window is a question about meaning: a session's own events go to that session's
-window, and `cmd`/`cmd_result` go to the line the operator's commands live on. The
-front-end is handed the list (`Sink::windows`) and only lays it out -- see
-`docs/notes/cli-lib.md`.
-
-A session can be named `cmd`. The command line's window therefore grows a space until
-no session owns the name: two windows with one name would show a session's answers in
-the command line, which is the kind of thing that reads as a bug in the log rather
-than as a naming collision.
 
 ## Sticky::fill
 

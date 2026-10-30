@@ -3,34 +3,53 @@
 //! # Invariant
 //!
 //! A line names the window it belongs to, and every view reads the same blocks: the
-//! division says what a frame shows, never what the client holds. See
+//! layout says what a frame shows, never what the client holds. See
 //! `docs/notes/tui-panes.md`.
 
 use crate::log::{Log, Viewport};
-use crate::{Layout, LineKind, View, Window};
-
-/// The name the merged view is filed under, which no session can have.
-const MERGED: &str = "";
+use crate::{Layout, LineKind, View};
 
 /// One view of the events area: what it shows and where it is scrolled.
 pub struct Pane {
     pub name: String,
-    /// The single line `cmd` and its result share, drawn outside the other panes.
-    pub command: bool,
-    /// The merged view: every line, in arrival order.
-    pub merged: bool,
+    /// What kind of view this is: SPEC's three parts of the window.
+    pub kind: Kind,
     /// Rows scrolled up from this pane's newest line.
     pub scroll: usize,
     /// The scroll bound, written back by the renderer.
     pub max_scroll: usize,
 }
 
+/// Which part of the window a pane is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// The session list, which draws names rather than events.
+    List,
+    /// A session drawn as its own pane of events.
+    Full,
+    /// A session drawn as one line per event, below the panes.
+    Line,
+    /// The single line `cmd` and its result share.
+    Command,
+}
+
+impl Kind {
+    /// Whether this pane reads events at all: the list draws its own rows.
+    pub fn is_events(self) -> bool {
+        matches!(self, Kind::Full | Kind::Line | Kind::Command)
+    }
+
+    /// Whether the wheel and the keyboard may scroll it.
+    pub fn scrolls(self) -> bool {
+        matches!(self, Kind::Full | Kind::Line)
+    }
+}
+
 impl Pane {
-    fn merged() -> Self {
+    fn of(name: &str, kind: Kind) -> Self {
         Self {
-            name: MERGED.to_string(),
-            command: false,
-            merged: true,
+            name: name.to_string(),
+            kind,
             scroll: 0,
             max_scroll: 0,
         }
@@ -38,16 +57,7 @@ impl Pane {
 
     /// Which rows this pane reads.
     pub fn view(&self) -> View<'_> {
-        if self.merged {
-            View::All
-        } else {
-            View::Window(&self.name)
-        }
-    }
-
-    /// A pane worth scrolling to: the one under the wheel, or the keyboard's focus.
-    pub fn is_event(&self) -> bool {
-        !self.command
+        View::Window(&self.name)
     }
 }
 
@@ -56,32 +66,66 @@ impl Pane {
 pub struct Panes {
     log: Log,
     panes: Vec<Pane>,
+    /// The session list, which is drawn from the command layer's announcement
+    /// rather than from the log.
+    listed: Vec<crate::Listed>,
 }
 
 impl Panes {
     pub fn new() -> Self {
         Self {
             log: Log::new(),
-            panes: vec![Pane::merged()],
+            panes: Vec::new(),
+            listed: Vec::new(),
         }
     }
 
+    /// The session list, as the command layer announced it.
+    pub fn listed(&self) -> &[crate::Listed] {
+        &self.listed
+    }
+
+    /// The names on the list, in its order.
+    pub fn listed_names(&self) -> Vec<String> {
+        self.listed.iter().map(|l| l.name.clone()).collect()
+    }
+
     /// Sets the views to show; the lines they hold never change.
+    ///
+    /// # Invariant
+    ///
+    /// The order is the announcement's on both lists, and the command line is
+    /// always last of the panes: it is drawn under everything else.
     pub fn layout(&mut self, layout: &Layout) {
-        self.panes = match layout {
-            Layout::Merged { hidden } => {
-                // Every block but the hidden sessions': their lines stay in the
-                // log, so showing one again costs no trip.
-                self.log.set_hidden(hidden);
-                vec![Pane::merged()]
-            }
-            Layout::Split(windows) => windows.iter().map(Pane::of).collect(),
-        };
-        for pane in &self.panes {
+        self.listed = layout.listed.clone();
+        let mut panes = vec![Pane::of("", Kind::List)];
+        panes.extend(layout.full.iter().map(|name| Pane::of(name, Kind::Full)));
+        panes.extend(layout.line.iter().map(|name| Pane::of(name, Kind::Line)));
+        // An empty name is no command line: a frame of events alone.
+        if !layout.command.is_empty() {
+            panes.push(Pane::of(&layout.command, Kind::Command));
+        }
+        for pane in &panes {
             // The command line is one row per block whatever the log-wide cap says.
             self.log
-                .set_cap(&pane.name, if pane.command { 1 } else { 0 });
+                .set_cap(&pane.name, if pane.kind == Kind::Command { 1 } else { 0 });
         }
+        self.panes = panes;
+    }
+
+    /// The panes of one kind, in order.
+    pub fn of_kind(&self, kind: Kind) -> impl Iterator<Item = &Pane> {
+        self.panes.iter().filter(move |pane| pane.kind == kind)
+    }
+
+    /// The panes that read events: everything but the session list.
+    pub fn events(&self) -> impl Iterator<Item = &Pane> {
+        self.panes.iter().filter(|pane| pane.kind.is_events())
+    }
+
+    /// The single line `cmd` and its result are drawn on.
+    pub fn command(&self) -> Option<&Pane> {
+        self.panes.iter().find(|pane| pane.kind == Kind::Command)
     }
 
     pub fn panes(&self) -> &[Pane] {
@@ -118,20 +162,12 @@ impl Panes {
         self.panes.iter_mut().find(|pane| pane.name == name)
     }
 
-    /// The panes that share the events area: everything but the command line.
-    pub fn events(&self) -> impl Iterator<Item = &Pane> {
-        self.panes.iter().filter(|pane| !pane.command)
-    }
-
-    /// The single line `cmd` and its result are drawn on.
-    pub fn command(&self) -> Option<&Pane> {
-        self.panes.iter().find(|pane| pane.command)
-    }
-
-    /// Where a keyboard with no focus yet starts: the first view sharing the area.
+    /// Where a keyboard with no focus starts: the first pane, or first group.
     pub fn first_name(&self) -> String {
-        self.events()
-            .next()
+        self.panes
+            .iter()
+            .find(|pane| pane.kind == Kind::Full)
+            .or_else(|| self.panes.iter().find(|pane| pane.kind == Kind::Line))
             .map(|pane| pane.name.clone())
             .unwrap_or_default()
     }
@@ -142,6 +178,13 @@ impl Panes {
             return;
         };
         pane.scroll = (pane.scroll as i64 + rows).clamp(0, pane.max_scroll as i64) as usize;
+    }
+
+    /// Pins one pane to its newest line: what "back to the bottom" means.
+    pub fn pin(&mut self, name: &str) {
+        if let Some(pane) = self.get_mut(name) {
+            pane.scroll = 0;
+        }
     }
 
     /// Pins every pane to its newest line.
@@ -165,17 +208,5 @@ impl Panes {
         scroll: usize,
     ) -> Viewport<'_> {
         self.log.window(view, width, height, scroll)
-    }
-}
-
-impl Pane {
-    fn of(window: &Window) -> Self {
-        Self {
-            name: window.name.clone(),
-            command: window.command,
-            merged: false,
-            scroll: 0,
-            max_scroll: 0,
-        }
     }
 }

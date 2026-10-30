@@ -1105,14 +1105,11 @@ mod tests {
             names,
             vec![
                 "connect_server",
-                "del_event_filter",
-                "del_sticky_cmd_argument",
-                "hide_session",
+                "del_sticky",
                 "serve",
-                "set_event_filter",
-                "set_event_ui",
-                "set_sticky_cmd_argument",
-                "show_session"
+                "set_render",
+                "set_render_session",
+                "set_sticky"
             ]
         );
         assert!(
@@ -1125,7 +1122,7 @@ mod tests {
         // source and nothing more.
         let sticky = protocol::client_commands()
             .into_iter()
-            .find(|c| c.name == "del_sticky_cmd_argument")
+            .find(|c| c.name == "del_sticky")
             .unwrap();
         assert!(matches!(
             sticky.args[0].completions,
@@ -1145,7 +1142,7 @@ mod tests {
     fn a_client_command_is_refused_with_a_reason() {
         let out = resolve(
             &published(),
-            "set_event_ui",
+            "set_render",
             &Args::from([("block_size".to_string(), "3".to_string())]),
         )
         .unwrap_err();

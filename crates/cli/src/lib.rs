@@ -8,7 +8,7 @@ pub mod complete;
 pub mod server;
 
 pub use crate::catalog::Catalog;
-pub use crate::commands::{BlockSize, Split, Sticky};
+pub use crate::commands::{BlockSize, RenderModes, Sticky};
 pub use crate::complete::{Candidate, Completer, Completion, SharedCompleter, token_bounds};
 pub use crate::server::{ensure, starts_here};
 
@@ -28,8 +28,7 @@ use protocol::{
 };
 use tokio::net::UdpSocket;
 
-use crate::commands::{EventFilters, HiddenSessions, parse_args, render_args};
-use protocol::EVENT_FIELDS;
+use crate::commands::{parse_args, render_args};
 
 const DEFAULT_SERVER: &str = "127.0.0.1:9700";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -160,24 +159,72 @@ pub enum LineKind {
     Error,
 }
 
-/// One events window, as the command layer decided it belongs.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Window {
-    /// What a line carries to say it belongs here.
-    pub name: String,
-    /// The single line holding `cmd` and its result: not one of the windows that
-    /// share the events area's rows.
-    pub command: bool,
+/// How one session's events are drawn: `set_render_session --mode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RenderMode {
+    /// A pane of its own, in the horizontal split beside the session list.
+    ///
+    /// # Invariant
+    ///
+    /// It is what a session nobody set is drawn as: a window that opens on nothing,
+    /// with no line saying why, reads as a broken server.
+    #[default]
+    Full,
+    /// One line per event, below the panes.
+    Line,
+    /// Nothing of this session is drawn; its lines are still held.
+    None,
 }
 
-/// How the events area is divided.
+impl RenderMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RenderMode::Full => "full",
+            RenderMode::Line => "line",
+            RenderMode::None => "none",
+        }
+    }
+
+    /// The mode named, or what is wrong with the name: never a silent default.
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim() {
+            "full" => Ok(RenderMode::Full),
+            "line" => Ok(RenderMode::Line),
+            "none" => Ok(RenderMode::None),
+            other => Err(format!(
+                "no render mode {other:?}; it takes {}",
+                protocol::RENDER_MODES.join(", ")
+            )),
+        }
+    }
+}
+
+/// One session in the list the window draws on the left.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Layout {
-    /// One window holding every line in the order it arrived, but the ones the
-    /// hidden sessions carried.
-    Merged { hidden: Vec<String> },
-    /// One window per name, in this order.
-    Split(Vec<Window>),
+pub struct Listed {
+    pub name: String,
+    /// The status word, spelled: `idle`, `running`, `error`. A front-end that
+    /// knows no protocol type can still draw it.
+    pub status: String,
+}
+
+/// Everything the window needs to lay itself out, as SPEC's UI section has it.
+///
+/// # Invariant
+///
+/// The three lists are one decision read three ways: a session is in `full`, in
+/// `line`, or in neither -- never in both -- and `listed` holds every session the
+/// server knows whatever its mode, because the list is how a mode gets changed.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Layout {
+    /// The session list, in the server's order.
+    pub listed: Vec<Listed>,
+    /// Sessions drawn as a pane each, in the list's order.
+    pub full: Vec<String>,
+    /// Sessions drawn as one line per event, in the list's order.
+    pub line: Vec<String>,
+    /// The window `cmd` and `cmd_result` are drawn in.
+    pub command: String,
 }
 
 /// What the command line's window is called.
@@ -203,8 +250,11 @@ pub trait Sink {
     /// How tall one block may get, in wrapped rows; 0 caps nothing. A front-end
     /// that shows every row ignores it.
     fn block_size(&mut self, _lines: usize) {}
-    /// How the events area is divided. A front-end that ignores it shows one window.
+    /// How the window lays itself out. A front-end that ignores it shows one list.
     fn layout(&mut self, _layout: &Layout) {}
+    /// The session the sticky `session` names: what the keys scroll and what a
+    /// click sets. See `docs/notes/cli-lib.md`.
+    fn sticky_session(&mut self, _name: Option<&str>) {}
 }
 
 /// The one-shot mode's sink: it prints nothing, but it remembers what went
@@ -257,13 +307,10 @@ pub enum Submission {
 pub struct Client {
     catalog: Catalog,
     sticky: Sticky,
-    filters: EventFilters,
     /// How tall one block may get, in wrapped rows.
     block_size: BlockSize,
-    /// Whether each session gets its own events window.
-    split: Split,
-    /// The sessions the events area leaves out.
-    hidden: HiddenSessions,
+    /// How each session's events are drawn.
+    render: RenderModes,
     /// Which window each accepted command's result belongs to, from its echo.
     results: HashMap<u64, String>,
     /// A `set_session` waiting for its acknowledgement, so a refused one writes
@@ -310,6 +357,18 @@ impl Client {
         }
     }
 
+    /// Whether an event's lines are drawn: by its own session's mode, or -- for an
+    /// event that names no session -- at all.
+    fn drawn(&self, event: &Event) -> bool {
+        let session = match event {
+            Event::Response(e) => Some(e.session.as_str()),
+            Event::ToolAnswer(e) => Some(e.session.as_str()),
+            Event::Status { session, .. } => Some(session.as_str()),
+            _ => None,
+        };
+        session.is_none_or(|name| self.render.mode_of(name) != RenderMode::None)
+    }
+
     /// The window for a line that names no session, named so no session can take it.
     fn command_window(&self) -> String {
         let mut name = COMMAND_WINDOW.to_string();
@@ -333,46 +392,55 @@ impl Client {
         format!("[{session}] {label}")
     }
 
-    /// How to divide the events area: one window, or one per session.
+    /// How the window lays itself out: SPEC's UI section, as three lists.
     ///
     /// # Invariant
     ///
-    /// A hidden session narrows the panes with the lines, and the merged window is
-    /// told to leave it out too: a window that draws nothing is not a window.
+    /// Every session the server knows is listed whatever its mode -- the list is
+    /// how a mode gets changed -- and each one is in exactly one of the two
+    /// drawing lists, or in neither when it is `none`.
     fn layout(&self) -> Layout {
-        let hidden = self.hidden.names();
-        if !self.split.0 {
-            return Layout::Merged { hidden };
+        Layout {
+            listed: self
+                .sessions
+                .iter()
+                .map(|s| Listed {
+                    name: s.name.clone(),
+                    status: match s.status {
+                        SessionStatus::Idle => "idle",
+                        SessionStatus::Running => "running",
+                        SessionStatus::Error => "error",
+                    }
+                    .to_string(),
+                })
+                .collect(),
+            // A session nobody set is `full`, so the lists read the sessions,
+            // not the file's entries.
+            full: self
+                .sessions
+                .iter()
+                .filter(|s| self.render.mode_of(&s.name) == RenderMode::Full)
+                .map(|s| s.name.clone())
+                .collect(),
+            line: self
+                .sessions
+                .iter()
+                .filter(|s| self.render.mode_of(&s.name) == RenderMode::Line)
+                .map(|s| s.name.clone())
+                .collect(),
+            command: self.command_window(),
         }
-        let mut windows: Vec<Window> = self
-            .sessions
-            .iter()
-            .filter(|s| !self.hidden.contains(&s.name))
-            .map(|s| Window {
-                name: s.name.clone(),
-                command: false,
-            })
-            .collect();
-        windows.push(Window {
-            name: self.command_window(),
-            command: true,
-        });
-        Layout::Split(windows)
     }
+
     fn new(catalog: Catalog, sticky: Sticky) -> Self {
-        let filters = EventFilters::load(sticky.home());
         let block_size = BlockSize::load(sticky.home());
-        let split = Split::load(sticky.home());
-        let hidden = HiddenSessions::load(sticky.home());
+        let render = RenderModes::load(sticky.home());
         catalog.set_sticky_names(&sticky.names());
-        catalog.set_filter_names(&filters.names());
         Self {
             catalog,
             sticky,
-            filters,
             block_size,
-            split,
-            hidden,
+            render,
             results: HashMap::new(),
             follows: Vec::new(),
             sessions: Vec::new(),
@@ -467,8 +535,8 @@ impl Client {
     }
 
     fn handle_event(&mut self, event: Event, sink: &mut dyn Sink) {
-        // Filters hide lines, not state: a hidden `Status` still updates the list.
-        let shown = self.filters.allows(&event);
+        // A render mode hides lines, not state: a `Status` still updates the list.
+        let shown = self.drawn(&event);
         match event {
             Event::Cmd { id, name, args } => {
                 let window = self.command_line(args.get("session").map(String::as_str));
@@ -591,10 +659,9 @@ impl Client {
         self.sessions.iter().map(|s| s.name.clone()).collect()
     }
 
-    /// Keeps the completer's `--name` candidates in step with both sets.
+    /// Keeps the completer's `--name` candidates in step with the sticky set.
     pub fn sync_sticky(&self) {
         self.catalog.set_sticky_names(&self.sticky.names());
-        self.catalog.set_filter_names(&self.filters.names());
     }
 
     /// The status line: server facts only, never a "current session".
@@ -603,6 +670,7 @@ impl Client {
         // Told on every refresh, so a front-end attached late still learns it.
         sink.block_size(self.block_size.0);
         sink.layout(&self.layout());
+        sink.sticky_session(self.sticky.get("session"));
         let facts = if self.connected {
             format!("model {} | {} session(s)", self.model, self.sessions.len())
         } else if self.attempts == 0 {
@@ -617,19 +685,23 @@ impl Client {
         } else {
             format!("sticky: {sticky}")
         };
-        let filters = pairs(&self.filters.pairs());
-        if !filters.is_empty() {
-            footer.push_str(&format!("  | filters: {filters}"));
-        }
         if self.block_size.0 > 0 {
             footer.push_str(&format!("  | block_size: {}", self.block_size.0));
         }
-        if self.split.0 {
-            footer.push_str(&format!("  | split: {}", self.split.as_str()));
+        // A session drawn as something other than the default says so, or a log
+        // that never appears has no explanation on screen.
+        let mut modes: Vec<String> = Vec::new();
+        for (mode, tag) in [
+            (RenderMode::Full, "full"),
+            (RenderMode::Line, "line"),
+            (RenderMode::None, "none"),
+        ] {
+            for name in self.render.named(mode) {
+                modes.push(format!("{name}={tag}"));
+            }
         }
-        let hidden = self.hidden.names();
-        if !hidden.is_empty() {
-            footer.push_str(&format!("  | hidden: {}", hidden.join(",")));
+        if !modes.is_empty() {
+            footer.push_str(&format!("  | render: {}", modes.join(",")));
         }
         sink.footer(&footer);
     }
@@ -790,14 +862,10 @@ impl Client {
             return Submission::Rejected;
         }
 
-        // A client command is echoed where it answers: the command line.
-        let window = if spec.target == protocol::CommandTarget::Client {
-            None
-        } else {
-            args.get("session").map(String::as_str)
-        };
-        self.show(sink, &echo, &tokens, window);
+        // One echo per command: this one, where it answers. A server command is
+        // drawn from its `cmd` event.
         if spec.target == protocol::CommandTarget::Client {
+            self.show(sink, &echo, &tokens, None);
             self.run_client_command(&head, &args, sink);
             return Submission::Local;
         }
@@ -885,16 +953,14 @@ impl Client {
                 LineKind::Error,
                 "serve takes over the process; run it in a shell: `gongga serve --port <port>`",
             ),
-            "set_event_ui" => self.run_event_ui(args, sink),
-            "show_session" | "hide_session" => {
-                self.run_session_visibility(name == "show_session", args, sink)
-            }
-            "set_sticky_cmd_argument" => {
+            "set_render" => self.run_render(args, sink),
+            "set_render_session" => self.run_render_session(args, sink),
+            "set_sticky" => {
                 let Some(value) = args.get("value").cloned() else {
                     sink.line(
                         &self.command_window(),
                         LineKind::Error,
-                        "set_sticky_cmd_argument requires --value",
+                        "set_sticky requires --value",
                     );
                     return;
                 };
@@ -914,7 +980,7 @@ impl Client {
                     ),
                 }
             }
-            "del_sticky_cmd_argument" => match self.sticky.del(&arg_name) {
+            "del_sticky" => match self.sticky.del(&arg_name) {
                 Ok(true) => {
                     sink.line(
                         &self.command_window(),
@@ -934,62 +1000,6 @@ impl Client {
                     &format!("could not save: {e}"),
                 ),
             },
-            "set_event_filter" => {
-                let Some(value) = args.get("value").cloned() else {
-                    sink.line(
-                        &self.command_window(),
-                        LineKind::Error,
-                        "set_event_filter requires --value",
-                    );
-                    return;
-                };
-                if !EVENT_FIELDS.contains(&arg_name.as_str()) {
-                    sink.line(
-                        &self.command_window(),
-                        LineKind::Error,
-                        &format!(
-                            "no event field named {arg_name:?}; it takes {}",
-                            EVENT_FIELDS.join(", ")
-                        ),
-                    );
-                    return;
-                }
-                match self.filters.set(&arg_name, &value) {
-                    Ok(()) => {
-                        sink.line(
-                            &self.command_window(),
-                            LineKind::Result,
-                            &format!("{arg_name} = {value}"),
-                        );
-                        self.after_sticky_change(sink);
-                    }
-                    Err(e) => sink.line(
-                        &self.command_window(),
-                        LineKind::Error,
-                        &format!("could not save: {e}"),
-                    ),
-                }
-            }
-            "del_event_filter" => match self.filters.del(&arg_name) {
-                Ok(true) => {
-                    sink.line(
-                        &self.command_window(),
-                        LineKind::Result,
-                        &format!("cleared filter {arg_name}"),
-                    );
-                    self.after_sticky_change(sink);
-                }
-                Ok(false) => sink.line(
-                    &self.command_window(),
-                    LineKind::Error,
-                    &format!("no event filter named {arg_name:?}"),
-                ),
-                Err(e) => sink.line(
-                    &self.command_window(),
-                    LineKind::Error,
-                    &format!("could not save: {e}"),
-                ),
-            },
             // Published as a client command this build cannot run: say so.
             other => sink.line(
                 &self.command_window(),
@@ -1002,90 +1012,32 @@ impl Client {
         }
     }
 
-    /// Runs `set_event_ui`: each argument changes one thing about the events area.
+    /// Runs `set_render`: how tall a block may get.
     ///
     /// # Invariant
     ///
-    /// Every argument parses before any of them saves, so a typo cannot leave the
-    /// area configured by half a command, and no argument at all is a read of the
-    /// whole setting rather than a reset of it.
-    fn run_event_ui(&mut self, args: &protocol::Args, sink: &mut dyn Sink) {
-        let mut size = None;
-        if let Some(raw) = args.get("block_size") {
-            match BlockSize::parse(raw) {
-                Ok(parsed) => size = Some(parsed),
-                Err(e) => {
-                    sink.line(&self.command_window(), LineKind::Error, &e);
-                    return;
-                }
-            }
-        }
-        let mut split = None;
-        if let Some(raw) = args.get("split") {
-            match Split::parse(raw) {
-                Ok(parsed) => split = Some(parsed),
-                Err(e) => {
-                    sink.line(&self.command_window(), LineKind::Error, &e);
-                    return;
-                }
-            }
-        }
-        // Nothing named is the question "what is the events area doing?".
-        if size.is_none() && split.is_none() {
-            let report = self.event_ui_report();
+    /// A value that does not parse saves nothing, and no argument is a read of
+    /// the setting rather than a reset of it.
+    fn run_render(&mut self, args: &protocol::Args, sink: &mut dyn Sink) {
+        let Some(raw) = args.get("block_size") else {
+            let report = format!("block_size = {}", self.block_size.0);
             sink.line(&self.command_window(), LineKind::Result, &report);
             return;
-        }
-
-        let home = self.sticky.home().to_path_buf();
-        let mut failed: Vec<String> = Vec::new();
-        if let Some(parsed) = size {
-            match parsed.save(&home) {
-                Ok(()) => self.block_size = parsed,
-                Err(e) => failed.push(e.to_string()),
-            }
-        }
-        if let Some(parsed) = split {
-            match parsed.save(&home) {
-                Ok(()) => self.split = parsed,
-                Err(e) => failed.push(e.to_string()),
-            }
-        }
-        for e in failed {
-            sink.line(
-                &self.command_window(),
-                LineKind::Error,
-                &format!("could not save: {e}"),
-            );
-        }
-        let report = self.event_ui_report();
-        sink.line(&self.command_window(), LineKind::Result, &report);
-        self.after_sticky_change(sink);
-    }
-
-    /// The setting as one line, because two answers to one command is an argument.
-    fn event_ui_report(&self) -> String {
-        format!(
-            "block_size = {}  split = {}",
-            self.block_size.0,
-            self.split.as_str(),
-        )
-    }
-
-    /// Runs `show_session` / `hide_session`: which sessions the events area draws.
-    fn run_session_visibility(&mut self, show: bool, args: &protocol::Args, sink: &mut dyn Sink) {
-        let name = args.get("session").cloned().unwrap_or_default();
-        let saved = if show {
-            self.hidden.show(&name)
-        } else {
-            self.hidden.hide(&name)
         };
-        match saved {
-            Ok(_) => {
+        let parsed = match BlockSize::parse(raw) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                sink.line(&self.command_window(), LineKind::Error, &e);
+                return;
+            }
+        };
+        match parsed.save(self.sticky.home()) {
+            Ok(()) => {
+                self.block_size = parsed;
                 sink.line(
                     &self.command_window(),
                     LineKind::Result,
-                    &self.hidden_report(),
+                    &format!("block_size = {}", parsed.0),
                 );
                 self.after_sticky_change(sink);
             }
@@ -1097,13 +1049,44 @@ impl Client {
         }
     }
 
-    /// Which sessions are not drawn, as one line: the command's own answer.
-    fn hidden_report(&self) -> String {
-        let hidden = self.hidden.names();
-        if hidden.is_empty() {
-            "hidden = (none)".to_string()
-        } else {
-            format!("hidden = {}", hidden.join(","))
+    /// Runs `set_render_session`: how one session's events are drawn.
+    ///
+    /// # Invariant
+    ///
+    /// It changes a view and never the state: the blocks a session already said
+    /// are still held, so `--mode full` after `--mode none` brings them back.
+    fn run_render_session(&mut self, args: &protocol::Args, sink: &mut dyn Sink) {
+        let name = args.get("session").cloned().unwrap_or_default();
+        let Some(raw) = args.get("mode") else {
+            let mode = self.render.mode_of(&name);
+            sink.line(
+                &self.command_window(),
+                LineKind::Result,
+                &format!("{name} = {}", mode.as_str()),
+            );
+            return;
+        };
+        let mode = match RenderMode::parse(raw) {
+            Ok(mode) => mode,
+            Err(e) => {
+                sink.line(&self.command_window(), LineKind::Error, &e);
+                return;
+            }
+        };
+        match self.render.set(&name, mode) {
+            Ok(()) => {
+                sink.line(
+                    &self.command_window(),
+                    LineKind::Result,
+                    &format!("{name} = {}", mode.as_str()),
+                );
+                self.after_sticky_change(sink);
+            }
+            Err(e) => sink.line(
+                &self.command_window(),
+                LineKind::Error,
+                &format!("could not save: {e}"),
+            ),
         }
     }
 
@@ -1849,7 +1832,46 @@ mod tests {
         c
     }
 
-    /// A greeting's catalog: what the server publishes, client commands and all.
+    /// A catalog whose one command is `set_session`: the server's, not ours.
+    fn set_session_catalog() -> Catalog {
+        let cat = Catalog::new();
+        cat.set_commands(vec![protocol::CommandSpec {
+            target: protocol::CommandTarget::Server,
+            name: "set_session".into(),
+            description: "Create or configure a session.".into(),
+            args: vec![protocol::ArgSpec {
+                name: "session".into(),
+                description: "Target.".into(),
+                required: true,
+                value_hint: None,
+                completions: protocol::CompletionSource::Sessions,
+            }],
+        }]);
+        cat
+    }
+
+    /// The acknowledgement of the command just sent, so a test can answer one.
+    fn ack(c: &mut Client, ok: bool, sink: &mut dyn Sink) {
+        let id = c.next_id - 1;
+        c.handle_event(
+            Event::CmdResult {
+                id,
+                ok,
+                message: String::new(),
+                data: None,
+            },
+            sink,
+        );
+    }
+
+    /// Draws every session the client knows in one mode: what the old split meant
+    /// for the one session a test creates.
+    fn draw_all(c: &mut Client, mode: RenderMode) {
+        for name in c.session_names() {
+            c.render.set(&name, mode).unwrap();
+        }
+    }
+
     fn published_catalog() -> Catalog {
         let cat = Catalog::new();
         cat.set_commands(protocol::client_commands());
@@ -2131,7 +2153,7 @@ mod tests {
     fn split_routes_each_part_of_a_session_into_its_window() {
         let d = tempfile::tempdir().unwrap();
         let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
-        c.split = Split(true);
+        draw_all(&mut c, RenderMode::Full);
         let mut s = StreamSink::default();
         c.handle_response(response("main", ResponsePart::Reasoning, "a"), &mut s);
         c.handle_response(response("main", ResponsePart::ToolCall, "b"), &mut s);
@@ -2161,61 +2183,46 @@ mod tests {
         assert_eq!(s.lines, vec!["[main] thinking: a"]);
     }
 
-    /// The front-end is told what to lay out: one window per session plus the line
-    /// the command and its result share.
+    /// The front-end is told SPEC's three lists: the session list, the panes, the
+    /// line groups, and the command line.
     #[test]
-    fn the_announcement_is_one_window_per_session_plus_the_command_line() {
+    fn the_announcement_is_the_three_lists_of_the_layout() {
         let d = tempfile::tempdir().unwrap();
         let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main", "peer"]);
         let mut s = StreamSink::default();
         c.refresh(&mut s);
+        let first = s.announced.clone().expect("a layout was announced");
         assert_eq!(
-            s.announced,
-            Some(Layout::Merged { hidden: Vec::new() }),
-            "unsplit is one window"
-        );
-
-        c.split = Split(true);
-        c.refresh(&mut s);
-        let named: Vec<(String, bool)> = match s.announced.clone() {
-            Some(Layout::Split(windows)) => windows
+            first
+                .listed
                 .iter()
-                .map(|w| (w.name.clone(), w.command))
-                .collect(),
-            other => panic!("expected a split layout, got {other:?}"),
-        };
-        assert_eq!(
-            named,
-            vec![
-                ("main".to_string(), false),
-                ("peer".to_string(), false),
-                ("cmd".to_string(), true)
-            ],
-            "{named:?}"
+                .map(|l| l.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["main", "peer"],
+            "every session is listed whatever its mode: the list is how a mode changes"
         );
-
-        // A hidden session narrows the panes with the lines: a window that draws
-        // nothing is not a window.
-        let mut hidden = HiddenSessions::load(d.path());
-        hidden.hide("peer").unwrap();
-        c.hidden = hidden;
-        c.refresh(&mut s);
-        let names: Vec<String> = match s.announced.clone() {
-            Some(Layout::Split(windows)) => windows.iter().map(|w| w.name.clone()).collect(),
-            other => panic!("expected a split layout, got {other:?}"),
-        };
-        assert_eq!(names, vec!["main", "cmd"], "{names:?}");
-
-        // Unsplit, the one window is told what not to draw.
-        c.split = Split(false);
-        c.refresh(&mut s);
         assert_eq!(
-            s.announced,
-            Some(Layout::Merged {
-                hidden: vec!["peer".to_string()]
-            }),
-            "the merged window leaves the hidden session out"
+            first.full,
+            vec!["main", "peer"],
+            "a session nobody set is drawn in full"
         );
+        assert!(first.line.is_empty(), "nothing is a line group yet");
+        assert_eq!(first.command, COMMAND_WINDOW);
+
+        // One session as panes, the other as lines: each list holds its own.
+        c.render.set("peer", RenderMode::Line).unwrap();
+        c.refresh(&mut s);
+        let named = s.announced.clone().expect("a layout was announced");
+        assert_eq!(named.full, vec!["main"]);
+        assert_eq!(named.line, vec!["peer"]);
+
+        // A session drawn as nothing is in neither list, and still in the list.
+        c.render.set("main", RenderMode::None).unwrap();
+        c.refresh(&mut s);
+        let none = s.announced.clone().expect("a layout was announced");
+        assert!(none.full.is_empty());
+        assert_eq!(none.line, vec!["peer"]);
+        assert_eq!(none.listed.len(), 2);
     }
 
     /// A session may be called `cmd`; that is not a reason to lose the command line.
@@ -2223,7 +2230,7 @@ mod tests {
     fn a_session_named_cmd_does_not_take_the_commands_window() {
         let d = tempfile::tempdir().unwrap();
         let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["cmd"]);
-        c.split = Split(true);
+        draw_all(&mut c, RenderMode::Full);
         let mut s = StreamSink::default();
         c.handle_event(
             Event::Cmd {
@@ -2240,11 +2247,13 @@ mod tests {
             s.windows
         );
         c.refresh(&mut s);
-        let names: Vec<String> = match s.announced.clone() {
-            Some(Layout::Split(windows)) => windows.iter().map(|w| w.name.clone()).collect(),
-            other => panic!("expected a split layout, got {other:?}"),
-        };
-        assert_eq!(names, vec!["cmd", "cmd "]);
+        let named = s.announced.clone().expect("a layout was announced");
+        // The session `cmd` is a pane; its name grows a space for the command line.
+        assert_eq!(named.full, vec!["cmd"]);
+        assert_eq!(
+            s.announced.clone().expect("a layout was announced").command,
+            "cmd "
+        );
     }
 
     /// Unsplit, a part is a block of its own, so nothing is glued.
@@ -2268,7 +2277,7 @@ mod tests {
     fn split_keeps_the_command_echo_and_its_result_on_their_own_lines() {
         let d = tempfile::tempdir().unwrap();
         let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
-        c.split = Split(true);
+        draw_all(&mut c, RenderMode::Full);
         let mut s = StreamSink::default();
         c.handle_event(
             Event::Cmd {
@@ -2293,121 +2302,94 @@ mod tests {
         assert_eq!(s.windows, vec!["cmd", "cmd"]);
     }
 
-    /// One command's two arguments: each persists, and one line answers both.
+    /// `set_render`: one setting, and no argument is a read of it.
     #[test]
-    fn set_event_ui_saves_and_tells_the_front_end() {
+    fn set_render_saves_the_block_size_and_reports_it() {
         let d = tempfile::tempdir().unwrap();
         let cat = published_catalog();
         cat.set_sticky_names(&[]);
-        cat.set_filter_names(&[]);
         let mut c = client_with(cat, Sticky::load(d.path()), vec!["main"]);
         let mut s = VecSink(Vec::new());
         assert!(matches!(
-            c.command(argv("set_event_ui --block_size 3"), &mut s),
+            c.command(argv("set_render --block_size 3"), &mut s),
             Submission::Local
         ));
         assert_eq!(c.block_size, BlockSize(3));
         assert_eq!(BlockSize::load(d.path()), BlockSize(3));
+        assert_eq!(s.0.last().map(String::as_str), Some("block_size = 3"));
 
-        // Split is the other argument, and one line answers both.
-        assert!(matches!(
-            c.command(argv("set_event_ui --split true"), &mut s),
-            Submission::Local
-        ));
-        assert_eq!(c.split, Split(true));
-        assert_eq!(Split::load(d.path()), Split(true));
-        assert_eq!(
-            s.0.last().map(String::as_str),
-            Some("block_size = 3  split = true"),
-            "{:?}",
-            s.0
-        );
-
-        // A value nothing answers to is refused, and the answer says what to type.
+        // A value nothing answers to is refused, and says what to type.
         s.0.clear();
-        c.command(argv("set_event_ui --block_size huge"), &mut s);
+        c.command(argv("set_render --block_size huge"), &mut s);
+        assert_eq!(c.block_size, BlockSize(3));
         let said = s.0.join("\n");
         assert!(said.contains("caps nothing"), "{said}");
 
-        // One bad argument vetoes the good one beside it: half an applied command
-        // is an area nobody chose.
-        s.0.clear();
-        c.command(argv("set_event_ui --block_size 9 --split sideways"), &mut s);
-        assert_eq!(c.block_size, BlockSize(3), "the bad split vetoed the size");
-        assert_eq!(c.split, Split(true));
-        let said = s.0.join("\n");
-        assert!(said.contains("true, false"), "{said}");
-        assert!(
-            !said.contains("block_size ="),
-            "a refused setting is not reported: {said}"
-        );
-
-        // Without an argument it is a read: the setting is reported, not reset.
+        // Without an argument it is a read.
         s.0.clear();
         assert!(matches!(
-            c.command(argv("set_event_ui"), &mut s),
+            c.command(argv("set_render"), &mut s),
             Submission::Local
         ));
-        assert_eq!(c.block_size, BlockSize(3));
-        assert_eq!(s.0, vec!["/set_event_ui", "block_size = 3  split = true"]);
+        assert_eq!(s.0, vec!["/set_render", "block_size = 3"]);
     }
 
-    /// `show_session` / `hide_session`: which sessions the events area draws.
+    /// `set_render_session`: the mode persists, and the answer is the mode.
     #[test]
-    fn show_and_hide_name_the_sessions_the_events_area_leaves_out() {
+    fn set_render_session_saves_one_sessions_mode() {
         let d = tempfile::tempdir().unwrap();
-        let mut c = client_with(
-            published_catalog(),
-            Sticky::load(d.path()),
-            vec!["main", "peer"],
-        );
-        c.split = Split(true);
+        let cat = published_catalog();
+        cat.set_sticky_names(&[]);
+        let mut c = client_with(cat, Sticky::load(d.path()), vec!["main", "peer"]);
         let mut s = VecSink(Vec::new());
         assert!(matches!(
-            c.command(argv("hide_session --session peer"), &mut s),
+            c.command(
+                argv("set_render_session --session peer --mode line"),
+                &mut s
+            ),
             Submission::Local
         ));
-        assert_eq!(c.hidden.names(), vec!["peer".to_string()]);
-        assert_eq!(HiddenSessions::load(d.path()).names(), vec!["peer"]);
         assert_eq!(
-            s.0.last().map(String::as_str),
-            Some("hidden = peer"),
-            "{:?}",
-            s.0
+            RenderModes::load(d.path()).mode_of("peer"),
+            RenderMode::Line
         );
+        assert_eq!(s.0.last().map(String::as_str), Some("peer = line"));
 
-        // The panes went with it: a window that draws nothing is not a window.
-        let mut announced = StreamSink::default();
-        c.refresh(&mut announced);
-        let names: Vec<String> = match announced.announced.clone() {
-            Some(Layout::Split(windows)) => windows.iter().map(|w| w.name.clone()).collect(),
-            other => panic!("expected a split layout, got {other:?}"),
-        };
-        assert_eq!(names, vec!["main", "cmd"], "{names:?}");
-
-        // Unsplit, the one window is told the same thing: those lines are not drawn.
-        c.split = Split(false);
-        let mut announced = StreamSink::default();
-        c.refresh(&mut announced);
-        assert_eq!(
-            announced.announced,
-            Some(Layout::Merged {
-                hidden: vec!["peer".to_string()]
-            })
-        );
-
+        // A mode nothing answers to is refused, and the list is the answer.
         s.0.clear();
-        assert!(matches!(
-            c.command(argv("show_session --session peer"), &mut s),
-            Submission::Local
-        ));
-        assert_eq!(c.hidden.names(), Vec::<String>::new());
-        assert_eq!(
-            s.0.last().map(String::as_str),
-            Some("hidden = (none)"),
-            "{:?}",
-            s.0
+        c.command(
+            argv("set_render_session --session peer --mode side"),
+            &mut s,
         );
+        let said = s.0.join("\n");
+        assert!(said.contains("none, line, full"), "{said}");
+        assert_eq!(
+            RenderModes::load(d.path()).mode_of("peer"),
+            RenderMode::Line
+        );
+
+        // Without `--mode` it is a read of that session's mode.
+        s.0.clear();
+        c.command(argv("set_render_session --session peer"), &mut s);
+        assert_eq!(s.0.last().map(String::as_str), Some("peer = line"));
+        s.0.clear();
+        c.command(argv("set_render_session --session main"), &mut s);
+        assert_eq!(s.0.last().map(String::as_str), Some("main = full"));
+    }
+
+    /// A mode that draws nothing has to be visible somewhere, or the log reads as
+    /// broken.
+    #[test]
+    fn the_footer_shows_the_render_modes() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
+        let mut s = StatusSink::default();
+        c.refresh(&mut s);
+        assert!(!s.footer.contains("render"), "footer was {s:?}");
+
+        c.render.set("main", RenderMode::None).unwrap();
+        c.refresh(&mut s);
+        assert!(s.footer.contains("render: main=none"), "{s:?}");
     }
 
     /// Every other result keeps its old look: one line, no invented content.
@@ -2483,7 +2465,7 @@ mod tests {
     fn a_result_that_answered_with_rows_says_only_how_many() {
         let d = tempfile::tempdir().unwrap();
         let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
-        c.split = Split(true);
+        draw_all(&mut c, RenderMode::Full);
         let mut s = StreamSink::default();
         c.handle_event(
             Event::CmdResult {
@@ -2500,31 +2482,6 @@ mod tests {
             "the description is not a row: {:?}",
             s.keys
         );
-    }
-
-    #[test]
-    fn client_commands_never_reach_the_wire() {
-        let d = tempfile::tempdir().unwrap();
-        let cat = published_catalog();
-        cat.set_sticky_names(&[]);
-        let mut c = client_with(cat, Sticky::load(d.path()), vec!["main"]);
-        let mut s = VecSink(Vec::new());
-        assert!(matches!(
-            c.command(
-                argv("set_sticky_cmd_argument --name session --value main"),
-                &mut s
-            ),
-            Submission::Local
-        ));
-        assert_eq!(
-            c.sticky.pairs(),
-            vec![("session".to_string(), "main".to_string())]
-        );
-        assert!(matches!(
-            c.command(argv("del_sticky_cmd_argument --name session"), &mut s),
-            Submission::Local
-        ));
-        assert!(c.sticky.pairs().is_empty());
     }
 
     /// An unknown flag is refused, and the refusal lists the ones accepted; the
@@ -2558,68 +2515,26 @@ mod tests {
         assert!(said.contains("--session"), "{said}");
     }
 
-    /// A session filter silences the other sessions' streams and nothing else.
     #[test]
-    fn an_event_filter_hides_the_streams_it_does_not_name() {
+    fn client_commands_never_reach_the_wire() {
         let d = tempfile::tempdir().unwrap();
-        let mut filters = EventFilters::load(d.path());
-        filters.set("session", "main").unwrap();
-        let mut c = Client::new(Catalog::new(), Sticky::load(d.path()));
-        c.filters = filters;
-        c.connected = true;
-        let mut s = StreamSink::default();
-        for session in ["main", "peer"] {
-            let text = if session == "main" { "mine" } else { "theirs" };
-            c.handle_event(
-                Event::Response(response(session, ResponsePart::Output, text)),
-                &mut s,
-            );
-        }
-        assert_eq!(s.lines, vec!["[main] mine"]);
-    }
-
-    /// A filter is written with a wire field name, so this goes through bytes.
-    #[test]
-    fn a_filter_matches_an_event_that_arrived_on_the_wire() {
-        let d = tempfile::tempdir().unwrap();
-        let mut filters = EventFilters::load(d.path());
-        filters.set("session", "main").unwrap();
-        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
-        c.filters = filters;
-        let mut s = StreamSink::default();
-
-        for session in ["main", "peer"] {
-            let msg = ServerMessage::Event(Event::Response(response(
-                session,
-                ResponsePart::Output,
-                session,
-            )));
-            c.handle_bytes(&encode_server(&msg).unwrap(), &mut s)
-                .unwrap();
-        }
-        assert_eq!(s.lines, vec!["[main] main"]);
-    }
-
-    /// Filters are about what is shown: the session list still learns the
-    /// status of a session whose lines are hidden.
-    #[test]
-    fn a_filtered_event_still_updates_the_client_state() {
-        let d = tempfile::tempdir().unwrap();
-        let mut filters = EventFilters::load(d.path());
-        filters.set("session", "main").unwrap();
-        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["peer"]);
-        c.filters = filters;
+        let cat = published_catalog();
+        cat.set_sticky_names(&[]);
+        let mut c = client_with(cat, Sticky::load(d.path()), vec!["main"]);
         let mut s = VecSink(Vec::new());
-        c.handle_event(
-            Event::Status {
-                session: "peer".into(),
-                status: SessionStatus::Running,
-                detail: None,
-            },
-            &mut s,
+        assert!(matches!(
+            c.command(argv("set_sticky --name session --value main"), &mut s),
+            Submission::Local
+        ));
+        assert_eq!(
+            c.sticky.pairs(),
+            vec![("session".to_string(), "main".to_string())]
         );
-        assert!(s.0.is_empty(), "the line was hidden: {:?}", s.0);
-        assert_eq!(c.sessions[0].status, SessionStatus::Running);
+        assert!(matches!(
+            c.command(argv("del_sticky --name session"), &mut s),
+            Submission::Local
+        ));
+        assert!(c.sticky.pairs().is_empty());
     }
 
     /// Separate processes should not reuse the same easily guessed id sequence.
@@ -2632,88 +2547,6 @@ mod tests {
             "two starts in the same tick still differ by process id"
         );
         assert_ne!(a, 0, "0 is a fine id only if it cannot be a seed");
-    }
-
-    /// The acknowledgement of the command just sent, so a test can answer one.
-    fn ack(c: &mut Client, ok: bool, sink: &mut dyn Sink) {
-        let id = c.next_id - 1;
-        c.handle_event(
-            Event::CmdResult {
-                id,
-                ok,
-                message: String::new(),
-                data: None,
-            },
-            sink,
-        );
-    }
-
-    /// A catalog holding `set_session`, which the server publishes rather than the
-    /// client's own list.
-    fn set_session_catalog() -> Catalog {
-        let cat = Catalog::new();
-        cat.set_commands(vec![protocol::CommandSpec {
-            target: protocol::CommandTarget::Server,
-            name: "set_session".into(),
-            description: "Create or configure a session.".into(),
-            args: vec![protocol::ArgSpec {
-                name: "session".into(),
-                description: "Target.".into(),
-                required: true,
-                value_hint: None,
-                completions: protocol::CompletionSource::Sessions,
-            }],
-        }]);
-        cat
-    }
-
-    /// SPEC: a `set_session` the server accepted becomes the sticky `session`, and
-    /// a refused one writes nothing.
-    #[test]
-    fn an_accepted_set_session_becomes_the_sticky_session() {
-        let d = tempfile::tempdir().unwrap();
-        let cat = set_session_catalog();
-        let mut c = client_with(cat, Sticky::load(d.path()), vec!["main"]);
-        let mut s = VecSink(Vec::new());
-        assert!(matches!(
-            c.command(argv("set_session --session main"), &mut s),
-            Submission::Send(_)
-        ));
-        assert_eq!(
-            c.sticky.get("session"),
-            None,
-            "not before the server says yes"
-        );
-        ack(&mut c, true, &mut s);
-        assert_eq!(c.sticky.get("session"), Some("main"));
-        assert_eq!(Sticky::load(d.path()).get("session"), Some("main"));
-
-        // A refusal leaves the client where it was.
-        c.command(argv("set_session --session typo"), &mut s);
-        ack(&mut c, false, &mut s);
-        assert_eq!(c.sticky.get("session"), Some("main"));
-    }
-
-    /// A client command is echoed on the command line, where it answers.
-    #[test]
-    fn a_window_command_is_echoed_where_it_answers() {
-        let d = tempfile::tempdir().unwrap();
-        let mut c = client_with(
-            published_catalog(),
-            Sticky::load(d.path()),
-            vec!["main", "peer"],
-        );
-        c.split = Split(true);
-        let mut s = StreamSink::default();
-        c.command(argv("hide_session --session peer"), &mut s);
-        assert_eq!(
-            s.windows,
-            vec![COMMAND_WINDOW, COMMAND_WINDOW],
-            "the echo and the answer, both on the command line: {:?}",
-            s.windows
-        );
-        // The session's pane is not given a line about the window's own settings.
-        assert!(!s.windows.iter().any(|w| w == "peer"), "{:?}", s.windows);
     }
 
     /// The whole reason the follow exists: after `set_session` is accepted, a
@@ -2779,38 +2612,53 @@ mod tests {
         assert_eq!(Sticky::load(d.path()).get("session"), Some("main"));
     }
 
-    /// A field no event carries would filter nothing; say so instead of
-    /// storing a filter that quietly does nothing.
+    /// SPEC: a `set_session` the server accepted becomes the sticky `session`, and
+    /// a refused one writes nothing.
     #[test]
-    fn set_event_filter_refuses_a_field_no_event_has() {
+    fn an_accepted_set_session_becomes_the_sticky_session() {
         let d = tempfile::tempdir().unwrap();
-        let mut c = client_with(published_catalog(), Sticky::load(d.path()), vec!["main"]);
+        let cat = set_session_catalog();
+        let mut c = client_with(cat, Sticky::load(d.path()), vec!["main"]);
         let mut s = VecSink(Vec::new());
         assert!(matches!(
-            c.command(argv("set_event_filter --name nope --value x"), &mut s),
-            Submission::Local
+            c.command(argv("set_session --session main"), &mut s),
+            Submission::Send(_)
         ));
-        assert!(c.filters.pairs().is_empty());
-        let said = s.0.join("\n");
-        assert!(said.contains("no event field named \"nope\""), "{said}");
-        assert!(said.contains("session"), "{said}");
+        assert_eq!(
+            c.sticky.get("session"),
+            None,
+            "not before the server says yes"
+        );
+        ack(&mut c, true, &mut s);
+        assert_eq!(c.sticky.get("session"), Some("main"));
+        assert_eq!(Sticky::load(d.path()).get("session"), Some("main"));
+
+        // A refusal leaves the client where it was.
+        c.command(argv("set_session --session typo"), &mut s);
+        ack(&mut c, false, &mut s);
+        assert_eq!(c.sticky.get("session"), Some("main"));
     }
 
-    /// A filter that hides lines has to be visible somewhere, or the log reads
-    /// as broken.
+    /// A client command is echoed on the command line, where it answers.
     #[test]
-    fn the_footer_shows_the_filters() {
+    fn a_window_command_is_echoed_where_it_answers() {
         let d = tempfile::tempdir().unwrap();
-        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
-        let mut s = StatusSink::default();
-        c.refresh(&mut s);
-        assert!(!s.footer.contains("filters"), "footer was {s:?}");
-
-        let mut filters = EventFilters::load(d.path());
-        filters.set("session", "main").unwrap();
-        c.filters = filters;
-        c.refresh(&mut s);
-        assert!(s.footer.contains("filters: session=main"), "{s:?}");
+        let mut c = client_with(
+            published_catalog(),
+            Sticky::load(d.path()),
+            vec!["main", "peer"],
+        );
+        draw_all(&mut c, RenderMode::Full);
+        let mut s = StreamSink::default();
+        c.command(argv("hide_session --session peer"), &mut s);
+        assert_eq!(
+            s.windows,
+            vec![COMMAND_WINDOW],
+            "a client command is drawn once, where it answers: {:?}",
+            s.windows
+        );
+        // The session's pane is not given a line about the window's own settings.
+        assert!(!s.windows.iter().any(|w| w == "peer"), "{:?}", s.windows);
     }
 
     #[test]

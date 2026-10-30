@@ -32,7 +32,21 @@ still reads only the rows it draws.
 Name, what kind of view it is, and its own `scroll`/`max_scroll`. There is no shared
 scroll: one session's history is not another's, which is the point of splitting.
 
+`Kind` is which part of SPEC's window a pane is: the session list, a full pane, a
+line group, or the command line. Only `Full` panes are laid out in the body's right
+half; the line groups and the command line have areas of their own, so the body's
+arithmetic never counts them.
+
 ## Panes::layout
+
+One pane per announcement, in its order: the list, then the full panes, then the
+line groups, then the command line. An empty command name is no command line at all,
+which is what a frame of events alone asks for.
+
+## Panes::pin and Panes::scroll_by
+
+One pane's scroll, by name: SPEC's page keys act on the sticky session, not on
+whatever the keyboard last pointed at.
 
 The list is what is *shown*; a window that drops out of it keeps nothing of its own,
 because it never held anything -- the log does. Re-announcing the same list is not a
@@ -42,12 +56,6 @@ what keeps the order truthful.
 The merged announcement carries the sessions it leaves out, and this is where the
 log is told: split, a hidden session has no pane; merged, it has no lines. Both are
 the same set from the same command, so the two cannot disagree.
-
-## MERGED
-
-The merged view is filed under the empty name, which no session can have: a session
-name comes from the server. It is the pane the keyboard starts on, and the only pane
-when the area is not split.
 
 ## The command view
 

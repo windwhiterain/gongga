@@ -1,5 +1,6 @@
 # Gongga Harness
 -- Rust Coding Agent Harness --
+
 ## Crate Structure
 all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, live inside directory "crates/xxx". 
 - protocol
@@ -10,12 +11,15 @@ all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, l
 - tui: binary, transparent cli wrapper, auto spawn a server and connected to it.
   - `--client_only`: suppress auto spawn server.
 - ...: more crates may be added, with the same naming and layout.
+
 ## Server Client Connection
 - UDP.
 - key.
+
 ## LLM API
 standard OpenAI Response API.
 - images: File API, gated by the roster's modalities.
+
 ## Tool
 use `which("bash")` as bash.
 - bash{command, name = "default", task = "default", background = false, detached = false}:
@@ -25,19 +29,39 @@ use `which("bash")` as bash.
 - list_bash{name_regex}: list matched bash with the caller session's name in key.
 - check_bash{name = "default"}: return bash's output that hasn't been read by the caller session.
 - del_bash{name_regex}: delete matched bash with the caller sessions' name in key. 
+
 ## State
 - everything in database (sqlite) under a home directory, structured for agentic retrieval/mutation.
+
 ## UI
-- events[]:
-  - cmd
-  - cmd_result
-  - response{session, reasoning, toolcall, output}: streaming.
-  - tool_result{session, toocall, ...}: 
+- main (vertical)
+  - horizontal
+    - sessions[] (vertical scroll)
+      - click to set sticky session.
+    - [{session{render mode = full}, events (scroll)}] (horizontal split):
+      - click to set sticky session.
+  - [{session{render mode = line}, event}] (vertical lines scroll)
+    - click to set sticky session.
+  - [{cmd, cmd_result}] (line)
+  - stickys[{name, value}]: auto fill in cmd argument if required but not provided.
+  - cmd_input: perfix select, auto complete (match candidates in any char position).
+    - `/<cmd>`
+    - `<pure text>` expand to `/send_message --message "<pure text>"`: need escape.
+
+- event
+  - | message_item{session | reasoning | toolcall | output}: streaming.
+  - | tool_result{session, toocall, ...}: 
     - bash's output streaming.
-- cmd_input: perfix select, auto complete.
-  - `/<cmd>`
-  - `<pure text>` expand to `/send_message --message "<pure text>"`: need escape.
-- sticky_cmd_arguments[{name, value}]: auto fill in cmd argument if required but not provided.
+
+- scroll
+  - if scrolled from bottom, do not auto scroll, show a go to bottom button.
+
+- hot-key
+  - Shift+Enter: new line in cmd_input.
+  - PageUp/PageDown (Fn+Up/Down): scroll the sticky session.
+  - Shift+Down: scroll the sticky session to bottom.
+
+
 ## Cmd
 - invocation: `gongga-cli <cmd> [--arg <v> ...]` -- argv is already tokens, so a command line
   carries no `/` and no prose form. `/` belongs to `cmd_input` only.
@@ -51,13 +75,11 @@ use `which("bash")` as bash.
 - server_script: that registered by external python scripts
   - `get_messages --session <name> --range <begin:end>`: return the rows in that closed range `range` (negative number to count from end).
 - client:
-  - `set_sticky_cmd_argument --name <name> --value <value>`
-  - `del_sticky_cmd_argument --name <name>`
-  - `set_event_ui [--block_size <line>] [--split <bool>]`:
+  - `set_sticky --name <name> --value <value>`:
+  - `del_sticky --name <name>`
+  - `set_render [--block_size <line>]`:
     - `block_size`: max line count of non-output block, auto scroll.
-    - `split` whether split events window by session name, cmd/cmd_result use a separate single line.
-  - `show_session --session <name>`
-  - `hide_session --session <name>`
+  - `set_render_session --session <name> [--mode <none|line|full>]`
   - `connect_server [--ip <ip>](default: localhost) --port <port>`
   - `serve --port <port> [--home <path>](default: "~/.gongga")`
 

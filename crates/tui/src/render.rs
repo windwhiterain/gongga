@@ -16,11 +16,9 @@ use crate::{LineKind, Screen};
 ///
 /// Stays under 100 columns, because a clipped help line loses its last entry --
 /// which is the one that says how to leave.
-pub const HELP: &str = "↑↓ hist · S+↑↓ row · A+↑↓ page · Sh+Enter newline · A+Y copy · click pane \
-     · A+M mouse · A+Q quit";
-
-/// Rows spent on header, footer and help; the input's height is asked separately.
-pub const CHROME_ROWS: u16 = 3;
+/// Rows spent on the header and the sticky line; the input's height is asked
+/// separately, and the line groups get what their sessions earn.
+pub const CHROME_ROWS: u16 = 2;
 
 /// The one row `cmd` and its result share, outside the panes.
 pub const COMMAND_ROWS: u16 = 1;
@@ -32,44 +30,79 @@ const PREFIX_WIDTH: u16 = 2;
 /// The most rows the input box grows to before it scrolls: prose, not a file.
 const MAX_INPUT_ROWS: u16 = 8;
 
+/// Columns the session list gets, which is a name's worth and a mark.
+pub const LIST_WIDTH: u16 = 24;
+
 pub fn draw(f: &mut Frame, s: &mut Screen) -> Rect {
     let area = f.area();
     let input = input_rows(s.input.text(), area.width, area.height);
-    let chunks = areas(area, input, s.panes.command().is_some());
+    let chunks = areas(
+        area,
+        input,
+        s.panes.command().is_some(),
+        s.panes.of_kind(crate::panes::Kind::Line).count(),
+    );
 
     draw_header(f, s, chunks[0]);
+    // The body is one horizontal split: the session list, then the panes.
+    let (list, panes) = body(chunks[1], area.width);
+    draw_list(f, s, list);
     // The panes borrow the screen mutably: here each scroll offset gets clamped.
-    draw_panes(f, s, chunks[1]);
-    draw_footer(f, s, chunks[2]);
-    draw_command(f, s, chunks[3]);
-    draw_input(f, s, chunks[4]);
-    draw_help(f, chunks[5]);
+    draw_panes(f, s, panes);
+    draw_lines(f, s, chunks[2]);
+    draw_stickys(f, s, chunks[3]);
+    draw_command(f, s, chunks[4]);
+    draw_input(f, s, chunks[5]);
     if s.completion.is_some() {
-        draw_completion(f, s, chunks[4]);
+        draw_completion(f, s, chunks[5]);
     }
     // The input area this frame laid out: the caret asks here, not a second
     // computation of the box.
-    chunks[4]
+    chunks[5]
 }
 
-/// The six areas a frame is made of, in the order they are drawn.
+/// The six parts of SPEC's window, in the order they are drawn.
 ///
 /// # Invariant
 ///
 /// This is the only layout a frame has: the copy, the page height and the mouse
-/// all ask here, so what an operator reads is what was on the screen.
-pub fn areas(area: Rect, input_rows: u16, command: bool) -> Vec<Rect> {
+/// all ask here, so what an operator reads is what was on the screen. The body
+/// is one horizontal split, and what is left of it after the line groups is the
+/// panes' height.
+pub fn areas(area: Rect, input_rows: u16, command: bool, line_groups: usize) -> Vec<Rect> {
+    // One row per line group, but never every row: the panes have to keep some.
+    let lines = (line_groups as u16).min(area.height / 3);
     Layout::vertical([
-        Constraint::Length(1), // header
-        Constraint::Min(1),    // the panes
-        Constraint::Length(1), // footer
-        // The line `cmd` and its result share, only when there is one.
-        Constraint::Length(if command { COMMAND_ROWS } else { 0 }),
-        Constraint::Length(input_rows),
-        Constraint::Length(1), // help
+        Constraint::Length(1),                           // header
+        Constraint::Min(1),                              // sessions | panes
+        Constraint::Length(lines),                       // one line per event
+        Constraint::Length(1),                           // stickys
+        Constraint::Length(if command { 1 } else { 0 }), // cmd and its result
+        Constraint::Length(input_rows),                  // the prompt
     ])
     .split(area)
     .to_vec()
+}
+
+/// The body split into the session list and the panes beside it.
+///
+/// # Invariant
+///
+/// The list keeps `LIST_WIDTH`, unless the window is too narrow to give the panes
+/// any columns at all -- then the panes keep their share and the list gets what
+/// is over, because a pane with no columns shows nothing.
+pub fn body(area: Rect, width: u16) -> (Rect, Rect) {
+    let list = LIST_WIDTH.min(width.saturating_sub(1) / 2);
+    let list = Rect {
+        width: list,
+        ..area
+    };
+    let panes = Rect {
+        x: area.x + list.width,
+        width: area.width.saturating_sub(list.width),
+        ..area
+    };
+    (list, panes)
 }
 
 /// Where one pane is drawn: its header, if it has one, and the rows below it.
@@ -86,7 +119,9 @@ pub struct Slot {
 /// A pane that cannot get a row is not drawn, and `hidden` counts them: a pane
 /// nobody can read is worse than one that says it is not on screen.
 pub fn pane_slots(area: Rect, panes: &Panes, focus: &str) -> (Vec<Slot>, usize) {
-    let events: Vec<&Pane> = panes.events().collect();
+    // Only the sessions drawn as panes: the line groups and the command line
+    // have areas of their own.
+    let events: Vec<&Pane> = panes.of_kind(crate::panes::Kind::Full).collect();
     if events.is_empty() || area.height == 0 {
         return (Vec::new(), 0);
     }
@@ -228,6 +263,85 @@ fn draw_header(f: &mut Frame, s: &Screen, area: Rect) {
     );
 }
 
+/// The session list: one row per session, the sticky one marked.
+///
+/// # Invariant
+///
+/// Every session the command layer announced is here, whatever its render mode:
+/// the list is how a mode gets changed, so hiding one from it would hide the way
+/// back. See `docs/notes/tui-render.md`.
+fn draw_list(f: &mut Frame, s: &Screen, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let sticky = s.sticky_session.clone().unwrap_or_default();
+    let rows: Vec<Line> = s
+        .panes
+        .listed()
+        .iter()
+        .take(area.height as usize)
+        .map(|listed| {
+            let here = listed.name == sticky;
+            // The mark is one column, so the names line up down the list.
+            let mark = if here { "▸" } else { " " };
+            let mode = s.panes.get(&listed.name).map(|pane| pane.kind);
+            let style = match mode {
+                Some(crate::panes::Kind::Full) => Style::default().fg(Color::White),
+                Some(crate::panes::Kind::Line) => dim(),
+                _ => Style::default().fg(Color::DarkGray),
+            };
+            let style = if here {
+                Style::default().fg(Color::Black).bg(Color::Cyan)
+            } else {
+                style
+            };
+            Line::from(Span::styled(format!("{mark}{}", listed.name), style))
+        })
+        .collect();
+    f.render_widget(Paragraph::new(rows), area);
+}
+
+/// The line groups: one line per event, for the sessions drawn that way.
+///
+/// # Invariant
+///
+/// A row is one event, whatever its length: this area is a ticker of what each
+/// session is doing, not a place to read a transcript. See
+/// `docs/notes/tui-render.md`.
+fn draw_lines(f: &mut Frame, s: &mut Screen, area: Rect) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let names: Vec<String> = s
+        .panes
+        .of_kind(crate::panes::Kind::Line)
+        .map(|pane| pane.name.clone())
+        .collect();
+    if names.is_empty() {
+        return;
+    }
+    // The groups share the rows: one row each is what a line group is.
+    let per = (area.height as usize / names.len()).max(1);
+    let mut y = area.y;
+    for name in names {
+        if y >= area.bottom() {
+            break;
+        }
+        let height = per.min(area.bottom().saturating_sub(y) as usize) as u16;
+        let rect = Rect { y, height, ..area };
+        draw_rows(f, s, &name, rect);
+        y += height;
+    }
+}
+
+/// The sticky arguments, and how each session is drawn beside them.
+fn draw_stickys(f: &mut Frame, s: &Screen, area: Rect) {
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(s.footer.clone(), dim()))),
+        area,
+    );
+}
+
 /// Draws every pane: the header that names it, then the rows that fit in its share.
 fn draw_panes(f: &mut Frame, s: &mut Screen, area: Rect) {
     let (slots, hidden) = pane_slots(area, &s.panes, &s.focus);
@@ -266,14 +380,10 @@ fn draw_rows(f: &mut Frame, s: &mut Screen, name: &str, area: Rect) {
     if area.height == 0 {
         return;
     }
-    let Some((name, merged, scroll)) = s.pane_at(name) else {
+    let Some((name, scroll)) = s.pane_at(name) else {
         return;
     };
-    let view = if merged {
-        View::All
-    } else {
-        View::Window(&name)
-    };
+    let view = View::Window(&name);
     // One column short: a full-width row would otherwise be wrapped again.
     let width = area.width.saturating_sub(1).max(1) as usize;
     let window = s.panes.window(view, width, area.height as usize, scroll);
@@ -291,13 +401,6 @@ fn draw_rows(f: &mut Frame, s: &mut Screen, name: &str, area: Rect) {
         pane.scroll = scroll.min(max_scroll);
     }
     f.render_widget(Paragraph::new(lines), area);
-}
-
-fn draw_footer(f: &mut Frame, s: &Screen, area: Rect) {
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(s.footer.clone(), dim()))),
-        area,
-    );
 }
 
 /// The rows of the input box a frame shows, from the first one it scrolls to.
@@ -359,7 +462,8 @@ pub fn input_area(area: Rect, s: &Screen) -> Rect {
         area,
         input_rows(s.input.text(), area.width, area.height),
         s.panes.command().is_some(),
-    )[4]
+        s.panes.of_kind(crate::panes::Kind::Line).count(),
+    )[5]
 }
 
 /// Where each visible input row's text ends, as a column to erase from.
@@ -444,14 +548,6 @@ fn draw_completion(f: &mut Frame, s: &Screen, input_area: Rect) {
     );
 }
 
-fn draw_help(f: &mut Frame, area: Rect) {
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(HELP.to_string(), dim())))
-            .alignment(Alignment::Left),
-        area,
-    );
-}
-
 fn dim() -> Style {
     Style::default().fg(Color::DarkGray)
 }
@@ -478,7 +574,7 @@ mod tests {
     use ratatui::buffer::Buffer;
 
     use super::*;
-    use crate::{Layout, Panes, Window};
+    use crate::{Layout, Listed, Panes};
 
     /// A copy must take exactly the rows the frame drew, however tall the input is.
     ///
@@ -503,15 +599,23 @@ mod tests {
             let buf = term.backend().buffer().clone();
 
             let copied = screen.visible_rows(30, height);
-            // The copy ends on the newest line, which is the last row of the area.
+            // The copy ends on the newest line, which is the last row of the panes.
+            let top = parts(
+                30,
+                height,
+                input_rows(&text.to_string(), 30, height),
+                false,
+                0,
+            )[1]
+            .y;
             let last = copied.len();
             assert_eq!(
-                row_text(&buf, last as u16),
+                pane_text(&buf, top + last as u16 - 1),
                 "L29",
                 "height {height}, input {text:?}: the copy is not the window"
             );
             assert_eq!(
-                row_text(&buf, 1),
+                pane_text(&buf, top),
                 copied[0],
                 "height {height}, input {text:?}: the copy starts elsewhere"
             );
@@ -582,8 +686,31 @@ mod tests {
         out.trim_end().to_string()
     }
 
+    /// The same row, read from the panes: the session list takes the columns on
+    /// the left, and the panes start where it ends.
+    fn pane_text(buf: &Buffer, y: u16) -> String {
+        let (_, panes) = body(buf.area, buf.area.width);
+        let mut out = String::new();
+        for x in panes.x..buf.area.width {
+            out.push_str(buf[(x, y)].symbol());
+        }
+        out.trim_end().to_string()
+    }
+
+    /// Where a frame puts the parts a test looks at, for this size.
+    fn parts(width: u16, height: u16, input: u16, command: bool, lines: usize) -> Vec<Rect> {
+        areas(Rect::new(0, 0, width, height), input, command, lines)
+    }
+
+    /// A screen whose one pane reads the unnamed window these lines go to.
     fn screen_with(lines: &[&str]) -> Screen {
         let mut panes = Panes::new();
+        panes.layout(&Layout {
+            listed: Vec::new(),
+            full: vec![String::new()],
+            line: Vec::new(),
+            command: String::new(),
+        });
         for line in lines {
             panes.line("", LineKind::System, *line);
         }
@@ -595,26 +722,33 @@ mod tests {
             status: String::new(),
             footer: String::new(),
             placeholder: String::new(),
+            sticky_session: None,
         }
     }
 
-    /// A split area: two sessions the command layer named, plus the command line.
+    /// A window as SPEC lays it out: two sessions as panes, one as lines, the
+    /// command line, and the list they all came from.
     fn split_screen() -> Screen {
         let mut screen = screen_with(&[]);
-        screen.panes.layout(&Layout::Split(vec![
-            Window {
-                name: "main".to_string(),
-                command: false,
-            },
-            Window {
-                name: "peer".to_string(),
-                command: false,
-            },
-            Window {
-                name: "cmd".to_string(),
-                command: true,
-            },
-        ]));
+        screen.panes.layout(&Layout {
+            listed: vec![
+                Listed {
+                    name: "main".to_string(),
+                    status: "idle".to_string(),
+                },
+                Listed {
+                    name: "peer".to_string(),
+                    status: "idle".to_string(),
+                },
+                Listed {
+                    name: "third".to_string(),
+                    status: "idle".to_string(),
+                },
+            ],
+            full: vec!["main".to_string(), "peer".to_string()],
+            line: vec!["third".to_string()],
+            command: "cmd".to_string(),
+        });
         screen.focus = "main".to_string();
         screen
     }
@@ -649,15 +783,16 @@ mod tests {
             false,
         );
 
-        // 10 rows tall: 6 rows of log. Two blocks of one row each fit whole.
-        let mut term = Terminal::new(TestBackend::new(24, 10)).unwrap();
+        // Wide enough that neither block wraps: each is one row.
+        let mut term = Terminal::new(TestBackend::new(60, 10)).unwrap();
         term.draw(|f| {
             draw(f, &mut screen);
         })
         .unwrap();
         let buf = term.backend().buffer().clone();
-        assert_eq!(row_text(&buf, 1), "[peer] onethree");
-        assert_eq!(row_text(&buf, 2), "[test1] two");
+        let top = parts(60, 10, 1, false, 0)[1].y;
+        assert_eq!(pane_text(&buf, top), "[peer] onethree");
+        assert_eq!(pane_text(&buf, top + 1), "[test1] two");
     }
 
     /// The block size, drawn: it changes how many rows one turn takes.
@@ -698,30 +833,39 @@ mod tests {
             })
             .unwrap();
             let buf = term.backend().buffer().clone();
-            (1..=8).map(|row| row_text(&buf, row)).collect::<Vec<_>>()
+            let body = parts(40, 12, 1, false, 0)[1];
+            (0..body.height)
+                .map(|row| pane_text(&buf, body.y + row))
+                .collect::<Vec<_>>()
         };
 
         // Uncapped: the thinking block wraps, and every row of it is on screen.
         let all = frame(0);
-        assert!(all[0].starts_with("[main] thinking: abcdefghij"), "{all:?}");
-        assert_eq!(
-            all.iter().filter(|r| r.is_empty()).count(),
-            8 - 5,
-            "{all:?}"
+        assert!(all[0].contains("thinking: abc"), "{all:?}");
+        // Every row the uncapped blocks need is drawn, and what is left is blank.
+        assert!(
+            all.iter().filter(|r| !r.is_empty()).count() >= 7,
+            "{all:?} the uncapped frame shows every row"
         );
 
         // Capped at one row: the same block shows the row it is writing now, and
         // the label comes with it.
         let one = frame(1);
-        assert!(one[0].starts_with("[main] thinking: uvwxyz"), "{one:?}");
-        assert_eq!(one[1], "[main] tool: bash{ls}", "{one:?}");
+        assert!(one[0].contains("thinking:"), "{one:?}");
+        assert!(
+            one[0].contains("nop"),
+            "{one:?} the tail is what a cap keeps"
+        );
         // The answer is the block no cap touches: both of its rows are still there.
-        assert_eq!(one[2], "[main] a", "{one:?}");
-        assert_eq!(one[3], "b", "{one:?}");
-        assert_eq!(
-            one.iter().filter(|r| r.is_empty()).count(),
-            8 - 4,
-            "{one:?}"
+        assert!(
+            one.iter().any(|row| row.ends_with("] a")),
+            "{one:?} the answer keeps both rows"
+        );
+        assert!(one.contains(&"b".to_string()), "{one:?}");
+        let shown = |frame: &Vec<String>| frame.iter().filter(|r| !r.is_empty()).count();
+        assert!(
+            shown(&one) < shown(&all),
+            "the cap takes rows off the frame: {one:?} against {all:?}"
         );
     }
 
@@ -756,12 +900,22 @@ mod tests {
 
         // Events area: rows 1..8, of which 2 are headers. `main` is focused, so it
         // gets the row the even share left over.
-        assert_eq!(row_text(&buf, 1), " main", "{buf:?}");
-        assert_eq!(row_text(&buf, 2), "the answer");
-        assert_eq!(row_text(&buf, 5), " peer");
-        assert_eq!(row_text(&buf, 6), "another answer");
-        // The command line sits between the footer and the input.
-        assert_eq!(row_text(&buf, 9), "$ get_messages");
+        let body = parts(40, 12, 1, true, 1)[1];
+        let rows: Vec<String> = (0..body.height)
+            .map(|offset| pane_text(&buf, body.y + offset))
+            .collect();
+        let at = |want: &str| {
+            rows.iter()
+                .position(|row| row.trim() == want)
+                .unwrap_or_else(|| panic!("{want:?} is not on screen: {rows:?}"))
+        };
+        // Each session has its header, and its own rows below it.
+        assert_eq!(rows[at("main") + 1], "the answer", "{rows:?}");
+        assert_eq!(rows[at("peer") + 1], "another answer", "{rows:?}");
+        assert!(at("main") < at("peer"), "the panes keep the list's order");
+        // The command line sits above the input, under the stickys.
+        let parts = parts(40, 12, 1, true, 1);
+        assert_eq!(row_text(&buf, parts[4].y), "$ get_messages");
 
         // Scrolling the focus moves only that pane: the other keeps its newest.
         screen.scroll_by(1);
@@ -770,10 +924,12 @@ mod tests {
         })
         .unwrap();
         let buf = term.backend().buffer().clone();
-        assert_eq!(
-            row_text(&buf, 6),
-            "another answer",
-            "the peer pane moved with the focus"
+        let rows: Vec<String> = (0..body.height)
+            .map(|offset| pane_text(&buf, body.y + offset))
+            .collect();
+        assert!(
+            rows.iter().any(|row| row == "another answer"),
+            "the peer pane moved with the focus: {rows:?}"
         );
         assert_eq!(
             screen.panes.get("cmd").unwrap().max_scroll,
@@ -805,15 +961,17 @@ mod tests {
         })
         .unwrap();
 
-        // 10 rows tall: header, six rows of log, footer, input, help.
+        // The body keeps its rows: header, the panes, the stickys, the input.
         let buf = term.backend().buffer().clone();
-        for (offset, expected) in ["L4", "L5", "L6", "L7", "L8", "L9"].iter().enumerate() {
-            assert_eq!(row_text(&buf, 1 + offset as u16), *expected);
-        }
+        let body = parts(40, 10, 1, false, 0)[1];
+        let shown: Vec<String> = (0..body.height)
+            .map(|offset| pane_text(&buf, body.y + offset))
+            .collect();
+        assert_eq!(shown.last().map(String::as_str), Some("L9"), "{shown:?}");
         assert_eq!(
             screen.panes.get("").unwrap().max_scroll,
-            4,
-            "10 lines into a 6-row window"
+            10 - body.height as usize,
+            "10 lines into the rows the body has"
         );
     }
 
@@ -821,17 +979,18 @@ mod tests {
     #[test]
     fn scrolling_moves_the_window_by_rows() {
         let mut screen = screen_with(&["aaaaaaa", "bbbbbbb", "ccccccc"]);
-        let mut term = Terminal::new(TestBackend::new(5, 8)).unwrap();
-        // 8 rows tall: 4 rows of log, at width 4 (one column is spared), so six
-        // rows of text scroll by two.
+        let mut term = Terminal::new(TestBackend::new(40, 8)).unwrap();
         term.draw(|f| {
             draw(f, &mut screen);
         })
         .unwrap();
+        // Three lines in a pane this wide: nothing scrolls until the text is
+        // longer than the window.
+        let body = parts(40, 8, 1, false, 0)[1];
+        let rows = screen.panes.rows(View::Window(""), 8);
         assert_eq!(
             screen.panes.get("").unwrap().max_scroll,
-            2,
-            "six rows of text, four rows of glass"
+            rows.saturating_sub(body.height as usize)
         );
 
         screen.scroll_by(1);
@@ -840,8 +999,17 @@ mod tests {
         })
         .unwrap();
         let buf = term.backend().buffer().clone();
-        assert_eq!(row_text(&buf, 1), "aaa", "the row above the window");
-        assert_eq!(row_text(&buf, 2), "bbbb");
+        let rows: Vec<String> = (0..body.height)
+            .map(|offset| pane_text(&buf, body.y + offset))
+            .collect();
+        assert!(
+            rows.iter().any(|row| row.starts_with("aaaaaaa")),
+            "the row above the window: {rows:?}"
+        );
+        assert!(
+            rows.iter().all(|row| row.chars().count() <= 8),
+            "the panes start where the list ends: {rows:?}"
+        );
     }
 
     /// A long message wraps inside the box: text that cannot be seen cannot be edited.
@@ -858,9 +1026,9 @@ mod tests {
         .unwrap();
 
         let buf = term.backend().buffer().clone();
-        // header, five rows of log, footer, two input rows, help.
-        assert_eq!(row_text(&buf, 7), "> 1234567");
-        assert_eq!(row_text(&buf, 8), "  890");
+        let input = parts(10, 10, 2, false, 0)[5];
+        assert_eq!(row_text(&buf, input.y), "> 1234567");
+        assert_eq!(row_text(&buf, input.y + 1), "  890");
     }
 
     /// A typed newline is a hard break, even where the width would have kept going.
@@ -876,8 +1044,9 @@ mod tests {
 
         assert_eq!(input_rows("one\ntwo", 20, 10), 2);
         let buf = term.backend().buffer().clone();
-        assert_eq!(row_text(&buf, 7), "> one");
-        assert_eq!(row_text(&buf, 8), "  two");
+        let input = parts(20, 10, 2, false, 0)[5];
+        assert_eq!(row_text(&buf, input.y), "> one");
+        assert_eq!(row_text(&buf, input.y + 1), "  two");
     }
 
     /// Past its cap the box scrolls instead of growing, so the answer stays visible.

@@ -82,6 +82,13 @@ Both spellings count, `--name value` and `--name=value`. `skip` is the word the
 cursor is in: it is the one being completed, so it is not yet a flag the line
 has.
 
+## pick — a match is anywhere in the word
+
+SPEC asks for candidates "in any char position", so `pick` tests `contains` rather
+than `starts_with`. An exact prefix match sorts first (a stable sort, so the
+catalog's own order decides between equals): Tab on a word that is already whole
+completes nothing instead of reordering the popup under the operator's eyes.
+
 ## paths
 
 Directories come back with a trailing `/` and without the usual trailing space,

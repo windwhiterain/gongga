@@ -63,6 +63,28 @@ is erased is what the frame drew as blank, so the erase can only take away ink t
 console put there. Erasing and rewriting the whole row (a first attempt) corrupted
 the row below it in a live run.
 
+## scroll_by and scroll_to_bottom
+
+SPEC's page keys act on the *sticky session*: PageUp/PageDown scroll it, Shift+Down
+takes it back to its newest line (`Panes::pin`). The keyboard therefore does not act
+on whatever was last clicked; the click sets the sticky, and the keys follow it.
+
+With no sticky session there is nothing to scroll, and a page is a no-op rather than
+a guess at which pane the operator meant.
+
+## handle_mouse
+
+The wheel scrolls the pane under the pointer, which is a reading position. A click
+is a different thing: SPEC makes it "set the sticky session", so the click is turned
+into the command that does that (`set_sticky --name session --value <name>`) and
+handed to the loop as a submitted line. The rule stays in the command layer, and the
+window keeps one path for everything the operator asks for.
+
+## Screen::sticky_session
+
+Filled from `Sink::sticky_session` on every refresh, so the list's mark, the keys and
+a click all read one value: the one the command layer has in `Sticky`.
+
 ## UiEvent
 
 There is deliberately no "cancel" here. Stopping work is a command like any

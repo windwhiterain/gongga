@@ -255,11 +255,21 @@ fn resolve(
     }
 }
 
-fn pick<'a>(values: impl Iterator<Item = &'a str>, prefix: &str, detail: &str) -> Vec<Candidate> {
-    values
-        .filter(|v| v.starts_with(prefix))
+/// The candidates that carry `token` anywhere, not only at the front.
+///
+/// # Invariant
+///
+/// A word already typed keeps its place in the list: an exact match sorts first,
+/// so Tab on `/send_message` completes nothing rather than reordering the popup.
+/// See `docs/notes/cli-catalog.md`.
+fn pick<'a>(values: impl Iterator<Item = &'a str>, token: &str, detail: &str) -> Vec<Candidate> {
+    let mut got: Vec<Candidate> = values
+        .filter(|v| v.contains(token))
         .map(|v| Candidate::word(v, detail))
-        .collect()
+        .collect();
+    // Stable sort, so the catalog's own order decides between equals.
+    got.sort_by_key(|c| !c.insert.starts_with(token));
+    got
 }
 
 /// Flags the line already carries, in either spelling; `skip` is the word being
@@ -411,7 +421,7 @@ mod tests {
     #[test]
     fn completes_command_names_from_both_catalogs() {
         let c = catalog();
-        assert_eq!(values(&c, "/set_st"), vec!["/set_sticky_cmd_argument"]);
+        assert_eq!(values(&c, "/set_st"), vec!["/set_sticky"]);
         assert_eq!(values(&c, "/send"), vec!["/send_message"]);
     }
 
@@ -468,6 +478,20 @@ mod tests {
         assert_eq!(values(&c, "/send_message --session sc"), vec!["scratch"]);
     }
 
+    /// SPEC: a candidate matches at any character position, not only at the front.
+    #[test]
+    fn candidates_match_anywhere_in_the_word() {
+        let c = catalog();
+        // `message` is inside `send_message` and behind it: both are offered.
+        let got = values(&c, "/set_render_session --ses");
+        assert_eq!(got, vec!["--session"]);
+        let got = values(&c, "/set_sticky --name s");
+        assert!(got.contains(&"session".to_string()), "{got:?}");
+        // An exact match comes first, so Tab on a whole word changes nothing.
+        let got = values(&c, "/set_render_session --session ma");
+        assert_eq!(got.first().map(String::as_str), Some("main"), "{got:?}");
+    }
+
     #[test]
     fn free_form_values_yield_nothing() {
         let c = catalog();
@@ -477,10 +501,7 @@ mod tests {
     #[test]
     fn sticky_names_complete_against_state() {
         let c = catalog();
-        assert_eq!(
-            values(&c, "/del_sticky_cmd_argument --name "),
-            vec!["session"]
-        );
+        assert_eq!(values(&c, "/del_sticky --name "), vec!["session"]);
     }
 
     /// `--name` takes an argument name, so it offers the catalog's, once each,
@@ -488,7 +509,7 @@ mod tests {
     #[test]
     fn argument_names_complete_from_the_whole_catalog() {
         let c = catalog();
-        let got = values(&c, "/set_sticky_cmd_argument --name ");
+        let got = values(&c, "/set_sticky --name ");
         assert_eq!(
             got,
             vec![
@@ -496,10 +517,10 @@ mod tests {
                 "cwd",
                 "ip",
                 "message",
+                "mode",
                 "name",
                 "port",
                 "session",
-                "split",
                 "value"
             ]
         );
@@ -511,11 +532,11 @@ mod tests {
     fn a_sticky_value_completes_like_the_argument_it_fills() {
         let c = catalog();
         assert_eq!(
-            values(&c, "/set_sticky_cmd_argument --name session --value "),
+            values(&c, "/set_sticky --name session --value "),
             vec!["main", "scratch"]
         );
         assert_eq!(
-            values(&c, "/set_sticky_cmd_argument --name=session --value ma"),
+            values(&c, "/set_sticky --name=session --value ma"),
             vec!["main"]
         );
     }
@@ -525,8 +546,8 @@ mod tests {
     #[test]
     fn a_sticky_value_for_a_free_form_argument_offers_nothing() {
         let c = catalog();
-        assert!(values(&c, "/set_sticky_cmd_argument --name message --value ").is_empty());
-        assert!(values(&c, "/set_sticky_cmd_argument --value main").is_empty());
+        assert!(values(&c, "/set_sticky --name message --value ").is_empty());
+        assert!(values(&c, "/set_sticky --value main").is_empty());
     }
 
     /// A path value lists the directory it names, and a directory is inserted
@@ -568,94 +589,57 @@ mod tests {
         assert!(values(&c, "/set_session --cwd nowhere/").is_empty());
     }
 
-    /// `--name` takes an event field, so it offers the fields an event has.
+    /// `set_render` takes one argument, and it completes to the sizes worth typing.
     #[test]
-    fn event_filter_names_complete_from_the_event_vocabulary() {
+    fn the_render_command_completes_its_sizes() {
         let c = catalog();
-        let got = values(&c, "/set_event_filter --name ");
-        assert!(got.contains(&"session".to_string()), "{got:?}");
-        assert!(got.contains(&"level".to_string()), "{got:?}");
+        assert_eq!(values(&c, "/set_render --"), vec!["--block_size"]);
         assert_eq!(
-            values(&c, "/set_event_filter --name sess"),
-            vec!["session", "sessions"]
-        );
-        assert!(values(&c, "/set_event_filter --name nope").is_empty());
-    }
-
-    /// The value is judged like the argument it mirrors: a session filter takes
-    /// sessions.
-    #[test]
-    fn a_filter_value_completes_like_the_argument_it_mirrors() {
-        let c = catalog();
-        assert_eq!(
-            values(&c, "/set_event_filter --name session --value "),
-            vec!["main", "scratch"]
-        );
-    }
-
-    /// The removal candidate comes from state, and follows it.
-    #[test]
-    fn del_event_filter_completes_against_the_filters_that_exist() {
-        let c = catalog();
-        assert!(values(&c, "/del_event_filter --name ").is_empty());
-        c.set_filter_names(&["session".to_string()]);
-        assert_eq!(values(&c, "/del_event_filter --name "), vec!["session"]);
-    }
-
-    /// One command, two arguments, each completing the way its own value does.
-    #[test]
-    fn the_event_ui_command_completes_each_argument_its_own_way() {
-        let c = catalog();
-        // Order follows the catalog, which is not what this is about.
-        let mut both = values(&c, "/set_event");
-        both.sort();
-        assert_eq!(both, vec!["/set_event_filter", "/set_event_ui"]);
-        assert_eq!(values(&c, "/set_event_u"), vec!["/set_event_ui"]);
-        assert_eq!(
-            values(&c, "/set_event_ui --"),
-            vec!["--block_size", "--split"]
-        );
-        assert_eq!(
-            values(&c, "/set_event_ui --block_size "),
+            values(&c, "/set_render --block_size "),
             vec!["0", "1", "2", "3", "5"]
         );
         // Any number is a size: the list above is what is worth offering, not the
         // set that is allowed.
-        assert_eq!(values(&c, "/set_event_ui --block_size 1"), vec!["1"]);
-        assert_eq!(values(&c, "/set_event_ui --split "), vec!["true", "false"]);
+        assert_eq!(values(&c, "/set_render --block_size 1"), vec!["1"]);
+    }
+
+    /// `set_render_session` names a session and then one of the three modes.
+    #[test]
+    fn the_render_session_command_completes_sessions_and_modes() {
+        let c = catalog();
+        // Catalog order, which is the order the command declares them in.
+        assert_eq!(
+            values(&c, "/set_render_session --"),
+            vec!["--session", "--mode"]
+        );
+        assert_eq!(
+            values(&c, "/set_render_session --session "),
+            vec!["main", "scratch"]
+        );
+        assert_eq!(
+            values(&c, "/set_render_session --mode "),
+            vec!["none", "line", "full"]
+        );
+        assert_eq!(values(&c, "/set_render_session --mode f"), vec!["full"]);
         // An argument the line already carries is not offered again.
         assert_eq!(
-            values(&c, "/set_event_ui --split true --"),
-            vec!["--block_size"]
-        );
-    }
-
-    /// `show_session` and `hide_session` name a session, so they complete to one.
-    #[test]
-    fn the_session_commands_complete_to_sessions() {
-        let c = catalog();
-        for command in ["/show_session --session ", "/hide_session --session "] {
-            assert_eq!(values(&c, command), vec!["main", "scratch"], "{command}");
-            assert_eq!(values(&c, &format!("{command}s")), vec!["scratch"]);
-        }
-        assert_eq!(
-            values(&c, "/show_session --"),
-            vec!["--session"],
-            "one argument, and it is the session"
+            values(&c, "/set_render_session --mode line --"),
+            vec!["--session"]
         );
     }
 
     #[test]
-    fn event_filters_are_client_commands() {
+    fn the_render_commands_run_in_the_client() {
         let c = catalog();
-        assert!(c.is_client_command("set_event_filter"));
-        assert!(c.is_client_command("del_event_filter"));
+        assert!(c.is_client_command("set_render"));
+        assert!(c.is_client_command("set_render_session"));
+        assert!(!c.is_client_command("send_message"));
     }
 
     #[test]
     fn client_commands_are_marked() {
         let c = catalog();
-        assert!(c.is_client_command("set_sticky_cmd_argument"));
-        assert!(!c.is_client_command("send_message"));
+        assert!(c.is_client_command("set_sticky"));
+        assert!(c.is_client_command("del_sticky"));
     }
 }

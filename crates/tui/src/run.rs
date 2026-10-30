@@ -53,6 +53,10 @@ impl Sink for TuiSink<'_> {
     fn layout(&mut self, layout: &Layout) {
         self.0.set_layout(layout);
     }
+
+    fn sticky_session(&mut self, name: Option<&str>) {
+        self.0.set_sticky_session(name);
+    }
 }
 
 impl TuiSink<'_> {
