@@ -209,6 +209,7 @@ fn detach(cmd: &mut Command) {
     }
     #[cfg(unix)]
     {
+        use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
 }
@@ -242,7 +243,10 @@ mod tests {
         let path = write_shim(&home, &cli, None).unwrap();
         assert_eq!(path, home.join("bin").join(COMMAND));
         let text = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(text, format!("#!/bin/sh\nexec \"{}\" \"$@\"\n", shell_path(&cli)));
+        assert_eq!(
+            text,
+            format!("#!/bin/sh\nexec \"{}\" \"$@\"\n", shell_path(&cli))
+        );
         assert!(!text.contains("\\r"), "a shebang for `sh\\r` is no shebang");
         // Rewriting is how a rebuilt command takes effect, so it must not fail
         // just because the script is already there.
