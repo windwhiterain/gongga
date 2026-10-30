@@ -305,7 +305,7 @@ hi`). There is no grammar here on purpose: a command line arrives tokenised by
 the shell that started the process, so there is nothing left to decide. `/name`
 is the *interactive* input line's syntax and prose is not a command; splitting a
 string back into tokens only to re-derive an intention would let the two paths
-disagree, and that disagreement is exactly what made `$GONGGA_CLI cancel` -- the
+disagree, and that disagreement is exactly what made `gongga cancel` -- the
 form the agent is told to use -- send the word "cancel" to the model as a chat
 message.
 
@@ -377,7 +377,7 @@ still arrive as something else --
 
 -- and both are best answered with the line that was meant. "unknown command"
 over a path nobody typed says nothing about the mistake, and that mistake is
-easy to make: the agent is told to drive the harness with `$GONGGA_CLI
+easy to make: the agent is told to drive the harness with `gongga
 <command>`.
 
 The last separator is what finds the name in both shapes. Split by hand rather
@@ -434,17 +434,19 @@ server mode before any runtime exists, and builds the runtime for everything els
 Returning the runtime from a function rather than from `#[tokio::main]` is what
 lets `serve` own its own.
 
-`forward` is the subcommand a shell adds to reach the layer through the program
-that is running: `None` from `gongga`, `Some(CLI)` from the window. It travels
-with the command line because the server writes the command its shells will type
-from it (`cli::server::write_shim`), and the only program that knows which half a
-`serve` was started from is the one that dispatched it.
+It knows nothing about which program called it: `serve` gets its home from the
+command line and links *itself* into that home under the command's name
+(`cli::server::place`), so the layer never has to be told which half of a program
+it is.
 
-## CLI, home_of
+## CLI, COMMAND, home_of
 
-`CLI` is the word itself, so the window and the shim the server writes cannot spell
-it differently. `home_of` is `--home`, then `GONGGA_HOME`, then `~/.gongga`: the
-home a front-end needs for the server it may start, and nothing else.
+`CLI` is the word a program that merely *carries* the layer answers to
+(`gongga-tui cli ...`), and `COMMAND` is the name a shell types -- one spelling
+each, so the window, the link the server places and this paragraph cannot disagree.
+
+`home_of` is `--home`, then `GONGGA_HOME`, then `~/.gongga`: the home a front-end
+needs for the server it may start, and nothing else.
 
 ## run
 
@@ -600,7 +602,7 @@ command name, and answering "unknown command `"/send_message"`" would hide the
 one fact worth knowing -- so the rejection spells the line out.
 
 This is not hypothetical: the agent is told to drive the harness with
-`$GONGGA_CLI <command>`, carried the TUI's `/` onto it, and on Windows Git Bash
+`gongga <command>`, carried the TUI's `/` onto it, and on Windows Git Bash
 turned the `/word` into a `C:/.../` path before the client ever saw it, so the
 command quietly became a chat message.
 
@@ -630,7 +632,7 @@ matching a real section line so a comment cannot satisfy it.
 ## no_env
 
 The real one is not empty -- the harness exports `GONGGA_SERVER`, `GONGGA_HOME`,
-`GONGGA_CLI`, `GONGGA_SESSION` and a shell-shaped `PATH`, and never the key, which
+`GONGGA_SESSION` and a shell-shaped `PATH`, and never the key, which
 stays in the home's `server.key` -- so every precedence test states its
 environment explicitly.
 

@@ -130,6 +130,14 @@ pub fn parse_argv(name: &'static str, about: &'static str) -> Args {
 /// `docs/notes/tui-main.md`.
 pub const CLI: &str = "cli";
 
+/// The name a shell types, and the name this program answers to in a home's `bin`.
+///
+/// Not `cmd`: that is Windows' own shell.
+pub const COMMAND: &str = "gongga";
+
+/// What this program says it is, wherever it is asked -- one layer, one sentence.
+pub const ABOUT: &str = "Gongga harness commands: one command in, its events out";
+
 /// The home this process works on: `--home`, then `GONGGA_HOME`, then `~/.gongga`.
 pub fn home_of(args: &Args) -> std::path::PathBuf {
     home_dir(args.conn.home.as_deref())
@@ -1137,10 +1145,10 @@ impl Link {
 ///
 /// `serve` is decided before a runtime exists: it leaves nothing of the client
 /// behind, and the server builds the runtime it wants to be stopped in.
-pub fn main(args: Args, forward: Option<&'static str>) -> anyhow::Result<()> {
+pub fn main(args: Args) -> anyhow::Result<()> {
     if let Some(Sub::Cmd(tokens)) = &args.command {
         if tokens.first().map(String::as_str) == Some("serve") {
-            return crate::server::serve(&args, &tokens[1..], forward);
+            return crate::server::serve(&args, &tokens[1..]);
         }
     }
     let runtime = tokio::runtime::Builder::new_multi_thread()

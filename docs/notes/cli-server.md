@@ -20,8 +20,8 @@ before a tokio runtime exists (`cli::main`), because the server builds the runti
 it wants to be stopped in, and a nested one would panic.
 
 Before the server exists -- and therefore before any shell it will start -- it
-writes the command those shells type (`install_command`, below): the one moment
-when both the home and the program are known for certain.
+puts the command those shells type in place (`install_command`, below): the one
+moment when both the home and the program are known for certain.
 
 `--port` is required and the address is localhost: a server that listened on
 every interface would need the operator to think about keys and firewalls, which
@@ -47,7 +47,7 @@ there" is a question only the wire can answer.
 **A refusal counts as an answer.** A server that says no is there, and starting a
 second one on the same home would be exactly the split this design refuses.
 
-It installs nothing itself: the command a shell types is the *server's* to write,
+It installs nothing itself: the command a shell types is the *server's* to place,
 because the server is what those shells exist for. A window that starts one, or
 finds one already answering, leaves the home's `bin` alone either way.
 
@@ -78,7 +78,7 @@ this function exists to detect.
 
 Spawns `this program serve --port <p>`, with `--home` named explicitly rather than
 left to the config it would read anyway: the child has to serve the home whose
-shim the caller just installed.
+command the caller just placed.
 
 Its own process group, its own hidden console, and its output appended to
 `<home>/server.log` -- all three follow from the same fact: the process that
@@ -87,34 +87,44 @@ life may depend on its starter's terminal.
 
 ## install_command
 
-The command an agent's shell types, written by the **server** as it comes up, and
-written from `current_exe()`: the program that started the server is what the
-server's shells get. Nothing is searched for.
+The command an agent's shell and its scripts both run, put there by the **server**
+as it comes up, from `current_exe()`: the program that started the server is what
+the server's children get. Nothing is searched for.
 
 That is the whole rule, and it is a rule about *this machine*: a home can be served
 by a build in `target/debug`, by a staged copy under another name, or by an
-installed `gongga`, and whichever one is running is the one whose shells must
-drive it. A search (`PATH`, a sibling, a `bin` that already holds something) would
-hand those shells a *different* program than the server they are talking to --
-possibly a different version, possibly a stale one -- and nothing would say so.
+installed `gongga`, and whichever one is running is the one its children must
+drive. A search (`PATH`, a sibling, a `bin` that already holds something) would
+hand them a *different* program than the server they are talking to -- possibly a
+different version, possibly a stale one -- and nothing would say so.
 
-## write_shim
+## place
 
-```
-#!/bin/sh
-exec "<program>"[ cli] "$@"
-```
+`<home>/bin/gongga.exe` on Windows, `<home>/bin/gongga` elsewhere: the **server
+itself**, under the name a shell types. A link, not a wrapper script, and that is
+what makes one name enough:
 
-Written next to its target and renamed into place. An agent's shell may be reading
-the old script at the moment a new `gongga` starts, and a partly written
-`#!/bin/sh` is a syntax error in a file that worked a second ago.
+- bash resolves `gongga` to `gongga.exe` by itself,
+- a native process starting `gongga` finds the same file,
+- so `subprocess.run(["gongga", ...])` in a script needs no path, no variable and
+  no knowledge of which platform it is on.
 
-The optional `cli` is the one word that separates the two programs this binary can
-be. `gongga` *is* the command layer, so its script passes arguments straight
-through; a window only *carries* the layer, so its script says which half of the
-program a shell means. `serve` is told which of the two it is by whoever called it
-(`cli::main`'s `forward`), never by looking at its own name: the same file can be
-renamed, and a rename must not change what a shell in this home runs.
+The link is a hard link on Windows and a symlink elsewhere. A symlink follows the
+path through a rebuild by itself; a hard link cannot, so each start compares size
+and modification time with the running program and replaces the name when they
+differ -- a last week's build answering to `gongga` while this week's serves the
+home is exactly the skew `current_exe` exists to prevent.
+
+It is placed beside its target and renamed in, because the command may be running
+right now -- and where Windows refuses to replace a running executable, the old
+one stays until the next start.
+
+## link_or_copy
+
+A hard link cannot cross a volume, and a home may sit on another drive than the
+program serving it. The copy is the fallback that keeps the name working, at the
+price any copy pays: it is the bytes of one build, and the next rebuild makes them
+yesterday's.
 
 ## detach
 
@@ -129,12 +139,12 @@ never shown, and every child inherits that one instead.
 ## tests
 
 `only_a_local_address_is_started_here` -- the policy above, both families.
-`the_shim_execs_the_server_s_own_program_by_its_absolute_path` -- the script's
-content, its line ending, and that rewriting it is safe.
-`the_shim_names_the_subcommand_that_reaches_the_command_layer` -- the word a
-window's shell needs, and where it goes.
-`the_command_installed_is_this_program` -- installed from `current_exe`, not from
-a search.
+`the_command_is_this_program_under_the_shell_s_name` -- the name, the bytes, and
+that there is only one copy of them.
+`a_stale_command_is_replaced_by_the_one_running` -- the rebuild case.
+`a_current_command_is_left_in_place` -- and the home is not churn on every start.
+`a_link_that_fails_falls_back_to_a_copy` -- the other volume.
+`the_other_spelling_is_removed` -- one directory, one answer to the lookup.
 `a_home_with_no_key_is_not_answering` -- the key file is progress, not decoration.
 `the_key_a_home_carries_in_its_config_is_the_one_to_ask_with` -- the key a home
 keeps in `config.toml` is one `answers` can ask with.

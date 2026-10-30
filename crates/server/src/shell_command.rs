@@ -2,20 +2,8 @@
 //!
 //! See `docs/notes/server-shell-command.md`.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-
-/// The program running this server, named for `GONGGA_CLI`.
-///
-/// # Invariant
-///
-/// It is *this* program, the one `serve` was started as, and not a file in the
-/// home or on `PATH`: one machine can hold several builds of the command layer,
-/// and a script that ran another would be driving a server it does not share a
-/// version with. It is also the form a script can execute directly, which the
-/// `#!/bin/sh` name in a home's `bin` is not.
-pub fn program() -> Option<PathBuf> {
-    std::env::current_exe().ok()
-}
 
 /// The `PATH` value that finds a home's `bin` first.
 ///
@@ -24,13 +12,36 @@ pub fn program() -> Option<PathBuf> {
 /// The value is POSIX-shaped: a native `C:\a;C:\b` handed to Git Bash is mangled
 /// at its startup, and the shell would then find no command at all.
 pub fn path(home: &Path) -> String {
-    let inherited = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-        .filter(|entry| !entry.as_os_str().is_empty())
-        .map(|entry| shell_path(&entry))
-        .collect::<Vec<_>>();
-    let mut parts = vec![shell_path(&home.join("bin"))];
-    parts.extend(inherited);
-    parts.join(":")
+    entries(home)
+        .iter()
+        .map(|entry| shell_path(entry))
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+/// The same value for a native process: a script's interpreter reads this one.
+///
+/// # Invariant
+///
+/// Native shape, because an interpreter given `/c/...` entries loses its own
+/// lookups. Both shapes name the same directory, so `gongga` resolves to one file.
+pub fn native_path(home: &Path) -> OsString {
+    std::env::join_paths(entries(home))
+        .unwrap_or_else(|_| home.join("bin").into_os_string())
+}
+
+/// This home's `bin`, then whatever this process inherited, without empty entries.
+///
+/// SPEC: a shell reads an empty `PATH` entry as "the current directory", and a
+/// shell that resolves commands out of wherever it happens to be is an accident
+/// waiting for a file named `gongga`.
+fn entries(home: &Path) -> Vec<PathBuf> {
+    let mut parts = vec![home.join("bin")];
+    parts.extend(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            .filter(|entry| !entry.as_os_str().is_empty()),
+    );
+    parts
 }
 
 /// One path the way a shell reads it: Git Bash spells a drive as `/c/...`.
@@ -63,21 +74,16 @@ mod tests {
         assert!(!joined.contains("::"), "{joined}");
     }
 
-    /// `GONGGA_CLI` names this program: one a script can execute itself, rather
-    /// than the shell script a home's `bin` holds under the command's name.
+    /// The same directory, in the shape a script's interpreter reads, so `gongga`
+    /// means one file whether a shell or a program looks it up.
     #[test]
-    fn the_program_named_is_the_one_running() {
-        let program = program().expect("a running process has a path");
-        assert_eq!(program, std::env::current_exe().unwrap());
-        assert!(program.is_file());
-        // On Windows that is what makes it executable: no `sh` needed.
-        #[cfg(windows)]
-        assert!(
-            program
-                .extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("exe")),
-            "{}",
-            program.display()
-        );
+    fn the_native_path_names_the_same_directory_in_the_native_shape() {
+        let home = tempfile::tempdir().unwrap();
+        let native = native_path(home.path());
+        // One name in both shapes: the same file answers a shell and a script.
+        let first = std::env::split_paths(&native).next().unwrap();
+        assert_eq!(first, home.path().join("bin"));
+        // And the native shape is the one an interpreter can read: no `/c/...`.
+        assert!(native.to_string_lossy().starts_with(&*home.path().to_string_lossy()));
     }
 }

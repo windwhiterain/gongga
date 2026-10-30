@@ -196,26 +196,20 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
 
     let store = store::Store::open(&cfg.db_path)?;
     let llm = Arc::new(LlmClient::new(&cfg.llm)?);
-    // A script drives this server by running this program: the one started as
-    // `serve`, which is also the one `install_command` wrote the home's `gongga`
-    // for. No copy, no lookup, and nothing for a rebuild to leave behind.
-    let mut server_env = vec![
+    // A script drives this server by the same name a shell does: `gongga`, which
+    // is this program under the command's name in the home's `bin`.
+    let base_env = vec![
         ("GONGGA_SERVER".to_string(), cfg.bind.to_string()),
         ("GONGGA_HOME".to_string(), cfg.home.display().to_string()),
     ];
-    match shell_command::program() {
-        Some(program) => server_env.push((
-            "GONGGA_CLI".to_string(),
-            program.display().to_string(),
-        )),
-        // Not an error: this server still serves what it was asked for, and a
-        // shell it starts can still type `gongga`.
-        None => tracing::warn!(
-            "cannot name the program running this server; its scripts get no `GONGGA_CLI`"
-        ),
-    }
-    // A shell this server starts reads a POSIX `PATH`; a script interpreter does not.
-    let mut shell_env = server_env.clone();
+    // A script's interpreter reads a native `PATH`; a shell this server starts
+    // reads a POSIX one. Both begin with the same directory.
+    let mut script_env = base_env.clone();
+    script_env.push((
+        "PATH".to_string(),
+        shell_command::native_path(&cfg.home).to_string_lossy().into_owned(),
+    ));
+    let mut shell_env = base_env;
     shell_env.push(("PATH".to_string(), shell_command::path(&cfg.home)));
     let detached = DetachedRegistry::new(
         store.clone(),
@@ -244,7 +238,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let scripts = script::Scripts::new(
         cfg.scripts.dir.clone(),
         cfg.scripts.interpreter(),
-        server_env,
+        script_env,
     );
     if let Err(e) = std::fs::create_dir_all(&cfg.scripts.dir) {
         tracing::warn!(dir = %cfg.scripts.dir.display(), error = %e, "cannot create the scripts directory");

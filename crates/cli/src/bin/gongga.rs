@@ -6,10 +6,7 @@
 use gongga_cli as cli;
 
 fn main() -> anyhow::Result<()> {
-    let args = cli::parse_argv(
-        "gongga",
-        "Gongga harness commands: one command in, its events out",
-    );
+    let args = cli::parse_argv(cli::COMMAND, cli::ABOUT);
     args.check_flag_order()?;
-    cli::main(args, None)
+    cli::main(args)
 }

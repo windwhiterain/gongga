@@ -25,12 +25,11 @@ binary that carries it is the program a person started, in its `serve` mode
 (`cli::server`). So the command its children get is not looked up either -- it is
 `current_exe()`, this program.
 
-One answer to two questions. `PATH` puts `<home>/bin` first, which is where `serve`
-wrote the `gongga` a shell types; `GONGGA_CLI` names the program itself, which is
-what a script can execute. Both are the same build, so a script and a shell in one
-home cannot end up driving two different servers. When `current_exe` cannot be
-read the variable is left out rather than pointing at nothing, and the omission is
-warned about: the server still serves what it was asked for.
+One name, two `PATH` shapes. `<home>/bin` goes first in both: a shell reads a
+POSIX `PATH` and types `gongga`; a script's interpreter reads the native one and
+starts `gongga` -- which is the program itself, linked into that directory
+(`cli-server.md`). Neither needs a second variable, and neither can end up driving
+a different build than the server they are talking to.
 
 ## main
 
@@ -83,8 +82,8 @@ the session it belongs to have to be handed down rather than discovered: without
 them an agent that wants to cancel or restart has no better option than killing
 its own server from outside. `GONGGA_HOME` and `GONGGA_SERVER` are exactly the two
 fallbacks the CLI reads, so a command needs no flags of its own. `PATH` is what
-makes `gongga` resolve, and `GONGGA_CLI` is the program a script can exec (both in
-`server-shell-command.md`); `GONGGA_SESSION` is added where a session's shells are
+makes `gongga` resolve, in the shape each child can read
+(`server-shell-command.md`); `GONGGA_SESSION` is added where a session's shells are
 made, because that name belongs to a session and not to the server. A script gets
 the same variables and keeps the native `PATH` it was started with.
 

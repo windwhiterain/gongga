@@ -5,51 +5,37 @@
 The agent drives its own server with a command line, so that command has to be
 something its shell can find by name: `gongga send_message --session x`.
 
-Who puts it there is the CLI's business, not this module's: `gongga` is the
-program a person starts, and when nothing answers it starts the server
-(`cli::server`). The server only has to make the directory win, so what is left
-here is that directory, the `PATH` value that puts it first, and the program
-`GONGGA_CLI` names.
+Who puts it there is the CLI's business, not this module's: the server links
+itself into `<home>/bin` under that name as it comes up (`cli::server::place`).
+This module only makes the directory win, in the shape the child will read it.
 
-Why a script in the home instead of putting the CLI's own directory on `PATH`:
-the binary sits in `target/debug` during development, next to the server, the
-bridge and every dll the build produced. Naming one directory for one command
-keeps the agent's `PATH` from resolving whatever else happens to be in a build
-output. It also keeps the server from having to know where that directory is --
-it is always `<home>/bin`, whatever staged the binaries.
+Why a directory in the home instead of the program's own directory on `PATH`: the
+binary sits in `target/debug` during development, next to the server, the bridge
+and every dll the build produced. Naming one directory for one command keeps the
+agent's `PATH` from resolving whatever else happens to be in a build output. It
+also keeps the server from having to know where that directory is -- it is always
+`<home>/bin`, whatever staged the binaries.
 
-## program
+## path, native_path
 
-The other half of the command: not where a *shell* finds it (`path`, above) but
-which file `GONGGA_CLI` names. It is this process, `current_exe()` -- the program
-that was started as `serve`, whose behaviour is the server's by construction, and
-which is the only build on this machine that can be guaranteed to match it.
+The same directory, two spellings, because there are two kinds of child: a shell
+reads `PATH` split on `:` with `/c/...` entries, and a script's interpreter reads
+the platform's own `;` and `C:\...`. Both are built from one list, so `gongga` is
+one file whichever of them looks it up.
 
-It is a program rather than the script in the home's `bin` because a script is
-what a *shell* can run: `scripts/server_script_example.py` drives the harness with
-`subprocess.run([os.environ["GONGGA_CLI"], ...])`, and that cannot execute a
-`#!/bin/sh` file on Windows. `None` only when the operating system cannot name the
-running process; the variable is then left out rather than pointing at nothing.
+## Why one name is enough
 
-## Why not one name for both worlds
-
-Inheriting the environment is not the problem -- a script the model runs from its
-bash gets all of it. What it inherits is a *name* that resolves to a shell script,
-and a native process cannot use that: measured here, `subprocess.run(["gongga"])`
-with `<home>/bin` first on `PATH` fails with `WinError 2`, because Windows appends
+The name in that directory is not a script, it is the program itself under
+`gongga`'s name (`cli-server.md`). That is what makes both spellings useful: bash
+resolves `gongga` to `gongga.exe` on its own, and `subprocess.run(["gongga"])`
+from a script starts the same file. Measured both ways on Windows, where the
+`#!/bin/sh` name this replaced had failed with `WinError 2` -- Windows appends
 `.exe` and nothing else when a command has no extension.
 
-A per-platform launcher does not close the gap either. A `gongga.cmd` beside the
-`gongga` script runs fine when the caller spells it (`["gongga.cmd"]` works, from a
-native process, no shell), but the bare name still finds nothing -- and a shell
-looks for `gongga`, not `gongga.cmd`. One name that both can run would have to be
-`gongga.exe` in the home, which is the copy this design refuses.
-
-So the split is by caller, and it is the same split the operating system makes:
-a **shell** gets a name (`gongga`, on `PATH`), a **program** gets a path
-(`GONGGA_CLI`). It also keeps a script away from whatever else answers to that
-name: this machine had a month-old `gongga.exe` in `~/.cargo/bin`, and a bare-name
-lookup is exactly what finds it.
+A per-platform launcher (`gongga.cmd` beside a `gongga` script) does not get
+there: a native process has to spell `.cmd`, and a shell looks for `gongga`. One
+name both can run has to be the program, which is why the link is what this
+module's `PATH` is for.
 
 ## Why the `PATH` is rebuilt rather than inherited
 
@@ -63,7 +49,7 @@ to be in is an accident waiting for a file named `gongga`.
 
 That POSIX `PATH` is for a shell. A script interpreter launched with it would
 lose its own native lookups, so `script::Scripts` is handed the `GONGGA_*`
-variables and the `PATH` it inherited untouched.
+variables and the native `PATH` -- the same directory, spelled the way it reads.
 
 ## Why `gongga` and not `cmd`
 

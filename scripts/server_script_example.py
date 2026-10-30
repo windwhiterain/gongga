@@ -11,8 +11,9 @@ One JSON request on stdin, one JSON reply on stdout:
     {"op": "run", "command": ..., "args": {...}, "home": ..., "server": ...}
                                        -> {"ok": true, "message": ..., "data": ...}
 
-The server passes GONGGA_SERVER, GONGGA_HOME and GONGGA_CLI in the environment,
-so a script can drive the harness with the same CLI the model uses.
+The server puts the harness's own command first on PATH and passes
+GONGGA_SERVER and GONGGA_HOME, so a script drives it through the same door the
+model uses: `gongga <command> ...`, by name.
 """
 
 import json
@@ -63,11 +64,11 @@ def manifest():
 def cli(*args):
     """Runs the harness CLI and returns its JSON events, one per line.
 
-    The server puts GONGGA_CLI, GONGGA_SERVER and GONGGA_HOME in the
-    environment, so this needs no flags: the same door the model uses.
+    The server puts `gongga` on PATH and GONGGA_SERVER in the environment, so
+    this needs no flags and no path: the same door the model uses.
     """
     out = subprocess.run(
-        [os.environ["GONGGA_CLI"], *args],
+        ["gongga", *args],
         capture_output=True,
         text=True,
         check=False,

@@ -9,11 +9,7 @@ use std::process::{Command, Stdio};
 use anyhow::Context;
 
 use crate::commands::parse_args;
-use crate::{Args, Endpoint, dial};
-
-/// The name a shell types for this crate's own program. Not `cmd`: that is
-/// Windows' own shell.
-const COMMAND: &str = "gongga";
+use crate::{Args, COMMAND, Endpoint, dial};
 
 /// The command that turns this process into a server.
 const SERVE: &str = "serve";
@@ -25,15 +21,11 @@ fn log_path(home: &Path) -> PathBuf {
 
 /// Runs this process as a server, in the foreground.
 ///
-/// `forward` is the subcommand a shell adds to reach the command layer in this
-/// program (`CLI` from the window, nothing from `gongga` itself): the server
-/// installs *itself* as the command for its shells, see `install_command`.
-///
 /// # Invariant
 ///
 /// Nothing of the client is left running: this is the whole process, and it is
 /// what `serve` was asked for -- one port on localhost, this home, no link.
-pub fn serve(args: &Args, tokens: &[String], forward: Option<&'static str>) -> anyhow::Result<()> {
+pub fn serve(args: &Args, tokens: &[String]) -> anyhow::Result<()> {
     let parsed = parse_args(tokens)?;
     let Some(port) = parsed.get("port") else {
         anyhow::bail!("serve needs --port <port>");
@@ -42,7 +34,7 @@ pub fn serve(args: &Args, tokens: &[String], forward: Option<&'static str>) -> a
         .parse()
         .with_context(|| format!("parsing --port {port:?}"))?;
     // Before a shell can exist: the command it will type is this program.
-    install_command(&crate::home_of(args), forward);
+    install_command(&crate::home_of(args));
     let start = harness::Args {
         home: args.conn.home.clone(),
         bind: Some(format!("127.0.0.1:{port}")),
@@ -127,16 +119,19 @@ fn start(home: &Path, addr: SocketAddr) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The command an agent's shell types, put in this home by the server itself.
+/// The command an agent's shell and its scripts both run, put in this home by the
+/// server itself.
 ///
 /// # Invariant
 ///
-/// It is *this* program -- whoever started the server -- plus the subcommand that
-/// reaches the command layer in it (`CLI` for the window, nothing for `gongga`).
-/// Never a search: a machine can hold several builds of these programs, and a home
-/// that pointed at whichever one answered `PATH` would hand its shells a different
-/// program than the server they are talking to.
-fn install_command(home: &Path, forward: Option<&str>) {
+/// It is *this* program -- whoever started the server -- under the name a shell
+/// types, and it is a link rather than a wrapper script: `bash` resolves
+/// `gongga` to `gongga.exe` by itself, and a native process starting `gongga`
+/// finds the same file, so one name works on both sides of the shell boundary.
+/// Never a search: a machine can hold several builds of these programs, and a
+/// home that pointed at whichever one answered `PATH` would hand its shells a
+/// different program than the server they are talking to.
+fn install_command(home: &Path) {
     let Ok(program) = std::env::current_exe() else {
         eprintln!(
             "warning: cannot find the program running now, so no `{COMMAND}` can be installed \
@@ -145,7 +140,7 @@ fn install_command(home: &Path, forward: Option<&str>) {
         );
         return;
     };
-    if let Err(e) = write_shim(home, &program, forward) {
+    if let Err(e) = place(home, &program) {
         eprintln!(
             "warning: cannot install `{COMMAND}` in {}: {e}",
             home.display()
@@ -153,44 +148,91 @@ fn install_command(home: &Path, forward: Option<&str>) {
     }
 }
 
-/// Writes the two-line `exec` a shell reads, through a rename.
+/// Puts `program` at `<home>/bin/gongga`, refreshed when it is not this build.
 ///
 /// See `docs/notes/cli-server.md`.
-fn write_shim(home: &Path, program: &Path, forward: Option<&str>) -> std::io::Result<PathBuf> {
+fn place(home: &Path, program: &Path) -> std::io::Result<PathBuf> {
     let bin = home.join("bin");
     std::fs::create_dir_all(&bin)?;
-    let target = bin.join(COMMAND);
-    // Written beside it, then renamed: a shell may be reading the old script,
-    // and half a `#!/bin/sh` is a syntax error.
-    let temp = bin.join(format!(".{COMMAND}.{}", std::process::id()));
-    // The word that says which half of a program that carries two is meant.
-    let forward = forward.map(|word| format!(" {word}")).unwrap_or_default();
-    std::fs::write(
-        &temp,
-        format!(
-            "#!/bin/sh\nexec \"{}\"{forward} \"$@\"\n",
-            shell_path(program)
-        ),
-    )?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o755))?;
+    let target = bin.join(command_name());
+    if this_build(&target, program) {
+        return Ok(target);
     }
-    std::fs::rename(&temp, &target)?;
-    Ok(target)
+    // Beside it, then renamed: the command may be running right now, and a
+    // half-written executable is worse than yesterday's.
+    let temp = bin.join(format!(".{}.{}", command_name(), std::process::id()));
+    let _ = std::fs::remove_file(&temp);
+    link_or_copy(program, &temp)?;
+    let placed = std::fs::rename(&temp, &target);
+    match placed {
+        Ok(()) => {
+            // One directory holds one answer to the lookup `PATH` does: the other
+            // spelling is what an older install left behind.
+            if let Some(other) = other_name() {
+                let _ = std::fs::remove_file(bin.join(other));
+            }
+            Ok(target)
+        }
+        Err(e) => {
+            // A running command cannot be replaced on Windows; the old one stays
+            // until the next start, which is what a stale build means anyway.
+            let _ = std::fs::remove_file(&temp);
+            Err(e)
+        }
+    }
 }
 
-/// One path the way a shell reads it: Git Bash spells a drive as `/c/...`.
-fn shell_path(path: &Path) -> String {
-    let text = path.to_string_lossy().replace('\\', "/");
-    let mut chars = text.chars();
-    match (chars.next(), chars.next()) {
-        (Some(drive), Some(':')) if drive.is_ascii_alphabetic() => {
-            format!("/{}{}", drive.to_ascii_lowercase(), &text[2..])
-        }
-        _ => text,
+/// The spelling this platform does not use, if the other one is possible at all.
+fn other_name() -> Option<&'static str> {
+    (command_name() != COMMAND).then_some(COMMAND)
+}
+
+/// Whether `target` is already the program running now.
+///
+/// # Invariant
+///
+/// Size and modification time, because a rebuild replaces the file: a hard link
+/// then still names yesterday's bytes, while a symlink follows the path by itself.
+fn this_build(target: &Path, program: &Path) -> bool {
+    let (Ok(here), Ok(there)) = (std::fs::metadata(target), std::fs::metadata(program)) else {
+        return false;
+    };
+    here.len() == there.len()
+        && here.modified().ok().zip(there.modified().ok()).is_some_and(|(a, b)| a == b)
+}
+
+/// The command's file name on this platform.
+fn command_name() -> &'static str {
+    if cfg!(windows) {
+        "gongga.exe"
+    } else {
+        COMMAND
     }
+}
+
+/// A link where one can be made, a copy only where it cannot.
+///
+/// # Invariant
+///
+/// A hard link cannot cross a volume, and a home may sit on another drive than the
+/// program that serves it; the copy is the fallback that keeps the name working,
+/// at the price of going stale on the next rebuild like any other copy.
+fn link_or_copy(program: &Path, target: &Path) -> std::io::Result<()> {
+    if link(program, target).is_ok() {
+        return Ok(());
+    }
+    std::fs::copy(program, target).map(|_| ())
+}
+
+#[cfg(windows)]
+fn link(program: &Path, target: &Path) -> std::io::Result<()> {
+    std::fs::hard_link(program, target)
+}
+
+/// A symlink, so a rebuild is picked up without this module noticing.
+#[cfg(unix)]
+fn link(program: &Path, target: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(program, target)
 }
 
 /// Puts the child outside this process's console and group.
@@ -233,52 +275,88 @@ mod tests {
         assert!(!starts_here(&addr("[2001:db8::1]:9700")));
     }
 
-    /// The command an agent types is a script naming the program that started
-    /// the server: no search, no copy, no second name.
+    /// The command a shell and a script both run is this program, under the name
+    /// they type: one file with two names, not a second copy of it.
     #[test]
-    fn the_shim_execs_the_server_s_own_program_by_its_absolute_path() {
+    fn the_command_is_this_program_under_the_shell_s_name() {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");
-        let cli = dir.path().join("gongga");
-        let path = write_shim(&home, &cli, None).unwrap();
-        assert_eq!(path, home.join("bin").join(COMMAND));
-        let text = std::fs::read_to_string(&path).unwrap();
+        let bin = home.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let program = bin.join("program");
+        std::fs::write(&program, b"the program").unwrap();
+        let placed = place(&home, &program).unwrap();
+        assert_eq!(placed, bin.join(command_name()));
+        assert_eq!(std::fs::read(&placed).unwrap(), b"the program");
+        // The same bytes, once: a link is the point.
         assert_eq!(
-            text,
-            format!("#!/bin/sh\nexec \"{}\" \"$@\"\n", shell_path(&cli))
-        );
-        assert!(!text.contains("\\r"), "a shebang for `sh\\r` is no shebang");
-        // Rewriting is how a rebuilt command takes effect, so it must not fail
-        // just because the script is already there.
-        write_shim(&home, &cli, None).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
-    }
-
-    /// A program that only *carries* the command layer gets the word that says
-    /// which half of it a shell means.
-    #[test]
-    fn the_shim_names_the_subcommand_that_reaches_the_command_layer() {
-        let dir = tempfile::tempdir().unwrap();
-        let home = dir.path().join("home");
-        let tui = dir.path().join("gongga-tui");
-        let path = write_shim(&home, &tui, Some(crate::CLI)).unwrap();
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(
-            text,
-            format!("#!/bin/sh\nexec \"{}\" cli \"$@\"\n", shell_path(&tui))
+            std::fs::metadata(&placed).unwrap().len(),
+            std::fs::metadata(&program).unwrap().len()
         );
     }
 
-    /// The server installs *itself*: the program a shell in this home gets is the
-    /// one running, not whatever a search for `gongga` would have found.
+    /// A rebuild replaces the program file, so the name has to be replaced with
+    /// it -- a last week's build answering to `gongga` is the skew this avoids.
     #[test]
-    fn the_command_installed_is_this_program() {
+    fn a_stale_command_is_replaced_by_the_one_running() {
         let dir = tempfile::tempdir().unwrap();
-        install_command(dir.path(), None);
-        let text = std::fs::read_to_string(dir.path().join("bin").join(COMMAND)).unwrap();
-        let me = std::env::current_exe().unwrap();
-        assert!(text.contains(&shell_path(&me)), "{text}");
-        assert!(text.ends_with("\"$@\"\n"), "{text}");
+        let home = dir.path().join("home");
+        let bin = home.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let program = bin.join("program");
+        std::fs::write(&program, b"this build").unwrap();
+        // A different build is a different size; the timestamp alone is a weaker
+        // signal than the bytes.
+        std::fs::write(bin.join(command_name()), b"last week's build").unwrap();
+        let placed = place(&home, &program).unwrap();
+        assert_eq!(std::fs::read(&placed).unwrap(), b"this build");
+    }
+
+    /// Nothing is rewritten when the name already carries this build: the home is
+    /// not churn on every start.
+    #[test]
+    fn a_current_command_is_left_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let bin = home.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let program = bin.join("program");
+        std::fs::write(&program, b"this build").unwrap();
+        let placed = place(&home, &program).unwrap();
+        let before = std::fs::metadata(&placed).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        place(&home, &program).unwrap();
+        assert_eq!(std::fs::metadata(&placed).unwrap().modified().unwrap(), before);
+    }
+
+    /// The other spelling is what an older install left there, and it is what a
+    /// shell would find first: one name, one directory.
+    #[cfg(windows)]
+    #[test]
+    fn the_other_spelling_is_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let bin = home.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let program = bin.join("program");
+        std::fs::write(&program, b"the program").unwrap();
+        std::fs::write(bin.join(COMMAND), "#!/bin/sh\n").unwrap();
+        place(&home, &program).unwrap();
+        assert!(!bin.join(COMMAND).exists(), "the old script would win the lookup");
+    }
+
+    /// Where a link cannot be made -- another volume -- a copy keeps the name
+    /// working. A target that is already there is the cheapest way to make the
+    /// link fail here.
+    #[test]
+    fn a_link_that_fails_falls_back_to_a_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("program");
+        std::fs::write(&program, b"the program").unwrap();
+        let taken = dir.path().join("already-there");
+        std::fs::write(&taken, b"old").unwrap();
+        link_or_copy(&program, &taken).unwrap();
+        assert_eq!(std::fs::read(&taken).unwrap(), b"the program");
     }
 
     /// A home with no key has no server: a server mints one on the way up.

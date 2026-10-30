@@ -1,18 +1,50 @@
 //! `gongga-tui`: the window you actually run; the composition root, nothing else.
 //! See `docs/notes/tui-main.md`.
 
+/// The name and the sentence this file answers with, which depend on the name it
+/// was started under: the same file is both halves of one program.
+fn describe() -> (&'static str, &'static str) {
+    if named(cli::COMMAND) {
+        (cli::COMMAND, cli::ABOUT)
+    } else {
+        ("gongga-tui", "Gongga harness terminal client")
+    }
+}
+
 fn main() -> anyhow::Result<()> {
-    let mut args = cli::parse_argv("gongga-tui", "Gongga harness terminal client");
+    let mut args = cli::parse_argv(describe().0, describe().1);
     // `cli` is this program's own name for the layer it carries: a shell that was
-    // started by a window has one program to type, so it says which half it means.
+    // started by a window has one program to type, so it may say which half it
+    // means. Under the name `gongga` it does not even have to.
     let layer = took_layer(&mut args);
     args.check_flag_order()?;
     // A command line is the command layer's business, `serve` included: only the
-    // bare invocation opens the window.
-    if layer || args.command.is_some() {
-        return cli::main(args, Some(cli::CLI));
+    // bare invocation is the window, and only under this program's own name.
+    if layer || args.command.is_some() || named(cli::COMMAND) {
+        return cli::main(args);
     }
     gongga_tui::main(args)
+}
+
+/// Whether this process was started under `name`.
+///
+/// # Invariant
+///
+/// The file name, not a flag: `<home>/bin/gongga` is this same program
+/// (`cli-server.md`), so the name is what tells the two halves apart -- and it
+/// has to, because a link has no room for an argument.
+fn named(name: &str) -> bool {
+    let Some(argv0) = std::env::args_os().next() else {
+        return false;
+    };
+    is_name(std::path::Path::new(&argv0), name)
+}
+
+/// The comparison itself, so a test does not have to be argv[0].
+fn is_name(path: &std::path::Path, name: &str) -> bool {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .is_some_and(|stem| stem.eq_ignore_ascii_case(name))
 }
 
 /// Takes the leading `cli` off a command line, and says whether it was there.
@@ -101,5 +133,23 @@ mod tests {
         // Not even a command that merely starts with it.
         let mut args = self::args(&["cli-other"]);
         assert!(!took_layer(&mut args));
+    }
+
+    /// The name is the whole difference: the same file installed as `gongga` is
+    /// the command layer, under its own name it is the window.
+    #[test]
+    fn the_command_s_name_is_recognised_in_either_spelling() {
+        for (path, expected) in [
+            ("gongga", true),
+            ("/home/a/.gongga/bin/gongga", true),
+            (r"C:\Users\a\.gongga\bin\gongga.exe", true),
+            (r"C:\Users\a\.gongga\bin\GONGGA.EXE", true),
+            ("gongga-tui", false),
+            ("gongga-tui.exe", false),
+            ("", false),
+        ] {
+            let path = std::path::Path::new(path);
+            assert_eq!(is_name(path, cli::COMMAND), expected, "{path:?}");
+        }
     }
 }

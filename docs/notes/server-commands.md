@@ -131,7 +131,7 @@ way it was left, and the in-memory copy is only what turns read.
 The `cwd` it answers with is read without taking the default shell's lock
 ([`SessionHandle::cwd`]): this is the one command every operator types at a session,
 and a session whose shell is mid-command was enough to leave the answer -- and the
-`$GONGGA_CLI` call waiting for it -- hanging until that command finished.
+`gongga` call waiting for it -- hanging until that command finished.
 
 ## resolve_llm
 
