@@ -20,19 +20,17 @@ instance lock all live under it. Overrides `[server] home`, which overrides
 
 ## run (the command an agent types)
 
-The server does not look for the CLI any more: SPEC makes this crate a library,
-and `gongga` -- the binary that carries it -- is the program a person starts,
-including in its `serve` mode (`cli::server`).
-What the server still has to do is hand its own children the command, and it can
-do that without knowing where the binary is -- the CLI installs
-`<home>/bin/gongga` on every run, so the home is the only thing the two have to
-agree on.
+The server does not look for the CLI: SPEC makes this crate a library, and the
+binary that carries it is the program a person started, in its `serve` mode
+(`cli::server`). So the command its children get is not looked up either -- it is
+`current_exe()`, this program.
 
-`GONGGA_CLI` names that script, not the binary behind it, because that is what a
-shell and a script can both execute. When it is missing -- a server started
-directly, before any CLI has been here -- the variable is left out rather than
-pointing at nothing, and the omission is warned about: the server still serves
-what it was asked for, and the fix is to start it once through the CLI.
+One answer to two questions. `PATH` puts `<home>/bin` first, which is where `serve`
+wrote the `gongga` a shell types; `GONGGA_CLI` names the program itself, which is
+what a script can execute. Both are the same build, so a script and a shell in one
+home cannot end up driving two different servers. When `current_exe` cannot be
+read the variable is left out rather than pointing at nothing, and the omission is
+warned about: the server still serves what it was asked for.
 
 ## main
 
@@ -85,10 +83,10 @@ the session it belongs to have to be handed down rather than discovered: without
 them an agent that wants to cancel or restart has no better option than killing
 its own server from outside. `GONGGA_HOME` and `GONGGA_SERVER` are exactly the two
 fallbacks the CLI reads, so a command needs no flags of its own. `PATH` is what
-turns `$GONGGA_CLI` into `gongga` -- see `server-shell-command.md` -- and
-`GONGGA_SESSION` is added where a session's shells are made, because that name
-belongs to a session and not to the server. A script gets the same variables and
-keeps the native `PATH` it was started with.
+makes `gongga` resolve, and `GONGGA_CLI` is the program a script can exec (both in
+`server-shell-command.md`); `GONGGA_SESSION` is added where a session's shells are
+made, because that name belongs to a session and not to the server. A script gets
+the same variables and keeps the native `PATH` it was started with.
 
 ## run (detached adoption)
 

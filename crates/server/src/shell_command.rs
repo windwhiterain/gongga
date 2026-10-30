@@ -4,21 +4,17 @@
 
 use std::path::{Path, PathBuf};
 
-/// The name a shell types for the CLI. Not `cmd`: that is Windows' own shell.
-pub const COMMAND: &str = "gongga";
-
-/// Where in a home the command lives.
-pub fn command_path(home: &Path) -> PathBuf {
-    home.join("bin").join(COMMAND)
-}
-
-/// The command a shell in this home will find, if the CLI has started here yet.
+/// The program running this server, named for `GONGGA_CLI`.
 ///
-/// The file is a script the program that served this home wrote, naming itself
-/// (`docs/notes/cli-server.md`): a name, not a search, is what a shell gets.
-pub fn command(home: &Path) -> Option<PathBuf> {
-    let path = command_path(home);
-    path.is_file().then_some(path)
+/// # Invariant
+///
+/// It is *this* program, the one `serve` was started as, and not a file in the
+/// home or on `PATH`: one machine can hold several builds of the command layer,
+/// and a script that ran another would be driving a server it does not share a
+/// version with. It is also the form a script can execute directly, which the
+/// `#!/bin/sh` name in a home's `bin` is not.
+pub fn program() -> Option<PathBuf> {
+    std::env::current_exe().ok()
 }
 
 /// The `PATH` value that finds a home's `bin` first.
@@ -50,12 +46,11 @@ fn shell_path(path: &Path) -> String {
 mod tests {
     use super::*;
 
-    /// The command is one file in the home, whatever else a build directory holds.
+    /// The home's `bin` is first on the line, so a `gongga` elsewhere -- a build
+    /// output, another install -- cannot win the lookup.
     #[test]
-    fn the_command_is_one_name_in_the_home() {
+    fn the_home_bin_comes_first() {
         let home = Path::new("/h");
-        assert_eq!(command_path(home), home.join("bin").join("gongga"));
-        // First on the line, so a `gongga` elsewhere cannot win the lookup.
         assert!(path(home).starts_with(&shell_path(&home.join("bin"))));
     }
 
@@ -68,17 +63,21 @@ mod tests {
         assert!(!joined.contains("::"), "{joined}");
     }
 
-    /// A home with no command says so; one with the script names the script.
+    /// `GONGGA_CLI` names this program: one a script can execute itself, rather
+    /// than the shell script a home's `bin` holds under the command's name.
     #[test]
-    fn the_command_is_the_script_or_nothing() {
-        let home = tempfile::tempdir().unwrap();
-        assert!(command(home.path()).is_none(), "a home with none has none");
-        let bin = home.path().join("bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        std::fs::write(bin.join(COMMAND), "#!/bin/sh\n").unwrap();
-        assert_eq!(
-            command(home.path()).as_deref(),
-            Some(command_path(home.path()).as_path())
+    fn the_program_named_is_the_one_running() {
+        let program = program().expect("a running process has a path");
+        assert_eq!(program, std::env::current_exe().unwrap());
+        assert!(program.is_file());
+        // On Windows that is what makes it executable: no `sh` needed.
+        #[cfg(windows)]
+        assert!(
+            program
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("exe")),
+            "{}",
+            program.display()
         );
     }
 }

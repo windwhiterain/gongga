@@ -196,25 +196,23 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
 
     let store = store::Store::open(&cfg.db_path)?;
     let llm = Arc::new(LlmClient::new(&cfg.llm)?);
-    // The command itself is the cli's to install (`cli::server`); this server
-    // only names where it lives.
-    let command = shell_command::command(&cfg.home);
+    // A script drives this server by running this program: the one started as
+    // `serve`, which is also the one `install_command` wrote the home's `gongga`
+    // for. No copy, no lookup, and nothing for a rebuild to leave behind.
     let mut server_env = vec![
         ("GONGGA_SERVER".to_string(), cfg.bind.to_string()),
         ("GONGGA_HOME".to_string(), cfg.home.display().to_string()),
     ];
-    if let Some(command) = command {
-        server_env.push((
+    match shell_command::program() {
+        Some(program) => server_env.push((
             "GONGGA_CLI".to_string(),
-            command.display().to_string(),
-        ));
-    } else {
-        // Not an error: this server still serves what it was asked for; the fix
-        // is to start it once through the cli.
-        tracing::warn!(
-            dir = %cfg.home.join("bin").display(),
-            "no `gongga` command here yet; a shell this server starts has none to drive it with"
-        );
+            program.display().to_string(),
+        )),
+        // Not an error: this server still serves what it was asked for, and a
+        // shell it starts can still type `gongga`.
+        None => tracing::warn!(
+            "cannot name the program running this server; its scripts get no `GONGGA_CLI`"
+        ),
     }
     // A shell this server starts reads a POSIX `PATH`; a script interpreter does not.
     let mut shell_env = server_env.clone();

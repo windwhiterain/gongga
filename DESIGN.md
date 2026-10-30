@@ -514,9 +514,11 @@ Shell **按 `session_name/bash_name` 建键**，所以一个会话持有的是�
   外面 `taskkill` 这一条路。`GONGGA_HOME` 与 `GONGGA_SERVER` 正好是 CLI 自己读的两个 fallback，
   `PATH` 首位是服务端刚写进 `<home>/bin` 的那个 `gongga`，所以按名字调用就行：
   `gongga cancel`、`gongga send_message --message hi --session $GONGGA_SESSION` 都不需要额外
-  参数。`$GONGGA_CLI` 就是 `<home>/bin/gongga` 这个 shim 的绝对路径，留给脚本和 launcher ——
-  它们不该依赖那条 `PATH`。服务端不去找 CLI 二进制：shim 是它自己起来时按自己写的，它只负责把
-  这个目录排到 `PATH` 首位，两边只需要对「home」有一个共识。
+  参数。`$GONGGA_CLI` 是**起这个服务端的那个程序本身**（`current_exe()`），留给脚本和 launcher ——
+  它们不该依赖那条 `PATH`，也不该被塞一个 `#!/bin/sh` 脚本：能让原生解释器直接 exec 的只有程序
+  本身（`subprocess.run([os.environ["GONGGA_CLI"], ...])`）。服务端不去找 CLI 二进制：`bin` 里的
+  `gongga` 是它自己起来时按自己写的，它只负责把这个目录排到 `PATH` 首位，两边只需要对「home」
+  有一个共识。
   脚本的 env 也只有那几个 `GONGGA_*` 变量：POSIX 化的 `PATH` 是给 shell 读的，解释器要的是原生那一条。
 
 `bash{command, name, background, detached}` 的三种跑法：
