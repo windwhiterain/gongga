@@ -272,11 +272,6 @@ impl Store {
         self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Where the database lives, for a reader that brings its own connection.
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
     // -- sessions ----------------------------------------------------------
 
     pub fn create_session(&self, name: &str, model: &str, cwd: &str) -> anyhow::Result<i64> {
@@ -525,19 +520,6 @@ impl Store {
             status,
             messages,
         })
-    }
-
-    /// `(seq, kind)` of every message, oldest first. Test-only: folding left the
-    /// server.
-    #[cfg(test)]
-    pub fn message_index(&self, session_id: i64) -> anyhow::Result<Vec<(i64, String)>> {
-        let conn = self.lock();
-        let mut stmt =
-            conn.prepare("SELECT seq, kind FROM messages WHERE session_id = ?1 ORDER BY seq")?;
-        let rows = stmt
-            .query_map(params![session_id], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows)
     }
 
     /// The handover note, if the agent has written one.
@@ -1181,18 +1163,7 @@ mod tests {
         (dir, store)
     }
 
-    /// Folds like the `heir` skill: a second connection, the same statement.
-    /// The store owns no writer for a handover.
-    fn fold_from_outside(dir: &std::path::Path, session_id: i64, note: &str) {
-        let conn = rusqlite::Connection::open(dir.join("g.db")).unwrap();
-        conn.execute(
-            "UPDATE sessions SET handover = ?1 WHERE id = ?2",
-            params![note, session_id],
-        )
-        .unwrap();
-    }
-
-    /// `--db <path>` brings its directory, and `:memory:` must not become a directory.
+    /// `<path>` brings its directory, and `:memory:` must not become a directory.
     #[test]
     fn the_database_path_brings_its_directory() {
         let dir = tempfile::tempdir().unwrap();
