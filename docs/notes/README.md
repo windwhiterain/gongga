@@ -30,6 +30,7 @@ note is a bug.
 | note | source |
 | --- | --- |
 | [`cargo-config.md`](cargo-config.md) | `.cargo/config.toml` |
+| [`bundle-main.md`](bundle-main.md) | `crates/bundle/src/main.rs` |
 
 ### server
 

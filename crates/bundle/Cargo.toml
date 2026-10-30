@@ -1,0 +1,17 @@
+[package]
+name = "gongga-bundle"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "One file that carries the programs: the stub at the front of a release, nothing else"
+
+# No dependencies at all, on purpose: this program is the head of every
+# distribution and has to build on a machine that has nothing.
+[dependencies]
+
+[[bin]]
+name = "gongga-bundle"
+path = "src/main.rs"
+test = false

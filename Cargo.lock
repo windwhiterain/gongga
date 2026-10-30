@@ -742,6 +742,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "gongga-bundle"
+version = "0.1.0"
+
+[[package]]
 name = "gongga-cli"
 version = "0.1.0"
 dependencies = [
