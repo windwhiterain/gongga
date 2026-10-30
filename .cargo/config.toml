@@ -1,0 +1,13 @@
+# How this workspace builds, on a machine that is going to build it again in a
+# minute. Nothing here changes what comes out, only how long it takes.
+#
+# `rust-lld` ships with rustup, so this needs nothing installed on the machine.
+# It is worth a flag for one reason: the server's test harness is a 19 MB
+# executable, and relinking it after a one-line edit is 5.1 s with MSVC's
+# `link.exe` and 2.7 s with lld. On a small binary it is a wash (3.1 s -> 3.3 s
+# for `gongga-tui`), which is why this is the linker and nothing more.
+#
+# Scoped to the MSVC toolchain on Windows: the gnu toolchain has its own linker
+# and its own reasons.
+[target.'cfg(all(windows, target_env = "msvc"))']
+linker = "rust-lld"

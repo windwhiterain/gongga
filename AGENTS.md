@@ -76,9 +76,10 @@ provider 目录分两层，服务端只读不写，启动时按 provider `id` �
 `GONGGA_PROVIDERS_CATALOG=<path>` 仍然表示「就这一个文件」，两层合并整个跳过。
 
 ## 技能
-skill 是"任务相关才读"的散文 + 脚本，**不在这个仓库里**：它们由独立的内容仓库
-ship，服务端 pin 一个 commit，启动时装进两个根——harness 桶进 `$GONGGA_HOME/skills/`，
-通用桶进 `~/.agents/skills/`。
+skill 是"任务相关才读"的散文 + 脚本，**不在这个仓库里**，分两层：harness 桶由内容仓库
+`ship` 提供，服务端 pin 一个 commit，启动时装进 `$GONGGA_HOME/skills/`；通用桶是社区内容
+`gongga-agents/skills/`（服务端已经 clone 的那个仓库），私有的 `~/.agents/skills/` 只用来
+覆盖同名的那一个。
 
 **别全读，也别 grep 目录**：调用 `index_skill` 工具，它返回 name / description / path /
 bucket 一张表，命中才按它给的路径读正文。列表本身不写在这里——写在这里就等于每加一个
@@ -90,19 +91,19 @@ skill 都要改一次这个文件，而读的人手上已经有那张表。
 装的是 `ship.toml` 里那个 commit，不是你工作树里的那个。
 在这里改 `.agents/skills/` 是改一个已经不存在的地方；改 `$GONGGA_HOME/skills/` 里的已安装
 副本会被下一次合并判成「读者自己写的」而不再更新。
-- `proxy`：两层。`~/.agents/skills/proxy/proxy` 是自实现的纯标准库分流代理（HTTP/SOCKS5/直连
+- `proxy`：两层。`~/.agents/gongga-agents/skills/proxy/proxy` 是自实现的纯标准库分流代理（HTTP/SOCKS5/直连
   上游，用户可接任何 API 端点）：先 `doctor`，`upstream add` 加上游，`add host --via` 定规则，
   `check host` 看代理自己记下的去向。出口 IP 只在两条路由相同时才说明问题——`check` 会明说。
   改配置后要重启 `serve`。`proxy core …` 直接驱动跑着的 mihomo/clash core：`groups` /
   `nodes` / `use GROUP NODE` 换节点、`bench [--throughput]` 测延迟和吞吐、`mode` 切
   rule/global/direct、`reload` 热重载。控制器自己从 core 的 config.yaml 找（不依赖任何
   客户端），`doctor` 会打印用的是哪一条来源。**换节点不用 flm；只有刷新订阅那一步需要账号。**
-- `computer_use`：用鼠标键盘操作真实桌面。`~/.agents/skills/computer_use/cu` 先跑 `doctor`，
+- `computer_use`：用鼠标键盘操作真实桌面。`~/.agents/gongga-agents/skills/computer_use/cu` 先跑 `doctor`，
   然后 `shot` 看屏 → `tree` 拿控件矩形 → `click`/`type`/`key`（都带 `--window`）。
   `cu.py` + 每平台一个后端（Windows ctypes/UIA 已实测，macOS/Linux 已写未实测），
   uv 解析内联依赖，不需要 pyautogui/pywinauto。这是用户的真实桌面，打字前先确认目标窗口，
   截图会把屏幕上的密钥一起带走。
-- `remote`：在另一台机器上跑命令、搬文件。`~/.agents/skills/remote/remote` 是纯标准库的 SSH
+- `remote`：在另一台机器上跑命令、搬文件。`~/.agents/gongga-agents/skills/remote/remote` 是纯标准库的 SSH
   外壳，目标由 `add` 记住（host/port/user/key），**不读 ~/.ssh/config，不依赖任何本地约定或
   第三方 CLI**。先 `doctor` 证明这条链每环（退出码/UTF-8/二进制/传输），再 `run`。脚本走
   base64 落盘执行、输出按 base64 分帧——所以引号、GBK、退出码这三个坑不存在。会话复用一条

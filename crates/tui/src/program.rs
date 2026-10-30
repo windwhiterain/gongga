@@ -1,10 +1,8 @@
-//! `gongga-tui`'s own two halves: which name it was started under, and the one
-//! word that says which half a command line means.
+//! Which half of `gongga-tui` this process is, and the word that says so.
 //!
-//! See `docs/notes/tui-main.md`.
+//! See `docs/notes/tui-program.md`.
 
-/// The name and the sentence this file answers with, which depend on the name it
-/// was started under: the same file is both halves of one program.
+/// The name and the sentence to answer with, both taken from argv[0].
 pub fn describe() -> (&'static str, &'static str) {
     if named(cli::COMMAND) {
         (cli::COMMAND, cli::ABOUT)
@@ -97,8 +95,7 @@ mod tests {
         );
     }
 
-    /// Alone, it means the catalog -- not a command called `cli`, and not the
-    /// window, which is what an empty command line means.
+    /// Alone it means the catalog, not a command called `cli` and not the window.
     #[test]
     fn the_layer_s_word_alone_leaves_a_command_line_with_no_command() {
         let mut args = args(&["cli"]);
@@ -106,8 +103,7 @@ mod tests {
         assert_eq!(command(&args), None);
     }
 
-    /// A command line that never said it is passed on untouched: `gongga-tui
-    /// serve` and `gongga-tui get_messages` are still the layer's business.
+    /// A command line that never said it is passed on untouched.
     #[test]
     fn a_command_line_without_the_word_is_left_alone() {
         for words in [
@@ -124,8 +120,7 @@ mod tests {
         assert!(!took_layer(&mut args));
     }
 
-    /// The name is the whole difference: the same file installed as `gongga` is
-    /// the command layer, under its own name it is the window.
+    /// The same file installed as `gongga` is the layer, not the window.
     #[test]
     fn the_command_s_name_is_recognised_in_either_spelling() {
         for (path, expected) in [

@@ -25,6 +25,12 @@ note is a bug.
 | [`protocol-channel.md`](protocol-channel.md) | `crates/protocol/src/channel.rs` |
 | [`protocol-loopback.md`](protocol-loopback.md) | `crates/protocol/src/loopback.rs` |
 
+### build
+
+| note | source |
+| --- | --- |
+| [`cargo-config.md`](cargo-config.md) | `.cargo/config.toml` |
+
 ### server
 
 | note | source |
