@@ -44,7 +44,9 @@ use `which("bash")` as bash.
     not carry ten copies of a screenshot, and an item whose file is gone leaves the request out.
   - a step: each `function_call` is followed directly by its own `function_call_output`, and a call with no
     result at the end of the transcript gets a placeholder saying it was interrupted. Only the last step can
-    have such a gap -- a request with an unanswered call is rejected, so the turn could not have gone on.
+    have such a gap -- a request with an unanswered call is rejected, so the turn could not have gone on. A
+    result whose call is not in the same step is left out: a call and its result belong to one step, which is
+    what makes that decidable without remembering what was already sent.
 - the request body streams. Repairing a step holds that step's rows and nothing older, so what a request
   costs in memory is O(one step), never O(history).
 - `upto_seq` is pinned when a request starts, and every retry of that request replays the same window.

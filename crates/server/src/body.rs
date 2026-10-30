@@ -85,9 +85,21 @@ impl Step {
                 self.entries.push(entry);
             }
             "tool_result" => {
-                if let Some(id) = &entry.call_id {
-                    self.open.retain(|open| open != id);
+                // A call and its result are the same step's: a result whose call is
+                // not waiting here is an orphan.
+                let waiting = entry
+                    .call_id
+                    .as_ref()
+                    .is_some_and(|id| self.open.contains(id));
+                if !waiting {
+                    tracing::debug!(
+                        call_id = entry.call_id.as_deref().unwrap_or("?"),
+                        "a tool result lost its call: not sent"
+                    );
+                    return out;
                 }
+                let id = entry.call_id.clone().unwrap_or_default();
+                self.open.retain(|open| open != &id);
                 self.entries.push(entry);
                 if self.open.is_empty() {
                     out = self.flush();
