@@ -27,8 +27,6 @@ use `which("bash")` as bash.
 - del_bash{name_regex}: delete matched bash with the caller sessions' name in key. 
 ## State
 - everything in database (sqlite) under a home directory, structured for agentic retrieval/mutation.
-- home directory path can be specified at server start (`gongga-server --home <dir>`; this is
-  the whole of its state -- database, config, logs, detached-job records, the instance lock).
 ## UI
 - events[]:
   - cmd
@@ -62,7 +60,7 @@ use `which("bash")` as bash.
     - `session`: filter the rendered events by session name.
     - `split` whether split events window by session name, cmd/cmd_result use a separate single line.
   - `connect_server [--ip <ip>](default: localhost) --port <port>`
-  - `serve --port <port>`
+  - `serve --port <port> [--home <path>](default: "~/.gongga")`
 
 ## Skill
 use python cripts read/write gongga home, calling server cmd.
