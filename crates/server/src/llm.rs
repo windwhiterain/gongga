@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::store::{HistoryItem, activity_detail, activity_name};
+use crate::store::{activity_detail, activity_name};
 
 /// A connect that takes this long is a broken route, not a slow provider: the
 /// answer itself is bounded by `headers_timeout` and `idle_timeout`.
@@ -902,7 +902,7 @@ fn storable_activity(item: &Value) -> (Value, bool) {
 }
 
 /// The item as a request should carry it, payload read back from `dir`.
-fn sendable_activity(
+pub(crate) fn sendable_activity(
     item: &Value,
     replayable: bool,
     dir: Option<&std::path::Path>,
@@ -1279,66 +1279,6 @@ async fn handle(
     Ok(())
 }
 
-/// Renders a stored transcript entry as a Responses-API input item.
-fn history_item_to_input(item: &HistoryItem) -> Option<Value> {
-    Some(match item {
-        HistoryItem::Text { role, text } => match role.as_str() {
-            "assistant" => json!({
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": text}],
-            }),
-            _ => json!({"role": role, "content": text}),
-        },
-        HistoryItem::ToolCall {
-            call_id,
-            name,
-            arguments,
-        } => {
-            json!({"type":"function_call","call_id":call_id,"name":name,"arguments":arguments})
-        }
-        // Back as it came, payload read back from the file beside the home.
-        HistoryItem::BuiltinCall { item, replayable } => {
-            match sendable_activity(item, *replayable, crate::blobs::dir()) {
-                Some(item) => item,
-                None => return None,
-            }
-        }
-        HistoryItem::ToolResult {
-            call_id,
-            output,
-            images,
-        } => {
-            // A plain string is the shape every provider takes; the content
-            // array is only needed when there is a picture in it.
-            if images.is_empty() {
-                json!({"type":"function_call_output","call_id":call_id,"output":output})
-            } else {
-                let mut content = vec![json!({"type": "input_text", "text": output})];
-                content.extend(images.iter().map(crate::image::content_part));
-                json!({"type":"function_call_output","call_id":call_id,"output":content})
-            }
-        }
-        // The summary is for the UI; the model gets only the encrypted blob.
-        HistoryItem::Reasoning {
-            item_id,
-            encrypted,
-            summary: _summary,
-        } => {
-            // Replay needs the blob; without it drop the item, never send a shape
-            // the API would reject.
-            let Some(enc) = encrypted else {
-                return None;
-            };
-            let mut item = json!({"type":"reasoning","summary":[]});
-            if let Some(id) = item_id {
-                item["id"] = json!(id);
-            }
-            item["encrypted_content"] = json!(enc);
-            item
-        }
-    })
-}
-
 /// One stored picture as an `input_image` part, read from disk now.
 ///
 /// # Invariant
@@ -1361,7 +1301,6 @@ fn shorten_body(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::image::ImageRef;
 
     /// A client with no roster behind it: what a test drives is the body it builds.
     fn client_with(model: &str, builtin_tools: &[&str], modalities: &[&str]) -> LlmClient {
@@ -1473,16 +1412,6 @@ mod tests {
     fn ignores_keepalive_comments() {
         assert!(parse_sse_block(": ping").is_none());
         assert!(parse_sse_block("event: ping\ndata: {}").is_some());
-    }
-
-    #[test]
-    fn reasoning_without_encrypted_content_is_dropped() {
-        let item = HistoryItem::Reasoning {
-            item_id: Some("rs_1".into()),
-            encrypted: None,
-            summary: "thinking".into(),
-        };
-        assert!(history_item_to_input(&item).is_none());
     }
 
     /// Some providers send an empty `summary` on `output_item.done`, so the
@@ -1657,19 +1586,6 @@ mod tests {
             }
         }
         assert_eq!(summary.as_deref(), Some("thinking out loud"));
-    }
-
-    #[test]
-    fn reasoning_replays_the_blob_without_its_summary_text() {
-        let item = HistoryItem::Reasoning {
-            item_id: Some("rs_1".into()),
-            encrypted: Some("blob".into()),
-            summary: "a long thought".into(),
-        };
-        let v = history_item_to_input(&item).unwrap();
-        assert_eq!(v["type"], "reasoning");
-        assert_eq!(v["encrypted_content"], "blob");
-        assert_eq!(v["summary"], json!([]));
     }
 
     #[test]
@@ -1861,18 +1777,6 @@ mod tests {
         let cold: Usage = serde_json::from_value(json!({"input_tokens": 10})).unwrap_or_default();
         assert_eq!(cold.cached_tokens(), None);
         assert_eq!(cold.input_tokens, Some(10));
-    }
-
-    #[test]
-    fn tool_results_use_the_output_item_shape() {
-        let item = HistoryItem::ToolResult {
-            call_id: "c1".into(),
-            output: "ok".into(),
-            images: Vec::new(),
-        };
-        let v = history_item_to_input(&item).unwrap();
-        assert_eq!(v["type"], "function_call_output");
-        assert_eq!(v["call_id"], "c1");
     }
 
     /// `--thinking_effort` rides on the request as the API spells it; unset sends
@@ -2119,52 +2023,6 @@ mod tests {
     }
 
     /// The only encoding `image_url` takes for a data URL.
-
-    /// A picture goes as `input_image`, not as base64 prose to puzzle over.
-    #[test]
-    fn a_picture_rides_in_the_tool_result_as_input_image() {
-        let d = tempfile::tempdir().unwrap();
-        let path = d.path().join("shot.png");
-        std::fs::write(&path, [0x89, b'P', b'N', b'G']).unwrap();
-        let item = HistoryItem::ToolResult {
-            call_id: "c1".into(),
-            output: "the model is looking at shot.png".into(),
-            images: vec![ImageRef::new(
-                path.to_string_lossy().to_string(),
-                "image/png",
-            )],
-        };
-        let v = history_item_to_input(&item).unwrap();
-        assert_eq!(v["type"], "function_call_output");
-        let content = v["output"].as_array().expect("a content array");
-        assert_eq!(content[0]["type"], "input_text");
-        assert_eq!(content[0]["text"], "the model is looking at shot.png");
-        assert_eq!(content[1]["type"], "input_image");
-        assert_eq!(
-            content[1]["image_url"],
-            json!(format!(
-                "data:image/png;base64,{}",
-                crate::image::base64_for_test(&[0x89, b'P', b'N', b'G'])
-            ))
-        );
-    }
-
-    /// A file that is gone degrades to a sentence: one unreadable picture must not
-    /// take the whole turn with it.
-    #[test]
-    fn a_missing_picture_degrades_to_a_sentence() {
-        let item = HistoryItem::ToolResult {
-            call_id: "c1".into(),
-            output: "looked at it".into(),
-            images: vec![ImageRef::new("C:/nowhere/gone.png", "image/png")],
-        };
-        let v = history_item_to_input(&item).unwrap();
-        let content = v["output"].as_array().expect("a content array");
-        assert_eq!(content[1]["type"], "input_text");
-        let text = content[1]["text"].as_str().unwrap();
-        assert!(text.contains("C:/nowhere/gone.png"), "{text}");
-        assert!(text.contains("no longer readable"), "{text}");
-    }
 
     /// The roster's `modalities` is the whole of the image question.
     #[test]

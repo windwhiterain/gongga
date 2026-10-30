@@ -190,9 +190,9 @@ transcript never holds a call waiting on a later one, and the call in flight is
 always the last row. That ordering is what lets a script that folds or empties
 the session keep exactly one row -- its own -- and still leave a request the
 provider accepts. A result without its call is a rejected request, so cutting
-inside a pair is the one thing no writer may do; `history_between` drops a
-result whose call is gone as the backstop, and `close_dangling_calls` closes the
-other way round.
+inside a pair is the one thing no writer may do. The backstop is in the request
+builder, not the store: a step's buffer has its own calls, so it can tell an
+orphan from a pair and leave the orphan out (`docs/notes/server-body.md`).
 
 ## Agent::maybe_notify_context
 

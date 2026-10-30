@@ -716,8 +716,8 @@ impl Agent {
     ///
     /// # Invariant
     ///
-    /// The line goes into the transcript as a `notice`, which `history_since`
-    /// skips. An `Event::Log` alone is broadcast and forgotten: "why did that
+    /// The line goes into the transcript as a `notice`, which no request is built
+    /// from. An `Event::Log` alone is broadcast and forgotten: "why did that
     /// turn fail" was unanswerable a minute later, and the failure of the
     /// *first* attempt of a request exists nowhere else at all.
     fn error(&self, id: i64, session: &str, what: &str, e: anyhow::Error) {
@@ -848,13 +848,6 @@ fn notice_budget(configured: u64, context: Option<u64>, percent: Option<u8>) -> 
     };
     providers::tokens_for_percent(window, percent.unwrap_or(DEFAULT_CONTEXT_LIMIT_PERCENT))
 }
-
-/// Where the note takes over: up to and including the seq is folded out.
-///
-/// # Invariant
-///
-/// The boundary is followed by a `text` or `tool_call`, never by an orphaned
-/// `tool_result`, which providers reject.
 
 #[cfg(test)]
 mod tests {

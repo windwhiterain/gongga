@@ -1,4 +1,4 @@
-//! The request body, written as it is read. See `docs/notes/server-llm.md`.
+//! The request body, written as it is read. See `docs/notes/server-body.md`.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Error as IoError;
@@ -22,13 +22,25 @@ struct Entry {
 }
 
 impl Entry {
-    fn of(row: Row) -> Self {
+    /// `None` when the row cannot be sent: its payload file is gone.
+    fn of(row: Row) -> Option<Self> {
         let Row {
             item,
             kind,
             call_id,
             images,
         } = row;
+        if kind == "builtin_call" {
+            let Ok(value) = serde_json::from_str::<Value>(&item) else {
+                return None;
+            };
+            let replayed = crate::llm::sendable_activity(&value, true, crate::blobs::dir())?;
+            return Some(Self {
+                bytes: replayed.to_string().into_bytes(),
+                kind,
+                call_id,
+            });
+        }
         let bytes = if images.is_empty() {
             item.into_bytes()
         } else {
@@ -49,11 +61,11 @@ impl Entry {
                 Err(_) => item.into_bytes(),
             }
         };
-        Self {
+        Some(Self {
             bytes,
             kind,
             call_id,
-        }
+        })
     }
 }
 
@@ -238,13 +250,16 @@ impl RequestBody {
         };
         match next {
             Some(Err(e)) => return Err(IoError::other(e)),
-            Some(Ok(entry)) => {
+            Some(Ok(Some(entry))) => {
                 for bytes in self.step.push(entry) {
                     self.emit(bytes);
                 }
-                return Ok(true);
             }
-            None => {}
+            // Read and set aside: the loop asks for the row after it.
+            Some(Ok(None)) | None => {}
+        }
+        if self.rows.is_some() {
+            return Ok(true);
         }
         if self.rows.take().is_some() {
             for bytes in self.step.close(&self.placeholder) {
