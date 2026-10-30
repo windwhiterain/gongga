@@ -124,7 +124,7 @@ pub enum UiEvent { Submit(String), Quit }
   它平时阻塞在 `recv_from` 上，对端不再发包就永远醒不过来 —— 每次重连都会留下一个 task 和
   一个 `Arc<UdpSocket>`。
 
-`tests/loopback.rs` 用真实 UDP socket 验证：200KB 消息分片往返、25% 丢包下恢复、
+`src/loopback.rs`（`#[cfg(test)]`，留在编译单元里，不额外链接一个测试二进制）用真实 UDP socket 验证：200KB 消息分片往返、25% 丢包下恢复、
 多条消息保持顺序、消费端暂停时链路不停、连接 drop 后 reader task 释放 socket。
 丢包恢复从最初的 25s 优化到 <0.4s。
 

@@ -13,6 +13,9 @@ description = "Gongga harness terminal front-end: an event log plus an input lin
 [[bin]]
 name = "gongga-tui"
 path = "src/main.rs"
+# The binary is `main` and nothing else: what it decides lives in the library, so
+# the crate carries one test binary rather than one per target.
+test = false
 
 [dependencies]
 cli = { workspace = true }

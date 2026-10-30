@@ -2,7 +2,10 @@
 
 ## main.rs
 
-`gongga-tui`: the window you actually run.
+`gongga-tui`: the window you actually run. The file is `main` and a call into the
+library: which name this program was started under, and what the word `cli` takes
+off a command line, are `program`'s (`tui-program.md`) -- a decision in `main.rs`
+is a decision only a test binary could reach, and a binary of its own to reach it.
 
 Two shapes, one command line: with a command it belongs to the command layer, and
 with none the *name* decides -- this program is also installed as `gongga`, and

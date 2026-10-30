@@ -23,7 +23,7 @@ note is a bug.
 | [`protocol-frame.md`](protocol-frame.md) | `crates/protocol/src/frame.rs` |
 | [`protocol-message.md`](protocol-message.md) | `crates/protocol/src/message.rs` |
 | [`protocol-channel.md`](protocol-channel.md) | `crates/protocol/src/channel.rs` |
-| [`protocol-loopback.md`](protocol-loopback.md) | `crates/protocol/tests/loopback.rs` |
+| [`protocol-loopback.md`](protocol-loopback.md) | `crates/protocol/src/loopback.rs` |
 
 ### server
 
@@ -66,6 +66,7 @@ note is a bug.
 | note | source |
 | --- | --- |
 | [`tui-main.md`](tui-main.md) | `crates/tui/src/main.rs` |
+| [`tui-program.md`](tui-program.md) | `crates/tui/src/program.rs` |
 | [`tui-lib.md`](tui-lib.md) | `crates/tui/src/lib.rs` |
 | [`tui-input.md`](tui-input.md) | `crates/tui/src/input.rs` |
 | [`tui-log.md`](tui-log.md) | `crates/tui/src/log.rs` |

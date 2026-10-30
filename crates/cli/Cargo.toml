@@ -13,6 +13,9 @@ description = "Gongga harness command layer: catalog, sticky arguments, wire cli
 [[bin]]
 name = "gongga"
 path = "src/bin/gongga.rs"
+# Three lines of `main`: every test in this crate is the library's, so the
+# workspace gains no empty test binary that still has to be linked.
+test = false
 
 [dependencies]
 protocol = { workspace = true }

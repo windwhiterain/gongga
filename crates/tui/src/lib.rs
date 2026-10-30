@@ -9,6 +9,7 @@ mod clipboard;
 mod input;
 mod log;
 mod panes;
+pub mod program;
 mod render;
 pub mod run;
 

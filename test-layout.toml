@@ -8,6 +8,10 @@
 # `exempt` matches path patterns inside the root, not package names: a nested
 # checkout of this repository carries these crate names too, and no exemption is
 # wanted for it here.
+#
+# A bound, not a target: this repository has no `tests/` at all. Everything is
+# `#[cfg(test)]` inside the crate it tests, so a crate links one test binary and
+# the only thing a second one could add is a second link of the same stack.
 
 [layout]
 max_external_test_binaries = 1

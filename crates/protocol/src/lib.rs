@@ -3,6 +3,8 @@
 
 pub mod channel;
 pub mod frame;
+#[cfg(test)]
+mod loopback;
 pub mod message;
 
 pub use channel::{

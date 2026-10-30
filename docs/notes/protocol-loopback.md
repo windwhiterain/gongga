@@ -2,6 +2,11 @@
 
 ## loopback
 
+`#[cfg(test)]` inside the crate, not `tests/`: a `tests/` file is a second test
+binary, and it exists to link this whole stack a second time to run proofs that
+need nothing the crate does not already have. Nothing here reaches inside the
+crate, so what would have been an integration test is a module.
+
 These tests drive the transport the way the server does: one socket, a
 demultiplexer that hands frames to per-peer connections, and a client that opens a
 connection with SYN. The lossy variant deliberately drops datagrams to prove the

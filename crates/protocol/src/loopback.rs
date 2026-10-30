@@ -1,5 +1,9 @@
 //! End-to-end exercise of the reliable channel over a real UDP socket.
 //!
+//! Compiled only for tests, and inside the crate rather than as a second test
+//! binary: a `tests/` file would link the whole stack a second time to run the
+//! same six proofs.
+//!
 //! See `docs/notes/protocol-loopback.md`.
 
 use std::collections::HashMap;
@@ -9,8 +13,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
-// Integration tests see the crate by its published name, not its workspace alias.
-use gongga_protocol as protocol;
+// The crate by its own name, so the call sites below read as a consumer's would.
+use crate as protocol;
 use protocol::frame::Frame;
 use protocol::{ChannelConfig, ChannelError, ChannelSink, ChannelStream};
 use tokio::net::UdpSocket;
