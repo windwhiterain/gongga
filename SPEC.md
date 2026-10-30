@@ -38,17 +38,20 @@ use `which("bash")` as bash.
     written at the next step boundary, never between a call and its result.
 - a request's `input` is the `content` of the sendable rows in `seq` order, with the handover note first.
   Two transforms are allowed, and no others:
-  - an image: `display`'s reference becomes an `input_image` part -- the provider's file id once the File
-    API has minted one, otherwise the bytes read at send time, so a transcript replayed ten times does not
-    carry ten copies of a screenshot.
+  - a reference becomes its content: `display`'s image becomes an `input_image` part -- the provider's file
+    id once the File API has minted one, otherwise the bytes read as the request is written -- and a
+    provider tool item's payload file is read the same way. Either way a transcript replayed ten times does
+    not carry ten copies of a screenshot, and an item whose file is gone leaves the request out.
   - a step: each `function_call` is followed directly by its own `function_call_output`, and a call with no
     result at the end of the transcript gets a placeholder saying it was interrupted. Only the last step can
     have such a gap -- a request with an unanswered call is rejected, so the turn could not have gone on.
 - the request body streams. Repairing a step holds that step's rows and nothing older, so what a request
   costs in memory is O(one step), never O(history).
 - `upto_seq` is pinned when a request starts, and every retry of that request replays the same window.
-- migration: an existing database has its rows rewritten once into this shape, under a schema version in
-  `meta`. Rewriting is where a transcript that stored its results in completion order gets its order fixed.
+- migration: the home's version step renames the payload version 1 stored to `display` and opens an empty
+  `content`; the server fills `content` as it opens, because the rule that says what a row sends lives
+  beside the code that writes rows. A transcript that stored its results in completion order is not
+  rewritten -- the step repair handles it on the way out, like any other.
 ## UI
 - events[]:
   - cmd

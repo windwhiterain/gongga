@@ -19,7 +19,7 @@ use std::process::Command;
 use anyhow::{Context, bail};
 
 /// The version this build reads and writes.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 /// The file that says what version a home is at. Missing means 0: a home this
 /// server has never migrated is the one it was created by.
@@ -231,11 +231,13 @@ mod tests {
         assert!(report.steps.is_empty());
     }
 
-    /// A cache holding one migrator, as an install would have left one.
-    fn cache_with(home: &Path, name: &str, body: &str) {
+    /// A cache holding `names`, as an install would have left one.
+    fn cache_with(home: &Path, names: &[&str], body: &str) {
         let work = home.join("content");
         std::fs::create_dir_all(work.join(DIRECTORY)).unwrap();
-        std::fs::write(work.join(DIRECTORY).join(name), body).unwrap();
+        for name in names {
+            std::fs::write(work.join(DIRECTORY).join(name), body).unwrap();
+        }
         let git = |args: &[&str]| {
             let out = Command::new("git")
                 .arg("-C")
@@ -274,15 +276,31 @@ mod tests {
         assert_eq!(version(dir.path()), VERSION);
     }
 
+    /// The migrator file for every step this build asks for.
+    fn every_step() -> Vec<String> {
+        (0..VERSION)
+            .map(|step| format!("{step}-to-{}.py", step + 1))
+            .collect()
+    }
+
     /// The version moves only once the step has exited zero.
     #[test]
     fn a_step_that_succeeds_moves_the_version() {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path();
         std::fs::write(home.join("g.db"), "bytes").unwrap();
-        cache_with(home, "0-to-1.py", "import sys\nsys.exit(0)\n");
+        let files = every_step();
+        cache_with(
+            home,
+            &files.iter().map(String::as_str).collect::<Vec<_>>(),
+            "import sys\nsys.exit(0)\n",
+        );
         let report = bring_forward(home, &home.join("g.db")).unwrap();
-        assert_eq!(report.steps, vec!["0-to-1".to_string()], "{report:?}");
+        let steps: Vec<String> = files
+            .iter()
+            .map(|file| file.trim_end_matches(".py").to_string())
+            .collect();
+        assert_eq!(report.steps, steps, "{report:?}");
         assert_eq!(version(home), VERSION);
     }
 
@@ -292,7 +310,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path();
         std::fs::write(home.join("g.db"), "bytes").unwrap();
-        cache_with(home, "0-to-1.py", "import sys\nsys.exit(3)\n");
+        cache_with(home, &["0-to-1.py"], "import sys\nsys.exit(3)\n");
         let error = bring_forward(home, &home.join("g.db"))
             .unwrap_err()
             .to_string();

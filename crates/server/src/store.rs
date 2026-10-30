@@ -83,7 +83,12 @@ CREATE TABLE IF NOT EXISTS messages (
     session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     seq        INTEGER NOT NULL,
     kind       TEXT NOT NULL,
-    content    TEXT NOT NULL,
+    -- The entry as the LLM API takes it: one standard Responses input item, sent verbatim.
+    -- NULL is the marker for a row no request is built from -- a notice, the prompt in force,
+    -- an item whose binary payload was gone before it could be replayed.
+    content    TEXT,
+    -- What the reader needs: the payload as it was written, never sent.
+    display    TEXT NOT NULL,
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS messages_by_session ON messages(session_id, seq);
@@ -191,6 +196,38 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "UPDATE detached_jobs SET name = shell || '-' || job WHERE name = ''",
         [],
     )?;
+    backfill_wire_items(conn)?;
+    Ok(())
+}
+
+/// Gives the rows a version-1 home wrote the item their requests will send.
+///
+/// # Invariant
+///
+/// The split itself is the version step, which renames the column before the database
+/// opens; this applies the writer's own rule to the rows that predate it, so what a row
+/// sends has one spelling. A row with no `content` was never split, which makes this a
+/// no-op on a home that has been through it.
+fn backfill_wire_items(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    if !has_column(conn, "messages", "content") || !has_column(conn, "messages", "display") {
+        return Ok(());
+    }
+    let rows: Vec<(i64, String)> = conn
+        .prepare("SELECT id, kind FROM messages WHERE content IS NULL ORDER BY id")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    for (id, kind) in rows {
+        let display: String = conn.query_row(
+            "SELECT display FROM messages WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )?;
+        let value = serde_json::from_str(&display).unwrap_or(serde_json::Value::Null);
+        conn.execute(
+            "UPDATE messages SET content = ?1 WHERE id = ?2",
+            params![wire_item(&kind, &value).map(|item| item.to_string()), id],
+        )?;
+    }
     Ok(())
 }
 
@@ -271,14 +308,14 @@ impl Store {
     pub fn orphaned_blobs(&self, name: &str) -> anyhow::Result<Vec<String>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT DISTINCT json_extract(content, '$.item.result_blob') FROM messages
+            "SELECT DISTINCT json_extract(display, '$.item.result_blob') FROM messages
               WHERE session_id = (SELECT id FROM sessions WHERE name = ?1)
                 AND kind = 'builtin_call'
-                AND json_extract(content, '$.item.result_blob') IS NOT NULL
-                AND json_extract(content, '$.item.result_blob') NOT IN (
-                    SELECT json_extract(content, '$.item.result_blob') FROM messages
+                AND json_extract(display, '$.item.result_blob') IS NOT NULL
+                AND json_extract(display, '$.item.result_blob') NOT IN (
+                    SELECT json_extract(display, '$.item.result_blob') FROM messages
                      WHERE session_id != (SELECT id FROM sessions WHERE name = ?1)
-                       AND json_extract(content, '$.item.result_blob') IS NOT NULL)",
+                       AND json_extract(display, '$.item.result_blob') IS NOT NULL)",
         )?;
         let ids = stmt
             .query_map(params![name], |r| r.get::<_, String>(0))?
@@ -390,20 +427,24 @@ impl Store {
         content: &serde_json::Value,
     ) -> anyhow::Result<i64> {
         let seq: i64 = conn.query_row(
-            "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?1",
-            params![session_id],
-            |r| r.get(0),
-        )?;
-        conn.execute(
-            "INSERT INTO messages (session_id, seq, kind, content, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO messages (session_id, seq, kind, content, display, created_at)
+             VALUES (
+                ?1,
+                (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?1),
+                ?2,
+                ?3,
+                ?4,
+                ?5
+             )
+             RETURNING seq",
             params![
                 session_id,
-                seq,
                 kind,
+                wire_item(kind, content).map(|item| item.to_string()),
                 serde_json::to_string(content)?,
                 now_millis()
             ],
+            |r| r.get(0),
         )?;
         Ok(seq)
     }
@@ -432,7 +473,7 @@ impl Store {
         let rows = {
             let conn = self.lock();
             let mut stmt = conn.prepare(
-                "SELECT kind, content FROM messages
+                "SELECT kind, display FROM messages
                   WHERE session_id = ?1 AND seq > ?2 AND seq <= ?3
                   ORDER BY seq",
             )?;
@@ -574,7 +615,7 @@ impl Store {
                 other => tracing::warn!("unknown message kind {other}"),
             }
         }
-        Ok(out)
+        Ok(pair_tool_results(out))
     }
 
     /// Where the transcript now ends, `0` for an empty one.
@@ -604,7 +645,7 @@ impl Store {
             |r| Ok((r.get(0)?, parse_status(&r.get::<_, String>(1)?))),
         )?;
         let mut stmt = conn.prepare(
-            "SELECT seq, kind, content FROM messages
+            "SELECT seq, kind, display FROM messages
              WHERE session_id = ?1 AND seq >= ?2 AND seq <= ?3
              ORDER BY seq ASC",
         )?;
@@ -678,7 +719,7 @@ impl Store {
         let row = {
             let conn = self.lock();
             conn.query_row(
-                "SELECT content FROM messages \
+                "SELECT display FROM messages \
                   WHERE session_id = ?1 AND kind = 'system' ORDER BY seq DESC LIMIT 1",
                 params![session_id],
                 |r| r.get::<_, String>(0),
@@ -709,7 +750,7 @@ impl Store {
         let rows = {
             let conn = self.lock();
             let mut stmt = conn
-                .prepare("SELECT kind, content FROM messages WHERE session_id = ?1 ORDER BY seq")?;
+                .prepare("SELECT kind, display FROM messages WHERE session_id = ?1 ORDER BY seq")?;
             stmt.query_map(params![session_id], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
             })?
@@ -1156,6 +1197,107 @@ fn images_of(value: &serde_json::Value) -> Vec<ImageRef> {
         .and_then(|v| v.as_array())
         .map(|list| list.iter().filter_map(ImageRef::from_json).collect())
         .unwrap_or_default()
+}
+
+/// The item a row is sent as: one standard Responses input item, decided once, here.
+///
+/// # Invariant
+///
+/// A request sends what is stored rather than re-deriving it, so the shape a provider
+/// takes is computed on the way in. `None` is the row's own answer to "is any request
+/// built from you": a notice, the prompt in force, a reasoning entry with no encrypted
+/// blob, a provider item whose payload was stripped.
+fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value> {
+    let text_of = |key: &str| {
+        value
+            .get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    match kind {
+        "text" => {
+            let role = text_of("role");
+            let text = text_of("text");
+            Some(if role == "assistant" {
+                json!({"role": "assistant", "content": [{"type": "output_text", "text": text}]})
+            } else {
+                json!({"role": role, "content": text})
+            })
+        }
+        "reasoning" => {
+            let encrypted = value.get("encrypted").and_then(|v| v.as_str())?;
+            let mut item = json!({
+                "type": "reasoning",
+                "summary": [],
+                "encrypted_content": encrypted,
+            });
+            if let Some(id) = value.get("item_id").and_then(|v| v.as_str()) {
+                item["id"] = json!(id);
+            }
+            Some(item)
+        }
+        "tool_call" => Some(json!({
+            "type": "function_call",
+            "call_id": text_of("call_id"),
+            "name": text_of("name"),
+            "arguments": text_of("arguments"),
+        })),
+        // The pictures ride in `display`: a stored item names a file, and the bytes
+        // are read when the request is written.
+        "tool_result" => Some(json!({
+            "type": "function_call_output",
+            "call_id": text_of("call_id"),
+            "output": text_of("output"),
+        })),
+        "builtin_call" => {
+            let item = value.get("item")?;
+            if item.is_null() {
+                return None;
+            }
+            let replayable = value
+                .get("replayable")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true);
+            replayable.then(|| item.clone())
+        }
+        _ => None,
+    }
+}
+
+/// Moves every tool result up to the item directly after the call it answers.
+///
+/// # Invariant
+///
+/// A provider reads a `function_call` as answered by the input item that follows
+/// it, while the rows land in completion order: a step that asked for two tools
+/// stores whichever result came back first, so replaying the stored order leaves
+/// the slower call reading as unanswered and the request is rejected.
+fn pair_tool_results(items: Vec<HistoryItem>) -> Vec<HistoryItem> {
+    let mut answers: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (index, item) in items.iter().enumerate() {
+        if let HistoryItem::ToolResult { call_id, .. } = item {
+            answers.insert(call_id.clone(), index);
+        }
+    }
+    let mut slots: Vec<Option<HistoryItem>> = items.into_iter().map(Some).collect();
+    let mut out = Vec::with_capacity(slots.len());
+    for index in 0..slots.len() {
+        let Some(item) = slots[index].take() else {
+            continue;
+        };
+        let answer = match &item {
+            HistoryItem::ToolCall { call_id, .. } => answers.get(call_id).copied(),
+            _ => None,
+        };
+        out.push(item);
+        if let Some(at) = answer {
+            if let Some(result) = slots[at].take() {
+                out.push(result);
+            }
+        }
+    }
+    out
 }
 
 /// The operator-facing name of a provider tool: `web_search_call` -> `web_search`.

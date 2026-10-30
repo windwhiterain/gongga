@@ -171,6 +171,20 @@ A notice is written for the operator, not for the model: it explains why a turn
 stopped. Feeding it back as history would put our own bookkeeping in the
 transcript the provider sees, and make the model answer questions nobody asked.
 
+Pairing is by position, not by membership, so `history_between` ends with
+`pair_tool_results`: the rows are stored in completion order and a step with two
+tool calls can store the second result first, which leaves the first call with
+its answer three items later. DeepSeek rejects that request as an unanswered
+call, and because the transcript is replayed whole on every turn the session
+cannot recover from it -- the same `call_id` fails again minutes later, with only
+a new `request_id` to tell the attempts apart.
+
+This is the interim shape. `messages` is splitting into `content`, the Responses
+input item a request sends verbatim, and `display`, the payload only the reader
+reads (`SPEC.md` ## State); `wire_item` is the one place that says what a row
+sends, and `pair_tool_results` moves into the request builder, where it will hold
+one step rather than the whole transcript.
+
 ## Store::last_seq
 
 Where the transcript ends. A negative bound in `--range` is resolved against it at
