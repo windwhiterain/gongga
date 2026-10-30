@@ -7,9 +7,9 @@
 ```text
 Cargo.toml                  workspace，resolver 3，edition 2024
 crates/protocol/  gongga-protocol   别名 protocol —— 帧、可靠 UDP 通道、消息词汇
-crates/server/    gongga-server     别名 server —— **库**：没有二进制，由 cli 内嵌运行
+crates/server/    gongga-server     别名 server —— **后端程序**（库 + `gongga-server` 二进制）
 crates/cli/       gongga-cli        别名 cli —— 命令层（库，外加 `gongga` 命令行程序），
-                                   没有服务端时自己起一个（`cli::server`）
+                                   没有服务端时把 `gongga-server` 拉起来（`cli::server`）
 crates/tui/       gongga-tui        别名 tui —— 终端前端 + `gongga-tui` 二进制
 crates/bridge/    gongga-bridge     别名 bridge —— IM 桥接器，见 §9
 ```
@@ -17,9 +17,9 @@ crates/bridge/    gongga-bridge     别名 bridge —— IM 桥接器，见 §9
 命名沿用你 `whiting` 项目的约定：目录不带前缀，`[workspace.dependencies]` 里用
 `package = "gongga-xxx"` 做别名。
 
-**依赖方向是一条链：`tui → cli → server`，反向不存在。** 服务端是库，命令层是内嵌它的那个
-二进制，窗口内嵌命令层。`cli` 依赖 `server` 是因为 `serve` 这条客户端命令要就地变成服务端；
-`server` 不知道 `cli` 存在（它连 CLI 二进制在哪都不搜了，只认 `<home>/bin` 这个目录）。
+**依赖方向是一条链：`tui → cli`，`server` 谁也不依赖。** 命令层不认识终端，也不携带服务端：
+`serve` 只是把 `gongga-server` 拉起来。`server` 不知道 `cli` 存在（它连 CLI 二进制在哪都不搜了，
+只认 `<home>/bin` 这个目录）。
 
 第二条是反的（`cli` 依赖 `tui`）的那些日子：交互模式
 当初写在 `gongga` 二进制里，而那个二进制归 `cli`。这看上去只是 Cargo.toml 里一行，实则把
@@ -31,12 +31,12 @@ ratatui 与 crossterm 拖进了**每一个**只想发一条命令的调用：脚
 
 | crate | 是 | 不是 |
 |---|---|---|
-| `cli` | 命令目录、sticky、参数解析/渲染、`Client` 状态机、链路 `Link`、`LineKind`、`gongga` 命令行、`serve` 起的服务端 | 任何终端 |
+| `cli` | 命令目录、sticky、参数解析/渲染、`Client` 状态机、链路 `Link`、`LineKind`、`gongga` 命令行、把 `gongga-server` 拉起来 | 任何终端、服务端本身 |
 | `tui` | 终端渲染、输入行、补全弹窗、交互循环、`gongga-tui` 二进制 | 命令是什么、协议长什么样 |
 
 两个程序，各归一半。`gongga` 是命令层自己的 front-end：argv 进来，这条命令的事件出去，视野里
-没有终端；不带命令时它打印服务端在问候语里发布的那份目录。它也是**唯一能当服务端的程序**：
-`gongga serve --port <p>` 就地跑内嵌的 server 库（§5「谁起服务端」）。窗口是 `gongga-tui`，它是**组装点**，
+没有终端；不带命令时它打印服务端在问候语里发布的那份目录。服务端是**另一个程序**
+`gongga-server`：`gongga serve --port <p>` 把控制台交给它（§5「谁起服务端」）。窗口是 `gongga-tui`，它是**组装点**，
 也是唯一同时需要两半的程序 —— 按 `cli` 的定义解析命令行、把「没有命令」交给交互循环、把有命令
 的交给 `cli::run`。两者都不认识任何命令名，所以「加一条命令要改前端」这件事不成立（SPEC 的
 「tui: transparent cli wrapper, do not know cmd」就是这条）。把自己叫什么也交给调用者：
@@ -49,8 +49,8 @@ ratatui 与 crossterm 拖进了**每一个**只想发一条命令的调用：脚
 词在 clap 之前就被摘掉，所以它不进目录、服务端也不认识它；摘光了剩下空，就是裸 `gongga` 的
 「列出服务端发布的那份目录」。
 
-于是 `<home>/bin/gongga` 是一条**链接**：服务端在起来之前把它自己（`current_exe()`）链到那个名字上
-（Windows 硬链接、Unix 符号链接，跨卷才拷贝）。不搜索、不改名：机器上可能同时有好几份这个程序的
+于是 `<home>/bin` 里是**两条链接**：`gongga` 指向起这个服务端的命令层程序，`gongga-server` 指向
+被起的服务端（Windows 硬链接、Unix 符号链接，跨卷才拷贝）。不搜索、不改名：机器上可能同时有好几份
 构建，谁在跑，谁的 shell 和脚本就驱动谁。身份落在名字上 —— 叫 `gongga` 就是命令层，叫
 `gongga-tui` 才是窗口 —— 因为链接里塞不进一个词，而名字正是 shell 和原生进程唯一共有的东西。
 
@@ -513,7 +513,7 @@ Shell **按 `session_name/bash_name` 建键**，所以一个会话持有的是�
   其首位是 `<home>/bin`（重建时同样注入）。这是**模型驱动自己的通道**：`bash` 跑在服务端的
   子进程里，不告诉它这些，它就既不知道服务端的地址、也不知道自己属于哪个会话，想取消或重启只剩从
   外面 `taskkill` 这一条路。`GONGGA_HOME` 与 `GONGGA_SERVER` 正好是 CLI 自己读的两个 fallback，
-  而 `PATH` 首位那个 `gongga` 就是**起这个服务端的程序本身**（`current_exe()`，链接进去的），
+  而 `PATH` 首位那个 `gongga` 就是**起这个服务端的命令层程序**（链接进去的，服务端只认这个目录），
   所以 shell 和脚本都只有一条路：`gongga cancel`、
   `gongga send_message --message hi --session $GONGGA_SESSION`，脚本里
   `subprocess.run(["gongga", ...])` 也一样 —— 不搜索、不复制第二份、没有第二个变量。
@@ -759,7 +759,7 @@ SPEC 给这一半起的名字是 `set_event_ui --session <name|none>`，它写�
 ## 5. CLI（命令层）
 
 `cli` 持有三样东西：服务端下发的命令目录、本地的 sticky 参数（和 `connect_server` 记住的
-地址，都在 `cli.toml`），以及内嵌的 server 库。它把输入行翻译成
+地址，都在 `cli.toml`），以及起服务端的那条路径。它把输入行翻译成
 `Submission::{Send, Local, Rejected}`，再通过 `Sink` trait 交给前端渲染 ——
 TUI 是一种实现（带样式的行），非交互模式是另一种（什么都不渲染，只把事件打成 JSON）。
 
@@ -975,8 +975,8 @@ TUI 输入行**同一套** `submit()` 解析 —— 否则补全、sticky 补齐
 
 ### 谁起服务端
 
-SPEC 的结构是：`server` 是**库**，`cli` 是**二进制**并内嵌它。于是「起一个服务端」不是某个要另外
-安装的程序，而是这个二进制自己的一个模式 —— 客户端命令 `serve`：
+SPEC 的结构是：`server` 和 `cli` 是两个**二进制**，`gongga-server` 由 `gongga` 拉起来。于是「起一个
+服务端」对使用者仍然只是一条客户端命令 `serve`：
 
 ```sh
 gongga --home ~/.gongga serve --port 9700
@@ -984,7 +984,8 @@ gongga --home ~/.gongga serve --port 9700
 
 它是**客户端命令**而不是隐藏开关：命令层本来就是「这个程序能被要求做什么」的清单，`serve` 因此
 照常出现在目录里、能补全、能自我说明。它在 `cli::main` 里于任何 tokio 运行时建立**之前**被分派，
-因为服务端要自己建它想被停掉的那个运行时（`server::main`），嵌套一个会 panic。
+然后把控制台交给 `gongga-server`（Unix 上 `exec` 换掉进程映像；Windows 上继承三个 stdio 并等待，
+把它的退出码带回来）：服务端要自己建它想被停掉的那个运行时，同一进程里嵌套一个会 panic。
 
 **谁自动起**：只有窗口。SPEC 把它写给了 `tui`，同时给了 `--client_only` 说「别起，我自己有一个」。
 一次性命令**不**自动起 —— 它是脚本或模型在跑，一个脚本悄悄在别人端口上拉起守护进程是惊吓不是便利。
@@ -1013,13 +1014,15 @@ Windows 给**每个**控制台子进程开一个新窗口 —— 而服务端启
 **不等它起来。** 窗口本来就在退避重连，再挂一个「等到 ready」的循环只是把同一个循环写两遍，错误
 还不如它。起服务端要负责的是「把它拉起来」，不是「盯着它」。
 
-`<home>/bin/gongga` 由**服务端起来之前自己放**（`cli::server::place`）：从 `current_exe()` 拿自己，
-**链接**过去 —— Windows 硬链接，Unix 符号链接，跨卷才退化成拷贝。于是「谁起的这个服务端，它的
-shell 和它的脚本就敲谁」，而且只有一个名字：bash 自己会把 `gongga` 补成 `gongga.exe`，原生进程
+`<home>/bin` 的那一对由**起服务端之前的那一步放**（`cli::server::install_commands`）：`gongga` 是
+起它的命令层程序，`gongga-server` 是被起的那一个，两个一起从同一份构建**链接**过去 —— Windows
+硬链接，Unix 符号链接，跨卷才退化成拷贝。于是「谁起的这个服务端，它的 shell 和它的脚本就敲谁」，
+而且只有一个名字：bash 自己会把 `gongga` 补成 `gongga.exe`，原生进程
 按裸名字找到的也是同一个文件，`subprocess.run(["gongga", ...])` 不需要路径也不需要变量。
 
 不搜索：同一台机器上可能有好几份构建，按 `PATH`、按兄弟目录、按 `bin` 里已有什么都可能挑到跟
-这个服务端不是同一份的那个，而且没人会说一声。硬链接不会跟着重建走（构建是换文件），所以每次
+这个服务端不是同一份的那个，而且没人会说一声。命令层找 `gongga-server` 同样只有三处写死的名字
+（`GONGGA_SERVER_BIN`、本程序的同级目录、本 home 的 `bin`），不搜 `PATH`。硬链接不会跟着重建走（构建是换文件），所以每次
 起来比较长度和 mtime，不一致就重放；符号链接不需要这一步。写走「先放旁边的临时文件、再 rename」，
 因为 agent 可能正在跑那个名字 —— Windows 拒绝替换正在运行的 exe 时，旧的留到下次。
 
@@ -1414,7 +1417,7 @@ home 就空着，没有进程去 resume 这个回合 ���— 一次失败�
 2. **agent 拿到的命令可能敲不通**：当初服务端只找「本进程的同级目录」，而 `dev.sh server`
    只把服务端复制进 `.dev/`，同级就没有 `gongga`，于是回退成裸名 `gongga.exe` —— 不在 `PATH` 上，
    agent 拿到的是一条必死的命令。后来改成「同级 → `../target/debug/` → `PATH`」，再后来这一条连
-   责任一起搬走了：放进 `<home>/bin` 的是**起服务端的那个程序自己**（`current_exe()`，链接），
+   责任一起搬走了：放进 `<home>/bin` 的是**起服务端的那个命令层程序**和它拉起来的服务端（两条链接），
    服务端只把那个目录排到 `PATH` 首位。理由与两个坑（原生 `PATH` 被 Git Bash 改写、`cmd` 这个名字
    已经是 Windows 自己的 shell）见 `docs/notes/server-shell-command.md`，起服务端那一段见 §5。
 

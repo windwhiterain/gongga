@@ -3,10 +3,10 @@
 ## Crate Structure
 all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, live inside directory "crates/xxx". 
 - protocol
-- server: library.
+- server: binary (the backend program; also a library for its own tests).
 - cli: binary.
   - cmd fully documented and diagnosed, transparent server cmd wrapper, do not know server cmd.
-  - embedded server, can spawn server
+  - does not carry the server: `serve` starts the server program.
 - tui: binary, transparent cli wrapper, auto spawn a server and connected to it.
   - `--client_only`: suppress auto spawn server.
 - ...: more crates may be added, with the same naming and layout.

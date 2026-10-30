@@ -2,16 +2,12 @@
 
 ## serve
 
-SPEC: `server` is a library and `cli` is the binary that carries it. So "start a
-server" is not a program anybody installs -- it is one of this binary's own
-client commands, run in a mode where it leaves nothing of the client behind:
+SPEC: `server` and `cli` are two programs. So "start a server" is one of this
+binary's own client commands, run in a console the server takes over:
 
 ```sh
 gongga --home ~/.gongga serve --port 9700
 ```
-
-That is what makes the rest of this module possible: a server to spawn is always
-the program you are already running.
 
 It is a *client* command and not a hidden flag, because the command layer is where
 "what this program can be told to do" already lives: `serve` shows up in the
@@ -20,8 +16,21 @@ before a tokio runtime exists (`cli::main`), because the server builds the runti
 it wants to be stopped in, and a nested one would panic.
 
 Before the server exists -- and therefore before any shell it will start -- it
-puts the command those shells type in place (`install_command`, below): the one
-moment when both the home and the program are known for certain.
+puts *both* programs in the home's `bin` (`install_commands`, below): the one
+moment when the home, this command layer and the server it is about to run are all
+known for certain.
+
+`--port` is required and the address is localhost: a server that listened on every
+interface would need the operator to think about keys and firewalls, which is a
+decision for the config file, not for a one-keystroke start.
+
+## take_over
+
+`serve` is one command, one console and one exit code. On Unix this process is
+replaced (`exec`), so the pid, the signals and the code are the server's from the
+start. Windows has no `exec`: the child inherits all three stdio handles, this
+process only waits, and the server's exit code becomes this one's -- a script that
+ran `serve` has to be able to tell why the server stopped.
 
 `--port` is required and the address is localhost: a server that listened on
 every interface would need the operator to think about keys and firewalls, which
@@ -47,9 +56,10 @@ there" is a question only the wire can answer.
 **A refusal counts as an answer.** A server that says no is there, and starting a
 second one on the same home would be exactly the split this design refuses.
 
-It installs nothing itself: the command a shell types is the *server's* to place,
-because the server is what those shells exist for. A window that starts one, or
-finds one already answering, leaves the home's `bin` alone either way.
+It installs nothing itself: the pair in `<home>/bin` is placed by whoever starts
+the server (`install_commands`), because that is the one place that knows both
+programs and the home. A window that starts one, or finds one already answering,
+leaves the home's `bin` alone either way.
 
 It does not wait for the server to come up. The window is already retrying with a
 backoff, and a second waiter would only duplicate that loop with a worse error
@@ -76,38 +86,57 @@ this function exists to detect.
 
 ## start
 
-Spawns `this program serve --port <p>`, with `--home` named explicitly rather than
-left to the config it would read anyway: the child has to serve the home whose
-command the caller just placed.
+Spawns `gongga-server --home <home> --bind <addr>`, with `--home` named explicitly
+rather than left to the config it would read anyway: the child has to serve the
+home whose command the caller just placed.
 
 Its own process group, its own hidden console, and its output appended to
 `<home>/server.log` -- all three follow from the same fact: the process that
 starts the server is usually gone in milliseconds, so nothing about the server's
 life may depend on its starter's terminal.
 
-## install_command
+## server_program
 
-The command an agent's shell and its scripts both run, put there by the **server**
-as it comes up, from `current_exe()`: the program that started the server is what
-the server's children get. Nothing is searched for.
+Where the program that carries the server is, and there are exactly three answers:
 
-That is the whole rule, and it is a rule about *this machine*: a home can be served
-by a build in `target/debug`, by a staged copy under another name, or by an
-installed `gongga`, and whichever one is running is the one its children must
-drive. A search (`PATH`, a sibling, a `bin` that already holds something) would
-hand them a *different* program than the server they are talking to -- possibly a
-different version, possibly a stale one -- and nothing would say so.
+1. `GONGGA_SERVER_BIN`, when something named one -- a test, a launcher, an
+   operator holding two builds;
+2. the sibling of this program: a build tree and an install both keep the pair
+   together, so the `gongga-server` beside `gongga` is the same build;
+3. `<home>/bin/gongga-server`, the copy an earlier start of this home installed.
+
+Never a `PATH` search. A machine can hold several builds, and the one that answers
+`PATH` is not necessarily the one this command layer was built against -- that is
+the skew `this_build` exists to prevent, and a search would reintroduce it from the
+other side. If none of the three is there, the error names all three.
+
+## install_commands
+
+The two commands a home's shells and scripts see: `gongga` is *this* program,
+`gongga-server` is the one about to serve, and both are placed before the server
+exists -- the one moment when the home and both programs are known for certain.
+
+The server goes in first. A `gongga` refreshed without a `gongga-server` beside it
+would be a command whose server cannot be found, and the failure would show up one
+level down, in a `serve` nobody is watching.
+
+Both, or the pair drifts: an operator who updated `gongga` by hand would leave an
+old server behind it, and the shells of that home would drive a build the server is
+not.
 
 ## place
 
-`<home>/bin/gongga.exe` on Windows, `<home>/bin/gongga` elsewhere: the **server
-itself**, under the name a shell types. A link, not a wrapper script, and that is
-what makes one name enough:
+`<home>/bin/<name>.exe` on Windows, `<home>/bin/<name>` elsewhere, for each of the
+two programs. A link, not a wrapper script, and that is what makes one name
+enough:
 
 - bash resolves `gongga` to `gongga.exe` by itself,
 - a native process starting `gongga` finds the same file,
 - so `subprocess.run(["gongga", ...])` in a script needs no path, no variable and
   no knowledge of which platform it is on.
+
+`a_home_gets_both_programs_from_one_install` is the pair; `the_server_is_looked_for_in_three_named_places`
+is the lookup, including that a missing server reports every place it looked.
 
 The link is a hard link on Windows and a symlink elsewhere. A symlink follows the
 path through a rebuild by itself; a hard link cannot, so each start compares size
@@ -145,6 +174,9 @@ that there is only one copy of them.
 `a_current_command_is_left_in_place` -- and the home is not churn on every start.
 `a_link_that_fails_falls_back_to_a_copy` -- the other volume.
 `the_other_spelling_is_removed` -- one directory, one answer to the lookup.
+`a_home_gets_both_programs_from_one_install` -- the pair, in one step.
+`the_server_is_looked_for_in_three_named_places` -- named, sibling, home; and the
+error reports every place it looked.
 `a_home_with_no_key_is_not_answering` -- the key file is progress, not decoration.
 `the_key_a_home_carries_in_its_config_is_the_one_to_ask_with` -- the key a home
 keeps in `config.toml` is one `answers` can ask with.

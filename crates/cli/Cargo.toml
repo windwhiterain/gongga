@@ -10,6 +10,10 @@ description = "Gongga harness command layer: catalog, sticky arguments, wire cli
 # Deliberately no rendering crate: this is the layer. Its own program is the
 # `gongga` binary below -- argv in, the command's events out, no terminal in
 # sight. The terminal is `crates/tui`, which depends on this crate.
+#
+# It does not depend on the harness: `serve` starts `gongga-server`, which is a
+# program of its own. Depending on it was half a minute of link time for a
+# command that only ever forwarded its argv.
 [[bin]]
 name = "gongga"
 path = "src/bin/gongga.rs"
@@ -19,10 +23,6 @@ test = false
 
 [dependencies]
 protocol = { workspace = true }
-# The server is a library and this crate is the binary that runs it. Named
-# `harness` here because `cli::server` is the module that starts it.
-harness = { path = "../server", package = "gongga-server" }
-
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

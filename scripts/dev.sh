@@ -72,17 +72,17 @@ case "${1:-help}" in
     cargo build --workspace
     ;;
   server)
-    # The server is a mode of the CLI: `gongga serve --port <p>`. Global flags
-    # (`--home`) would have to come before `serve`, so they are an environment
-    # variable here: `GONGGA_HOME=... dev.sh server --port 9700`.
-    cargo build -p gongga-cli || die "build failed"
-    stage "$ROOT/target/debug/gongga.exe" server >/dev/null
+    # The server is its own program: `gongga-server --bind 127.0.0.1:<p>`. The
+    # home comes from the environment, so a second dev server on one machine is
+    # `GONGGA_HOME=... dev.sh server --bind 127.0.0.1:9701`.
+    cargo build -p gongga-server || die "build failed"
+    stage "$ROOT/target/debug/gongga-server.exe" server >/dev/null
     exe="$(ls -t "$RUN"/server-*.exe | head -1)"
     case " $* " in
-      *" --port "*) ;;
-      *) set -- "$@" --port 9700 ;;
+      *" --bind "*) ;;
+      *) set -- "$@" --bind 127.0.0.1:9700 ;;
     esac
-    start_bg server "$exe" serve "${@:2}"
+    start_bg server "$exe" "${@:2}"
     ;;
   client)
     # The window is the `gongga-tui` binary. The command line the agent types,

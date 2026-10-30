@@ -22,9 +22,14 @@ and a nested one would panic. Keeping that decision in this file would have mean
 two binaries each knowing which command needs a runtime.
 
 This program *is* the command layer, and it is also the name the layer is
-installed under -- the server links whichever program is running into
-`<home>/bin/gongga`, so this file and that link are the same layer
-(`tui-main.md` has the other half of that).
+installed under: whichever command layer started a server links itself into
+`<home>/bin/gongga`, beside the `gongga-server` it started, so this file and that
+link are the same layer (`tui-main.md` has the other half of that).
+
+It carries no server. It used to: `crates/server` was a library this binary
+included, which made every command -- and the window, and every test build --
+link SQLite, reqwest and the whole agent loop to send one datagram. `serve` now
+starts the program instead, and `gongga` is 6 MB rather than 23.
 
 ## A bare call lists what exists
 

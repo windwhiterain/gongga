@@ -1,4 +1,4 @@
-//! The server this binary carries: how it is started, and what it needs.
+//! The server this program starts: where it is, and how it is started.
 //!
 //! See `docs/notes/cli-server.md`.
 
@@ -11,20 +11,25 @@ use anyhow::Context;
 use crate::commands::parse_args;
 use crate::{Args, COMMAND, Endpoint, dial};
 
-/// The command that turns this process into a server.
+/// The command that starts a server.
 const SERVE: &str = "serve";
+
+/// The program that carries the server, and the variable that names one.
+const SERVER: &str = "gongga-server";
+const SERVER_BIN: &str = "GONGGA_SERVER_BIN";
 
 /// The log a started server writes, and the only place its refusal is explained.
 fn log_path(home: &Path) -> PathBuf {
     home.join("server.log")
 }
 
-/// Runs this process as a server, in the foreground.
+/// Runs a server in this process's place, in the foreground.
 ///
 /// # Invariant
 ///
-/// Nothing of the client is left running: this is the whole process, and it is
-/// what `serve` was asked for -- one port on localhost, this home, no link.
+/// Nothing of the client is left running: `serve` was asked for one port on
+/// localhost, this home, no link -- and the console that started it belongs to
+/// the server from here, exit code included.
 pub fn serve(args: &Args, tokens: &[String]) -> anyhow::Result<()> {
     let parsed = parse_args(tokens)?;
     let Some(port) = parsed.get("port") else {
@@ -33,14 +38,18 @@ pub fn serve(args: &Args, tokens: &[String]) -> anyhow::Result<()> {
     let port: u16 = port
         .parse()
         .with_context(|| format!("parsing --port {port:?}"))?;
-    // Before a shell can exist: the command it will type is this program.
-    install_command(&crate::home_of(args));
-    let start = harness::Args {
-        home: args.conn.home.clone(),
-        bind: Some(format!("127.0.0.1:{port}")),
-        ..Default::default()
-    };
-    harness::main(start)
+    let home = crate::home_of(args);
+    let server = server_program(&home)?;
+    // Before a shell can exist: the command it will type is this program, and the
+    // program that serves it sits beside it.
+    install_commands(&home, &server);
+    let mut cmd = Command::new(&server);
+    cmd.arg("--home")
+        .arg(&home)
+        .arg("--bind")
+        .arg(format!("127.0.0.1:{port}"))
+        .current_dir(&home);
+    take_over(cmd, &server)
 }
 
 /// Starts a server for `addr` when nothing answers there, and says whether it did.
@@ -89,7 +98,7 @@ async fn answers(home: &Path, addr: SocketAddr) -> bool {
 /// milliseconds, and a server that died with its caller would take the turn it
 /// just started down with it.
 fn start(home: &Path, addr: SocketAddr) -> anyhow::Result<()> {
-    let exe = std::env::current_exe().context("finding this program")?;
+    let server = server_program(home)?;
     std::fs::create_dir_all(home).with_context(|| format!("creating {}", home.display()))?;
     let log = log_path(home);
     let out = std::fs::OpenOptions::new()
@@ -98,19 +107,18 @@ fn start(home: &Path, addr: SocketAddr) -> anyhow::Result<()> {
         .open(&log)
         .with_context(|| format!("opening {}", log.display()))?;
     let err = out.try_clone().context("duplicating the log handle")?;
-    let mut cmd = Command::new(&exe);
+    let mut cmd = Command::new(&server);
     cmd.arg("--home")
         .arg(home)
-        .arg(SERVE)
-        .arg("--port")
-        .arg(addr.port().to_string())
+        .arg("--bind")
+        .arg(addr.to_string())
         .current_dir(home)
         .stdin(Stdio::null())
         .stdout(Stdio::from(out))
         .stderr(Stdio::from(err));
     detach(&mut cmd);
     cmd.spawn()
-        .with_context(|| format!("starting {} {SERVE}", exe.display()))?;
+        .with_context(|| format!("starting {}", server.display()))?;
     eprintln!(
         "started {SERVE} for {} (log {})",
         home.display(),
@@ -119,48 +127,96 @@ fn start(home: &Path, addr: SocketAddr) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The command an agent's shell and its scripts both run, put in this home by the
-/// server itself.
+/// Where the program that carries the server is.
 ///
 /// # Invariant
 ///
-/// It is *this* program -- whoever started the server -- under the name a shell
-/// types, and it is a link rather than a wrapper script: `bash` resolves
-/// `gongga` to `gongga.exe` by itself, and a native process starting `gongga`
-/// finds the same file, so one name works on both sides of the shell boundary.
-/// Never a search: a machine can hold several builds of these programs, and a
-/// home that pointed at whichever one answered `PATH` would hand its shells a
-/// different program than the server they are talking to.
-fn install_command(home: &Path) {
-    let Ok(program) = std::env::current_exe() else {
+/// Three named places, never a search: an explicit `GONGGA_SERVER_BIN`, the
+/// sibling of this program (a build tree and an install both hold the pair
+/// together), then the copy in this home's `bin`. A `PATH` lookup would start
+/// whichever build answered it, which is the skew the install exists to prevent.
+fn server_program(home: &Path) -> anyhow::Result<PathBuf> {
+    let named = std::env::var_os(SERVER_BIN).map(PathBuf::from);
+    find_server(
+        home,
+        named.as_deref(),
+        std::env::current_exe().ok().as_deref(),
+    )
+}
+
+/// The three places themselves, so a test does not have to be argv[0].
+fn find_server(home: &Path, named: Option<&Path>, me: Option<&Path>) -> anyhow::Result<PathBuf> {
+    let mut tried = Vec::new();
+    let candidates = named
+        .map(Path::to_path_buf)
+        .into_iter()
+        .chain(
+            me.and_then(Path::parent)
+                .map(|dir| dir.join(program_name(SERVER))),
+        )
+        .chain([home.join("bin").join(program_name(SERVER))]);
+    for candidate in candidates {
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+        tried.push(candidate);
+    }
+    anyhow::bail!(
+        "no `{SERVER}` to start: looked in {tried:?}. Build it (`cargo build -p gongga-server`), \
+         set {SERVER_BIN}, or start the server some other way"
+    )
+}
+
+/// The two files a home's `bin` holds, put there by whoever starts a server.
+///
+/// # Invariant
+///
+/// `gongga` is this program and `gongga-server` is the one about to serve, both
+/// from one build and refreshed together: a shell reaches the build the server
+/// runs, not a copy an operator keeps in step by hand.
+fn install_commands(home: &Path, server: &Path) {
+    let (Ok(me), Ok(server)) = (std::env::current_exe(), server.canonicalize()) else {
         eprintln!(
-            "warning: cannot find the program running now, so no `{COMMAND}` can be installed \
-             in {}; a shell this home starts would have no command to drive the server with",
+            "warning: cannot resolve the programs running now, so neither `{COMMAND}` nor \
+             `{SERVER}` can be installed in {}; a shell this home starts would have no command \
+             to drive the server with",
             home.display()
         );
         return;
     };
-    if let Err(e) = place(home, &program) {
-        eprintln!(
-            "warning: cannot install `{COMMAND}` in {}: {e}",
-            home.display()
-        );
+    install_pair(home, &me, &server);
+}
+
+/// The pair landing in `<home>/bin`, with both paths already resolved.
+///
+/// # Invariant
+///
+/// The server goes in first: a `gongga` refreshed without one beside it is a
+/// command whose server cannot be found.
+fn install_pair(home: &Path, cli: &Path, server: &Path) {
+    for (name, program) in [(SERVER, server), (COMMAND, cli)] {
+        if let Err(e) = place(home, name, program) {
+            eprintln!(
+                "warning: cannot install `{name}` in {}: {e}",
+                home.display()
+            );
+        }
     }
 }
 
-/// Puts `program` at `<home>/bin/gongga`, refreshed when it is not this build.
+/// Puts `program` at `<home>/bin/<name>`, refreshed when it is not this build.
 ///
 /// See `docs/notes/cli-server.md`.
-fn place(home: &Path, program: &Path) -> std::io::Result<PathBuf> {
+fn place(home: &Path, name: &str, program: &Path) -> std::io::Result<PathBuf> {
     let bin = home.join("bin");
     std::fs::create_dir_all(&bin)?;
-    let target = bin.join(command_name());
+    let target = bin.join(program_name(name));
     if this_build(&target, program) {
         return Ok(target);
     }
-    // Beside it, then renamed: the command may be running right now, and a
-    // half-written executable is worse than yesterday's.
-    let temp = bin.join(format!(".{}.{}", command_name(), std::process::id()));
+    // Beside it, then renamed: the command may be running now, and half an
+    // executable is worse than yesterday's.
+    let temp = bin.join(format!(".{}.{}", program_name(name), std::process::id()));
     let _ = std::fs::remove_file(&temp);
     link_or_copy(program, &temp)?;
     let placed = std::fs::rename(&temp, &target);
@@ -168,7 +224,7 @@ fn place(home: &Path, program: &Path) -> std::io::Result<PathBuf> {
         Ok(()) => {
             // One directory holds one answer to the lookup `PATH` does: the other
             // spelling is what an older install left behind.
-            if let Some(other) = other_name() {
+            if let Some(other) = other_name(name) {
                 let _ = std::fs::remove_file(bin.join(other));
             }
             Ok(target)
@@ -183,8 +239,8 @@ fn place(home: &Path, program: &Path) -> std::io::Result<PathBuf> {
 }
 
 /// The spelling this platform does not use, if the other one is possible at all.
-fn other_name() -> Option<&'static str> {
-    (command_name() != COMMAND).then_some(COMMAND)
+fn other_name(name: &str) -> Option<String> {
+    (program_name(name) != name).then(|| name.to_string())
 }
 
 /// Whether `target` is already the program running now.
@@ -198,15 +254,19 @@ fn this_build(target: &Path, program: &Path) -> bool {
         return false;
     };
     here.len() == there.len()
-        && here.modified().ok().zip(there.modified().ok()).is_some_and(|(a, b)| a == b)
+        && here
+            .modified()
+            .ok()
+            .zip(there.modified().ok())
+            .is_some_and(|(a, b)| a == b)
 }
 
-/// The command's file name on this platform.
-fn command_name() -> &'static str {
+/// One program's file name on this platform.
+fn program_name(name: &str) -> String {
     if cfg!(windows) {
-        "gongga.exe"
+        format!("{name}.exe")
     } else {
-        COMMAND
+        name.to_string()
     }
 }
 
@@ -233,6 +293,37 @@ fn link(program: &Path, target: &Path) -> std::io::Result<()> {
 #[cfg(unix)]
 fn link(program: &Path, target: &Path) -> std::io::Result<()> {
     std::os::unix::fs::symlink(program, target)
+}
+
+/// Gives this process's console to `server`, and reports how it ended.
+///
+/// # Invariant
+///
+/// `serve` is one command, one console and one exit code: where the platform can
+/// replace this process image it does (`exec`), and where it cannot (Windows) the
+/// child inherits all three stdio handles and this process only waits. Either way
+/// nothing of the client runs alongside the server.
+fn take_over(cmd: Command, server: &Path) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let error = cmd.exec();
+        Err(error).with_context(|| format!("running {}", server.display()))
+    }
+    #[cfg(not(unix))]
+    {
+        let mut cmd = cmd;
+        let status = cmd
+            .status()
+            .with_context(|| format!("running {}", server.display()))?;
+        if status.success() {
+            Ok(())
+        } else {
+            // The code matters to a script that started `serve`: it is the
+            // server's verdict, not this program's opinion of it.
+            std::process::exit(status.code().unwrap_or(1));
+        }
+    }
 }
 
 /// Puts the child outside this process's console and group.
@@ -285,8 +376,8 @@ mod tests {
         std::fs::create_dir_all(&bin).unwrap();
         let program = bin.join("program");
         std::fs::write(&program, b"the program").unwrap();
-        let placed = place(&home, &program).unwrap();
-        assert_eq!(placed, bin.join(command_name()));
+        let placed = place(&home, COMMAND, &program).unwrap();
+        assert_eq!(placed, bin.join(program_name(COMMAND)));
         assert_eq!(std::fs::read(&placed).unwrap(), b"the program");
         // The same bytes, once: a link is the point.
         assert_eq!(
@@ -307,8 +398,8 @@ mod tests {
         std::fs::write(&program, b"this build").unwrap();
         // A different build is a different size; the timestamp alone is a weaker
         // signal than the bytes.
-        std::fs::write(bin.join(command_name()), b"last week's build").unwrap();
-        let placed = place(&home, &program).unwrap();
+        std::fs::write(bin.join(program_name(COMMAND)), b"last week's build").unwrap();
+        let placed = place(&home, COMMAND, &program).unwrap();
         assert_eq!(std::fs::read(&placed).unwrap(), b"this build");
     }
 
@@ -322,11 +413,14 @@ mod tests {
         std::fs::create_dir_all(&bin).unwrap();
         let program = bin.join("program");
         std::fs::write(&program, b"this build").unwrap();
-        let placed = place(&home, &program).unwrap();
+        let placed = place(&home, COMMAND, &program).unwrap();
         let before = std::fs::metadata(&placed).unwrap().modified().unwrap();
         std::thread::sleep(std::time::Duration::from_millis(20));
-        place(&home, &program).unwrap();
-        assert_eq!(std::fs::metadata(&placed).unwrap().modified().unwrap(), before);
+        place(&home, COMMAND, &program).unwrap();
+        assert_eq!(
+            std::fs::metadata(&placed).unwrap().modified().unwrap(),
+            before
+        );
     }
 
     /// The other spelling is what an older install left there, and it is what a
@@ -341,8 +435,72 @@ mod tests {
         let program = bin.join("program");
         std::fs::write(&program, b"the program").unwrap();
         std::fs::write(bin.join(COMMAND), "#!/bin/sh\n").unwrap();
-        place(&home, &program).unwrap();
-        assert!(!bin.join(COMMAND).exists(), "the old script would win the lookup");
+        place(&home, COMMAND, &program).unwrap();
+        assert!(
+            !bin.join(COMMAND).exists(),
+            "the old script would win the lookup"
+        );
+    }
+
+    /// The two files a home ships are one build: `gongga` starts `gongga-server`,
+    /// so both arrive together or a shell has a command with no server.
+    #[test]
+    fn a_home_gets_both_programs_from_one_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let build = dir.path().join("build");
+        std::fs::create_dir_all(&build).unwrap();
+        let cli = build.join(program_name(COMMAND));
+        let server = build.join(program_name(SERVER));
+        std::fs::write(&cli, b"the command").unwrap();
+        std::fs::write(&server, b"the server").unwrap();
+
+        install_pair(&home, &cli, &server);
+
+        let bin = home.join("bin");
+        assert_eq!(
+            std::fs::read(bin.join(program_name(COMMAND))).unwrap(),
+            b"the command"
+        );
+        assert_eq!(
+            std::fs::read(bin.join(program_name(SERVER))).unwrap(),
+            b"the server"
+        );
+    }
+
+    /// The server is found where it is named, beside this program, or in the
+    /// home -- three answers, never a `PATH` search.
+    #[test]
+    fn the_server_is_looked_for_in_three_named_places() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let build = dir.path().join("build");
+        let bin = home.join("bin");
+        for made in [&build, &bin] {
+            std::fs::create_dir_all(made).unwrap();
+        }
+        let me = build.join(program_name(COMMAND));
+        let named = dir.path().join("named");
+        let missing = find_server(&home, Some(&named), Some(&me)).expect_err("nothing is there");
+        let message = format!("{missing}");
+        assert!(message.contains(SERVER), "{message}");
+        assert!(
+            message.contains("named"),
+            "every place is reported: {message}"
+        );
+
+        // Beside this program is the build it came from, before any install.
+        let sibling = build.join(program_name(SERVER));
+        std::fs::write(&sibling, b"beside").unwrap();
+        assert_eq!(find_server(&home, None, Some(&me)).unwrap(), sibling);
+        // And nothing beside it falls back to the home's own copy.
+        std::fs::remove_file(&sibling).unwrap();
+        let installed = bin.join(program_name(SERVER));
+        std::fs::write(&installed, b"installed").unwrap();
+        assert_eq!(find_server(&home, None, Some(&me)).unwrap(), installed);
+        // An explicit name wins over both.
+        std::fs::write(&named, b"named").unwrap();
+        assert_eq!(find_server(&home, Some(&named), Some(&me)).unwrap(), named);
     }
 
     /// Where a link cannot be made -- another volume -- a copy keeps the name

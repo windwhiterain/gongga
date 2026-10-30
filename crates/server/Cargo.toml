@@ -7,6 +7,15 @@ license.workspace = true
 authors.workspace = true
 description = "Gongga harness server library: sessions, agent loop, tools, sqlite storage"
 
+# The backend is a program: the command a home's shells talk to, and the thing
+# `evolve` replaces. Nothing carries it -- `gongga` starts it.
+[[bin]]
+name = "gongga-server"
+path = "src/main.rs"
+# Its own tests are the library's; a second harness would link this stack again
+# to run none.
+test = false
+
 [dependencies]
 protocol = { workspace = true }
 

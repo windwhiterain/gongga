@@ -36,6 +36,7 @@ note is a bug.
 | note | source |
 | --- | --- |
 | [`server-lib.md`](server-lib.md) | `crates/server/src/lib.rs` |
+| [`server-main.md`](server-main.md) | `crates/server/src/main.rs` |
 | [`server-agent.md`](server-agent.md) | `crates/server/src/agent.rs` |
 | [`server-agents.md`](server-agents.md) | `crates/server/src/agents.rs` |
 | [`server-blobs.md`](server-blobs.md) | `crates/server/src/blobs.rs` |

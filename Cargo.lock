@@ -749,7 +749,6 @@ dependencies = [
  "clap",
  "dirs",
  "gongga-protocol",
- "gongga-server",
  "serde",
  "serde_json",
  "shell-words",

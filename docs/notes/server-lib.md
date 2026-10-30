@@ -3,7 +3,7 @@
 ## Args::db
 
 The whole of what a server can be told. `Default` is the empty command line, and
-that is what `gongga serve` starts from: it names a home and a port, and every
+that is what `gongga serve` passes on: it names a home and a port, and every
 other value comes from that home's config.
 
 SQLite database path. Overrides `[server] db`.
@@ -20,21 +20,22 @@ instance lock all live under it. Overrides `[server] home`, which overrides
 
 ## run (the command an agent types)
 
-The server does not look for the CLI: SPEC makes this crate a library, and the
-binary that carries it is the program a person started, in its `serve` mode
-(`cli::server`). So the command its children get is not looked up either -- it is
-`current_exe()`, this program.
+The server does not look for the CLI, and does not need to: `current_exe()` is
+`gongga-server`, which is not what a shell should type. What its children get is
+`<home>/bin/gongga`, placed there by the command layer that started this server
+(`cli-server.md`) -- the command layer is a program of its own now, so the
+directory is the only thing the two have in common.
 
 One name, two `PATH` shapes. `<home>/bin` goes first in both: a shell reads a
 POSIX `PATH` and types `gongga`; a script's interpreter reads the native one and
-starts `gongga` -- which is the program itself, linked into that directory
-(`cli-server.md`). Neither needs a second variable, and neither can end up driving
-a different build than the server they are talking to.
+starts `gongga` -- which is the command layer, linked into that directory. Neither
+needs a second variable, and neither can end up driving a different build than the
+server they are talking to.
 
 ## main
 
-The entry point, now a function rather than a process: `gongga serve` calls it
-with an `Args`, and it owns the runtime for the life of the server.
+The entry point as a function: `gongga-server`'s `main.rs` parses its flags into an
+`Args` and calls this, and it owns the runtime for the life of the server.
 
 The runtime is built here rather than by `#[tokio::main]` so that the drop
 happens at a point where `run` has already closed every shell. The drop still
