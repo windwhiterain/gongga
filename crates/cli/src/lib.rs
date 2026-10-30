@@ -10,7 +10,7 @@ pub mod server;
 pub use crate::catalog::Catalog;
 pub use crate::commands::{BlockSize, Split, Sticky};
 pub use crate::complete::{Candidate, Completer, Completion, SharedCompleter, token_bounds};
-pub use crate::server::{ensure, prepare, starts_here};
+pub use crate::server::{ensure, starts_here};
 
 use std::collections::HashMap;
 
@@ -120,6 +120,19 @@ pub fn parse_argv(name: &'static str, about: &'static str) -> Args {
         .version(env!("CARGO_PKG_VERSION"))
         .get_matches();
     Args::from_arg_matches(&matches).expect("clap already rejected what it could not parse")
+}
+
+/// The subcommand a program that *carries* the command layer answers to for it.
+///
+/// `gongga-tui cli get_messages ...` is `gongga get_messages ...`: one program
+/// was installed, and this is the word that says which half of it is meant. A
+/// program that *is* the command layer has no such word to add -- see
+/// `docs/notes/tui-main.md`.
+pub const CLI: &str = "cli";
+
+/// The home this process works on: `--home`, then `GONGGA_HOME`, then `~/.gongga`.
+pub fn home_of(args: &Args) -> std::path::PathBuf {
+    home_dir(args.conn.home.as_deref())
 }
 
 // Where rendered output goes
@@ -1116,15 +1129,18 @@ impl Link {
 
 /// Runs one command line, with the runtime each command needs.
 ///
+/// `forward` is the subcommand a shell has to type to reach the command layer
+/// through this program -- `Some(CLI)` from the window, `None` from `gongga`
+/// itself. It only decides what the server installs for its own shells.
+///
 /// # Invariant
 ///
 /// `serve` is decided before a runtime exists: it leaves nothing of the client
 /// behind, and the server builds the runtime it wants to be stopped in.
-pub fn main(args: Args) -> anyhow::Result<()> {
-    crate::server::prepare(&args);
+pub fn main(args: Args, forward: Option<&'static str>) -> anyhow::Result<()> {
     if let Some(Sub::Cmd(tokens)) = &args.command {
         if tokens.first().map(String::as_str) == Some("serve") {
-            return crate::server::serve(&args, &tokens[1..]);
+            return crate::server::serve(&args, &tokens[1..], forward);
         }
     }
     let runtime = tokio::runtime::Builder::new_multi_thread()

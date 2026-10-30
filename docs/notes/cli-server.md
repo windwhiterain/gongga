@@ -19,6 +19,10 @@ catalog, completes, and documents itself like every other command. It is decided
 before a tokio runtime exists (`cli::main`), because the server builds the runtime
 it wants to be stopped in, and a nested one would panic.
 
+Before the server exists -- and therefore before any shell it will start -- it
+writes the command those shells type (`install_command`, below): the one moment
+when both the home and the program are known for certain.
+
 `--port` is required and the address is localhost: a server that listened on
 every interface would need the operator to think about keys and firewalls, which
 is a decision for the config file, not for a one-keystroke start.
@@ -42,6 +46,10 @@ there" is a question only the wire can answer.
 
 **A refusal counts as an answer.** A server that says no is there, and starting a
 second one on the same home would be exactly the split this design refuses.
+
+It installs nothing itself: the command a shell types is the *server's* to write,
+because the server is what those shells exist for. A window that starts one, or
+finds one already answering, leaves the home's `bin` alone either way.
 
 It does not wait for the server to come up. The window is already retrying with a
 backoff, and a second waiter would only duplicate that loop with a worse error
@@ -79,62 +87,34 @@ life may depend on its starter's terminal.
 
 ## install_command
 
-The command an agent's shell types, written by the CLI on every run, because the
-CLI is the program that knows where it is. The server only puts `<home>/bin` first
-on `PATH` (`server/shell_command.rs`), so the two agree on the home and on nothing
-else.
+The command an agent's shell types, written by the **server** as it comes up, and
+written from `current_exe()`: the program that started the server is what the
+server's shells get. Nothing is searched for.
 
-Which of the two shapes it takes is decided by what `cli_binary` found, and the
-distinction is the whole of "a user may have only one program":
-
-- the program is already *named* `gongga` -- a script that execs it by absolute
-  path (`write_shim`);
-- the program only *carries* the command layer -- the same file installed under
-  the command's name (`write_named`).
-
-The second case exists because SPEC's window is a transparent wrapper: it contains
-the command layer, so on a machine where only the window was installed it is the
-only thing that can be a `gongga`. It answers to that name by argv[0]
-(`tui-main.md`), which is why installing it under the name is enough -- there is
-no flag, no environment variable, and no second program to copy.
+That is the whole rule, and it is a rule about *this machine*: a home can be served
+by a build in `target/debug`, by a staged copy under another name, or by an
+installed `gongga`, and whichever one is running is the one whose shells must
+drive it. A search (`PATH`, a sibling, a `bin` that already holds something) would
+hand those shells a *different* program than the server they are talking to --
+possibly a different version, possibly a stale one -- and nothing would say so.
 
 ## write_shim
+
+```
+#!/bin/sh
+exec "<program>"[ cli] "$@"
+```
 
 Written next to its target and renamed into place. An agent's shell may be reading
 the old script at the moment a new `gongga` starts, and a partly written
 `#!/bin/sh` is a syntax error in a file that worked a second ago.
 
-It points at the command layer, never at whatever program is running: `gongga-tui`
-also carries this crate, and an agent that typed `gongga` must not be handed a
-window it cannot see.
-
-## write_named, current, link_or_copy
-
-The file itself, under the command's name: a hard link where the platform has one
-(no privilege, no second copy of 25 MB), a symlink on unix first (that one also
-follows a rebuild by itself), a copy only when the two live on different volumes.
-
-A link needs refreshing, and that is what `current` is for: a build *replaces* the
-program file rather than writing through it, so a link made before a rebuild still
-names the old bytes. Length and modification time are compared, and a link that
-does not match is replaced -- otherwise a shell would keep running last week's
-command layer without a word.
-
-Only one shape may exist in `bin`: `gongga` (the script) and `gongga.exe` are two
-answers to one lookup, and which one wins would be decided by the shell's path
-resolution. Each writer removes the other's file.
-
-## cli_binary
-
-This process, then its sibling, then `../target/debug` (where `dev.sh` stages a
-copy from), then `PATH`, then this process anyway. The staged case is why the
-fallback chain exists at all: `.dev/server-<stamp>.exe` is a copy of `gongga.exe`
-under another name, so "the binary next to me" is not the binary an agent should
-run.
-
-The last resort is the point of `write_named`: whatever is running is the only
-command layer there is, and it can be started under the command's name. It sits
-after `PATH` so an installed `gongga` still wins over an unnamed copy.
+The optional `cli` is the one word that separates the two programs this binary can
+be. `gongga` *is* the command layer, so its script passes arguments straight
+through; a window only *carries* the layer, so its script says which half of the
+program a shell means. `serve` is told which of the two it is by whoever called it
+(`cli::main`'s `forward`), never by looking at its own name: the same file can be
+renamed, and a rename must not change what a shell in this home runs.
 
 ## detach
 
@@ -146,23 +126,15 @@ session runs. `DETACHED_PROCESS` was tried first and the screen filled with
 flashing windows. `CREATE_NO_WINDOW` gives the server a console that exists and is
 never shown, and every child inherits that one instead.
 
-## prepare
-
-The home this process works on, with the command installed in it. One call so that
-the window, the one-shot command and the server mode all agree on where state
-lives before anything else reads it.
-
 ## tests
 
 `only_a_local_address_is_started_here` -- the policy above, both families.
-`the_shim_execs_the_command_layer_by_its_absolute_path` -- the script's content,
-its line ending, and that rewriting it is safe.
-`a_program_with_another_name_is_installed_under_the_command_s` -- the second
-shape, and that installing it twice is a no-op.
-`a_rebuilt_program_replaces_the_link_that_named_the_old_one` -- the stale link a
-build leaves behind, and that it is noticed.
-`another_program_is_not_the_command_layer` -- `gongga` in either spelling, and
-not the window's name.
+`the_shim_execs_the_server_s_own_program_by_its_absolute_path` -- the script's
+content, its line ending, and that rewriting it is safe.
+`the_shim_names_the_subcommand_that_reaches_the_command_layer` -- the word a
+window's shell needs, and where it goes.
+`the_command_installed_is_this_program` -- installed from `current_exe`, not from
+a search.
 `a_home_with_no_key_is_not_answering` -- the key file is progress, not decoration.
 `the_key_a_home_carries_in_its_config_is_the_one_to_ask_with` -- the key a home
 keeps in `config.toml` is one `answers` can ask with.

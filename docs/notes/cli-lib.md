@@ -429,10 +429,22 @@ the server drop this connection now instead of waiting out its idle timeout.
 
 ## main
 
-The one entry point both binaries use for a command line: it installs the command
-an agent's shell types, sends `serve` to the server mode before any runtime
-exists, and builds the runtime for everything else. Returning the runtime from a
-function rather than from `#[tokio::main]` is what lets `serve` own its own.
+The one entry point both binaries use for a command line: it sends `serve` to the
+server mode before any runtime exists, and builds the runtime for everything else.
+Returning the runtime from a function rather than from `#[tokio::main]` is what
+lets `serve` own its own.
+
+`forward` is the subcommand a shell adds to reach the layer through the program
+that is running: `None` from `gongga`, `Some(CLI)` from the window. It travels
+with the command line because the server writes the command its shells will type
+from it (`cli::server::write_shim`), and the only program that knows which half a
+`serve` was started from is the one that dispatched it.
+
+## CLI, home_of
+
+`CLI` is the word itself, so the window and the shim the server writes cannot spell
+it differently. `home_of` is `--home`, then `GONGGA_HOME`, then `~/.gongga`: the
+home a front-end needs for the server it may start, and nothing else.
 
 ## run
 

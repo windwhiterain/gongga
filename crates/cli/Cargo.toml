@@ -31,9 +31,6 @@ toml = "0.8"
 # Completion splits the line being typed (`catalog.rs`), which is the input
 # line's business -- a command that already arrived as argv is never re-split.
 shell-words = "1"
-# The server is started by name when nothing answers (`server.rs`), so the name
-# is looked up the way a shell would.
-which = "8"
 
 [dev-dependencies]
 tempfile = "3"

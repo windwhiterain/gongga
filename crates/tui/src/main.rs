@@ -1,76 +1,105 @@
 //! `gongga-tui`: the window you actually run; the composition root, nothing else.
 //! See `docs/notes/tui-main.md`.
 
-/// The name this program answers to when it is the command layer.
-const COMMAND: &str = "gongga";
-
 fn main() -> anyhow::Result<()> {
-    // One program, two names. This crate carries the command layer (SPEC: the
-    // window is a transparent wrapper), so `gongga` is one of the two things
-    // this binary is -- and a user who has only this file still needs a
-    // `gongga` for a shell to drive the server with.
-    //
-    // The name decides, not a flag: a shell that typed `gongga` must never be
-    // handed a screen it cannot see, and someone who starts the window must not
-    // have to type a command first.
-    let command = named(COMMAND);
-    let args = if command {
-        cli::parse_argv(
-            COMMAND,
-            "Gongga harness commands: one command in, its events out",
-        )
-    } else {
-        cli::parse_argv("gongga-tui", "Gongga harness terminal client")
-    };
+    let mut args = cli::parse_argv("gongga-tui", "Gongga harness terminal client");
+    // `cli` is this program's own name for the layer it carries: a shell that was
+    // started by a window has one program to type, so it says which half it means.
+    let layer = took_layer(&mut args);
     args.check_flag_order()?;
-    // A command line is the command layer's business, `serve` included: only
-    // the bare invocation of the *window's* name opens the window.
-    if command || args.command.is_some() {
-        return cli::main(args);
+    // A command line is the command layer's business, `serve` included: only the
+    // bare invocation opens the window.
+    if layer || args.command.is_some() {
+        return cli::main(args, Some(cli::CLI));
     }
     gongga_tui::main(args)
 }
 
-/// Whether this process was started as `name`, which is `gongga` or `gongga.exe`.
-fn named(name: &str) -> bool {
-    let Some(argv0) = std::env::args_os().next() else {
-        return false;
-    };
-    is_named(std::path::Path::new(&argv0), name)
-}
-
-/// Whether `argv0` names `name`.
+/// Takes the leading `cli` off a command line, and says whether it was there.
 ///
 /// # Invariant
 ///
-/// The name is read from argv[0], not from where the file is: the same file
-/// installed twice under two names is two programs, and a copy loses nothing.
-fn is_named(argv0: &std::path::Path, name: &str) -> bool {
-    argv0
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .is_some_and(|stem| stem.eq_ignore_ascii_case(name))
+/// `gongga-tui cli` with nothing after it is the catalog, exactly like `gongga`
+/// with nothing at all: the word is removed with the command left empty, not with
+/// a command named `cli` -- and not with the window, which is what an empty
+/// command line means everywhere else.
+fn took_layer(args: &mut cli::Args) -> bool {
+    let Some(cli::Sub::Cmd(tokens)) = &mut args.command else {
+        return false;
+    };
+    if tokens.first().map(String::as_str) != Some(cli::CLI) {
+        return false;
+    }
+    tokens.remove(0);
+    if tokens.is_empty() {
+        args.command = None;
+    }
+    true
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Both platforms' spellings of one name, and the other name that must not
-    /// be mistaken for it.
+    /// A command line as this crate receives it after clap.
+    fn args(words: &[&str]) -> cli::Args {
+        cli::Args {
+            conn: cli::Connection {
+                server: None,
+                home: None,
+                key: None,
+            },
+            client_only: false,
+            command: (!words.is_empty()).then(|| {
+                cli::Sub::Cmd(words.iter().map(|word| word.to_string()).collect())
+            }),
+        }
+    }
+
+    fn command(args: &cli::Args) -> Option<Vec<String>> {
+        match &args.command {
+            Some(cli::Sub::Cmd(tokens)) => Some(tokens.clone()),
+            None => None,
+        }
+    }
+
+    /// The word is a way of naming a half of this program, so what is left is the
+    /// command it was hiding.
     #[test]
-    fn the_window_answers_only_to_the_window_s_name() {
-        for argv0 in [
-            r"C:\Users\a\.gongga\bin\gongga",
-            r"C:\Users\a\.gongga\bin\gongga.EXE",
-            "/home/a/.gongga/bin/gongga",
-            "gongga",
-        ] {
-            assert!(is_named(std::path::Path::new(argv0), "gongga"), "{argv0}");
+    fn the_layer_s_word_is_taken_off_and_the_command_stays() {
+        let mut args = args(&["cli", "get_messages", "--session", "main"]);
+        assert!(took_layer(&mut args));
+        assert_eq!(
+            command(&args),
+            Some(vec![
+                "get_messages".to_string(),
+                "--session".to_string(),
+                "main".to_string()
+            ])
+        );
+    }
+
+    /// Alone, it means the catalog -- not a command called `cli`, and not the
+    /// window, which is what an empty command line means.
+    #[test]
+    fn the_layer_s_word_alone_leaves_a_command_line_with_no_command() {
+        let mut args = args(&["cli"]);
+        assert!(took_layer(&mut args));
+        assert_eq!(command(&args), None);
+    }
+
+    /// A command line that never said it is passed on untouched: `gongga-tui
+    /// serve` and `gongga-tui get_messages` are still the layer's business.
+    #[test]
+    fn a_command_line_without_the_word_is_left_alone() {
+        for words in [&["get_messages", "--session", "main"], &["serve", "--port", "9700"]] {
+            let mut args = args(words);
+            let before = command(&args);
+            assert!(!took_layer(&mut args), "{words:?}");
+            assert_eq!(command(&args), before, "{words:?}");
         }
-        // The stem is compared whole: not this name, and not nearly it.
-        for argv0 in ["gongga-tui.exe", "gongga-server.exe", "", "gongga-tui"] {
-            assert!(!is_named(std::path::Path::new(argv0), "gongga"), "{argv0}");
-        }
+        // Not even a command that merely starts with it.
+        let mut args = self::args(&["cli-other"]);
+        assert!(!took_layer(&mut args));
     }
 }

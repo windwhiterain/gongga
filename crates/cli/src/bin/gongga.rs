@@ -11,5 +11,5 @@ fn main() -> anyhow::Result<()> {
         "Gongga harness commands: one command in, its events out",
     );
     args.check_flag_order()?;
-    cli::main(args)
+    cli::main(args, None)
 }

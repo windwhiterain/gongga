@@ -21,6 +21,10 @@ before a runtime exists: the server builds the runtime it wants to be stopped in
 and a nested one would panic. Keeping that decision in this file would have meant
 two binaries each knowing which command needs a runtime.
 
+It is the one caller that passes `forward: None`: this program *is* the command
+layer, so a shell reaches it without a word in front (`tui-main.md` has the other
+half of that).
+
 ## A bare call lists what exists
 
 With no command, `gongga` prints the catalog the server sent in its greeting --

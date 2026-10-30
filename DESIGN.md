@@ -44,12 +44,14 @@ ratatui 与 crossterm 拖进了**每一个**只想发一条命令的调用：脚
 那个东西。
 
 **它们也可以是同一个文件。** 用户手里可能只有 `gongga-tui.exe` 一个文件，而 agent 的 shell 仍然
-需要一个 `gongga` 可敲 —— 窗口内嵌命令层，所以它也能*当*命令层。身份由 argv[0] 决定：以 `gongga`
-启动（含 `.exe`，大小写不敏感）就是命令层，裸调用照 CLI 的样子列出服务端发布的目录；以别的名字
-启动（`gongga-tui`）裸调用才是窗口。没有隐藏开关，也不需要第二个程序被拷贝：`install_command`
-发现身边没有名为 `gongga` 的程序时，就把当前这个程序**按命令的名字**装进 `<home>/bin` ——
-硬链接，Unix 先试符号链接，跨卷才退化成拷贝。链接会因为 rebuild 而指向旧文件（构建是换文件，
-不是写旧文件），所以每次运行拿长度和 mtime 比一下，不一致就重连。
+需要一个 `gongga` 可敲 —— 窗口内嵌命令层，所以它也能把命令交给命令层，但要说清楚是交给哪一半：
+`gongga-tui cli <command> ...` 就是「这一行归命令层」，`gongga-tui` 单独一个才是窗口。这个 `cli`
+词在 clap 之前就被摘掉，所以它不进目录、服务端也不认识它；摘光了剩下空，就是裸 `gongga` 的
+「列出服务端发布的那份目录」。
+
+于是 shim 只有一种写法：`exec "<某个程序>"[ cli] "$@"`。用哪个程序、带不带那个词，由**起这个
+服务端的程序**决定 —— 服务端在起来之前把它自己（`current_exe()`）连同那个词写进 `<home>/bin/gongga`。
+不搜索、不复制、不改名：机器上可能同时有好几份这个程序的构建，谁在跑，谁的 shell 就驱动谁。
 
 **为什么 `tui` 连协议也不认识**：交互循环要收包发包，但它拿到的是 `Link::recv()` 给的字节和
 `Client::handle_bytes()` 的结果；问候语是一个不透明的 `Greeting`，应用它的是 `cli`。所以 `tui`
@@ -512,9 +514,9 @@ Shell **按 `session_name/bash_name` 建键**，所以一个会话持有的是�
   外面 `taskkill` 这一条路。`GONGGA_HOME` 与 `GONGGA_SERVER` 正好是 CLI 自己读的两个 fallback，
   `PATH` 首位是服务端刚写进 `<home>/bin` 的那个 `gongga`，所以按名字调用就行：
   `gongga cancel`、`gongga send_message --message hi --session $GONGGA_SESSION` 都不需要额外
-  参数。`$GONGGA_CLI` 是 `<home>/bin` 里那个命令的绝对路径（shim，或者程序本身），留给脚本和
-  launcher —— 它们不该依赖那条 `PATH`。服务端不再自己去找 CLI 二进制：写它是 CLI 每次运行顺手
-  做的事，服务端只负责把这个目录排到 `PATH` 首位，两边只需要对「home」有一个共识。
+  参数。`$GONGGA_CLI` 就是 `<home>/bin/gongga` 这个 shim 的绝对路径，留给脚本和 launcher ——
+  它们不该依赖那条 `PATH`。服务端不去找 CLI 二进制：shim 是它自己起来时按自己写的，它只负责把
+  这个目录排到 `PATH` 首位，两边只需要对「home」有一个共识。
   脚本的 env 也只有那几个 `GONGGA_*` 变量：POSIX 化的 `PATH` 是给 shell 读的，解释器要的是原生那一条。
 
 `bash{command, name, background, detached}` 的三种跑法：
@@ -1010,15 +1012,16 @@ Windows 给**每个**控制台子进程开一个新窗口 —— 而服务端启
 **不等它起来。** 窗口本来就在退避重连，再挂一个「等到 ready」的循环只是把同一个循环写两遍，错误
 还不如它。起服务端要负责的是「把它拉起来」，不是「盯着它」。
 
-`<home>/bin/gongga` 这个命令归 CLI 写（`cli::server::install_command`）：它知道自己在哪。服务端
-只把 `<home>/bin` 排到 `PATH` 首位（`server/shell_command.rs`），两边只需要对「home」有共识 ——
-服务端不再搜索 CLI 二进制。它认两种形态：身边有名为 `gongga` 的程序，就写 shim（`exec` 绝对路径）；
-一个都没有（用户只拿到 `gongga-tui` 一个文件），就把**当前这个程序**按命令的名字装进去。
-连自己在哪都问不出来时才不带 `GONGGA_CLI` 并 warn 一句，而不是指向一个不存在的东西。
+`<home>/bin/gongga` 这个命令由**服务端起，起来之前自己写**（`cli::server::install_command`）：
+它从 `current_exe()` 拿自己，加上调用者告诉它的那个词（`cli::main` 的 `forward`：窗口传 `cli`，
+`gongga` 传空），于是「谁起的这个服务端，它的 shell 就敲谁」。不搜索：同一台机器上可能有好几份
+构建，按 `PATH`、按兄弟目录、按 `bin` 里已有什么都可能挑到跟这个服务端不是同一份的那个，而且
+没人会说一声。服务端只把 `<home>/bin` 排到 `PATH` 首位（`server/shell_command.rs`），两边只需要
+对「home」有共识。`current_exe()` 都问不出来时才不带 `GONGGA_CLI` 并 warn 一句，而不是指向一个
+不存在的东西。
 
-落地的必须是**命令层**，不是当前跑着的那个程序：`gongga-tui` 也内嵌 `cli`，agent 敲 `gongga`
-不该拿到一个它看不见的窗口。所以第二种形态装的是同一份文件、另一个名字 —— 名字正是它区分身份
-的东西。shim 的写入走「先写旁边的临时文件、再 rename」，因为 agent 的 shell 随时可能在读那个
+`gongga-tui` 写出来的 shim 一定带 `cli` 这个词 —— 否则 agent 敲 `gongga` 就会拿到一个它看不见的
+窗口。写 shim 本身走「先写旁边的临时文件、再 rename」，因为 agent 的 shell 随时可能在读那个
 脚本 —— 半个 `#!/bin/sh` 是一个上一秒还好用的文件里的语法错误。
 
 ### TUI 的滚动缓冲：一帧只碰一屏

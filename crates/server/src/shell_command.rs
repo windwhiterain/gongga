@@ -12,23 +12,13 @@ pub fn command_path(home: &Path) -> PathBuf {
     home.join("bin").join(COMMAND)
 }
 
-/// The command a shell in this home will find, in whichever shape the CLI left it.
+/// The command a shell in this home will find, if the CLI has started here yet.
 ///
-/// # Invariant
-///
-/// Two shapes are possible -- a script named `gongga` that execs the command
-/// layer, or the command layer itself under this platform's program name (see
-/// `docs/notes/cli-server.md`) -- and `PATH` finds either. `None` means the CLI
-/// has not started here yet.
+/// The file is a script the program that served this home wrote, naming itself
+/// (`docs/notes/cli-server.md`): a name, not a search, is what a shell gets.
 pub fn command(home: &Path) -> Option<PathBuf> {
-    [command_path(home), home.join("bin").join(program_name())]
-        .into_iter()
-        .find(|path| path.is_file())
-}
-
-/// The command layer's own file name on this platform.
-fn program_name() -> &'static str {
-    if cfg!(windows) { "gongga.exe" } else { "gongga" }
+    let path = command_path(home);
+    path.is_file().then_some(path)
 }
 
 /// The `PATH` value that finds a home's `bin` first.
@@ -78,20 +68,17 @@ mod tests {
         assert!(!joined.contains("::"), "{joined}");
     }
 
-    /// Either shape is the command -- the script, or the program itself under its
-    /// own name, which is all a home with only the window installed has.
+    /// A home with no command says so; one with the script names the script.
     #[test]
-    fn either_shape_of_the_command_is_the_command() {
+    fn the_command_is_the_script_or_nothing() {
         let home = tempfile::tempdir().unwrap();
         assert!(command(home.path()).is_none(), "a home with none has none");
         let bin = home.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        let program = bin.join(program_name());
-        std::fs::write(&program, "the program").unwrap();
-        assert_eq!(command(home.path()).as_deref(), Some(program.as_path()));
-        // The script is what bash looks for first, so it is also what is named.
-        let script = bin.join(COMMAND);
-        std::fs::write(&script, "#!/bin/sh\n").unwrap();
-        assert_eq!(command(home.path()).as_deref(), Some(script.as_path()));
+        std::fs::write(bin.join(COMMAND), "#!/bin/sh\n").unwrap();
+        assert_eq!(
+            command(home.path()).as_deref(),
+            Some(command_path(home.path()).as_path())
+        );
     }
 }

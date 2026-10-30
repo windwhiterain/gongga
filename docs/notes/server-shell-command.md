@@ -19,11 +19,10 @@ it is always `<home>/bin`, whatever staged the binaries.
 
 ## command
 
-The command is not always a script. A home where only the window was installed has
-the same program under its own name there instead (`cli-server.md`), so this asks
-which shape is present and names that one for `GONGGA_CLI` -- a variable pointing
-at a file that does not exist is worse than no variable, and a server that warned
-"no command here yet" about a command it could see would be wrong.
+The name for `GONGGA_CLI`, and `None` when the server has not written it yet: a
+variable pointing at a file that does not exist is worse than no variable. The file
+is a script the program that served this home left behind, naming itself
+(`cli-server.md`), so this module still only deals in names and a directory.
 
 ## Why the `PATH` is rebuilt rather than inherited
 

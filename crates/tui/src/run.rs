@@ -104,7 +104,7 @@ async fn dial_now(conn: cli::Connection) -> Result<(Link, Greeting), DialFailure
 /// The interactive front-end: the window outlives the link. See `docs/notes/tui-run.md`.
 pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
     // The command an agent's shell types, installed before any shell exists.
-    let home = cli::prepare(args);
+    let home = cli::home_of(args);
 
     let mut client = cli::build_client(args);
     let mut ui = Tui::new(client.completer())?;
