@@ -32,9 +32,15 @@ pub struct Ship {
     pub commit: String,
     /// The repository path that becomes a home's `config.toml`.
     pub config: String,
-    /// The repository path whose contents become a home's `skills/`.
     #[serde(default)]
-    skills: String,
+    skills: SkillRoots,
+}
+
+/// Where each bucket of skills belongs.
+#[derive(Debug, Clone, Default, Deserialize)]
+struct SkillRoots {
+    harness: String,
+    general: String,
 }
 
 /// The pin this build ships. A manifest that does not parse is a build bug, not
@@ -176,19 +182,24 @@ pub fn config_text() -> Option<String> {
 
 /// Each root, with the repository paths that belong under it.
 fn plans(roots: &Roots, ship: &Ship) -> Vec<(PathBuf, Vec<Mapping>)> {
-    let mut home = vec![Mapping {
-        source: ship.config.clone(),
-        target: PathBuf::from("config.toml"),
-        tree: false,
-    }];
-    if !ship.skills.is_empty() {
-        home.push(Mapping {
-            source: ship.skills.clone(),
+    let home = vec![
+        Mapping {
+            source: ship.config.clone(),
+            target: PathBuf::from("config.toml"),
+            tree: false,
+        },
+        Mapping {
+            source: ship.skills.harness.clone(),
             target: PathBuf::from("skills"),
             tree: true,
-        });
-    }
-    vec![(roots.home.clone(), home)]
+        },
+    ];
+    let machine = vec![Mapping {
+        source: ship.skills.general.clone(),
+        target: PathBuf::from("skills"),
+        tree: true,
+    }];
+    vec![(roots.home.clone(), home), (roots.machine.clone(), machine)]
 }
 
 /// Reconciles one root against the pinned content.
@@ -567,9 +578,11 @@ mod tests {
     /// A repository holding shipped content, shaped like the real one.
     fn content_repo(dir: &Path, config: &str, skill: &str) -> String {
         std::fs::create_dir_all(dir.join("config")).unwrap();
-        std::fs::create_dir_all(dir.join("skills/heir")).unwrap();
+        std::fs::create_dir_all(dir.join("skills/harness/heir")).unwrap();
+        std::fs::create_dir_all(dir.join("skills/general/remote")).unwrap();
         std::fs::write(dir.join("config/config.toml"), config).unwrap();
-        std::fs::write(dir.join("skills/heir/SKILL.md"), skill).unwrap();
+        std::fs::write(dir.join("skills/harness/heir/SKILL.md"), skill).unwrap();
+        std::fs::write(dir.join("skills/general/remote/remote.py"), skill).unwrap();
         git_in(dir, &["init", "-q", "-b", "main"]);
         git_in(dir, &["add", "-A"]);
         git_in(dir, &["commit", "-q", "-m", "content"]);
@@ -581,7 +594,10 @@ mod tests {
             url: url.to_string(),
             commit: commit.to_string(),
             config: "config/config.toml".to_string(),
-            skills: "skills".to_string(),
+            skills: SkillRoots {
+                harness: "skills/harness".to_string(),
+                general: "skills/general".to_string(),
+            },
         }
     }
 
@@ -640,7 +656,7 @@ mod tests {
     /// The manifest is data this binary trusts, so a short sha would stop naming
     /// one commit the moment the repository moves.
     #[test]
-    fn the_pin_names_a_full_commit_and_where_the_skills_are() {
+    fn the_pin_names_a_full_commit_and_two_buckets() {
         let ship = pinned();
         assert_eq!(ship.commit.len(), 40, "{}", ship.commit);
         assert!(
@@ -653,11 +669,12 @@ mod tests {
             "a git url, or a local checkout while developing"
         );
         assert_eq!(ship.config, "config/config.toml");
-        assert_eq!(ship.skills, "skills");
+        assert_eq!(ship.skills.harness, "skills/harness");
+        assert_eq!(ship.skills.general, "skills/general");
     }
 
     #[test]
-    fn a_first_start_lands_the_config_and_the_skills() {
+    fn a_first_start_lands_the_config_and_both_skill_buckets() {
         let d = tempfile::tempdir().unwrap();
         let f = fixture(d.path());
         let commit = content_repo(&f.content, "instructions here\n", "# skill\n");
@@ -668,14 +685,12 @@ mod tests {
             "instructions here\n"
         );
         assert!(f.home().join("skills/heir/SKILL.md").exists());
-        assert_eq!(report.written, 2, "{report:?}");
+        assert!(f.machine().join("skills/remote/remote.py").exists());
+        assert_eq!(report.written, 3, "{report:?}");
         assert!(report.conflicts.is_empty(), "{report:?}");
         assert!(report.fetched);
         assert_eq!(f.pin(f.home()), commit);
-        assert!(
-            !f.machine().join(PIN_FILE).exists(),
-            "the machine root is not this install's business"
-        );
+        assert_eq!(f.pin(f.machine()), commit);
     }
 
     #[test]
@@ -686,7 +701,7 @@ mod tests {
         f.install(&commit).unwrap();
         let again = f.at();
         assert_eq!(again.written, 0, "{again:?}");
-        assert_eq!(again.current, 2, "{again:?}");
+        assert_eq!(again.current, 3, "{again:?}");
         assert_eq!(again.merged, 0);
     }
 
@@ -790,7 +805,7 @@ mod tests {
         let first = content_repo(&f.content, "c\n", "skill text\n");
         f.install(&first).unwrap();
 
-        std::fs::remove_file(f.content.join("skills/heir/SKILL.md")).unwrap();
+        std::fs::remove_file(f.content.join("skills/harness/heir/SKILL.md")).unwrap();
         git_in(&f.content, &["add", "-A"]);
         git_in(&f.content, &["commit", "-q", "-m", "drop a skill"]);
         let report = f.at();
@@ -807,7 +822,7 @@ mod tests {
         f.install(&first).unwrap();
         std::fs::write(f.home().join("skills/heir/SKILL.md"), "mine now\n").unwrap();
 
-        std::fs::remove_file(f.content.join("skills/heir/SKILL.md")).unwrap();
+        std::fs::remove_file(f.content.join("skills/harness/heir/SKILL.md")).unwrap();
         git_in(&f.content, &["add", "-A"]);
         git_in(&f.content, &["commit", "-q", "-m", "drop a skill"]);
         let report = f.at();
@@ -818,7 +833,7 @@ mod tests {
         );
         assert_eq!(
             report.kept,
-            vec!["skills/heir/SKILL.md (kept: removed upstream)".to_string()],
+            vec!["skills/harness/heir/SKILL.md (kept: removed upstream)".to_string()],
             "{report:?}"
         );
         assert!(report.conflicts.is_empty(), "{report:?}");

@@ -2,13 +2,12 @@
 
 ## module doc
 
-The harness ships the config and the skills that speak about the server. Neither
-belongs in this repository, because a file in the working tree is a file a
-project's own edits and the harness's updates fight over. They live in a content
-repository of their own, and this module installs them into a home from a commit
-this binary pins. The skills that speak about the *machine* are not shipped from
-here: they are community content in the `gongga-agents` clone, which the harness
-reads rather than installs (see `docs/notes/server-agents.md`).
+The harness ships three kinds of thing a user should be able to edit: the config,
+the skills that speak about the server, and the skills that speak about the
+machine. None of them belongs in this repository, because a file in the working
+tree is a file a project's own edits and the harness's updates fight over. They
+live in a content repository of their own, and this module installs them into a
+home from a commit this binary pins.
 
 ## MANIFEST, pinned
 
@@ -24,15 +23,13 @@ a real `~/.agents`.
 
 ## Roots, machine_root
 
-One installed root, and one root only read. The harness bucket speaks about *this
-server* -- `evolve`, `heir`, `image`, `self-control` -- so it belongs beside the
-database and follows the home: one pin, one copy, and two harnesses of different
-versions never share prose about the turn. The general bucket speaks about *this
-machine* -- `proxy`, `remote`, `computer_use`, `web-search` -- so no install pass
-owns it: `index_skill` reads it from the community clone at
-`~/.agents/gongga-agents/skills`, then from the private `~/.agents/skills`.
-Installing the general bucket into a home would give one machine five copies of the
-same procedure and five chances to edit them apart.
+Two roots, because the two buckets have different lifetimes. The harness bucket
+speaks about *this server* -- `evolve`, `heir`, `image`, `self-control` -- so it
+belongs beside the database and follows the home. The general bucket speaks about
+*this machine* -- `proxy`, `remote`, `computer_use`, `web-search`, `latency` -- so
+it lives in `~/.agents/skills`, beside `llm.toml`, which the server
+also reads live. Installing the general bucket into a home would give one machine
+five copies of the same procedure and five chances to edit them apart.
 
 ## install_at (refusal)
 
@@ -44,9 +41,8 @@ what the prose is used for.
 
 ## plans
 
-`config.toml` is mapped from one repository file to one home file; the skills root is
-mapped from a repository *tree* spread under `skills/`. A manifest with an empty
-skills path installs the config alone. The difference matters for
+`config.toml` is mapped from one repository file to one home file; a skill bucket is
+mapped from a repository *tree* spread under `skills/`. The difference matters for
 `collect`, which yields one entry per file either way, and for what gets removed when
 upstream drops a path.
 
@@ -57,9 +53,9 @@ content of the pin this root was last reconciled against (the base). The base is
 an upstream edit lands on a file nobody touched and does *not* land on one somebody
 did: without it, "differs from upstream" and "the reader edited this" look identical.
 
-`Report` is per install, and the count it takes before deciding whether to advance
-the pin is what keeps one kept file from freezing a pin and repeating a merge that
-already resolved.
+`Report` is shared by both roots, so this root counts only what it added before
+deciding whether to advance its pin. Without that, one kept file in the machine root
+would freeze the home root's pin and repeat a merge that already resolved.
 
 A conflict or a kept file leaves the pin where it was, so the next start repeats the
 same three-way merge against the same base. Advancing the pin past an unresolved file

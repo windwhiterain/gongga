@@ -15,12 +15,6 @@ useful question after "does this task have a skill" is "whose skill is it": a ha
 skill describes this server and is reinstalled from the pinned content, while a general
 skill belongs to the machine and may have been edited by whoever sits at it.
 
-The general bucket has two roots and this tool is the only place that knows it: the
-community clone at `~/.agents/gongga-agents/skills` is the floor, and the private
-`~/.agents/skills` overrides a name it shares -- the same precedence the roster uses,
-so an override is one rule in this server rather than one per file kind. Nothing is
-reported twice under one name.
-
 ## description
 
 The description is the whole argument for calling it: *before* deciding a task has no

@@ -23,11 +23,10 @@ impl Tool for IndexSkillTool {
         "List every skill this server can offer: its name, the one line saying \
          what it is for, the path of its SKILL.md, and which root it came from \
          (`harness` for the skills that speak about this server, installed under \
-         the home, or `general` for the machine's own: the community clone under \
-         `~/.agents/gongga-agents/skills`, then the private `~/.agents/skills`, \
-         which wins a name they share). Call it before deciding a task has no \
-         skill, and read a body only when its line matches the task -- reading \
-         every skill is the cost this table exists to avoid. Takes no arguments."
+         the home, or `general` for the machine's own). Call it before deciding \
+         a task has no skill, and read a body only when its line matches the \
+         task -- reading every skill is the cost this table exists to avoid. \
+         Takes no arguments."
     }
 
     fn parameters(&self) -> Value {
@@ -45,9 +44,13 @@ impl Tool for IndexSkillTool {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
             let roots = crate::ship::roots();
-            let agents = crate::agents::Roots::of();
-            let mut rows = listed(HARNESS, &roots.home.join("skills"));
-            rows.extend(general(&agents.community, &roots.machine));
+            let mut rows = Vec::new();
+            for (bucket, root) in [
+                (HARNESS, roots.home.join("skills").as_path()),
+                (GENERAL, roots.machine.join("skills").as_path()),
+            ] {
+                rows.extend(listed(bucket, root));
+            }
             if rows.is_empty() {
                 return ToolOutcome::ok(
                     "no skill is installed: nothing under the home's `skills/` or the \
@@ -61,26 +64,6 @@ impl Tool for IndexSkillTool {
             )
         })
     }
-}
-
-/// The general bucket: the community clone, then the machine's own copy.
-///
-/// # Invariant
-///
-/// A name the two roots share is the private one, the same way a private
-/// `providers.toml` overrides the community entry: the community list is the
-/// floor, and nothing here silently shows a reader two skills by one name.
-fn general(community: &Path, private: &Path) -> Vec<Value> {
-    let mut rows = listed(GENERAL, &community.join("skills"));
-    for row in listed(GENERAL, &private.join("skills")) {
-        let name = row["name"].clone();
-        match rows.iter().position(|seen| seen["name"] == name) {
-            Some(at) => rows[at] = row,
-            None => rows.push(row),
-        }
-    }
-    rows.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
-    rows
 }
 
 /// One directory's skills, in name order so two calls read the same.
