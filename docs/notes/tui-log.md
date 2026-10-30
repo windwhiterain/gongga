@@ -181,6 +181,17 @@ The same block is counted twice, once per ledger that holds it, and the two coun
 differ: a window may cap its blocks apart from the rest (the command line's are single
 rows), so `contributions` returns both and every mutation moves both sums.
 
+## Log::set_hidden
+
+`hide_session` is a view: the merged ledger does not hold the hidden window's
+blocks, so no frame draws them -- the ones drawn before the command included. The
+blocks stay in `entries` and in their own window's ledger, so `show_session` is a
+rebuild and not a re-send.
+
+A block whose window is hidden therefore has a position in its own ledger and none
+in the merged one (`Entry::merged_at`), and `shift` moves a row sum only where a
+sum exists. That is the one place a block is in fewer than two ledgers.
+
 ## Log::set_block_size
 
 `set_event_ui --block_size <lines>`: how many rows one block may fill. A display

@@ -88,10 +88,17 @@ the server writes it from its own program as it comes up (`cli-server.md`).
 
 Starting a server is SPEC's job for this front-end, and it happens on the *first
 failed dial* rather than at startup: that is the same moment the operator learns
-nothing is there, it covers a `connect_server` that moved to a server nobody
-started, and `--client_only` has exactly one place to say no. The task is spawned
-rather than awaited, so the window keeps taking keys while a first start migrates
-a home and fetches its content.
+nothing is there, and `--client_only` has exactly one place to say no. The task is
+spawned rather than awaited, so the window keeps taking keys while a first start
+migrates a home and fetches its content.
+
+Only a *cold* start does it -- before the first link, once. After this window has
+been connected, a server that is not there is the operator's doing: `cancel` is how
+SPEC stops a server (it finishes what cannot be serialised, stores the rest and
+exits), and a front-end that answered the loss by starting another one would make
+`cancel` impossible to perform. From then on the loop dials and reports, and a
+server that comes back is picked up by the same dial: `starts_a_server` is the whole
+rule.
 
 Resolved before the terminal is taken over: a bad address or a missing key is not
 fixed by retrying, and an error is far easier to read on the normal screen than

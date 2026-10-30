@@ -41,16 +41,29 @@ that usable:
   operator who typed it. Dropping it would hide the command that caused the
   output still being shown.
 
-`set_event_ui --session <name|none>` writes and clears this map's `session`
-entry; it is not a second filter beside the one it names. SPEC gives the session case
-its own argument because that is the choice an operator makes constantly, and the
-general form -- any field an event carries -- stays here, unwritten in SPEC for now.
+`show_session` / `hide_session` are *not* this map: a session is hidden from the
+render, not filtered out of the arrival, and the two are different questions. A
+field filter drops what comes in (and a hidden event still updates state); a
+hidden session keeps arriving and is simply not drawn -- which is what makes
+`show_session` bring back the lines it said while it was hidden. SPEC names the
+session case and leaves the general form here, unwritten for now.
 
 `allows` compares through the serialised event rather than a `match` over every
 variant: the field names are the names in the wire JSON (`session`, `part`,
 `level`), so a filter value is what a `jq` selector would call it, and adding an
 event variant does not need a new filtering branch. A hidden event still returns
 `true` for everything else -- see `Client::handle_event`.
+
+## HiddenSessions
+
+The sessions the events area leaves out, in `cli.toml` beside the other display
+state. It is a set, not a single name: `hide_session peer` and `hide_session
+scratch` both hold, and `show_session` clears one of them.
+
+Nothing is deleted when a session is hidden. The log holds one copy of every line,
+so the view is what changes: `Client::layout` drops the session from the panes and
+the merged window is told the same list, which is why a session that is hidden
+loses even the lines it drew before the command.
 
 ## BlockSize
 

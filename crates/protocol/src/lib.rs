@@ -13,8 +13,8 @@ pub use channel::{
 };
 pub use message::{
     ArgSpec, Args, BLOCK_SIZES, ClientInfo, ClientMessage, CmdArg, CommandSpec, CommandTarget,
-    CompletionSource, EVENT_FIELDS, Event, LogLevel, NO_SESSION, PROTOCOL_VERSION, REPLAY_TURN,
-    ResponseEvent, ResponsePart, SPLIT_VALUES, ServerInfo, ServerMessage, SessionInfo,
-    SessionStatus, ToolAnswerEvent, ToolStream, client_commands, decode_client, decode_server,
-    encode_client, encode_server,
+    CompletionSource, EVENT_FIELDS, Event, LogLevel, PROTOCOL_VERSION, REPLAY_TURN, ResponseEvent,
+    ResponsePart, SPLIT_VALUES, ServerInfo, ServerMessage, SessionInfo, SessionStatus,
+    ToolAnswerEvent, ToolStream, client_commands, decode_client, decode_server, encode_client,
+    encode_server,
 };

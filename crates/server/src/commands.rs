@@ -1174,10 +1174,12 @@ mod tests {
                 "connect_server",
                 "del_event_filter",
                 "del_sticky_cmd_argument",
+                "hide_session",
                 "serve",
                 "set_event_filter",
                 "set_event_ui",
-                "set_sticky_cmd_argument"
+                "set_sticky_cmd_argument",
+                "show_session"
             ]
         );
         assert!(

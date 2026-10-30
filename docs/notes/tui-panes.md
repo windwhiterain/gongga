@@ -39,6 +39,10 @@ because it never held anything -- the log does. Re-announcing the same list is n
 no-op: the order comes from the list, and one path for "changed" and "unchanged" is
 what keeps the order truthful.
 
+The merged announcement carries the sessions it leaves out, and this is where the
+log is told: split, a hidden session has no pane; merged, it has no lines. Both are
+the same set from the same command, so the two cannot disagree.
+
 ## MERGED
 
 The merged view is filed under the empty name, which no session can have: a session

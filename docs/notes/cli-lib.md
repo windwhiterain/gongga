@@ -253,33 +253,28 @@ them rather than three commands with one name. Two rules make that legible:
   refused whole, because half an applied command is an events area nobody configured
   on purpose -- and the refusal does not report the setting it left alone.
 - **The answer is the whole setting**, on a write as on a read: `block_size = 3
-  session = main split = false` in one line, because three answers to one command is
-  an argument.
+  split = false` in one line, because two answers to one command is an argument.
 
-`--session` is the filter, and `none` is the word that clears it -- not a session
-named none. It writes the same `EventFilters` map `set_event_filter --name session`
-addresses, so the two spellings cannot disagree about what is on screen.
+## Client::run_session_visibility
 
-## Client::follow_session_command
+`show_session` and `hide_session` change what the events area draws, and nothing
+else: they write `HiddenSessions`, they answer with the whole set, and they ask
+for a frame. The blocks are untouched, so `show_session` is a view change and not
+a re-read -- which is the same rule the split follows.
 
-The SPEC rule about `set_session` is one behaviour: the session you name is the one
-later commands act on, so it becomes the sticky `session`. It is *not* what this
-client renders -- which session's lines are drawn is `set_event_ui --session`'s to
-say, and a client that retargeted its view as a side effect of a send would be
-hiding a display setting inside a server call.
+## Client::layout
 
-`del_session` only clears them when it deletes the session they point at.
-Deleting some other session must not silently retarget a client that is watching
-one, and neither must a failed delete -- hence the equality test rather than an
-unconditional clear.
+Which panes exist, and -- since a session can be hidden while the area is merged
+-- which window the one pane does *not* read. Both spellings of "not on screen"
+come from the same set, so they cannot disagree: a session that is hidden is a
+session with no pane and with no lines in the merged view.
 
-Neither runs at submission time. `set_session --llm nosuch/model` is refused, and
-a client that had already followed it would be watching a session that does not
-exist -- the kind of wrong that reads as "the log stopped". So the command is
-remembered in `follows` (id, name, session) and `settle_follow` applies it when
-its `cmd_result` says `ok`. That is one extra piece of state, and it is the reason
-`run_once` now feeds events through `handle_event`: a one-shot `set_session` gets
-the same acknowledgement, and would otherwise never follow at all.
+## Client::submit_tokens
+
+Nothing is followed: naming a session writes no sticky argument and no filter.
+SPEC gives the sticky its own command, so a `set_session` that also retargeted the
+next send would be two changes behind one word -- and the one it silently made is
+the one the operator cannot see.
 
 ## Client::refresh
 
@@ -293,9 +288,9 @@ is a lie the operator cannot see through.
 ## Client::refresh — the footer
 
 The footer is the only place the client's own state is visible, which is why the
-filters join the sticky arguments there: a line that never appears has to be
-explained somewhere, or the operator concludes the server stopped talking. The
-filters half is omitted entirely when there are none, so the common case stays
+filters and the hidden sessions join the sticky arguments there: a line that never
+appears has to be explained somewhere, or the operator concludes the server stopped
+talking. Each half is omitted entirely when it is empty, so the common case stays
 one line of text.
 
 ## Client::command

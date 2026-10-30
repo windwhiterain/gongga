@@ -81,6 +81,58 @@ impl Split {
     }
 }
 
+/// The sessions whose events are not drawn: `hide_session` and `show_session`.
+///
+/// # Invariant
+///
+/// Hiding is a reading, not a deletion: the blocks stay in the log, so showing a
+/// session again brings back every line it ever carried.
+#[derive(Default)]
+pub struct HiddenSessions {
+    path: PathBuf,
+    names: std::collections::BTreeSet<String>,
+}
+
+impl HiddenSessions {
+    /// Loads `home/cli.toml`; a missing or unreadable file hides nothing.
+    pub fn load(home: &Path) -> Self {
+        let path = home.join("cli.toml");
+        let names = read_file(&path).hidden_sessions.into_iter().collect();
+        Self { path, names }
+    }
+
+    /// The hidden names, sorted, which is the order a list is read in.
+    pub fn names(&self) -> Vec<String> {
+        self.names.iter().cloned().collect()
+    }
+
+    pub fn contains(&self, name: &str) -> bool {
+        self.names.contains(name)
+    }
+
+    /// Returns whether the session was not hidden already.
+    pub fn hide(&mut self, name: &str) -> anyhow::Result<bool> {
+        if !self.names.insert(name.to_string()) {
+            return Ok(false);
+        }
+        self.save().map(|()| true)
+    }
+
+    /// Returns whether the session was hidden.
+    pub fn show(&mut self, name: &str) -> anyhow::Result<bool> {
+        if !self.names.remove(name) {
+            return Ok(false);
+        }
+        self.save().map(|()| true)
+    }
+
+    fn save(&self) -> anyhow::Result<()> {
+        let mut file = read_file(&self.path);
+        file.hidden_sessions = self.names.iter().cloned().collect();
+        write_file(&self.path, &file)
+    }
+}
+
 /// The pre-rename key for sticky arguments: read once, then rewritten
 /// under `sticky_cmd_arguments`.
 const OLD_STICKY_KEY: &str = "persistant_cmd_arguments";
@@ -96,6 +148,8 @@ struct File {
     block_size: Option<String>,
     #[serde(default)]
     event_split: bool,
+    #[serde(default)]
+    hidden_sessions: Vec<String>,
     /// Where `connect_server` last pointed this client.
     #[serde(default)]
     connection: Option<Stored>,
@@ -126,12 +180,7 @@ impl Remembered {
         let stored = read_file(&home.join("cli.toml")).connection?;
         // Parsed, not formatted: `"::1:9700"` is not an address, and a file
         // that was right must not fall back to the default.
-        let ip: std::net::IpAddr = stored
-            .ip
-            .as_deref()
-            .unwrap_or("127.0.0.1")
-            .parse()
-            .ok()?;
+        let ip: std::net::IpAddr = stored.ip.as_deref().unwrap_or("127.0.0.1").parse().ok()?;
         Some(std::net::SocketAddr::new(ip, stored.port))
     }
 

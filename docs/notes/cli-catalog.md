@@ -92,12 +92,6 @@ so Tab twice walks down a tree instead of starting a new word.
 Read relative to the client's directory; `~` is expanded because `--cwd ~/work`
 is how people write it.
 
-## CompletionSource::SessionsOrNone
-
-A filter's value space is the live session list plus the word that turns the filter
-off. It is a source of its own rather than `Sessions` plus a note in the description,
-because a popup that offers every name and not `none` teaches half the argument.
-
 ## client_specs
 
 Their arguments complete against the sticky arguments that exist right now, so
@@ -114,10 +108,10 @@ catalog's argument names, because it names an *event* field. Its `--value`
 completes as the argument of the same name would -- `session` offers sessions --
 through the same `OfNamedArgument` hop the sticky value uses.
 
-Two commands can give one name two meanings (`set_session --session` targets a
-session; `set_event_ui --session` filters by one, and takes `none`), so the hop
-prefers the argument that is *required*: that is the target reading, and the one a
-free-form value should mirror. Catalog order does not decide it.
+A name can mean one thing in two commands (`set_session --session` targets a
+session; `show_session --session` names one to draw), and the hop prefers the
+argument that is *required*: that is the reading a free-form value should mirror.
+Catalog order does not decide it.
 
 ## the_flag_being_typed_is_still_a_candidate
 

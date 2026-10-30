@@ -52,13 +52,12 @@ use `which("bash")` as bash.
   - `get_messages --session <name> --range <begin:end>`: return the rows in that closed range `range` (negative number to count from end).
 - client:
   - `set_sticky_cmd_argument --name <name> --value <value>`
-    - auto set `--session` after `set_session`
   - `del_sticky_cmd_argument --name <name>`
-    - auto del `--session` after `del_session`
-  - `set_event_ui [--block_size <line>] [--session <name|none>] [--split <bool>]`:
+  - `set_event_ui [--block_size <line>] [--split <bool>]`:
     - `block_size`: max line count of non-output block, auto scroll.
-    - `session`: filter the rendered events by session name.
     - `split` whether split events window by session name, cmd/cmd_result use a separate single line.
+  - `show_session --session <name>`
+  - `hide_session --session <name>`
   - `connect_server [--ip <ip>](default: localhost) --port <port>`
   - `serve --port <port> [--home <path>](default: "~/.gongga")`
 

@@ -223,12 +223,6 @@ fn resolve(
         CompletionSource::EventFilters => {
             pick(ctx.filters.iter().map(String::as_str), token, "filter")
         }
-        CompletionSource::SessionsOrNone => {
-            // The word that clears the filter is offered beside the names it filters to.
-            let mut got = pick(ctx.sessions.iter().map(String::as_str), token, "session");
-            got.extend(pick([protocol::NO_SESSION].into_iter(), token, "value"));
-            got
-        }
         CompletionSource::OfNamedArgument if depth < 2 => {
             let Some(named) = flag_value(words, "name") else {
                 return Vec::new();
@@ -608,9 +602,9 @@ mod tests {
         assert_eq!(values(&c, "/del_event_filter --name "), vec!["session"]);
     }
 
-    /// One command, three arguments, each completing the way its own value does.
+    /// One command, two arguments, each completing the way its own value does.
     #[test]
-    fn the_event_ui_command_completes_name_argument_and_sizes() {
+    fn the_event_ui_command_completes_each_argument_its_own_way() {
         let c = catalog();
         // Order follows the catalog, which is not what this is about.
         let mut both = values(&c, "/set_event");
@@ -619,7 +613,7 @@ mod tests {
         assert_eq!(values(&c, "/set_event_u"), vec!["/set_event_ui"]);
         assert_eq!(
             values(&c, "/set_event_ui --"),
-            vec!["--block_size", "--session", "--split"]
+            vec!["--block_size", "--split"]
         );
         assert_eq!(
             values(&c, "/set_event_ui --block_size "),
@@ -628,17 +622,26 @@ mod tests {
         // Any number is a size: the list above is what is worth offering, not the
         // set that is allowed.
         assert_eq!(values(&c, "/set_event_ui --block_size 1"), vec!["1"]);
-        // The filter completes to the sessions and to the word that clears it.
-        assert_eq!(
-            values(&c, "/set_event_ui --session "),
-            vec!["main", "scratch", "none"]
-        );
-        assert_eq!(values(&c, "/set_event_ui --session n"), vec!["none"]);
         assert_eq!(values(&c, "/set_event_ui --split "), vec!["true", "false"]);
         // An argument the line already carries is not offered again.
         assert_eq!(
             values(&c, "/set_event_ui --split true --"),
-            vec!["--block_size", "--session"]
+            vec!["--block_size"]
+        );
+    }
+
+    /// `show_session` and `hide_session` name a session, so they complete to one.
+    #[test]
+    fn the_session_commands_complete_to_sessions() {
+        let c = catalog();
+        for command in ["/show_session --session ", "/hide_session --session "] {
+            assert_eq!(values(&c, command), vec!["main", "scratch"], "{command}");
+            assert_eq!(values(&c, &format!("{command}s")), vec!["scratch"]);
+        }
+        assert_eq!(
+            values(&c, "/show_session --"),
+            vec!["--session"],
+            "one argument, and it is the session"
         );
     }
 

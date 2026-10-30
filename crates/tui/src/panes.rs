@@ -69,7 +69,12 @@ impl Panes {
     /// Sets the views to show; the lines they hold never change.
     pub fn layout(&mut self, layout: &Layout) {
         self.panes = match layout {
-            Layout::Merged => vec![Pane::merged()],
+            Layout::Merged { hidden } => {
+                // Every block but the hidden sessions': their lines stay in the
+                // log, so showing one again costs no trip.
+                self.log.set_hidden(hidden);
+                vec![Pane::merged()]
+            }
             Layout::Split(windows) => windows.iter().map(Pane::of).collect(),
         };
         for pane in &self.panes {
