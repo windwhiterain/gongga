@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
@@ -162,6 +162,7 @@ pub struct Channel {
     peer: SocketAddr,
     conn_id: Arc<std::sync::Mutex<u32>>,
     max_message_len: usize,
+    refused: Arc<AtomicBool>,
 }
 
 impl Channel {
@@ -211,6 +212,7 @@ impl Channel {
             ChannelStream {
                 inbound: self.inbound,
                 shared: self.shared,
+                refused: self.refused,
             },
         )
     }
@@ -261,11 +263,19 @@ impl ChannelSink {
 pub struct ChannelStream {
     inbound: mpsc::UnboundedReceiver<Vec<u8>>,
     shared: Arc<Inbound>,
+    refused: Arc<AtomicBool>,
 }
 
 impl ChannelStream {
     pub async fn recv(&mut self) -> Option<Vec<u8>> {
         self.shared.recv(&mut self.inbound).await
+    }
+
+    /// Whether the address refused a datagram, which is why this channel ended.
+    ///
+    /// See `docs/notes/protocol-channel.md`.
+    pub fn refused(&self) -> bool {
+        self.refused.load(Ordering::Acquire)
     }
 }
 
@@ -701,6 +711,10 @@ pub async fn connect(
 ) -> Result<Channel, ChannelError> {
     let (tx, rx) = mpsc::channel::<Frame>(512);
     let reader = socket.clone();
+    // Shared with the reader and with the handle: a refusal is the answer this
+    // channel ended on, and the only party that sees it is the read.
+    let refused = Arc::new(AtomicBool::new(false));
+    let read_refused = refused.clone();
     let reader_task = tokio::spawn(async move {
         let mut buf = vec![0u8; 65507];
         loop {
@@ -717,6 +731,12 @@ pub async fn connect(
                 }
                 Ok(_) => {}
                 Err(e) => {
+                    // An ICMP refusal arrives as an error on this read, and it is
+                    // news about the address: nothing is listening there. Not a
+                    // fault here, so it is recorded rather than swallowed.
+                    if is_refusal(&e) {
+                        read_refused.store(true, Ordering::Release);
+                    }
                     tracing::debug!(error = %e, "client socket closed");
                     break;
                 }
@@ -731,6 +751,7 @@ pub async fn connect(
         0,
         Role::Client,
         Some(ReaderAbort(reader_task)),
+        refused,
     )
 }
 
@@ -742,8 +763,20 @@ pub fn accept(
     cfg: ChannelConfig,
     conn_id: u32,
 ) -> Channel {
-    spawn_inner(socket, peer, inbox, cfg, conn_id, Role::Server, None)
-        .expect("spawn_inner is infallible")
+    // The demux owns the read, and it answers a refusal itself: a server never
+    // ends a channel on one. See `docs/notes/server-net.md`.
+    let refused = Arc::new(AtomicBool::new(false));
+    spawn_inner(
+        socket,
+        peer,
+        inbox,
+        cfg,
+        conn_id,
+        Role::Server,
+        None,
+        refused,
+    )
+    .expect("spawn_inner is infallible")
 }
 
 fn spawn_inner(
@@ -754,6 +787,7 @@ fn spawn_inner(
     conn_id: u32,
     role: Role,
     reader: Option<ReaderAbort>,
+    refused: Arc<AtomicBool>,
 ) -> Result<Channel, ChannelError> {
     let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(256);
     let shared = Inbound::new(reader);
@@ -864,6 +898,7 @@ fn spawn_inner(
         peer,
         conn_id: conn_id_shared,
         max_message_len,
+        refused,
     })
 }
 
@@ -997,6 +1032,19 @@ async fn on_tick(
 
 /// How many stale packets one timer tick will resend.
 const MAX_RETRANSMITS_PER_TICK: usize = 8;
+
+/// Whether an error is the socket relaying an ICMP refusal for a datagram we
+/// sent -- an answer about the address, not a fault in this socket.
+///
+/// See `docs/notes/protocol-channel.md`.
+fn is_refusal(e: &std::io::Error) -> bool {
+    if cfg!(windows) {
+        // `WSAECONNRESET` on a UDP socket: the peer answered "nothing here".
+        e.raw_os_error() == Some(10054)
+    } else {
+        e.kind() == std::io::ErrorKind::ConnectionRefused
+    }
+}
 
 /// Sequence-space comparison that survives 32-bit wraparound.
 fn seq_lt(a: u32, b: u32) -> bool {

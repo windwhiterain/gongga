@@ -481,6 +481,14 @@ attempts of one reconnect must not mean two different servers.
 The key is wrong, the address is malformed. Retrying would only hide the reason
 behind an endless "reconnecting".
 
+## DialFailure::NoListener
+
+The port answered "nothing here" instead of saying nothing at all, and that is the
+one dial failure starting a server is an answer to -- which is why it is its own
+case rather than a `Temporary` with a different sentence. A front-end may report
+it as news ("nothing is listening at 127.0.0.1:9700 -- starting one") instead of
+as an error it will simply retry through.
+
 ## dial
 
 Every call binds a new local port on purpose. The server routes datagrams by
@@ -493,6 +501,13 @@ server's own demultiplexer expects.
 
 The greeting is the first thing the server sends, so waiting for it is both the
 handshake confirmation and the command catalog download.
+
+A channel that ends before a greeting has two possible causes and the socket is
+the only one that knows which: `ChannelStream::refused` says the address refused
+a datagram, so there is no server there; anything else means a server was there
+and hung up. They are different facts about the world -- one is answered by
+starting a server, the other by looking at the one that is running -- so they are
+reported differently even though both mean "no link".
 
 ## Greeting
 

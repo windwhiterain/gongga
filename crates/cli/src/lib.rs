@@ -10,7 +10,7 @@ pub mod server;
 pub use crate::catalog::Catalog;
 pub use crate::commands::{BlockSize, Split, Sticky};
 pub use crate::complete::{Candidate, Completer, Completion, SharedCompleter, token_bounds};
-pub use crate::server::{ensure, prepare};
+pub use crate::server::{ensure, prepare, starts_here};
 
 use std::collections::HashMap;
 
@@ -1342,6 +1342,9 @@ pub fn endpoint(args: &Connection) -> anyhow::Result<Endpoint> {
 pub enum DialFailure {
     /// Asking again cannot help: wrong key, malformed address.
     Fatal(anyhow::Error),
+    /// The address refused the datagram: nothing is listening there. This is the
+    /// one failure starting a server is an answer to.
+    NoListener(anyhow::Error),
     /// Worth retrying: the server is not listening right now.
     Temporary(anyhow::Error),
 }
@@ -1349,7 +1352,9 @@ pub enum DialFailure {
 impl DialFailure {
     pub fn message(&self) -> String {
         match self {
-            DialFailure::Fatal(e) | DialFailure::Temporary(e) => e.to_string(),
+            DialFailure::Fatal(e) | DialFailure::NoListener(e) | DialFailure::Temporary(e) => {
+                e.to_string()
+            }
         }
     }
 
@@ -1357,9 +1362,14 @@ impl DialFailure {
         matches!(self, DialFailure::Fatal(_))
     }
 
+    /// Whether starting a server where this dial went is what would fix it.
+    pub fn nothing_listening(&self) -> bool {
+        matches!(self, DialFailure::NoListener(_))
+    }
+
     pub fn into_error(self) -> anyhow::Error {
         match self {
-            DialFailure::Fatal(e) | DialFailure::Temporary(e) => e,
+            DialFailure::Fatal(e) | DialFailure::NoListener(e) | DialFailure::Temporary(e) => e,
         }
     }
 }
@@ -1395,13 +1405,19 @@ pub async fn dial(endpoint: Endpoint) -> Result<(Link, Greeting), DialFailure> {
                 "no response from {} within {HANDSHAKE_TIMEOUT:?}",
                 endpoint.addr
             ))
-        })?
-        .ok_or_else(|| {
+        })?;
+    let Some(greeting) = greeting else {
+        // A channel that ends before a greeting ended on one of two facts, and
+        // the socket is the one that knows which.
+        return Err(if stream.refused() {
+            DialFailure::NoListener(anyhow!("nothing is listening at {}", endpoint.addr))
+        } else {
             DialFailure::Temporary(anyhow!(
                 "{} closed the connection during the handshake",
                 endpoint.addr
             ))
-        })?;
+        });
+    };
 
     let msg = decode_server(&greeting)
         .context("decoding server greeting")
@@ -1501,8 +1517,7 @@ fn resolve_server_with(args: &Connection, env: &Env) -> anyhow::Result<SocketAdd
     Ok(DEFAULT_SERVER.parse().unwrap())
 }
 
-/// `--key`, then `GONGGA_KEY`, then `<home>/server.key`, then a `[server] key`
-/// a pre-split home still has.
+/// `--key`, then `GONGGA_KEY`, then what the home itself carries.
 fn resolve_key(args: &Connection) -> Option<String> {
     resolve_key_with(args, &process_env)
 }
@@ -1511,17 +1526,28 @@ fn resolve_key_with(args: &Connection, env: &Env) -> Option<String> {
     if let Some(k) = &args.key {
         return Some(k.clone());
     }
-    if let Some(k) = env("GONGGA_KEY") {
-        return Some(k);
-    }
-    if let Some(k) = std::fs::read_to_string(home_dir(args.home.as_deref()).join("server.key"))
+    env("GONGGA_KEY").or_else(|| key_from_home(&home_dir(args.home.as_deref())))
+}
+
+/// The key this process would present to the server of `home`.
+pub(crate) fn key_of(home: &Path) -> Option<String> {
+    process_env("GONGGA_KEY").or_else(|| key_from_home(home))
+}
+
+/// What a home itself says its key is: `server.key` first, because a server that
+/// minted one wrote it there, then a `[server] key` a home written before that
+/// still has.
+///
+/// # Invariant
+///
+/// One reader for both questions -- "what do I present" and "is anything
+/// there" -- so the two can never disagree about which key a home means.
+pub(crate) fn key_from_home(home: &Path) -> Option<String> {
+    let written = std::fs::read_to_string(home.join("server.key"))
         .ok()
         .map(|t| t.trim().to_string())
-        .filter(|v| !v.is_empty())
-    {
-        return Some(k);
-    }
-    config_value(args, |c| c.server.as_ref().and_then(|s| s.key.clone()))
+        .filter(|v| !v.is_empty());
+    written.or_else(|| config_in(home, |c| c.server.as_ref().and_then(|s| s.key.clone())))
 }
 
 #[derive(serde::Deserialize)]
@@ -1536,8 +1562,11 @@ struct FileServer {
 }
 
 fn config_value(args: &Connection, pick: impl Fn(&FileConfig) -> Option<String>) -> Option<String> {
-    let path = home_dir(args.home.as_deref()).join("config.toml");
-    let text = std::fs::read_to_string(path).ok()?;
+    config_in(&home_dir(args.home.as_deref()), pick)
+}
+
+fn config_in(home: &Path, pick: impl Fn(&FileConfig) -> Option<String>) -> Option<String> {
+    let text = std::fs::read_to_string(home.join("config.toml")).ok()?;
     let cfg: FileConfig = toml::from_str(&text).ok()?;
     pick(&cfg)
 }

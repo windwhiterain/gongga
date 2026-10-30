@@ -54,10 +54,17 @@ machine, and a config that binds IPv6 should not read as a remote server.
 
 ## answers
 
-The key file is the first evidence of progress: a server mints `server.key` on its
-way up, so a home without one has no server to talk to. Once there is a key, the
-question is a real handshake -- and a `DialFailure::Fatal` (wrong key) is still a
-server.
+The key is the first evidence of progress: a server can only be greeted by
+someone who has it, so a home that carries none has no server to talk to. It is
+read the way `dial` reads it -- `server.key` first, because that is where a
+minted key is written, then a `[server] key` in `config.toml`. One reader for both
+questions: reading only the file made `answers` say no to a server that was
+running with a configured key, so every window that opened started a second
+server to be refused by the lock.
+
+Once there is a key the question is a real handshake -- and a `DialFailure::Fatal`
+(wrong key) is still a server, while `DialFailure::NoListener` is exactly the case
+this function exists to detect.
 
 ## start
 

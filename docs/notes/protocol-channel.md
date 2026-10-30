@@ -75,6 +75,26 @@ that is still in use keeps the socket open.
 
 A sink with nobody receiving beside it is still a link somebody may come back to.
 
+## is_refusal
+
+A datagram sent to a port nobody is listening on comes back as an ICMP
+unreachable, and the OS reports it as an error on the *next read of the socket
+that sent it*: `WSAECONNRESET` on Windows, `ECONNREFUSED` elsewhere. Nothing about
+this socket is wrong, and the address has just answered a question nobody asked
+in words -- so it is recorded rather than swallowed, and the read stops as it
+would on any other error.
+
+The distinction matters on a cold start: a window that dials a home whose server
+has not come up yet is not looking at a broken link, it is looking at an empty
+port, and the answer to that is to start a server rather than to report a fault.
+
+## ChannelStream::refused
+
+Why a channel ended, asked after `recv` has said `None`: the socket is the only
+party that saw the refusal, and the caller is the only party that can decide what
+to say about it. A server channel never sets it -- the demultiplexer owns that
+read, and it treats a refusal as noise (`server-net.md`).
+
 ## ChannelCore::packet_rto
 
 Backing off per packet rather than per channel is what keeps a burst of losses

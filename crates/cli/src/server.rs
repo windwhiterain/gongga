@@ -61,7 +61,7 @@ pub async fn ensure(home: &Path, addr: SocketAddr) -> anyhow::Result<bool> {
 }
 
 /// Whether a server on `addr` is this machine's to start.
-fn starts_here(addr: &SocketAddr) -> bool {
+pub fn starts_here(addr: &SocketAddr) -> bool {
     addr.ip().is_loopback()
 }
 
@@ -72,11 +72,7 @@ fn starts_here(addr: &SocketAddr) -> bool {
 /// A refusal counts as an answer: a server that says no is there, and starting
 /// another one for the same home would be the split this design refuses.
 async fn answers(home: &Path, addr: SocketAddr) -> bool {
-    let key = std::fs::read_to_string(home.join("server.key"))
-        .ok()
-        .map(|text| text.trim().to_string())
-        .filter(|key| !key.is_empty());
-    let Some(key) = key else {
+    let Some(key) = crate::key_of(home) else {
         return false;
     };
     match dial(Endpoint { addr, key }).await {
@@ -282,5 +278,20 @@ mod tests {
     async fn a_home_with_no_key_is_not_answering() {
         let dir = tempfile::tempdir().unwrap();
         assert!(!answers(dir.path(), addr("127.0.0.1:9")).await);
+    }
+
+    /// A key in `config.toml` is a key: `server.key` is where a *minted* one
+    /// goes, not the only place a home can keep one. Reading only the file made
+    /// `answers` say no to a server that was there, so every start spawned a
+    /// second one to be refused by the lock.
+    #[test]
+    fn the_key_a_home_carries_in_its_config_is_the_one_to_ask_with() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[server]\nkey = \"c0ffee\"\n",
+        )
+        .unwrap();
+        assert_eq!(crate::key_from_home(dir.path()).as_deref(), Some("c0ffee"));
     }
 }

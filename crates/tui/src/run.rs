@@ -211,23 +211,38 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                         client.set_offline(attempts, &mut TuiSink(&mut ui));
                         // Once per outage: start what is not there, and the
                         // loop keeps dialing while the task does it.
-                        if attempts == 1 && !args.client_only {
-                            if let Ok(addr) = cli::server_of(&args.conn) {
-                                let home = home.clone();
-                                tokio::spawn(async move {
-                                    let _ = cli::ensure(&home, addr).await;
-                                });
-                            }
+                        let starting = if attempts == 1 && !args.client_only {
+                            cli::server_of(&args.conn)
+                                .ok()
+                                .filter(|addr| cli::starts_here(addr))
+                        } else {
+                            None
+                        };
+                        if let Some(addr) = starting {
+                            let home = home.clone();
+                            tokio::spawn(async move {
+                                let _ = cli::ensure(&home, addr).await;
+                            });
                         }
                         // Once per outage: the status line already carries "attempt N".
                         if attempts == 1 {
-                            TuiSink(&mut ui).say(
-                                LineKind::Error,
-                                &format!(
-                                    "{} — retrying in the background, Alt+Q still leaves",
-                                    failure.message()
+                            // A cold start is not a fault. Nothing is listening
+                            // yet, and the server about to come up is the answer
+                            // -- so it is said as news, not as an error.
+                            let (kind, line) = match (failure.nothing_listening(), starting) {
+                                (true, Some(_)) => (
+                                    LineKind::System,
+                                    format!("{} — starting one", failure.message()),
                                 ),
-                            );
+                                _ => (
+                                    LineKind::Error,
+                                    format!(
+                                        "{} — retrying in the background, Alt+Q still leaves",
+                                        failure.message()
+                                    ),
+                                ),
+                            };
+                            TuiSink(&mut ui).say(kind, &line);
                         }
                         backoff = (backoff * 2).min(RECONNECT_MAX);
                         next_try = tokio::time::Instant::now() + backoff;

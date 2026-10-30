@@ -73,6 +73,14 @@ A restart therefore looks like two lines in the log -- `connection lost`, then
 `connected` -- with the input line, the history and the scroll position exactly
 where they were.
 
+A cold start is not a fault and is not reported as one. The first attempt of an
+outage says its line once: when the address refused the datagram and a server may
+be started here, it is a system line -- `nothing is listening at 127.0.0.1:9700 --
+starting one` -- because that is what is about to happen. Every other failure is an
+error, since retrying is all this loop can do about it. The status line carries
+`attempt N` from then on, so the outage is not narrated twice.
+
+
 The one thing done before the window opens is `cli::prepare`: the command an
 agent's shell types has to exist before a shell does.
 
