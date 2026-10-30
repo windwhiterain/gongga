@@ -266,6 +266,9 @@ pub struct Client {
     hidden: HiddenSessions,
     /// Which window each accepted command's result belongs to, from its echo.
     results: HashMap<u64, String>,
+    /// A `set_session` waiting for its acknowledgement, so a refused one writes
+    /// nothing. See `docs/notes/cli-lib.md`.
+    follows: Vec<(u64, String)>,
     sessions: Vec<SessionInfo>,
     model: String,
     next_id: u64,
@@ -364,6 +367,7 @@ impl Client {
             split,
             hidden,
             results: HashMap::new(),
+            follows: Vec::new(),
             sessions: Vec::new(),
             model: "-".to_string(),
             next_id: Self::seed_command_id(),
@@ -475,6 +479,7 @@ impl Client {
                 data,
                 ..
             } => {
+                self.settle_follow(id, ok, sink);
                 if shown {
                     // The rows a read answered with arrived as events before this;
                     // what is left to say is the sentence about them.
@@ -790,6 +795,12 @@ impl Client {
         }
 
         let id = self.next_id();
+        // SPEC: the sticky follows what the server accepted, never a submission.
+        if head == "set_session" {
+            if let Some(session) = args.get("session") {
+                self.follows.push((id, session.clone()));
+            }
+        }
         Submission::Send(ClientMessage::Command {
             id,
             name: head,
@@ -828,6 +839,30 @@ impl Client {
                 &format!("could not save: {e}"),
             ),
         }
+    }
+
+    /// Applies a `set_session` the server accepted; a refusal writes nothing.
+    ///
+    /// # Invariant
+    ///
+    /// It runs on the acknowledgement, not on the submission: a refused
+    /// `set_session` must not retarget the next message.
+    fn settle_follow(&mut self, id: u64, ok: bool, sink: &mut dyn Sink) {
+        let Some(at) = self.follows.iter().position(|(i, _)| *i == id) else {
+            return;
+        };
+        let (_, session) = self.follows.remove(at);
+        if !ok {
+            return;
+        }
+        if let Err(e) = self.sticky.set("session", &session) {
+            sink.line(
+                &self.command_window(),
+                LineKind::Error,
+                &format!("could not save: {e}"),
+            );
+        }
+        self.after_sticky_change(sink);
     }
 
     /// Runs one client command, whose args the spec already validated.
@@ -1103,6 +1138,18 @@ impl Link {
     /// Best-effort goodbye, so the server can drop this connection now.
     pub async fn goodbye(&self) {
         let _ = self.send(ClientMessage::Bye).await;
+    }
+
+    /// Stops the server as SPEC's `cancel` does: a kill would lose the work it
+    /// stores for the next start.
+    pub async fn cancel(&self) {
+        let _ = self
+            .send(ClientMessage::Command {
+                id: 0,
+                name: "cancel".to_string(),
+                args: Default::default(),
+            })
+            .await;
     }
 }
 
@@ -2151,8 +2198,7 @@ mod tests {
         };
         assert_eq!(names, vec!["main", "cmd"], "{names:?}");
 
-        // Unsplit there is one window to name, and it is told what not to draw: the
-        // lines of a hidden session are not in this frame.
+        // Unsplit, the one window is told what not to draw.
         c.split = Split(false);
         c.refresh(&mut s);
         assert_eq!(
@@ -2594,34 +2640,113 @@ mod tests {
         );
     }
 
-    /// Naming a session writes nothing: SPEC keeps the target in the sticky
-    /// argument, and a side effect there would be a display setting hidden in a
-    /// server call.
-    #[test]
-    fn set_session_writes_no_sticky_argument() {
-        let d = tempfile::tempdir().unwrap();
+    /// A catalog holding `set_session`, which the server publishes rather than the
+    /// client's own list.
+    fn set_session_catalog() -> Catalog {
         let cat = Catalog::new();
         cat.set_commands(vec![protocol::CommandSpec {
             target: protocol::CommandTarget::Server,
             name: "set_session".into(),
-            description: "s".into(),
+            description: "Create or configure a session.".into(),
             args: vec![protocol::ArgSpec {
                 name: "session".into(),
-                description: "s".into(),
+                description: "Target.".into(),
                 required: true,
                 value_hint: None,
-                completions: protocol::CompletionSource::None,
+                completions: protocol::CompletionSource::Sessions,
             }],
         }]);
+        cat
+    }
+
+    /// SPEC: a `set_session` the server accepted becomes the sticky `session`, and
+    /// a refused one writes nothing.
+    #[test]
+    fn an_accepted_set_session_becomes_the_sticky_session() {
+        let d = tempfile::tempdir().unwrap();
+        let cat = set_session_catalog();
         let mut c = client_with(cat, Sticky::load(d.path()), vec!["main"]);
         let mut s = VecSink(Vec::new());
         assert!(matches!(
             c.command(argv("set_session --session main"), &mut s),
             Submission::Send(_)
         ));
+        assert_eq!(
+            c.sticky.get("session"),
+            None,
+            "not before the server says yes"
+        );
         ack(&mut c, true, &mut s);
-        assert_eq!(c.sticky.get("session"), None);
-        assert_eq!(c.hidden.names(), Vec::<String>::new());
+        assert_eq!(c.sticky.get("session"), Some("main"));
+        assert_eq!(Sticky::load(d.path()).get("session"), Some("main"));
+
+        // A refusal leaves the client where it was.
+        c.command(argv("set_session --session typo"), &mut s);
+        ack(&mut c, false, &mut s);
+        assert_eq!(c.sticky.get("session"), Some("main"));
+    }
+
+    /// The whole reason the follow exists: after `set_session` is accepted, a
+    /// message needs no `--session` of its own.
+    #[test]
+    fn a_message_after_set_session_needs_no_session_argument() {
+        let d = tempfile::tempdir().unwrap();
+        let cat = set_session_catalog();
+        let mut with_message = cat.commands();
+        with_message.extend(protocol::client_commands());
+        with_message.push(protocol::CommandSpec {
+            target: protocol::CommandTarget::Server,
+            name: "send_message".into(),
+            description: "s".into(),
+            args: vec![
+                protocol::ArgSpec {
+                    name: "session".into(),
+                    description: "s".into(),
+                    required: true,
+                    value_hint: None,
+                    completions: protocol::CompletionSource::Sessions,
+                },
+                protocol::ArgSpec {
+                    name: "message".into(),
+                    description: "s".into(),
+                    required: true,
+                    value_hint: None,
+                    completions: protocol::CompletionSource::None,
+                },
+            ],
+        });
+        let cat = Catalog::new();
+        cat.set_commands(with_message);
+        let mut c = client_with(cat, Sticky::load(d.path()), vec!["main"]);
+        let mut s = VecSink(Vec::new());
+        c.command(argv("set_session --session main"), &mut s);
+        ack(&mut c, true, &mut s);
+        match c.message("hello", &mut s) {
+            Submission::Send(protocol::ClientMessage::Command { args, .. }) => {
+                assert_eq!(args.get("session").map(String::as_str), Some("main"));
+            }
+            _ => panic!("the message was not sent: {:?}", s.0),
+        }
+    }
+
+    /// Another client's result settles nothing here, and neither does a result for
+    /// a command that named no session.
+    #[test]
+    fn a_result_that_is_not_this_set_session_writes_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(
+            set_session_catalog(),
+            Sticky::load(d.path()),
+            vec!["main", "peer"],
+        );
+        let mut s = VecSink(Vec::new());
+        c.command(argv("set_session --session main"), &mut s);
+        let ours = c.follows[0].0;
+        ack(&mut c, true, &mut s);
+        assert_eq!(c.follows.len(), 0);
+        // A stranger's id is not a follow any more.
+        c.settle_follow(ours + 1, true, &mut s);
+        assert_eq!(Sticky::load(d.path()).get("session"), Some("main"));
     }
 
     /// A field no event carries would filter nothing; say so instead of

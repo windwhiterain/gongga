@@ -32,7 +32,7 @@ const PREFIX_WIDTH: u16 = 2;
 /// The most rows the input box grows to before it scrolls: prose, not a file.
 const MAX_INPUT_ROWS: u16 = 8;
 
-pub fn draw(f: &mut Frame, s: &mut Screen) {
+pub fn draw(f: &mut Frame, s: &mut Screen) -> Rect {
     let area = f.area();
     let input = input_rows(s.input.text(), area.width, area.height);
     let chunks = areas(area, input, s.panes.command().is_some());
@@ -47,6 +47,9 @@ pub fn draw(f: &mut Frame, s: &mut Screen) {
     if s.completion.is_some() {
         draw_completion(f, s, chunks[4]);
     }
+    // The input area this frame laid out: the caret asks here, not a second
+    // computation of the box.
+    chunks[4]
 }
 
 /// The six areas a frame is made of, in the order they are drawn.
@@ -297,13 +300,12 @@ fn draw_footer(f: &mut Frame, s: &Screen, area: Rect) {
     );
 }
 
-fn draw_input(f: &mut Frame, s: &Screen, area: Rect) {
-    let layout = layout_input(s.input.text(), s.input.cursor(), content_width(area.width));
+/// The rows of the input box a frame shows, from the first one it scrolls to.
+fn input_rows_of<'a>(s: &'a Screen, layout: &'a InputLayout, area: Rect) -> Vec<Line<'a>> {
     let height = area.height.max(1) as usize;
     // The box stops at its cap and scrolls, so the cursor never leaves the window.
     let first = (layout.cursor_row + 1).saturating_sub(height);
-
-    let lines: Vec<Line> = layout
+    layout
         .rows
         .iter()
         .enumerate()
@@ -322,13 +324,71 @@ fn draw_input(f: &mut Frame, s: &Screen, area: Rect) {
                 body,
             ])
         })
-        .collect();
-    f.render_widget(Paragraph::new(lines), area);
+        .collect()
+}
 
+fn draw_input(f: &mut Frame, s: &Screen, area: Rect) {
+    let layout = layout_input(s.input.text(), s.input.cursor(), content_width(area.width));
+    let lines = input_rows_of(s, &layout, area);
+    // The caller anchors the caret after applying the frame; a position set here
+    // would be applied by nobody.
+    f.render_widget(Paragraph::new(lines), area);
+}
+
+/// Where the caret goes for this input in this area.
+///
+/// # Invariant
+///
+/// The renderer and the window agree on this one function, so a frame that draws
+/// the input and a frame that only re-anchors the caret cannot disagree about where
+/// it is.
+pub fn caret(s: &Screen, area: Rect) -> (u16, u16) {
+    let layout = layout_input(s.input.text(), s.input.cursor(), content_width(area.width));
+    let height = area.height.max(1) as usize;
+    let first = (layout.cursor_row + 1).saturating_sub(height);
     // A row that exactly fills the width puts the cursor past the area: clamp it.
     let x = (area.x + PREFIX_WIDTH + layout.cursor_col).min(area.x + area.width.saturating_sub(1));
     let y = area.y + (layout.cursor_row - first) as u16;
-    f.set_cursor_position((x, y));
+    (x, y)
+}
+
+/// The input area as `draw` lays it out, so a caller can find the row to re-anchor.
+pub fn input_area(area: Rect, s: &Screen) -> Rect {
+    areas(
+        area,
+        input_rows(s.input.text(), area.width, area.height),
+        s.panes.command().is_some(),
+    )[4]
+}
+
+/// Where each visible input row's text ends, as a column to erase from.
+///
+/// # Invariant
+///
+/// Every column named is one this frame drew as blank, so erasing there can only
+/// take away ink the console wrote itself -- an IME composes into the console, on
+/// this row, and a diff cannot see ink it did not put there. See
+/// `docs/notes/tui-render.md`.
+pub fn input_ends(s: &Screen, area: Rect) -> Vec<(u16, u16)> {
+    let area = Rect {
+        height: area.height.max(1),
+        ..area
+    };
+    let layout = layout_input(s.input.text(), s.input.cursor(), content_width(area.width));
+    let lines = input_rows_of(s, &layout, area);
+    lines
+        .iter()
+        .enumerate()
+        .map(|(row, line)| {
+            let used: usize = line
+                .spans
+                .iter()
+                .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+                .sum();
+            let used = used.min(area.width.saturating_sub(1) as usize);
+            (area.y + row as u16, area.x + used as u16)
+        })
+        .collect()
 }
 
 fn draw_completion(f: &mut Frame, s: &Screen, input_area: Rect) {
@@ -435,7 +495,10 @@ mod tests {
             let mut screen = screen_with(&refs);
             screen.input.insert_str(text);
             let mut term = Terminal::new(TestBackend::new(30, height)).unwrap();
-            term.draw(|f| draw(f, &mut screen)).unwrap();
+            term.draw(|f| {
+                draw(f, &mut screen);
+            })
+            .unwrap();
             let buf = term.backend().buffer().clone();
 
             let copied = screen.visible_rows(30, height);
@@ -453,6 +516,60 @@ mod tests {
             );
             assert_eq!(copied.last().unwrap(), "L29");
         }
+    }
+
+    /// The caret sits on the input row, and a message that wraps keeps it inside
+    /// the box it is being typed in.
+    #[test]
+    fn the_caret_stays_on_the_input_row() {
+        let mut screen = screen_with(&["a"]);
+        let area = Rect::new(0, 0, 30, 12);
+        let input = input_area(area, &screen);
+        assert_eq!(input.height, 1);
+        assert_eq!(caret(&screen, input), (2, input.y), "an empty prompt");
+
+        screen.input.insert_str("hello");
+        assert_eq!(caret(&screen, input), (7, input.y), "two columns of prefix");
+
+        // A line longer than the box wraps, and the caret goes with it.
+        screen.input.insert_str(&"x".repeat(3 * content_width(30)));
+        let input = input_area(area, &screen);
+        assert!(input.height > 1, "the box grew: {input:?}");
+        let (x, y) = caret(&screen, input);
+        assert!(y >= input.y && y < input.bottom(), "caret off the box: {y}");
+        assert!(x < input.right(), "caret off the right edge: {x}");
+    }
+
+    /// The erase after typing starts where each row's text ends, so it can only
+    /// take away ink this frame did not draw.
+    #[test]
+    fn the_erase_starts_after_the_input_text() {
+        let mut screen = screen_with(&[]);
+        // Tall enough for the box to grow a row, so both rows are in the frame.
+        let area = Rect::new(0, 0, 40, 30);
+        let input = input_area(area, &screen);
+        assert_eq!(
+            input_ends(&screen, input),
+            vec![(input.y, 2)],
+            "just the prompt"
+        );
+
+        screen.input.insert_str("hi");
+        // Two columns of prompt, then the text: everything past it was drawn blank.
+        assert_eq!(input_ends(&screen, input), vec![(input.y, 4)]);
+
+        // A message with a break has a row of its own, each ending where its text does.
+        screen.input.insert_str("\nbye");
+        let input = input_area(area, &screen);
+        assert_eq!(input.height, 2, "the box grew: {input:?}");
+        let ends = input_ends(&screen, input);
+        assert_eq!(ends.len(), 2, "{ends:?}");
+        assert_eq!(ends[0], (input.y, 4));
+        assert_eq!(
+            ends[1],
+            (input.y + 1, 5),
+            "the continuation pad and its text"
+        );
     }
 
     /// The text drawn on row `y`, trailing blanks removed.
@@ -533,7 +650,10 @@ mod tests {
 
         // 10 rows tall: 6 rows of log. Two blocks of one row each fit whole.
         let mut term = Terminal::new(TestBackend::new(24, 10)).unwrap();
-        term.draw(|f| draw(f, &mut screen)).unwrap();
+        term.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
         let buf = term.backend().buffer().clone();
         assert_eq!(row_text(&buf, 1), "[peer] onethree");
         assert_eq!(row_text(&buf, 2), "[test1] two");
@@ -572,7 +692,10 @@ mod tests {
                 true,
             );
             let mut term = Terminal::new(TestBackend::new(40, 12)).unwrap();
-            term.draw(|f| draw(f, &mut screen)).unwrap();
+            term.draw(|f| {
+                draw(f, &mut screen);
+            })
+            .unwrap();
             let buf = term.backend().buffer().clone();
             (1..=8).map(|row| row_text(&buf, row)).collect::<Vec<_>>()
         };
@@ -624,7 +747,10 @@ mod tests {
         screen.panes.line("cmd", LineKind::System, "$ get_messages");
 
         let mut term = Terminal::new(TestBackend::new(40, 12)).unwrap();
-        term.draw(|f| draw(f, &mut screen)).unwrap();
+        term.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
         let buf = term.backend().buffer().clone();
 
         // Events area: rows 1..8, of which 2 are headers. `main` is focused, so it
@@ -638,7 +764,10 @@ mod tests {
 
         // Scrolling the focus moves only that pane: the other keeps its newest.
         screen.scroll_by(1);
-        term.draw(|f| draw(f, &mut screen)).unwrap();
+        term.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
         let buf = term.backend().buffer().clone();
         assert_eq!(
             row_text(&buf, 6),
@@ -670,7 +799,10 @@ mod tests {
         let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
         let mut screen = screen_with(&refs);
         let mut term = Terminal::new(TestBackend::new(20, 10)).unwrap();
-        term.draw(|f| draw(f, &mut screen)).unwrap();
+        term.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
 
         // 10 rows tall: header, six rows of log, footer, input, help.
         let buf = term.backend().buffer().clone();
@@ -691,7 +823,10 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(5, 8)).unwrap();
         // 8 rows tall: 4 rows of log, at width 4 (one column is spared), so six
         // rows of text scroll by two.
-        term.draw(|f| draw(f, &mut screen)).unwrap();
+        term.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
         assert_eq!(
             screen.panes.get("").unwrap().max_scroll,
             2,
@@ -699,7 +834,10 @@ mod tests {
         );
 
         screen.scroll_by(1);
-        term.draw(|f| draw(f, &mut screen)).unwrap();
+        term.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
         let buf = term.backend().buffer().clone();
         assert_eq!(row_text(&buf, 1), "aaa", "the row above the window");
         assert_eq!(row_text(&buf, 2), "bbbb");
@@ -713,7 +851,10 @@ mod tests {
         // 10 wide: a two-column prompt and one column spared, so seven of text.
         assert_eq!(input_rows("1234567890", 10, 10), 2);
         let mut term = Terminal::new(TestBackend::new(10, 10)).unwrap();
-        term.draw(|f| draw(f, &mut screen)).unwrap();
+        term.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
 
         let buf = term.backend().buffer().clone();
         // header, five rows of log, footer, two input rows, help.
@@ -727,7 +868,10 @@ mod tests {
         let mut screen = screen_with(&[]);
         screen.input.insert_str("one\ntwo");
         let mut term = Terminal::new(TestBackend::new(20, 10)).unwrap();
-        term.draw(|f| draw(f, &mut screen)).unwrap();
+        term.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
 
         assert_eq!(input_rows("one\ntwo", 20, 10), 2);
         let buf = term.backend().buffer().clone();

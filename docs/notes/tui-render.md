@@ -22,6 +22,24 @@ to see is the answer they are replying to, so the box stops growing.
 The log borrows the screen mutably: it is where the scroll offset gets clamped
 against a height that only the renderer can compute.
 
+## draw — what it returns
+
+The input area, as this frame laid it out. The caret and the post-typing erase both
+need that box, and a second computation of it is how the two come apart: the terminal
+can be resized between them, and then a cursor move or an erase lands on a row the
+frame drew as something else.
+
+## caret
+
+Where the caret goes for this input in this area. One function, so the frame that
+draws the box and the window that re-anchors the caret cannot disagree about it.
+
+## input_ends
+
+Where each visible row of the box stops being text: a column to erase from, on the
+row it belongs to. Every column named is one the frame drew blank, which is what
+makes the erase safe -- see `docs/notes/tui-lib.md`.
+
 ## input_rows
 
 How many rows the input box needs for `text` at this width, and how many the

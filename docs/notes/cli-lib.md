@@ -269,12 +269,22 @@ Which panes exist, and -- since a session can be hidden while the area is merged
 come from the same set, so they cannot disagree: a session that is hidden is a
 session with no pane and with no lines in the merged view.
 
+## Client::settle_follow
+
+SPEC's `set_session` carries a second sentence: it also sets the sticky `session`,
+which is what keeps `send_message --message ...` from needing `--session` said
+every time. It runs on the acknowledgement, never on the submission, because a
+refused `set_session` must leave the client pointed where it was: following a
+session that `--llm nosuch/model` refused to create is the kind of wrong that
+reads as "the log stopped".
+
+`del_session` follows nothing. Which session a command goes to is the sticky's to
+say, and the SPEC sentence about it names only `set_session`.
+
 ## Client::submit_tokens
 
-Nothing is followed: naming a session writes no sticky argument and no filter.
-SPEC gives the sticky its own command, so a `set_session` that also retargeted the
-next send would be two changes behind one word -- and the one it silently made is
-the one the operator cannot see.
+Nothing else is followed: naming a session writes no filter, and `show_session` /
+`hide_session` are the only commands that change what the events area draws.
 
 ## Client::refresh
 

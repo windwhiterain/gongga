@@ -29,6 +29,7 @@ use crossterm::terminal::{
 };
 use futures_util::StreamExt;
 use ratatui::Terminal;
+use ratatui::backend::ClearType;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 
@@ -197,6 +198,9 @@ pub struct Tui {
     settled: Option<(std::time::Instant, usize)>,
     /// An event read while deciding whether a keystroke began a paste.
     stashed: Option<std::io::Result<TermEvent>>,
+    /// The input as the last frame saw it: typing may have put console ink on
+    /// the row.
+    input_seen: Option<(usize, usize)>,
 }
 
 impl Tui {
@@ -239,6 +243,7 @@ impl Tui {
             completer,
             history: Vec::new(),
             history_pos: None,
+            input_seen: None,
             events: EventStream::new(),
             mouse_captured: true,
             restored: false,
@@ -330,8 +335,10 @@ impl Tui {
         if !self.dirty {
             return Ok(());
         }
-        // The renderer writes the scroll bound back, hence `&mut` on a read-only screen.
-        self.terminal.draw(|f| render::draw(f, &mut self.screen))?;
+        let seen = (self.screen.input.text().len(), self.screen.input.cursor());
+        let typed = self.input_seen != Some(seen);
+        self.input_seen = Some(seen);
+        present(&mut self.terminal, &mut self.screen, typed)?;
         // Cleared only after the frame landed, so a failed paint is retried.
         self.dirty = false;
         Ok(())
@@ -781,6 +788,43 @@ impl Drop for Tui {
         // A panicking caller must not leave the terminal in raw mode.
         let _ = self.restore();
     }
+}
+
+/// Paints `screen` and leaves the console caret on the prompt.
+///
+/// # Invariant
+///
+/// Every painted frame ends with the caret anchored and nothing is hidden: a
+/// frame that writes the events area must not leave the console caret there, and
+/// a caret that blinks on every repaint is what an IME follows. See
+/// `docs/notes/tui-lib.md`.
+fn present(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    screen: &mut Screen,
+    typed: bool,
+) -> anyhow::Result<()> {
+    terminal.autoresize()?;
+    let input = {
+        // The renderer writes the scroll bound back, hence `&mut`.
+        let mut frame = terminal.get_frame();
+        render::draw(&mut frame, screen)
+    };
+    terminal.flush()?;
+    terminal.swap_buffers();
+    // After typing, what the row drew blank is said again: an IME writes into
+    // the console, which the diff cannot see.
+    if typed {
+        for (y, x) in render::input_ends(screen, input) {
+            terminal.set_cursor_position((x, y))?;
+            ratatui::backend::Backend::clear_region(
+                terminal.backend_mut(),
+                ClearType::UntilNewLine,
+            )?;
+        }
+    }
+    terminal.set_cursor_position(render::caret(screen, input))?;
+    terminal.backend_mut().flush()?;
+    Ok(())
 }
 
 fn restore_terminal(out: &mut impl Write) -> io::Result<()> {

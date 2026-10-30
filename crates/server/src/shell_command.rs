@@ -26,8 +26,7 @@ pub fn path(home: &Path) -> String {
 /// Native shape, because an interpreter given `/c/...` entries loses its own
 /// lookups. Both shapes name the same directory, so `gongga` resolves to one file.
 pub fn native_path(home: &Path) -> OsString {
-    std::env::join_paths(entries(home))
-        .unwrap_or_else(|_| home.join("bin").into_os_string())
+    std::env::join_paths(entries(home)).unwrap_or_else(|_| home.join("bin").into_os_string())
 }
 
 /// This home's `bin`, then whatever this process inherited, without empty entries.
@@ -84,6 +83,10 @@ mod tests {
         let first = std::env::split_paths(&native).next().unwrap();
         assert_eq!(first, home.path().join("bin"));
         // And the native shape is the one an interpreter can read: no `/c/...`.
-        assert!(native.to_string_lossy().starts_with(&*home.path().to_string_lossy()));
+        assert!(
+            native
+                .to_string_lossy()
+                .starts_with(&*home.path().to_string_lossy())
+        );
     }
 }

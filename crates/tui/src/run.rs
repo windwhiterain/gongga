@@ -1,6 +1,7 @@
 //! The interactive client: a window, a link, and the loop between them.
 
 use std::future::Future;
+use std::net::SocketAddr;
 use std::pin::Pin;
 
 use cli::{DialFailure, Greeting, Layout, LineKind, Link, Sink};
@@ -106,6 +107,18 @@ fn starts_a_server(cold: bool, attempts: u32, client_only: bool) -> bool {
     cold && attempts == 1 && !client_only
 }
 
+/// Whether the window on the way out stops the server it started.
+///
+/// # Invariant
+///
+/// Only a server this window started, and only the one listening where it
+/// started it: a server somebody else runs is not a window's to stop, and a
+/// `connect_server` that moved elsewhere must not stop the old one. See
+/// `docs/notes/tui-run.md`.
+fn stops_a_server(started: Option<SocketAddr>, here: Option<SocketAddr>) -> bool {
+    matches!((started, here), (Some(started), Some(here)) if started == here)
+}
+
 /// One attempt, resolving afresh: `connect_server` moves the address.
 async fn dial_now(conn: cli::Connection) -> Result<(Link, Greeting), DialFailure> {
     let endpoint = conn.endpoint().map_err(DialFailure::Temporary)?;
@@ -129,6 +142,9 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
     // Until the first link, a server that is not there is this window's to
     // start. See `docs/notes/tui-run.md`.
     let mut cold = true;
+    // What this window started, so leaving can stop it rather than leave it.
+    let mut started: Option<SocketAddr> = None;
+    let mut began_flags: Vec<std::sync::Arc<std::sync::atomic::AtomicBool>> = Vec::new();
 
     let result = loop {
         // Every arm keeps the keyboard branch, so no state stops it answering keys.
@@ -237,9 +253,16 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                         };
                         if let Some(addr) = starting {
                             let home = home.clone();
+                            let began =
+                                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                            let flag = began.clone();
                             tokio::spawn(async move {
-                                let _ = cli::ensure(&home, addr).await;
+                                // Only what this task started is this window's to stop.
+                                let ok = cli::ensure(&home, addr).await.unwrap_or(false);
+                                flag.store(ok, std::sync::atomic::Ordering::SeqCst);
                             });
+                            started = Some(addr);
+                            began_flags.push(began);
                         }
                         // Once per outage: the status line already carries "attempt N".
                         if attempts == 1 {
@@ -268,6 +291,21 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
         }
     };
 
+    // Nothing this window started is left behind: `cancel` is SPEC's stop, and
+    // it stores what cannot be serialised.
+    let here = link
+        .is_some()
+        .then(|| cli::server_of(&args.conn).ok())
+        .flatten();
+    if stops_a_server(started, here)
+        && began_flags
+            .iter()
+            .any(|f| f.load(std::sync::atomic::Ordering::SeqCst))
+    {
+        if let Some(open) = link.as_ref() {
+            open.cancel().await;
+        }
+    }
     // Best-effort goodbye: saves the server its idle timeout; failure is harmless.
     if let Some(open) = link.take() {
         open.goodbye().await;
@@ -280,6 +318,20 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Leaving stops the server this window started, and nothing else.
+    #[test]
+    fn only_a_server_this_window_started_is_stopped_on_the_way_out() {
+        let here: SocketAddr = "127.0.0.1:9700".parse().unwrap();
+        let elsewhere: SocketAddr = "127.0.0.1:9800".parse().unwrap();
+        assert!(stops_a_server(Some(here), Some(here)), "ours, still here");
+        assert!(
+            !stops_a_server(None, Some(here)),
+            "somebody else started it"
+        );
+        assert!(!stops_a_server(Some(here), Some(elsewhere)), "moved away");
+        assert!(!stops_a_server(Some(here), None), "no link to ask with");
+    }
 
     /// A server is started once, at the start, and never to undo a `cancel`.
     #[test]

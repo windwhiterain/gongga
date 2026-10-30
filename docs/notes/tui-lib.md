@@ -36,6 +36,33 @@ against its own empty buffer, so a cell holding a space is never written.
 Hence the explicit `terminal.clear()` before the first frame. It is one sequence
 on every start, and the only thing that makes a start look like a start.
 
+## Tui::draw — the caret, and why the frame is applied by hand
+
+`Terminal::draw` flushes the frame and then, for the caret, always calls
+`show_cursor` + `set_cursor_position`, even when the caret has not moved. Every
+repaint therefore repositions the console caret -- and on Windows that is exactly
+the moment an IME re-places its composition and candidate window. An answer that
+streams repaints several times a second, so a caret and a candidate list that were
+sitting still flicker for as long as the answer arrives.
+
+So the two halves are done here: `autoresize` + `get_frame` + `render::draw` +
+`flush` + `swap_buffers` write the frame, and the caret is touched only when it
+actually moved. A frame that only appended to the log now costs no cursor sequence
+at all, and a frame that followed typing costs one.
+
+The input area the caret belongs in is the one `render::draw` returns, not a second
+computation of it: `autoresize` can change the size between the two, and a mismatch
+is a `MoveTo` and a `Clear` on the wrong row -- which is what an earlier version of
+this did, blanking the first cells of the help row.
+
+After a change to the input, the box is also erased from where each row's text ends
+to the right edge (`render::input_ends`). An IME draws its composition into the
+console on that row, the diff never sees that ink, and so a composition longer than
+the text committed from it leaves its tail behind with nothing to overwrite it. What
+is erased is what the frame drew as blank, so the erase can only take away ink the
+console put there. Erasing and rewriting the whole row (a first attempt) corrupted
+the row below it in a live run.
+
 ## UiEvent
 
 There is deliberately no "cancel" here. Stopping work is a command like any

@@ -129,5 +129,13 @@ indistinguishable from a first start.
 Once per outage: the status line carries "attempt N", so repeating this every few
 hundred milliseconds would bury the log without adding information.
 
+A server this window started is stopped on the way out, through `cancel` rather
+than a kill: `cancel` is SPEC's stop -- it finishes what cannot be serialised and
+stores the rest, which a killed process cannot do. Only that server, and only
+while the window is still pointed at the address it started: one somebody else
+runs is not a window's to stop, and a `connect_server` that moved elsewhere must
+not take the old one down with it. Once the link is gone there is nothing to ask
+with, so the way out stops nothing.
+
 Best-effort goodbye: the server drops this connection now instead of waiting out
 its idle timeout. Worth nothing if it fails -- the window is already closing.

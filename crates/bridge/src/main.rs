@@ -618,9 +618,7 @@ async fn dial(
     let greeting = tokio::time::timeout(HANDSHAKE_TIMEOUT, stream.recv())
         .await
         .map_err(|_| {
-            anyhow!(
-                "no answer from {addr} within {HANDSHAKE_TIMEOUT:?}; is a server running?"
-            )
+            anyhow!("no answer from {addr} within {HANDSHAKE_TIMEOUT:?}; is a server running?")
         })?
         .ok_or_else(|| anyhow!("the server closed the connection during the handshake"))?;
     match decode_server(&greeting).context("decoding the greeting")? {
