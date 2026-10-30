@@ -1013,20 +1013,18 @@ async fn handle(
                     .await?;
                 }
                 ItemKind::FunctionCall => {
+                    // Only the marker: the arguments arrive as deltas of their own
+                    // and are appended to this part, so the call is shown once --
+                    // `name(` now, the deltas as they come, `)` at `done`.
                     out.send(LlmEvent::PartStart {
                         part: ResponsePart::ToolCall,
                         item_id: id.clone(),
                     })
                     .await?;
-                    let mut shown = format!("{}(", item["name"].as_str().unwrap_or("?"));
-                    if let Some(args) = item["arguments"].as_str() {
-                        shown.push_str(args);
-                    }
-                    shown.push(')');
                     out.send(LlmEvent::Delta {
                         part: ResponsePart::ToolCall,
                         item_id: id,
-                        text: shown,
+                        text: format!("{}(", item["name"].as_str().unwrap_or("?")),
                     })
                     .await?;
                 }
@@ -1072,10 +1070,18 @@ async fn handle(
             .await?;
         }
         "response.function_call_arguments.delta" => {
+            let item_id = d["item_id"].as_str().unwrap_or_default().to_string();
+            let delta = d["delta"].as_str().unwrap_or_default().to_string();
+            // Remembered so `done` knows whether the arguments were already shown.
+            items
+                .entry(item_id.clone())
+                .or_default()
+                .text
+                .push_str(&delta);
             out.send(LlmEvent::Delta {
                 part: ResponsePart::ToolCall,
-                item_id: d["item_id"].as_str().unwrap_or_default().to_string(),
-                text: d["delta"].as_str().unwrap_or_default().to_string(),
+                item_id,
+                text: delta,
             })
             .await?;
         }
@@ -1147,6 +1153,22 @@ async fn handle(
                     .await?;
                 }
                 ItemKind::FunctionCall => {
+                    // The call was streamed as `name(` + its argument deltas, so all
+                    // that is left to say is the closing bracket -- and one line
+                    // for a provider that streamed no deltas at all.
+                    let streamed = !meta.text.is_empty();
+                    let text = if streamed {
+                        ")".to_string()
+                    } else {
+                        let args = item["arguments"].as_str().unwrap_or("{}");
+                        format!("{}({args})", meta.name)
+                    };
+                    out.send(LlmEvent::Delta {
+                        part: ResponsePart::ToolCall,
+                        item_id: id.clone(),
+                        text,
+                    })
+                    .await?;
                     out.send(LlmEvent::ToolCall {
                         item_id: id.clone(),
                         call_id: meta.call_id,

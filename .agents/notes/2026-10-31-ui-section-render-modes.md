@@ -59,3 +59,21 @@ SPEC 的 UI 一节整段重写了，`Cmd` 的 client 一节也换了三个命令
 `/set_render_session --session peer --mode line` 里的 `--session` 是**目标**，不是过滤：
 我为它新写的 `drawn()` 只看会话的 mode，不看命令参数。测试里因此用 `handle_event` 而不是
 直接调 `handle_response`，否则测的是绕过判断的那条路。
+
+## 后续：四处「同一件事说了两遍」
+
+用户报的四件事是同一个毛病：**tag 和布局把「去向已经说过的事」又说了一遍**。
+
+1. **左侧栏固定 24 列**。`LIST_WIDTH` 常量换成了 `list_width(&panes)`：标记 + 最长会话名
+   + 一格空气，最少 `LIST_MIN`(6) 列，最多半个窗口。名字短的时候不再留一大片空白。
+2. **已经分屏的会话，每行还带 `[session]`**。`Client::tag` 现在是「**目的地说过就不再说**」：
+   会话画成 `full`（有自己的面板标题）�� 只留 label；画成 `line`/`none` → 才加 `[session]`���
+3. **每个 tool call 前的 `tool:`**。去掉：颜色已经说明「跑了个工具」，文本本身就是那次调用。
+   `thinking:` 留着（reasoning 的散文否则和回答分不开），`provider:` 留着（它说明在哪跑的）。
+4. **tool call 参数出现两次**：`output_item.added` 已经发出了完整的 `name(args)`，而
+   `function_call_arguments.delta` 又把参数以 delta 追加到同一个 block，于是屏幕上是
+   `bash({...}){...}`。现在 `added` 只发 `name(`，delta 追加参数（顺带记进 `items`），
+   `done` 收尾补 `)`；没收到任何 delta 的 provider 在 `done` 发完整的 `name(args)`。
+
+真帧（`single-stream`，100x30）：列表只剩 `▸main` 宽、行上无 `[main]`、
+`bash({"command":"echo hi-from-fake"})` 只出现一次。`cargo test --workspace` 445 通过。

@@ -387,9 +387,18 @@ impl Client {
         }
     }
 
-    /// What a block opens with: the window says who, the label says which part.
+    /// What a block opens with: the label says which part of the answer it is.
+    ///
+    /// # Invariant
+    ///
+    /// The name is added only where the destination does not already say it: a
+    /// session drawn `full` has a pane headed with its name, so repeating it on
+    /// every row is the same word twice in one line. See `docs/notes/cli-lib.md`.
     fn tag(&self, session: &str, label: &str) -> String {
-        format!("[{session}] {label}")
+        match self.render.mode_of(session) {
+            RenderMode::Full => label.to_string(),
+            RenderMode::Line | RenderMode::None => format!("[{session}] {label}"),
+        }
     }
 
     /// How the window lays itself out: SPEC's UI section, as three lists.
@@ -632,7 +641,8 @@ impl Client {
         let key = format!("r:{}:{}:{:?}", e.session, e.turn, e.part);
         let (kind, label) = match e.part {
             ResponsePart::Reasoning => (LineKind::Reasoning, "thinking: "),
-            ResponsePart::ToolCall => (LineKind::ToolCall, "tool: "),
+            // No label: the colour says a tool ran, and the text is the call.
+            ResponsePart::ToolCall => (LineKind::ToolCall, ""),
             // Not our tool: the provider ran it, so the label says where it ran.
             ResponsePart::Activity => (LineKind::ToolCall, "provider: "),
             ResponsePart::Output => (LineKind::Assistant, ""),
@@ -1974,23 +1984,29 @@ mod tests {
         }
     }
 
-    /// Every part of a response says who is speaking, before its own label.
+    /// A line names its session only where the destination does not: a pane is
+    /// headed with the name, a line group is not.
     #[test]
-    fn a_response_line_names_its_session() {
+    fn a_response_line_names_its_session_only_where_the_pane_does_not() {
         let d = tempfile::tempdir().unwrap();
-        let c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["peer"]);
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["peer"]);
         let mut s = StreamSink::default();
+        // The default mode is `full`: the pane is headed `peer`, so no tag.
         c.handle_response(response("peer", ResponsePart::Reasoning, "hmm"), &mut s);
         c.handle_response(response("peer", ResponsePart::ToolCall, "bash"), &mut s);
         c.handle_response(response("peer", ResponsePart::Output, "hi there"), &mut s);
         assert_eq!(
             s.lines,
-            vec![
-                "[peer] thinking: hmm",
-                "[peer] tool: bash",
-                "[peer] hi there"
-            ]
+            vec!["thinking: hmm", "bash", "hi there"],
+            "a tool call needs no `tool:` either: its colour says it ran"
         );
+
+        // Drawn as one line among others, the row has to name its session: there
+        // is no header over a line group's rows.
+        s.lines.clear();
+        c.render.set("peer", RenderMode::Line).unwrap();
+        c.handle_response(response("peer", ResponsePart::Output, "hi there"), &mut s);
+        assert_eq!(s.lines, vec!["[peer] hi there"]);
     }
 
     /// The key stays what it was: the session there is for routing, not display.
@@ -2003,11 +2019,13 @@ mod tests {
         assert_eq!(s.keys, vec!["r:peer:1:Output"]);
     }
 
-    /// stdout and stderr both carry the tag, and stay separate streams.
+    /// stdout and stderr stay separate streams, and carry the tag a line group
+    /// needs -- not the one a pane already has.
     #[test]
-    fn a_tool_answer_line_names_its_session() {
+    fn a_tool_answer_line_names_its_session_where_it_must() {
         let d = tempfile::tempdir().unwrap();
-        let c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["peer"]);
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["peer"]);
+        c.render.set("peer", RenderMode::Line).unwrap();
         let mut s = StreamSink::default();
         for (stream, text) in [(ToolStream::Stdout, "out"), (ToolStream::Stderr, "err")] {
             c.handle_tool_answer(
@@ -2024,6 +2042,22 @@ mod tests {
         }
         assert_eq!(s.lines, vec!["[peer] out", "[peer] err"]);
         assert_eq!(s.keys, vec!["t:c1:Stdout", "t:c1:Stderr"]);
+
+        // In a pane of its own, the output needs no name over it.
+        c.render.set("peer", RenderMode::Full).unwrap();
+        s.lines.clear();
+        c.handle_tool_answer(
+            ToolAnswerEvent {
+                session: "peer".into(),
+                call_id: "c1".into(),
+                tool: "bash".into(),
+                stream: ToolStream::Stdout,
+                text: "out".into(),
+                done: false,
+            },
+            &mut s,
+        );
+        assert_eq!(s.lines, vec!["out"]);
     }
 
     /// A log already names itself; a command belongs to the operator.
@@ -2164,21 +2198,19 @@ mod tests {
             vec!["r:main:1:Reasoning", "r:main:1:ToolCall", "r:main:1:Output"],
             "a part is its own block in the session's window"
         );
-        // The label always names the speaker: the merged view has no header.
-        assert_eq!(
-            s.lines,
-            vec!["[main] thinking: a", "[main] tool: b", "[main] c"]
-        );
+        // The pane's header names the speaker; a tool call needs no `tool:`.
+        assert_eq!(s.lines, vec!["thinking: a", "b", "c"]);
     }
 
-    /// Unsplit is the same traffic with one window and the speaker in the label.
+    /// As a line among others, a row names its session: no header covers it.
     #[test]
-    fn unsplit_puts_everything_in_one_window_and_names_the_speaker() {
+    fn a_line_group_row_names_its_session() {
         let d = tempfile::tempdir().unwrap();
-        let c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
+        c.render.set("main", RenderMode::Line).unwrap();
         let mut s = StreamSink::default();
         c.handle_response(response("main", ResponsePart::Reasoning, "a"), &mut s);
-        // Unsplit is a *view*, not a rewrite of the lines: the window is still named.
+        // The mode is a view, not a rewrite: the window is still the session's.
         assert_eq!(s.windows, vec!["main"]);
         assert_eq!(s.lines, vec!["[main] thinking: a"]);
     }
@@ -2429,7 +2461,7 @@ mod tests {
         call.done = true;
         c.handle_event(Event::Response(call), &mut s);
         assert_eq!(s.windows, vec!["main"]);
-        assert_eq!(s.lines, vec!["[main] tool: {\"command\":\"ls\"}"]);
+        assert_eq!(s.lines, vec!["{\"command\":\"ls\"}"]);
 
         // Turn 0 keeps two rows of one part in separate blocks, and out of the
         // answer a running turn is still writing.
@@ -2443,7 +2475,7 @@ mod tests {
         c.handle_event(Event::Response(second), &mut s);
         assert_eq!(
             s.lines,
-            vec!["[main] first row", "[main] second row"],
+            vec!["first row", "second row"],
             "one block per row, in the order the store keeps them"
         );
 

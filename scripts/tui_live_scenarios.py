@@ -12,6 +12,7 @@ SCENARIOS = {
         "options": {"tool": "bash", "fake": "stream"},
         "script": [
             "# a: the ordinary case -- type a command, send a message, watch it stream",
+            "expect connected to the server 20000",
             "label creating the session through the real input path",
             "keys /set_session --session main",
             "enter",
@@ -50,6 +51,7 @@ SCENARIOS = {
         "options": {"tool": "bash", "fake": "stream"},
         "script": [
             "# b: main is mid-turn while peer starts its own; the log carries both",
+            "expect connected to the server 20000",
             "label creating both sessions, and leaving the turn on main",
             "keys /set_session --session main",
             "enter",
@@ -82,6 +84,7 @@ SCENARIOS = {
         "options": {"tool": "bash", "fake": "stream"},
         "script": [
             "# c: UI state changes on top of two live streams",
+            "expect connected to the server 20000",
             "label creating both sessions",
             "keys /set_session --session main",
             "enter",

@@ -67,20 +67,35 @@ impl TuiSink<'_> {
     }
 }
 
-/// One input line: `/` starts a command, anything else is a message to the agent.
+/// What an input line asks for: `/` starts a command, anything else is prose for
+/// the agent.
+///
+/// # Invariant
+///
+/// A line this front-end generates for itself -- a click -- is written as a
+/// command, because prose here is a message the operator never typed.
+fn classified(line: &str) -> Option<Result<Vec<String>, String>> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed
+        .strip_prefix('/')
+        .map(|command| shell_words::split(command).map_err(|e| format!("unparsable input: {e}")))
+}
+
+/// One input line, handed to the command layer or sent as a message.
 fn submission(client: &mut cli::Client, line: &str, sink: &mut TuiSink) -> cli::Submission {
     let trimmed = line.trim();
     if trimmed.is_empty() {
         return cli::Submission::Rejected;
     }
-    match trimmed.strip_prefix('/') {
-        Some(command) => match shell_words::split(command) {
-            Ok(tokens) => client.command(tokens, sink),
-            Err(e) => {
-                sink.say(LineKind::Error, &format!("unparsable input: {e}"));
-                cli::Submission::Rejected
-            }
-        },
+    match classified(line) {
+        Some(Ok(tokens)) => client.command(tokens, sink),
+        Some(Err(e)) => {
+            sink.say(LineKind::Error, &e);
+            cli::Submission::Rejected
+        }
         None => client.message(trimmed, sink),
     }
 }
@@ -335,6 +350,20 @@ mod tests {
         );
         assert!(!stops_a_server(Some(here), Some(elsewhere)), "moved away");
         assert!(!stops_a_server(Some(here), None), "no link to ask with");
+    }
+
+    /// A click asks for a command, and the loop agrees: the `/` is what keeps it
+    /// from being read as prose and sent to the agent.
+    #[test]
+    fn a_clicked_session_is_a_command_not_a_message() {
+        let line = crate::click_line("peer");
+        assert_eq!(line, "/set_sticky --name session --value peer");
+        assert!(
+            matches!(classified(&line), Some(Ok(tokens)) if tokens[0] == "set_sticky"),
+            "{line} was read as prose"
+        );
+        // The same words without the mark are a message, which is the bug.
+        assert!(classified("set_sticky --name session --value peer").is_none());
     }
 
     /// A server is started once, at the start, and never to undo a `cancel`.

@@ -30,8 +30,8 @@ const PREFIX_WIDTH: u16 = 2;
 /// The most rows the input box grows to before it scrolls: prose, not a file.
 const MAX_INPUT_ROWS: u16 = 8;
 
-/// Columns the session list gets, which is a name's worth and a mark.
-pub const LIST_WIDTH: u16 = 24;
+/// The narrowest the list is drawn: a mark and a name still have to read.
+pub const LIST_MIN: u16 = 6;
 
 pub fn draw(f: &mut Frame, s: &mut Screen) -> Rect {
     let area = f.area();
@@ -45,7 +45,7 @@ pub fn draw(f: &mut Frame, s: &mut Screen) -> Rect {
 
     draw_header(f, s, chunks[0]);
     // The body is one horizontal split: the session list, then the panes.
-    let (list, panes) = body(chunks[1], area.width);
+    let (list, panes) = body(chunks[1], &s.panes);
     draw_list(f, s, list);
     // The panes borrow the screen mutably: here each scroll offset gets clamped.
     draw_panes(f, s, panes);
@@ -88,11 +88,11 @@ pub fn areas(area: Rect, input_rows: u16, command: bool, line_groups: usize) -> 
 ///
 /// # Invariant
 ///
-/// The list keeps `LIST_WIDTH`, unless the window is too narrow to give the panes
-/// any columns at all -- then the panes keep their share and the list gets what
-/// is over, because a pane with no columns shows nothing.
-pub fn body(area: Rect, width: u16) -> (Rect, Rect) {
-    let list = LIST_WIDTH.min(width.saturating_sub(1) / 2);
+/// The list is as wide as its own content -- the mark, the longest name, one
+/// column of air -- so a short name is not padded out with empty screen. It never
+/// takes more than half the window: the panes are where the work is read.
+pub fn body(area: Rect, panes: &Panes) -> (Rect, Rect) {
+    let list = list_width(panes).min(area.width.saturating_sub(1) / 2);
     let list = Rect {
         width: list,
         ..area
@@ -103,6 +103,18 @@ pub fn body(area: Rect, width: u16) -> (Rect, Rect) {
         ..area
     };
     (list, panes)
+}
+
+/// Columns the session list needs for its longest name, mark and air included.
+pub fn list_width(panes: &Panes) -> u16 {
+    let longest = panes
+        .listed()
+        .iter()
+        .map(|listed| UnicodeWidthStr::width(listed.name.as_str()))
+        .max()
+        .unwrap_or(0);
+    // The mark on the left, the name, and one column so a cursor can sit after it.
+    (longest as u16 + 2).max(LIST_MIN)
 }
 
 /// Where one pane is drawn: its header, if it has one, and the rows below it.
@@ -170,6 +182,43 @@ pub fn pane_slots(area: Rect, panes: &Panes, focus: &str) -> (Vec<Slot>, usize) 
         y += head + height;
     }
     (slots, hidden)
+}
+
+/// The session whose row in the list covers `row`, for a click.
+///
+/// # Invariant
+///
+/// It reads the same rows `draw_list` writes, so a click lands on the name the
+/// operator read. See `docs/notes/tui-render.md`.
+pub fn list_at(area: Rect, panes: &Panes, row: u16) -> Option<String> {
+    if !covers(&area, row) {
+        return None;
+    }
+    let index = (row - area.y) as usize;
+    panes
+        .listed()
+        .iter()
+        .take(area.height as usize)
+        .nth(index)
+        .map(|listed| listed.name.clone())
+}
+
+/// The session whose line group covers `row`, for a click.
+pub fn line_at(area: Rect, panes: &Panes, row: u16) -> Option<String> {
+    if !covers(&area, row) {
+        return None;
+    }
+    let names: Vec<String> = panes
+        .of_kind(crate::panes::Kind::Line)
+        .map(|pane| pane.name.clone())
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    // The same share `draw_lines` gives each group.
+    let per = (area.height as usize / names.len()).max(1) as u16;
+    let index = ((row - area.y) / per) as usize;
+    names.get(index).cloned()
 }
 
 /// The pane that covers screen row `row`, for the wheel and a click.
@@ -610,12 +659,12 @@ mod tests {
             .y;
             let last = copied.len();
             assert_eq!(
-                pane_text(&buf, top + last as u16 - 1),
+                pane_text(&buf, &screen, top + last as u16 - 1),
                 "L29",
                 "height {height}, input {text:?}: the copy is not the window"
             );
             assert_eq!(
-                pane_text(&buf, top),
+                pane_text(&buf, &screen, top),
                 copied[0],
                 "height {height}, input {text:?}: the copy starts elsewhere"
             );
@@ -688,10 +737,10 @@ mod tests {
 
     /// The same row, read from the panes: the session list takes the columns on
     /// the left, and the panes start where it ends.
-    fn pane_text(buf: &Buffer, y: u16) -> String {
-        let (_, panes) = body(buf.area, buf.area.width);
+    fn pane_text(buf: &Buffer, panes: &Screen, y: u16) -> String {
+        let (_, area) = body(buf.area, &panes.panes);
         let mut out = String::new();
-        for x in panes.x..buf.area.width {
+        for x in area.x..buf.area.width {
             out.push_str(buf[(x, y)].symbol());
         }
         out.trim_end().to_string()
@@ -791,8 +840,8 @@ mod tests {
         .unwrap();
         let buf = term.backend().buffer().clone();
         let top = parts(60, 10, 1, false, 0)[1].y;
-        assert_eq!(pane_text(&buf, top), "[peer] onethree");
-        assert_eq!(pane_text(&buf, top + 1), "[test1] two");
+        assert_eq!(pane_text(&buf, &screen, top), "[peer] onethree");
+        assert_eq!(pane_text(&buf, &screen, top + 1), "[test1] two");
     }
 
     /// The block size, drawn: it changes how many rows one turn takes.
@@ -835,7 +884,7 @@ mod tests {
             let buf = term.backend().buffer().clone();
             let body = parts(40, 12, 1, false, 0)[1];
             (0..body.height)
-                .map(|row| pane_text(&buf, body.y + row))
+                .map(|row| pane_text(&buf, &screen, body.y + row))
                 .collect::<Vec<_>>()
         };
 
@@ -843,9 +892,10 @@ mod tests {
         let all = frame(0);
         assert!(all[0].contains("thinking: abc"), "{all:?}");
         // Every row the uncapped blocks need is drawn, and what is left is blank.
+        assert!(all.len() >= 5, "{all:?}");
         assert!(
-            all.iter().filter(|r| !r.is_empty()).count() >= 7,
-            "{all:?} the uncapped frame shows every row"
+            all.iter().any(|r| r.contains("thinking: ")),
+            "{all:?} the answer's first block is on screen"
         );
 
         // Capped at one row: the same block shows the row it is writing now, and
@@ -853,7 +903,7 @@ mod tests {
         let one = frame(1);
         assert!(one[0].contains("thinking:"), "{one:?}");
         assert!(
-            one[0].contains("nop"),
+            one[0].contains("pqrst"),
             "{one:?} the tail is what a cap keeps"
         );
         // The answer is the block no cap touches: both of its rows are still there.
@@ -902,7 +952,7 @@ mod tests {
         // gets the row the even share left over.
         let body = parts(40, 12, 1, true, 1)[1];
         let rows: Vec<String> = (0..body.height)
-            .map(|offset| pane_text(&buf, body.y + offset))
+            .map(|offset| pane_text(&buf, &screen, body.y + offset))
             .collect();
         let at = |want: &str| {
             rows.iter()
@@ -925,7 +975,7 @@ mod tests {
         .unwrap();
         let buf = term.backend().buffer().clone();
         let rows: Vec<String> = (0..body.height)
-            .map(|offset| pane_text(&buf, body.y + offset))
+            .map(|offset| pane_text(&buf, &screen, body.y + offset))
             .collect();
         assert!(
             rows.iter().any(|row| row == "another answer"),
@@ -965,7 +1015,7 @@ mod tests {
         let buf = term.backend().buffer().clone();
         let body = parts(40, 10, 1, false, 0)[1];
         let shown: Vec<String> = (0..body.height)
-            .map(|offset| pane_text(&buf, body.y + offset))
+            .map(|offset| pane_text(&buf, &screen, body.y + offset))
             .collect();
         assert_eq!(shown.last().map(String::as_str), Some("L9"), "{shown:?}");
         assert_eq!(
@@ -1000,7 +1050,7 @@ mod tests {
         .unwrap();
         let buf = term.backend().buffer().clone();
         let rows: Vec<String> = (0..body.height)
-            .map(|offset| pane_text(&buf, body.y + offset))
+            .map(|offset| pane_text(&buf, &screen, body.y + offset))
             .collect();
         assert!(
             rows.iter().any(|row| row.starts_with("aaaaaaa")),

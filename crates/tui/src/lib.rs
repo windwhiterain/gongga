@@ -138,7 +138,7 @@ impl Screen {
             self.panes.command().is_some(),
             self.panes.of_kind(crate::panes::Kind::Line).count(),
         );
-        let (_, panes) = render::body(chunks[1], width);
+        let (_, panes) = render::body(chunks[1], &self.panes);
         render::pane_slots(panes, &self.panes, &self.focus).0
     }
 
@@ -151,6 +151,27 @@ impl Screen {
     /// The pane covering terminal row `row`, which is where the wheel landed.
     pub fn pane_at_row(&self, width: u16, height: u16, row: u16) -> Option<String> {
         render::pane_at(&self.slots(width, height), row).map(str::to_string)
+    }
+
+    /// The session a click on `row` names, from the list, a pane, or a group.
+    pub fn session_at_row(&self, width: u16, height: u16, row: u16) -> Option<String> {
+        let area = Rect::new(0, 0, width, height);
+        let input = render::input_rows(self.input.text(), width, height);
+        let chunks = render::areas(
+            area,
+            input,
+            self.panes.command().is_some(),
+            self.panes.of_kind(crate::panes::Kind::Line).count(),
+        );
+        let (list, panes) = render::body(chunks[1], &self.panes);
+        render::list_at(list, &self.panes, row)
+            .or_else(|| render::pane_at(&self.slots(width, height), row).map(str::to_string))
+            .or_else(|| render::line_at(chunks[2], &self.panes, row))
+    }
+
+    /// Scrolls one pane: the wheel reads what the pointer is over, not the keys'.
+    pub fn scroll_pane(&mut self, name: &str, rows: i64) {
+        self.panes.scroll_by(name, rows);
     }
 
     /// Every row the panes show, top to bottom, in the order the frame draws them.
@@ -636,22 +657,23 @@ impl Tui {
         let Ok(size) = self.terminal.size() else {
             return;
         };
-        let Some(name) = self.screen.pane_at_row(size.width, size.height, mouse.row) else {
+        let Some(name) = self
+            .screen
+            .session_at_row(size.width, size.height, mouse.row)
+        else {
             return;
         };
-        self.screen.focus = name;
+        self.screen.focus = name.clone();
         if let Some(rows) = rows {
-            self.screen.scroll_by(rows);
+            // The wheel reads what the pointer is over; it does not retarget keys.
+            self.screen.scroll_pane(&name, rows);
             self.dirty = true;
             return;
         }
-        // SPEC: a click sets the sticky session, asked for as the command that
-        // does it, so the command layer owns the rule.
+        // SPEC: a click sets the sticky session, as the command that does it, so
+        // the rule stays in the command layer.
         self.dirty = true;
-        self.clicked = Some(format!(
-            "set_sticky --name session --value {}",
-            self.screen.focus
-        ));
+        self.clicked = Some(click_line(&name));
     }
 
     /// The window a line of this front-end's own belongs to.
@@ -835,6 +857,17 @@ impl Drop for Tui {
         // A panicking caller must not leave the terminal in raw mode.
         let _ = self.restore();
     }
+}
+
+/// The command line a click on a session asks for.
+///
+/// # Invariant
+///
+/// It starts with `/`: a line without one is prose, and prose goes to the agent.
+/// A click that sent "set_sticky --name session --value peer" as a message was
+/// exactly the bug this spelling exists to prevent. See `docs/notes/tui-lib.md`.
+fn click_line(session: &str) -> String {
+    format!("/set_sticky --name session --value {session}")
 }
 
 /// Paints `screen` and leaves the console caret on the prompt.
@@ -1728,6 +1761,53 @@ mod tests {
         h.measure("main", 10);
         h.screen.scroll_by(3);
         assert_eq!(h.pane_scroll("main"), 0);
+    }
+
+    /// A click asks for the sticky session, as the command line that sets it.
+    #[test]
+    fn a_click_names_the_session_it_landed_on() {
+        let mut panes = Panes::new();
+        panes.layout(&Layout {
+            listed: vec![
+                Listed {
+                    name: "main".to_string(),
+                    status: "idle".to_string(),
+                },
+                Listed {
+                    name: "peer".to_string(),
+                    status: "idle".to_string(),
+                },
+            ],
+            full: vec!["main".to_string()],
+            line: vec!["peer".to_string()],
+            command: "cmd".to_string(),
+        });
+        // The list is the body's left column; its second row is the second name.
+        let area = Rect::new(0, 0, 80, 24);
+        let parts = crate::render::areas(area, 1, true, 1);
+        let (list, _) = crate::render::body(parts[1], &panes);
+        assert_eq!(
+            crate::render::list_at(list, &panes, list.y + 1),
+            Some("peer".to_string()),
+            "a click on a name reads that name"
+        );
+        assert_eq!(crate::render::list_at(list, &panes, 0), None, "the header");
+        // A row below the last name names nobody.
+        assert_eq!(
+            crate::render::list_at(list, &panes, list.bottom() - 1),
+            None
+        );
+        // The line group is its own area, and a click there names its session.
+        assert_eq!(
+            crate::render::line_at(parts[2], &panes, parts[2].y),
+            Some("peer".to_string())
+        );
+        // A press on a name becomes the command that sets it.
+        assert_eq!(
+            format!("/set_sticky --name session --value {}", "peer"),
+            "/set_sticky --name session --value peer",
+            "the loop reads a `/` line as a command"
+        );
     }
 
     #[test]
