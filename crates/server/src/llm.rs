@@ -49,6 +49,45 @@ pub struct LlmClient {
     modalities: Vec<String>,
 }
 
+/// Where a request's input comes from: one session's transcript, up to a seq pinned
+/// when the request started.
+///
+/// # Invariant
+///
+/// The source names the window rather than holding the body, because a body is read
+/// once and a retry has to send the same bytes as the attempt it follows. The window
+/// is closed before the request is sent, so a row landing while the network is still
+/// writing belongs to the next request, not to a retry of this one.
+#[derive(Clone)]
+pub struct RequestSource {
+    pub db_path: std::path::PathBuf,
+    pub session_id: i64,
+    pub upto_seq: i64,
+    /// What a call that never got its result is said to have been.
+    pub placeholder: String,
+}
+
+impl RequestSource {
+    fn open(
+        &self,
+        head: &[u8],
+    ) -> anyhow::Result<(
+        crate::body::RequestBody,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    )> {
+        let rows =
+            crate::transcript::Transcript::open(&self.db_path, self.session_id, self.upto_seq)?;
+        let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let body = crate::body::RequestBody::new(
+            head.to_vec(),
+            rows,
+            self.placeholder.clone(),
+            counter.clone(),
+        );
+        Ok((body, counter))
+    }
+}
+
 impl LlmClient {
     pub fn new(cfg: &crate::config::LlmConfig) -> anyhow::Result<Self> {
         if cfg.api_key.is_empty() {
@@ -158,13 +197,14 @@ impl LlmClient {
         &self,
         instructions: &str,
         handover: Option<&str>,
-        history: &[HistoryItem],
+        source: &RequestSource,
         tools: &[ToolDefinition],
         effort: Option<&str>,
         cancel: CancellationToken,
     ) -> mpsc::Receiver<LlmEvent> {
         let (tx, rx) = mpsc::channel(256);
-        let body = self.build_body(instructions, handover, history, tools, effort);
+        let head = self.build_head(instructions, handover, tools, effort);
+        let source = source.clone();
         let url = format!("{}/responses", self.base_url);
         let api_key = self.api_key.clone();
         let http = self.http.clone();
@@ -176,11 +216,26 @@ impl LlmClient {
         tokio::spawn(async move {
             let mut attempt: u32 = 0;
             loop {
+                // Opened again for every attempt: a body is read once, and a retry
+                // has to send what the attempt before it sent.
+                let (body, bytes) = match source.open(&head) {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        let _ = tx
+                            .send(LlmEvent::Failed {
+                                message: format!("could not read the transcript: {e}"),
+                                retryable: false,
+                            })
+                            .await;
+                        return;
+                    }
+                };
                 let mut once = stream_once(
                     &http,
                     &url,
                     &api_key,
-                    &body,
+                    body,
+                    bytes,
                     headers_timeout,
                     idle_timeout,
                     cancel.clone(),
@@ -269,28 +324,15 @@ impl LlmClient {
         rx
     }
 
-    fn build_body(
+    fn build_head(
         &self,
         instructions: &str,
-        handover: Option<&str>,
-        history: &[HistoryItem],
+        note: Option<&str>,
         tools: &[ToolDefinition],
         effort: Option<&str>,
-    ) -> Value {
-        let mut input: Vec<Value> = Vec::with_capacity(history.len() + 1);
-        // Both are the caller's prose: this module builds requests and writes no
-        // sentence of its own.
-        if let Some(note) = handover {
-            input.push(json!({
-                "role": "user",
-                "content": [{"type": "input_text", "text": note}],
-            }));
-        }
-        input.extend(history.iter().filter_map(history_item_to_input));
-
+    ) -> Vec<u8> {
         let mut body = json!({
             "model": self.model,
-            "input": input,
             "stream": true,
             "store": self.store,
         });
@@ -334,7 +376,23 @@ impl LlmClient {
             // its encrypted blob.
             body["include"] = json!(["reasoning.encrypted_content"]);
         }
-        body
+        // Reopened at `input`, whose array the body fills as the network asks: the
+        // transcript is never one value.
+        let mut head = body.to_string();
+        head.pop();
+        head.push_str(",\"input\":[");
+        // The note is the array's first item, so the transcript never displaces it.
+        if let Some(note) = note {
+            head.push_str(
+                &json!({
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": note}],
+                })
+                .to_string(),
+            );
+            head.push(',');
+        }
+        head.into_bytes()
     }
 }
 
@@ -573,23 +631,25 @@ async fn stream_once(
     http: &reqwest::Client,
     url: &str,
     api_key: &str,
-    body: &Value,
+    body: crate::body::RequestBody,
+    bytes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     headers_timeout: Duration,
     idle_timeout: Duration,
     cancel: CancellationToken,
 ) -> mpsc::Receiver<LlmEvent> {
     let (tx, rx) = mpsc::channel(256);
-    let body = body.clone();
     let url = url.to_string();
     let api_key = api_key.to_string();
     let http = http.clone();
 
     tokio::spawn(async move {
+        let body = body;
         let outcome = AssertUnwindSafe(read_stream(
             &http,
             &url,
             &api_key,
-            &body,
+            body,
+            bytes,
             headers_timeout,
             idle_timeout,
             &cancel,
@@ -617,20 +677,21 @@ async fn read_stream(
     http: &reqwest::Client,
     url: &str,
     api_key: &str,
-    body: &Value,
+    body: crate::body::RequestBody,
+    bytes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     headers_timeout: Duration,
     idle_timeout: Duration,
     cancel: &CancellationToken,
     tx: &mpsc::Sender<LlmEvent>,
 ) {
-    let chars = body.to_string().len();
     let started = Instant::now();
-    tracing::info!(%url, chars, "model request: sending");
+    tracing::info!(%url, "model request: sending");
+    // The byte count is only known afterwards: it is what the transcript cost.
     let request = http
         .post(url)
         .header("Accept", "text/event-stream")
         .bearer_auth(api_key)
-        .json(body);
+        .body(reqwest::Body::wrap_stream(body));
 
     let response = match tokio::time::timeout(headers_timeout, request.send()).await {
         Ok(Ok(r)) => r,
@@ -661,6 +722,7 @@ async fn read_stream(
     };
     tracing::info!(
         status = %response.status(),
+        bytes = bytes.load(std::sync::atomic::Ordering::Relaxed),
         elapsed = ?started.elapsed(),
         "model request: headers"
     );
@@ -1351,6 +1413,26 @@ mod tests {
         );
     }
 
+    /// The head as an object, with the array it opens left empty: a test of the
+    /// envelope needs no transcript.
+    fn head(
+        client: &LlmClient,
+        instructions: &str,
+        note: Option<&str>,
+        tools: &[ToolDefinition],
+        effort: Option<&str>,
+    ) -> Value {
+        let mut text = String::from_utf8(client.build_head(instructions, note, tools, effort))
+            .expect("a head is built from text");
+        // Cut at the marker: a note is written after it.
+        let at = text
+            .find(",\"input\":[")
+            .expect("a head ends by opening its input array");
+        text.truncate(at);
+        text.push('}');
+        serde_json::from_str(&text).expect("the head is one JSON object")
+    }
+
     /// The tool schema is out of band, so a fold cannot drop it -- and this
     /// pins that every request still carries it.
     #[test]
@@ -1366,7 +1448,7 @@ mod tests {
         // A folded prefix must not change what the model is offered: the
         // schema is out of band, not part of the history.
         for handover in [None, Some("earlier work, folded out")] {
-            let body = client.build_body("instructions", handover, &[], &tools, None);
+            let body = head(&client, "instructions", handover, &tools, None);
             let sent = &body["tools"][0];
             assert_eq!(sent["name"], "bash");
             assert_eq!(sent["parameters"]["required"][0], "cmd");
@@ -1375,7 +1457,7 @@ mod tests {
 
         // An empty registry means no `tools` key at all, rather than an empty
         // array that some providers reject.
-        let body = client.build_body("instructions", None, &[], &[], None);
+        let body = head(&client, "instructions", None, &[], None);
         assert!(body.get("tools").is_none(), "{body}");
     }
 
@@ -1798,9 +1880,9 @@ mod tests {
     #[test]
     fn a_thinking_level_rides_on_the_request() {
         let client = client_with("m", &[], &[]);
-        let body = client.build_body("instructions", None, &[], &[], Some("high"));
+        let body = head(&client, "instructions", None, &[], Some("high"));
         assert_eq!(body["reasoning"]["effort"], "high");
-        let body = client.build_body("instructions", None, &[], &[], None);
+        let body = head(&client, "instructions", None, &[], None);
         assert!(
             body.get("reasoning").is_none(),
             "an unset level must not become an empty reasoning object"
@@ -1817,7 +1899,7 @@ mod tests {
             description: "run".into(),
             parameters: json!({"type": "object"}),
         }];
-        let body = client.build_body("instructions", None, &[], &tools, None);
+        let body = head(&client, "instructions", None, &tools, None);
         let offered = body["tools"].as_array().expect("tools");
         assert_eq!(offered.len(), 3, "{body}");
         assert_eq!(offered[0]["type"], "function");
@@ -1830,14 +1912,14 @@ mod tests {
     #[test]
     fn a_model_that_declares_no_builtin_tools_sends_none() {
         let client = client_with("m", &[], &[]);
-        let body = client.build_body("instructions", None, &[], &[], None);
+        let body = head(&client, "instructions", None, &[], None);
         assert!(
             body.get("tools").is_none(),
             "an empty tools array is not the same as no tools key: {body}"
         );
         // Only a builtin tool, no local ones, still sends the key.
         let client = client_with("m", &["web_search"], &[]);
-        let body = client.build_body("instructions", None, &[], &[], None);
+        let body = head(&client, "instructions", None, &[], None);
         assert_eq!(body["tools"], json!([{"type": "web_search"}]));
     }
 

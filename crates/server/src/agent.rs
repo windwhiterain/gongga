@@ -389,16 +389,19 @@ impl Agent {
             effort,
             cwd,
         } = *attempt;
-        let (note, history) = self.store.context(id)?;
+        let note = self.store.handover(id)?;
         let definitions = self.tools.definitions();
         let prompt = self.prompt_in_force(id, &name, cwd, note.as_deref(), step == 1)?;
+        // Pinned here, so every retry of this request replays the window that was
+        // current when it started.
+        let source = self.store.request_source(id)?;
         // One number for "how long the model took": the whole stream, retries
         // inside it included, because that is what the wall clock paid.
         let requested = std::time::Instant::now();
         let mut rx = llm.stream(
             &prompt.instructions,
             prompt.handover.as_deref(),
-            &history,
+            &source,
             &definitions,
             effort,
             cancel.clone(),

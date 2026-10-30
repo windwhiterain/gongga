@@ -5,6 +5,7 @@
 mod agent;
 mod agents;
 mod blobs;
+mod body;
 mod bus;
 mod commands;
 mod config;
@@ -21,6 +22,7 @@ mod shell_command;
 mod ship;
 mod store;
 mod tools;
+mod transcript;
 mod transport;
 
 use std::path::PathBuf;

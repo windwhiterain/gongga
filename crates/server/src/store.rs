@@ -1,7 +1,7 @@
 //! Everything durable lives in SQLite.
 //! See `docs/notes/server-store.md`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use protocol::SessionStatus;
@@ -89,6 +89,9 @@ CREATE TABLE IF NOT EXISTS messages (
     content    TEXT,
     -- What the reader needs: the payload as it was written, never sent.
     display    TEXT NOT NULL,
+    -- The tool this row calls or answers, so a request can pair them without
+    -- opening the item's bytes. NULL for every other kind of row.
+    call_id    TEXT,
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS messages_by_session ON messages(session_id, seq);
@@ -144,7 +147,11 @@ CREATE INDEX IF NOT EXISTS detached_by_session ON detached_jobs(session);
 "#;
 
 #[derive(Debug, Clone)]
-pub struct Store(Arc<Mutex<Connection>>);
+pub struct Store {
+    conn: Arc<Mutex<Connection>>,
+    /// Where the database is, so a request can open its own read-only view of it.
+    path: PathBuf,
+}
 
 /// Whether `table` already has `column`, and adds it when it does not.
 fn add_column_if_missing(
@@ -196,6 +203,12 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "UPDATE detached_jobs SET name = shell || '-' || job WHERE name = ''",
         [],
     )?;
+    add_column_if_missing(
+        conn,
+        "messages",
+        "call_id",
+        "ALTER TABLE messages ADD COLUMN call_id TEXT",
+    )?;
     backfill_wire_items(conn)?;
     Ok(())
 }
@@ -224,8 +237,12 @@ fn backfill_wire_items(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         )?;
         let value = serde_json::from_str(&display).unwrap_or(serde_json::Value::Null);
         conn.execute(
-            "UPDATE messages SET content = ?1 WHERE id = ?2",
-            params![wire_item(&kind, &value).map(|item| item.to_string()), id],
+            "UPDATE messages SET content = ?1, call_id = ?2 WHERE id = ?3",
+            params![
+                wire_item(&kind, &value).map(|item| item.to_string()),
+                value.get("call_id").and_then(|v| v.as_str()),
+                id
+            ],
         )?;
     }
     Ok(())
@@ -244,12 +261,20 @@ impl Store {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(SCHEMA)?;
         migrate(&conn)?;
-        Ok(Self(Arc::new(Mutex::new(conn))))
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+            path: path.to_path_buf(),
+        })
     }
 
     fn lock(&self) -> MutexGuard<'_, Connection> {
         // A poisoned mutex is safe to recover: the WAL keeps the database consistent.
-        self.0.lock().unwrap_or_else(|e| e.into_inner())
+        self.conn.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Where the database lives, for a reader that brings its own connection.
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     // -- sessions ----------------------------------------------------------
@@ -427,14 +452,15 @@ impl Store {
         content: &serde_json::Value,
     ) -> anyhow::Result<i64> {
         let seq: i64 = conn.query_row(
-            "INSERT INTO messages (session_id, seq, kind, content, display, created_at)
+            "INSERT INTO messages (session_id, seq, kind, content, display, call_id, created_at)
              VALUES (
                 ?1,
                 (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?1),
                 ?2,
                 ?3,
                 ?4,
-                ?5
+                ?5,
+                ?6
              )
              RETURNING seq",
             params![
@@ -442,6 +468,7 @@ impl Store {
                 kind,
                 wire_item(kind, content).map(|item| item.to_string()),
                 serde_json::to_string(content)?,
+                content.get("call_id").and_then(|v| v.as_str()),
                 now_millis()
             ],
             |r| r.get(0),
@@ -794,6 +821,16 @@ impl Store {
         let note = self.handover(session_id)?;
         let items = self.history_since(session_id, 0)?;
         Ok((note, items))
+    }
+
+    /// The transcript a request reads, closed at the row that exists right now.
+    pub fn request_source(&self, session_id: i64) -> anyhow::Result<crate::llm::RequestSource> {
+        Ok(crate::llm::RequestSource {
+            db_path: self.path.clone(),
+            session_id,
+            upto_seq: self.last_seq(session_id)?,
+            placeholder: interrupted_call(),
+        })
     }
 
     // -- tool calls --------------------------------------------------------
@@ -1191,7 +1228,7 @@ impl MessageRow {
 }
 
 /// The pictures a stored `tool_result` row recorded, by path.
-fn images_of(value: &serde_json::Value) -> Vec<ImageRef> {
+pub(crate) fn images_of(value: &serde_json::Value) -> Vec<ImageRef> {
     value
         .get("images")
         .and_then(|v| v.as_array())
