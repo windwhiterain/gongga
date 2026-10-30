@@ -14,11 +14,13 @@ use serde_json::{Value, json};
 use crate::image::content_part;
 use crate::transcript::{Row, Transcript};
 
-/// One item, as it will be written, with the two fields the ordering needs.
+/// One item, as it will be written, with the fields the ordering needs.
 struct Entry {
     bytes: Vec<u8>,
     kind: String,
     call_id: Option<String>,
+    /// A text row's speaker: the one kind that can end a step from the customer side.
+    role: Option<String>,
 }
 
 impl Entry {
@@ -28,6 +30,7 @@ impl Entry {
             item,
             kind,
             call_id,
+            role,
             images,
         } = row;
         if kind == "builtin_call" {
@@ -39,6 +42,7 @@ impl Entry {
                 bytes: replayed.to_string().into_bytes(),
                 kind,
                 call_id,
+                role,
             });
         }
         let bytes = if images.is_empty() {
@@ -65,6 +69,7 @@ impl Entry {
             bytes,
             kind,
             call_id,
+            role,
         })
     }
 }
@@ -73,11 +78,10 @@ impl Entry {
 ///
 /// # Invariant
 ///
-/// A provider reads a `function_call` as answered by the item directly after it, while
-/// the rows are stored in completion order, so a step's items cannot be written until
-/// the step is over. A step is over when its last open call is answered -- the model
-/// cannot ask for the next one before it hears about these -- which bounds what this
-/// holds by one step rather than by the transcript.
+/// A provider wants a `function_call` answered by the item after it, while results
+/// land in completion order, so a step is held until its last call is answered or a
+/// new prompt ends it -- unfinished calls then answered as interrupted. That bounds
+/// what is held by one step, not by the transcript.
 #[derive(Default)]
 struct Step {
     entries: Vec<Entry>,
@@ -87,7 +91,7 @@ struct Step {
 
 impl Step {
     /// Takes one row and returns what the request may now send.
-    fn push(&mut self, entry: Entry) -> Vec<Vec<u8>> {
+    fn push(&mut self, entry: Entry, placeholder: &str) -> Vec<Vec<u8>> {
         let mut out = Vec::new();
         match entry.kind.as_str() {
             "tool_call" => {
@@ -114,37 +118,39 @@ impl Step {
                 self.open.retain(|open| open != &id);
                 self.entries.push(entry);
                 if self.open.is_empty() {
-                    out = self.flush();
+                    out = self.flush(placeholder);
                 }
             }
-            // Not a tool: nothing left to pair, so the buffered step goes first.
-            _ => {
-                out = self.flush();
+            // A new prompt ends a step nobody finished; a step's own reasoning stays.
+            _ if entry.kind == "text" && entry.role.as_deref() != Some("assistant") => {
+                out = self.flush(placeholder);
                 out.push(entry.bytes);
             }
+            _ if self.open.is_empty() => {
+                out = self.flush(placeholder);
+                out.push(entry.bytes);
+            }
+            _ => self.entries.push(entry),
         }
         out
     }
 
-    /// Ends the transcript: a call with no result gets one saying it was interrupted.
-    fn close(&mut self, placeholder: &str) -> Vec<Vec<u8>> {
-        for id in self.open.clone() {
-            let answer = json!({
-                "type": "function_call_output",
-                "call_id": id,
-                "output": placeholder,
-            });
+    /// Writes the buffered step, answering any call no result reached.
+    fn flush(&mut self, placeholder: &str) -> Vec<Vec<u8>> {
+        for id in self.open.drain(..) {
             self.entries.push(Entry {
-                bytes: answer.to_string().into_bytes(),
+                bytes: json!({
+                    "type": "function_call_output",
+                    "call_id": id,
+                    "output": placeholder,
+                })
+                .to_string()
+                .into_bytes(),
                 kind: "tool_result".to_string(),
                 call_id: Some(id),
+                role: None,
             });
         }
-        self.flush()
-    }
-
-    /// Writes the buffered step with each call followed by its own result.
-    fn flush(&mut self) -> Vec<Vec<u8>> {
         if self.entries.is_empty() {
             return Vec::new();
         }
@@ -165,9 +171,7 @@ impl Step {
                 continue;
             };
             let Entry {
-                bytes,
-                kind,
-                call_id,
+                bytes, kind, call_id, ..
             } = entry;
             if kind == "tool_result" {
                 // Already written beside the call it answers.
@@ -189,7 +193,6 @@ impl Step {
                 }
             }
         }
-        self.open.clear();
         out
     }
 }
@@ -244,28 +247,26 @@ impl RequestBody {
             self.ready.push_back(head);
             return Ok(true);
         }
-        let next = match self.rows.as_mut() {
-            None => None,
-            Some(rows) => rows.next().map(|row| row.map(Entry::of)),
-        };
-        match next {
-            Some(Err(e)) => return Err(IoError::other(e)),
-            Some(Ok(Some(entry))) => {
-                for bytes in self.step.push(entry) {
-                    self.emit(bytes);
+        if let Some(rows) = self.rows.as_mut() {
+            match rows.next() {
+                Some(Err(e)) => return Err(IoError::other(e)),
+                Some(Ok(row)) => {
+                    if let Some(entry) = Entry::of(row) {
+                        for bytes in self.step.push(entry, &self.placeholder) {
+                            self.emit(bytes);
+                        }
+                    }
+                    return Ok(true);
+                }
+                // The walk is over: whatever is still buffered is the last step.
+                None => {
+                    self.rows = None;
+                    for bytes in self.step.flush(&self.placeholder) {
+                        self.emit(bytes);
+                    }
+                    return Ok(true);
                 }
             }
-            // Read and set aside: the loop asks for the row after it.
-            Some(Ok(None)) | None => {}
-        }
-        if self.rows.is_some() {
-            return Ok(true);
-        }
-        if self.rows.take().is_some() {
-            for bytes in self.step.close(&self.placeholder) {
-                self.emit(bytes);
-            }
-            return Ok(true);
         }
         if let Some(tail) = self.tail.take() {
             self.ready.push_back(tail);
