@@ -763,56 +763,6 @@ impl Store {
         self.append_message(session_id, "system", &payload)
     }
 
-    /// Closes every call that never got a result, and returns how many.
-    ///
-    /// # Invariant
-    ///
-    /// A read path must not invent an item the database does not hold: providers
-    /// reject the call without its result, so the closing row has to exist, and
-    /// writing it here is what makes the next request's array the stored rows and
-    /// not a rendering of a gap.
-    pub fn close_dangling_calls(&self, session_id: i64) -> anyhow::Result<usize> {
-        // Raw rows: history closes an unanswered call itself, and that
-        // placeholder must not hide the gap from this write.
-        let rows = {
-            let conn = self.lock();
-            let mut stmt = conn
-                .prepare("SELECT kind, display FROM messages WHERE session_id = ?1 ORDER BY seq")?;
-            stmt.query_map(params![session_id], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })?
-            .collect::<Result<Vec<_>, _>>()?
-        };
-        let call_id = |content: &str| {
-            serde_json::from_str::<serde_json::Value>(content)
-                .ok()
-                .and_then(|v| v.get("call_id")?.as_str().map(str::to_string))
-        };
-        let mut open: Vec<String> = Vec::new();
-        let mut answered: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for (kind, content) in &rows {
-            let Some(id) = call_id(content) else { continue };
-            match kind.as_str() {
-                "tool_call" => open.push(id),
-                "tool_result" => {
-                    answered.insert(id);
-                }
-                _ => {}
-            }
-        }
-        let text = interrupted_call();
-        let mut closed = 0;
-        for call_id in open.iter().filter(|id| !answered.contains(*id)) {
-            self.append_message(
-                session_id,
-                "tool_result",
-                &json!({"call_id": call_id, "output": text, "images": []}),
-            )?;
-            closed += 1;
-        }
-        Ok(closed)
-    }
-
     /// What a request is built from: the handover note plus every row still here.
     ///
     /// A handover leaves the note and nothing else -- the rows that explained it
@@ -2174,35 +2124,6 @@ mod tests {
             t.messages[0].text
         );
         assert_eq!(t.messages[1].kind, "text");
-    }
-
-    /// A call left open by the last turn gets its result written, once.
-    #[test]
-    fn a_dangling_call_is_closed_with_a_row_not_a_fiction() {
-        let (_d, store) = temp_store();
-        let id = store.create_session("main", "m", "C:/x").unwrap();
-        store
-            .append_message(
-                id,
-                "tool_call",
-                &json!({"call_id": "c1", "name": "bash", "arguments": "{}"}),
-            )
-            .unwrap();
-
-        assert_eq!(store.close_dangling_calls(id).unwrap(), 1);
-        assert_eq!(
-            store.close_dangling_calls(id).unwrap(),
-            0,
-            "closed once is closed"
-        );
-        let rows = store.messages_between(id, 1, i64::MAX).unwrap();
-        assert_eq!(
-            rows.messages.len(),
-            2,
-            "the closure is a row: {:?}",
-            rows.messages
-        );
-        assert_eq!(rows.messages[1].kind, "tool_result");
     }
 
     /// A payload another session still names is not this session's to take with it.

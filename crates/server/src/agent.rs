@@ -126,15 +126,6 @@ impl Agent {
         }
         let (turn, cancel) = session.new_turn();
         let started = std::time::Instant::now();
-        // A call the last turn left open is closed before anything is asked:
-        // providers reject the pair.
-        match self.store.close_dangling_calls(session.id()) {
-            Ok(0) => {}
-            Ok(n) => tracing::info!(session = %name, closed = n, "calls that never got a result"),
-            Err(e) => {
-                tracing::warn!(session = %name, error = %e, "could not close a dangling call")
-            }
-        }
         // Resolved once: every step of a turn sends to the model it started on.
         let (llm, budget) = match self.route(&name, &session.tuning()) {
             Ok(route) => route,
