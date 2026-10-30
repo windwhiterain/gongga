@@ -11,8 +11,8 @@ url = "https://github.com/windwhiterain/gongga-ship.git"
 commit = "61da64edaf1b3db5df149fd8bf40360b4b4e1551"
 # Which path in that repository is the home's config.
 config = "config/config.toml"
+# Where the home's skills are. One root: a home installs only the skills that
+# belong to a home. The machine's own skills are community content in the
+# gongga-agents clone, which the harness reads rather than installs.
+skills = "skills"
 
-# The split between what belongs to a home and what belongs to the machine.
-[ship.skills]
-harness = "skills/harness"
-general = "skills/general"

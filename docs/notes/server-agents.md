@@ -3,9 +3,10 @@
 ## agents
 
 The machine's shared content, kept in a clone under `~/.agents`. Today that is
-the roster and the quota scripts beside it; the module is named for the
-directory rather than for the two files because the next thing to live there
-will not be a roster, and a module renamed every time is a module nobody cites.
+the roster, the quota scripts beside it, and the general bucket of skills under
+`skills/<name>`; the module is named for the directory rather than for the files
+because the next thing to live there will not be a roster, and a module renamed
+every time is a module nobody cites.
 
 ## Roots
 
@@ -14,8 +15,8 @@ the same thing in both:
 
 | root | who writes it | what it is |
 |---|---|---|
-| `~/.agents/gongga-agents` | gongga, by cloning | the community repository |
-| `~/.agents` | the user | this machine's own files |
+| `~/.agents/gongga-agents` | gongga, by cloning | the community repository: roster, quota scripts, general skills |
+| `~/.agents` | the user | this machine's own files, when a field or a skill needs overriding |
 
 The sameness is deliberate. `quota_query.script` in the roster is a path
 relative to the file that names it (`providers/deepseek.py`), so a community entry
