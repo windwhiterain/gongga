@@ -3,6 +3,7 @@
 //! See `docs/notes/server-lib.md`.
 
 mod agent;
+mod agents;
 mod blobs;
 mod bus;
 mod commands;
@@ -118,7 +119,6 @@ pub fn main(args: Args) -> anyhow::Result<()> {
 }
 
 pub async fn run(args: Args) -> anyhow::Result<()> {
-
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&args.log));
     match args.log_format {
         LogFormat::Json => tracing_subscriber::fmt()
@@ -150,6 +150,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let cfg = config_from(&args)?;
     // Claim the home before opening the database: one server per home.
     let _instance = instance::InstanceLock::acquire(&cfg.home)?;
+    // Off this thread before anything reads a roster: the community copy may not
+    // be here yet, and no start waits for a network. See `docs/notes/server-agents.md`.
+    agents::start();
     // Before anything reads this home: one migrator per version step.
     // First, because the data outlives the content.
     ship::prepare(&cfg.home);
@@ -207,7 +210,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let mut script_env = base_env.clone();
     script_env.push((
         "PATH".to_string(),
-        shell_command::native_path(&cfg.home).to_string_lossy().into_owned(),
+        shell_command::native_path(&cfg.home)
+            .to_string_lossy()
+            .into_owned(),
     ));
     let mut shell_env = base_env;
     shell_env.push(("PATH".to_string(), shell_command::path(&cfg.home)));
@@ -307,10 +312,10 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     // Which roster was read, and whether it was readable at all: "no --llm
     // worked" is nearly always this line.
     tracing::info!(
-        roster = ?providers::roster().path(),
+        rosters = ?providers::roster().paths(),
         providers = providers::roster().providers().len(),
         problem = providers::roster().problem(),
-        "llm roster imported"
+        "provider roster imported"
     );
     tracing::info!(
         key = %cfg.home.join("server.key").display(),

@@ -392,7 +392,7 @@ UI 上流式看到的仍是完整输出，但进 transcript 的不会反复计�
   - 压缩成功后把这个数清零：它描述的是刚被折掉的旧请求，留着会让下一步拿过期数字再压一次。
   - 兼容层不返回 `usage` 时，这个数一直是 0，压缩不会触发 —— 这是唯一诚实的失败方式，
     总比用一个假比率把上下文撑爆、然后被 provider 400 强。
-- **阈值从哪来**：模型有 `context`（`~/.agents/llm.toml`）时就是它的 70%
+- **阈值从哪来**：模型有 `context`（`~/.agents/providers.toml`）时就是它的 70%
   （`context_limit` 可改百分比）；没有 `context` 时退回 `agent.compress_above_tokens`
   （默认 40000）。0 一律表示关闭，包括全局配置和百分比两条路。
 
@@ -457,7 +457,7 @@ UI 上流式看到的仍是完整输出，但进 transcript 的不会反复计�
   实测踩到了。现在 `history_since` 给这种调用补一条
   「本轮被中断，结果未知，请重新确认」，既让请求合法，也没替模型假设命令跑没跑。
 
-#### 名单：`~/.agents/llm.toml`（自动导入）
+#### 名单：`~/.agents/providers.toml`（自动导入）
 
 这台机器有一份机器级的 LLM 名单：15 个 provider，各自带
 `[[provider.endpoint]]`（`api` + `base_url`）、`[[provider.model]]`（`id` / `context` /
@@ -487,7 +487,7 @@ UI 上流式看到的仍是完整输出，但进 transcript 的不会反复计�
 按 `minimax-cn/MiniMax-M3.1-Flash` 跑。
 
 名单缺了或坏了都不致命：记下原因、退回内置默认、启动日志里写明
-（`llm roster imported roster=... providers=15`）。为了让名单不是个更糟的依赖，
+（`provider roster imported rosters=... providers=15`）。为了让名单不是个更糟的依赖，
 这里宁可少干也不拒启动。
 
 
@@ -1083,8 +1083,8 @@ shell 和它的脚本就敲谁」，而且只有一个名字：bash 自己会把
 [transport] mtu = 1200  window = 64
 ```
 
-`[llm]` 这一段**基本不用写**：provider / base_url / key / 上下文都来自 `~/.agents/llm.toml`
-（见 §4「名单」），这里只用来**覆盖**它。`GONGGA_LLM_CATALOG` 可以把名单指到别的路径。
+`[llm]` 这一段**基本不用写**：provider / base_url / key / 上下文都来自 `~/.agents/providers.toml`
+（见 §4「名单」），这里只用来**覆盖**它。`GONGGA_PROVIDERS_CATALOG` 可以把名单指到别的路径。
 
 库路径也能在启动时直接给（SPEC「database path can be specified at server start」）：
 
@@ -1135,7 +1135,7 @@ Git Bash 自动探测常见安装路径，找不到再退回 PATH 上的 `bash`�
 | `adopt()` 的开销与行数无关：一次 `tasklist` 回答全部 pid | 通过（156 行陈旧记录：修复前 75.4s 才 bind，修复后 1.4–1.9s；20/50/156 行基本持平） |
 | reasoning `summary` 从 delta 累积（真实 provider：0 → 395 字符） | 通过 |
 | 回传的 `encrypted_content` 被 provider 消费（真 blob 答对 / 垃圾 blob 答不出） | 通过 |
-| 名单自动导入：`~/.agents/llm.toml` 15 个 provider，启动即用 | 通过（`llm roster imported ... providers=15`）|
+| 名单自动导入：`~/.agents/providers.toml` 15 个 provider，启动即用 | 通过（`provider roster imported ... providers=15`）|
 | 无配置时按名单选默认条目：`deepseek-official/deepseek-flash`，`/v1/responses` 可用 | 通过（真实 DeepSeek，609ms 一轮）|
 | `set_session --llm`：`deepseek-official/deepseek-v4-pro` 一轮答对；`minimax-cn/MiniMax-M3.1-Flash` 一轮答对 | 通过（两条都真跑，密钥链各自命中）|
 | `set_session --context_limit 30%`：日志 `budget=300000`（1M × 30%，单位是 token） | 通过 |

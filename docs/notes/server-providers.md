@@ -2,9 +2,9 @@
 
 ## providers
 
-The machine's LLM roster: `~/.agents/llm.toml`.
+The machine's LLM roster: the community `providers.toml`, with the user's own over it.
 
-One file already describes every provider this machine can reach: endpoints,
+One file already describes every provider a group of machines can reach: endpoints,
 keys, model catalogue, context windows. Reading it is what lets a session say
 `--llm deepseek-official/deepseek-flash` and be understood, instead of every
 caller restating a base URL and the name of an environment variable.
@@ -18,10 +18,62 @@ defaults; a broken one is the same, plus a line saying why. Refusing to start
 because a file we merely *prefer* is malformed would make the roster a worse
 dependency than not having it.
 
-## DEFAULT_PATH
+## roster_paths
 
-Where the roster lives, relative to the home directory. One file per machine,
-so `--llm` and the server's own default read the same answer.
+Two files, one per layer: `~/.agents/gongga-agents/providers.toml` is what the
+community repository clones down (`agents::ROSTER` under each root), and
+`~/.agents/providers.toml` is the machine's own. `GONGGA_PROVIDERS_CATALOG` still names one
+file and means it: an override is a test rig or a fork, not a third layer.
+
+The split exists because the two kinds of statement have different owners. A
+model's context window, its modalities, its price bands and the shape of its
+endpoint are facts about the provider, the same on every machine, and they
+change when the provider does. A key, a private gateway's base URL, a
+self-hosted llama.cpp -- those are facts about *this* machine. Keeping them in
+one file meant every machine's copy drifted on its own, and a corrected price
+had to be found and applied 15 times.
+
+It also decides what can be committed. The community file is public, so it
+never holds a secret: `key_env` names the variable, the secret lives in the
+environment or in the private file. That is why the private layer is read
+*last* -- it can correct anything the community says, and only it can say
+"this machine's key is sk-...".
+
+## Catalog::load_layers
+
+Merges the layers in order, so the last file read wins a disputed field and the
+first file read provides everything nobody disputed. A missing layer is the
+normal case (a fresh machine, a machine that never wrote a private roster) and
+is not worth a line; a layer that does not parse costs only itself, because the
+other one still answers `--llm` and a roster half the size beats no roster.
+
+Merging stops at what a request needs. `[calendar]` and `[peak_off_peak]` are
+merged too, but nothing here reads them: they are merged because they are in the
+same file and a private layer that overrode one of them would otherwise be
+silently ignored by the tools that do read them.
+
+## merge_into
+
+Field-level, keyed by `id` for arrays of tables: `[[provider]]` and, under it,
+`[[provider.endpoint]]` and `[[provider.model]]`.
+
+The alternative -- a private `[[provider]]` replacing the community one whole --
+was rejected because of what the private file is *for*. Its most common content
+is one field: `key = "sk-..."` for a provider the community already describes.
+Whole-provider replacement would make that a 40-line copy of the community
+entry, which then rots: the community fixes a price, the copy keeps the old one,
+and nothing says which is right.
+
+Arrays of tables pair up by `id` only when every element on both sides has one.
+That rule keeps `modalities = ["text"]` overriding as a value -- a list of
+strings is a value, and merging it element-wise would be inventing semantics the
+roster never had -- while `[[provider.model]]` merges per model.
+
+Order is the base's, with private-only entries appended. File order is the
+default preference order (`Catalog::default_entry`), so a private layer can add
+a provider at the end and cannot silently promote itself above the community's
+first choice; making it the default is what `[llm] provider` in `config.toml`
+is for.
 
 ## Model::context
 
@@ -50,7 +102,7 @@ Kept separate from `Choice` because the two callers need different things.
 `--llm` must be able to say "this is wrong" at the moment it is typed, so it
 wants a key. Startup must not: the server's own key comes from a longer chain
 (an exported `GONGGA_API_KEY`, its `key_env` variable, or the roster's `key`),
-and refusing to boot because `llm.toml` did not hold one would be a step
+and refusing to boot because `providers.toml` did not hold one would be a step
 backwards.
 
 ## Model::modalities
@@ -114,8 +166,11 @@ does take while the caller is still looking at what they typed.
 
 ## Catalog::problem
 
-Why the file could not be read, when it could not be. Kept rather than returned
-so startup can proceed and still report it once.
+Why a layer could not be read, when one could not be. Kept rather than returned
+so startup can proceed and still report it once, and kept as the *first*
+complaint: with two layers, the one that failed parsing is the one worth naming,
+and a list of three errors on one line reads as a broken roster rather than a
+broken file.
 
 ## Catalog::specs
 
@@ -171,18 +226,26 @@ job, and it does that by measurement rather than by a constant (see `Meter`).
 Levels this model accepts, as the roster spells them. Empty means the roster
 does not say, which is the common case for anything older than the field.
 
-## parse
+## parse_value
 
-Duplicate ids would make `--llm` ambiguous, and the resolution above silently
-takes the first. Keep the first and drop the rest rather than pretend both
-exist.
+Takes the merged tree rather than text, because merging happens on TOML values:
+a layer can only override a field it can see, and the parse is what assigns the
+merged result its meaning. Duplicate ids would make `--llm` ambiguous, and the
+resolution above silently takes the first. Keep the first and drop the rest
+rather than pretend both exist.
 
 ## roster, Live, read_fresh
 
-Read once per file, not once per process: an edit to `~/.agents/llm.toml` reaches
+Read once per file, not once per process: an edit to either `providers.toml` reaches
 the next `set_session --llm` and the next `get_messages` completion list without a
 restart, which is the whole reason a roster is a file rather than a build-time
-table.
+table. The stamp is taken per file, because the files change for different
+reasons: the community one when the clone is refreshed, the private one when a
+reader edits it, and a server must not re-read 65KB for either.
+
+That per-file question is also what lets the community layer arrive late. A
+clone that lands 30 seconds after startup is not a restart: the next read sees a
+file where there was none and merges it in.
 
 The handle is an `Arc`, never a `&'static`. A `&'static` was honest while the file
 was read once; keeping it through a reload would mean the retired list stays

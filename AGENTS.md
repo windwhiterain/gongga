@@ -56,6 +56,25 @@ $S clean        # 收掉没人会 swap 的旧继任者（--artifacts 连旧暂�
   要验的是外部状态（pid / 端口 / pending），那部分只能重新测量。
 - **换完看继任者自己的日志**有没有 `replaying a turn ... resumed=true`，那才是"接上了"。
 
+## LLM 目录（`~/.agents/providers.toml`）
+
+provider 目录分两层，服务端只读不写，启动时按 provider `id` 字段级合并，私有覆盖社区：
+
+| 根 | 谁的 | 怎么来 |
+| --- | --- | --- |
+| `~/.agents/gongga-agents/` | 社区，`windwhiterain/gongga-agents` | 服务端缺失就 clone，启动时 + 每小时 `pull --ff-only` |
+| `~/.agents/` | 用户私有 | 可以整个缺席：要覆盖哪个字段再写哪个 |
+
+两层同构：`providers.toml` + `providers/`，所以 `quota_query.script` 的相对路径（`providers/deepseek.py`）
+在哪一层写着就指向哪一层的脚本，不需要额外的查找表。
+
+**社区那份永远不带密钥**：它公开，provider 只用 `key_env` 指环境变量。改 provider 的事实
+（模型、上下文、模态、价格、端点）去社区仓库改并发 PR。密钥的优先级是环境变量 > 私有文件里
+的 `key`，所以一台机器可以**没有私有文件**：13 个密钥在用户环境变量里（`DEEPSEEK_API_KEY` 等，
+与 `key_env` 同名），社区那份就是唯一的 roster。只有要改 `base_url`、加自建 provider 时才写
+`~/.agents/providers.toml`，那个文件只留本地、不进任何仓库。
+`GONGGA_PROVIDERS_CATALOG=<path>` 仍然表示「就这一个文件」，两层合并整个跳过。
+
 ## 技能
 skill 是"任务相关才读"的散文 + 脚本，**不在这个仓库里**：它们由独立的内容仓库
 ship，服务端 pin 一个 commit，启动时装进两个根——harness 桶进 `$GONGGA_HOME/skills/`，

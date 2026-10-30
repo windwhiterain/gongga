@@ -545,7 +545,7 @@ pub fn roots() -> &'static Roots {
 
 /// `git` by name: it is what the machine has, and a path resolved at build time
 /// is wrong on the next one.
-fn git() -> &'static str {
+pub(crate) fn git() -> &'static str {
     "git"
 }
 
