@@ -337,6 +337,37 @@ pub fn client_commands() -> Vec<CommandSpec> {
                 ),
             ],
         ),
+        (
+            "connect_server",
+            "Point this client at a server, and remember it for later commands.",
+            vec![
+                spec_arg(
+                    "ip",
+                    "Where the server is; localhost when omitted.",
+                    false,
+                    Some("ip"),
+                    CompletionSource::None,
+                ),
+                spec_arg(
+                    "port",
+                    "The UDP port it listens on.",
+                    true,
+                    Some("port"),
+                    CompletionSource::None,
+                ),
+            ],
+        ),
+        (
+            "serve",
+            "Run a server for this home in this process, in the foreground.",
+            vec![spec_arg(
+                "port",
+                "The UDP port to listen on, on localhost.",
+                true,
+                Some("port"),
+                CompletionSource::None,
+            )],
+        ),
     ]
     .into_iter()
     .map(|(name, description, args)| CommandSpec {

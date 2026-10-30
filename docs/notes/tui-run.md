@@ -48,14 +48,40 @@ keyboard for five seconds at a stretch -- the TUI would be unresponsive exactly
 while the server is down, which is when the operator is most likely to be pressing
 Alt+Q.
 
+## main
+
+The window's own entry point: it builds the runtime and hands it to `interactive`.
+It lives in the library rather than in `main.rs` because the binary now has two
+shapes -- a command line, which is the cli's, and no command at all, which is this
+-- and the choice between them is one `if`.
+
+## dial_now
+
+The address is resolved on *every* attempt, not once per process. `connect_server`
+moves it under a running loop, and a key only appears after a server has minted
+one, so an endpoint resolved at startup is the one thing that cannot be right in
+both of those cases.
+
 ## interactive
 
 The window and the link are separate things. Nothing here makes the server's
 presence a condition for the client to exist: the TUI opens first, dials from
 inside the loop, and when the link dies it goes back to dialling instead of taking
-the window down with it. A restart therefore looks like two lines in the log --
-`connection lost`, then `connected` -- with the input line, the history and the
-scroll position exactly where they were.
+the window down with it.
+
+A restart therefore looks like two lines in the log -- `connection lost`, then
+`connected` -- with the input line, the history and the scroll position exactly
+where they were.
+
+The one thing done before the window opens is `cli::prepare`: the command an
+agent's shell types has to exist before a shell does.
+
+Starting a server is SPEC's job for this front-end, and it happens on the *first
+failed dial* rather than at startup: that is the same moment the operator learns
+nothing is there, it covers a `connect_server` that moved to a server nobody
+started, and `--client_only` has exactly one place to say no. The task is spawned
+rather than awaited, so the window keeps taking keys while a first start migrates
+a home and fetches its content.
 
 Resolved before the terminal is taken over: a bad address or a missing key is not
 fixed by retrying, and an error is far easier to read on the normal screen than

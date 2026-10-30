@@ -1171,8 +1171,10 @@ mod tests {
         assert_eq!(
             names,
             vec![
+                "connect_server",
                 "del_event_filter",
                 "del_sticky_cmd_argument",
+                "serve",
                 "set_event_filter",
                 "set_event_ui",
                 "set_sticky_cmd_argument"

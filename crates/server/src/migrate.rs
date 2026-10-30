@@ -49,10 +49,18 @@ pub fn version(home: &Path) -> u32 {
 pub fn bring_forward(home: &Path, db: &Path) -> anyhow::Result<Report> {
     let mut report = Report {
         from: version(home),
-        steps: Vec::new(),
+        ..Default::default()
     };
     if report.from >= VERSION {
         return Ok(report);
+    }
+    // A home with no database has nothing to migrate: it is this build's first start.
+    if !db.is_file() && !home.join(STAMP).is_file() {
+        write_version(home, VERSION)?;
+        return Ok(Report {
+            from: VERSION,
+            ..Default::default()
+        });
     }
     for step in report.from..VERSION {
         let script = fetch(home, step)?;
@@ -221,6 +229,75 @@ mod tests {
         let report = bring_forward(dir.path(), &dir.path().join("g.db")).unwrap();
         assert_eq!(report.from, VERSION);
         assert!(report.steps.is_empty());
+    }
+
+    /// A cache holding one migrator, as an install would have left one.
+    fn cache_with(home: &Path, name: &str, body: &str) {
+        let work = home.join("content");
+        std::fs::create_dir_all(work.join(DIRECTORY)).unwrap();
+        std::fs::write(work.join(DIRECTORY).join(name), body).unwrap();
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&work)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["add", "-A"]);
+        git(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-q",
+            "-m",
+            "content",
+        ]);
+        std::fs::rename(work.join(".git"), home.join("ship.git")).unwrap();
+    }
+
+    /// A first start is not a migration: there is nothing to bring forward.
+    #[test]
+    fn a_home_with_no_database_is_stamped_without_asking_for_a_migrator() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = bring_forward(dir.path(), &dir.path().join("g.db")).unwrap();
+        assert!(report.steps.is_empty(), "{report:?}");
+        assert_eq!(report.from, VERSION);
+        assert_eq!(version(dir.path()), VERSION);
+    }
+
+    /// The version moves only once the step has exited zero.
+    #[test]
+    fn a_step_that_succeeds_moves_the_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        std::fs::write(home.join("g.db"), "bytes").unwrap();
+        cache_with(home, "0-to-1.py", "import sys\nsys.exit(0)\n");
+        let report = bring_forward(home, &home.join("g.db")).unwrap();
+        assert_eq!(report.steps, vec!["0-to-1".to_string()], "{report:?}");
+        assert_eq!(version(home), VERSION);
+    }
+
+    /// A step that fails leaves the home at the version it is really in.
+    #[test]
+    fn a_migrator_that_fails_leaves_the_version_where_it_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        std::fs::write(home.join("g.db"), "bytes").unwrap();
+        cache_with(home, "0-to-1.py", "import sys\nsys.exit(3)\n");
+        let error = bring_forward(home, &home.join("g.db"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("0-to-1.py"), "{error}");
+        assert_eq!(version(home), 0, "a failed step is run again next start");
     }
 
     /// No Python is an error with the step's name in it, not a panic and not a

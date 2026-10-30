@@ -316,6 +316,16 @@ what it asks for then. Assembled as tokens, never as a line: whatever the
 operator typed -- quotes, `--`, backslashes, a whole paragraph -- is one
 argument, and no parsing rule can turn part of it into a flag.
 
+## Client::remember_server, Client::take_server_change
+
+The client-side half of `connect_server`: save the address, report it, and set a
+flag the front-end reads. A one-shot command reads it by never asking — it decided
+`connect_server` before dialing — and the window reads it to drop the link and
+retry, which is the only way a running window moves to another server.
+
+The flag is taken rather than read, so a front-end that handles two submissions in
+one pass cannot redial twice for one move.
+
 ## Client::submit_tokens
 
 `echo` is only about what the operator sees: a command is echoed as the input
@@ -326,6 +336,16 @@ Everything below is about *commands*: the catalog, sticky arguments, required
 arguments, the wire. That a line without `/` is prose was decided before this,
 by whoever had an input box.
 
+## Client::remember_server, Client::take_server_change
+
+The client-side half of `connect_server`: save the address, report it, and set a
+flag the front-end reads. A one-shot command reads it by never asking — it decided
+`connect_server` before dialing — and the window reads it to drop the link and
+retry, which is the only way a running window moves to another server.
+
+The flag is taken rather than read, so a front-end that handles two submissions in
+one pass cannot redial twice for one move.
+
 ## Client::submit_tokens — offline
 
 Offline, the catalog is whatever the last greeting said -- possibly nothing at
@@ -333,6 +353,16 @@ all, on a client started before its server. Falling through to "unknown command"
 would then blame the operator for the server being down, so say what is really
 wrong. Client commands keep working from the last greeting, because they never
 leave this process.
+
+## Client::remember_server, Client::take_server_change
+
+The client-side half of `connect_server`: save the address, report it, and set a
+flag the front-end reads. A one-shot command reads it by never asking — it decided
+`connect_server` before dialing — and the window reads it to drop the link and
+retry, which is the only way a running window moves to another server.
+
+The flag is taken rather than read, so a front-end that handles two submissions in
+one pass cannot redial twice for one move.
 
 ## Client::submit_tokens — unknown command
 
@@ -353,10 +383,30 @@ easy to make: the agent is told to drive the harness with `$GONGGA_CLI
 The last separator is what finds the name in both shapes. Split by hand rather
 than with `Path`, which does not call `\\` a separator on every platform.
 
+## Client::remember_server, Client::take_server_change
+
+The client-side half of `connect_server`: save the address, report it, and set a
+flag the front-end reads. A one-shot command reads it by never asking — it decided
+`connect_server` before dialing — and the window reads it to drop the link and
+retry, which is the only way a running window moves to another server.
+
+The flag is taken rather than read, so a front-end that handles two submissions in
+one pass cannot redial twice for one move.
+
 ## Client::submit_tokens — the rest of the line
 
 Whatever followed the name, in either shape: inside the one argument when the
 whole line was quoted, or in the remaining tokens when it was real argv.
+
+## Client::remember_server, Client::take_server_change
+
+The client-side half of `connect_server`: save the address, report it, and set a
+flag the front-end reads. A one-shot command reads it by never asking — it decided
+`connect_server` before dialing — and the window reads it to drop the link and
+retry, which is the only way a running window moves to another server.
+
+The flag is taken rather than read, so a front-end that handles two submissions in
+one pass cannot redial twice for one move.
 
 ## Client::submit_tokens — unknown flag
 
@@ -376,6 +426,13 @@ only this crate answers.
 
 Worth nothing if it fails: the caller is already closing. Sending it anyway lets
 the server drop this connection now instead of waiting out its idle timeout.
+
+## main
+
+The one entry point both binaries use for a command line: it installs the command
+an agent's shell types, sends `serve` to the server mode before any runtime
+exists, and builds the runtime for everything else. Returning the runtime from a
+function rather than from `#[tokio::main]` is what lets `serve` own its own.
 
 ## run
 
@@ -462,6 +519,28 @@ command at all rather than a stale list of its own.
 One-shot mode only: there is no reconnect here, because one command that cannot
 reach a server has nothing to wait for. An interactive client dials from inside
 its own loop instead, so it can outlive any number of restarts.
+
+Nothing is started here. SPEC gives the auto-start to the window, and a one-shot
+command is what a script or a model runs: a script that silently brings a daemon
+up on somebody's port is a surprise. `serve` is the command that starts one, and
+the window calls it too (`cli::server`).
+
+## server_of, server_address
+
+Two ways to say where a client goes, neither of which needs a key:
+`server_of` is the address a connection *would* use (the window needs it before a
+server exists to mint its key), and `server_address` turns `--ip`/`--port` into
+one. `server_address` defaults to `127.0.0.1` rather than the name `localhost`
+because that is what `serve` binds: this platform resolves `localhost` to `::1`
+first, and the two ends of one command line must agree without asking DNS.
+
+## connect_elsewhere
+
+`connect_server`, decided before a link exists -- it is the command that says
+where a link would go. It saves the address first and dials second, then prints
+one JSON object: the saved address outliving a refusal is the point, because the
+next command will report the same refusal in its own words rather than dialing
+somewhere else entirely.
 
 ## connect — the retry hint
 

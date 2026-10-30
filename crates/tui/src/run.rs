@@ -95,10 +95,16 @@ enum Step {
 /// A dial kept alive between loop iterations, boxed so the loop never blocks.
 type Dialing = Pin<Box<dyn Future<Output = Result<(Link, Greeting), DialFailure>>>>;
 
+/// One attempt, resolving afresh: `connect_server` moves the address.
+async fn dial_now(conn: cli::Connection) -> Result<(Link, Greeting), DialFailure> {
+    let endpoint = conn.endpoint().map_err(DialFailure::Temporary)?;
+    cli::dial(endpoint).await
+}
+
 /// The interactive front-end: the window outlives the link. See `docs/notes/tui-run.md`.
 pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
-    // Resolved before the terminal is taken over, so the error stays readable on screen.
-    let endpoint = args.conn.endpoint()?;
+    // The command an agent's shell types, installed before any shell exists.
+    let home = cli::prepare(args);
 
     let mut client = cli::build_client(args);
     let mut ui = Tui::new(client.completer())?;
@@ -133,7 +139,17 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
             Step::Input(None) => break Ok(()),
             Step::Input(Some(UiEvent::Quit)) => break Ok(()),
             Step::Input(Some(UiEvent::Submit(line))) => {
-                match submission(&mut client, &line, &mut TuiSink(&mut ui)) {
+                let outcome = submission(&mut client, &line, &mut TuiSink(&mut ui));
+                // A `connect_server` moved the address: drop the link and let
+                // the next dial find the new one.
+                if client.take_server_change() {
+                    link = None;
+                    backoff = RECONNECT_MIN;
+                    attempts = 0;
+                    next_try = tokio::time::Instant::now();
+                    client.set_offline(0, &mut TuiSink(&mut ui));
+                }
+                match outcome {
                     cli::Submission::Local | cli::Submission::Rejected => {}
                     // Nothing left this process, so the text is still the operator's:
                     // put it back rather than log it away.
@@ -178,7 +194,7 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
             }
             Step::Dial => {
                 attempts += 1;
-                dialing = Some(Box::pin(cli::dial(endpoint.clone())));
+                dialing = Some(Box::pin(dial_now(args.conn.clone())));
             }
             Step::Dialed(outcome) => {
                 // Finished either way: clear it, or a later poll of a dead future panics.
@@ -193,6 +209,16 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                     Err(failure) if failure.is_fatal() => break Err(failure.into_error()),
                     Err(failure) => {
                         client.set_offline(attempts, &mut TuiSink(&mut ui));
+                        // Once per outage: start what is not there, and the
+                        // loop keeps dialing while the task does it.
+                        if attempts == 1 && !args.client_only {
+                            if let Ok(addr) = cli::server_of(&args.conn) {
+                                let home = home.clone();
+                                tokio::spawn(async move {
+                                    let _ = cli::ensure(&home, addr).await;
+                                });
+                            }
+                        }
                         // Once per outage: the status line already carries "attempt N".
                         if attempts == 1 {
                             TuiSink(&mut ui).say(

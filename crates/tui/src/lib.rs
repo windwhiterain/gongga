@@ -36,6 +36,14 @@ pub use crate::log::Log;
 pub use crate::panes::Panes;
 pub use crate::run::interactive;
 
+/// Runs the window: its own runtime, because the loop owns every task in it.
+pub fn main(args: cli::Args) -> anyhow::Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(interactive(&args))
+}
+
 // The vocabulary is the command layer's, re-exported so this crate can name it.
 pub use crate::log::View;
 pub use cli::{

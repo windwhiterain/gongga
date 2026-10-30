@@ -65,6 +65,17 @@ runnable with no client change at all.
 An entry that omits the field reads as `server`: that is what every entry meant
 before it existed, so an older catalog decodes with its meaning intact.
 
+## connect_server, serve
+
+The two client commands that name a process rather than the client's own state.
+`connect_server` takes `--ip`/`--port`, `serve` takes `--port`.
+
+`serve` is the one command a front-end cannot run *for* you -- it takes the whole
+process -- so the window answers it with where to type it, and the command line
+runs it before any runtime exists (`cli::main`). Publishing it here anyway keeps
+one catalog: what a client can run is what the greeting says, and a client
+command that only one front-end can honour still belongs to the list.
+
 ## CompletionSource::StickyArguments, ::EventFilters and ::SessionsOrNone
 
 The server publishes the client's own commands, but the candidate values are the

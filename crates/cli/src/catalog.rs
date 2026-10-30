@@ -500,8 +500,10 @@ mod tests {
             vec![
                 "block_size",
                 "cwd",
+                "ip",
                 "message",
                 "name",
+                "port",
                 "session",
                 "split",
                 "value"

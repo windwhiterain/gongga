@@ -111,6 +111,22 @@ pub struct Report {
     pub fetched: bool,
 }
 
+/// Makes this home answerable to a lookup before anything is installed.
+///
+/// # Invariant
+///
+/// The fetch is best effort, and that is the point: a migrator has to be
+/// findable before the content that ships in the same commit is installed, so a
+/// network that answers nothing must not be what strands a home's data. No
+/// network leaves the lookup to the caller, which names what it could not find.
+pub fn prepare(home: &Path) {
+    let roots = Roots::of(home);
+    if let Err(e) = fetch(&roots.home.join(CACHE), &pinned().url) {
+        tracing::warn!(error = %e, "cannot reach the content repository yet");
+    }
+    let _ = ROOTS.set(roots);
+}
+
 /// Fetches the pinned content and reconciles it into both roots.
 pub fn install(home: &Path) -> anyhow::Result<Report> {
     install_at(&Roots::of(home), pinned())

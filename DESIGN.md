@@ -7,8 +7,9 @@
 ```text
 Cargo.toml                  workspace，resolver 3，edition 2024
 crates/protocol/  gongga-protocol   别名 protocol —— 帧、可靠 UDP 通道、消息词汇
-crates/server/    gongga-server     别名 server
-crates/cli/       gongga-cli        别名 cli —— 命令层（库，外加 `gongga` 命令行程序）
+crates/server/    gongga-server     别名 server —— **库**：没有二进制，由 cli 内嵌运行
+crates/cli/       gongga-cli        别名 cli —— 命令层（库，外加 `gongga` 命令行程序），
+                                   没有服务端时自己起一个（`cli::server`）
 crates/tui/       gongga-tui        别名 tui —— 终端前端 + `gongga-tui` 二进制
 crates/bridge/    gongga-bridge     别名 bridge —— IM 桥接器，见 §9
 ```
@@ -16,7 +17,11 @@ crates/bridge/    gongga-bridge     别名 bridge —— IM 桥接器，见 §9
 命名沿用你 `whiting` 项目的约定：目录不带前缀，`[workspace.dependencies]` 里用
 `package = "gongga-xxx"` 做别名。
 
-**依赖方向只有一条：`tui → cli`，反向不存在。** 早先是反的（`cli` 依赖 `tui`），因为交互模式
+**依赖方向是一条链：`tui → cli → server`，反向不存在。** 服务端是库，命令层是内嵌它的那个
+二进制，窗口内嵌命令层。`cli` 依赖 `server` 是因为 `serve` 这条客户端命令要就地变成服务端；
+`server` 不知道 `cli` 存在（它连 CLI 二进制在哪都不搜了，只认 `<home>/bin` 这个目录）。
+
+第二条是反的（`cli` 依赖 `tui`）的那些日子：交互模式
 当初写在 `gongga` 二进制里，而那个二进制归 `cli`。这看上去只是 Cargo.toml 里一行，实则把
 ratatui 与 crossterm 拖进了**每一个**只想发一条命令的调用：脚本、测试、桥接器、模型手里的
 `$GONGGA_CLI`，全都要为一个它们不用的终端付出依赖与编译代价。命令层一旦认识终端，「同一条命令
@@ -26,11 +31,12 @@ ratatui 与 crossterm 拖进了**每一个**只想发一条命令的调用：脚
 
 | crate | 是 | 不是 |
 |---|---|---|
-| `cli` | 命令目录、sticky、参数解析/渲染、`Client` 状态机、链路 `Link`、`LineKind`、`gongga` 命令行 | 任何终端 |
+| `cli` | 命令目录、sticky、参数解析/渲染、`Client` 状态机、链路 `Link`、`LineKind`、`gongga` 命令行、`serve` 起的服务端 | 任何终端 |
 | `tui` | 终端渲染、输入行、补全弹窗、交互循环、`gongga-tui` 二进制 | 命令是什么、协议长什么样 |
 
 两个程序，各归一半。`gongga` 是命令层自己的 front-end：argv 进来，这条命令的事件出去，视野里
-没有终端；不带命令时它打印服务端在问候语里发布的那份目录。窗口是 `gongga-tui`，它是**组装点**，
+没有终端；不带命令时它打印服务端在问候语里发布的那份目录。它也是**唯一能当服务端的程序**：
+`gongga serve --port <p>` 就地跑内嵌的 server 库（§5「谁起服务端」）。窗口是 `gongga-tui`，它是**组装点**，
 也是唯一同时需要两半的程序 —— 按 `cli` 的定义解析命令行、把「没有命令」交给交互循环、把有命令
 的交给 `cli::run`。两者都不认识任何命令名，所以「加一条命令要改前端」这件事不成立（SPEC 的
 「tui: transparent cli wrapper, do not know cmd」就是这条）。把自己叫什么也交给调用者：
@@ -379,9 +385,9 @@ UI 上流式看到的仍是完整输出，但进 transcript 的不会反复计�
   （`context_limit` 可改百分比）；没有 `context` 时退回 `agent.compress_above_tokens`
   （默认 40000）。0 一律表示关闭，包括全局配置和百分比两条路。
 
-- **非破坏性**：`sessions.handover` + `sessions.handover_upto` 只标记「笔记覆盖到哪里」，
-  一行消息都不删 —— transcript 是记录不是缓存，删了就没了，且 UI 仍能回放全部历史。
-  请求 = 一条 user 消息（笔记前缀）+ `seq > handover_upto` 的消息。
+- **非破坏性**：`sessions.handover` 只记「上一轮留给自己的话」，一行消息都不删 ——
+  transcript 是记录不是缓存，删了就没了，且 UI 仍能回放全部历史。请求 = 一条 user 消息
+  （笔记前缀）+ 表里**全部**消息：没有「折到第几条」这种边界。
 - **切点只放在能独立站立的位置**：`function_call_output` 前面必须有 `function_call`，
   否则 API 直接拒；reasoning 前面被挖空也会白占空间。所以切点只会落在 `text` 或 `tool_call`
   之前，最近 N 条（默认 30）原样保留。若整个窗口都找不到安全位置，这次就不压。
@@ -492,14 +498,16 @@ Shell **按 `session_name/bash_name` 建键**，所以一个会话持有的是�
   这个 shell，不受影响。
   这样超时不再是「活儿最多干多久」的预算 —— 长构建、长测试只是换了个地方继续跑，模型拿到
   新 shell 立刻可以干别的。
-- 每个 shell 启动时注入 `GONGGA_SERVER` / `GONGGA_HOME` / `GONGGA_CLI` / `GONGGA_SESSION`
-  和一条 POSIX 形态的 `PATH`（重建时同样注入）。这是**模型驱动自己的通道**：`bash` 跑在服务端的
+- 每个 shell 启动时注入 `GONGGA_SERVER` / `GONGGA_HOME` / `GONGGA_CLI`(存在时) /
+  `GONGGA_SESSION` 和一条 POSIX 形态的 `PATH`（重建时同样注入）。这是**模型驱动自己的通道**：`bash` 跑在服务端的
   子进程里，不告诉它这些，它就既不知道服务端的地址、也不知道自己属于哪个会话，想取消或重启只剩从
   外面 `taskkill` 这一条路。`GONGGA_HOME` 与 `GONGGA_SERVER` 正好是 CLI 自己读的两个 fallback，
   `PATH` 首位是服务端刚写进 `<home>/bin` 的那个 `gongga`，所以按名字调用就行：
   `gongga cancel`、`gongga send_message --message hi --session $GONGGA_SESSION` 都不需要额外
-  参数。`$GONGGA_CLI` 是同一个程序的绝对路径，留给脚本和 launcher —— 它们不该依赖那条 `PATH`。
-  脚本的 env 也只有那三个变量：POSIX 化的 `PATH` 是给 shell 读的，解释器要的是原生那一条。
+  参数。`$GONGGA_CLI` 就是 `<home>/bin/gongga` 这个 shim 的绝对路径，留给脚本和 launcher ——
+  它们不该依赖那条 `PATH`。服务端不再自己去找 CLI 二进制：写 shim 是 CLI 每次运行顺手做的事，
+  服务端只负责把这个目录排到 `PATH` 首位，两边只需要对「home」有一个共识。
+  脚本的 env 也只有那几个 `GONGGA_*` 变量：POSIX 化的 `PATH` 是给 shell 读的，解释器要的是原生那一条。
 
 `bash{command, name, background, detached}` 的三种跑法：
 
@@ -564,7 +572,7 @@ Shell **按 `session_name/bash_name` 建键**，所以一个会话持有的是�
 `detached` 不是「后台跑」，是**服务端放弃所有权**。典型用法就是你说的那个：
 一个 agent 想重启它正跑在上面的服务端 ——
 
-1. `bash{command:"gongga-server --bind ... ", detached:true}` 拉起替身；
+1. `bash{command:"gongga serve --port <new>", detached:true}` 拉起替身；
 2. 然后 `cancel` 自己；
 3. 替身活下来接管，客户端改连新端口即可。
 
@@ -739,7 +747,8 @@ SPEC 给这一半起的名字是 `set_event_ui --session <name|none>`，它写�
 
 ## 5. CLI（命令层）
 
-`cli` 持有两样东西：服务端下发的命令目录，和本地的 sticky 参数。它把输入行翻译成
+`cli` 持有三样东西：服务端下发的命令目录、本地的 sticky 参数（和 `connect_server` 记住的
+地址，都在 `cli.toml`），以及内嵌的 server 库。它把输入行翻译成
 `Submission::{Send, Local, Rejected}`，再通过 `Sink` trait 交给前端渲染 ——
 TUI 是一种实现（带样式的行），非交互模式是另一种（什么都不渲染，只把事件打成 JSON）。
 
@@ -953,6 +962,55 @@ TUI 输入行**同一套** `submit()` 解析 —— 否则补全、sticky 补齐
 非交互模式**没有等待时限**：等的是一条命令的回执，不是它启动的活。服务端不回就会被自己的
 `idle_timeout` 断连，那也是一个错误出口，不需要客户端再猜一个数字。
 
+### 谁起服务端
+
+SPEC 的结构是：`server` 是**库**，`cli` 是**二进制**并内嵌它。于是「起一个服务端」不是某个要另外
+安装的程序，而是这个二进制自己的一个模式 —— 客户端命令 `serve`：
+
+```sh
+gongga --home ~/.gongga serve --port 9700
+```
+
+它是**客户端命令**而不是隐藏开关：命令层本来就是「这个程序能被要求做什么」的清单，`serve` 因此
+照常出现在目录里、能补全、能自我说明。它在 `cli::main` 里于任何 tokio 运行时建立**之前**被分派，
+因为服务端要自己建它想被停掉的那个运行时（`server::main`），嵌套一个会 panic。
+
+**谁自动起**：只有窗口。SPEC 把它写给了 `tui`，同时给了 `--client_only` 说「别起，我自己有一个」。
+一次性命令**不**自动起 —— 它是脚本或模型在跑，一个脚本悄悄在别人端口上拉起守护进程是惊吓不是便利。
+窗口在**第一次拨号失败**时起（`attempts == 1`），而不是启动时：那一刻正是操作员知道「没人应答」的
+时候，也顺带覆盖了 `connect_server` 指向一个没人起的服务端，`--client_only` 只有一处需要说「不」。
+起服务端是 spawn 出去的任务而不是当场 await，所以窗口在「第一次启动要迁移 home、拉 content」的
+整个过程中仍然收键盘。
+
+三条判断写在这里，因为每一条都可以反过来：
+
+- **只有本机地址才起。** 拨 `10.1.2.3:9700` 失败是别人的服务端断了，答案不是给这个 home 起一个
+  —— 那会是一个没人要的服务端，绑在没人听的端口上。`is_loopback()` 是这条唯一的判据。
+- **由一次真实拨号判定，不看 `server.lock`。** 锁里是 pid 不是地址，而一个 home 可以被配置绑在任意
+  端口；「有没有人在」只有链路能回答。它也顺手覆盖了最要紧的一种：用错 key 答话的服务端是**在**的，
+  这时再起一个就是这个设计最反对的「一个 home 两个服务端」。
+- **被拒绝也算应答。** `DialFailure::Fatal` 意味着有人答话了并说了不 —— 它是**在**的，再起一个只会
+  和正在服务的那个抢锁，输的那个唯一的下场是一行没人看的日志。
+
+起出来的进程**不属于调用者**：自成进程组（Windows 上是 `CREATE_NO_WINDOW`），输出追加进
+`<home>/server.log`。这里踩过一次坑：`DETACHED_PROCESS` 看起来更彻底，但「没有控制台」会让
+Windows 给**每个**控制台子进程开一个新窗口 —— 而服务端启动时要跑 `git`（取 ship 内容）、
+`python`（迁移脚本）、`bash`（会话的 shell），于是满屏弹窗。`CREATE_NO_WINDOW` 给的是一个存在
+但永不显示的控制台，子进程继承它。一条一次性命令几百毫秒就退出了，服务端要是跟着它的终端一起死，
+刚才那个 turn 也就白跑了。`--home` 显式传给子进程：它要服务的是刚才写了 shim 的那个 home。
+
+**不等它起来。** 窗口本来就在退避重连，再挂一个「等到 ready」的循环只是把同一个循环写两遍，错误
+还不如它。起服务端要负责的是「把它拉起来」，不是「盯着它」。
+
+`<home>/bin/gongga` 这个 shim 归 CLI 写（`cli::server::install_command`）：它知道自己在哪。服务端
+只把 `<home>/bin` 排到 `PATH` 首位（`server/shell_command.rs`），两边只需要对「home」有共识 ——
+服务端不再搜索 CLI 二进制。shim 写不出来时（找不到命令层二进制，比如 `dev.sh` 只 stage 了一个
+改名副本），服务端**不带** `GONGGA_CLI` 并 warn 一句，而不是指向一个不存在的东西。
+
+shim 写的是**命令层**，不是当前跑着的那个程序：`gongga-tui` 也内嵌 `cli`，agent 敲 `gongga`
+不该拿到一个它看不见的窗口。写入走「先写旁边的临时文件、再 rename」，因为 agent 的 shell 随时
+可能在读那个脚本 —— 半个 `#!/bin/sh` 是一个上一秒还好用的文件里的语法错误。
+
 ### TUI 的滚动缓冲：一帧只碰一屏
 
 症状：对话一长，TUI 卡的要死 —— 不是「有点顿」，是打字都跟不上。
@@ -1016,8 +1074,8 @@ TUI 输入行**同一套** `submit()` 解析 —— 否则补全、sticky 补齐
 库路径也能在启动时直接给（SPEC「database path can be specified at server start」）：
 
 ```sh
-gongga-server --db /tmp/scratch/gongga.db   # 覆盖 [server] db；目录不存在会建
-gongga-server --db :memory:                 # 一次性库，碰不到真实数据
+gongga --home /tmp/scratch serve --port 9700     # 另一个 home，整个状态都在它下面
+GONGGA_DB=:memory: gongga serve --port 9701       # 一次性库，碰不到真实数据
 ```
 
 `--db` 在**写完默认 config 之后**才生效：这次顺手生成的 `config.toml` 记的是 home 下的默认路径，
@@ -1139,7 +1197,7 @@ job(s) keep running -- they outlive the server, stop them with del_bash`）→ �
 14. **压缩后 reasoning 链可能断**（见 §4 闸二）：保留区间里的加密块引用的前文已经变成
     摘要，provider 是否还消费它，目前没有直接证据。
 15. **一次压缩 ~32s**：实测压缩请求 32s（2000 token 上限、非流式）。它不是每步都发生 ——
-    `context()` 只统计 `handover_upto` 之后的部分，而 `choose_cut` 要求 live 多于
+    `context()` 统计表里全部消息，而 `choose_cut` 要求 live 多于
     `keep_recent`(30) 条才切，压完 live 就只剩那 30 条，闸门直接关上（实测压完后再发消息：
     `step start` 前没有任何 compression，turn 1.1s 结束）。
     曾经浪费一次：启动 resume 的 turn 和新发的 turn 各自判了一次超预算，同一份上下文被压
@@ -1170,7 +1228,7 @@ job(s) keep running -- they outlive the server, stop them with del_bash`）→ �
     宁可暴露在 400 上，也不用一个假比率把上下文撑爆。要覆盖它，得让名册声明「这家报不报
     usage」，再把按字符估降级成显式的兜底。
 23. **`--cwd` 的补全是客户端的目录，执行却是服务端的目录**：两边是同一台机器，但
-    `gongga-server` 可能从别处启动，于是 Tab 出来的相对路径服务端可能找不到。写绝对路径
+    服务端可能从别的目录启动，于是 Tab 出来的相对路径它可能找不到。写绝对路径
     就没有歧义；要不要让补全直接把相对前缀展开成绝对路径（更安全，但输入行会变长）？
 24. **补全候选没有分页**：`Static` 的 `--llm` 已经是一份 44 项的名单，`--cwd` 更是整个
     目录。弹窗现在是「列全部、靠前缀收窄」，没有翻页/分栏，输入行为空时确实会顶掉大半个
@@ -1287,7 +1345,7 @@ assistant text」没有歧义 —— 这也正是 `get_messages` 存在的理由
 | 启动时拾起 | `commands.rs::resume_pending` | 新服务端起 bind 后把该回合接着跑 |
 | `bash --detached` | `tools/detached.rs` | 继任者必须活在旧进程之外，否则一起死 |
 | `server.lock` | `instance.rs` | home 是**交接**不是抢占；旧 pid 还在就拒绝启动 |
-| `$GONGGA_CLI` | `main.rs::cli_path` | agent 从 bash 里给自己发 `cancel` |
+| `gongga`（在 `PATH` 首位） | `cli::server::write_shim` | agent 从 bash 里给自己发 `cancel` |
 
 顺序是有原因的，`.agents/skills/evolve/evolve.sh` 把它固化成两条命令：
 
@@ -1302,7 +1360,7 @@ home 就空着，没有进程去 resume 这个回合 ���— 一次失败�
 「继任者起不来 → swap 检查到 launcher 不在 → 拒绝 cancel → 旧服务端照常活着」。
 
 **为什么 `stage` 用 `.dev/target` 而不是 `target/`**：Windows 锁住正在运行的 `.exe`，
-而要被替换的那个服务端常常就是 `target\debug\gongga-server.exe` —— 在 `target/` 里构建会
+而要被替换的那个服务端常常就是 `target\debug\gongga.exe` —— 在 `target/` 里构建会
 以 `拒绝访问 (os error 5)` 失败，恰好卡在「想自我进化」这个动作上。私有 target 目录让
 构建与 `target/` 的占用状态无关，也让 `dev.sh` 那套「用副本跑」的纪律继续成立。
 
@@ -1338,14 +1396,12 @@ home 就空着，没有进程去 resume 这个回合 ���— 一次失败�
    失败」时才删，而客户端重连后换了本地端口，旧地址再也不会来包。现在 `handle_connection`
    结束时自己释放那一项，并用 `conn_id` 保护 —— 同一地址已被新连接占用时，旧任务不得删掉
    新 peer 的条目。
-2. **`GONGGA_CLI` 可能是条敲不通的命令**：`cli_path()` 只找「本进程的同级目录」，
-   而 `dev.sh server` 只把服务端复制进 `.dev/`，同级就没有 `gongga`，于是回退成裸名
-   `gongga.exe` —— 不在 `PATH` 上，agent 拿到的是一条必死的命令。现在依次尝试
-   同级 → `../target/debug/` → `PATH`，都没有才用裸名并 **warn**（否则这个死胡同无人可诊断）。
-   今天这条已经不只是补救：`cli_path()` 定出的绝对路径被写进 `<home>/bin/gongga` 这个 shim，
-   该目录排在每条 shell 的 `PATH` 首位，agent 按名字敲 `gongga <命令>` 就够了；`GONGGA_CLI`
-   仍是同一个路径，给脚本用。理由与两个坑（原生 `PATH` 被 Git Bash 改写、`cmd` 这个名字已经是
-   Windows 自己的 shell）在 `docs/notes/server-shell-command.md`。
+2. **`GONGGA_CLI` 可能是条敲不通的命令**：当初服务端只找「本进程的同级目录」，而 `dev.sh server`
+   只把服务端复制进 `.dev/`，同级就没有 `gongga`，于是回退成裸名 `gongga.exe` —— 不在 `PATH` 上，
+   agent 拿到的是一条必死的命令。当时改成「同级 → `../target/debug/` → `PATH`，都没有才 warn」。
+   这一条后来连责任一起搬走了：写 `<home>/bin/gongga` 的是 CLI 自己（它才知道自己在哪），服务端只把
+   那个目录排到 `PATH` 首位。理由与两个坑（原生 `PATH` 被 Git Bash 改写、`cmd` 这个名字已经是
+   Windows 自己的 shell）见 `docs/notes/server-shell-command.md`，起服务端那一段见 §5「谁起服务端」。
 
 ### 仍然存在的风险（**未做**，需要你定）
 

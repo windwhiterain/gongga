@@ -14,6 +14,14 @@ of the harness. A per-session "only show main" toggle on the server would have t
 be per connection anyway, and then it would be remembered by whoever holds the
 connection -- which is the client.
 
+## File::connection, Remembered
+
+`connect_server` has to outlive the process that ran it -- a one-shot command has
+nothing else to remember it with -- so the last address lives in `cli.toml`
+beside the sticky arguments. The IP is parsed back as an address rather than
+formatted into one: `"::1:9700"` is not a socket address, and a fallback to the
+default would have silently sent later commands to the wrong port.
+
 ## Sticky::load
 
 Tolerating a missing or unreadable file is deliberate: a client that cannot

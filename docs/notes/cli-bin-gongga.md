@@ -13,6 +13,14 @@ argv in, the command's events out, no terminal in sight. The window is
 `gongga-tui`, in the crate that depends on this one. The split is the same one the
 libraries already drew, applied to the last place it had not been applied.
 
+## main belongs to the command layer
+
+This file parses argv and hands it to `cli::main`, and does nothing else. The
+entry point moved down because one of the commands -- `serve` -- has to be decided
+before a runtime exists: the server builds the runtime it wants to be stopped in,
+and a nested one would panic. Keeping that decision in this file would have meant
+two binaries each knowing which command needs a runtime.
+
 ## A bare call lists what exists
 
 With no command, `gongga` prints the catalog the server sent in its greeting --

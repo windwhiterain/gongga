@@ -1,6 +1,10 @@
-# server/main.rs
+# server/lib.rs
 
 ## Args::db
+
+The whole of what a server can be told. `Default` is the empty command line, and
+that is what `gongga serve` starts from: it names a home and a port, and every
+other value comes from that home's config.
 
 SQLite database path. Overrides `[server] db`.
 
@@ -14,22 +18,26 @@ The home directory: the database, config, logs, detached-job records and the
 instance lock all live under it. Overrides `[server] home`, which overrides
 `$GONGGA_HOME`.
 
-## cli_path
+## run (the command an agent types)
 
-The server and the command line ship together, so the usual answer is the sibling
-of this executable -- `gongga`, the command layer's own binary, not the window.
-That is not the only layout in use, though: `dev.sh` copies the server into
-`.dev/` *alone*, so the sibling is missing there and the agent ends up with a
-`GONGGA_CLI` that is not on `PATH` -- the one thing it needs in order to drive (or
-replace) the server it is running on.
+The server does not look for the CLI any more: SPEC makes this crate a library,
+and `gongga` -- the binary that carries it -- is the program a person starts,
+including in its `serve` mode (`cli::server`).
+What the server still has to do is hand its own children the command, and it can
+do that without knowing where the binary is -- the CLI installs
+`<home>/bin/gongga` on every run, so the home is the only thing the two have to
+agree on.
 
-So: sibling, then the `target/debug` a staged copy sits under, then `PATH`, and
-only as a last resort the bare name -- announced, because a bare name that is not
-on `PATH` is a dead end the agent cannot diagnose. Whatever comes out is also what
-`shell_command::install` puts in the shell's `gongga` command, so the two cannot
-disagree about which binary is being driven.
+`GONGGA_CLI` names that script, not the binary behind it, because that is what a
+shell and a script can both execute. When it is missing -- a server started
+directly, before any CLI has been here -- the variable is left out rather than
+pointing at nothing, and the omission is warned about: the server still serves
+what it was asked for, and the fix is to start it once through the CLI.
 
 ## main
+
+The entry point, now a function rather than a process: `gongga serve` calls it
+with an `Args`, and it owns the runtime for the life of the server.
 
 The runtime is built here rather than by `#[tokio::main]` so that the drop
 happens at a point where `run` has already closed every shell. The drop still
@@ -72,14 +80,14 @@ Detached jobs live next to the database: they outlive this process, so their log
 have to outlive it too.
 
 How the model drives itself, which is what this vec is for. `bash` runs inside
-this process's children, so the server address, the CLI that speaks to it and the
-session it belongs to have to be handed down rather than discovered: without them
-an agent that wants to cancel or restart has no better option than killing its own
-server from outside. `GONGGA_HOME` and `GONGGA_SERVER` are exactly the two
+this process's children, so the server address, the command that speaks to it and
+the session it belongs to have to be handed down rather than discovered: without
+them an agent that wants to cancel or restart has no better option than killing
+its own server from outside. `GONGGA_HOME` and `GONGGA_SERVER` are exactly the two
 fallbacks the CLI reads, so a command needs no flags of its own. `PATH` is what
 turns `$GONGGA_CLI` into `gongga` -- see `server-shell-command.md` -- and
 `GONGGA_SESSION` is added where a session's shells are made, because that name
-belongs to a session and not to the server. A script gets the three variables and
+belongs to a session and not to the server. A script gets the same variables and
 keeps the native `PATH` it was started with.
 
 ## run (detached adoption)
@@ -125,12 +133,6 @@ started is a process too, so it is ended here rather than being left to finish
 work nobody is waiting for any more. Its caller is told the server stopped --
 not shown a killed process's exit status, which would read as the script's own
 failure.
-
-## tests::the_cli_path_is_something_that_can_be_run
-
-The CLI is what lets the model cancel, restart or replace this server, so the
-path it is handed has to be runnable -- a bare name is only correct if that name
-is actually on `PATH`.
 
 ## tests::the_database_path_is_a_startup_flag
 

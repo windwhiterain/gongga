@@ -749,12 +749,14 @@ dependencies = [
  "clap",
  "dirs",
  "gongga-protocol",
+ "gongga-server",
  "serde",
  "serde_json",
  "shell-words",
  "tempfile",
  "tokio",
  "toml",
+ "which",
 ]
 
 [[package]]

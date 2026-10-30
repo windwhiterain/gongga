@@ -5,14 +5,16 @@
 pub mod catalog;
 pub mod commands;
 pub mod complete;
+pub mod server;
 
 pub use crate::catalog::Catalog;
 pub use crate::commands::{BlockSize, Split, Sticky};
 pub use crate::complete::{Candidate, Completer, Completion, SharedCompleter, token_bounds};
+pub use crate::server::{ensure, prepare};
 
 use std::collections::HashMap;
 
-use std::net::SocketAddr;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -65,6 +67,9 @@ impl Connection {
 pub struct Args {
     #[command(flatten)]
     pub conn: Connection,
+    /// Never start a server for this client; the window waits instead.
+    #[arg(long, global = true)]
+    pub client_only: bool,
     #[command(subcommand)]
     pub command: Option<Sub>,
 }
@@ -81,7 +86,7 @@ impl Args {
         let mut i = 1;
         while i < command.len() {
             let token = &command[i];
-            if let Some(flag) = ["--server", "--home", "--key"]
+            if let Some(flag) = ["--server", "--home", "--key", "--client-only"]
                 .iter()
                 .find(|flag| token.as_str() == **flag || token.starts_with(&format!("{flag}=")))
             {
@@ -247,6 +252,8 @@ pub struct Client {
     connected: bool,
     /// Failed dials since the link went down, so silence is legible.
     attempts: u32,
+    /// Set by `connect_server`; the front-end reads it and dials again.
+    server_changed: bool,
 }
 
 /// What the operator typed, for the purpose of echoing it back into the log.
@@ -339,7 +346,18 @@ impl Client {
             next_id: Self::seed_command_id(),
             connected: false,
             attempts: 0,
+            server_changed: false,
         }
+    }
+
+    /// The model the server reported, for a caller that only says what it reached.
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    /// Whether a `connect_server` moved this client, once per move.
+    pub fn take_server_change(&mut self) -> bool {
+        std::mem::take(&mut self.server_changed)
     }
 
     /// The first id this client will use.
@@ -399,7 +417,7 @@ impl Client {
                 sink.line(
                     &self.command_window(),
                     LineKind::System,
-                    &format!("connected to gongga-server (model {})", self.model),
+                    &format!("connected to the server (model {})", self.model),
                 );
                 self.refresh(sink);
             }
@@ -758,6 +776,39 @@ impl Client {
         })
     }
 
+    /// `connect_server`: the address a later command dials, written down now.
+    ///
+    /// # Invariant
+    ///
+    /// The move is saved before the front-end is told, so a window that
+    /// redials at once reads the new address rather than the old one.
+    fn remember_server(&mut self, args: &protocol::Args, sink: &mut dyn Sink) {
+        let port = args.get("port").map(String::as_str).unwrap_or_default();
+        let ip = args.get("ip").map(String::as_str);
+        let addr = match server_address(ip, port) {
+            Ok(addr) => addr,
+            Err(e) => {
+                sink.line(&self.command_window(), LineKind::Error, &format!("{e}"));
+                return;
+            }
+        };
+        match commands::Remembered::save(self.sticky.home(), addr) {
+            Ok(()) => {
+                sink.line(
+                    &self.command_window(),
+                    LineKind::Result,
+                    &format!("server is {addr}; reconnecting"),
+                );
+                self.server_changed = true;
+            }
+            Err(e) => sink.line(
+                &self.command_window(),
+                LineKind::Error,
+                &format!("could not save: {e}"),
+            ),
+        }
+    }
+
     /// A refusal has to leave the client where it was, so this runs on the
     /// acknowledgement, not on the submission.
     fn settle_follow(&mut self, id: u64, ok: bool, sink: &mut dyn Sink) {
@@ -800,6 +851,14 @@ impl Client {
     fn run_client_command(&mut self, name: &str, args: &protocol::Args, sink: &mut dyn Sink) {
         let arg_name = args.get("name").cloned().unwrap_or_default();
         match name {
+            "connect_server" => self.remember_server(args, sink),
+            // The process is the server: a window cannot draw it, so say
+            // where to type it.
+            "serve" => sink.line(
+                &self.command_window(),
+                LineKind::Error,
+                "serve takes over the process; run it in a shell: `gongga serve --port <port>`",
+            ),
             "set_event_ui" => self.run_event_ui(args, sink),
             "set_sticky_cmd_argument" => {
                 let Some(value) = args.get("value").cloned() else {
@@ -1055,10 +1114,90 @@ impl Link {
     }
 }
 
+/// Runs one command line, with the runtime each command needs.
+///
+/// # Invariant
+///
+/// `serve` is decided before a runtime exists: it leaves nothing of the client
+/// behind, and the server builds the runtime it wants to be stopped in.
+pub fn main(args: Args) -> anyhow::Result<()> {
+    crate::server::prepare(&args);
+    if let Some(Sub::Cmd(tokens)) = &args.command {
+        if tokens.first().map(String::as_str) == Some("serve") {
+            return crate::server::serve(&args, &tokens[1..]);
+        }
+    }
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        match &args.command {
+            None => list_commands(&args).await,
+            Some(Sub::Cmd(command)) => run(&args, command).await,
+        }
+    })
+}
+
+/// An address a client is asked to dial: `--ip` (localhost by default), `--port`.
+///
+/// # Invariant
+///
+/// The default is `127.0.0.1`, not the name `localhost`: that is what `serve`
+/// binds, and this platform resolves `localhost` to `::1` first -- the two ends
+/// of one command line must agree without asking DNS.
+pub fn server_address(ip: Option<&str>, port: &str) -> anyhow::Result<SocketAddr> {
+    let ip = ip.unwrap_or("127.0.0.1");
+    let host = format!("{ip}:{port}");
+    let resolved: Vec<SocketAddr> = host
+        .to_socket_addrs()
+        .with_context(|| format!("resolving {host:?}"))?
+        .collect();
+    resolved
+        .iter()
+        .copied()
+        .find(SocketAddr::is_ipv4)
+        .or_else(|| resolved.first().copied())
+        .ok_or_else(|| anyhow!("{host:?} is not an address"))
+}
+
+/// `connect_server`: remember where the next command goes, then prove it answers.
+async fn connect_elsewhere(args: &Args, command: &[String]) -> anyhow::Result<()> {
+    let parsed = parse_args(&command[1..])?;
+    let port = parsed.get("port").map(String::as_str).unwrap_or_default();
+    let addr = server_address(parsed.get("ip").map(String::as_str), port)?;
+    // Saved before dialing: a refusal then leaves the client pointed where
+    // the operator asked.
+    commands::Remembered::save(&home_dir(args.conn.home.as_deref()), addr)?;
+    let key = resolve_key(&args.conn).ok_or_else(|| {
+        anyhow!(
+            "{addr} is remembered as this client's server, but there is no key to dial it              with: pass --key, set GONGGA_KEY, or start the server once to generate one"
+        )
+    })?;
+    let (link, greeting) = dial(Endpoint { addr, key })
+        .await
+        .map_err(|failure| failure.into_error())?;
+    let mut client = build_client(args);
+    greeting.apply(&mut client, &mut NullSink::default());
+    println!(
+        "{}",
+        serde_json::json!({
+            "server": addr.to_string(),
+            "connected": true,
+            "model": client.model(),
+        })
+    );
+    link.goodbye().await;
+    Ok(())
+}
+
 /// Headless: one command in, its JSON events out, then exit.
 ///
 /// See `docs/notes/cli-lib.md`.
 pub async fn run(args: &Args, command: &[String]) -> anyhow::Result<()> {
+    // `connect_server` says where a link would go; it cannot need one first.
+    if command.first().map(String::as_str) == Some("connect_server") {
+        return connect_elsewhere(args, command).await;
+    }
     let (mut client, mut link) = connect(args).await?;
     let result = run_once(&mut client, &mut link, command).await;
     // A best-effort goodbye lets the server tear the connection down now
@@ -1186,6 +1325,11 @@ pub struct Endpoint {
     key: String,
 }
 
+/// The address this client would dial, without needing its key.
+pub fn server_of(conn: &Connection) -> anyhow::Result<SocketAddr> {
+    resolve_server(conn)
+}
+
 pub fn endpoint(args: &Connection) -> anyhow::Result<Endpoint> {
     let addr = resolve_server(args)?;
     let key = resolve_key(args).ok_or_else(|| {
@@ -1298,7 +1442,7 @@ async fn connect(args: &Args) -> anyhow::Result<(Client, Link)> {
         Err(failure) if failure.is_fatal() => return Err(failure.into_error()),
         Err(failure) => {
             return Err(anyhow!(
-                "{}; is `gongga-server` running?",
+                "{}; is a server running? Start one with `gongga serve --port <port>`",
                 failure.message()
             ));
         }
@@ -1344,6 +1488,10 @@ fn resolve_server_with(args: &Connection, env: &Env) -> anyhow::Result<SocketAdd
         return s
             .parse()
             .with_context(|| format!("parsing GONGGA_SERVER {s:?}"));
+    }
+    // What `connect_server` said outlives the process that said it.
+    if let Some(addr) = commands::Remembered::load(&home_dir(args.home.as_deref())) {
+        return Ok(addr);
     }
     if let Some(bind) = config_value(args, |c| c.server.as_ref().and_then(|s| s.bind.clone())) {
         return bind
@@ -1417,6 +1565,7 @@ mod tests {
                 home: None,
                 key: None,
             },
+            client_only: false,
             command: Some(Sub::Cmd(command)),
         }
     }
@@ -1829,7 +1978,7 @@ mod tests {
     #[test]
     fn one_shot_sink_keeps_errors_and_nothing_else() {
         let mut s = NullSink::default();
-        s.line("", LineKind::System, "connected to gongga-server");
+        s.line("", LineKind::System, "connected to the server");
         s.line(
             "",
             LineKind::Error,

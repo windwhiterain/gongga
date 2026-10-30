@@ -1,24 +1,21 @@
 # server/shell_command.rs
 
-## install
+## command_path, path
 
 The agent drives its own server with a command line, so that command has to be
-something its shell can find by name: `gongga send_message --session x`. The
-server writes `<home>/bin/gongga` -- a two-line `exec` of the CLI's absolute path
--- and returns the `PATH` that makes that directory win the lookup.
+something its shell can find by name: `gongga send_message --session x`.
+
+Who puts it there is the CLI's business, not this module's: `gongga` is the
+program a person starts, and when nothing answers it starts the server
+(`cli::server`). The server only has to make the directory win, so what is left
+here is a name, a path, and the `PATH` value that puts it first.
 
 Why a script in the home instead of putting the CLI's own directory on `PATH`:
 the binary sits in `target/debug` during development, next to the server, the
 bridge and every dll the build produced. Naming one directory for one command
 keeps the agent's `PATH` from resolving whatever else happens to be in a build
-output. It also means the name is chosen here rather than inherited from wherever
-the binary was staged: `dev.sh` runs a *copy* of the server out of `.dev/`, so the
-sibling of the running process is not where the CLI lives.
-
-The script is not a convenience wrapper around `$GONGGA_CLI`. It carries the path
-decided at startup, so a shell that drops the environment still runs the command
-that was installed for it -- and the two cannot disagree about which binary is
-being driven.
+output. It also keeps the server from having to know where that directory is --
+it is always `<home>/bin`, whatever staged the binaries.
 
 ## Why the `PATH` is rebuilt rather than inherited
 
@@ -31,7 +28,7 @@ directory, and a shell that resolves commands out of whatever directory it happe
 to be in is an accident waiting for a file named `gongga`.
 
 That POSIX `PATH` is for a shell. A script interpreter launched with it would
-lose its own native lookups, so `script::Scripts` is handed the three `GONGGA_*`
+lose its own native lookups, so `script::Scripts` is handed the `GONGGA_*`
 variables and the `PATH` it inherited untouched.
 
 ## Why `gongga` and not `cmd`
@@ -40,11 +37,3 @@ variables and the `PATH` it inherited untouched.
 Git Bash it already resolves to `/c/Windows/System32/cmd`. A `PATH` entry that
 shadows the operating system's shell would be a surprise nobody asked for; the
 name that wins is the one the harness actually owns.
-
-## Executing a file a Windows program wrote
-
-MSYS treats ordinary NTFS files as runnable, so the `chmod` a POSIX system needs
-is compiled out here. Verified on this machine: a Rust process writes
-`<home>/bin/gongga`, and the persistent shell, `bash -c`, and a `PATH` lookup all
-exec it. The one thing that must not vary is the line ending -- a `#!/bin/sh` with
-a trailing `\r` is a shebang for a program named `sh\r`.

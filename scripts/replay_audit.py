@@ -23,7 +23,6 @@ LOG = os.path.join(SCRATCH, "server.log")
 PORT = "18972"
 FAKE_PORT = "8785"
 CLI = os.path.join(ROOT, "target", "debug", "gongga.exe")
-SERVER = os.path.join(ROOT, "target", "debug", "gongga-server.exe")
 
 failures = []
 
@@ -68,7 +67,7 @@ def main():
     fake = spawn([sys.executable, os.path.join(ROOT, "scripts", "fake_llm.py"), FAKE_PORT],
                  env=fake_env)
     time.sleep(2)
-    server = spawn([SERVER, "--home", HOME, "--bind", f"127.0.0.1:{PORT}", "--log", "info"],
+    server = spawn([CLI, "--home", HOME, "serve", "--port", PORT],
                    env=dict(env, GONGGA_HOME=HOME), out="log")
     try:
         time.sleep(16)
@@ -92,14 +91,11 @@ def main():
         command("send_message", "--session", "audit", "--message", "第二回合，改过的散文")
         time.sleep(8)
 
-        # A fold: new content entering the store mid-conversation.
+        # A handover: new content entering the store mid-conversation.
         db = sqlite3.connect(os.path.join(HOME, "gongga.db"), timeout=5)
         db.row_factory = sqlite3.Row
         sid = db.execute("select id from sessions where name='audit'").fetchone()["id"]
-        last = db.execute(
-            "select coalesce(max(seq),0) from messages where session_id=?", (sid,)).fetchone()[0]
-        db.execute("update sessions set handover='一份交接笔记', handover_upto=? where id=?",
-                   (last, sid))
+        db.execute("update sessions set handover='一份交接笔记' where id=?", (sid,))
         db.commit()
         db.close()
         command("send_message", "--session", "audit", "--message", "第三回合，笔记之后")

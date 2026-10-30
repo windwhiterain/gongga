@@ -3,9 +3,12 @@
 ## Crate Structure
 all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, live inside directory "crates/xxx". 
 - protocol
-- server: embedde a cli for agents.
-- cli: cmd fully documented and diagnosed, transparent server cmd wrapper, do not know server cmd.
-- tui: transparent cli wrapper.
+- server: library.
+- cli: binary.
+  - cmd fully documented and diagnosed, transparent server cmd wrapper, do not know server cmd.
+  - embedded server, can spawn server
+- tui: binary, transparent cli wrapper, auto spawn a server and connected to it.
+  - `--client_only`: suppress auto spawn server.
 - ...: more crates may be added, with the same naming and layout.
 ## Server Client Connection
 - UDP.
@@ -58,6 +61,8 @@ use `which("bash")` as bash.
     - `block_size`: max line count of non-output block, auto scroll.
     - `session`: filter the rendered events by session name.
     - `split` whether split events window by session name, cmd/cmd_result use a separate single line.
+  - `connect_server [--ip <ip>](default: localhost) --port <port>`
+  - `serve --port <port>`
 
 ## Skill
 use python cripts read/write gongga home, calling server cmd.

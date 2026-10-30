@@ -29,7 +29,7 @@ note is a bug.
 
 | note | source |
 | --- | --- |
-| [`server-main.md`](server-main.md) | `crates/server/src/main.rs` |
+| [`server-lib.md`](server-lib.md) | `crates/server/src/lib.rs` |
 | [`server-agent.md`](server-agent.md) | `crates/server/src/agent.rs` |
 | [`server-blobs.md`](server-blobs.md) | `crates/server/src/blobs.rs` |
 | [`server-commands.md`](server-commands.md) | `crates/server/src/commands.rs` |
@@ -54,6 +54,7 @@ note is a bug.
 | note | source |
 | --- | --- |
 | [`cli-lib.md`](cli-lib.md) | `crates/cli/src/lib.rs` |
+| [`cli-server.md`](cli-server.md) | `crates/cli/src/server.rs` |
 | [`cli-bin-gongga.md`](cli-bin-gongga.md) | `crates/cli/src/bin/gongga.rs` |
 | [`cli-catalog.md`](cli-catalog.md) | `crates/cli/src/catalog.rs` |
 | [`cli-complete.md`](cli-complete.md) | `crates/cli/src/complete.rs` |

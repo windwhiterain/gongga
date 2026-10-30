@@ -96,12 +96,55 @@ struct File {
     block_size: Option<String>,
     #[serde(default)]
     event_split: bool,
+    /// Where `connect_server` last pointed this client.
+    #[serde(default)]
+    connection: Option<Stored>,
+}
+
+/// The server a client was told to use, as the file spells it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Stored {
+    #[serde(default)]
+    ip: Option<String>,
+    port: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Entry {
     name: String,
     value: String,
+}
+
+/// The server `connect_server` pointed this client at.
+///
+/// See `docs/notes/cli-commands.md`.
+pub struct Remembered;
+
+impl Remembered {
+    /// `None` when nothing was remembered, or the file does not parse.
+    pub fn load(home: &Path) -> Option<std::net::SocketAddr> {
+        let stored = read_file(&home.join("cli.toml")).connection?;
+        // Parsed, not formatted: `"::1:9700"` is not an address, and a file
+        // that was right must not fall back to the default.
+        let ip: std::net::IpAddr = stored
+            .ip
+            .as_deref()
+            .unwrap_or("127.0.0.1")
+            .parse()
+            .ok()?;
+        Some(std::net::SocketAddr::new(ip, stored.port))
+    }
+
+    /// Writes the server the next command should talk to.
+    pub fn save(home: &Path, addr: std::net::SocketAddr) -> anyhow::Result<()> {
+        let path = home.join("cli.toml");
+        let mut file = read_file(&path);
+        file.connection = Some(Stored {
+            ip: Some(addr.ip().to_string()),
+            port: addr.port(),
+        });
+        write_file(&path, &file)
+    }
 }
 
 pub struct Sticky {

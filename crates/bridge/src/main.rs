@@ -619,7 +619,7 @@ async fn dial(
         .await
         .map_err(|_| {
             anyhow!(
-                "no answer from {addr} within {HANDSHAKE_TIMEOUT:?}; is `gongga-server` running?"
+                "no answer from {addr} within {HANDSHAKE_TIMEOUT:?}; is a server running?"
             )
         })?
         .ok_or_else(|| anyhow!("the server closed the connection during the handshake"))?;

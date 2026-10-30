@@ -5,11 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Gongga harness server: sessions, agent loop, tools, sqlite storage"
-
-[[bin]]
-name = "gongga-server"
-path = "src/main.rs"
+description = "Gongga harness server library: sessions, agent loop, tools, sqlite storage"
 
 [dependencies]
 protocol = { workspace = true }
