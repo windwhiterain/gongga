@@ -686,10 +686,12 @@ async fn read_stream(
 ) {
     let started = Instant::now();
     tracing::info!(%url, "model request: sending");
-    // The byte count is only known afterwards: it is what the transcript cost.
+    // The count is known only afterwards. The type must be stated: a provider
+    // answers 415 for a streamed body without it.
     let request = http
         .post(url)
         .header("Accept", "text/event-stream")
+        .header("Content-Type", "application/json")
         .bearer_auth(api_key)
         .body(reqwest::Body::wrap_stream(body));
 
