@@ -8,7 +8,7 @@
 Cargo.toml                  workspace，resolver 3，edition 2024
 crates/protocol/  gongga-protocol   别名 protocol —— 帧、可靠 UDP 通道、消息词汇
 crates/server/    gongga-server     别名 server —— **后端程序**（库 + `gongga-server` 二进制）
-crates/cli/       gongga-cli        别名 cli —— 命令层（库，外加 `gongga` 命令行程序），
+crates/cli/       gongga-cli        别名 cli —— 命令层（库，外加 `gongga-cli` 命令行程序），
                                    没有服务端时把 `gongga-server` 拉起来（`cli::server`）
 crates/tui/       gongga-tui        别名 tui —— 终端前端 + `gongga-tui` 二进制
 crates/bridge/    gongga-bridge     别名 bridge —— IM 桥接器，见 §9
@@ -22,36 +22,36 @@ crates/bridge/    gongga-bridge     别名 bridge —— IM 桥接器，见 §9
 只认 `<home>/bin` 这个目录）。
 
 第二条是反的（`cli` 依赖 `tui`）的那些日子：交互模式
-当初写在 `gongga` 二进制里，而那个二进制归 `cli`。这看上去只是 Cargo.toml 里一行，实则把
+当初写在 `gongga-cli` 二进制里，而那个二进制归 `cli`。这看上去只是 Cargo.toml 里一行，实则把
 ratatui 与 crossterm 拖进了**每一个**只想发一条命令的调用：脚本、测试、桥接器、模型手里的
-`gongga`，全都要为一个它们不用的终端付出依赖与编译代价。命令层一旦认识终端，「同一条命令
+`gongga-cli`，全都要为一个它们不用的终端付出依赖与编译代价。命令层一旦认识终端，「同一条命令
 也能从没有键盘的地方发出」这个性质就守不住了。
 
 现在的分工：
 
 | crate | 是 | 不是 |
 |---|---|---|
-| `cli` | 命令目录、sticky、参数解析/渲染、`Client` 状态机、链路 `Link`、`LineKind`、`gongga` 命令行、把 `gongga-server` 拉起来 | 任何终端、服务端本身 |
+| `cli` | 命令目录、sticky、参数解析/渲染、`Client` 状态机、链路 `Link`、`LineKind`、`gongga-cli` 命令行、把 `gongga-server` 拉起来 | 任何终端、服务端本身 |
 | `tui` | 终端渲染、输入行、补全弹窗、交互循环、`gongga-tui` 二进制 | 命令是什么、协议长什么样 |
 
-两个程序，各归一半。`gongga` 是命令层自己的 front-end：argv 进来，这条命令的事件出去，视野里
+两个程序，各归一半。`gongga-cli` 是命令层自己的 front-end：argv 进来，这条命令的事件出去，视野里
 没有终端；不带命令时它打印服务端在问候语里发布的那份目录。服务端是**另一个程序**
-`gongga-server`：`gongga serve --port <p>` 把控制台交给它（§5「谁起服务端」）。窗口是 `gongga-tui`，它是**组装点**，
+`gongga-server`：`gongga-cli serve --port <p>` 把控制台交给它（§5「谁起服务端」）。窗口是 `gongga-tui`，它是**组装点**，
 也是唯一同时需要两半的程序 —— 按 `cli` 的定义解析命令行、把「没有命令」交给交互循环、把有命令
 的交给 `cli::run`。两者都不认识任何命令名，所以「加一条命令要改前端」这件事不成立（SPEC 的
 「tui: transparent cli wrapper, do not know cmd」就是这条）。把自己叫什么也交给调用者：
-`cli::parse_argv(name, about)`，于是 `gongga --help` 与 `gongga-tui --help` 说的都是被运行的
+`cli::parse_argv(name, about)`，于是 `gongga-cli --help` 与 `gongga-tui --help` 说的都是被运行的
 那个东西。
 
 **它们也可以是同一个文件。** 用户手里可能只有 `gongga-tui.exe` 一个文件，而 agent 的 shell 仍然
-需要一个 `gongga` 可敲 —— 窗口内嵌命令层，所以它也能把命令交给命令层，但要说清楚是交给哪一半：
+需要一个 `gongga-cli` 可敲 —— 窗口内嵌命令层，所以它也能把命令交给命令层，但要说清楚是交给哪一半：
 `gongga-tui cli <command> ...` 就是「这一行归命令层」，`gongga-tui` 单独一个才是窗口。这个 `cli`
-词在 clap 之前就被摘掉，所以它不进目录、服务端也不认识它；摘光了剩下空，就是裸 `gongga` 的
+词在 clap 之前就被摘掉，所以它不进目录、服务端也不认识它；摘光了剩下空，就是裸 `gongga-cli` 的
 「列出服务端发布的那份目录」。
 
-于是 `<home>/bin` 里是**两条链接**：`gongga` 指向起这个服务端的命令层程序，`gongga-server` 指向
+于是 `<home>/bin` 里是**两条链接**：`gongga-cli` 指向起这个服务端的命令层程序，`gongga-server` 指向
 被起的服务端（Windows 硬链接、Unix 符号链接，跨卷才拷贝）。不搜索、不改名：机器上可能同时有好几份
-构建，谁在跑，谁的 shell 和脚本就驱动谁。身份落在名字上 —— 叫 `gongga` 就是命令层，叫
+构建，谁在跑，谁的 shell 和脚本就驱动谁。身份落在名字上 —— 叫 `gongga-cli` 就是命令层，叫
 `gongga-tui` 才是窗口 —— 因为链接里塞不进一个词，而名字正是 shell 和原生进程唯一共有的东西。
 
 **为什么 `tui` 连协议也不认识**：交互循环要收包发包，但它拿到的是 `Link::recv()` 给的字节和
@@ -60,7 +60,7 @@ ratatui 与 crossterm 拖进了**每一个**只想发一条命令的调用：脚
 （`Link::send/recv/goodbye`、`Client::handle_bytes`、`Greeting::apply`）。
 
 **方向有测试钉着**：`cli` 里断言「依赖里不得出现 tui/ratatui/crossterm，且它的程序就是命令行
-那一个 `gongga`」，`tui` 里断言「必须依赖 cli」。两者都读 `include_str!("../Cargo.toml")`，
+那一个 `gongga-cli`」，`tui` 里断言「必须依赖 cli」。两者都读 `include_str!("../Cargo.toml")`，
 谁把箭头调回去，测试会先红。
 
 **`tui` 的边界**：SPEC 说「tui: transparent cli wrapper, do not know cmd」。所以 tui 只认识
@@ -513,9 +513,9 @@ Shell **按 `session_name/bash_name` 建键**，所以一个会话持有的是�
   其首位是 `<home>/bin`（重建时同样注入）。这是**模型驱动自己的通道**：`bash` 跑在服务端的
   子进程里，不告诉它这些，它就既不知道服务端的地址、也不知道自己属于哪个会话，想取消或重启只剩从
   外面 `taskkill` 这一条路。`GONGGA_HOME` 与 `GONGGA_SERVER` 正好是 CLI 自己读的两个 fallback，
-  而 `PATH` 首位那个 `gongga` 就是**起这个服务端的命令层程序**（链接进去的，服务端只认这个目录），
-  所以 shell 和脚本都只有一条路：`gongga cancel`、
-  `gongga send_message --message hi --session $GONGGA_SESSION`，脚本里
+  而 `PATH` 首位那个 `gongga-cli` 就是**起这个服务端的命令层程序**（链接进去的，服务端只认这个目录），
+  所以 shell 和脚本都只有一条路：`gongga-cli cancel`、
+  `gongga-cli send_message --message hi --session $GONGGA_SESSION`，脚本里
   `subprocess.run(["gongga", ...])` 也一样 —— 不搜索、不复制第二份、没有第二个变量。
   `PATH` 有两种拼法，因为读它的人有两种：shell 读 POSIX 那条，解释器读原生那条
   （`server/shell_command.rs` 里 `path` 与 `native_path`），指向同一个目录。
@@ -657,7 +657,7 @@ bash{command: "echo hi"}                              -> [read error: invalid ut
 ### `/` 只在输入行里存在
 
 `/cmd` 是**输入行**的语法，不是命令层的。它本来被写在 `Client::submit(&str)` 里，而一次性
-路径（`gongga <cmd> ...`）为了复用它，先把 argv 拼成一行字符串再交给 `submit` —— 于是命令
+路径（`gongga-cli <cmd> ...`）为了复用它，先把 argv 拼成一行字符串再交给 `submit` —— 于是命令
 行也必须带 `/`，不带 `/` 的一律被当成说话：
 
 ```
@@ -667,7 +667,7 @@ gongga MSYS_NO_PATHCONV=1 /cancel         -> 这才是 cancel
 ```
 
 这是 SPEC 里「`cli: cmd fully documented and diagnosed`」的反面：系统提示明明写着
-`gongga <command>`，照做却得到沉默的错误行为。而一次 `get_messages` 要三次调用才摸对。
+`gongga-cli <command>`，照做却得到沉默的错误行为。而一次 `get_messages` 要三次调用才摸对。
 
 根子在**层次**：argv 已经是 token 了，谁启动这个进程就是谁写下了命令名，没有任何歧义需要
 再解一遍。歧义只存在于**输入框**里 —— 那里一行字既可能是命令也可能是要说的话，才需要一个
@@ -679,7 +679,7 @@ gongga MSYS_NO_PATHCONV=1 /cancel         -> 这才是 cancel
   留在这一层，因为它们是「输入框」的性质，不是「命令」的性质。
 
 顺带把错法的回答做成诊断：带 `/` 或带路径分隔符的第一个 token，取出最后一段当命令名去目录
-里查，命中就回一句「`/x` 是输入行语法，命令行直接写 `gongga x ...`」，并补齐剩下的参数。
+里查，命中就回一句「`/x` 是输入行语法，命令行直接写 `gongga-cli x ...`」，并补齐剩下的参数。
 Windows 上 Git Bash 会**在程序启动之前**把 `/x` 改写成 `C:/.../Git/x`，所以这条规则认的是
 「以已知命令名结尾的路径」，而不只是开头的 `/` —— 否则模型看到的仍是一句无用的
 `unknown command "C:/SoftWare/git/Git/get_messages"`。
@@ -753,7 +753,7 @@ SPEC 给这一半起的名字是 `set_event_ui --session <name|none>`，它写�
 表现为「日志忽然不说话了」。为此 `Client.follows` 记 (id, 命令, 会话)，收到回执才结算；
 一次性模式也照此走，所以 `run_once` 现在把事件同时喂给 client（静默），stdout 仍只有 JSON。
 
-非交互模式（`gongga <cmd>`）**不应用过滤**：脚本拿到的是它要的那些事件的完整 JSON，
+非交互模式（`gongga-cli <cmd>`）**不应用过滤**：脚本拿到的是它要的那些事件的完整 JSON，
 而且滤掉 `cmd_result` 会让它一直等一个永远不会打印的回执。
 
 ## 5. CLI（命令层）
@@ -780,7 +780,7 @@ TUI 是一种实现（带样式的行），非交互模式是另一种（什么�
   于是再也下不去。`Candidate::space = false` 只给目录用，Tab 连按就能逐层往下走。
   点开头的条目默认不列（像 shell），除非前缀本身就是 `.`。
 - **`--cwd` 列的是客户端自己的文件系统**：目录里没有这台机器的目录结构，而 Tab 是客户端
-  在处理；两者在同一台机器上（同一个 `gongga` 进程旁边就是服务端），所以由客户端读盘比
+  在处理；两者在同一台机器上（同一个 `gongga-cli` 进程旁边就是服务端），所以由客户端读盘比
   让服务端回一趟更直接。代价是相对路径仍由服务端按它自己的工作目录解析，两边不一致时
   Tab 出来的目录服务端可能找不到——写绝对路径就没有这个歧义。
 - **输入行有两种写法，都直接来自 SPEC。** `/` 开头是命令：`/send_message --session main
@@ -964,7 +964,7 @@ CLI 立刻退出，turn 在后台自己跑完，跑完时 assistant 的消息才
 的 `timeout_ms` 重复，JSON 变成唯一输出格式后也没有什么可开关的了，所以整个子命令删掉 ——
 现在只有上面这一种写法。
 
-**为什么不是 `gongga set_session` 这种真子命令**：能做，但命令集是服务端握手时下发的，
+**为什么不是 `gongga-cli set_session` 这种真子命令**：能做，但命令集是服务端握手时下发的，
 本地没有固定列表可声明，所以走 clap 的 `external_subcommand` 兜住任何名字，再交给和
 TUI 输入行**同一套** `submit()` 解析 —— 否则补全、sticky 补齐、报错要维护两份。
 代价：`--server` / `--home` / `--key` 必须写在命令**之前**（external 参数会被整包吞掉），
@@ -975,7 +975,7 @@ TUI 输入行**同一套** `submit()` 解析 —— 否则补全、sticky 补齐
 
 ### 谁起服务端
 
-SPEC 的结构是：`server` 和 `cli` 是两个**二进制**，`gongga-server` 由 `gongga` 拉起来。于是「起一个
+SPEC 的结构是：`server` 和 `cli` 是两个**二进制**，`gongga-server` 由 `gongga-cli` 拉起来。于是「起一个
 服务端」对使用者仍然只是一条客户端命令 `serve`：
 
 ```sh
@@ -1014,10 +1014,10 @@ Windows 给**每个**控制台子进程开一个新窗口 —— 而服务端启
 **不等它起来。** 窗口本来就在退避重连，再挂一个「等到 ready」的循环只是把同一个循环写两遍，错误
 还不如它。起服务端要负责的是「把它拉起来」，不是「盯着它」。
 
-`<home>/bin` 的那一对由**起服务端之前的那一步放**（`cli::server::install_commands`）：`gongga` 是
+`<home>/bin` 的那一对由**起服务端之前的那一步放**（`cli::server::install_commands`）：`gongga-cli` 是
 起它的命令层程序，`gongga-server` 是被起的那一个，两个一起从同一份构建**链接**过去 —— Windows
 硬链接，Unix 符号链接，跨卷才退化成拷贝。于是「谁起的这个服务端，它的 shell 和它的脚本就敲谁」，
-而且只有一个名字：bash 自己会把 `gongga` 补成 `gongga.exe`，原生进程
+而且只有一个名字：bash 自己会把 `gongga-cli` 补成 `gongga-cli.exe`，原生进程
 按裸名字找到的也是同一个文件，`subprocess.run(["gongga", ...])` 不需要路径也不需要变量。
 
 不搜索：同一台机器上可能有好几份构建，按 `PATH`、按兄弟目录、按 `bin` 里已有什么都可能挑到跟
@@ -1026,7 +1026,7 @@ Windows 给**每个**控制台子进程开一个新窗口 —— 而服务端启
 起来比较长度和 mtime，不一致就重放；符号链接不需要这一步。写走「先放旁边的临时文件、再 rename」，
 因为 agent 可能正在跑那个名字 —— Windows 拒绝替换正在运行的 exe 时，旧的留到下次。
 
-身份因此落在名字上（`tui/main.rs` 的 `named`）：以 `gongga` 启动，裸调用就是目录；以 `gongga-tui`
+身份因此落在名字上（`tui/main.rs` 的 `named`）：以 `gongga-cli` 启动，裸调用就是目录；以 `gongga-tui`
 启动，裸调用才是窗口。链接里塞不进 `cli` 这个词，而 `cli` 仍然可作为显式写法（`gongga-tui cli ...`）。
 
 ### TUI 的滚动缓冲：一帧只碰一屏
@@ -1151,7 +1151,7 @@ Git Bash 自动探测常见安装路径，找不到再退回 PATH 上的 `bash`�
 | 值补全：`--cwd` 列目录，目录补成 `src/` 不带空格、再按 Tab 能进下一层 | 通过（单测，真 TTY 未验证）|
 | 工具输出上限：22KB `cat` → 2004 字符 + 落盘（真实 provider） | 通过 |
 | 摘要压缩：第 51 条处压出 2318 字符摘要，会话继续（真实 provider） | 通过 |
-| 模型从 bash 里调自己的 CLI（`gongga cancel`，真实 provider） | 通过 |
+| 模型从 bash 里调自己的 CLI（`gongga-cli cancel`，真实 provider） | 通过 |
 | CLI 裸命令 / 整行引号形式两种写法，输出恒为 JSON lines | 通过 |
 | `send_message` 拿到 ack 就退出（实测 0.45s），turn 在后台跑完才落库 | 通过 |
 | `cancel` 后 pending 行**保留**，下个服务端 `resumed=1` 重放（真实 provider） | 通过 |
@@ -1190,7 +1190,7 @@ job(s) keep running -- they outlive the server, stop them with del_bash`）→ �
 2. **`response{session,...}` 的语义**（见 §3）。
 3. **是否需要给 agent 暴露 DB 工具**（见 §4）。
 4. **bash 零审批**下要不要危险命令黑名单（见 §4）。
-5. **非交互输出只有 JSON**（见 §5）：人直接敲 `gongga set_session --session x` 看到的是一行
+5. **非交互输出只有 JSON**（见 §5）：人直接敲 `gongga-cli set_session --session x` 看到的是一行
    JSON 而不是「session is now x」。TUI 才是给人看的，命令行是给脚本和模型看的 —— 是否
    要留一个 `--text` 兜底？
 6. **同一会话并发**：现在新 turn 会取消旧 turn；并行工具调用是串行的。是否符合预期？
@@ -1206,9 +1206,9 @@ job(s) keep running -- they outlive the server, stop them with del_bash`）→ �
     `del_bash{name, job}` 这种「复用已有工具」的形态？
 11. 仓库还没 `git init`。
 12. **模型停自己这件事，现在是命令而不是快捷键**（见 §4）：`interrupt_session` 是服务端命令，
-    模型从 `bash` 里敲 `gongga interrupt_session --session <自己>` 就能停；`cancel` 同理
+    模型从 `bash` 里敲 `gongga-cli interrupt_session --session <自己>` 就能停；`cancel` 同理
     （`test1` 当年是用 `taskkill` 硬停的，现在没必要）。要不要**进一步**在工具层加一条豁免
-    ——比如禁掉 `gongga cancel`，免得 agent 一顺手把整个服务端关了？
+    ——比如禁掉 `gongga-cli cancel`，免得 agent 一顺手把整个服务端关了？
 13. **`detached_jobs` 里那条 job 就是服务端自己**（`test1` 的 pid 31984 是 `exec` 出来的
     新 server 的 MSYS wrapper）：`del_bash` 一下就能自杀，而且重启 adopt 时有 pid 复用
     误伤的风险。要不要在 adopt / kill 时跳过「命令看起来是自己」的作业？
@@ -1225,7 +1225,7 @@ job(s) keep running -- they outlive the server, stop them with del_bash`）→ �
     （日志里 `turn end outcome=Cancelled` 出现在压缩之后）。因为请求期间没有 select 取消信号。
     要不要让压缩也能被打断？
 17. ~~**排队的 turn 没法单独取消**~~ **已解决**：`interrupt_session --session <n>` 是服务端命令，
-    脚本、`gongga interrupt_session --session x`（也就是模型自己）和 TUI 打的是同一条。
+    脚本、`gongga-cli interrupt_session --session x`（也就是模型自己）和 TUI 打的是同一条。
     它连排队中的 pending 行一起清 —— 排队中的 turn 放行时会看到 epoch 变了而直接走人。
 18. ~~**`del_session` 会一直等到 turn 结束**~~ **已解决**：删除现在**先 `interrupt` 再拿门**
     （见 §4「冲突的操作排队」）。实测在跑 `sleep 45` 的会话上删除：0.49s 返回，bash 在
@@ -1363,7 +1363,7 @@ assistant text」没有歧义 —— 这也正是 `get_messages` 存在的理由
 | 启动时拾起 | `commands.rs::resume_pending` | 新服务端起 bind 后把该回合接着跑 |
 | `bash --detached` | `tools/detached.rs` | 继任者必须活在旧进程之外，否则一起死 |
 | `server.lock` | `instance.rs` | home 是**交接**不是抢占；旧 pid 还在就拒绝启动 |
-| `gongga`（在 `PATH` 首位） | `cli::server::place` | agent 从 bash 里给自己发 `cancel` |
+| `gongga-cli`（在 `PATH` 首位） | `cli::server::place` | agent 从 bash 里给自己发 `cancel` |
 
 顺序是有原因的，`.agents/skills/evolve/evolve.sh` 把它固化成两条命令：
 
@@ -1378,7 +1378,7 @@ home 就空着，没有进程去 resume 这个回合 ���— 一次失败�
 「继任者起不来 → swap 检查到 launcher 不在 → 拒绝 cancel → 旧服务端照常活着」。
 
 **为什么 `stage` 用 `.dev/target` 而不是 `target/`**：Windows 锁住正在运行的 `.exe`，
-而要被替换的那个服务端常常就是 `target\debug\gongga.exe` —— 在 `target/` 里构建会
+而要被替换的那个服务端常常就是 `target\debug\gongga-server.exe` —— 在 `target/` 里构建会
 以 `拒绝访问 (os error 5)` 失败，恰好卡在「想自我进化」这个动作上。私有 target 目录让
 构建与 `target/` 的占用状态无关，也让 `dev.sh` 那套「用副本跑」的纪律继续成立。
 
@@ -1415,7 +1415,7 @@ home 就空着，没有进程去 resume 这个回合 ���— 一次失败�
    结束时自己释放那一项，并用 `conn_id` 保护 —— 同一地址已被新连接占用时，旧任务不得删掉
    新 peer 的条目。
 2. **agent 拿到的命令可能敲不通**：当初服务端只找「本进程的同级目录」，而 `dev.sh server`
-   只把服务端复制进 `.dev/`，同级就没有 `gongga`，于是回退成裸名 `gongga.exe` —— 不在 `PATH` 上，
+   只把服务端复制进 `.dev/`，同级就没有 `gongga-cli`，于是回退成裸名 `gongga-cli.exe` —— 不在 `PATH` 上，
    agent 拿到的是一条必死的命令。后来改成「同级 → `../target/debug/` → `PATH`」，再后来这一条连
    责任一起搬走了：放进 `<home>/bin` 的是**起服务端的那个命令层程序**和它拉起来的服务端（两条链接），
    服务端只把那个目录排到 `PATH` 首位。理由与两个坑（原生 `PATH` 被 Git Bash 改写、`cmd` 这个名字

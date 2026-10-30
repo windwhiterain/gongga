@@ -22,7 +22,7 @@ DUMP = os.path.join(SCRATCH, "dump.jsonl")
 LOG = os.path.join(SCRATCH, "server.log")
 PORT = "18972"
 FAKE_PORT = "8785"
-CLI = os.path.join(ROOT, "target", "debug", "gongga.exe")
+CLI = os.path.join(ROOT, "target", "debug", "gongga-cli.exe")
 
 failures = []
 

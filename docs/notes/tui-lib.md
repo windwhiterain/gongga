@@ -17,7 +17,7 @@ is added.
 
 The `gongga-tui` binary lives here because the window is the only program that
 needs both halves, and linking them is what a binary is for. The command line is
-`gongga`, in the crate this one depends on.
+`gongga-cli`, in the crate this one depends on.
 
 ## cli re-exports
 

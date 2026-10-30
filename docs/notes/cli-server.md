@@ -59,7 +59,7 @@ second one on the same home would be exactly the split this design refuses.
 It places the pair before spawning (`install_commands`), and that is not
 bookkeeping: the spawned process is `gongga-server`, whose own `current_exe()` is
 the wrong answer to "what should a shell type", so the server cannot install its
-own command. Before the split the child *was* `gongga serve`, which installed
+own command. Before the split the child *was* `gongga-cli serve`, which installed
 itself on the way up; a window-started home now depends on this line.
 
 A window that finds a server already answering still leaves the home's `bin`
@@ -106,7 +106,7 @@ Where the program that carries the server is, and there are exactly three answer
 1. `GONGGA_SERVER_BIN`, when something named one -- a test, a launcher, an
    operator holding two builds;
 2. the sibling of this program: a build tree and an install both keep the pair
-   together, so the `gongga-server` beside `gongga` is the same build;
+   together, so the `gongga-server` beside `gongga-cli` is the same build;
 3. `<home>/bin/gongga-server`, the copy an earlier start of this home installed.
 
 Never a `PATH` search. A machine can hold several builds, and the one that answers
@@ -116,15 +116,15 @@ other side. If none of the three is there, the error names all three.
 
 ## install_commands
 
-The two commands a home's shells and scripts see: `gongga` is *this* program,
+The two commands a home's shells and scripts see: `gongga-cli` is *this* program,
 `gongga-server` is the one about to serve, and both are placed before the server
 exists -- the one moment when the home and both programs are known for certain.
 
-The server goes in first. A `gongga` refreshed without a `gongga-server` beside it
+The server goes in first. A `gongga-cli` refreshed without a `gongga-server` beside it
 would be a command whose server cannot be found, and the failure would show up one
 level down, in a `serve` nobody is watching.
 
-Both, or the pair drifts: an operator who updated `gongga` by hand would leave an
+Both, or the pair drifts: an operator who updated `gongga-cli` by hand would leave an
 old server behind it, and the shells of that home would drive a build the server is
 not.
 
@@ -134,8 +134,8 @@ not.
 two programs. A link, not a wrapper script, and that is what makes one name
 enough:
 
-- bash resolves `gongga` to `gongga.exe` by itself,
-- a native process starting `gongga` finds the same file,
+- bash resolves `gongga-cli` to `gongga-cli.exe` by itself,
+- a native process starting `gongga-cli` finds the same file,
 - so `subprocess.run(["gongga", ...])` in a script needs no path, no variable and
   no knowledge of which platform it is on.
 
@@ -145,7 +145,7 @@ is the lookup, including that a missing server reports every place it looked.
 The link is a hard link on Windows and a symlink elsewhere. A symlink follows the
 path through a rebuild by itself; a hard link cannot, so each start compares size
 and modification time with the running program and replaces the name when they
-differ -- a last week's build answering to `gongga` while this week's serves the
+differ -- a last week's build answering to `gongga-cli` while this week's serves the
 home is exactly the skew `current_exe` exists to prevent.
 
 It is placed beside its target and renamed in, because the command may be running

@@ -39,7 +39,7 @@ use `which("bash")` as bash.
   - `<pure text>` expand to `/send_message --message "<pure text>"`: need escape.
 - sticky_cmd_arguments[{name, value}]: auto fill in cmd argument if required but not provided.
 ## Cmd
-- invocation: `gongga <cmd> [--arg <v> ...]` -- argv is already tokens, so a command line
+- invocation: `gongga-cli <cmd> [--arg <v> ...]` -- argv is already tokens, so a command line
   carries no `/` and no prose form. `/` belongs to `cmd_input` only.
 - server:
   - `set_session --session <name> [--cwd <path>] [--llm <provider/model>] [--context_limit <n%>] [--thinking_effort <level>]`

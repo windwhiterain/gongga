@@ -103,7 +103,7 @@ throw the work away.
 It used to take the shell's own lock to read `cwd`, which meant that asking where
 a session was waited for whatever command was running in that shell -- `set_session`
 answers with this, so creating a session B whose default shell happened to be busy
-could hang for minutes in A's `gongga` call. Now it reads the cell the shell
+could hang for minutes in A's `gongga-cli` call. Now it reads the cell the shell
 mirrors its directory into, which needs no lock at all.
 
 Staleness is not the cost of a race: the mirror is written by the same statement

@@ -1,11 +1,13 @@
-# cli/src/bin/gongga.rs
+# cli/src/bin/gongga-cli.rs
 
 ## Why the command layer has a program of its own
 
-`gongga` used to be the terminal's name: one binary that was headless when given a
-command and a window when given none. That made the thing the agent types inside
+`gongga-cli` used to be the terminal's name: one binary that was headless when given a
+command and a window when given none. This program is `gongga-cli` now -- the
+crate's own name -- because the program, the package and the link in a home's `bin`
+are one thing, and a reader should not have to learn a second spelling for it. That made the thing the agent types inside
 its shell -- and every script, the evolve launcher and the bridge dial with -- a
-build of the front-end, and a bare `gongga` in a pipe tried to draw a UI into a
+build of the front-end, and a bare `gongga-cli` in a pipe tried to draw a UI into a
 pipe.
 
 Now each program is one shape. This file is the command layer's own front-end:
@@ -29,11 +31,11 @@ link are the same layer (`tui-main.md` has the other half of that).
 It carries no server. It used to: `crates/server` was a library this binary
 included, which made every command -- and the window, and every test build --
 link SQLite, reqwest and the whole agent loop to send one datagram. `serve` now
-starts the program instead, and `gongga` is 6 MB rather than 23.
+starts the program instead, and `gongga-cli` is 6 MB rather than 23.
 
 ## A bare call lists what exists
 
-With no command, `gongga` prints the catalog the server sent in its greeting --
+With no command, `gongga-cli` prints the catalog the server sent in its greeting --
 one line per command, its description, the arguments it takes and whether each is
 required, and a marker for the commands that run in the client rather than here.
 
@@ -50,7 +52,7 @@ agent reads to learn what it may say next.
 ## Naming itself
 
 `cli::parse_argv(name, about)` takes the identity from the binary rather than the
-derive, because one `Args` struct now serves two programs. `gongga --help` and
+derive, because one `Args` struct now serves two programs. `gongga-cli --help` and
 `gongga-tui --help` therefore describe the thing that was actually run: the usage
 line, and the clap `about` line, are the caller's words. `Args` itself keeps no
 `about` -- a default that neither binary prints would only drift.

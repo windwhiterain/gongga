@@ -8,7 +8,7 @@ off a command line, are `program`'s (`tui-program.md`) -- a decision in `main.rs
 is a decision only a test binary could reach, and a binary of its own to reach it.
 
 Two shapes, one command line: with a command it belongs to the command layer, and
-with none the *name* decides -- this program is also installed as `gongga`, and
+with none the *name* decides -- this program is also installed as `gongga-cli`, and
 under that name the bare invocation is the catalog (`named`, below). A command
 line goes straight to `cli::main`, which knows that `serve` takes the process and
 that everything else needs a link; keeping that decision here would mean this
@@ -18,7 +18,7 @@ What is left here is a runtime and the window, and no command knowledge of its
 own -- adding a command must not mean touching this crate, which is what
 "transparent cli wrapper" means.
 
-`--client_only` is the one thing this front-end does not share with `gongga`: a
+`--client_only` is the one thing this front-end does not share with `gongga-cli`: a
 window starts a server when nothing answers (SPEC), and a person who already runs
 one somewhere else needs a way to say so. It is declared on `cli::Args` because
 both programs parse one `Args`, but only this one has something to suppress.
@@ -31,7 +31,7 @@ meant:
 
 ```sh
 gongga-tui            # the window
-gongga-tui cli        # the catalog, exactly like `gongga` with nothing at all
+gongga-tui cli        # the catalog, exactly like `gongga-cli` with nothing at all
 gongga-tui cli get_messages --session main --range -5:
 ```
 
@@ -40,7 +40,7 @@ The word is taken off the front of the command and the rest is the layer's.
 It belongs to the program, not to the layer: it is not in the catalog, the server
 has never heard of it, and it is answered before anything is dialled -- an empty
 command line after it means "list what the server publishes", which is what an
-empty command line means for `gongga` too.
+empty command line means for `gongga-cli` too.
 
 A command line that never says it is still passed straight to the layer, because
 this front-end is a transparent wrapper: `gongga-tui serve --port <p>` is how the
@@ -49,17 +49,17 @@ which commands exist.
 
 ## named — why the word is not always needed
 
-The server puts *this program* into the home's `bin` under the name `gongga`
+The server puts *this program* into the home's `bin` under the name `gongga-cli`
 (`cli-server.md`), so one file has two names and two meanings:
 
 | started as | bare invocation |
 |---|---|
 | `gongga-tui` | the window |
-| `gongga` (a link to it) | the catalog |
+| `gongga-cli` (a link to it) | the catalog |
 
 The name, not a flag: a link cannot carry an argument, so the name is the only
 thing left that can say which half is meant. It is compared as a stem and
-case-insensitively, so `gongga.exe` and `GONGGA.EXE` are the same command, on
+case-insensitively, so `gongga-cli.exe` and `GONGGA-CLI.EXE` are one command, on
 every platform and whatever directory the file sits in.
 
 `cli` still works and still means the layer, because whoever typed it means it.

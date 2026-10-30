@@ -3,7 +3,7 @@
 ## path
 
 The agent drives its own server with a command line, so that command has to be
-something its shell can find by name: `gongga send_message --session x`.
+something its shell can find by name: `gongga-cli send_message --session x`.
 
 Who puts it there is the CLI's business, not this module's: the server links
 itself into `<home>/bin` under that name as it comes up (`cli::server::place`).
@@ -20,20 +20,20 @@ also keeps the server from having to know where that directory is -- it is alway
 
 The same directory, two spellings, because there are two kinds of child: a shell
 reads `PATH` split on `:` with `/c/...` entries, and a script's interpreter reads
-the platform's own `;` and `C:\...`. Both are built from one list, so `gongga` is
+the platform's own `;` and `C:\...`. Both are built from one list, so `gongga-cli` is
 one file whichever of them looks it up.
 
 ## Why one name is enough
 
 The name in that directory is not a script, it is the program itself under
-`gongga`'s name (`cli-server.md`). That is what makes both spellings useful: bash
-resolves `gongga` to `gongga.exe` on its own, and `subprocess.run(["gongga"])`
+`gongga-cli`'s name (`cli-server.md`). That is what makes both spellings useful: bash
+resolves `gongga-cli` to `gongga-cli.exe` on its own, and `subprocess.run(["gongga-cli"])`
 from a script starts the same file. Measured both ways on Windows, where the
 `#!/bin/sh` name this replaced had failed with `WinError 2` -- Windows appends
 `.exe` and nothing else when a command has no extension.
 
-A per-platform launcher (`gongga.cmd` beside a `gongga` script) does not get
-there: a native process has to spell `.cmd`, and a shell looks for `gongga`. One
+A per-platform launcher (`gongga.cmd` beside a `gongga-cli` script) does not get
+there: a native process has to spell `.cmd`, and a shell looks for `gongga-cli`. One
 name both can run has to be the program, which is why the link is what this
 module's `PATH` is for.
 
@@ -45,13 +45,13 @@ rewritten at the child's startup and comes out mangled -- measured here as
 translated with `msys_path`, joined with `:` the way a shell splits it, and
 `bin` is put first. Empty entries are dropped: `PATH` treats one as the current
 directory, and a shell that resolves commands out of whatever directory it happens
-to be in is an accident waiting for a file named `gongga`.
+to be in is an accident waiting for a file named `gongga-cli`.
 
 That POSIX `PATH` is for a shell. A script interpreter launched with it would
 lose its own native lookups, so `script::Scripts` is handed the `GONGGA_*`
 variables and the native `PATH` -- the same directory, spelled the way it reads.
 
-## Why `gongga` and not `cmd`
+## Why `gongga-cli` and not `cmd`
 
 `cmd` is the shorter name and the one SPEC uses for a harness command, but in
 Git Bash it already resolves to `/c/Windows/System32/cmd`. A `PATH` entry that

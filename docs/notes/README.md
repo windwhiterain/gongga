@@ -63,7 +63,7 @@ note is a bug.
 | --- | --- |
 | [`cli-lib.md`](cli-lib.md) | `crates/cli/src/lib.rs` |
 | [`cli-server.md`](cli-server.md) | `crates/cli/src/server.rs` |
-| [`cli-bin-gongga.md`](cli-bin-gongga.md) | `crates/cli/src/bin/gongga.rs` |
+| [`cli-bin-gongga.md`](cli-bin-gongga.md) | `crates/cli/src/bin/gongga-cli.rs` |
 | [`cli-catalog.md`](cli-catalog.md) | `crates/cli/src/catalog.rs` |
 | [`cli-complete.md`](cli-complete.md) | `crates/cli/src/complete.rs` |
 | [`cli-commands.md`](cli-commands.md) | `crates/cli/src/commands.rs` |

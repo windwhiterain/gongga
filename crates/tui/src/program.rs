@@ -120,14 +120,14 @@ mod tests {
         assert!(!took_layer(&mut args));
     }
 
-    /// The same file installed as `gongga` is the layer, not the window.
+    /// The same file installed as `gongga-cli` is the layer, not the window.
     #[test]
     fn the_command_s_name_is_recognised_in_either_spelling() {
         for (path, expected) in [
-            ("gongga", true),
-            ("/home/a/.gongga/bin/gongga", true),
-            (r"C:\Users\a\.gongga\bin\gongga.exe", true),
-            (r"C:\Users\a\.gongga\bin\GONGGA.EXE", true),
+            ("gongga-cli", true),
+            ("/home/a/.gongga/bin/gongga-cli", true),
+            (r"C:\Users\a\.gongga\bin\gongga-cli.exe", true),
+            (r"C:\Users\a\.gongga\bin\GONGGA-CLI.EXE", true),
             ("gongga-tui", false),
             ("gongga-tui.exe", false),
             ("", false),

@@ -11,13 +11,13 @@ as a built-in, and none of them needs a client rebuild.
 It does not own the *input line*. Whether a line is a `/command` or prose for
 the agent is the interactive front-end's decision (`Client::command` and
 `Client::message` are the two things that decision can ask for), so the
-one-shot path -- `gongga send_message --message hi` -- never has to guess: its
+one-shot path -- `gongga-cli send_message --message hi` -- never has to guess: its
 argv is already tokens.
 
 It knows nothing about terminals. That is the point of the split: anything that
 can present `Sink` events can drive it, and the interactive client is one such
 thing (the window is `gongga-tui` in `crates/tui`, and the command line is
-`gongga`, this crate's own `src/bin/gongga.rs`). Nothing here names a rendering
+`gongga-cli`, this crate's own `src/bin/gongga-cli.rs`). Nothing here names a rendering
 crate, so the command layer builds into a script, a test, or a UI without
 dragging a terminal along.
 
@@ -46,7 +46,7 @@ reconnect mean two different servers.
 
 ## Args::check_flag_order
 
-clap hands an external subcommand every token after it, so `gongga send_message
+clap hands an external subcommand every token after it, so `gongga-cli send_message
 --server 1.2.3.4:1` would take `--server` as one of the command's own arguments
 and then quietly dial the default server.
 
@@ -56,7 +56,7 @@ Anything but a flag is the command itself, because what the client can run is
 decided by the server and only known after the handshake: there is no fixed list
 of subcommands to declare here.
 
-`gongga set_session --name main`. One command per process, the answer on stdout
+`gongga-cli set_session --name main`. One command per process, the answer on stdout
 as JSON lines, then exit -- this is how a script (or the model in a `bash` tool)
 drives the harness.
 
@@ -300,12 +300,12 @@ one line of text.
 
 ## Client::command
 
-This is the whole interface of the one-shot path (`gongga send_message --message
+This is the whole interface of the one-shot path (`gongga-cli send_message --message
 hi`). There is no grammar here on purpose: a command line arrives tokenised by
 the shell that started the process, so there is nothing left to decide. `/name`
 is the *interactive* input line's syntax and prose is not a command; splitting a
 string back into tokens only to re-derive an intention would let the two paths
-disagree, and that disagreement is exactly what made `gongga cancel` -- the
+disagree, and that disagreement is exactly what made `gongga-cli cancel` -- the
 form the agent is told to use -- send the word "cancel" to the model as a chat
 message.
 
@@ -452,7 +452,7 @@ needs for the server it may start, and nothing else.
 
 Runs one command against the server, prints the events, exits.
 
-`gongga send_message --message hi --session main`. One command per process is the
+`gongga-cli send_message --message hi --session main`. One command per process is the
 whole interface: there is no `exec` to wrap it in, and nothing to configure
 about the wait -- the command returns when the server answers, which for
 `send_message` is the moment the message is accepted, not the moment the turn
@@ -591,7 +591,7 @@ it -- splitting here would be the thing being avoided.
 
 ## an_argument_that_contains_a_space_stays_one_argument
 
-`gongga send_message --message "two words"` has to reach the server as one
+`gongga-cli send_message --message "two words"` has to reach the server as one
 argument, not two. Nothing splits or rejoins the argv, so the only thing that
 could go wrong is the tokenizer inside the command layer.
 
@@ -602,7 +602,7 @@ command name, and answering "unknown command `"/send_message"`" would hide the
 one fact worth knowing -- so the rejection spells the line out.
 
 This is not hypothetical: the agent is told to drive the harness with
-`gongga <command>`, carried the TUI's `/` onto it, and on Windows Git Bash
+`gongga-cli <command>`, carried the TUI's `/` onto it, and on Windows Git Bash
 turned the `/word` into a `C:/.../` path before the client ever saw it, so the
 command quietly became a chat message.
 
@@ -626,7 +626,7 @@ name.
 It ships exactly one program, and that program is the command line: argv in, the
 command's events out. What it must not ship is a dependency on a front-end -- a
 terminal dragged into every script and test that only wants to send a command. The
-assertion therefore reads the manifest for the `gongga` binary this crate owns,
+assertion therefore reads the manifest for the `gongga-cli` binary this crate owns,
 matching a real section line so a comment cannot satisfy it.
 
 ## no_env

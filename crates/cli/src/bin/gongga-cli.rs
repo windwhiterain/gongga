@@ -1,4 +1,4 @@
-//! `gongga`: the command line, one command per process.
+//! `gongga-cli`: the command line, one command per process.
 //!
 //! See `docs/notes/cli-bin-gongga.md`.
 

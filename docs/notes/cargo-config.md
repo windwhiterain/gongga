@@ -25,7 +25,7 @@ the linker and not a set of profile knobs.
   -- the time is this workspace's own code, not std. It would also break the
   install: `cli::server::place` puts exactly one file in `<home>/bin`, and
   `scripts/dev.sh` stages one file into `.dev/`, so a build that needed DLLs
-  beside it would not start as `gongga`.
+  beside it would not start as `gongga-cli`.
 - Workspace crates as `dylib`: the same install problem, multiplied by every
   crate, and it ties the binaries to one toolchain's Rust ABI.
 - `[profile.dev] debug = "line-tables-only"`: 3.0 s against 3.3 s on top of lld --

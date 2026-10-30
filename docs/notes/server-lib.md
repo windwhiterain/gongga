@@ -3,7 +3,7 @@
 ## Args::db
 
 The whole of what a server can be told. `Default` is the empty command line, and
-that is what `gongga serve` passes on: it names a home and a port, and every
+that is what `gongga-cli serve` passes on: it names a home and a port, and every
 other value comes from that home's config.
 
 SQLite database path. Overrides `[server] db`.
@@ -27,8 +27,8 @@ The server does not look for the CLI, and does not need to: `current_exe()` is
 directory is the only thing the two have in common.
 
 One name, two `PATH` shapes. `<home>/bin` goes first in both: a shell reads a
-POSIX `PATH` and types `gongga`; a script's interpreter reads the native one and
-starts `gongga` -- which is the command layer, linked into that directory. Neither
+POSIX `PATH` and types `gongga-cli`; a script's interpreter reads the native one and
+starts `gongga-cli` -- which is the command layer, linked into that directory. Neither
 needs a second variable, and neither can end up driving a different build than the
 server they are talking to.
 
@@ -83,7 +83,7 @@ the session it belongs to have to be handed down rather than discovered: without
 them an agent that wants to cancel or restart has no better option than killing
 its own server from outside. `GONGGA_HOME` and `GONGGA_SERVER` are exactly the two
 fallbacks the CLI reads, so a command needs no flags of its own. `PATH` is what
-makes `gongga` resolve, in the shape each child can read
+makes `gongga-cli` resolve, in the shape each child can read
 (`server-shell-command.md`); `GONGGA_SESSION` is added where a session's shells are
 made, because that name belongs to a session and not to the server. A script gets
 the same variables and keeps the native `PATH` it was started with.

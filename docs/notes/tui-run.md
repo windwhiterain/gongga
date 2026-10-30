@@ -33,7 +33,7 @@ It lives here, not in the command layer, because it is a property of the one
 input box: an input line has to mean *something* when the operator types prose
 into it, so it needs a way to say "and now a command". A command line has no such
 problem -- its argv is already tokens, and the process was started with the
-command's name -- so `gongga send_message ...` takes no `/`. Carrying the prefix
+command's name -- so `gongga-cli send_message ...` takes no `/`. Carrying the prefix
 over was not harmless: on Windows Git Bash rewrites a leading `/word` into a
 `C:/.../` path before it is even an argument, and the whole line then became a
 chat message to the agent.

@@ -63,7 +63,7 @@ impl Connection {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "gongga", version)]
+#[command(name = "gongga-cli", version)]
 pub struct Args {
     #[command(flatten)]
     pub conn: Connection,
@@ -132,8 +132,9 @@ pub const CLI: &str = "cli";
 
 /// The name a shell types, and the name this program answers to in a home's `bin`.
 ///
-/// Not `cmd`: that is Windows' own shell.
-pub const COMMAND: &str = "gongga";
+/// The crate's own name, not a short form of it: one name for the package, the
+/// program and the link, so what a reader finds in `Cargo.toml` is what they type.
+pub const COMMAND: &str = "gongga-cli";
 
 /// What this program says it is, wherever it is asked -- one layer, one sentence.
 pub const ABOUT: &str = "Gongga harness commands: one command in, its events out";
@@ -1717,7 +1718,9 @@ mod tests {
         }
         // Its one program is the command line; the terminal is another crate.
         assert!(
-            manifest.lines().any(|l| l.trim() == "name = \"gongga\""),
+            manifest
+                .lines()
+                .any(|l| l.trim() == "name = \"gongga-cli\""),
             "the command layer's own binary is the command line:\n{manifest}"
         );
     }

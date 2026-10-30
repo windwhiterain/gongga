@@ -28,7 +28,7 @@ there is no second, weaker path.
 The last non-empty line of stdout is the reply, so a script may log above it;
 stderr is where a diagnosis comes from when the exit status is not success.
 
-The server puts `gongga` first on the script's `PATH` and passes `GONGGA_SERVER`
+The server puts `<home>/bin` first on the script's `PATH` and passes `GONGGA_SERVER`
 and `GONGGA_HOME`, so a script drives the harness through the same door the model
 uses -- by name, the same name. The example in `scripts/server_script_example.py`
 does exactly that: `subprocess.run(["gongga", *args])`.
