@@ -27,6 +27,28 @@ use `which("bash")` as bash.
 - del_bash{name_regex}: delete matched bash with the caller sessions' name in key. 
 ## State
 - everything in database (sqlite) under a home directory, structured for agentic retrieval/mutation.
+- `messages` is the transcript: one row per entry, ordered by `seq`, each row written as it happens --
+  a tool result lands when that tool finished, not when its step did.
+  - `content`: the entry as the LLM API takes it, one standard OpenAI Response API input item, sent verbatim.
+  - `display`: what only the reader needs -- a reasoning summary, an image reference, a notice's text, the
+    prompt in force -- and is never sent.
+  - `sendable`: `0` for the operator's own rows, `1` for the rows a request is built from.
+  - `step`: a per-session ordinal, one value per model step, stamped on every row that step wrote. A step's
+    rows are contiguous in `seq`: a message arriving while a tool runs waits in `pending_tasks` and is
+    written at the next step boundary, never between a call and its result.
+- a request's `input` is the `content` of the sendable rows in `seq` order, with the handover note first.
+  Two transforms are allowed, and no others:
+  - an image: `display`'s reference becomes an `input_image` part -- the provider's file id once the File
+    API has minted one, otherwise the bytes read at send time, so a transcript replayed ten times does not
+    carry ten copies of a screenshot.
+  - a step: each `function_call` is followed directly by its own `function_call_output`, and a call with no
+    result at the end of the transcript gets a placeholder saying it was interrupted. Only the last step can
+    have such a gap -- a request with an unanswered call is rejected, so the turn could not have gone on.
+- the request body streams. Repairing a step holds that step's rows and nothing older, so what a request
+  costs in memory is O(one step), never O(history).
+- `upto_seq` is pinned when a request starts, and every retry of that request replays the same window.
+- migration: an existing database has its rows rewritten once into this shape, under a schema version in
+  `meta`. Rewriting is where a transcript that stored its results in completion order gets its order fixed.
 ## UI
 - events[]:
   - cmd
