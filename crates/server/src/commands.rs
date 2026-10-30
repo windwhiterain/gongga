@@ -201,9 +201,10 @@ pub fn server_catalog() -> Vec<CommandSpec> {
         CommandSpec {
             target: CommandTarget::Server,
             name: "set_session".into(),
-            description: "Create the session if it does not exist, and apply the given settings to \
+            description:
+                "Create the session if it does not exist, and apply the given settings to \
                       it. Settings omitted now are left as they are."
-                .into(),
+                    .into(),
             args: vec![
                 arg(
                     "session",
@@ -280,9 +281,10 @@ pub fn server_catalog() -> Vec<CommandSpec> {
         CommandSpec {
             target: CommandTarget::Server,
             name: "interrupt_session".into(),
-            description: "Stop the turn one session is running. The turn is dropped, not resumed on \
+            description:
+                "Stop the turn one session is running. The turn is dropped, not resumed on \
                       the next start. Detached jobs keep running."
-                .into(),
+                    .into(),
             args: vec![arg(
                 "session",
                 "Session whose turn should stop.",
@@ -298,19 +300,6 @@ pub fn server_catalog() -> Vec<CommandSpec> {
                       Detached jobs are left running."
                 .into(),
             args: vec![],
-        },
-        CommandSpec {
-            target: CommandTarget::Server,
-            name: "report".into(),
-            description: "One session's ledger as a document: turns and how each ended,                      requests, input/cached/output tokens, cache share, peak context,                      request latency, context notices, the handover, tool calls."
-                .into(),
-            args: vec![arg(
-                "session",
-                "Session to report on.",
-                true,
-                Some("name"),
-                CompletionSource::Sessions,
-            )],
         },
         CommandSpec {
             target: CommandTarget::Server,
@@ -372,7 +361,6 @@ pub async fn dispatch(d: &Dispatch, name: &str, args: &Args) -> Outcome {
         "del_session" => del_session(d, args).await,
         "interrupt_session" => interrupt_session(d, args).await,
         "cancel" => cancel(d).await,
-        "report" => report(d, args).await,
         "get_messages" => get_messages(d, args).await,
         // Published as a server command but unhandled: a catalog bug, named.
         other => Outcome::err(format!(
@@ -693,60 +681,6 @@ fn parse_seq_slice(raw: &str, last_seq: i64) -> Result<SeqWindow, String> {
     let first = window.first.max(1);
     let last = window.last.min(last_seq);
     Ok(SeqWindow { first, last })
-}
-
-/// Reads the transcript back out, so a caller need not reassemble deltas.
-///
-/// # Invariant
-///
-/// Read-only: it takes no session gate, because reading while a turn appends is
-/// what the TUI's replay does.
-async fn report(d: &Dispatch, args: &Args) -> Outcome {
-    let name = args["session"].clone();
-    match d.store.report(&name) {
-        Ok(document) => {
-            let summary = report_summary(&name, &document);
-            Outcome::ok_with(summary, document)
-        }
-        Err(e) => Outcome::err(e.to_string()),
-    }
-}
-
-/// The one line a reader sees before the document: what the run cost.
-///
-/// Split out so the shape of the document and the sentence about it cannot drift
-/// apart, and so a test can assert the sentence without a database.
-fn report_summary(name: &str, document: &serde_json::Value) -> String {
-    let count = |value: &serde_json::Value| value.as_i64().unwrap_or_default();
-    let usage = &document["usage"];
-    let limit = match document["context_limit"].as_i64() {
-        Some(percent) => format!(", limit {percent}% of the window"),
-        None => String::new(),
-    };
-    [
-        format!("{name}: {} turn(s)", count(&document["turns"]["count"])),
-        format!(
-            "last {}",
-            document["turns"]["last"]["outcome"]
-                .as_str()
-                .unwrap_or("none")
-        ),
-        format!("{} request(s)", count(&document["requests"])),
-        format!(
-            "input {} ({} cached), output {}",
-            count(&usage["input"]),
-            count(&usage["cached"]),
-            count(&usage["output"])
-        ),
-        format!("peak input {}{}", count(&document["peak_input"]), limit),
-        format!("{} notice(s)", count(&document["context_notices"])),
-        format!(
-            "{} tool call(s), {} failed",
-            count(&document["tool_calls"]["count"]),
-            count(&document["tool_calls"]["failed"])
-        ),
-    ]
-    .join("; ")
 }
 
 async fn get_messages(d: &Dispatch, args: &Args) -> Outcome {
@@ -1149,7 +1083,6 @@ mod tests {
                 "del_session",
                 "get_messages",
                 "interrupt_session",
-                "report",
                 "send_message",
                 "set_session"
             ]
