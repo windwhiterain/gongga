@@ -15,6 +15,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::store::{HistoryItem, activity_detail, activity_name};
 
+/// A connect that takes this long is a broken route, not a slow provider: the
+/// answer itself is bounded by `headers_timeout` and `idle_timeout`.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
 #[derive(Debug, Clone)]
 pub struct LlmClient {
     http: reqwest::Client,
@@ -24,7 +28,16 @@ pub struct LlmClient {
     temperature: Option<f32>,
     max_output_tokens: Option<u32>,
     store: bool,
-    /// Silence between chunks that counts as a broken stream.
+    /// How long the provider may take to answer with response headers.
+    ///
+    /// Nothing about the body: an answer that is still arriving is never cut
+    /// by a wall clock, only by [`Self::idle_timeout`].
+    headers_timeout: Duration,
+    /// Silence of *content* that counts as a broken stream.
+    ///
+    /// Chunks that carry no event -- keep-alives, comments -- do not move this
+    /// clock, so a provider holding the socket open with nothing to say is as
+    /// silent as one sending no bytes at all.
     idle_timeout: Duration,
     /// Extra attempts after a failure or an empty response.
     max_retries: u32,
@@ -44,9 +57,13 @@ impl LlmClient {
                 cfg.api_key_env
             );
         }
-        // One client-wide timeout covers every request, compression included.
+        // No client-wide deadline on purpose: a wall clock covers the body
+        // too, and a body that is still producing is the one thing an answer
+        // of any length is entitled to do. What is left needs bounds that
+        // know what they are bounding -- [`CONNECT_TIMEOUT`] for the socket,
+        // `headers_timeout` for the answer, `idle_timeout` for the content.
         let http = reqwest::Client::builder()
-            .timeout(cfg.request_timeout)
+            .connect_timeout(CONNECT_TIMEOUT)
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Ok(Self {
@@ -57,6 +74,7 @@ impl LlmClient {
             temperature: cfg.temperature,
             max_output_tokens: cfg.max_output_tokens,
             store: cfg.store,
+            headers_timeout: cfg.headers_timeout,
             idle_timeout: cfg.idle_timeout,
             max_retries: cfg.max_retries,
             retry_base: cfg.retry_base,
@@ -150,6 +168,7 @@ impl LlmClient {
         let url = format!("{}/responses", self.base_url);
         let api_key = self.api_key.clone();
         let http = self.http.clone();
+        let headers_timeout = self.headers_timeout;
         let idle_timeout = self.idle_timeout;
         let max_retries = self.max_retries;
         let retry_base = self.retry_base;
@@ -157,8 +176,16 @@ impl LlmClient {
         tokio::spawn(async move {
             let mut attempt: u32 = 0;
             loop {
-                let mut once =
-                    stream_once(&http, &url, &api_key, &body, idle_timeout, cancel.clone()).await;
+                let mut once = stream_once(
+                    &http,
+                    &url,
+                    &api_key,
+                    &body,
+                    headers_timeout,
+                    idle_timeout,
+                    cancel.clone(),
+                )
+                .await;
                 let mut produced = false;
                 let mut completed = false;
                 let mut cancelled = false;
@@ -399,9 +426,9 @@ pub enum LlmEvent {
     },
 }
 
-/// Any content means this attempt said something. Activity counts: a completed
-/// response may hold nothing else.
-fn event_produced(event: &LlmEvent) -> bool {
+/// Anything the caller was handed to read, as opposed to the provider's own
+/// liveness noise.
+fn event_content(event: &LlmEvent) -> bool {
     matches!(
         event,
         LlmEvent::Delta { .. }
@@ -409,11 +436,20 @@ fn event_produced(event: &LlmEvent) -> bool {
             | LlmEvent::Reasoning { .. }
             | LlmEvent::ToolCall { .. }
             | LlmEvent::BuiltinCall { .. }
-            | LlmEvent::PartStart {
+    )
+}
+
+/// Any content means this attempt said something. An activity beat counts too:
+/// a completed response may hold nothing else.
+fn event_produced(event: &LlmEvent) -> bool {
+    event_content(event)
+        || matches!(
+            event,
+            LlmEvent::PartStart {
                 part: ResponsePart::Activity,
                 ..
             }
-    )
+        )
 }
 
 /// Cap on one retry delay. Doubling is meant to wait out a provider's bad
@@ -538,6 +574,7 @@ async fn stream_once(
     url: &str,
     api_key: &str,
     body: &Value,
+    headers_timeout: Duration,
     idle_timeout: Duration,
     cancel: CancellationToken,
 ) -> mpsc::Receiver<LlmEvent> {
@@ -553,6 +590,7 @@ async fn stream_once(
             &url,
             &api_key,
             &body,
+            headers_timeout,
             idle_timeout,
             &cancel,
             &tx,
@@ -580,6 +618,7 @@ async fn read_stream(
     url: &str,
     api_key: &str,
     body: &Value,
+    headers_timeout: Duration,
     idle_timeout: Duration,
     cancel: &CancellationToken,
     tx: &mpsc::Sender<LlmEvent>,
@@ -593,13 +632,27 @@ async fn read_stream(
         .bearer_auth(api_key)
         .json(body);
 
-    let response = match request.send().await {
-        Ok(r) => r,
-        Err(e) => {
+    let response = match tokio::time::timeout(headers_timeout, request.send()).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
             tracing::warn!(error = %e, elapsed = ?started.elapsed(), "model request: send failed");
             let _ = tx
                 .send(LlmEvent::Failed {
                     message: format!("{e}"),
+                    retryable: true,
+                })
+                .await;
+            return;
+        }
+        Err(_) => {
+            tracing::warn!(
+                limit = ?headers_timeout,
+                elapsed = ?started.elapsed(),
+                "model request: no answer"
+            );
+            let _ = tx
+                .send(LlmEvent::Failed {
+                    message: format!("no response headers within {headers_timeout:?}"),
                     retryable: true,
                 })
                 .await;
@@ -628,41 +681,50 @@ async fn read_stream(
     let mut buf = String::new();
     // item_id -> output item metadata, so deltas can be attributed.
     let mut items: HashMap<String, ItemMeta> = HashMap::new();
-    // Idle silence is failure: no error, no EOF, nothing else wakes the turn.
+    let mut out = Outbox::new(tx);
+    // Silence of content is failure: no error, no EOF, nothing else wakes the
+    // turn. It is deliberately not "time since the request started", which
+    // would cut a long answer in the middle of writing it.
     let idle = tokio::time::sleep(idle_timeout);
     tokio::pin!(idle);
 
     loop {
         tokio::select! {
             _ = cancel.cancelled() => {
-                let _ = tx.send(LlmEvent::Cancelled).await;
+                let _ = out.send(LlmEvent::Cancelled).await;
                 return;
             }
             _ = &mut idle => {
-                tracing::warn!(idle = ?idle_timeout, elapsed = ?started.elapsed(), "model request: no data");
-                let _ = tx.send(LlmEvent::Failed {
-                    message: format!("no response data for {idle_timeout:?}"),
+                tracing::warn!(idle = ?idle_timeout, elapsed = ?started.elapsed(), "model request: no content");
+                let _ = out.send(LlmEvent::Failed {
+                    message: format!("nothing said for {idle_timeout:?}"),
                     retryable: true,
                 }).await;
                 return;
             }
             next = stream.next() => {
                 let Some(chunk) = next else { break };
-                idle.as_mut().reset(tokio::time::Instant::now() + idle_timeout);
                 match chunk {
                     Ok(bytes) => {
                         buf.push_str(&String::from_utf8_lossy(&bytes));
                         while let Some(block) = next_sse_block(&mut buf) {
                             if let Some(event) = parse_sse_block(&block) {
-                                if let Err(e) = handle(event, &mut items, tx).await {
+                                if let Err(e) = handle(event, &mut items, &mut out).await {
                                     tracing::debug!(error = %e, "llm stream closed early");
                                     return;
                                 }
                             }
                         }
+                        // Only content moves the clock. A chunk that held a
+                        // keep-alive said nothing, and a provider that keeps the
+                        // socket warm while saying nothing is the stall this
+                        // bound is for.
+                        if out.take_content() {
+                            idle.as_mut().reset(tokio::time::Instant::now() + idle_timeout);
+                        }
                     }
                     Err(e) => {
-                        let _ = tx.send(LlmEvent::Failed { message: format!("{e}"), retryable: true }).await;
+                        let _ = out.send(LlmEvent::Failed { message: format!("{e}"), retryable: true }).await;
                         return;
                     }
                 }
@@ -674,7 +736,7 @@ async fn read_stream(
     let tail = buf.trim_end_matches('\r').trim();
     if !tail.is_empty() {
         if let Some(event) = parse_sse_block(tail) {
-            let _ = handle(event, &mut items, tx).await;
+            let _ = handle(event, &mut items, &mut out).await;
         }
     }
     tracing::info!(elapsed = ?started.elapsed(), "model request: stream ended");
@@ -865,10 +927,35 @@ fn provider_phase(event_name: &str) -> Option<(&str, &str)> {
     is_provider_call(item_type).then_some((item_type, phase))
 }
 
+/// The event channel, plus whether content has gone out since anyone asked.
+///
+/// It exists so the idle clock can be moved by what the model *said* rather
+/// than by what the socket carried: see [`crate`]'s note on `idle_timeout`.
+struct Outbox<'a> {
+    tx: &'a mpsc::Sender<LlmEvent>,
+    content: bool,
+}
+
+impl<'a> Outbox<'a> {
+    fn new(tx: &'a mpsc::Sender<LlmEvent>) -> Self {
+        Self { tx, content: false }
+    }
+
+    async fn send(&mut self, event: LlmEvent) -> Result<(), mpsc::error::SendError<LlmEvent>> {
+        self.content |= event_content(&event);
+        self.tx.send(event).await
+    }
+
+    /// Whether content went out since the last call, clearing the mark.
+    fn take_content(&mut self) -> bool {
+        std::mem::take(&mut self.content)
+    }
+}
+
 async fn handle(
     event: SseEvent,
     items: &mut HashMap<String, ItemMeta>,
-    tx: &mpsc::Sender<LlmEvent>,
+    out: &mut Outbox<'_>,
 ) -> Result<(), mpsc::error::SendError<LlmEvent>> {
     let d = &event.data;
     // The provider's own beats land on the line its item already opened.
@@ -881,7 +968,7 @@ async fn handle(
             _ => "",
         };
         if !text.is_empty() {
-            tx.send(LlmEvent::Delta {
+            out.send(LlmEvent::Delta {
                 part: ResponsePart::Activity,
                 item_id: d["item_id"].as_str().unwrap_or_default().to_string(),
                 text: text.to_string(),
@@ -912,21 +999,21 @@ async fn handle(
             );
             match kind {
                 ItemKind::Reasoning => {
-                    tx.send(LlmEvent::PartStart {
+                    out.send(LlmEvent::PartStart {
                         part: ResponsePart::Reasoning,
                         item_id: id,
                     })
                     .await?;
                 }
                 ItemKind::Message => {
-                    tx.send(LlmEvent::PartStart {
+                    out.send(LlmEvent::PartStart {
                         part: ResponsePart::Output,
                         item_id: id,
                     })
                     .await?;
                 }
                 ItemKind::FunctionCall => {
-                    tx.send(LlmEvent::PartStart {
+                    out.send(LlmEvent::PartStart {
                         part: ResponsePart::ToolCall,
                         item_id: id.clone(),
                     })
@@ -936,7 +1023,7 @@ async fn handle(
                         shown.push_str(args);
                     }
                     shown.push(')');
-                    tx.send(LlmEvent::Delta {
+                    out.send(LlmEvent::Delta {
                         part: ResponsePart::ToolCall,
                         item_id: id,
                         text: shown,
@@ -945,12 +1032,12 @@ async fn handle(
                 }
                 ItemKind::ProviderCall => {
                     let shown = activity_name(item["type"].as_str().unwrap_or("call"));
-                    tx.send(LlmEvent::PartStart {
+                    out.send(LlmEvent::PartStart {
                         part: ResponsePart::Activity,
                         item_id: id.clone(),
                     })
                     .await?;
-                    tx.send(LlmEvent::Delta {
+                    out.send(LlmEvent::Delta {
                         part: ResponsePart::Activity,
                         item_id: id,
                         text: shown.to_string(),
@@ -969,7 +1056,7 @@ async fn handle(
                 .or_default()
                 .text
                 .push_str(&delta);
-            tx.send(LlmEvent::Delta {
+            out.send(LlmEvent::Delta {
                 part: ResponsePart::Reasoning,
                 item_id,
                 text: delta,
@@ -977,7 +1064,7 @@ async fn handle(
             .await?;
         }
         "response.output_text.delta" => {
-            tx.send(LlmEvent::Delta {
+            out.send(LlmEvent::Delta {
                 part: ResponsePart::Output,
                 item_id: d["item_id"].as_str().unwrap_or_default().to_string(),
                 text: d["delta"].as_str().unwrap_or_default().to_string(),
@@ -985,7 +1072,7 @@ async fn handle(
             .await?;
         }
         "response.function_call_arguments.delta" => {
-            tx.send(LlmEvent::Delta {
+            out.send(LlmEvent::Delta {
                 part: ResponsePart::ToolCall,
                 item_id: d["item_id"].as_str().unwrap_or_default().to_string(),
                 text: d["delta"].as_str().unwrap_or_default().to_string(),
@@ -1025,13 +1112,13 @@ async fn handle(
                     if summary.is_empty() {
                         summary = meta.text.clone();
                     }
-                    tx.send(LlmEvent::Reasoning {
+                    out.send(LlmEvent::Reasoning {
                         item_id: id.clone(),
                         summary,
                         encrypted: item["encrypted_content"].as_str().map(str::to_string),
                     })
                     .await?;
-                    tx.send(LlmEvent::PartDone {
+                    out.send(LlmEvent::PartDone {
                         part: ResponsePart::Reasoning,
                         item_id: id,
                     })
@@ -1048,26 +1135,26 @@ async fn handle(
                                 .join("")
                         })
                         .unwrap_or_default();
-                    tx.send(LlmEvent::Output {
+                    out.send(LlmEvent::Output {
                         item_id: id.clone(),
                         text,
                     })
                     .await?;
-                    tx.send(LlmEvent::PartDone {
+                    out.send(LlmEvent::PartDone {
                         part: ResponsePart::Output,
                         item_id: id,
                     })
                     .await?;
                 }
                 ItemKind::FunctionCall => {
-                    tx.send(LlmEvent::ToolCall {
+                    out.send(LlmEvent::ToolCall {
                         item_id: id.clone(),
                         call_id: meta.call_id,
                         name: meta.name,
                         arguments: item["arguments"].as_str().unwrap_or("{}").to_string(),
                     })
                     .await?;
-                    tx.send(LlmEvent::PartDone {
+                    out.send(LlmEvent::PartDone {
                         part: ResponsePart::ToolCall,
                         item_id: id,
                     })
@@ -1075,19 +1162,19 @@ async fn handle(
                 }
                 ItemKind::ProviderCall => {
                     let (stored, replayable) = storable_activity(item);
-                    tx.send(LlmEvent::Delta {
+                    out.send(LlmEvent::Delta {
                         part: ResponsePart::Activity,
                         item_id: id.clone(),
                         text: activity_detail(item),
                     })
                     .await?;
-                    tx.send(LlmEvent::BuiltinCall {
+                    out.send(LlmEvent::BuiltinCall {
                         item_id: id.clone(),
                         item: stored,
                         replayable,
                     })
                     .await?;
-                    tx.send(LlmEvent::PartDone {
+                    out.send(LlmEvent::PartDone {
                         part: ResponsePart::Activity,
                         item_id: id,
                     })
@@ -1100,7 +1187,7 @@ async fn handle(
         "response.output_text.annotation.added" => {
             let annotation = &d["annotation"];
             if let Some(url) = annotation["url"].as_str() {
-                tx.send(LlmEvent::Citation {
+                out.send(LlmEvent::Citation {
                     item_id: d["item_id"].as_str().unwrap_or_default().to_string(),
                     title: annotation["title"].as_str().unwrap_or_default().to_string(),
                     url: url.to_string(),
@@ -1110,7 +1197,7 @@ async fn handle(
         }
         "response.completed" => {
             let usage = serde_json::from_value(d["response"]["usage"].clone()).ok();
-            tx.send(LlmEvent::Completed { usage }).await?;
+            out.send(LlmEvent::Completed { usage }).await?;
         }
         "response.failed" | "error" => {
             let error = event_error(d);
@@ -1119,7 +1206,7 @@ async fn handle(
                 .or_else(|| d["message"].as_str())
                 .unwrap_or("unknown error")
                 .to_string();
-            tx.send(LlmEvent::Failed {
+            out.send(LlmEvent::Failed {
                 message,
                 retryable: error_retryable(d),
             })
@@ -1226,7 +1313,7 @@ mod tests {
             temperature: None,
             max_output_tokens: None,
             store: false,
-            request_timeout: Duration::from_secs(1),
+            headers_timeout: Duration::from_secs(1),
             idle_timeout: Duration::from_secs(1),
             max_retries: 0,
             retry_base: Duration::from_millis(1),
@@ -1332,7 +1419,7 @@ mod tests {
                 json!({"item": {"id": "rs_1", "type": "reasoning"}}),
             ),
             &mut items,
-            &tx,
+            &mut Outbox::new(&tx),
         )
         .await
         .unwrap();
@@ -1343,7 +1430,7 @@ mod tests {
                     json!({"item_id": "rs_1", "delta": delta}),
                 ),
                 &mut items,
-                &tx,
+                &mut Outbox::new(&tx),
             )
             .await
             .unwrap();
@@ -1359,7 +1446,7 @@ mod tests {
                 }}),
             ),
             &mut items,
-            &tx,
+            &mut Outbox::new(&tx),
         )
         .await
         .unwrap();
@@ -1396,7 +1483,7 @@ mod tests {
                 json!({"item": {"id": "rs_1", "type": "reasoning"}}),
             ),
             &mut items,
-            &tx,
+            &mut Outbox::new(&tx),
         )
         .await
         .unwrap();
@@ -1406,7 +1493,7 @@ mod tests {
                 json!({"item_id": "rs_1", "delta": "from deltas"}),
             ),
             &mut items,
-            &tx,
+            &mut Outbox::new(&tx),
         )
         .await
         .unwrap();
@@ -1421,7 +1508,7 @@ mod tests {
                 }}),
             ),
             &mut items,
-            &tx,
+            &mut Outbox::new(&tx),
         )
         .await
         .unwrap();
@@ -1451,7 +1538,7 @@ mod tests {
                 json!({"item_id": "rs_1", "delta": "thinking "}),
             ),
             &mut items,
-            &tx,
+            &mut Outbox::new(&tx),
         )
         .await
         .unwrap();
@@ -1461,7 +1548,7 @@ mod tests {
                 json!({"item_id": "rs_1", "delta": "out loud"}),
             ),
             &mut items,
-            &tx,
+            &mut Outbox::new(&tx),
         )
         .await
         .unwrap();
@@ -1476,7 +1563,7 @@ mod tests {
                 }}),
             ),
             &mut items,
-            &tx,
+            &mut Outbox::new(&tx),
         )
         .await
         .unwrap();
@@ -1637,7 +1724,7 @@ mod tests {
                     data,
                 },
                 &mut items,
-                &tx,
+                &mut Outbox::new(&tx),
             )
             .await
             .unwrap();
@@ -1769,7 +1856,7 @@ mod tests {
                 json!({"item": {"id": "ws_1", "type": "web_search_call", "status": "in_progress"}}),
             ),
             &mut items,
-            &tx,
+            &mut Outbox::new(&tx),
         )
         .await
         .unwrap();
@@ -1779,7 +1866,7 @@ mod tests {
                 json!({"item_id": "ws_1"}),
             ),
             &mut items,
-            &tx,
+            &mut Outbox::new(&tx),
         )
         .await
         .unwrap();
@@ -1794,7 +1881,7 @@ mod tests {
                 }}),
             ),
             &mut items,
-            &tx,
+            &mut Outbox::new(&tx),
         )
         .await
         .unwrap();
@@ -1859,7 +1946,7 @@ mod tests {
                 }),
             },
             &mut items,
-            &tx,
+            &mut Outbox::new(&tx),
         )
         .await
         .unwrap();

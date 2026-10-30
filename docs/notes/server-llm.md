@@ -11,9 +11,11 @@ tool-call arguments to the UI as they arrive.
 
 ## LlmClient::new
 
-The timeout lives on the client so every request is covered, the compression
-call included. It is what turns "the provider went quiet" from a turn that
-hangs forever into a retryable error.
+The client carries no deadline of its own. A client-wide timeout covers the
+body as well as the answer, and a body that is still producing is exactly what
+a long answer is entitled to do -- so the bounds sit where each one knows what
+it bounds: `CONNECT_TIMEOUT` on the socket, `headers_timeout` on the answer's
+headers, `idle_timeout` on the content.
 
 ## LlmClient::model
 
@@ -58,6 +60,10 @@ the turn ended in `Error` with no retry and no reason for either. A stream that
 ends with neither a completion nor a failure reports itself the same way.
 Whether it gets tried again is still the produced rule: text already forwarded
 cannot be unsaid, so an attempt that spoke keeps its partial answer and fails.
+Silence is a different question with a different answer: `read_stream` moves its
+idle clock only when the attempt *said* something (`Outbox`), never when the
+socket merely carried bytes, so a long answer is cut by nothing but its own
+silence, and a keep-alive cannot hold a turn open.
 
 ## LlmClient::build_body
 

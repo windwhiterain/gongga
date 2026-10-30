@@ -55,17 +55,18 @@ pub struct LlmConfig {
     pub max_output_tokens: Option<u32>,
     /// Ask the API not to retain server-side state; we replay the transcript.
     pub store: bool,
-    /// Wall-clock ceiling on one request, streaming included.
+    /// How long the provider may take to answer with response headers, the
+    /// upload of the request included.
     ///
     /// # Invariant
     ///
-    /// Past it the turn fails and can be retried, rather than waiting forever on
-    /// a socket that never finishes. See `docs/notes/server-config.md`.
-    pub request_timeout: Duration,
-    /// Silence between chunks that counts as a broken stream, kept below
-    /// `request_timeout` on purpose.
+    /// Nothing about the body: a stream that is still producing is never cut by
+    /// a wall clock. See `docs/notes/server-config.md`.
+    pub headers_timeout: Duration,
+    /// Silence of content that counts as a broken stream: chunks that carry no
+    /// event (keep-alives) do not move this clock.
     pub idle_timeout: Duration,
-    /// Extra attempts after a failure or an empty response; 0 means one attempt.
+    /// Extra attempts after a failure or an empty response; 0 is no ceiling.
     pub max_retries: u32,
     /// First retry delay; doubles per attempt up to the [`MAX_RETRY_DELAY`] cap.
     pub retry_base: Duration,
@@ -197,7 +198,7 @@ struct FileLlm {
     temperature: Option<f32>,
     max_output_tokens: Option<u32>,
     store: Option<bool>,
-    request_timeout_ms: Option<u64>,
+    headers_timeout_ms: Option<u64>,
     idle_timeout_ms: Option<u64>,
     max_retries: Option<u32>,
     retry_base_ms: Option<u64>,
@@ -339,10 +340,12 @@ impl Config {
             temperature: llm_file.temperature,
             max_output_tokens: llm_file.max_output_tokens,
             store: llm_file.store.unwrap_or(false),
-            request_timeout: Duration::from_millis(
+            headers_timeout: Duration::from_millis(
                 llm_file
-                    .request_timeout_ms
-                    .or_else(|| env_or("GONGGA_LLM_TIMEOUT_MS").and_then(|v| v.parse().ok()))
+                    .headers_timeout_ms
+                    .or_else(|| {
+                        env_or("GONGGA_LLM_HEADERS_TIMEOUT_MS").and_then(|v| v.parse().ok())
+                    })
                     .unwrap_or(180_000),
             ),
             idle_timeout: Duration::from_millis(

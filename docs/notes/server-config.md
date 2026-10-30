@@ -28,21 +28,31 @@ and it is only used in messages.
 Context window of `model`, when something told us. `--context_limit` is a
 percentage of this, so without it a percentage has no meaning.
 
-## LlmConfig::request_timeout
+## LlmConfig::headers_timeout
 
-Without it a provider that accepts the connection and then goes quiet parks the
-turn forever: nothing in the process is waiting on a socket that ever finishes,
-and no operator is watching to notice.
+The provider has this long to answer with response headers, the upload of a
+request included. A provider that accepts the connection and then goes quiet
+never sends them, and nothing else in the process is waiting to notice. It
+bounds nothing about the body: see `idle_timeout`.
 
 ## LlmConfig::idle_timeout
 
-Shorter than `request_timeout` on purpose: a response that is still arriving is
-fine, one that stalled is not.
+The longest the model may go without *saying* something. Only an event that
+carries content moves this clock -- a chunk holding nothing but keep-alive
+noise does not -- so a provider that holds the socket open while it thinks is
+as stalled as one that sends no bytes at all.
+
+There is deliberately no wall-clock bound on the body. A total deadline covers
+the response as well as the answer, and it cannot tell "not answering" from
+"still writing": measured on real runs, one response reached 470 s (46.8k
+output tokens), and every cut-off landed at the deadline to the millisecond
+rather than at any network event. A response's length is bounded by the
+provider's own output cap, not by a socket timer.
 
 ## LlmConfig::max_retries
 
-Extra attempts after a request fails, times out, or comes back with no content at
-all. `0` means one attempt and then the turn fails.
+Extra attempts after a request fails, times out, or comes back with no content
+at all. `0` is no ceiling: retry until the turn is cancelled.
 
 ## LlmConfig::retry_base
 
