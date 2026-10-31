@@ -401,3 +401,11 @@ visible without a second kind of row.
 A title wide enough to need several rows, drawn at a real pane's width: every field is
 on screen somewhere in the header, the body starts under the last header row, and a
 one-row body keeps its row with no header at all.
+
+## a_taller_window_keeps_what_a_scrolled_view_was_reading
+
+Whole-path: draw, scroll up five rows, draw the same view at a taller terminal, and
+read the top row back. It is the same row, the four new rows are underneath it, and a
+view at the bottom is still at the bottom. Removing `Pane::anchor` from `draw_rows`
+makes this fail with the row four further up (`L26` for `L30`), which is exactly the
+symptom the operator reported.

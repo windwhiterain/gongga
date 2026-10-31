@@ -728,9 +728,13 @@ fn draw_rows(f: &mut Frame, s: &mut Screen, name: &str, area: Rect) {
     if area.height == 0 {
         return;
     }
-    let Some((name, scroll)) = s.pane_at(name) else {
+    let Some(pane) = s.panes.get_mut(name) else {
         return;
     };
+    // Before the window is read: a taller pane keeps the rows it was showing.
+    pane.anchor(area.height as usize);
+    let scroll = pane.scroll;
+    let name = pane.name.clone();
     let view = View::Window(&name);
     // One column short: a full-width row would otherwise be wrapped again.
     let width = area.width.saturating_sub(1).max(1) as usize;
@@ -1971,6 +1975,71 @@ mod tests {
         assert!(
             rows.iter().all(|row| row.chars().count() <= 8),
             "the panes start where the list ends: {rows:?}"
+        );
+    }
+
+    /// A taller window keeps the rows a scrolled view was reading.
+    ///
+    /// # Invariant
+    ///
+    /// Scroll is measured from the newest row, so a taller pane would otherwise show
+    /// *older* rows above the same bottom: the paragraph the operator was reading
+    /// slides down the screen. A view away from the bottom keeps its top row, and a
+    /// view at the bottom stays at the bottom, where growing is what shows history.
+    #[test]
+    fn a_taller_window_keeps_what_a_scrolled_view_was_reading() {
+        let lines: Vec<String> = (0..40).map(|i| format!("L{i:02}")).collect();
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let mut screen = screen_with(&refs);
+        // The rows a frame shows, below the pane's own header row.
+        fn shown(buf: &Buffer, area: Rect) -> Vec<String> {
+            // The list column is on the left; a pane's text starts where it ends.
+            (0..area.height - 1)
+                .map(|offset| row_text(buf, area.y + 1 + offset).trim().to_string())
+                .collect()
+        }
+
+        let mut term = Terminal::new(TestBackend::new(20, 8)).unwrap();
+        term.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
+        let short = parts(20, 8, 1, false, 0)[1];
+        let bottom = shown(&term.backend().buffer().clone(), short);
+        assert_eq!(bottom.last().map(String::as_str), Some("L39"));
+
+        // Scrolled into the history: the top row is what is being read. This pane
+        // has no sticky session, so scroll it by name.
+        screen.panes.scroll_by("", 5);
+        term.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
+        let top = shown(&term.backend().buffer().clone(), short)[0].clone();
+        assert_eq!(top, "L30", "five rows up from the bottom of 40 rows");
+
+        // The same window, taller: the top row stays, the new rows land under it.
+        let mut tall = Terminal::new(TestBackend::new(20, 12)).unwrap();
+        tall.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
+        let grown = parts(20, 12, 1, false, 0)[1];
+        let after = shown(&tall.backend().buffer().clone(), grown);
+        assert_eq!(after[0], top, "the row that was at the top is still there");
+        assert_eq!(after.len(), bottom.len() + 4, "four more rows are drawn");
+
+        // Back at the newest row, a taller window shows history above it instead.
+        screen.panes.pin("");
+        tall.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
+        let after = shown(&tall.backend().buffer().clone(), grown);
+        assert_eq!(
+            after.last().map(String::as_str),
+            Some("L39"),
+            "the newest row is still the last row"
         );
     }
 

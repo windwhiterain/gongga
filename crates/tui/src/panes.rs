@@ -18,6 +18,8 @@ pub struct Pane {
     pub scroll: usize,
     /// The scroll bound, written back by the renderer.
     pub max_scroll: usize,
+    /// The height this pane was last drawn at, so a change can be compensated.
+    last_height: usize,
 }
 
 /// Which part of the window a pane is.
@@ -52,7 +54,24 @@ impl Pane {
             kind,
             scroll: 0,
             max_scroll: 0,
+            last_height: 0,
         }
+    }
+
+    /// Keeps the rows on screen where they are when the pane changes height.
+    ///
+    /// # Invariant
+    ///
+    /// A view at its newest row stays there: growing it is what shows more history.
+    /// A view scrolled away from the bottom keeps its *top* row, so a terminal that
+    /// got taller adds rows underneath what the operator was reading instead of
+    /// pushing the paragraph down the screen. See `docs/notes/tui-panes.md`.
+    pub fn anchor(&mut self, height: usize) {
+        if self.scroll > 0 && self.last_height != 0 && self.last_height != height {
+            // start = total - scroll - height, held constant across the change.
+            self.scroll = (self.scroll + self.last_height).saturating_sub(height);
+        }
+        self.last_height = height;
     }
 
     /// Which rows this pane reads.
@@ -141,6 +160,9 @@ impl Panes {
             if let Some(old) = kept {
                 pane.scroll = old.scroll;
                 pane.max_scroll = old.max_scroll;
+                // A split that gained a session resizes every pane: the next frame
+                // must see a resize, not a new pane.
+                pane.last_height = old.last_height;
             }
         }
         for pane in &panes {
