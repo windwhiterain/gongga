@@ -225,48 +225,6 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "ALTER TABLE messages ADD COLUMN call_id TEXT",
     )?;
     backfill_wire_items(conn)?;
-    backfill_reasoning_text(conn)?;
-    Ok(())
-}
-
-/// Gives a thinking row written before it was kept the text a provider demands back.
-///
-/// # Invariant
-///
-/// The summary the reader saw is the provider's own reasoning text, so a row with a
-/// summary and no text is healed from it rather than left to fail every request that
-/// replays the step. A row with neither is left alone: there is nothing to heal.
-fn backfill_reasoning_text(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
-    if !has_column(conn, "messages", "content") || !has_column(conn, "messages", "display") {
-        return Ok(());
-    }
-    let rows: Vec<(i64, String, String)> = conn
-        .prepare(
-            "SELECT id, content, display FROM messages
-              WHERE kind = 'reasoning' AND content IS NOT NULL
-                AND json_extract(content, '$.content') IS NULL
-                AND length(json_extract(display, '$.summary')) > 0",
-        )?
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-        .collect::<Result<_, _>>()?;
-    for (id, content, display) in rows {
-        let wire: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
-        let shown: serde_json::Value = serde_json::from_str(&display).unwrap_or_default();
-        let mut value = serde_json::json!({
-            "summary": "",
-            "text": shown.get("summary").and_then(|v| v.as_str()).unwrap_or_default(),
-        });
-        if let Some(encrypted) = wire.get("encrypted_content").and_then(|v| v.as_str()) {
-            value["encrypted"] = serde_json::json!(encrypted);
-        }
-        if let Some(item_id) = wire.get("id").and_then(|v| v.as_str()) {
-            value["item_id"] = serde_json::json!(item_id);
-        }
-        conn.execute(
-            "UPDATE messages SET content = ?1 WHERE id = ?2",
-            params![wire_item("reasoning", &value).map(|v| v.to_string()), id],
-        )?;
-    }
     Ok(())
 }
 
@@ -1097,20 +1055,12 @@ fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value>
             })
         }
         "reasoning" => {
-            // An item with neither a blob nor its text has nothing to replay.
-            let encrypted = value.get("encrypted").and_then(|v| v.as_str());
-            let text = text_of("text");
-            if encrypted.is_none() && text.is_empty() {
-                return None;
-            }
-            let mut item = json!({"type": "reasoning", "summary": []});
-            if let Some(encrypted) = encrypted {
-                item["encrypted_content"] = json!(encrypted);
-            }
-            if !text.is_empty() {
-                // The thinking itself: a later request may be refused without it.
-                item["content"] = json!([{"type": "reasoning_text", "text": text}]);
-            }
+            let encrypted = value.get("encrypted").and_then(|v| v.as_str())?;
+            let mut item = json!({
+                "type": "reasoning",
+                "summary": [],
+                "encrypted_content": encrypted,
+            });
             if let Some(id) = value.get("item_id").and_then(|v| v.as_str()) {
                 item["id"] = json!(id);
             }
