@@ -47,11 +47,13 @@ fn built() -> Vec<(&'static str, PathBuf)> {
         .join("../../target/bundle-payload");
     let mut cmd = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string()));
     cmd.args(["build", "--profile", profile])
-        .args(["-p", "gongga-cli", "-p", "gongga-server"])
+        .args(["-p", "gongga-cli", "-p", "gongga-server", "-p", "gongga-tui"])
         .current_dir(Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("../.."))
         .env("CARGO_TARGET_DIR", &target)
         .env_remove("CARGO_FEATURE_PAYLOAD");
-    let output = cmd.output().expect("running cargo for the embedded payload");
+    let output = cmd
+        .output()
+        .expect("running cargo for the embedded payload");
     assert!(
         output.status.success(),
         "building the embedded programs failed:\n{}\n{}",
@@ -59,7 +61,7 @@ fn built() -> Vec<(&'static str, PathBuf)> {
         String::from_utf8_lossy(&output.stderr)
     );
     let suffix = if cfg!(windows) { ".exe" } else { "" };
-    ["gongga-cli", "gongga-server"]
+    ["gongga-cli", "gongga-server", "gongga-tui"]
         .into_iter()
         .map(|name| {
             (
