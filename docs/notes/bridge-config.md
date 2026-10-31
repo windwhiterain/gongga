@@ -17,6 +17,17 @@ Empty means **nobody**: an agent with a real shell behind it is a root shell wit
 a chat interface, so this fails closed. The refusal the bridge logs names the id
 to add.
 
+## Bridge::model
+
+The model a session this bridge creates runs on, as `<provider>/<model name>`.
+Empty means the bridge creates no session and relays only to the ones that exist.
+
+A session states its own model -- the server has no default for one -- so the
+creator names it. That makes this key the bridge's one answer to "who pays for a
+chat that nobody set up": naming a model here creates the session on that model,
+and relaying to a session a person created leaves the model that person chose
+alone, because selecting never names one (`ensure_args`).
+
 ## Bridge::max_chars
 
 QQ drops bodies it thinks are too long, so the default sits well under its limit.

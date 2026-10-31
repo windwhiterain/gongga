@@ -5,7 +5,7 @@ mod channel;
 mod chat;
 mod config;
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -45,6 +45,39 @@ struct Args {
     key: Option<String>,
 }
 
+/// The `set_session` arguments for one chat: select the session, or create it.
+///
+/// # Invariant
+///
+/// A session states its own model, so creating one means naming it and selecting
+/// one must not -- naming it again would overwrite the model a person chose. Which
+/// this is comes from the greeting's session list, never from a guess about a
+/// server default, which does not exist.
+///
+/// `Err` is the reply when the session is missing and no model was named.
+fn ensure_args<'a>(
+    session: &'a str,
+    cwd: &'a str,
+    model: &'a str,
+    exists: bool,
+) -> Result<Vec<(&'a str, &'a str)>, String> {
+    if !exists && model.is_empty() {
+        return Err(format!(
+            "这台机器上没有会话 {session}，而 bridge.toml 没有写 model。会话的模型由创建它的人\
+指定，桥不替你选：请在 ~/.gongga/bridge.toml 的 [bridge] 里写 \
+model = \"<provider>/<model>\"（`model_pool pick` 会给出一个当前能跑的）。"
+        ));
+    }
+    let mut args = vec![("session", session)];
+    if !cwd.is_empty() {
+        args.push(("cwd", cwd));
+    }
+    if !exists {
+        args.push(("model", model));
+    }
+    Ok(args)
+}
+
 // ------------------------------- The bridge -------------------------------
 
 /// A message that will never reach the harness, and the apology to send back.
@@ -60,6 +93,11 @@ struct Bridge {
     allowed: Vec<String>,
     ack: bool,
     max_chars: usize,
+    /// The model a session this bridge creates runs on; empty creates none.
+    model: String,
+    /// Sessions the greeting listed or this bridge created: what tells "select"
+    /// from "create".
+    existing: HashSet<String>,
     /// Per session: where its transcript cursor stands and what is owed.
     chats: HashMap<String, ChatState>,
     seen: Dedupe,
@@ -82,6 +120,8 @@ impl Bridge {
             allowed: cfg.allowed,
             ack: cfg.ack,
             max_chars: cfg.max_chars,
+            model: cfg.model,
+            existing: HashSet::new(),
             chats: HashMap::new(),
             seen: Dedupe::default(),
             queue: VecDeque::new(),
@@ -189,12 +229,22 @@ impl Bridge {
                 continue;
             }
 
-            // `set_session` creates as well as selects, so send it every time.
-            let mut ensure = vec![("session", session.as_str())];
-            if !self.cwd.is_empty() {
-                ensure.push(("cwd", self.cwd.as_str()));
-            }
+            let ensure = match ensure_args(
+                &session,
+                &self.cwd,
+                &self.model,
+                self.existing.contains(&session),
+            ) {
+                Ok(args) => args,
+                Err(said) => {
+                    tracing::warn!(session = %session, "refusing to create a session without a model");
+                    let _ = deliver(out, &incoming.chat, &incoming.reply, 1, &said).await;
+                    self.queue.pop_front();
+                    continue;
+                }
+            };
             self.command(sink, "set_session", args_of(&ensure)).await?;
+            self.existing.insert(session.clone());
             self.command(
                 sink,
                 "send_message",
@@ -231,7 +281,10 @@ impl Bridge {
         &mut self,
         sink: &protocol::ChannelSink,
         out: &Arc<dyn Outbox>,
+        sessions: Vec<String>,
     ) -> anyhow::Result<()> {
+        // The greeting is the authority: a replaced server may have none.
+        self.existing = sessions.into_iter().collect();
         let mut probes: Vec<(u64, Incoming)> = self.probes.drain().collect();
         probes.sort_by_key(|(id, _)| *id);
         for (_, incoming) in probes.into_iter().rev() {
@@ -518,7 +571,7 @@ async fn main() -> anyhow::Result<()> {
     // Redial here, not in the platform loop: the harness is replaced, we are not.
     let mut backoff = REDIAL_MIN;
     loop {
-        let (sink, mut stream) = match dial(&args, &home).await {
+        let (sink, mut stream, sessions) = match dial(&args, &home).await {
             Ok(pair) => pair,
             // A refusal is an answer: the server is up and does not want this
             // bridge, so retrying would be refused again.
@@ -535,7 +588,7 @@ async fn main() -> anyhow::Result<()> {
             }
         };
         backoff = REDIAL_MIN;
-        let link = match bridge.recover(&sink, &outbox).await {
+        let link = match bridge.recover(&sink, &outbox, sessions).await {
             Err(e) => e,
             Ok(()) => loop {
                 tokio::select! {
@@ -590,10 +643,12 @@ impl std::error::Error for Refused {}
 // ----------------------- Connection to the harness -----------------------
 
 /// Connects and authenticates, exactly as the CLI does.
+///
+/// Also returns the greeting's session names: select or create.
 async fn dial(
     args: &Args,
     home: &Path,
-) -> anyhow::Result<(protocol::ChannelSink, protocol::ChannelStream)> {
+) -> anyhow::Result<(protocol::ChannelSink, protocol::ChannelStream, Vec<String>)> {
     let addr = resolve_server(args, home)?;
     let key = resolve_key(args, home).ok_or_else(|| {
         anyhow!(
@@ -624,16 +679,20 @@ async fn dial(
             anyhow!("no answer from {addr} within {HANDSHAKE_TIMEOUT:?}; is a server running?")
         })?
         .ok_or_else(|| anyhow!("the server closed the connection during the handshake"))?;
-    match decode_server(&greeting).context("decoding the greeting")? {
+    let known = match decode_server(&greeting).context("decoding the greeting")? {
         ServerMessage::Denied { reason } => return Err(anyhow::Error::new(Refused(reason))),
         ServerMessage::Hello {
             server, sessions, ..
         } => {
             tracing::info!(%addr, model = %server.model, sessions = sessions.len(), "connected to the harness");
+            sessions.into_iter().map(|s| s.name).collect()
         }
-        other => tracing::warn!(?other, "unexpected greeting"),
-    }
-    Ok((sink, stream))
+        other => {
+            tracing::warn!(?other, "unexpected greeting");
+            Vec::new()
+        }
+    };
+    Ok((sink, stream, known))
 }
 
 fn home_dir(explicit: Option<&Path>) -> PathBuf {
@@ -757,6 +816,44 @@ mod tests {
         assert!(!is_stop("请取消上一条"));
     }
 
+    /// Selecting a session keeps its model; creating one names it; a bridge told no
+    /// model refuses to create.
+    #[test]
+    fn a_session_is_created_with_a_model_and_selected_without_one() {
+        let created = ensure_args(
+            "qq-d-u",
+            "C:/work",
+            "deepseek-official/deepseek-flash",
+            false,
+        )
+        .expect("a bridge told a model creates the session");
+        assert_eq!(
+            created,
+            vec![
+                ("session", "qq-d-u"),
+                ("cwd", "C:/work"),
+                ("model", "deepseek-official/deepseek-flash")
+            ]
+        );
+
+        let selected = ensure_args(
+            "qq-d-u",
+            "C:/work",
+            "deepseek-official/deepseek-flash",
+            true,
+        )
+        .expect("selecting needs no model");
+        assert_eq!(selected, vec![("session", "qq-d-u"), ("cwd", "C:/work")]);
+
+        let no_cwd = ensure_args("qq-d-u", "", "m", false).expect("creating");
+        assert_eq!(no_cwd, vec![("session", "qq-d-u"), ("model", "m")]);
+
+        let refused = ensure_args("qq-d-u", "C:/work", "", false)
+            .expect_err("a bridge told no model creates nothing");
+        assert!(refused.contains("bridge.toml"), "{refused}");
+        assert!(refused.contains("model_pool"), "{refused}");
+    }
+
     #[test]
     fn command_ids_do_not_start_at_one() {
         let id = Bridge::seed_command_id();
@@ -816,7 +913,7 @@ mod tests {
         let out: Arc<dyn Outbox> = delivered.clone();
         let (sink, _frames) = test_sink().await;
 
-        bridge.recover(&sink, &out).await.unwrap();
+        bridge.recover(&sink, &out, Vec::new()).await.unwrap();
 
         assert!(bridge.reads.is_empty());
         assert_eq!(bridge.probes.len(), 1);

@@ -28,6 +28,15 @@ pub struct Bridge {
     pub ack: bool,
     /// Reply length cap in characters (0 disables); QQ drops oversized bodies.
     pub max_chars: usize,
+    /// The model a session this bridge creates runs on, as `<provider>/<model
+    /// name>`.
+    ///
+    /// # Invariant
+    ///
+    /// The server states no default model for a session, so whoever creates one
+    /// names it. Empty means this bridge creates none and relays only to sessions
+    /// that already exist: a relay is not a place to invent who pays.
+    pub model: String,
 }
 
 impl Default for Bridge {
@@ -37,6 +46,7 @@ impl Default for Bridge {
             allowed: Vec::new(),
             ack: true,
             max_chars: 1800,
+            model: String::new(),
         }
     }
 }
@@ -113,6 +123,12 @@ ack = true
 
 # Reply length cap in characters. 0 = no cap.
 max_chars = 1800
+
+# The model a session this bridge creates runs on, as <provider>/<model name>.
+# A session states its own model here (the server has no default), so a chat with
+# no session yet is refused until this names one. Empty = relay only, never
+# create. `model_pool pick` names one this machine can run now.
+model = ""
 
 [qq]
 app_id = ""

@@ -31,6 +31,15 @@ that answer arrives the message stays parked, because writing to the transcript
 first would make the read-back return the whole history and relay an old answer
 as a new one.
 
+## Bridge::pump (select or create)
+
+`set_session` both selects and creates, so it is sent for every message -- but the
+model is named only when the greeting did not list that session, because naming it
+again would overwrite what a person chose. Which of the two this is comes from the
+greeting's session list, reseeded on every dial: a replaced server may have none of
+the sessions it had. A missing session and no `bridge.model` is a refusal with the
+sentence to send back, not a guess.
+
 ## Bridge::pump (a stop)
 
 Stopping is a command, not a prompt -- and it must not go near `cancel`, which
