@@ -29,12 +29,15 @@ _Post Modern Agent Harness_
 
 ## Install
 
-### Cargo
+### Cargo (package manager)
+
 ```sh
 cargo install --git https://github.com/windwhiterain/gongga.git --locked gongga-bundle
-
 gongga tui
 ```
 
-
-
+### LocalBuild
+```sh
+cargo install --path crates/bundle --force
+gongga tui
+```

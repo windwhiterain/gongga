@@ -100,11 +100,16 @@ do whatever user can do to the server.
 ## Skill: Polity
 agents play certain roles to keep context focus.
 
-consitution: user assign the consitution of a project, usually SPEC file.
-
 roles: 
-- justice: talk to the user, understand user, revise consitution according to user's will, judge if developing direction unconsitutional. (only agent writer of consitition)
-- pm: breaks the work down, dispatches workers, reviews what comes
-  back, runs the tests, gathers the evidence, reports to the justice.
+- justice: talk to the user, understand user.
+  - judge if approve report about the implementation based on spec. 
+  - judge if approve proposal and send to user for approval.
+- premier: plan, orchestrate, spawn subagents, review.
+  - report the implementation to the justice.
+  - present proposal of changes to the spec.
 
-judgement{object, constitution_quote}: should be recorded.
+record:
+- proposal
+- report
+- judgement over proposal/report
+- spec amendment
