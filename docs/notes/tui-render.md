@@ -270,3 +270,22 @@ window hides the answer it is replying to.
 A three-row log is the floor the input may not take from.
 
 `layout_input` follows the cursor, so the last row is the one shown.
+
+## A `line` session is one row
+
+SPEC gives the line area to `[{session{render mode = line}, event}]`: the name and
+one event on the same row, so a window with several sessions shows a ticker of
+what each one is doing. It is therefore not a small pane: no header above it, no
+rows under it, and no scroll -- there is only ever one row to look at.
+
+The name is the row's own first column, painted like any other header. That is
+why `Log::headline` leaves the block's tag out: the tag exists to say which
+session a row belongs to when there is no header, and here the header *is* the
+first column. `[peer] peer` said it twice.
+
+The event is the newest block of that view, flattened: a line break becomes a
+space and text past the width is cut with `…`. A sentence's continuation is not
+the session's current state, so it must not be what the row shows.
+
+`full` and `line` share `lines_of`: one place turns a `LineKind` into a style, so
+the two views cannot drift apart in how a row of that kind looks.

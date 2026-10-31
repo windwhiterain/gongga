@@ -23,8 +23,8 @@ pub const CHROME_ROWS: u16 = 2;
 /// The one row `cmd` and its result share, outside the panes.
 pub const COMMAND_ROWS: u16 = 1;
 
-/// How many events one `line` group shows under its header.
-pub const LINE_ROWS: u16 = 3;
+/// The one row a `line` session gets: its name and its latest event on it.
+pub const LINE_ROWS: u16 = 1;
 
 /// The prompt on the first row; continuation rows pad behind it.
 const PREFIX: &str = "> ";
@@ -73,9 +73,9 @@ pub fn draw(f: &mut Frame, s: &mut Screen) -> Rect {
 /// is one horizontal split, and what is left of it after the line groups is the
 /// panes' height.
 pub fn areas(area: Rect, input_rows: u16, command: bool, line_groups: usize) -> Vec<Rect> {
-    // A header and a few events each; never more than half the window, because
-    // the panes have to keep some rows.
-    let lines = (line_groups as u16 * (1 + LINE_ROWS)).min(area.height / 2);
+    // One row each, name and event together; never more than half the window,
+    // because the panes have to keep some rows.
+    let lines = (line_groups as u16 * LINE_ROWS).min(area.height / 2);
     Layout::vertical([
         Constraint::Length(1),                           // header
         Constraint::Min(1),                              // sessions | panes
@@ -442,111 +442,62 @@ fn draw_lines(f: &mut Frame, s: &mut Screen, area: Rect) {
         .of_kind(crate::panes::Kind::Line)
         .map(|pane| pane.name.clone())
         .collect();
-    if names.is_empty() {
-        return;
-    }
-    // Laid out like the panes: a header each, rows shared, leftover to sticky.
     let sticky = s.sticky_session.clone();
-    let (slots, _) = group_slots(area, &names, sticky.as_deref());
-    for slot in &slots {
-        if let Some(header) = slot.header {
-            draw_group_header(f, &slot.name, header, sticky.as_deref());
-        }
-        draw_headlines(f, s, &slot.name, slot.body);
-    }
-}
-
-/// One group's rows: one line per event, cut rather than wrapped.
-///
-/// # Invariant
-///
-/// A row is an event, so a block that would wrap is cut and marked. Reading a
-/// sentence's tail instead of its subject -- or a blank continuation row -- is what
-/// this view did before, and it is why a ticker is drawn from blocks rather than
-/// from wrapped rows. See `docs/notes/tui-render.md`.
-fn draw_headlines(f: &mut Frame, s: &mut Screen, name: &str, area: Rect) {
-    if area.height == 0 {
-        return;
-    }
-    let Some((name, scroll)) = s.pane_at(name) else {
-        return;
-    };
-    let width = area.width.saturating_sub(1).max(1) as usize;
-    let (rows, max_scroll) =
-        s.panes
-            .headlines(View::Window(&name), width, area.height as usize, scroll);
-    let lines: Vec<Line> = rows
-        .iter()
-        .map(|(kind, text)| Line::from(Span::styled(text.clone(), style_for(*kind))))
-        .collect();
-    if let Some(pane) = s.panes.get_mut(&name) {
-        pane.max_scroll = max_scroll;
-        pane.scroll = scroll.min(max_scroll);
-    }
-    f.render_widget(Paragraph::new(lines), area);
-    if scroll > 0 {
-        draw_bottom(f, area);
-    }
-}
-
-/// Where each line group goes: its header, then its rows.
-///
-/// # Invariant
-///
-/// The same arithmetic as [`pane_slots`], so a `line` session and a `full` one are
-/// the same picture at different heights. A flat `height / groups` left the later
-/// groups with rows the earlier ones had already used, which is how a group came to
-/// be drawn as blank lines.
-pub fn group_slots(area: Rect, names: &[String], sticky: Option<&str>) -> (Vec<Slot>, usize) {
-    let n = names.len() as u16;
-    if names.is_empty() || area.height == 0 {
-        return (Vec::new(), 0);
-    }
-    let labels = if area.height >= n + n { n } else { 0 };
-    let rows = area.height - labels;
-    let per = (rows / n).max(1);
-    let extra = rows.saturating_sub(per * n);
-
-    let mut slots: Vec<Slot> = Vec::with_capacity(names.len());
     let mut y = area.y;
-    let mut hidden = 0usize;
     for name in names {
-        let head = if labels > 0 { 1 } else { 0 };
-        let share = per + u16::from(Some(name.as_str()) == sticky) * extra;
-        let left = area.bottom().saturating_sub(y + head);
-        let height = share.min(left);
-        if height == 0 {
-            hidden += 1;
-            continue;
+        if y >= area.bottom() {
+            break;
         }
-        slots.push(Slot {
-            name: name.clone(),
-            header: (head > 0).then_some(Rect {
-                x: area.x,
-                y,
-                width: area.width,
-                height: head,
-            }),
-            body: Rect {
-                x: area.x,
-                y: y + head,
-                width: area.width,
-                height,
-            },
-        });
-        y += head + height;
+        let rect = Rect {
+            y,
+            height: LINE_ROWS,
+            ..area
+        };
+        draw_one_line(f, s, &name, rect, sticky.as_deref());
+        y += LINE_ROWS;
     }
-    (slots, hidden)
 }
 
-/// A header row, styled the one way every header is.
+/// One session on one row: its name, then the event it is on now.
 ///
 /// # Invariant
 ///
-/// One function for the panes and the line groups: a session drawn `full` and the
-/// same session drawn `line` must not be told apart by how their names are painted.
-fn draw_group_header(f: &mut Frame, name: &str, area: Rect, sticky: Option<&str>) {
-    draw_group_header_note(f, name, area, sticky, None);
+/// The name is the row's first column and the event follows it, cut rather than
+/// wrapped: a ticker of what each session is doing, one row whatever the length.
+/// A `line` session therefore has nothing to scroll. See `tui-render.md`.
+fn draw_one_line(f: &mut Frame, s: &mut Screen, name: &str, area: Rect, sticky: Option<&str>) {
+    let width = area.width as usize;
+    let label = Span::styled(name.to_string(), style_for(LineKind::System));
+    let line = match s
+        .panes
+        .headline(View::Window(name), width.saturating_sub(name.len()))
+    {
+        // No events yet: the name alone says the session exists.
+        None => Line::from(label),
+        Some((kind, text)) => Line::from(vec![
+            label,
+            Span::styled(" ", style_for(LineKind::System)),
+            Span::styled(text, style_for(kind)),
+        ]),
+    };
+    let line = if Some(name) == sticky {
+        line.style(Style::default().add_modifier(Modifier::BOLD))
+    } else {
+        line
+    };
+    f.render_widget(Paragraph::new(line), area);
+    if let Some(pane) = s.panes.get_mut(name) {
+        pane.max_scroll = 0;
+        pane.scroll = 0;
+    }
+}
+
+/// The sticky arguments, and how each session is drawn beside them.
+fn draw_stickys(f: &mut Frame, s: &Screen, area: Rect) {
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(s.footer.clone(), dim()))),
+        area,
+    );
 }
 
 fn draw_group_header_note(
@@ -566,14 +517,6 @@ fn draw_group_header_note(
         dim()
     };
     f.render_widget(Paragraph::new(Line::from(Span::styled(title, style))), area);
-}
-
-/// The sticky arguments, and how each session is drawn beside them.
-fn draw_stickys(f: &mut Frame, s: &Screen, area: Rect) {
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(s.footer.clone(), dim()))),
-        area,
-    );
 }
 
 /// Draws every pane: the header that names it, then the rows that fit in its share.
@@ -601,6 +544,19 @@ fn draw_command(f: &mut Frame, s: &mut Screen, area: Rect) {
     draw_rows(f, s, &name, area);
 }
 
+/// Rows as the window draws them: one line each, coloured by its kind.
+///
+/// # Invariant
+///
+/// The one place a `LineKind` becomes a style. `full` and `line` ask for
+/// different rows -- a wrapped window against one flattened event -- and must
+/// never differ in how a row of that kind looks.
+fn lines_of<'a>(rows: impl IntoIterator<Item = (LineKind, &'a str)>) -> Vec<Line<'a>> {
+    rows.into_iter()
+        .map(|(kind, text)| Line::from(Span::styled(text, style_for(kind))))
+        .collect()
+}
+
 /// One pane's rows, and the scroll bound it writes back.
 fn draw_rows(f: &mut Frame, s: &mut Screen, name: &str, area: Rect) {
     if area.height == 0 {
@@ -614,12 +570,13 @@ fn draw_rows(f: &mut Frame, s: &mut Screen, name: &str, area: Rect) {
     let width = area.width.saturating_sub(1).max(1) as usize;
     let window = s.panes.window(view, width, area.height as usize, scroll);
     let max_scroll = window.max_scroll;
-    // Cloned: the rows a frame draws cannot outlive the log they came from.
-    let lines: Vec<Line> = window
+    // Owned: the pane is borrowed mutably again just below.
+    let rows: Vec<(LineKind, String)> = window
         .rows
         .iter()
-        .map(|(kind, text)| Line::from(Span::styled(text.to_string(), style_for(*kind))))
+        .map(|(kind, text)| (*kind, text.to_string()))
         .collect();
+    let lines = lines_of(rows.iter().map(|(kind, text)| (*kind, text.as_str())));
     drop(window);
     if let Some(pane) = s.panes.get_mut(&name) {
         pane.max_scroll = max_scroll;
@@ -885,26 +842,22 @@ mod tests {
 
     /// A session drawn `line` gets the header a pane gets, laid out the same way.
     #[test]
-    fn a_line_group_is_drawn_like_a_pane() {
+    /// A `line` session is one row: its name first, then the event it is on.
+    #[test]
+    fn a_line_session_is_one_row_of_its_own() {
         let mut screen = screen_with(&[]);
+        // A `line` session is one the layout put there, not one that merely has
+        // events: `draw` counts the panes it was given.
         screen.panes.layout(&Layout {
-            listed: vec![
-                Listed {
-                    name: "main".to_string(),
-                    status: "idle".to_string(),
-                },
-                Listed {
-                    name: "peer".to_string(),
-                    status: "idle".to_string(),
-                },
-            ],
-            full: vec!["main".to_string()],
+            listed: Vec::new(),
+            full: Vec::new(),
             line: vec!["peer".to_string()],
-            command: "cmd".to_string(),
+            command: String::new(),
         });
-        screen.sticky_session = None;
         screen.panes.line("peer", LineKind::Assistant, "one");
         screen.panes.line("peer", LineKind::Assistant, "two");
+        screen.panes.line("peer", LineKind::ToolCall, "three");
+        screen.sticky_session = None;
 
         let (width, height) = (40u16, 12u16);
         let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -913,46 +866,50 @@ mod tests {
         })
         .unwrap();
         let buf = term.backend().buffer().clone();
-        // Counted the way `draw` counts them, or the two would disagree.
-        let parts = parts(width, height, 1, true, 1);
-        let (slots, _) = group_slots(parts[2], &["peer".to_string()], None);
-        assert_eq!(slots.len(), 1, "one group, one slot");
-        let slot = &slots[0];
-        let head = slot.header.expect("a line group has a header");
+        let parts = parts(width, height, 1, false, 1);
+        // One row per session, and it starts with the name: no header above it,
+        // no `[peer]` tag in the text, no rows to spare.
+        assert_eq!(parts[2].height, LINE_ROWS, "one row for one session");
         assert_eq!(
-            row_text(&buf, head.y),
-            " peer",
-            "the same header a pane gets, not `[peer]` in the text"
+            row_text(&buf, parts[2].y),
+            "peer three",
+            "name, then its event"
         );
-        // And a pane's header reads the same way: read from the panes, since the
-        // list owns the columns on the left.
-        let pane_header = body(parts[1], &screen.panes).1;
-        assert_eq!(pane_text(&buf, &screen, pane_header.y), " main");
-        let drawn: Vec<String> = (slot.body.y..slot.body.bottom())
-            .map(|row| row_text(&buf, row))
-            .collect();
-        // The newest two, and the spare row a group has for the next event.
-        assert_eq!(&drawn[..2], &["one", "two"], "and its own rows under it");
-        assert!(drawn[2..].iter().all(String::is_empty), "{drawn:?}");
+        assert!(
+            row_text(&buf, parts[2].y + 1).is_empty(),
+            "and nothing under it"
+        );
+    }
+
+    /// Two `line` sessions take two rows, in name order, back to back.
+    #[test]
+    fn two_line_sessions_take_one_row_each() {
+        let mut screen = screen_with(&[]);
+        screen.panes.layout(&Layout {
+            listed: Vec::new(),
+            full: Vec::new(),
+            line: vec!["a".to_string(), "b".to_string()],
+            command: String::new(),
+        });
+        screen.panes.line("a", LineKind::Assistant, "first");
+        screen.panes.line("b", LineKind::Assistant, "second");
+        screen.sticky_session = None;
+
+        let (width, height) = (40u16, 12u16);
+        let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
+        term.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+        let parts = parts(width, height, 1, false, 2);
+        assert_eq!(parts[2].height, 2 * LINE_ROWS);
+        assert_eq!(row_text(&buf, parts[2].y), "a first");
+        assert_eq!(row_text(&buf, parts[2].y + 1), "b second");
     }
 
     /// Two groups split the rows: neither gets rows the other already used.
     #[test]
-    fn two_line_groups_share_the_rows_without_gaps() {
-        let names = vec!["a".to_string(), "b".to_string()];
-        let area = Rect::new(0, 0, 40, 10);
-        let (slots, hidden) = group_slots(area, &names, None);
-        assert_eq!(hidden, 0);
-        assert_eq!(slots.len(), 2);
-        // Back to back: the second starts where the first ends, header included.
-        assert_eq!(slots[0].body.bottom(), slots[1].header.unwrap().y);
-        let used = slots
-            .iter()
-            .map(|slot| slot.header.map(|h| h.height).unwrap_or(0) + slot.body.height)
-            .sum::<u16>();
-        assert_eq!(used, area.height, "every row is somebody's");
-        assert!(slots.iter().all(|slot| slot.body.height > 0), "{slots:?}");
-    }
 
     /// The list shows the rows around the sticky session -- the only position.
     #[test]

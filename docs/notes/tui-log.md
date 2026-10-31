@@ -402,3 +402,11 @@ command, in the error colour.
 
 A block's trailing newline is trimmed when it seals, while a blank line *inside*
 the block survives.
+
+## headline
+
+The newest block of one view, as one row: that is what a `line` session shows.
+Not `window`'s rows -- those are wrapped rows of a block, so a sentence's
+continuation and a trailing blank row would both be what the session "is on".
+The block's tag is left out, because the row that draws it already starts with
+the session's name (see `tui-render.md`).

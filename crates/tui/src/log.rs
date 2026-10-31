@@ -577,35 +577,18 @@ impl Log {
     /// "one line per event" must not show a sentence's tail or a blank
     /// continuation row. Text past `width` columns is cut and marked, so a row is
     /// always exactly what fits. See `docs/notes/tui-log.md`.
-    pub fn headlines(
-        &self,
-        view: View<'_>,
-        width: usize,
-        limit: usize,
-        scroll: usize,
-    ) -> (Vec<(LineKind, String)>, usize) {
-        let Some(ledger) = self.ledger(view) else {
-            return (Vec::new(), 0);
-        };
-        let total = ledger.blocks.len();
-        let max_scroll = total.saturating_sub(limit);
-        let scroll = scroll.min(max_scroll);
-        let end = total - scroll;
-        let start = end.saturating_sub(limit);
-        let width = width.max(1);
-        let rows = ledger.blocks[start..end]
-            .iter()
-            .map(|at| {
-                let entry = &self.entries[*at];
-                // The label is not text, and this view has no header: the row
-                // carries it.
-                (
-                    entry.kind,
-                    one_line(&format!("{}{}", entry.tag, entry.text), width),
-                )
-            })
-            .collect();
-        (rows, max_scroll)
+    /// The newest event of one view, flattened to one row.
+    ///
+    /// # Invariant
+    ///
+    /// The event, not a row of it: a `line` session is one line, so a sentence's
+    /// continuation and a block's trailing blank row must not be what it shows.
+    pub fn headline(&mut self, view: View<'_>, width: usize) -> Option<(LineKind, String)> {
+        self.reflow(width);
+        let at = *self.ledger(view)?.blocks.last()?;
+        let entry = &self.entries[at];
+        // No tag: the row that draws this already starts with the name.
+        Some((entry.kind, one_line(&entry.text, width.max(1))))
     }
 
     /// The rows for one frame of one view: the last `height` rows, in order.
@@ -1157,8 +1140,13 @@ mod tests {
 
     /// One row per block: a wrapped event is cut, never continued.
     #[test]
-    fn a_headline_is_one_event_on_one_row() {
+    /// The newest event of a view as one row, tag left out: see `tui-render.md`.
+    #[test]
+    fn a_headline_is_the_newest_event_on_one_row() {
         let mut log = Log::new();
+        let view = View::Window("peer");
+        assert!(log.headline(view, 40).is_none(), "no events, no row");
+
         log.stream(
             "peer",
             "k1",
@@ -1167,30 +1155,17 @@ mod tests {
             "first\nsecond",
             true,
         );
-        log.stream("peer", "k2", LineKind::Assistant, "", "two", true);
-        let view = View::Window("peer");
-        let (rows, max_scroll) = log.headlines(view, 40, 4, 0);
-        assert_eq!(
-            rows.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>(),
-            vec!["[peer] first second", "two"],
-            "a break becomes a space, so one block is one row"
-        );
-        assert_eq!(max_scroll, 0);
+        let (kind, text) = log.headline(view, 40).expect("a row");
+        assert_eq!(kind, LineKind::Assistant);
+        assert_eq!(text, "first second", "one event is one row, no tag");
 
-        // A long event is cut, and says so: the row is exactly what fits.
+        log.stream("peer", "k2", LineKind::Assistant, "", "two", true);
+        assert_eq!(log.headline(view, 40).unwrap().1, "two", "the newest wins");
+
         log.stream("peer", "k3", LineKind::Assistant, "", &"x".repeat(80), true);
-        let (rows, _) = log.headlines(view, 10, 4, 0);
-        let last = &rows.last().expect("a row").1;
+        let last = log.headline(view, 10).unwrap().1;
         assert_eq!(last.chars().count(), 10, "{last:?}");
         assert!(last.ends_with('\u{2026}'), "{last:?}");
-
-        // And the view scrolls by events, not by rows.
-        let (rows, max_scroll) = log.headlines(view, 40, 2, 0);
-        assert_eq!(max_scroll, 1, "three blocks in two rows");
-        assert_eq!(rows.len(), 2);
-        assert!(rows.last().unwrap().1.starts_with("xxx"), "{rows:?}");
-        let (_, max_scroll) = log.headlines(view, 40, 2, 9);
-        assert_eq!(max_scroll, 1, "a scroll past the end is clamped");
     }
 
     /// A window can cap its blocks apart from the rest.
