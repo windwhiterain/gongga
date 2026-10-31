@@ -132,6 +132,33 @@ impl Entry {
     }
 }
 
+/// One block's text as a single row of at most `width` columns.
+///
+/// # Invariant
+///
+/// A line break becomes a space rather than an end: this view is one row per
+/// event, and a row that ends mid-sentence says less than one that is cut with a
+/// mark. See `docs/notes/tui-log.md`.
+fn one_line(text: &str, width: usize) -> String {
+    let flat: String = text
+        .chars()
+        .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+        .collect();
+    let mut out = String::new();
+    let mut used = 0usize;
+    for c in flat.chars() {
+        let advance = c.width().unwrap_or(0);
+        // One column is kept for the mark, so a cut row still says it was cut.
+        if used + advance > width.saturating_sub(1) {
+            out.push('\u{2026}');
+            return out;
+        }
+        out.push(c);
+        used += advance;
+    }
+    out
+}
+
 /// The greedy wrap state machine, movable so an append can pick it up mid-line.
 ///
 /// # Invariant
@@ -540,6 +567,45 @@ impl Log {
         self.ledger(view)
             .map(|ledger| ledger.index.total())
             .unwrap_or(0)
+    }
+
+    /// One row per block: the last `limit` blocks, newest last, as single lines.
+    ///
+    /// # Invariant
+    ///
+    /// One block is one row, however tall it would be wrapped: a view drawn as
+    /// "one line per event" must not show a sentence's tail or a blank
+    /// continuation row. Text past `width` columns is cut and marked, so a row is
+    /// always exactly what fits. See `docs/notes/tui-log.md`.
+    pub fn headlines(
+        &self,
+        view: View<'_>,
+        width: usize,
+        limit: usize,
+        scroll: usize,
+    ) -> (Vec<(LineKind, String)>, usize) {
+        let Some(ledger) = self.ledger(view) else {
+            return (Vec::new(), 0);
+        };
+        let total = ledger.blocks.len();
+        let max_scroll = total.saturating_sub(limit);
+        let scroll = scroll.min(max_scroll);
+        let end = total - scroll;
+        let start = end.saturating_sub(limit);
+        let width = width.max(1);
+        let rows = ledger.blocks[start..end]
+            .iter()
+            .map(|at| {
+                let entry = &self.entries[*at];
+                // The label is not text, and this view has no header: the row
+                // carries it.
+                (
+                    entry.kind,
+                    one_line(&format!("{}{}", entry.tag, entry.text), width),
+                )
+            })
+            .collect();
+        (rows, max_scroll)
     }
 
     /// The rows for one frame of one view: the last `height` rows, in order.
@@ -1087,6 +1153,44 @@ mod tests {
             shown(&mut log, 40, 10, 0),
             vec!["[main] one!", "[peer] two more"]
         );
+    }
+
+    /// One row per block: a wrapped event is cut, never continued.
+    #[test]
+    fn a_headline_is_one_event_on_one_row() {
+        let mut log = Log::new();
+        log.stream(
+            "peer",
+            "k1",
+            LineKind::Assistant,
+            "[peer] ",
+            "first\nsecond",
+            true,
+        );
+        log.stream("peer", "k2", LineKind::Assistant, "", "two", true);
+        let view = View::Window("peer");
+        let (rows, max_scroll) = log.headlines(view, 40, 4, 0);
+        assert_eq!(
+            rows.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>(),
+            vec!["[peer] first second", "two"],
+            "a break becomes a space, so one block is one row"
+        );
+        assert_eq!(max_scroll, 0);
+
+        // A long event is cut, and says so: the row is exactly what fits.
+        log.stream("peer", "k3", LineKind::Assistant, "", &"x".repeat(80), true);
+        let (rows, _) = log.headlines(view, 10, 4, 0);
+        let last = &rows.last().expect("a row").1;
+        assert_eq!(last.chars().count(), 10, "{last:?}");
+        assert!(last.ends_with('\u{2026}'), "{last:?}");
+
+        // And the view scrolls by events, not by rows.
+        let (rows, max_scroll) = log.headlines(view, 40, 2, 0);
+        assert_eq!(max_scroll, 1, "three blocks in two rows");
+        assert_eq!(rows.len(), 2);
+        assert!(rows.last().unwrap().1.starts_with("xxx"), "{rows:?}");
+        let (_, max_scroll) = log.headlines(view, 40, 2, 9);
+        assert_eq!(max_scroll, 1, "a scroll past the end is clamped");
     }
 
     /// A window can cap its blocks apart from the rest.

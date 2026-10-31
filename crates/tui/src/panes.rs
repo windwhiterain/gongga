@@ -189,6 +189,17 @@ impl Panes {
         self.log.rows(view, width)
     }
 
+    /// One row per event, for a session drawn as a line group.
+    pub fn headlines(
+        &mut self,
+        view: View<'_>,
+        width: usize,
+        limit: usize,
+        scroll: usize,
+    ) -> (Vec<(LineKind, String)>, usize) {
+        self.log.headlines(view, width, limit, scroll)
+    }
+
     /// The rows one frame of one view shows.
     pub fn window(
         &mut self,

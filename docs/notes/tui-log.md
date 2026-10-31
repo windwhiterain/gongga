@@ -181,6 +181,16 @@ The same block is counted twice, once per ledger that holds it, and the two coun
 differ: a window may cap its blocks apart from the rest (the command line's are single
 rows), so `contributions` returns both and every mutation moves both sums.
 
+## Log::headlines
+
+One row per block, for a view drawn as "one line per event": the last `limit`
+blocks, with a block's own label in front of its text, breaks turned into spaces,
+and anything past `width` columns cut with `…`.
+
+Not `Log::window` with height 1 per block: that would show a wrapped sentence's tail,
+and a block whose last row is empty would show as a blank row. This view reads
+blocks, so its scroll counts events rather than rows.
+
 ## Log::set_hidden
 
 `hide_session` is a view: the merged ledger does not hold the hidden window's

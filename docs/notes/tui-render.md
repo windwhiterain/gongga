@@ -133,12 +133,27 @@ announced, whatever its render mode -- the list is how a mode gets changed, so
 hiding a session from it would hide the way back. The sticky session is marked with
 `▸` and a highlighted row, which is also the row the keyboard scrolls.
 
-## draw_lines
+## draw_lines and group_slots
 
-The sessions drawn as `line`, below the panes: one row per event, shared out
-between the groups. This is a ticker of what each session is doing, not a place to
-read a transcript -- the whole text is still in the log, one `set_render_session`
-away.
+The sessions drawn as `line`, below the panes: one row per event, laid out exactly
+like the panes -- `group_slots` is `pane_slots`' arithmetic, so a header each, the
+rows shared out, and what is left over to the sticky session. The difference between
+`full` and `line` is the height, not the picture: the same grey header with the
+session's name on it, painted by `draw_group_header`, which both use.
+
+A flat `height / groups` was wrong in the way that shows: the earlier groups took
+rows the later ones still counted, and a group ended up drawn as blank lines.
+
+## draw_headlines
+
+One row per *event*, which is not one row per wrapped row. `Log::headlines` gives
+one line per block: a break inside a block becomes a space and text past the width
+is cut with `…`. Drawing a group from `Log::window` -- the wrapped rows -- showed a
+sentence's tail and blank continuation rows, which is what "line sometimes turns
+into an empty line" was.
+
+The block's label rides on that row (`[peer] …`): a line group has no header per
+block, so the row is the only place to say who is speaking.
 
 ## draw_stickys
 
