@@ -258,6 +258,17 @@ fn reconcile(
             .and_then(|pin| blob(cache, pin, &file.source));
         let settled = kept.contains(&file.source);
         match decide(ours.as_deref(), base.as_deref(), &theirs) {
+            // No base, but these bytes are an install of some older pin: it is
+            // not the reader's, so it is replaced rather than kept.
+            Decision::Keep
+                if old.is_none()
+                    && ours
+                        .as_deref()
+                        .is_some_and(|ours| is_a_past_install(cache, &file.source, ours)) =>
+            {
+                put(&file.dest, &theirs, file.exec)?;
+                report.updated += 1;
+            }
             Decision::Place => {
                 put(&file.dest, &theirs, file.exec)?;
                 report.written += 1;
@@ -476,6 +487,35 @@ pub fn blob(cache: &Path, commit: &str, path: &str) -> Option<Vec<u8>> {
         .ok()
         .filter(|out| out.status.success())
         .map(|out| out.stdout)
+}
+
+/// Whether these bytes are some past version of `path` that this cache holds.
+///
+/// # Invariant
+///
+/// Only asked when a root has no pin, which is the one case where the base is
+/// unknown: a file that matches a commit in the history is an install somebody
+/// left behind -- an older pin, a different build -- and not the reader's own
+/// words. Without this a home that lost its pin would freeze every file it
+/// happens to have, which is what happened to this machine.
+fn is_a_past_install(cache: &Path, path: &str, ours: &[u8]) -> bool {
+    const LOOK_BACK: usize = 40;
+    let Ok(listed) = Command::new(git())
+        .arg("--git-dir")
+        .arg(cache)
+        .args(["rev-list", "--all", "--"])
+        .arg(path)
+        .output()
+    else {
+        return false;
+    };
+    if !listed.status.success() {
+        return false;
+    }
+    String::from_utf8_lossy(&listed.stdout)
+        .lines()
+        .take(LOOK_BACK)
+        .any(|commit| blob(cache, commit, path).is_some_and(|bytes| bytes == ours))
 }
 
 /// The pin a root is at: the first line of its pin file.
@@ -949,6 +989,55 @@ mod tests {
             std::fs::read_to_string(f.home().join("skills/heir/SKILL.md")).unwrap(),
             "mine\n",
             "and the reader's file is still theirs"
+        );
+    }
+
+    /// A file left by an older pin is not the reader's: with no pin to say so, the
+    /// history decides.
+    #[test]
+    fn a_file_from_an_older_pin_is_replaced_not_kept() {
+        let d = tempfile::tempdir().unwrap();
+        let f = fixture(d.path());
+        let old_pin = content_repo(&f.content, "old\n", "older skill\n");
+        // What an older install left, with no pin recording it.
+        std::fs::create_dir_all(f.home().join("skills/heir")).unwrap();
+        std::fs::write(f.home().join("skills/heir/SKILL.md"), "older skill\n").unwrap();
+
+        // The pin moves on, and this home never recorded where it was.
+        std::fs::write(
+            f.content.join("skills/harness/heir/SKILL.md"),
+            "newer skill\n",
+        )
+        .unwrap();
+        git_in(&f.content, &["commit", "-q", "-am", "upstream"]);
+        let report = f.install(&head(&f.content)).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(f.home().join("skills/heir/SKILL.md")).unwrap(),
+            "newer skill\n",
+            "an install of {old_pin} is not a reader's words: {report:?}"
+        );
+        assert!(report.kept.is_empty(), "{report:?}");
+    }
+
+    /// A file of the reader's own still wins, pin or no pin.
+    #[test]
+    fn a_file_of_the_readers_own_is_still_kept() {
+        let d = tempfile::tempdir().unwrap();
+        let f = fixture(d.path());
+        // Nothing in the history has these bytes.
+        std::fs::create_dir_all(f.home().join("skills/heir")).unwrap();
+        std::fs::write(f.home().join("skills/heir/SKILL.md"), "my own words\n").unwrap();
+        let commit = content_repo(&f.content, "c\n", "shipped\n");
+        let report = f.install(&commit).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(f.home().join("skills/heir/SKILL.md")).unwrap(),
+            "my own words\n",
+            "{report:?}"
+        );
+        assert_eq!(
+            report.kept,
+            vec!["skills/harness/heir/SKILL.md".to_string()]
         );
     }
 
