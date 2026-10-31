@@ -313,8 +313,7 @@ pub trait Sink {
     );
     fn status(&mut self, text: &str);
     fn footer(&mut self, text: &str);
-    /// The harness's own news: refused, a log line, a build mismatch. Not a
-    /// command's, so the front-end decides where it goes.
+    /// The harness's own news, never a command's line.
     fn note(&mut self, _kind: LineKind, _text: &str) {}
     /// How tall one block may get, in wrapped rows; 0 caps nothing. A front-end
     /// that shows every row ignores it.
@@ -403,6 +402,9 @@ pub struct Client {
     attempts: u32,
     /// Set by `connect_server`; the front-end reads it and dials again.
     server_changed: bool,
+    /// Another build or home: part of the facts, which no note can wipe.
+    build_note: Option<String>,
+    home_note: Option<String>,
 }
 
 /// What the operator typed, for the purpose of echoing it back into the log.
@@ -537,6 +539,8 @@ impl Client {
             connected: false,
             attempts: 0,
             server_changed: false,
+            build_note: None,
+            home_note: None,
         }
     }
 
@@ -605,34 +609,14 @@ impl Client {
                 self.connected = true;
                 self.attempts = 0;
                 // The facts are the announcement: "offline — reconnecting"
-                // becomes the model and the session count.
-                self.refresh(sink);
-                // After the facts, so they do not wipe it. A different build is
-                // a warning about this machine, and the reader can fix it.
-                if !server.build.is_empty() && server.build != protocol::BUILD {
-                    sink.note(
-                        LineKind::System,
-                        &format!(
-                            "that server is build {}, this program is {} -- \
-                             same protocol, different builds",
-                            server.build,
-                            protocol::BUILD
-                        ),
-                    );
-                }
-                // Two homes on one machine share the default port, so a
-                // matching key is enough to drive the other one by accident.
+                // becomes the model and the session count. A warning about this
+                // machine belongs beside them, not in place of them.
+                self.build_note = (!server.build.is_empty() && server.build != protocol::BUILD)
+                    .then(|| format!("build {}", server.build));
                 let mine = self.sticky.home();
-                if !server.home.is_empty() && !same_home(&server.home, mine) {
-                    sink.note(
-                        LineKind::Error,
-                        &format!(
-                            "that server serves {}, not {} -- commands here would act                              on the other home",
-                            server.home,
-                            mine.display()
-                        ),
-                    );
-                }
+                self.home_note = (!server.home.is_empty() && !same_home(&server.home, mine))
+                    .then(|| format!("home {}", server.home));
+                self.refresh(sink);
             }
             ServerMessage::Denied { reason } => {
                 sink.note(LineKind::Error, &format!("connection refused: {reason}"));
@@ -785,13 +769,17 @@ impl Client {
         sink.block_size(self.block_size.0);
         sink.layout(&self.layout());
         sink.sticky_session(self.sticky.get("session"));
-        let facts = if self.connected {
+        let mut facts = if self.connected {
             format!("model {} | {} session(s)", self.model, self.sessions.len())
         } else if self.attempts == 0 {
             "offline — connecting…".to_string()
         } else {
             format!("offline — reconnecting (attempt {})", self.attempts)
         };
+        for note in [&self.build_note, &self.home_note].into_iter().flatten() {
+            facts.push_str(" | ");
+            facts.push_str(note);
+        }
         sink.status(&facts);
         let sticky = pairs(&self.sticky.pairs());
         let mut footer = if sticky.is_empty() {

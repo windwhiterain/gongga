@@ -521,12 +521,11 @@ impl Tui {
 
     /// Whether a key is one a paste arrives as, when the terminal cannot say so.
     fn paste_key(key: &KeyEvent) -> bool {
-        let typing = !key
-            .modifiers
-            .intersects(KeyModifiers::ALT | KeyModifiers::CONTROL);
         match key.code {
-            KeyCode::Char(_) => typing,
-            KeyCode::Enter => key.modifiers.is_empty(),
+            KeyCode::Char(_) => !key
+                .modifiers
+                .intersects(KeyModifiers::ALT | KeyModifiers::CONTROL),
+            KeyCode::Enter => is_paste_newline(key),
             _ => false,
         }
     }
@@ -767,14 +766,8 @@ impl Tui {
         self.screen.page_height(size.width, size.height)
     }
 
-    /// Breaks the line instead of sending it.
-    /// Inserts a pasted block at the cursor, without sending it.
-    ///
-    /// # Invariant
-    ///
     /// A paste is text, never a keystroke replay: a newline inside it must not
-    /// press Enter, or pasting a programme would submit its first line and leave
-    /// the rest in the prompt.
+    /// press Enter.
     fn paste(&mut self, raw: &str) {
         let text = clipboard::paste_text(raw);
         if text.is_empty() {
@@ -1062,10 +1055,27 @@ impl Completer for NoCompleter {
 
 /// Whether this run is one bare `Enter` that a recent paste delivered.
 fn glue_break(keys: &[KeyEvent], pasted_run: Option<usize>) -> bool {
-    pasted_run.is_some_and(|chars| chars >= MACHINE_RUN)
-        && keys.len() == 1
-        && keys[0].code == KeyCode::Enter
-        && keys[0].modifiers.is_empty()
+    let lone_break = keys.len() == 1 && is_paste_newline(&keys[0]);
+    // A modified Enter settles it alone: no hand sends with it, and the timing
+    // rule cannot see it -- ConPTY delivers pasted keys one at a time.
+    let modified = keys.len() == 1 && keys[0].modifiers.contains(KeyModifiers::CONTROL);
+    lone_break && (modified || pasted_run.is_some_and(|chars| chars >= MACHINE_RUN))
+}
+
+/// Whether this Enter is a paste's line break rather than the operator sending.
+///
+/// # Invariant
+///
+/// A paste's newline is not a plain Enter. Windows delivers it as `Enter` with
+/// `CONTROL` -- seen in a real terminal, not guessed -- so a rule that accepts only
+/// the bare key loses every line break in a pasted block, and one that sends on it
+/// posts the block a line at a time. Shift and Alt are the operator's own breaks
+/// and are excluded. See `docs/notes/tui-paste.md`.
+fn is_paste_newline(key: &KeyEvent) -> bool {
+    key.code == KeyCode::Enter
+        && !key
+            .modifiers
+            .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT)
 }
 
 fn pasted(keys: &[KeyEvent]) -> Option<String> {
@@ -1076,7 +1086,7 @@ fn pasted(keys: &[KeyEvent]) -> Option<String> {
     let mut text = String::new();
     for key in keys {
         match key.code {
-            KeyCode::Enter if key.modifiers.is_empty() => text.push('\n'),
+            KeyCode::Enter if is_paste_newline(key) => text.push('\n'),
             KeyCode::Char(c) => text.push(c),
             // Anything else means this was not one pasted block after all.
             _ => return None,
@@ -1529,6 +1539,35 @@ mod tests {
     ///
     /// This is the difference between pasting a programme and sending its first
     /// line while the rest sits in the box.
+    /// A pasted newline is not a plain Enter: Windows sends `Enter` with CONTROL,
+    /// and a rule that only takes the bare key loses every line break -- or, worse,
+    /// sends the block one line at a time.
+    #[test]
+    fn a_pasted_newline_is_recognised_however_the_terminal_spells_it() {
+        let plain = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let control = KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL);
+        let shifted = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
+
+        for key in [&plain, &control] {
+            assert!(is_paste_newline(key), "{key:?} is a paste's break");
+        }
+        assert!(!is_paste_newline(&shifted), "Shift+Enter is the operator's");
+
+        // A block pasted as keys: each Enter in it is a line, not a send.
+        let keys: Vec<KeyEvent> = "one\ntwo"
+            .chars()
+            .map(|c| match c {
+                '\n' => control,
+                other => KeyEvent::new(KeyCode::Char(other), KeyModifiers::NONE),
+            })
+            .collect();
+        assert_eq!(pasted(&keys).as_deref(), Some("one\ntwo"));
+
+        // And a lone pasted break after a machine-fast run is still a line.
+        assert!(glue_break(&[control], Some(MACHINE_RUN)));
+        assert!(Tui::paste_key(&control), "and it keeps a run going");
+    }
+
     #[test]
     fn a_paste_is_inserted_not_submitted() {
         let mut h = Headless::new();

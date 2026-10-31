@@ -1,5 +1,26 @@
 # tui/lib.rs — a paste that arrives as keystrokes
 
+## A pasted newline is not a plain Enter
+
+The timing rule above guesses a paste from how fast keys arrive. It cannot be the
+whole answer, because what a terminal sends for a newline inside a pasted block is
+not the key a hand presses: **Windows delivers it as `Enter` with `CONTROL`**, read
+off this window's own console rather than guessed.
+
+Two failures follow from treating that as a bare Enter:
+
+- a rule that only accepts the unmodified key drops the break, and the block arrives
+  as one run-on line;
+- a rule that treats any Enter inside a run as a send posts the block a line at a
+  time -- the report this was fixed for.
+
+`is_paste_newline` therefore accepts an Enter carrying neither `SHIFT` nor `ALT`, and
+`glue_break` treats a `CONTROL`-carrying Enter as settled on its own: a hand does not
+produce that key to send, and the timing rule cannot see it anyway -- ConPTY hands
+pasted keys over one at a time, slower than `PASTE_GAP`, so a run of them never
+accumulates. The timing rule stays for terminals that replay a paste as fast
+keystrokes.
+
 ## The problem
 
 `EnableBracketedPaste` is written to the terminal, and `Event::Paste` is handled
@@ -80,6 +101,13 @@ a submit.
 The residual risk is a human who rolls three keys together and then hits Enter
 within 150 ms. It costs them one extra Enter, and it is the safe direction: the
 alternative is one message per pasted line.
+
+That rule needs the run to accumulate, and in this harness's own console it does not:
+ConPTY delivers a pasted block one key at a time, slower than `PASTE_GAP`, so the
+run is always one key long and the timing test never fires. What does reach the
+window is the *modifier*: a pasted newline arrives as `Enter` with `CONTROL`, which
+is the subject of the first section. Both rules are kept, because the terminals
+differ: one for a paste replayed as fast keystrokes, one for a paste that says so.
 
 ## What the run holds back
 

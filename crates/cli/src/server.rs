@@ -67,7 +67,15 @@ pub async fn ensure(home: &Path, addr: SocketAddr) -> anyhow::Result<bool> {
     if answers(home, addr).await {
         return Ok(false);
     }
-    start(home, addr)?;
+    let pid = start(home, addr)?;
+    // Only here: `ensure` is the one-shot path, whose stderr is being read.
+    if let Some(pid) = pid {
+        eprintln!(
+            "started {SERVE} for {} (pid {pid}, log {})",
+            home.display(),
+            log_path(home).display()
+        );
+    }
     Ok(true)
 }
 
@@ -144,12 +152,8 @@ fn start(home: &Path, addr: SocketAddr) -> anyhow::Result<Option<u32>> {
     let child = cmd
         .spawn()
         .with_context(|| format!("starting {}", server.display()))?;
-    eprintln!(
-        "started {SERVE} for {} (pid {}, log {})",
-        home.display(),
-        child.id(),
-        log.display()
-    );
+    // Silent: a window that starts its own server owns the screen, and a line on
+    // stderr lands in the middle of it.
     Ok(Some(child.id()))
 }
 
