@@ -590,7 +590,8 @@ cmd_clean() {
   fi
   removed=$(find "$RUN" -maxdepth 1 -type f \
     \( -name 'evolve-*-launch.sh' -o -name 'evolve-*-launch.pid' \
-       -o -name 'evolve-*-launch.beat' -o -name 'evolve-*-gongga.exe' \
+       -o -name 'evolve-*-launch.beat' \
+       -o -name 'evolve-*-gongga.exe' -o -name 'evolve-*-server.exe' \
        -o -name 'evolve-*.txt' \) \
     ! \( "${keep[@]}" \) -print -delete 2>/dev/null | wc -l)
   echo "artifacts: $removed file(s) removed"
