@@ -21,6 +21,11 @@ fn main() {
             root.join("Cargo.lock").display()
         );
     }
+    // A commit touches nothing under `crates/`, but it changes what the embedded
+    // programs report.
+    if let Some(ref_file) = git_ref() {
+        println!("cargo:rerun-if-changed={}", ref_file.display());
+    }
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("cargo always sets OUT_DIR"));
     let mut generated = String::new();
     if std::env::var_os("CARGO_FEATURE_PAYLOAD").is_some() {
@@ -42,6 +47,21 @@ fn main() {
         generated.push_str("pub const EMBEDDED: &[(&str, &[u8])] = &[];\n");
     }
     std::fs::write(out.join("embedded.rs"), generated).expect("writing the embedded table");
+}
+
+/// The ref a commit moves: `.git/HEAD` reads `ref: refs/heads/x` and never changes.
+fn git_ref() -> Option<PathBuf> {
+    let out = Command::new("git")
+        .args(["rev-parse", "--git-dir"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let dir = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+    let head = std::fs::read_to_string(dir.join("HEAD")).ok()?;
+    let target = head.trim().strip_prefix("ref:")?.trim().to_string();
+    Some(dir.join(target))
 }
 
 /// The programs, built here rather than expected to be lying around.

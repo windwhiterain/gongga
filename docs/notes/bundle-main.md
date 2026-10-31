@@ -57,7 +57,9 @@ Two details that are not optional:
   nested build's output. `include_bytes!` makes a file an *input* to this crate,
   and the nested build rewrites its own output every time it runs -- so embedding
   the output closed a loop: every build was dirty, and a no-op build cost 8 s;
-- `build.rs` watches `crates/`, `Cargo.toml` and `Cargo.lock`, not just itself.
+- `build.rs` watches `crates/`, `Cargo.toml`, `Cargo.lock` and the git ref, not
+  just itself. The ref matters because a commit touches nothing under `crates/`
+  yet does change what the embedded programs report.
   Cargo only tracks this package's own sources, so without that an edit to
   `crates/cli` left a stale program embedded indefinitely -- which happened, and
   is why the first attempt at a message change appeared to do nothing;
@@ -104,3 +106,16 @@ Every run places all payloads in `$GONGGA_HOME/bin` first (all of them, because
 `serve` looks for the server beside itself, and `tui` looks for nothing but its
 own two halves). A file already holding those bytes is left alone, so the second
 run costs a checksum per program and nothing else.
+
+## Why a feature rather than "always"
+
+`cargo bundle` is an alias for the one command (`.cargo/config.toml`):
+
+    cargo bundle   ->  cargo build -p gongga-bundle --features payload
+
+The build script does all the work; the feature only decides whether to run it.
+Making it unconditional would mean every `cargo build`, `cargo check` and `cargo
+test` in this workspace spawns a nested cargo that compiles the whole dependency
+graph a second time into a second target directory -- 35 s cold, 1.8 GB. That is
+a cost the inner loop pays hundreds of times a day and the installer pays once,
+so it is opt-in and one alias away.

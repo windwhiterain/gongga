@@ -30,11 +30,15 @@ say() { printf '  %s\n' "$*"; }
 die() { echo "bundle: $*" >&2; exit 1; }
 
 say "== build =="
-cargo build -p gongga-bundle --features payload $flag 2>&1 | tail -n 4
+# `cargo bundle` is the alias in `.cargo/config.toml`: the same command, spelled
+# once for everybody. `--release` is not part of it.
+cargo bundle $flag 2>&1 | tail -n 4
 
 ext=""
 [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* ]] && ext=".exe"
-built="$root/target/$profile/gongga-bundle$ext"
+# The bin is `gongga` (see crates/bundle/Cargo.toml), not the package name: a
+# script that copied the old spelling shipped whatever build was lying there.
+built="$root/target/$profile/gongga$ext"
 [[ -f "$built" ]] || die "$built is missing"
 
 out=${out:-$root/.dev/dist/gongga}
