@@ -129,7 +129,7 @@ fill() {
 
 write_launcher() {
   local stamp="$1" exe="$2" old_pid="$3" clean="${4:-0}"
-  local argsfile="${5:-}"
+  local argsfile="${5:-}" bundle="${6:-0}"
   local path="$RUN/evolve-$stamp-launch.sh"
   local pidfile="$RUN/evolve-$stamp-launch.pid"
   local beatfile="$RUN/evolve-$stamp-launch.beat"
@@ -145,6 +145,7 @@ write_launcher() {
     -e "s|@@BIND@@|$(fill "$BIND")|g" \
     -e "s|@@CURRENT@@|$(fill "$CURRENT")|g" \
     -e "s|@@CLEAN@@|$(fill "$clean")|g" \
+    -e "s|@@BUNDLE@@|$(fill "$bundle")|g" \
     > "$path" <<'LAUNCH'
 #!/usr/bin/env bash
 # Successor for @@STAMP@@: waits outside the old server, then takes the home.
@@ -235,6 +236,14 @@ while :; do
     # exactly as the spawned server did (see cli::server::command).
     cd "$NEW_HOME" || { echo "evolve: no home at $NEW_HOME; not taking it" >&2; exit 1; }
     echo "evolve: taking the home as $NEW_HOME on $NEW_BIND${NEW_PARENT:+ for window $NEW_PARENT} (${#ARGS[@]} argument(s) carried over)"
+    # The staged file is the bundle: one head that installs every program it
+    # carries into this home and then runs the one its own word names. That is
+    # what makes a handover replace the whole distribution -- payload for all
+    # three programs, and the `bin` pair the next shell will type (the server
+    # refreshes it from its own build at startup).
+    if [ '@@BUNDLE@@' = "1" ]; then
+      GONGGA_HOME="$NEW_HOME" exec "$NEW" server "${ARGS[@]}"
+    fi
     exec "$NEW" "${ARGS[@]}"
   fi
   date +%s > '@@BEATFILE@@'
@@ -330,10 +339,10 @@ running_pid() {
 }
 
 cmd_stage() {
-  local all=0 clean=0
+  local clean=0
   for flag in "$@"; do
     case "$flag" in
-      --all) all=1 ;;
+      --all) echo "note: --all is the only mode now; every program is staged" ;;
       --clean) clean=1 ;;
     esac
   done
@@ -346,20 +355,21 @@ cmd_stage() {
   cargo test --workspace 2>&1 | tail -n 25
 
   echo "== build =="
-  if [ "$all" = 1 ]; then
-    CARGO_TARGET_DIR="$BUILD" cargo build --workspace
-  else
-    # Server-only by default: the TUI may be running from
-    # target/debug/gongga-tui.exe and a workspace build would have to relink it.
-    # The protocol is unchanged, so the old client still speaks to the new
-    # server.
-    CARGO_TARGET_DIR="$BUILD" cargo build -p gongga-server
-  fi
+  # The whole distribution, as one file: the bundle carries server, cli and tui,
+  # so a handover replaces all three rather than only the process this machine
+  # happens to be running. It builds its payload into `target/bundle-payload`,
+  # never into `$BUILD`, because the crate asks cargo for those three programs by
+  # name and cargo resolves that against the tree it is told to use.
+  ( cd "$ROOT" && cargo build -p gongga-bundle ) || die "building the bundle failed"
+  # The head is `gongga` (see crates/bundle/Cargo.toml), not the package name.
+  local head="$ROOT/target/debug/gongga"
+  [ -f "$head" ] || head="$head.exe"
+  [ -f "$head" ] || die "no bundle head at $ROOT/target/debug/gongga"
 
   local stamp exe old_pid launcher
   stamp="$(date +%Y%m%d-%H%M%S)"
-  exe="$RUN/evolve-$stamp-server.exe"
-  cp "$BUILD/debug/gongga-server.exe" "$exe" || die "copying the server failed"
+  exe="$RUN/evolve-$stamp-gongga.exe"
+  cp "$head" "$exe" || die "copying the bundle failed"
   old_pid="$(running_pid || true)"
   [ -n "$old_pid" ] || echo "note: no live server holds $HOME_DIR/server.lock"
   # The successor has to be the old server over again: its argv is recorded now,
@@ -381,14 +391,14 @@ unknown; refusing to stage a handover that would produce a server nobody owns"
     old_parent="$(flag_of "$old_pid" --parent)"
     echo "old server: home $old_home, bind $old_bind, owner ${old_parent:-none}"
   fi
-  launcher="$(write_launcher "$stamp" "$exe" "$old_pid" "$clean" "$argsfile")"
+  launcher="$(write_launcher "$stamp" "$exe" "$old_pid" "$clean" "$argsfile" 1)"
   # The previous attempt is abandoned from here on: its launcher sees itself
   # superseded and leaves the waiting loop by itself (see the loop below).
   echo "$stamp" > "$CURRENT"
 
   {
     echo "stamp=$stamp"
-    echo "server=$exe"
+    echo "bundle=$exe"
     echo "old_pid=${old_pid:-none}"
     echo "old_home=$old_home"
     echo "old_bind=$old_bind"
@@ -410,8 +420,8 @@ unknown; refusing to stage a handover that would produce a server nobody owns"
 
 cmd_swap() {
   local stamp="${1:?usage: evolve.sh swap <stamp>}"
-  local exe="$RUN/evolve-$stamp-server.exe"
-  [ -f "$exe" ] || die "no staged server for $stamp; run stage first"
+  local exe="$RUN/evolve-$stamp-gongga.exe"
+  [ -f "$exe" ] || die "no staged bundle for $stamp; run stage first"
 
   # Only the newest stage may take the home. An older stamp still has its
   # files, but its launcher has left the queue (it saw the pointer move), and
@@ -559,7 +569,7 @@ cmd_clean() {
     return 0
   fi
 
-  # The staged `-server.exe` is ~18MB, nothing ever rewrites it, and a stamp
+  # The staged bundle is ~40MB, nothing ever rewrites it, and a stamp
   # that is not current can no longer be swapped -- so the copy buys nothing.
   # The current stamp keeps everything: it is the one that may still be
   # launched. So does the stamp the running server came from, whose exe is the
@@ -580,7 +590,7 @@ cmd_clean() {
   fi
   removed=$(find "$RUN" -maxdepth 1 -type f \
     \( -name 'evolve-*-launch.sh' -o -name 'evolve-*-launch.pid' \
-       -o -name 'evolve-*-launch.beat' -o -name 'evolve-*-server.exe' \
+       -o -name 'evolve-*-launch.beat' -o -name 'evolve-*-gongga.exe' \
        -o -name 'evolve-*.txt' \) \
     ! \( "${keep[@]}" \) -print -delete 2>/dev/null | wc -l)
   echo "artifacts: $removed file(s) removed"

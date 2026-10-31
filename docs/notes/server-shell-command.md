@@ -91,26 +91,34 @@ Git Bash it already resolves to `/c/Windows/System32/cmd`. A `PATH` entry that
 shadows the operating system's shell would be a surprise nobody asked for; the
 name that wins is the one the harness actually owns.
 
-## ensure_command
+## ensure_pair
 
 The directory is only half of it: an entry on `PATH` that holds nothing is a
 shell with no command. Before the split the server *was* `gongga`, so its own
 `current_exe()` was the thing to link; now it is `gongga-server`, and the command
-layer is a different program that the CLI installs right before spawning a
-server (`cli-server.md`).
+layer is a different program.
 
-That leaves a hole with real cases behind it: `evolve`'s launcher `exec`s
-`gongga-server` directly, `dev.sh server` stages it into `.dev/`, and a bare
-`cargo run -p gongga-server` starts one too. None of them has `gongga-cli` beside
-it, and a home first started that way had an empty `bin` -- an agent whose shell
+That leaves a hole with real cases behind it: `evolve`'s launcher runs the
+distribution head, `dev.sh server` stages a server into `.dev/`, and a bare
+`cargo run -p gongga-server` starts one too. None of them is a window that spawned
+one, and a home first started that way had an empty `bin` -- an agent whose shell
 cannot reach the server it is running on.
 
-So the server asks the same three questions the CLI does, in the same order:
-`GONGGA_CLI_BIN`, the sibling of its own executable, this home's `bin`. It
-installs only when the file is *missing*: refreshing a stale one is the CLI's
-job, because the CLI is the program that knows which build it is, and a stale
-copy is visible anyway -- the handshake carries `BUILD` both ways
-(`protocol-lib.md`).
+So the server installs the **pair**: itself, and the command from
+`GONGGA_CLI_BIN` / the sibling of its own executable / this home's `bin`.
+
+The pair is refreshed when it is not this build, not only created when missing.
+A stale copy used to be "the CLI's job", and that reasoning had a hole of its own:
+a handover replaces the server, and a `bin` still holding yesterday's command
+hands the next shell a client for a build that is gone. The running server is the
+one program that knows which build it *is*, and its sibling in `payload/<stamp>/`
+is the command of that same build.
+
+"Same build" is length and modification time -- the two facts `cli::server`
+compares for the same pair -- and both survive because the install is a hard link.
+A program that is running now cannot be replaced: that start keeps the old one and
+the next one replaces it. Half a program is never visible: written beside, renamed
+in.
 
 Not finding one is a warning, not a refusal. Serving without a command still
 serves; a server that refused to start would turn a missing file into an outage.

@@ -131,10 +131,16 @@ to the first is an overlay, not a bigger binary.
 ./gongga tui              # the window
 ```
 
-Every run places all payloads in `$GONGGA_HOME/bin` first (all of them, because
-`serve` looks for the server beside itself, and `tui` looks for nothing but its
-own two halves). A file already holding those bytes is left alone, so the second
-run costs a checksum per program and nothing else.
+Every run places all payloads in `$GONGGA_HOME/payload/<stamp>/` first (all of
+them, because `serve` looks for the server beside itself, and `tui` looks for
+nothing but its own two halves). A file already holding those bytes is left alone,
+so the second run costs a checksum per program and nothing else. A directory whose
+server is still running is left where it is; the next install retires it.
+
+`<home>/bin` is the *server's* business, not this file's: the program this one
+takes over with installs itself and its command pair at startup
+(`server-shell-command.md`). That is why one handover replaces the whole
+distribution -- payload for all three programs, and the pair a shell types.
 
 ## Why a feature rather than "always"
 

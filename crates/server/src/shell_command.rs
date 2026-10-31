@@ -8,41 +8,92 @@ use std::path::{Path, PathBuf};
 /// The command layer's own name, the one a shell types.
 const CLI: &str = "gongga-cli";
 
+/// The server's own name, the program this one is.
+const SERVER: &str = "gongga-server";
+
 /// A variable naming the command layer when it is somewhere unusual.
 const CLI_BIN: &str = "GONGGA_CLI_BIN";
 
-/// Puts the command layer in this home's `bin`, and says where it landed.
+/// Puts this server and its command layer in this home's `bin`, and says where
+/// the command landed.
 ///
 /// # Invariant
 ///
-/// A shell this server starts must be able to drive it, and this home's `bin` is
-/// the only name it has: a launcher or `cargo run` starts a server with nothing
-/// beside it, so one is fetched from three named places and never from `PATH`.
-/// See `docs/notes/server-shell-command.md`.
-pub fn ensure_command(home: &Path) -> Option<PathBuf> {
-    let installed = home.join("bin").join(file_name(CLI));
-    if installed.is_file() {
-        return Some(installed);
+/// A shell this server starts must drive *this* server, and this home's `bin` is
+/// the only name it has: a launcher starts one with nothing beside it, so both
+/// programs come from named places, never from `PATH`. The pair is refreshed when
+/// it is not this build, or a handover leaves the next shell a client for a build
+/// that is gone. See `docs/notes/server-shell-command.md`.
+pub fn ensure_pair(home: &Path) -> Option<PathBuf> {
+    let bin = home.join("bin");
+    std::fs::create_dir_all(&bin).ok()?;
+    let mut command = None;
+    // The server first: a command refreshed without one beside it would be a
+    // command whose server cannot be found.
+    for (name, source) in [(SERVER, server_source()), (CLI, command_source())] {
+        let Some(source) = source else { continue };
+        if let Some(placed) = place(&bin, name, &source) {
+            if name == CLI {
+                command = Some(placed);
+            }
+        }
     }
+    command
+}
+
+/// The server running now: the program that is asking.
+fn server_source() -> Option<PathBuf> {
+    std::env::current_exe().ok().filter(|me| me.is_file())
+}
+
+/// The command layer: the one named for it, else the sibling of this server.
+fn command_source() -> Option<PathBuf> {
     let named = std::env::var_os(CLI_BIN).map(PathBuf::from);
-    let source = named
+    named
         .into_iter()
         .chain(
             std::env::current_exe()
                 .ok()
                 .and_then(|me| me.parent().map(|dir| dir.join(file_name(CLI)))),
         )
-        .find(|candidate| candidate.is_file())?;
-    let bin = home.join("bin");
-    std::fs::create_dir_all(&bin).ok()?;
-    // Beside it, then renamed in: a shell may be running the old one.
-    let temp = bin.join(format!(".{}.{}", file_name(CLI), std::process::id()));
+        .find(|candidate| candidate.is_file())
+}
+
+/// One program in this home's `bin`, linked when it is not already this build.
+///
+/// # Invariant
+///
+/// Written beside and renamed in, so no shell ever starts half a program, and a
+/// copy that is running now is left alone: the old one still works, and the next
+/// start replaces it.
+fn place(bin: &Path, name: &str, source: &Path) -> Option<PathBuf> {
+    let installed = bin.join(file_name(name));
+    if same_build(&installed, source) {
+        return Some(installed);
+    }
+    let temp = bin.join(format!(".{}.{}", file_name(name), std::process::id()));
     let _ = std::fs::remove_file(&temp);
-    if copy(&source, &temp).is_ok() && std::fs::rename(&temp, &installed).is_ok() {
+    let placed = copy(source, &temp).and_then(|()| std::fs::rename(&temp, &installed));
+    if placed.is_ok() {
         return Some(installed);
     }
     let _ = std::fs::remove_file(&temp);
-    None
+    // In use, so this start cannot replace it; a usable old one beats none.
+    installed.is_file().then_some(installed)
+}
+
+/// Whether `installed` is already `source`: length and mtime, as `cli::server`
+/// compares them for the same pair.
+fn same_build(installed: &Path, source: &Path) -> bool {
+    let (Ok(here), Ok(there)) = (std::fs::metadata(installed), std::fs::metadata(source)) else {
+        return false;
+    };
+    here.len() == there.len()
+        && here
+            .modified()
+            .ok()
+            .zip(there.modified().ok())
+            .is_some_and(|(a, b)| a == b)
 }
 
 /// Says, once, that no command layer could be found and where it looked.
@@ -258,7 +309,7 @@ mod tests {
         );
     }
 
-    /// A server with no command beside it places one.
+    /// The pair is this build, not whatever was there: a handover refreshes it.
     #[test]
     fn a_home_with_no_command_gets_one() {
         let dir = tempfile::tempdir().unwrap();
@@ -268,11 +319,46 @@ mod tests {
         std::fs::write(&source, b"the command layer").unwrap();
         // SAFETY: no other test in this crate reads this variable.
         unsafe { std::env::set_var(CLI_BIN, &source) };
-        let placed = ensure_command(&home).expect("a placeable command");
-        unsafe { std::env::remove_var(CLI_BIN) };
+        let placed = ensure_pair(&home).expect("a placeable command");
         assert_eq!(placed, home.join("bin").join(file_name(CLI)));
         assert_eq!(std::fs::read(&placed).unwrap(), b"the command layer");
         // And a second start finds it there rather than placing it twice.
-        assert_eq!(ensure_command(&home).unwrap(), placed);
+        assert_eq!(ensure_pair(&home).unwrap(), placed);
+
+        // A different file is a different build; rewriting `source` would not be,
+        // because the installed copy is a link to it.
+        let newer = dir.path().join("gongga-cli-newer");
+        std::fs::write(&newer, b"a newer command layer!!").unwrap();
+        unsafe { std::env::set_var(CLI_BIN, &newer) };
+        let again = ensure_pair(&home).expect("a replaceable command");
+        unsafe { std::env::remove_var(CLI_BIN) };
+        assert_eq!(
+            std::fs::read(&again).unwrap(),
+            b"a newer command layer!!",
+            "a stale copy must not survive a start of another build"
+        );
+    }
+
+    /// The server installs itself beside the command, so a shell that finds one
+    /// finds the other.
+    #[test]
+    fn the_server_goes_into_bin_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let me = std::env::current_exe().expect("the test binary");
+        let placed = ensure_pair(&home);
+        // The command source may be absent in a test binary's directory, but the
+        // server is this process and always lands.
+        assert!(placed.is_some() || !home.join("bin").join(file_name(CLI)).exists());
+        let installed = home.join("bin").join(file_name(SERVER));
+        assert!(
+            installed.is_file(),
+            "the server installs itself: {installed:?}"
+        );
+        assert_eq!(
+            std::fs::read(&installed).unwrap(),
+            std::fs::read(&me).unwrap()
+        );
     }
 }

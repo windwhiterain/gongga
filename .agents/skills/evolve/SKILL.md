@@ -226,6 +226,26 @@ powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter 'ProcessI
 顺带一条：修完 `store.rs` 这类 schema 迁移之后，旧服务端的进程仍然持有旧代码，即使数据库
 已经被新二进制迁过了——两边对同一个库的假设不一样，这就是「什么都对不上」的来源。
 
+## 一次换手换的是整套发行版
+
+`stage` 构建的是**bundle**（一个文件携带 server / cli / tui），继任者也**就是**它：
+
+```
+stage:  cargo test → cargo build -p gongga-bundle → 暂存 .dev/evolve-<stamp>-gongga.exe
+launch: 等旧服务端退出
+exec:   GONGGA_HOME=<home> <bundle> server <旧服务端的 argv>
+        → bundle 把三个程序装进 <home>/payload/<stamp>/
+        → 退休别的 payload 目录（正在被窗口用的那个留着）
+        → 用它刚装的 gongga-server.exe 服务同一端口、同一 home、同一 owner
+```
+
+所以换手之后：`payload/` 是新的三个程序、`bin/gongga-cli.exe` 与 `bin/gongga-server.exe`
+是新的一对（服务端启动时按自己的构建刷新它们）、跑着的服务端也是新的。**唯一没换的是正在
+运行的那个窗口**：`gongga-tui.exe` 无法替换自己，重开窗口才会用上新的 tui；但它的 payload
+目录不会被删，所以旧窗口照常工作到你自己关掉它。
+
+`stage --all` 因此不再需要（所有程序本来就都跟着走），传了也只会打一行提示。
+
 ## 继任者带着旧服务端的命令行
 
 SPEC（Skill: evolve）：*restart server should still keep its lifetime, e.g. tui
@@ -267,8 +287,9 @@ $S clean             # 收掉没人会 swap 的旧继任者（--artifacts 连旧
 
 ## 什么时候不需要它
 
-- 只改了 skill 脚本 / 文档 / TUI → 不用换服务端（TUI 要重开客户端而已）。
-- 想换的是**客户端** → `stage --all`，然后手动重开 TUI。
+- 只改了 skill 脚本 / 文档 → 不用换（它们不在任何二进制里）。
+- 改了 TUI → 换手会把新 tui 装进 `payload/`，但正在运行的窗口是旧的；关掉重开窗口即可，
+  不必为了 tui 换服务端。
 
 ## 代价
 

@@ -210,7 +210,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     // Before any shell exists: the command it types has to be there, and a
     // server started by something other than the command layer has none beside
     // it. Best effort -- a server with no command still serves, and says so.
-    let command = shell_command::ensure_command(&cfg.home);
+    let command = shell_command::ensure_pair(&cfg.home);
     if command.is_none() {
         shell_command::warn_missing_command(&cfg.home);
     }
