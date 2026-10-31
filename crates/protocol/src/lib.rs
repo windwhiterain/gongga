@@ -1,26 +1,24 @@
 //! Wire protocol and reliable-UDP transport for the server, CLI and TUI.
 //! See `docs/notes/protocol-lib.md`.
 
-/// Which build this is: one id for the server, the command line and the window.
+/// Which code this is: the commit, one id for all three programs.
 ///
 /// # Invariant
 ///
-/// Every program that links this crate carries the same string, so "are these
-/// three one build" is a comparison and not a guess. It is not the version:
-/// `0.1.0` says which release, this says which commit -- and two builds of one
-/// release are exactly the case a version cannot answer.
+/// The whole identity, and the only one. "Are these three one build" is then a
+/// comparison rather than a guess, and a bug report carries the answer instead of
+/// a release number that cannot tell two builds of that release apart.
 pub const BUILD: &str = env!("GONGGA_BUILD");
 
-/// What `--version` answers: the release, then the build in `BUILD`'s spelling.
+/// What `--version` answers: which code this is, and nothing else.
 ///
 /// # Invariant
 ///
-/// The build is part of the answer because `0.1.0` alone cannot tell two builds
-/// apart, and "same version" is the question a person asks when something acts
-/// strangely. One line, greppable, identical in all three programs.
+/// `BUILD` alone. `0.1.0` is a release number that cannot tell two builds of one
+/// release apart, so it is a second thing to read and a weaker answer than the
+/// commit it would sit next to. One identity, one line, every program.
 pub fn version_line() -> &'static str {
-    static LINE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    LINE.get_or_init(|| format!("{} ({BUILD})", env!("CARGO_PKG_VERSION")))
+    BUILD
 }
 
 pub mod channel;

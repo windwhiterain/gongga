@@ -9,12 +9,7 @@ fn main() {
         .ok()
         .filter(|v| !v.is_empty())
         .or_else(from_git)
-        .unwrap_or_else(|| {
-            format!(
-                "unknown+{}",
-                std::env::var("CARGO_PKG_VERSION").unwrap_or_default()
-            )
-        });
+        .unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=GONGGA_BUILD={build}");
     println!("cargo:rerun-if-env-changed=GONGGA_BUILD");
     // Watch the ref, not HEAD: HEAD reads `ref: refs/heads/x` and never changes.
