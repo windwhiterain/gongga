@@ -32,25 +32,31 @@ still reads only the rows it draws.
 Name, what kind of view it is, and its own `scroll`/`max_scroll`. There is no shared
 scroll: one session's history is not another's, which is the point of splitting.
 
-`last_height` is what makes a resize legible: `scroll` counts rows up from the newest
-row, so the same number means a different piece of text once the pane is taller.
+`scroll` counts rows up from the newest row, so the same number means a different
+piece of text once the view changes shape: `last_height` and `last_rows` are what the
+last frame drew, and `Pane::anchor` needs both to know which row the operator was
+actually reading.
 
 ## Pane::anchor
 
 `scroll` is a distance from the bottom, which is what makes "stay at the newest row"
 free: appending text moves the bottom, and a scroll of 0 follows it. The price is that
-the number means something else when the window changes height -- a pane that grew by
-four rows shows four *older* rows above the same bottom, and the paragraph the
-operator was reading slides down the screen while they watch. Reported as: scroll out
-of the bottom, make the terminal taller, and the position moves.
+the same number names a different row as soon as anything else changes -- a pane that
+grew by four rows shows four *older* rows above the same bottom, and a line arriving
+under a scrolled view pushes that view one row up. Both were reported from a real
+window: scroll out of the bottom, and the paragraph slides away while it is being
+read.
 
-So the height is remembered and the scroll is re-expressed when it changes, holding
-`start = total - scroll - height` still. Away from the bottom that keeps the top row
-where it was and puts the new rows *underneath* what is being read; at the bottom
-(`scroll == 0`) nothing is re-expressed, because there growing is exactly what shows
-more history. Content still arriving needs no counterpart: a new row at the end does
-not move a scrolled view at all, which is the whole reason the number is measured from
-the bottom.
+So the height *and* the row count are remembered, and the scroll is re-expressed on
+every frame, holding `start = rows - scroll - height` still. Away from the bottom that
+keeps the top row where it was and puts the window's new rows -- taller window, or new
+text -- underneath what is being read; at the bottom (`scroll == 0`) nothing is
+re-expressed, because there growing is exactly what shows more history.
+
+The two changes are one formula on purpose. Written as two, each compensating one
+case, the taller-window case and the arriving-row case disagree about `last_height`
+and the view drifts by the difference; as one, a frame at a new shape is a frame at a
+new shape.
 
 `Kind` is which part of SPEC's window a pane is: the session list, a full pane, a
 line group, or the command line. Only `Full` panes are laid out in the body's right
@@ -68,9 +74,10 @@ every event that changes what is drawn -- a status, and the measurement that put
 numbers in a pane's title -- so a pane rebuilt from zero would jump to its newest row
 every step, which is exactly what SPEC says a view scrolled away from the bottom must
 not do. The scroll bound comes with it, because it belongs to the same view; the frame
-re-clamps both against the height it actually has. `last_height` travels too: a
-session joining the split makes every other pane shorter, and that is a height change
-`Pane::anchor` has to see.
+re-clamps both against the height it actually has. `last_height` and `last_rows`
+travel too: a session joining the split makes every other pane shorter, and that is a
+shape change `Pane::anchor` has to see -- a fresh pane with a row count of zero would
+otherwise read as "the whole log is new" and jump to the top of it.
 
 ## Panes::pin and Panes::scroll_by
 

@@ -14,12 +14,14 @@ pub struct Pane {
     pub name: String,
     /// What kind of view this is: SPEC's three parts of the window.
     pub kind: Kind,
-    /// Rows scrolled up from this pane's newest line.
+    /// Rows scrolled up from this pane's newest row: zero is the bottom.
     pub scroll: usize,
     /// The scroll bound, written back by the renderer.
     pub max_scroll: usize,
-    /// The height this pane was last drawn at, so a change can be compensated.
+    /// The height and the row count the last frame drew, so the next one can hold
+    /// the rows that frame was reading.
     last_height: usize,
+    last_rows: usize,
 }
 
 /// Which part of the window a pane is.
@@ -55,23 +57,29 @@ impl Pane {
             scroll: 0,
             max_scroll: 0,
             last_height: 0,
+            last_rows: 0,
         }
     }
 
-    /// Keeps the rows on screen where they are when the pane changes height.
+    /// Keeps the rows on screen where they are when the window or the log changes.
     ///
     /// # Invariant
     ///
     /// A view at its newest row stays there: growing it is what shows more history.
-    /// A view scrolled away from the bottom keeps its *top* row, so a terminal that
-    /// got taller adds rows underneath what the operator was reading instead of
-    /// pushing the paragraph down the screen. See `docs/notes/tui-panes.md`.
-    pub fn anchor(&mut self, height: usize) {
-        if self.scroll > 0 && self.last_height != 0 && self.last_height != height {
-            // start = total - scroll - height, held constant across the change.
-            self.scroll = (self.scroll + self.last_height).saturating_sub(height);
+    /// A view scrolled away from the bottom keeps its *top* row, so a taller window
+    /// or a line that arrived adds rows underneath what the operator was reading
+    /// instead of sliding the paragraph away. See `docs/notes/tui-panes.md`.
+    pub fn anchor(&mut self, height: usize, rows: usize) {
+        if self.scroll > 0 && self.last_height != 0 {
+            // start = rows - scroll - height, held across the frame.
+            let start = self
+                .last_rows
+                .saturating_sub(self.scroll)
+                .saturating_sub(self.last_height);
+            self.scroll = rows.saturating_sub(height).saturating_sub(start);
         }
         self.last_height = height;
+        self.last_rows = rows;
     }
 
     /// Which rows this pane reads.
@@ -163,6 +171,7 @@ impl Panes {
                 // A split that gained a session resizes every pane: the next frame
                 // must see a resize, not a new pane.
                 pane.last_height = old.last_height;
+                pane.last_rows = old.last_rows;
             }
         }
         for pane in &panes {

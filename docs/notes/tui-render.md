@@ -101,11 +101,26 @@ SPEC's "show a go to bottom button", drawn on exactly the condition it names: th
 view is away from its newest row. A button that is always there says nothing about
 where the view is, so a frame at the bottom draws none.
 
-It sits on the last row of the view it belongs to, right-aligned, on a coloured
-strip so it reads as a control rather than as a line of the log. It says
-`↓ bottom · Shift+↓` when the width allows it; over a narrow session list -- whose
-columns are only as wide as its names -- it is the bare `↓`, one column, which lands
-on the list's spare column instead of on a name.
+It sits on the last row of the view it belongs to, right-aligned, painted black on
+cyan like every other mark this window draws, so it reads as a control rather than
+as a line of the log. It says `↓ bottom · Shift+↓` when the width allows it; over a
+narrow pane it is the bare `↓`, one column, which still fits beside the row's text.
+
+The last row of a scrolled view is the one it covers: the hint is drawn *over* that
+row rather than under the text, and the row is what a click there would otherwise
+have named.
+
+## bottom_hint, bottom_rect and bottom_at
+
+One rect, three readers. `bottom_hint` decides the text and the cell it covers,
+`draw_bottom` paints it, and `bottom_at` answers a click with it: a button the
+pointer cannot press is a picture of a button, and a click that lands on one used to
+fall through to the pane under it and set that session sticky -- so the way back to
+the newest row asked for a command instead.
+
+`bottom_at` is asked before `pane_at` in `Screen::session_at_row` for that reason,
+and it only answers for a pane that is actually scrolled: a hidden hint is not a click
+target.
 
 ## list_window
 
@@ -142,10 +157,9 @@ and every row of the list is painted the same way. The list used to colour a nam
 the mode that session would be drawn as elsewhere (white for `full`, dim for `line`,
 dark grey for the rest), which made one column look like three kinds of row.
 
-The sticky session is marked by `name_style`: the mark column `▸`, and the same
-highlighted patch its name gets in a pane header and at the start of a line group.
-It is one state -- what the page keys scroll and where a message goes -- and one
-look, wherever the name happens to be.
+The sticky session is marked by `name_style`: the mark column `▸`, and the fill
+running from the name to the list's right edge. It is one state -- what the page keys
+scroll and where a message goes -- and one look, wherever a row is filled for it.
 
 A name is bracketed -- `▸[main]` -- in the list, in a pane's title and at the start
 of a line group's row: one spelling in all three areas, so a name cannot be mistaken
@@ -154,11 +168,25 @@ for the first word of the events beside it. `bracketed` is that spelling, and
 
 ## name_style
 
-The look of a session's name: the sticky one is black on cyan, every other name is
-the area's own base style. The base differs on purpose -- a pane header is chrome and
-stays dim, a line group's row is the newest event and stays the text colour -- but the
-*state* does not: a header used to mark the sticky session with a dark grey patch
-while the list and the line rows used cyan, so the same thing looked like two.
+The mark itself: black on cyan. It is a *row*, not a word -- `fill_row` pads what is
+left of the area with it, because a patch that stops where the text stops reads as a
+highlighted word and made the selected session look like a rendering accident.
+
+The base style differs on purpose -- the list is dim chrome, a line group's row is
+the newest event -- but the state does not: the same session used to be a dark grey
+patch in a header and cyan in the list, so the same thing looked like two.
+
+A pane in the split is the exception, and it is a different mark rather than another
+colour: it is framed (see `pane_slots`), so its rows keep the look of the kind of
+event they hold. Filling a pane's rows would paint over the colours the operator
+reads them by.
+
+## fill_row
+
+`spans` plus the blank columns left in the area, in the mark's style. It is what
+makes a filled row reach the edge, and it only pads: the text of the row is what the
+caller built, so a `line` group's `[peer] …` and a list row's `▸[main]` are padded the
+same way without either knowing about the other.
 
 ## draw_lines and group_slots
 
@@ -199,6 +227,12 @@ The panes take the events area in announced order; each gets a header naming it 
 the share of rows its neighbours do not use. The header only appears for a window
 with a name, so the unsplit area -- whose one window is named nothing -- looks exactly
 like it did before splitting existed.
+
+A slot with a `frame` has its box drawn first, in the mark's colour and with no
+background: the border is the mark, so a frame never meets a filled row. The header is
+told whether the row is filled rather than which session is sticky, which is what lets
+one function paint a pane in the split and the fallback case of a pane too small to
+frame.
 
 The header carries everything SPEC gives a `full` pane -- the measurements and the
 session's own tuning -- read from the announcement as the command layer spelled them,
@@ -279,17 +313,25 @@ decides the log is broken.
 
 A header costs one row of the body's height, once, however many panes there are.
 
+The sticky pane's shape is one variant: its column gets a `frame` and its header and
+rows are laid out one column and one row inside it, so the box is drawn where the pane
+is rather than over it. Two columns and two rows of that pane are what the box costs;
+a column too small for a border keeps its rows and is marked by `name_style` instead,
+because a border around nothing is worse than a fill. `Slot::frame` is the box, and it
+is also what the hit test reads: a click on the border is a click on the session.
+
 ## pane_at
 
 The cell, not the row. With the panes side by side, one row of the window holds
 several of them, so a hit test that asked only "which pane covers row N" answered
 with the leftmost one for every click -- and the right-hand session's name could not
 be pressed at all. `covers` checks both coordinates, and a header is a cell like any
-other, so a click on a pane's title names that pane.
+other, so a click on a pane's title names that pane. A framed pane answers on its
+border too: the box is part of what was drawn for it.
 
-## draw_log
+## draw_rows
 
-Draws the log window.
+One pane's rows, and the bound and scroll it writes back.
 
 The log hands back exactly the rows that fit, already wrapped and borrowed from
 its own buffers, so this walks a screenful and nothing else. The scroll bound
@@ -301,6 +343,11 @@ wrap it again on its own, which double-spaces every full line.
 
 Clamping here as well as in the key handler covers the cases the handler cannot
 see: a window that just grew, or a line set that just shrank.
+
+`Pane::anchor` is asked before the window is read, and with the pane's own row
+count: the height alone cannot tell a shorter window from a longer log, and a
+scroll offset counted from the newest row means nothing without both. Skipping it
+is how a scrolled view came to follow the log instead of holding its top row.
 
 Borrowed, not cloned: the text lives in the log and the spans can point at it.
 Cloning every visible row was part of what made a long log slow.
@@ -380,11 +427,13 @@ The rule, measured on a frame: a `full` and a `line` session stay out of the lis
 the two `none` names are its first two rows in the announcement's order, and their
 cells carry one style between them.
 
-## the_sticky_session_is_marked_the_same_way_in_every_area
+## the_sticky_session_is_a_filled_row_or_a_frame_but_never_both
 
-One name read at two places in one window -- the line group's row and a pane's
-header -- and the same black-on-cyan cell at both, which is what `name_style` is
-for.
+One window, three places, three readings: a line group's first and last column both
+black on cyan (the fill reaches the edge), a list row's last column too (the row, not
+the text), and a `full` pane's four border corners in the mark's colour while the cell
+just inside its header keeps the background it was drawn with. The two marks are
+mutually exclusive by construction, and this is the frame that says so.
 
 ## the_quota_row_sits_above_the_command_line
 
@@ -401,6 +450,13 @@ visible without a second kind of row.
 A title wide enough to need several rows, drawn at a real pane's width: every field is
 on screen somewhere in the header, the body starts under the last header row, and a
 one-row body keeps its row with no header at all.
+
+## a_scrolled_view_holds_its_top_row_when_a_line_arrives
+
+Whole-path, the other half of the same invariant: draw, scroll up five rows, add two
+lines *under* the window, draw again, and the top row is the same text. Without
+`last_rows` in `Pane::anchor` the window follows the log, which is the direction SPEC
+forbids for a view that was scrolled away from the bottom.
 
 ## a_taller_window_keeps_what_a_scrolled_view_was_reading
 

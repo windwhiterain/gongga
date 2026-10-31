@@ -133,6 +133,8 @@ pub fn list_width(panes: &Panes) -> u16 {
 #[derive(Debug)]
 pub struct Slot {
     pub name: String,
+    /// The box a sticky pane is drawn in, and its rows start inside it.
+    pub frame: Option<Rect>,
     pub header: Option<Rect>,
     pub body: Rect,
     /// What the header says beside the name, and how many rows it needed.
@@ -199,22 +201,35 @@ pub fn pane_slots(area: Rect, panes: &Panes, sticky: Option<&str>) -> (Vec<Slot>
                 None => format!("{hidden} not shown"),
             });
         }
-        let rows = match area.height {
+        // Framed, not coloured: the box is the mark, and its rows keep their kind.
+        let frame = (Some(name.as_str()) == sticky && column.width > 2 && column.height > 2)
+            .then_some(column);
+        let inner = match frame {
+            Some(frame) => Rect {
+                x: frame.x + 1,
+                y: frame.y + 1,
+                width: frame.width - 2,
+                height: frame.height - 2,
+            },
+            None => column,
+        };
+        let rows = match inner.height {
             0 | 1 => 0,
-            height => (pane_header_rows(&name, note.as_deref(), column.width).len() as u16)
+            height => (pane_header_rows(&name, note.as_deref(), inner.width).len() as u16)
                 .min(height - 1)
                 .max(1),
         };
         slots.push(Slot {
             name,
+            frame,
             header: (rows > 0).then_some(Rect {
                 height: rows,
-                ..column
+                ..inner
             }),
             body: Rect {
-                y: column.y + rows,
-                height: column.height - rows,
-                ..column
+                y: inner.y + rows,
+                height: inner.height - rows,
+                ..inner
             },
             note,
         });
@@ -345,7 +360,8 @@ pub fn pane_at(slots: &[Slot], column: u16, row: u16) -> Option<&str> {
     slots
         .iter()
         .find(|slot| {
-            covers(&slot.body, column, row)
+            slot.frame.is_some_and(|frame| covers(&frame, column, row))
+                || covers(&slot.body, column, row)
                 || slot.header.is_some_and(|head| covers(&head, column, row))
         })
         .map(|slot| slot.name.as_str())
@@ -473,24 +489,27 @@ fn draw_list(f: &mut Frame, s: &Screen, area: Rect) {
         .map(|name| {
             // The mark is one column, so the names line up down the list.
             let here = Some(name.as_str()) == sticky;
-            let mark = if here { "\u{25b8}" } else { " " };
-            Line::from(Span::styled(
-                format!("{mark}{}", bracketed(name)),
-                name_style(here, dim()),
-            ))
+            let marker = if here { "\u{25b8}" } else { " " };
+            let style = name_style(here, dim());
+            let fill = here.then_some(style);
+            fill_row(
+                vec![Span::styled(format!("{marker}{}", bracketed(name)), style)],
+                area.width,
+                fill,
+            )
         })
         .collect();
     f.render_widget(Paragraph::new(rows), area);
 }
 
-/// How a session's name is painted, wherever it is drawn.
+/// How the sticky session is painted in every row that is filled for it.
 ///
 /// # Invariant
 ///
-/// The sticky session -- the one the keys scroll and a message goes to -- is
-/// marked the same way in the list, in a pane header and at the start of a line
-/// group; `base` is the area's own look for every other name. See
-/// `docs/notes/tui-render.md`.
+/// One mark -- black on cyan -- across the *whole* row, in the list, in a line
+/// group and on the way back to the newest row; `base` is the area's own look for
+/// every other row. A pane in the split is framed instead, so its rows keep the
+/// look of the kind of event they hold. See `docs/notes/tui-render.md`.
 fn name_style(sticky: bool, base: Style) -> Style {
     if sticky {
         Style::default().fg(Color::Black).bg(Color::Cyan)
@@ -523,14 +542,14 @@ fn list_window(
     (start, start + height)
 }
 
-/// The way back to the newest row, over the last row of something scrolled up.
+/// The way back to the newest row: its text and the one row it covers.
 ///
 /// # Invariant
 ///
-/// SPEC asks for it exactly when the view is away from its bottom: a button that
-/// is always there says nothing about where the view is. See
-/// `docs/notes/tui-render.md`.
-fn draw_bottom(f: &mut Frame, area: Rect) {
+/// One rect for the frame and for the click, so a pointer that lands on the hint
+/// gets the hint rather than the session drawn under it. A view too narrow for even
+/// the arrow has no hint, and then nothing to click. See `docs/notes/tui-render.md`.
+fn bottom_hint(area: Rect) -> Option<(&'static str, Rect)> {
     const FULL: &str = " \u{2193} bottom \u{00b7} Shift+\u{2193} ";
     // A narrow view gets the bare arrow: one column fits the list's spare one.
     const SHORT: &str = "\u{2193}";
@@ -541,7 +560,7 @@ fn draw_bottom(f: &mut Frame, area: Rect) {
     };
     let width = UnicodeWidthStr::width(hint) as u16;
     if area.height == 0 || area.width < width {
-        return;
+        return None;
     }
     let rect = Rect {
         x: area.right() - width,
@@ -549,14 +568,54 @@ fn draw_bottom(f: &mut Frame, area: Rect) {
         width,
         height: 1,
     };
+    Some((hint, rect))
+}
+
+/// The rect the hint covers in `area`, for the pointer.
+pub fn bottom_rect(area: Rect) -> Option<Rect> {
+    bottom_hint(area).map(|(_, rect)| rect)
+}
+
+/// The way back to the newest row, over the last row of something scrolled up.
+///
+/// # Invariant
+///
+/// SPEC asks for it exactly when the view is away from its bottom: a button that
+/// is always there says nothing about where the view is. See
+/// `docs/notes/tui-render.md`.
+fn draw_bottom(f: &mut Frame, area: Rect) {
+    let Some((hint, rect)) = bottom_hint(area) else {
+        return;
+    };
     f.render_widget(Clear, rect);
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
             hint,
-            Style::default().fg(Color::Black).bg(Color::Cyan),
+            name_style(true, Style::default()),
         ))),
         rect,
     );
+}
+
+/// The pane whose hint covers this cell, for a click.
+///
+/// # Invariant
+///
+/// Asked before the pane it is drawn on: the way back to the newest row must not
+/// become a click on the session that holds it.
+pub fn bottom_at(slots: &[Slot], panes: &Panes, column: u16, row: u16) -> Option<String> {
+    for slot in slots {
+        let scrolled = panes.get(&slot.name).is_some_and(|pane| pane.scroll > 0);
+        if !scrolled {
+            continue;
+        }
+        if let Some(rect) = bottom_rect(slot.body) {
+            if covers(&rect, column, row) {
+                return Some(slot.name.clone());
+            }
+        }
+    }
+    None
 }
 
 /// The line groups: one line per event, for the sessions drawn that way.
@@ -592,7 +651,8 @@ fn draw_headline(f: &mut Frame, s: &mut Screen, name: &str, area: Rect, sticky: 
     if area.height == 0 || area.width == 0 {
         return;
     }
-    let style = name_style(Some(name) == sticky, Style::default().fg(Color::White));
+    let selected = Some(name) == sticky;
+    let style = name_style(selected, Style::default().fg(Color::White));
     let label = bracketed(name);
     let mut spans = vec![Span::styled(format!("{label} "), style)];
     // Cut to what is left beside the name, so a row is one line and the name never
@@ -601,9 +661,34 @@ fn draw_headline(f: &mut Frame, s: &mut Screen, name: &str, area: Rect, sticky: 
         .saturating_sub(UnicodeWidthStr::width(label.as_str()) + 1)
         .max(1);
     if let Some((kind, text)) = s.panes.headline(View::Window(name), room) {
-        spans.push(Span::styled(text, style_for(kind)));
+        // A selected row is one mark across its width: the event's kind is not
+        // what an operator is looking for in it.
+        let event = if selected { style } else { style_for(kind) };
+        spans.push(Span::styled(text, event));
     }
-    f.render_widget(Paragraph::new(Line::from(spans)), area);
+    let row = fill_row(spans, area.width, selected.then_some(style));
+    f.render_widget(Paragraph::new(row), area);
+}
+
+/// `spans` as one row, with `fill` painting the columns left of `width`.
+///
+/// # Invariant
+///
+/// A filled row paints every column of its area: a strip that stops where the text
+/// stops reads as a highlighted word, not as the row that is selected.
+fn fill_row(mut spans: Vec<Span<'static>>, width: u16, fill: Option<Style>) -> Line<'static> {
+    let Some(fill) = fill else {
+        return Line::from(spans);
+    };
+    let used: usize = spans
+        .iter()
+        .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+        .sum();
+    let left = width as usize - used.min(width as usize);
+    if left > 0 {
+        spans.push(Span::styled(" ".repeat(left), fill));
+    }
+    Line::from(spans)
 }
 
 /// Where each line group goes: its header, then its rows.
@@ -638,6 +723,7 @@ pub fn group_slots(area: Rect, names: &[String], sticky: Option<&str>) -> (Vec<S
         }
         slots.push(Slot {
             name: name.clone(),
+            frame: None,
             header: (head > 0).then_some(Rect {
                 x: area.x,
                 y,
@@ -661,17 +747,17 @@ pub fn group_slots(area: Rect, names: &[String], sticky: Option<&str>) -> (Vec<S
 ///
 /// # Invariant
 ///
-/// One function for the panes and the line groups, and the name is painted by
-/// [`name_style`]: a session drawn `full` and the same session drawn `line` are
-/// not told apart by how they are named. See `docs/notes/tui-render.md`.
+/// The one place a pane's header is drawn, so a `full` session reads the same
+/// whatever else the frame holds; `selected` is [`name_style`]'s fill, which the
+/// caller turns off for a pane its frame already marks. See `docs/notes/tui-render.md`.
 fn draw_group_header_note(
     f: &mut Frame,
     name: &str,
     area: Rect,
-    sticky: Option<&str>,
+    selected: bool,
     note: Option<&str>,
 ) {
-    let style = name_style(Some(name) == sticky, dim());
+    let style = name_style(selected, dim());
     let rows: Vec<Line> = pane_header_rows(name, note, area.width)
         .into_iter()
         .map(|row| Line::from(Span::styled(row, style)))
@@ -707,9 +793,19 @@ fn draw_panes(f: &mut Frame, s: &mut Screen, area: Rect) {
     let sticky = s.sticky_session.clone();
     let (slots, _hidden) = pane_slots(area, &s.panes, sticky.as_deref());
     for slot in &slots {
+        if let Some(frame) = slot.frame {
+            f.render_widget(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Cyan)),
+                frame,
+            );
+        }
         if let Some(header) = slot.header {
             let note = slot.note.as_deref();
-            draw_group_header_note(f, &slot.name, header, sticky.as_deref(), note);
+            // A framed pane is marked by its box; the fill is the fallback.
+            let filled = slot.frame.is_none() && Some(slot.name.as_str()) == sticky.as_deref();
+            draw_group_header_note(f, &slot.name, header, filled, note);
         }
         draw_rows(f, s, &slot.name, slot.body);
     }
@@ -728,16 +824,18 @@ fn draw_rows(f: &mut Frame, s: &mut Screen, name: &str, area: Rect) {
     if area.height == 0 {
         return;
     }
+    // One column short: a full-width row would otherwise be wrapped again.
+    let width = area.width.saturating_sub(1).max(1) as usize;
+    // The pane's row count: an offset cannot say a line arrived under it.
+    let rows = s.panes.rows(View::Window(name), width);
     let Some(pane) = s.panes.get_mut(name) else {
         return;
     };
     // Before the window is read: a taller pane keeps the rows it was showing.
-    pane.anchor(area.height as usize);
+    pane.anchor(area.height as usize, rows);
     let scroll = pane.scroll;
     let name = pane.name.clone();
     let view = View::Window(&name);
-    // One column short: a full-width row would otherwise be wrapped again.
-    let width = area.width.saturating_sub(1).max(1) as usize;
     let window = s.panes.window(view, width, area.height as usize, scroll);
     let max_scroll = window.max_scroll;
     // Cloned: the rows a frame draws cannot outlive the log they came from.
@@ -1129,9 +1227,17 @@ mod tests {
         assert!(panes.width > 0);
     }
 
-    /// The mark for the sticky session is one mark, wherever the name is drawn.
+    /// The sticky session's mark: a filled row where there is no frame, a box where
+    /// the session has a pane of its own.
+    ///
+    /// # Invariant
+    ///
+    /// A filled row paints every column of its area -- a strip that stops at the
+    /// text reads as a highlighted word -- and a framed pane paints none of its
+    /// rows: the two marks are never on one session at once.
     #[test]
-    fn the_sticky_session_is_marked_the_same_way_in_every_area() {
+    fn the_sticky_session_is_a_filled_row_or_a_frame_but_never_both() {
+        // A line group's row: the name, its newest event, and the fill across it.
         let mut screen = split_screen();
         screen.panes.line("third", LineKind::Assistant, "an event");
         screen.sticky_session = Some("third".to_string());
@@ -1141,15 +1247,51 @@ mod tests {
         })
         .unwrap();
         let buf = term.backend().buffer().clone();
-        // The line group's row: the name is the first span of its newest event.
         let groups = parts(60, 14, 1, true, 1)[2];
-        let mark = buf[(groups.x, groups.y)].clone();
-        assert_eq!(mark.fg, Color::Black, "{mark:?}");
-        assert_eq!(mark.bg, Color::Cyan, "{mark:?}");
+        for column in [groups.x, groups.x + 1, groups.right() - 1] {
+            let cell = buf[(column, groups.y)].clone();
+            assert_eq!(cell.fg, Color::Black, "{cell:?} at column {column}");
+            assert_eq!(cell.bg, Color::Cyan, "{cell:?} at column {column}");
+        }
 
-        // A pane headed with the same name is marked with the same pair.
+        // A name in the list: one row, filled to the list's own edge.
+        let mut screen = screen_with(&[]);
+        screen.panes.layout(&Layout {
+            listed: vec![
+                Listed {
+                    name: "third".to_string(),
+                    status: "idle".to_string(),
+                    title: String::new(),
+                },
+                Listed {
+                    name: "fourth".to_string(),
+                    status: "idle".to_string(),
+                    title: String::new(),
+                },
+            ],
+            none: vec!["third".to_string(), "fourth".to_string()],
+            full: Vec::new(),
+            line: Vec::new(),
+            command: "cmd".to_string(),
+            quota: None,
+        });
+        screen.sticky_session = Some("third".to_string());
+        let mut term = Terminal::new(TestBackend::new(40, 8)).unwrap();
+        term.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+        let list = body(parts(40, 8, 1, true, 0)[1], &screen.panes).0;
+        assert_eq!(read(&buf, list.x, list.width, list.y), "\u{25b8}[third]");
+        let filled = buf[(list.right() - 1, list.y)].clone();
+        assert_eq!(filled.bg, Color::Cyan, "the fill stops short: {filled:?}");
+        let quiet = buf[(list.right() - 1, list.y + 1)].clone();
+        assert_ne!(quiet.bg, Color::Cyan, "the row below is not the mark");
+
+        // A session drawn `full` is framed: the box is its mark, and its rows are
+        // painted like any other pane's.
         let mut screen = split_screen();
-        screen.sticky_session = Some("main".to_string());
         let mut term = Terminal::new(TestBackend::new(60, 14)).unwrap();
         term.draw(|f| {
             draw(f, &mut screen);
@@ -1159,11 +1301,27 @@ mod tests {
         let body = parts(60, 14, 1, true, 1)[1];
         let (_, panes) = crate::render::body(body, &screen.panes);
         let (slots, _) = pane_slots(panes, &screen.panes, screen.sticky_session.as_deref());
-        let head = slots[0].header.expect("a header on the column");
-        // One column in: the header opens with the space before the name.
+        let frame = slots[0].frame.expect("a frame on the sticky column");
+        for (x, y) in [
+            (frame.x, frame.y),
+            (frame.right() - 1, frame.y),
+            (frame.x, frame.bottom() - 1),
+            (frame.right() - 1, frame.bottom() - 1),
+        ] {
+            let cell = buf[(x, y)].clone();
+            assert_eq!(cell.fg, Color::Cyan, "the box at {x},{y}: {cell:?}");
+        }
+        let head = slots[0].header.expect("a header inside the frame");
         let cell = buf[(head.x + 1, head.y)].clone();
-        assert_eq!(cell.fg, mark.fg, "the same mark in a pane's header");
-        assert_eq!(cell.bg, mark.bg, "the same mark in a pane's header");
+        assert_ne!(
+            cell.bg,
+            Color::Cyan,
+            "a framed pane paints no row: {cell:?}"
+        );
+        // And one session is sticky, not every session: the pane beside it is plain.
+        let peer = slots[1].header.expect("the other header");
+        let cell = buf[(peer.x + 1, peer.y)].clone();
+        assert_ne!(cell.bg, Color::Cyan, "two marks on two sessions: {cell:?}");
     }
 
     /// The list shows the rows around the sticky session -- the only position.
@@ -1616,11 +1774,16 @@ mod tests {
         // columns because the operator is reading it.
         assert_eq!(slots[0].name, "main");
         assert_eq!(slots[1].name, "peer");
-        assert_eq!(slots[0].body.x, panes.x);
-        assert_eq!(slots[1].body.x, slots[0].body.x + slots[0].body.width);
+        // The framed pane is the sticky one; its rows start one column in.
+        let frame = slots[0].frame.expect("a frame on the sticky column");
+        assert_eq!(frame.x, panes.x);
+        assert_eq!(slots[0].body.x, frame.x + 1, "{slots:?}");
+        assert_eq!(slots[0].body.width, frame.width - 2, "{slots:?}");
+        assert_eq!(slots[1].body.x, frame.right());
+        assert!(slots[1].frame.is_none(), "one frame, on the sticky pane");
         assert!(
-            slots[0].body.width > slots[1].body.width,
-            "the sticky pane is the wider one: {slots:?}"
+            frame.width > slots[1].body.width,
+            "the sticky column is the wider one: {slots:?}"
         );
         let head = slots[0].header.expect("a header on the column");
         assert_eq!(read(&buf, head.x, head.width, head.y), " [main]");
@@ -2041,6 +2204,64 @@ mod tests {
             Some("L39"),
             "the newest row is still the last row"
         );
+    }
+
+    /// A view scrolled off the bottom holds its top row when a line arrives.
+    ///
+    /// # Invariant
+    ///
+    /// SPEC: a view scrolled from the bottom does not follow the log. The offset is
+    /// counted from the newest row, so a row that arrived under it has to move the
+    /// window with it -- otherwise the paragraph slides up and out of sight.
+    #[test]
+    fn a_scrolled_view_holds_its_top_row_when_a_line_arrives() {
+        let lines: Vec<String> = (0..40).map(|i| format!("L{i:02}")).collect();
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let mut screen = screen_with(&refs);
+        let mut term = Terminal::new(TestBackend::new(20, 8)).unwrap();
+        // One frame first: the scroll bound is what the renderer writes back.
+        term.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
+        let area = parts(20, 8, 1, false, 0)[1];
+        // The pane's first row is its header, so its text starts one below.
+        fn top(buf: &Buffer, screen: &Screen, area: Rect) -> String {
+            pane_text(buf, screen, area.y + 1)
+        }
+
+        screen.panes.scroll_by("", 5);
+        term.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
+        let reading = top(&term.backend().buffer().clone(), &screen, area);
+        assert_eq!(reading, "L30", "five rows up from the bottom of 40 rows");
+
+        // Two rows arrive under the window: it stays on what is being read.
+        screen.panes.line("", LineKind::System, "L40");
+        screen.panes.line("", LineKind::System, "L41");
+        term.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
+        assert_eq!(
+            top(&term.backend().buffer().clone(), &screen, area),
+            reading,
+            "the view followed the log instead of holding its top row"
+        );
+
+        // Shift+Down is what brings it back, and then it follows again.
+        screen.panes.pin("");
+        term.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
+        let drawn = term.backend().buffer().clone();
+        let rows = (0..area.height)
+            .map(|offset| pane_text(&drawn, &screen, area.y + offset))
+            .collect::<Vec<String>>();
+        assert_eq!(rows.last().map(String::as_str), Some("L41"), "{rows:?}");
     }
 
     /// A long message wraps inside the box: text that cannot be seen cannot be edited.

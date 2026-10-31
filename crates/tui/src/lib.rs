@@ -102,6 +102,8 @@ pub enum Part {
     Pane,
     /// One session's line group.
     Line,
+    /// The way back to the newest row, drawn over a pane's last row.
+    Bottom,
 }
 
 /// What a pointer landed on: the session it names, and which part it hit.
@@ -196,7 +198,15 @@ impl Screen {
                 part: Part::List,
             });
         }
-        if let Some(name) = render::pane_at(&self.slots(width, height), column, row) {
+        let slots = self.slots(width, height);
+        // The hint is drawn over the pane's last row, so it answers before it.
+        if let Some(name) = render::bottom_at(&slots, &self.panes, column, row) {
+            return Some(Hit {
+                name,
+                part: Part::Bottom,
+            });
+        }
+        if let Some(name) = render::pane_at(&slots, column, row) {
             return Some(Hit {
                 name: name.to_string(),
                 part: Part::Pane,
@@ -716,8 +726,13 @@ impl Tui {
             self.dirty = true;
             return;
         }
-        // Again on the sticky session: walk its mode.
         self.dirty = true;
+        // The way back to the newest row is not a click on the session under it.
+        if hit.part == Part::Bottom {
+            self.screen.panes.pin(&hit.name);
+            return;
+        }
+        // Again on the sticky session: walk its mode.
         self.clicked = Some(
             if self.screen.sticky_session.as_deref() == Some(hit.name.as_str()) {
                 let drawn = self.screen.panes.get(&hit.name).map(|pane| pane.kind);
@@ -1858,6 +1873,50 @@ mod tests {
         // Shift+Down is "back to the newest line", whatever the offset was.
         h.screen.scroll_to_bottom();
         assert_eq!(h.pane_scroll("main"), 0);
+    }
+
+    /// The way back to the newest row answers the click drawn over it.
+    ///
+    /// # Invariant
+    ///
+    /// The hint sits on a pane's last row, so a click there pins that pane: a
+    /// click that set the session under the hint is the bug this ordering exists
+    /// to prevent. See `docs/notes/tui-lib.md`.
+    #[test]
+    fn a_click_on_the_way_back_to_the_bottom_pins_the_view() {
+        let mut h = Headless::new();
+        for i in 0..40 {
+            h.screen
+                .panes
+                .line("main", LineKind::System, format!("L{i}"));
+        }
+        h.screen.sticky_session = Some("main".to_string());
+        let (width, height) = (40u16, 12u16);
+        // The bound the renderer works out for a pane of this size, then the scroll.
+        h.measure("main", 6);
+        h.screen.scroll_by(3);
+        assert_eq!(h.pane_scroll("main"), 3);
+        let slot = h
+            .screen
+            .slots(width, height)
+            .into_iter()
+            .find(|slot| slot.name == "main")
+            .expect("a pane named main");
+        let hint = crate::render::bottom_rect(slot.body).expect("a hint on a scrolled pane");
+        assert_eq!(
+            h.screen
+                .session_at_row(width, height, hint.x, hint.y)
+                .map(|hit| hit.part),
+            Some(Part::Bottom),
+            "the hint answers before the session drawn under it"
+        );
+        // One row above it is the pane itself, whichever session that is.
+        assert_eq!(
+            h.screen
+                .session_at_row(width, height, hint.x, hint.y - 1)
+                .map(|hit| hit.part),
+            Some(Part::Pane)
+        );
     }
 
     /// With no sticky session there is nothing for a page to scroll.

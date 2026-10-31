@@ -75,8 +75,14 @@ a guess at which pane the operator meant.
 ## Screen::session_at_row
 
 What a pointer landed on, as a `Hit`: the session it names and which part it hit --
-the list, a pane, or a line group. The three have different scroll behaviour, so the
-part is part of the answer rather than something the caller re-derives.
+the list, a pane, a line group, or the way back to a pane's newest row. They have
+different behaviour, so the part is part of the answer rather than something the
+caller re-derives.
+
+The order is the drawing order: the list, then the go-to-bottom hint, then the panes,
+then the line groups. The hint is drawn over the last row of the pane it belongs to,
+so asking the pane first is how a click on the button became a click on the session --
+which asked the command layer for a `set_sticky` nobody pressed.
 
 ## handle_mouse
 
@@ -87,7 +93,9 @@ session whatever the pointer did.
 
 A click is a different thing: SPEC makes it "set the sticky session", so the click is
 turned into the command that does that (`/set_sticky --name session --value <name>`)
-and handed to the loop as a submitted line. The rule stays in the command layer, and
+and handed to the loop as a submitted line -- except on the go-to-bottom hint, which
+is not the session: it pins that pane to its newest row (`Panes::pin`) and asks the
+command layer for nothing. The rule stays in the command layer, and
 the window keeps one path for everything the operator asks for. The leading `/` is
 what makes it a command: a line without one is prose, and prose goes to the agent.
 
