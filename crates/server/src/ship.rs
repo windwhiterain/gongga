@@ -1042,7 +1042,7 @@ mod tests {
     }
 
     /// A commit the pin does not name changes nothing: a home installs the pin,
-    /// so the reader's fast-forward is theirs to keep.
+    /// so the reader's fast-forward stays theirs.
     #[test]
     fn a_commit_ahead_of_the_pin_installs_nothing() {
         let d = tempfile::tempdir().unwrap();
