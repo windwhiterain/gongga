@@ -130,7 +130,7 @@ pub fn body(area: Rect, panes: &Panes) -> (Rect, Rect) {
     (list, panes)
 }
 
-/// Columns the session list needs for its longest name, mark and air included.
+/// Columns the session list needs for its longest name, brackets and air included.
 pub fn list_width(panes: &Panes) -> u16 {
     let longest = panes
         .list_names()
@@ -138,8 +138,8 @@ pub fn list_width(panes: &Panes) -> u16 {
         .map(|name| UnicodeWidthStr::width(name.as_str()))
         .max()
         .unwrap_or(0);
-    // The mark on the left, the brackets around the name, and one column of air.
-    (longest as u16 + 4).max(LIST_MIN)
+    // The brackets around the name, and one column of air.
+    (longest as u16 + 3).max(LIST_MIN)
 }
 
 /// Where one pane is drawn: its header, if it has one, and the rows below it.
@@ -159,13 +159,13 @@ pub fn bracketed(name: &str) -> String {
     format!("[{name}]")
 }
 
-/// Rows the windows get, with the sticky session taking what an even share leaves.
+/// The windows' columns, with the sticky session taking what an even share leaves.
 ///
 /// # Invariant
 ///
-/// A band that cannot get a row is not drawn, and `hidden` counts them: a window
+/// A column that cannot get a cell is not drawn, and `hidden` counts them: a window
 /// nobody can read is worse than one that says it is not on screen. A header takes
-/// the rows its text wraps to, but never the band's last one.
+/// the rows its text wraps to, but never the column's last one.
 pub fn pane_slots(area: Rect, panes: &Panes, sticky: Option<&str>) -> (Vec<Slot>, usize) {
     // Only the sessions drawn beside the list: the command line has its own row.
     let events: Vec<&Pane> = panes.of_kind(crate::panes::Kind::Shown).collect();
@@ -173,29 +173,29 @@ pub fn pane_slots(area: Rect, panes: &Panes, sticky: Option<&str>) -> (Vec<Slot>
         return (Vec::new(), 0);
     }
     let n = events.len() as u16;
-    // SPEC: the windows stack, so the height is what is shared out.
-    let per = (area.height / n).max(1);
-    let extra = area.height.saturating_sub(per * n);
+    // SPEC: the windows are a horizontal split, so the width is what is shared.
+    let per = (area.width / n).max(1);
+    let extra = area.width.saturating_sub(per * n);
 
     let mut slots: Vec<Slot> = Vec::with_capacity(events.len());
-    let mut y = area.y;
+    let mut x = area.x;
     let mut hidden = 0usize;
     for pane in &events {
         let share = per + u16::from(Some(pane.name.as_str()) == sticky) * extra;
-        let left = area.bottom().saturating_sub(y);
-        let height = share.min(left);
-        if height == 0 {
+        let left = area.right().saturating_sub(x);
+        let width = share.min(left);
+        if width == 0 {
             hidden += 1;
             continue;
         }
-        let band = Rect {
-            x: area.x,
-            y,
-            width: area.width,
-            height,
+        let column = Rect {
+            x,
+            y: area.y,
+            width,
+            height: area.height,
         };
-        y += height;
-        slots.push(slot_of(panes, &pane.name, band, sticky));
+        x += width;
+        slots.push(slot_of(panes, &pane.name, column, sticky));
     }
     // The last drawn window says when the division hid one: a session whose
     // window is missing has to be explained somewhere.
@@ -210,11 +210,11 @@ pub fn pane_slots(area: Rect, panes: &Panes, sticky: Option<&str>) -> (Vec<Slot>
     (slots, hidden)
 }
 
-/// One session's band: its frame when it is sticky, its header and its rows.
-fn slot_of(panes: &Panes, name: &str, band: Rect, sticky: Option<&str>) -> Slot {
+/// One session's column: its frame when it is sticky, its header and its rows.
+fn slot_of(panes: &Panes, name: &str, column: Rect, sticky: Option<&str>) -> Slot {
     let note = pane_note(panes, name);
     // Framed, not coloured: the box is the mark, and its rows keep their kind.
-    let frame = (Some(name) == sticky && band.width > 2 && band.height > 2).then_some(band);
+    let frame = (Some(name) == sticky && column.width > 2 && column.height > 2).then_some(column);
     let inner = match frame {
         Some(frame) => Rect {
             x: frame.x + 1,
@@ -222,8 +222,9 @@ fn slot_of(panes: &Panes, name: &str, band: Rect, sticky: Option<&str>) -> Slot 
             width: frame.width - 2,
             height: frame.height - 2,
         },
-        None => band,
+        None => column,
     };
+    // A header's own height needs the width it will be drawn at, so it comes after.
     let rows = match inner.height {
         0 | 1 => 0,
         height => (pane_header_rows(name, note.as_deref(), inner.width).len() as u16)
@@ -478,13 +479,14 @@ fn draw_header(f: &mut Frame, s: &Screen, area: Rect) {
     );
 }
 
-/// The session list: one row per session, shown or not.
+/// The session list: one row per session, bright when it has a window.
 ///
 /// # Invariant
 ///
-/// Every name is here, so the list is the whole answer to "which sessions are
-/// there", and every row is painted the same way: what a click does is not
-/// something a row's colour says. See `docs/notes/tui-render.md`.
+/// A name is bright exactly when that session is shown beside the list: brightness
+/// is the same fact the right-hand split states, said once more where it is
+/// clicked. The sticky session is *not* marked here -- it is necessarily shown, and
+/// the frame around its window is its mark. See `docs/notes/tui-render.md`.
 fn draw_list(f: &mut Frame, s: &Screen, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -498,29 +500,27 @@ fn draw_list(f: &mut Frame, s: &Screen, area: Rect) {
         .unwrap_or_default()
         .iter()
         .map(|name| {
-            // The mark is one column, so the names line up down the list.
-            let here = Some(name.as_str()) == sticky;
-            let marker = if here { "\u{25b8}" } else { " " };
-            let style = name_style(here, dim());
-            let fill = here.then_some(style);
-            fill_row(
-                vec![Span::styled(format!("{marker}{}", bracketed(name)), style)],
-                area.width,
-                fill,
-            )
+            let shown = s
+                .panes
+                .get(name)
+                .is_some_and(|pane| pane.kind == crate::panes::Kind::Shown);
+            Line::from(Span::styled(
+                bracketed(name),
+                if shown { bright() } else { dim() },
+            ))
         })
         .collect();
     f.render_widget(Paragraph::new(rows), area);
 }
 
-/// How the sticky session is painted in every row that is filled for it.
+/// How the sticky session is painted where a row is filled for it.
 ///
 /// # Invariant
 ///
-/// One mark -- black on cyan -- across the *whole* row, in the list and on the way
-/// back to the newest row; `base` is the area's own look for
-/// every other row. A pane in the split is framed instead, so its rows keep the
-/// look of the kind of event they hold. See `docs/notes/tui-render.md`.
+/// One mark -- black on cyan -- on the way back to the newest row; `base` is the
+/// area's own look for every other row. A window in the split is framed instead, so
+/// its rows keep the look of the kind of event they hold, and the list says what is
+/// shown rather than what is sticky. See `docs/notes/tui-render.md`.
 fn name_style(sticky: bool, base: Style) -> Style {
     if sticky {
         Style::default().fg(Color::Black).bg(Color::Cyan)
@@ -627,27 +627,6 @@ pub fn bottom_at(slots: &[Slot], panes: &Panes, column: u16, row: u16) -> Option
         }
     }
     None
-}
-
-/// `spans` as one row, with `fill` painting the columns left of `width`.
-///
-/// # Invariant
-///
-/// A filled row paints every column of its area: a strip that stops where the text
-/// stops reads as a highlighted word, not as the row that is selected.
-fn fill_row(mut spans: Vec<Span<'static>>, width: u16, fill: Option<Style>) -> Line<'static> {
-    let Some(fill) = fill else {
-        return Line::from(spans);
-    };
-    let used: usize = spans
-        .iter()
-        .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
-        .sum();
-    let left = width as usize - used.min(width as usize);
-    if left > 0 {
-        spans.push(Span::styled(" ".repeat(left), fill));
-    }
-    Line::from(spans)
 }
 
 /// A pane's header: the name, then whatever the title carries beside it.
@@ -946,6 +925,11 @@ fn dim() -> Style {
     Style::default().fg(Color::DarkGray)
 }
 
+/// A list row whose session has a window beside it: the list's own two looks.
+fn bright() -> Style {
+    Style::default().fg(Color::White)
+}
+
 /// The look of each kind of line.
 ///
 /// # Invariant
@@ -1042,11 +1026,11 @@ mod tests {
         }
     }
 
-    /// A shown session is a band: its header on top, its events underneath.
+    /// A shown session is a column: its header on top, its events underneath.
     ///
     /// # Invariant
     ///
-    /// The band is what the click toggles, so the name and its figures are in the
+    /// The column is what the click toggles, so the name and figures are in the
     /// area a held pointer is over, not only in the list.
     #[test]
     fn a_shown_session_is_a_header_over_its_events() {
@@ -1080,7 +1064,7 @@ mod tests {
         let buf = term.backend().buffer().clone();
         let panes = body(parts(width, height, 1, true)[1], &screen.panes).1;
         let (slots, hidden) = pane_slots(panes, &screen.panes, None);
-        assert_eq!(hidden, 0, "one session, one band");
+        assert_eq!(hidden, 0, "one session, one column");
         assert_eq!(slots.len(), 1);
         // The header is the announcement's figures; the events start under it.
         assert_eq!(
@@ -1095,9 +1079,15 @@ mod tests {
         );
     }
 
-    /// Bands stack: neither gets rows the other already used.
+    /// Columns sit side by side: neither takes cells the other already used.
+    ///
+    /// # Invariant
+    ///
+    /// The windows are a horizontal split, so the width is what is divided and
+    /// every column is the body's full height. A flat `width / n` that gave the
+    /// later columns cells the earlier ones had used is what this measures.
     #[test]
-    fn two_windows_share_the_rows_without_gaps() {
+    fn two_windows_share_the_columns_without_gaps() {
         let names = vec!["a".to_string(), "b".to_string()];
         let area = Rect::new(0, 0, 40, 10);
         let mut panes = Panes::new();
@@ -1110,28 +1100,25 @@ mod tests {
         let (slots, hidden) = pane_slots(area, &panes, None);
         assert_eq!(hidden, 0);
         assert_eq!(slots.len(), 2);
-        // Back to back, full width each: the windows are a vertical split.
-        assert_eq!(slots[0].body.bottom(), slots[1].header.unwrap().y);
+        // Back to back across the body: the second starts where the first ends.
+        assert_eq!(slots[0].body.right(), slots[1].header.unwrap().x);
         for slot in &slots {
-            assert_eq!(slot.body.width, area.width, "{slots:?}");
+            assert_eq!(slot.body.height, area.height - 1, "{slots:?}");
         }
-        let used = slots
-            .iter()
-            .map(|slot| slot.header.map(|h| h.height).unwrap_or(0) + slot.body.height)
-            .sum::<u16>();
-        assert_eq!(used, area.height, "every row is somebody's");
+        let used: u16 = slots.iter().map(|slot| slot.body.width).sum();
+        assert_eq!(used, area.width, "every column is somebody's");
         assert!(slots.iter().all(|slot| slot.body.height > 0), "{slots:?}");
     }
 
-    /// SPEC's session list: every name, one per row, every row painted the same way.
+    /// SPEC's session list: every name, one per row, bright when it has a window.
     ///
     /// # Invariant
     ///
-    /// A shown session is a row here too -- the list is where it is clicked again
-    /// to hide it -- and the rows do not encode whether its window is drawn: a
-    /// colour that meant "shown" would be a state an operator reads twice.
+    /// Two looks and one question: a shown session's row is bright, a hidden one's
+    /// is dim, and nothing in the list says which session is sticky -- that is the
+    /// frame around its window.
     #[test]
-    fn the_list_is_every_session_and_none_of_them_is_marked_shown() {
+    fn the_list_is_bright_for_the_sessions_it_draws_beside_it() {
         let mut screen = screen_with(&[]);
         let listed = |name: &str, usage: &str| Listed {
             name: name.to_string(),
@@ -1145,10 +1132,11 @@ mod tests {
                 listed("third", ""),
                 listed("fourth", ""),
             ],
-            shown: vec!["main".to_string()],
+            shown: vec!["main".to_string(), "third".to_string()],
             command: "cmd".to_string(),
             quota: None,
         });
+        screen.sticky_session = Some("third".to_string());
         let mut term = Terminal::new(TestBackend::new(60, 12)).unwrap();
         term.draw(|f| {
             draw(f, &mut screen);
@@ -1163,69 +1151,41 @@ mod tests {
             .collect();
         assert_eq!(
             &rows[..4],
-            [" [main]", " [peer]", " [third]", " [fourth]"],
+            ["[main]", "[peer]", "[third]", "[fourth]"],
             "{rows:?}"
         );
-        // Every name in the list has one look: nothing says which one is drawn.
-        let paints: Vec<Style> = (0..4)
-            .map(|offset| buf[(list.x, list.y + offset)].style())
+        // Bright for the shown ones, dim for the rest; the sticky one is not
+        // marked here -- its window's frame is its mark.
+        let looks: Vec<Color> = (0..4)
+            .map(|offset| buf[(list.x, list.y + offset)].fg)
             .collect();
-        assert!(
-            paints.windows(2).all(|pair| pair[0] == pair[1]),
-            "one pattern down the list"
+        assert_eq!(
+            looks,
+            vec![Color::White, Color::DarkGray, Color::White, Color::DarkGray],
+            "the list says what is shown, not what is sticky"
         );
-        // And the one that is shown has its own band beside the list.
-        assert!(panes.width > 0);
+        // And the ones that are shown have columns of their own beside the list.
         let (slots, _) = pane_slots(panes, &screen.panes, None);
-        assert_eq!(slots.len(), 1, "{slots:?}");
-        assert_eq!(slots[0].name, "main");
+        assert_eq!(
+            slots
+                .iter()
+                .map(|slot| slot.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["main", "third"],
+            "{slots:?}"
+        );
     }
 
-    /// The sticky session's mark: a filled row in the list, a box where its window
-    /// is drawn.
+    /// The sticky session's mark is the box around its window, and only that.
     ///
     /// # Invariant
     ///
-    /// A filled row paints every column of its area -- a strip that stops at the
-    /// text reads as a highlighted word -- and a framed window paints none of its
-    /// rows: the two marks are never on one session at once.
+    /// A framed window paints none of its rows: the box is the mark, so its header
+    /// and events keep the colours they are read by. Nothing in the list is filled
+    /// for the sticky session -- it is necessarily shown, and the list's one mark
+    /// means "shown".
     #[test]
-    fn the_sticky_session_is_a_filled_row_or_a_frame_but_never_both() {
-        // A name in the list: one row, filled to the list's own edge.
-        let mut screen = screen_with(&[]);
-        screen.panes.layout(&Layout {
-            listed: vec![
-                Listed {
-                    name: "third".to_string(),
-                    status: "idle".to_string(),
-                    title: String::new(),
-                },
-                Listed {
-                    name: "fourth".to_string(),
-                    status: "idle".to_string(),
-                    title: String::new(),
-                },
-            ],
-            shown: Vec::new(),
-            command: "cmd".to_string(),
-            quota: None,
-        });
-        screen.sticky_session = Some("third".to_string());
-        let mut term = Terminal::new(TestBackend::new(40, 8)).unwrap();
-        term.draw(|f| {
-            draw(f, &mut screen);
-        })
-        .unwrap();
-        let buf = term.backend().buffer().clone();
-        let list = body(parts(40, 8, 1, true)[1], &screen.panes).0;
-        assert_eq!(read(&buf, list.x, list.width, list.y), "\u{25b8}[third]");
-        let filled = buf[(list.right() - 1, list.y)].clone();
-        assert_eq!(filled.bg, Color::Cyan, "the fill stops short: {filled:?}");
-        let quiet = buf[(list.right() - 1, list.y + 1)].clone();
-        assert_ne!(quiet.bg, Color::Cyan, "the row below is not the mark");
-
-        // A session drawn `full` is framed: the box is its mark, and its rows are
-        // painted like any other pane's.
+    fn the_sticky_session_is_a_frame_and_the_list_says_only_what_is_shown() {
         let mut screen = split_screen();
         let mut term = Terminal::new(TestBackend::new(60, 14)).unwrap();
         term.draw(|f| {
@@ -1234,9 +1194,11 @@ mod tests {
         .unwrap();
         let buf = term.backend().buffer().clone();
         let body = parts(60, 14, 1, true)[1];
-        let (_, panes) = crate::render::body(body, &screen.panes);
+        let (list, panes) = crate::render::body(body, &screen.panes);
         let (slots, _) = pane_slots(panes, &screen.panes, screen.sticky_session.as_deref());
+        // The framed window is the sticky one, and its box is the mark.
         let frame = slots[0].frame.expect("a frame on the sticky column");
+        assert_eq!(slots[0].name, "main");
         for (x, y) in [
             (frame.x, frame.y),
             (frame.right() - 1, frame.y),
@@ -1251,12 +1213,18 @@ mod tests {
         assert_ne!(
             cell.bg,
             Color::Cyan,
-            "a framed pane paints no row: {cell:?}"
+            "a framed window paints no row: {cell:?}"
         );
-        // And one session is sticky, not every session: the pane beside it is plain.
+        // And one session is sticky, not every session: the column beside it is plain.
         let peer = slots[1].header.expect("the other header");
         let cell = buf[(peer.x + 1, peer.y)].clone();
         assert_ne!(cell.bg, Color::Cyan, "two marks on two sessions: {cell:?}");
+        // The list's row for the sticky session carries no fill: every row is
+        // painted by what it means -- shown or not.
+        let row = read(&buf, list.x, list.width, list.y);
+        assert_eq!(row, "[main]", "{row:?}");
+        let filled = buf[(list.right() - 1, list.y)].clone();
+        assert_ne!(filled.bg, Color::Cyan, "the list is not a sticky mark");
     }
 
     /// The list shows the rows around the sticky session -- the only position.
@@ -1308,7 +1276,7 @@ mod tests {
         );
         let at = rows
             .iter()
-            .position(|row| row.trim().trim_start_matches('\u{25b8}').trim() == "[s9]")
+            .position(|row| row.trim() == "[s9]")
             .unwrap_or_else(|| panic!("s9 is not drawn: {rows:?}"));
         assert_eq!(
             list_at(
@@ -1704,7 +1672,7 @@ mod tests {
         );
     }
 
-    /// A split area: each session its own header, rows and scroll.
+    /// A split area: each session its own column, header, rows and scroll.
     #[test]
     fn a_split_area_names_every_session_and_lets_each_scroll_alone() {
         let mut screen = split_screen();
@@ -1726,43 +1694,37 @@ mod tests {
         );
         screen.panes.line("cmd", LineKind::System, "$ get_messages");
 
-        // Tall enough for two bands with a header each, and one row over: the
-        // split leaves it to the sticky window.
-        let (width, height) = (41u16, 20u16);
-        let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
+        // An odd body width, so the division leaves a column for the sticky one.
+        let mut term = Terminal::new(TestBackend::new(45, 12)).unwrap();
         term.draw(|f| {
             draw(f, &mut screen);
         })
         .unwrap();
         let buf = term.backend().buffer().clone();
 
-        // Each session is its own band: a header row, then its own rows under it.
-        let body = parts(width, height, 1, true)[1];
+        // Each session is its own column: a header row, then its own rows under it.
+        let body = parts(45, 12, 1, true)[1];
         let (_, panes) = crate::render::body(body, &screen.panes);
         let (slots, hidden) = pane_slots(panes, &screen.panes, screen.sticky_session.as_deref());
         assert_eq!(hidden, 0);
         assert_eq!(slots.len(), 2, "two sessions shown: {slots:?}");
-        // One under the other, in the list's order; the sticky one takes the
-        // leftover rows.
+        // Side by side, in the list's order, and the sticky one takes the leftover
+        // column because the operator is reading it.
         assert_eq!(slots[0].name, "main");
         assert_eq!(slots[1].name, "peer");
-        // The framed window is the sticky one; its rows start one column in.
-        let frame = slots[0].frame.expect("a frame on the sticky window");
+        let frame = slots[0].frame.expect("a frame on the sticky column");
+        assert_eq!(frame.right(), slots[1].header.unwrap().x, "{slots:?}");
+        // The framed column is the sticky one; its rows start one column in.
+        let frame = slots[0].frame.expect("a frame on the sticky column");
         assert_eq!(frame.x, panes.x);
         assert_eq!(slots[0].body.x, frame.x + 1, "{slots:?}");
         assert_eq!(slots[0].body.width, frame.width - 2, "{slots:?}");
-        assert_eq!(
-            slots[1].body.y,
-            slots[1].header.unwrap().bottom(),
-            "{slots:?}"
-        );
-        assert_eq!(slots[1].header.unwrap().y, frame.bottom(), "{slots:?}");
-        assert!(slots[1].frame.is_none(), "one frame, on the sticky window");
+        assert!(slots[1].frame.is_none(), "one frame, on the sticky column");
         assert!(
-            frame.height > slots[1].body.height,
-            "the sticky band is the taller one: {slots:?}"
+            frame.width > slots[1].body.width,
+            "the sticky column is the wider one: {slots:?}"
         );
-        let head = slots[0].header.expect("a header on the band");
+        let head = slots[0].header.expect("a header on the column");
         assert_eq!(read(&buf, head.x, head.width, head.y), " [main]");
         assert_eq!(
             slot_text(&buf, &screen, "main", slots[0].body.y),
@@ -1774,10 +1736,10 @@ mod tests {
         );
 
         // The command line sits above the input, which is the last row.
-        let parts = parts(width, height, 1, true);
+        let parts = parts(45, 12, 1, true);
         assert_eq!(row_text(&buf, parts[3].y), "$ get_messages");
 
-        // Scrolling the sticky session moves only that window: the other keeps its newest.
+        // Scrolling the sticky session moves only that column: the other keeps its newest.
         screen.scroll_by(1);
         term.draw(|f| {
             draw(f, &mut screen);
@@ -1787,7 +1749,7 @@ mod tests {
         assert_eq!(
             slot_text(&buf, &screen, "peer", slots[1].body.y),
             "another answer",
-            "the peer window moved with the sticky session"
+            "the peer column moved with the sticky session"
         );
         assert_eq!(
             screen.panes.get("cmd").unwrap().max_scroll,
@@ -1796,7 +1758,7 @@ mod tests {
         );
     }
 
-    /// A row names the pane drawn there; stacked, the row decides.
+    /// A cell names the pane drawn there; side by side, the column decides.
     #[test]
     fn a_row_names_the_pane_it_falls_in() {
         let screen = split_screen();
@@ -1805,7 +1767,7 @@ mod tests {
         let (slots, _) = pane_slots(panes, &screen.panes, screen.sticky_session.as_deref());
         let main = slots.iter().find(|s| s.name == "main").expect("main");
         let peer = slots.iter().find(|s| s.name == "peer").expect("peer");
-        // Different rows, one column: that is what picks a window now.
+        // The same row, different columns: that is what picks a window.
         assert_eq!(
             screen
                 .pane_at_row(40, 12, main.body.x, main.body.y)
@@ -1817,15 +1779,15 @@ mod tests {
                 .pane_at_row(40, 12, peer.body.x, peer.body.y)
                 .as_deref(),
             Some("peer"),
-            "the row below names the window below"
+            "the same row, one column to the right"
         );
         // A click on the header row names the window it is the header of.
-        let head = peer.header.expect("a header per window");
+        let head = peer.header.expect("a header per column");
         assert_eq!(
             screen.pane_at_row(40, 12, head.x, head.y).as_deref(),
             Some("peer")
         );
-        // A row nobody draws is nobody's, and neither is the chrome above.
+        // A column nobody draws is nobody's, and neither is the chrome above.
         assert_eq!(screen.pane_at_row(40, 12, 0, 0), None);
     }
 
@@ -2066,7 +2028,7 @@ mod tests {
             command: "cmd".to_string(),
             quota: None,
         });
-        // Wide enough that a whole header fits its band.
+        // Wide enough that a whole header fits its column.
         let mut term = Terminal::new(TestBackend::new(130, 12)).unwrap();
         term.draw(|f| {
             draw(f, &mut screen);
@@ -2076,19 +2038,19 @@ mod tests {
         let body = parts(130, 12, 1, true)[1];
         let (_, panes) = crate::render::body(body, &screen.panes);
         let (slots, _) = pane_slots(panes, &screen.panes, screen.sticky_session.as_deref());
-        let head = slots[0].header.expect("a header on the band");
+        let head = slots[0].header.expect("a header on the column");
         assert_eq!(
             read(&buf, head.x, head.width, head.y),
             " [main] ctx 12345 · cached 89% · tps 41.6 · ttft 820ms"
         );
-        let head = slots[1].header.expect("a header on the band");
+        let head = slots[1].header.expect("a header on the column");
         assert_eq!(read(&buf, head.x, head.width, head.y), " [peer]");
 
         // A hidden session has no header to carry them: its figures wait in the
         // announcement until its window is shown.
         assert!(
             slots.iter().all(|slot| slot.name != "third"),
-            "a hidden session has no band: {slots:?}"
+            "a hidden session has no column: {slots:?}"
         );
     }
 

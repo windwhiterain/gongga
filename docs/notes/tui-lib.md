@@ -110,8 +110,9 @@ does nothing at all -- the header is what a session is clicked by.
 
 ## Screen::sticky_session
 
-Filled from `Sink::sticky_session` on every refresh, so the list's mark, the keys and
-a click all read one value: the one the command layer has in `Sticky`.
+Filled from `Sink::sticky_session` on every refresh, so the keys, the wheel's target
+and the frame around that window all read one value: the one the command layer has in
+`Sticky`. The list does not read it -- its brightness answers "is there a window".
 
 ## UiEvent
 
@@ -163,8 +164,8 @@ do not wipe it in the same breath.
 
 There is no `focus`: no "which pane did the pointer last touch", no second name that
 can drift from the one the keys obey. The sticky session decides everything the
-keyboard does -- which pane a page scrolls, whose header is highlighted, which pane
-takes the rows an even share leaves over -- and a click is what changes it, by asking
+keyboard does -- which window a page scrolls, whose window is framed, which column
+takes the width an even share leaves over -- and a click is what changes it, by asking
 the command layer for the command that sets it.
 
 The wheel is momentary: it moves what it is over and writes no state, so a glance at

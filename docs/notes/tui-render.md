@@ -194,40 +194,42 @@ was hidden rather than the list of what exists -- and a session drawn `full` had
 name in two places. SPEC now gives the list every name and puts the toggle in the
 click: a shown session is still a row, because that row is where it is hidden again.
 
-Every row is painted the same way. The list once coloured a name by the mode that
-session would be drawn as elsewhere (white for `full`, dim for `line`, dark grey for
-the rest), which made one column look like three kinds of row.
+The row's one look says one thing: **bright when that session has a window beside the
+list, dim when it does not**. That is the same fact the right-hand split states, said
+again where it is clicked.
 
-The sticky session is marked by `name_style`: the mark column `▸`, and the fill
-running from the name to the list's right edge. It is one state -- what the page keys
-scroll and where a message goes -- and one look, wherever a row is filled for it.
+It does *not* say which session is sticky. The sticky one is necessarily shown, and its
+window is framed (`pane_slots`) -- so a second mark here would be the same thing twice,
+in the area that is about something else. The list used to carry the mark column `▸`
+and a fill to the right edge for it; both went when the frame became the sticky mark.
 
-A name is bracketed -- `▸[main]` -- in the list and in the window's header: one
-spelling in both areas, so a name cannot be mistaken for the first word of the events
-beside it. `bracketed` is that spelling, and `list_width` counts the two extra
-columns.
+A name is bracketed -- `[main]` -- in the list and in the window's header: one spelling
+in both areas, so a name cannot be mistaken for the first word of the events beside it.
+`bracketed` is that spelling, and `list_width` counts the two columns it adds plus one
+of air.
+
+`list_window` still centres the list on the sticky session even though the row no
+longer says so: which rows are on screen is a scroll position, not a mark, and the
+session the operator is reading is the useful thing to centre on.
 
 ## name_style
 
-The mark itself: black on cyan. It is a *row*, not a word -- `fill_row` pads what is
-left of the area with it, because a patch that stops where the text stops reads as a
-highlighted word and made the selected session look like a rendering accident.
+The sticky mark itself: black on cyan, one row. What is left of it after the list
+stopped using it is the way back to the newest row (`draw_bottom`), and the fallback
+fill on a header whose window is too small to frame.
+
+It was a *row*, not a word -- `fill_row` padded what was left of the area with it,
+because a patch that stops where the text stops reads as a highlighted word. That is
+gone with the last caller: a header is one line of text in its own band, and the frame
+is what marks a window.
 
 The base style differs on purpose -- the list is dim chrome, a window's header is dim
 too -- but the state does not: the same session used to be a dark grey patch in a
 header and cyan in the list, so the same thing looked like two.
 
-A pane in the split is the exception, and it is a different mark rather than another
-colour: it is framed (see `pane_slots`), so its rows keep the look of the kind of
-event they hold. Filling a pane's rows would paint over the colours the operator
-reads them by.
-
-## fill_row
-
-`spans` plus the blank columns left in the area, in the mark's style. It is what
-makes a filled row reach the edge, and it only pads: the text of the row is what the
-caller built, so a list row's `▸[main]` and a window's header are padded the same way
-without either knowing about the other.
+A window in the split is the exception, and it is a different mark rather than another
+colour: it is framed (see `pane_slots`), so its rows keep the look of the kind of event
+they hold. Filling its rows would paint over the colours the operator reads them by.
 
 ## draw_lines and draw_headlines
 
@@ -240,7 +242,7 @@ went with it: a row that is nobody's window is a row nothing asks about.
 
 The body split into the session list and the windows beside it. The list is as wide
 as its own content -- the mark, the longest name, one column of air -- and never
-wider than half the window: the windows keep their share, because a band with no
+wider than half the window: the windows keep their share, because a column with no
 columns shows nothing.
 
 It measures the list's names, which are now every announced session, so the column is
@@ -248,8 +250,8 @@ exactly as wide as the widest name it draws.
 
 ## draw_panes
 
-The windows take the events area in the announcement's order, stacked; each gets a
-header naming it and the share of rows the others do not use. The header only appears
+The windows take the events area in the announcement's order, side by side; each gets
+a header naming it and the share of columns the others do not use. The header only appears
 for a window with a name, so the unsplit area -- whose one window is named nothing --
 looks exactly like it did before a second session existed.
 
@@ -261,7 +263,7 @@ frame.
 
 The header carries everything SPEC gives a shown session -- the measurements and the
 session's own tuning -- read from the announcement as the command layer spelled them,
-and then the note about a band the division hid. One title, parts joined by `·`,
+and then the note about a column the division hid. One title, parts joined by `·`,
 because two strings written by two functions is how `main · 1 not shown · 1 not shown`
 happens.
 
@@ -286,9 +288,9 @@ The name is bracketed -- `[main]` -- in both areas, so a name reads as a name ra
 than as the first word of the events beside it. That is also why the client stopped
 prefixing `[session] ` to the text: one place says who is speaking.
 
-A header never takes the band's last row: a title that needs more room than the band
-has is cut by the band's own height, and `pane_slots` keeps one row for the events,
-which are what the window is for.
+A header never takes the column's last row: a title that needs more room than the
+column has is cut by the column's own height, and `pane_slots` keeps one row for the
+events, which are what the window is for.
 
 ## draw_command
 
@@ -326,35 +328,32 @@ place that computed it is how a copy ends up including rows the screen never dre
 
 ## pane_slots
 
-SPEC's windows stack: what is shared out is the *height*, and what the division leaves
-over goes to the sticky session -- the operator is reading that one, so it should be
-the taller band.
+SPEC's horizontal split: the windows sit side by side, so what is shared out is the
+*width*, and what the division leaves over goes to the sticky session -- the operator
+is reading that one, so it should be the wider column.
 
-Each band gets a header on its first row and the rest of the band under it. A band
-that cannot get a row is not drawn and counts towards `hidden`, which the last drawn
-header says out loud -- silently dropping a session's window is how a user decides the
-log is broken.
+Each window gets a header on the first row of its own column and the rest of the height
+under it, so a header is per column rather than a band across the window. A column that
+cannot get a cell is not drawn and counts towards `hidden`, which the last drawn header
+says out loud -- silently dropping a session's window is how a user decides the log is
+broken.
 
-A header costs one row of its band, not one row of the window: the bands are stacked,
-so the second one starts under the first one's header.
+A header costs one row of the body's height, once, however many windows there are.
 
-The sticky band's shape is one variant: it gets a `frame` and its header and rows are
-laid out one column and one row inside it, so the box is drawn where the window is
-rather than over it. Two columns and two rows of that band are what the box costs; a
-band too small for a border keeps its rows and is marked by `name_style` instead,
+The sticky window's shape is one variant: its column gets a `frame` and its header and
+rows are laid out one column and one row inside it, so the box is drawn where the window
+is rather than over it. Two columns and two rows of that column are what the box costs;
+a column too small for a border keeps its rows and is marked by `name_style` instead,
 because a border around nothing is worse than a fill. `Slot::frame` is the box, and it
 is also what the hit test reads: a click on the border is a click on the session.
 
-The shared-out height is why a band can lose its header: two rows is a framed band of
-one inner row, and `pane_slots` gives that row to the events rather than to the name.
-
 ## pane_at, header_at
 
-Both coordinates, always, even though the windows now stack: a rewrite that leaned on
-"one row is one window" would be wrong the moment a band is framed, and `covers` is
-one function the wheel and the click share.
+The cell, not the row: with the windows side by side, one row of the window holds
+several of them, so `covers` checks both coordinates and `pane_at` is one function the
+wheel and the click share.
 
-`pane_at` answers for a window's whole band -- header, rows and box -- because the
+`pane_at` answers for a window's whole column -- header, rows and box -- because the
 wheel over any of them scrolls that window. `header_at` answers for the header alone,
 because SPEC's click makes a session sticky from its name and figures, while a click in
 the events is a click on text the operator is reading. The earlier shape had one hit
@@ -453,18 +452,19 @@ is the whole of SPEC's rule about where they live.
 The announcement arrives on every step of a turn, so it is not a reason to move a
 view: a pane that kept its rows keeps its place in them.
 
-## the_list_is_every_session_and_none_of_them_is_marked_shown
+## the_list_is_bright_for_the_sessions_it_draws_beside_it
 
 The rule, measured on a frame: every announced name is a row in the announcement's
-order, a shown session is one of them rather than absent, and every row's cells carry
-one style between them.
+order, a shown session is one of them rather than absent, and the row's colour is the
+answer to "does it have a window" -- white for shown, dark grey for hidden, even for
+the session that is sticky.
 
-## the_sticky_session_is_a_filled_row_or_a_frame_but_never_both
+## the_sticky_session_is_a_frame_and_the_list_says_only_what_is_shown
 
-One session, two places, two readings: a list row's last column black on cyan (the
-row, not the text), and a shown session's four border corners in the mark's colour
-while the cell just inside its header keeps the background it was drawn with. The two
-marks are mutually exclusive by construction, and this is the frame that says so.
+One session, one mark, one place: the four border corners of the sticky session's
+column in the mark's colour, while the cell just inside its header keeps the background
+it was drawn with -- and the list's row for that same session carries no fill. The list
+answers a different question (shown or not), so the two never say the same thing twice.
 
 ## the_quota_row_sits_above_the_command_line
 
