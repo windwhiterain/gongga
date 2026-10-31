@@ -33,7 +33,7 @@ use `which("bash")` as bash.
 everything in database (sqlite) under a home directory, structured for agentic retrieval/mutation.
 
 ## File
-`@<path>.<supported image suffix>` will be replaced as file id, referencing image will be upload via File API in advance.
+`@<path>.<supported image suffix>` in messages will be replaced as file id, referencing image will be upload via File API in advance.
 
 ## UI
 - main (vertical)
