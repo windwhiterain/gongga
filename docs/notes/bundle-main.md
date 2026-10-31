@@ -53,6 +53,14 @@ Two details that are not optional:
 - the nested `cargo` gets `CARGO_TARGET_DIR` of its own. The parent holds a lock
   on the directory it is using, and a child waiting for that lock deadlocks the
   build that started it;
+- the programs are copied into `OUT_DIR` and embedded from there, not from the
+  nested build's output. `include_bytes!` makes a file an *input* to this crate,
+  and the nested build rewrites its own output every time it runs -- so embedding
+  the output closed a loop: every build was dirty, and a no-op build cost 8 s;
+- `build.rs` watches `crates/`, `Cargo.toml` and `Cargo.lock`, not just itself.
+  Cargo only tracks this package's own sources, so without that an edit to
+  `crates/cli` left a stale program embedded indefinitely -- which happened, and
+  is why the first attempt at a message change appeared to do nothing;
 - `--profile dev`, not `debug`: `PROFILE` is the directory name, and cargo
   reserves `debug` as a profile name. The directory is still `debug`.
 

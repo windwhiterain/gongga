@@ -24,18 +24,20 @@ fn main() {
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("cargo always sets OUT_DIR"));
     let mut generated = String::new();
     if std::env::var_os("CARGO_FEATURE_PAYLOAD").is_some() {
-        let payloads = built();
         generated.push_str("pub const EMBEDDED: &[(&str, &[u8])] = &[\n");
-        for (name, path) in &payloads {
+        for (name, path) in built() {
+            // From OUT_DIR: `include_bytes!` makes the file an input, and the
+            // nested build rewrites its own output on every run.
+            let copy = out.join(path.file_name().unwrap_or_default());
+            std::fs::copy(&path, &copy).unwrap_or_else(|e| {
+                panic!("copying {} to {}: {e}", path.display(), copy.display())
+            });
             generated.push_str(&format!(
                 "    ({name:?}, include_bytes!({:?})),\n",
-                path.display().to_string()
+                copy.display().to_string()
             ));
         }
         generated.push_str("];\n");
-        for (_, path) in &payloads {
-            println!("cargo:rerun-if-changed={}", path.display());
-        }
     } else {
         generated.push_str("pub const EMBEDDED: &[(&str, &[u8])] = &[];\n");
     }
