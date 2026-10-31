@@ -211,7 +211,7 @@ that was seen.
 A fold needs the seqs to decide where the note may take over, not just the
 contents.
 
-## Store::set_usage
+## Store::set_usage_for_generation
 
 Called with the token counts from `usage`, never with a computed one: the provider
 is the only party that tokenises with the tokeniser it will actually bill against.
@@ -221,6 +221,12 @@ and a row that held the context of one request beside the rate of another could 
 explain itself. `tps` and `ttft_ms` are the columns SPEC's `tps (latest)` and
 `ttft (latest)` are read from, and NULL is "not measured" -- a provider that reports
 no token counts leaves them NULL rather than 0.
+
+The update also names the generation captured when the request started. If a tool
+handed the transcript over while the response was still streaming, that response's
+usage belongs to the old context and the conditional write does nothing. Provider
+usage events still record what the request cost; the session's current context is
+not overwritten with a transcript that no longer exists.
 
 `cached_tokens` is stored as the count the provider reported beside the input, not
 as the share SPEC's title shows: the share is that count divided by this one, so
@@ -252,6 +258,19 @@ prompt changed and where, without a 10k-character row in the middle of the dialo
 
 An aborted process is indistinguishable from a deliberate `cancel`: either way,
 whatever is still in this table is what the next start owes.
+
+## Store::deliver_pending
+
+An operator's message and a background job's result remain owed until they are
+appended. A context notice is different: it is advice about a measurement, and a
+handover can make that measurement obsolete while the notice waits in the inbox.
+Marked notices carry their context generation and token limit. A database trigger
+advances the generation whenever a handover resets a nonzero context to zero.
+Delivery compares both fields with the session's current row. Usage writes are
+conditional on the request's generation too, so an old response cannot restore
+its high token count after a handover. A stale notice is deleted without becoming
+a user message; unmarked injections are always appended. Every row leaves the
+inbox exactly once, and the return value counts messages actually appended.
 
 ## Store::take_pending_tasks
 

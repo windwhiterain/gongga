@@ -77,6 +77,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- the point -- the first request of the next run needs a size to compare
     -- against, and no amount of character counting would give a better one.
     context_tokens INTEGER NOT NULL DEFAULT 0,
+    -- Incremented by the reset trigger, so a notice queued for an older transcript
+    -- stays obsolete even when the in-flight request writes its old usage back.
+    context_generation INTEGER NOT NULL DEFAULT 0,
     -- What of that the provider served from its prefix cache: SPEC's
     -- `cached (in n%, latest)` is a share of the same number. NULL is a provider
     -- that does not report it, which is not the same as nothing cached.
@@ -201,6 +204,10 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             "ALTER TABLE sessions ADD COLUMN context_tokens INTEGER NOT NULL DEFAULT 0",
         ),
         (
+            "context_generation",
+            "ALTER TABLE sessions ADD COLUMN context_generation INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
             "thinking_effort",
             "ALTER TABLE sessions ADD COLUMN thinking_effort TEXT",
         ),
@@ -231,6 +238,16 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "ALTER TABLE messages ADD COLUMN call_id TEXT",
     )?;
     backfill_wire_items(conn)?;
+    conn.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS session_context_reset
+         AFTER UPDATE OF context_tokens ON sessions
+         WHEN NEW.context_tokens = 0 AND OLD.context_tokens <> 0
+         BEGIN
+             UPDATE sessions
+             SET context_generation = context_generation + 1
+             WHERE id = NEW.id;
+         END;",
+    )?;
     Ok(())
 }
 
@@ -561,16 +578,26 @@ impl Store {
         Ok(note)
     }
 
+    /// The provider's last input measurement and the transcript generation it belongs to.
+    pub fn context_measurement(&self, session_id: i64) -> anyhow::Result<(u64, u64)> {
+        let conn = self.lock();
+        let (tokens, generation): (i64, i64) = conn.query_row(
+            "SELECT context_tokens, context_generation FROM sessions WHERE id = ?1",
+            params![session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok((tokens.max(0) as u64, generation.max(0) as u64))
+    }
+
     /// Input tokens the provider reported for the last request, or 0 if this
     /// session has not made one yet.
     pub fn context_tokens(&self, session_id: i64) -> anyhow::Result<u64> {
-        let conn = self.lock();
-        let n: i64 = conn.query_row(
-            "SELECT context_tokens FROM sessions WHERE id = ?1",
-            params![session_id],
-            |r| r.get(0),
-        )?;
-        Ok(n.max(0) as u64)
+        Ok(self.context_measurement(session_id)?.0)
+    }
+
+    /// The transcript generation a context notice belongs to.
+    pub fn context_generation(&self, session_id: i64) -> anyhow::Result<u64> {
+        Ok(self.context_measurement(session_id)?.1)
     }
 
     /// What one request measured: input tokens, what of them was cached, the
@@ -581,19 +608,30 @@ impl Store {
     /// One statement: the four are one measurement, and a window that read the
     /// context of one request beside the rate of another would be a lie the row
     /// cannot explain.
-    pub fn set_usage(&self, session_id: i64, usage: protocol::Usage) -> anyhow::Result<()> {
+    pub fn set_usage_for_generation(
+        &self,
+        session_id: i64,
+        generation: u64,
+        usage: protocol::Usage,
+    ) -> anyhow::Result<()> {
         self.lock().execute(
             "UPDATE sessions SET context_tokens = ?1, cached_tokens = ?2, tps = ?3, \
-             ttft_ms = ?4 WHERE id = ?5",
+             ttft_ms = ?4 WHERE id = ?5 AND context_generation = ?6",
             params![
                 usage.context_tokens as i64,
                 usage.cached_tokens.map(|n| n as i64),
                 usage.tps,
                 usage.ttft_ms.map(|ms| ms as i64),
-                session_id
+                session_id,
+                generation as i64
             ],
         )?;
         Ok(())
+    }
+
+    #[cfg(test)]
+    fn set_usage(&self, session_id: i64, usage: protocol::Usage) -> anyhow::Result<()> {
+        self.set_usage_for_generation(session_id, self.context_generation(session_id)?, usage)
     }
 
     /// The newest stored prompt, or nothing before a session's first request.
@@ -739,7 +777,7 @@ impl Store {
         Ok(id)
     }
 
-    /// Delivers every injected message and removes its inbox row in the same transaction.
+    /// Delivers current injected messages and removes their inbox rows in one transaction.
     pub fn deliver_pending(&self, session_id: i64, session: &str) -> anyhow::Result<usize> {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
@@ -753,13 +791,39 @@ impl Store {
             })?;
             rows.collect::<Result<Vec<_>, _>>()?
         };
-        let delivered = tasks.len();
+        let mut delivered = 0;
         for (id, payload) in tasks {
             let payload: serde_json::Value = serde_json::from_str(&payload)?;
+            if let Some(notice) = payload.get("context_notice") {
+                let limit = notice
+                    .get("limit")
+                    .and_then(serde_json::Value::as_u64)
+                    .ok_or_else(|| anyhow::anyhow!("pending inject {id} has no context limit"))?;
+                let generation = notice
+                    .get("generation")
+                    .and_then(serde_json::Value::as_u64)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("pending inject {id} has no context generation")
+                    })?;
+                let (tokens, current_generation): (i64, i64) = tx.query_row(
+                    "SELECT context_tokens, context_generation FROM sessions WHERE id = ?1",
+                    params![session_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                // A notice is advice about a measurement, not an operator's message.
+                // A handover advances the generation even if old usage arrives late.
+                if (current_generation.max(0) as u64) != generation
+                    || (tokens.max(0) as u64) < limit
+                {
+                    tx.execute("DELETE FROM pending_tasks WHERE id = ?1", params![id])?;
+                    continue;
+                }
+            }
             let expanded = crate::meta::Expanded::from_json(&payload)
                 .ok_or_else(|| anyhow::anyhow!("pending inject {id} has no message"))?;
             Self::append_message_conn(&tx, session_id, "text", &user_row(&expanded))?;
             tx.execute("DELETE FROM pending_tasks WHERE id = ?1", params![id])?;
+            delivered += 1;
         }
         tx.commit()?;
         Ok(delivered)
