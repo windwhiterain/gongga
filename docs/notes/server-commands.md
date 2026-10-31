@@ -89,6 +89,21 @@ The turn is done, so it is no longer something the next start owes -- unless a
 `cancel` interrupted it, in which case staying pending is exactly what "save
 what is left undone" promised.
 
+## skill
+
+SPEC's two arguments, both required: the skill to send, and the session to tell.
+`index_skill` is how an agent finds a skill for itself; this is how somebody tells
+one agent about a skill it did not think to look for.
+
+What travels is the row of `index_skill`'s table -- name, bucket, the line saying
+what it is for, the path -- and not the prose. The table is the cheap step that
+decided the skill was worth reading; shipping the body would spend the context the
+table exists to save. The body goes back to the caller instead, so the human who
+typed the command can read what they sent.
+
+Delivered through the same code as `send_message`: a turn when the session is free,
+an inbox row at its next step boundary when it is not.
+
 ## send_message (marking the inbox)
 
 `note_message` is what makes "next step boundary" soon rather than eventual.

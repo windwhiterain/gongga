@@ -296,16 +296,26 @@ pub fn server_catalog() -> Vec<CommandSpec> {
         CommandSpec {
             target: CommandTarget::Server,
             name: "skill".into(),
-            description: "Read one installed skill's SKILL.md: what it teaches, in full. \
-                      `index_skill` is the table; this is the body behind a row of it."
+            description: "Send one installed skill to a session: the row of `index_skill`'s \
+                      table that describes it, so that agent knows it exists. The answer \
+                      carries the SKILL.md whole."
                 .into(),
-            args: vec![arg(
-                "skill",
-                "The skill's name, as `index_skill` spells it.",
-                true,
-                Some("name"),
-                CompletionSource::Skills,
-            )],
+            args: vec![
+                arg(
+                    "session",
+                    "Session to tell about the skill.",
+                    true,
+                    None,
+                    CompletionSource::Sessions,
+                ),
+                arg(
+                    "skill",
+                    "The skill's name, as `index_skill` spells it.",
+                    true,
+                    Some("name"),
+                    CompletionSource::Skills,
+                ),
+            ],
         },
         CommandSpec {
             target: CommandTarget::Server,
@@ -376,7 +386,7 @@ pub async fn dispatch(d: &Dispatch, name: &str, args: &Args) -> Outcome {
         "interrupt_session" => interrupt_session(d, args).await,
         "cancel" => cancel(d).await,
         "get_messages" => get_messages(d, args).await,
-        "skill" => skill(args),
+        "skill" => skill(d, args).await,
         // Published as a server command but unhandled: a catalog bug, named.
         other => Outcome::err(format!(
             "{other} is published as a server command but has no handler"
@@ -434,7 +444,17 @@ async fn send_message(d: &Dispatch, args: &Args) -> Outcome {
             "send_message requires --session; set a sticky `session` to avoid typing it",
         );
     };
-    let session = match d.sessions.get(&name) {
+    deliver(d, &name, message).await
+}
+
+/// Puts `message` into `name`'s hands: a turn when it is free, an inbox row when not.
+///
+/// # Invariant
+///
+/// The gate is claimed before the durable write, so a second sender can only
+/// inject, never spawn a competing turn.
+async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcome {
+    let session = match d.sessions.get(name) {
         Ok(s) => s,
         Err(e) => return Outcome::err(e.to_string()),
     };
@@ -445,7 +465,7 @@ async fn send_message(d: &Dispatch, args: &Args) -> Outcome {
     if let Some(gate) = session.try_claim() {
         // The gate is claimed before the durable write, so a second sender can only
         // inject, never spawn a competing turn.
-        match d.store.begin_turn(session.id(), &name, &message) {
+        match d.store.begin_turn(session.id(), name, &message) {
             Ok(task) => {
                 spawn_turn(
                     d,
@@ -462,7 +482,7 @@ async fn send_message(d: &Dispatch, args: &Args) -> Outcome {
         }
     } else {
         match d.store.add_pending_task(
-            &name,
+            name,
             "inject",
             &json!({"session": name, "message": message}),
         ) {
@@ -905,15 +925,18 @@ async fn interrupt_session(d: &Dispatch, args: &Args) -> Outcome {
 ///
 /// Detached jobs keep running: they were started precisely so they would
 /// outlive this.
-/// `skill --skill <name>`: one installed skill's body, whole.
+/// `skill --session <name> --skill <name>`: the table's row, sent to an agent.
 ///
 /// # Invariant
 ///
 /// The name is looked up in the list `index_skill` publishes, so the table and
-/// the command cannot disagree about what exists. Nothing is summarised on the
-/// way out: a skill is prose whose wording is the point.
-fn skill(args: &Args) -> Outcome {
+/// the command cannot disagree about what exists. What travels is the row, not
+/// the prose: the agent reads the body when its line matches the task.
+async fn skill(d: &Dispatch, args: &Args) -> Outcome {
     let wanted = args.get("skill").map(String::as_str).unwrap_or_default();
+    let Some(name) = args.get("session").cloned() else {
+        return Outcome::err("skill requires --session; it tells one session's agent");
+    };
     let all = crate::tools::index_skill::installed();
     let Some(found) = all.iter().find(|s| s.name == wanted) else {
         let names: Vec<&str> = all.iter().map(|s| s.name.as_str()).collect();
@@ -926,17 +949,31 @@ fn skill(args: &Args) -> Outcome {
             }
         ));
     };
-    match found.body() {
-        Ok(text) => Outcome::ok_with(
-            text,
-            serde_json::json!({
-                "name": found.name,
-                "bucket": found.bucket,
-                "path": found.path.display().to_string(),
-            }),
-        ),
-        Err(e) => Outcome::err(format!("could not read {}: {e}", found.path.display())),
+    // Read before telling: a body that cannot be read is not a skill to announce.
+    let text = match found.body() {
+        Ok(text) => text,
+        Err(e) => return Outcome::err(format!("could not read {}: {e}", found.path.display())),
+    };
+    let told = format!(
+        "skill `{}` ({}) is installed: {}\nits SKILL.md: {}",
+        found.name,
+        found.bucket,
+        found.description,
+        found.path.display()
+    );
+    let delivered = deliver(d, &name, told).await;
+    if !delivered.ok {
+        return delivered;
     }
+    Outcome::ok_with(
+        text,
+        serde_json::json!({
+            "name": found.name,
+            "bucket": found.bucket,
+            "path": found.path.display().to_string(),
+            "session": name,
+        }),
+    )
 }
 
 /// A stop asked from outside the protocol -- a signal -- says what `cancel` says.
@@ -1267,6 +1304,24 @@ mod tests {
         assert!(spec.args.is_empty(), "cancel is a whole-server stop");
     }
 
+    /// SPEC: `skill --session <name> --skill <name>`: the session is not optional.
+    #[test]
+    fn skill_names_the_session_it_tells() {
+        let spec = server_catalog()
+            .into_iter()
+            .find(|c| c.name == "skill")
+            .unwrap();
+        let names: Vec<&str> = spec.args.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["session", "skill"]);
+        let refused = resolve(
+            &published(),
+            "skill",
+            &Args::from([("skill".to_string(), "heir".to_string())]),
+        )
+        .unwrap_err();
+        assert!(refused.message.contains("session"), "{}", refused.message);
+    }
+
     /// Interrupting names one session; guessing one is the hidden state we avoid.
     #[test]
     fn interrupt_session_names_one_session() {
@@ -1283,8 +1338,8 @@ mod tests {
     #[test]
     fn every_command_takes_a_session_or_a_message() {
         for spec in server_catalog() {
-            // Two name something else: `cancel` configures nothing, `skill` a skill.
-            if matches!(spec.name.as_str(), "cancel" | "skill") {
+            // `cancel` names nothing: it is a whole-server stop.
+            if spec.name == "cancel" {
                 continue;
             }
             let required: Vec<&str> = spec
