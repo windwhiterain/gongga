@@ -262,9 +262,9 @@ fn reconcile(
             // not the reader's, so it is replaced rather than kept.
             Decision::Keep
                 if old.is_none()
-                    && ours
-                        .as_deref()
-                        .is_some_and(|ours| is_a_past_install(cache, &file.source, ours)) =>
+                    && ours.as_deref().is_some_and(|ours| {
+                        is_a_past_install(cache, &ship.commit, &file.source, ours)
+                    }) =>
             {
                 put(&file.dest, &theirs, file.exec)?;
                 report.updated += 1;
@@ -489,21 +489,21 @@ pub fn blob(cache: &Path, commit: &str, path: &str) -> Option<Vec<u8>> {
         .map(|out| out.stdout)
 }
 
-/// Whether these bytes are some past version of `path` that this cache holds.
+/// Whether these bytes are a past version of `path` that the pin can reach.
 ///
 /// # Invariant
 ///
-/// Only asked when a root has no pin, which is the one case where the base is
-/// unknown: a file that matches a commit in the history is an install somebody
-/// left behind -- an older pin, a different build -- and not the reader's own
-/// words. Without this a home that lost its pin would freeze every file it
-/// happens to have, which is what happened to this machine.
-fn is_a_past_install(cache: &Path, path: &str, ours: &[u8]) -> bool {
+/// Only history *the pin reaches*, never `--all`: a commit the reader made in the
+/// cache is not an install this code placed, and treating it as one would replace
+/// their own words. Only asked when a root has no pin, which is the one case
+/// where the base is unknown -- otherwise every stale file in such a home reads
+/// as the reader's and freezes, which is what happened to this machine.
+fn is_a_past_install(cache: &Path, pin: &str, path: &str, ours: &[u8]) -> bool {
     const LOOK_BACK: usize = 40;
     let Ok(listed) = Command::new(git())
         .arg("--git-dir")
         .arg(cache)
-        .args(["rev-list", "--all", "--"])
+        .args(["rev-list", pin, "--"])
         .arg(path)
         .output()
     else {
@@ -1034,6 +1034,64 @@ mod tests {
             std::fs::read_to_string(f.home().join("skills/heir/SKILL.md")).unwrap(),
             "my own words\n",
             "{report:?}"
+        );
+        assert_eq!(
+            report.kept,
+            vec!["skills/harness/heir/SKILL.md".to_string()]
+        );
+    }
+
+    /// A commit the pin does not name changes nothing: a home installs the pin,
+    /// so the reader's fast-forward is theirs to keep.
+    #[test]
+    fn a_commit_ahead_of_the_pin_installs_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let f = fixture(d.path());
+        let pinned = content_repo(&f.content, "one\n", "shipped\n");
+        f.install(&pinned).unwrap();
+
+        // The reader commits more content on top: this repository is now ahead.
+        std::fs::write(f.content.join("config/config.toml"), "mine\n").unwrap();
+        git_in(&f.content, &["commit", "-q", "-am", "a local change"]);
+        let ahead = head(&f.content);
+        assert_ne!(ahead, pinned);
+
+        // Same pin, so nothing to do -- and the file still says what installed it.
+        let report = f.install(&pinned).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(f.home().join("config.toml")).unwrap(),
+            "one\n",
+            "{report:?}"
+        );
+        assert_eq!((report.written, report.updated, report.merged), (0, 0, 0));
+        assert_eq!(f.pin(f.home()), pinned, "the pin did not move");
+    }
+
+    /// The reader's words are still theirs, even committed into the cache.
+    #[test]
+    fn a_commit_of_the_readers_own_is_not_an_install() {
+        let d = tempfile::tempdir().unwrap();
+        let f = fixture(d.path());
+        let pinned = content_repo(&f.content, "one\n", "shipped\n");
+        // On a branch the pin cannot reach: `rev-list --all` would see it.
+        git_in(&f.content, &["checkout", "-q", "-b", "theirs"]);
+        std::fs::write(
+            f.content.join("skills/harness/heir/SKILL.md"),
+            "my own words\n",
+        )
+        .unwrap();
+        git_in(&f.content, &["commit", "-q", "-am", "mine"]);
+        git_in(&f.content, &["checkout", "-q", "main"]);
+
+        // The home has those bytes and no pin, so nothing says where they came from.
+        std::fs::create_dir_all(f.home().join("skills/heir")).unwrap();
+        std::fs::write(f.home().join("skills/heir/SKILL.md"), "my own words\n").unwrap();
+
+        let report = f.install(&pinned).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(f.home().join("skills/heir/SKILL.md")).unwrap(),
+            "my own words\n",
+            "kept, not replaced: {report:?}"
         );
         assert_eq!(
             report.kept,
