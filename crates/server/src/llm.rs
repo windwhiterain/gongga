@@ -91,7 +91,7 @@ impl RequestSource {
 }
 
 impl LlmClient {
-    pub fn new(cfg: &crate::config::LlmConfig) -> anyhow::Result<Self> {
+    pub fn new(cfg: &crate::config::ProviderConfig) -> anyhow::Result<Self> {
         if cfg.api_key.is_empty() {
             anyhow::bail!(
                 "no API key: set {} (or GONGGA_API_KEY) before starting the server",
@@ -1432,7 +1432,7 @@ mod tests {
 
     /// A client with no roster behind it: what a test drives is the body it builds.
     fn client_with(model: &str, builtin_tools: &[&str], modalities: &[&str]) -> LlmClient {
-        let cfg = crate::config::LlmConfig {
+        let cfg = crate::config::ProviderConfig {
             provider: None,
             base_url: "http://127.0.0.1:1/v1".to_string(),
             model: model.to_string(),

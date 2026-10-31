@@ -176,7 +176,7 @@ nothing.
 
 ## SessionManager::materialise
 
-`llm` is what the session was pinned to; a row that predates it still knows its
+`provider` is what the session was pinned to; a row that predates it still knows its
 model, and the roster is what turns that name back into a provider. Only a model
 the roster has never heard of falls back to the server's own.
 

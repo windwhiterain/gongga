@@ -17,7 +17,7 @@ struct Command {
     /// UDP address to listen on. Overrides `[server] bind`.
     #[arg(long)]
     bind: Option<String>,
-    /// Model name. Overrides `[llm] model`.
+    /// Model name. Overrides `[provider] model`.
     #[arg(long)]
     model: Option<String>,
     /// Path to bash. Overrides `[tools.bash] program`.

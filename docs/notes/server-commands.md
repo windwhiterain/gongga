@@ -68,8 +68,8 @@ needs beside the balance row.
 ## set_session — what the answer says
 
 The confirmation is `session is now <name>` and nothing else. It used to append the
-llm spec, the thinking level and the notice threshold, which put
-`(llm deepseek-official/deepseek-flash)` at the top of every new session's window --
+provider spec, the thinking level and the notice threshold, which put
+`(provider deepseek-official/deepseek-flash)` at the top of every new session's window --
 the first line of the pane, above the conversation. Those three are SPEC's title
 fields now, drawn over the pane, so repeating them in the answer was the same
 sentence twice in the place the operator looks first.
@@ -158,7 +158,7 @@ The `cwd` it answers with is read without taking the default shell's lock
 and a session whose shell is mid-command was enough to leave the answer -- and the
 `gongga-cli` call waiting for it -- hanging until that command finished.
 
-## resolve_llm
+## resolve_provider
 
 `provider/model` first, then a bare model id: model ids may themselves contain a
 slash, so the fallback is what makes `--provider deepseek-flash` work without making

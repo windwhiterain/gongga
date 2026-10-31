@@ -248,7 +248,7 @@ item or the missing `previous_response_id`, on **every** request of a session
 whose transcript holds one such item, which would look like a permanently broken
 session rather than a bad item.
 
-If that shows up: `[llm] store = true` is already a knob here, and the shape to
+If that shows up: `[provider] store = true` is already a knob here, and the shape to
 send becomes `previous_response_id` plus only the new items, which is a change to
 `build_head` and to what `store` is allowed to hold. See
 `docs/notes/server-store.md` for why the item is stored verbatim in the first
