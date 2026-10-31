@@ -377,6 +377,15 @@ pub async fn dispatch(d: &Dispatch, name: &str, args: &Args) -> Outcome {
 /// Client commands are refused, not executed: the server cannot change a
 /// caller's own state, and saying "unknown" would hide a catalog entry that is
 /// right there in the greeting.
+/// The one sentence a missing argument gets, so a rule enforced later reads the
+/// same as one the catalog could state.
+pub fn missing_arguments(name: &str, missing: &[String]) -> String {
+    format!(
+        "{name} is missing required argument(s): {}",
+        missing.join(", ")
+    )
+}
+
 pub fn resolve(catalog: &[CommandSpec], name: &str, args: &Args) -> Result<CommandSpec, Outcome> {
     let Some(spec) = catalog.iter().find(|c| c.name == name) else {
         return Err(Outcome::err(format!("unknown command {name:?}")));
@@ -393,10 +402,7 @@ pub fn resolve(catalog: &[CommandSpec], name: &str, args: &Args) -> Result<Comma
         .map(|a| a.name.clone())
         .collect();
     if !missing.is_empty() {
-        return Err(Outcome::err(format!(
-            "{name} is missing required argument(s): {}",
-            missing.join(", ")
-        )));
+        return Err(Outcome::err(missing_arguments(name, &missing)));
     }
     Ok(spec.clone())
 }
@@ -513,11 +519,9 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             None => {
                 let stated_default = crate::config::DEFAULT_SESSION_MODEL;
                 if stated_default.is_empty() {
-                    return Outcome::err(
-                        "set_session requires --model: a session states its own model, and this \
-                         server states no default (DEFAULT_SESSION_MODEL is empty). \
-                         `model_pool pick` names one this machine can run now",
-                    );
+                    // Same sentence the catalog would give a missing argument: this
+                    // is `--model`, required only when nothing else names a model.
+                    return Outcome::err(missing_arguments("set_session", &["model".to_string()]));
                 }
                 match resolve_model(d, stated_default) {
                     Ok(entry) => entry,
@@ -1280,6 +1284,17 @@ mod tests {
         // There is no implicit "current session" to fall back on, so naming it
         // is not optional.
         assert!(session.required, "--session is required");
+    }
+
+    #[test]
+    /// The sentence a session with no model gets is the catalog's own, so a rule
+    /// enforced later reads exactly like an argument the spec could declare.
+    #[test]
+    fn a_session_with_no_model_reports_a_missing_argument() {
+        assert_eq!(
+            missing_arguments("set_session", &["model".to_string()]),
+            "set_session is missing required argument(s): model"
+        );
     }
 
     #[test]
