@@ -11,6 +11,18 @@
 /// release are exactly the case a version cannot answer.
 pub const BUILD: &str = env!("GONGGA_BUILD");
 
+/// What `--version` answers: the release, then the build in `BUILD`'s spelling.
+///
+/// # Invariant
+///
+/// The build is part of the answer because `0.1.0` alone cannot tell two builds
+/// apart, and "same version" is the question a person asks when something acts
+/// strangely. One line, greppable, identical in all three programs.
+pub fn version_line() -> &'static str {
+    static LINE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    LINE.get_or_init(|| format!("{} ({BUILD})", env!("CARGO_PKG_VERSION")))
+}
+
 pub mod channel;
 pub mod frame;
 #[cfg(test)]

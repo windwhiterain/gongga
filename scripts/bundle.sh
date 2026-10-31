@@ -31,6 +31,8 @@ done
 [[ "$profile" == release ]] && flag=--release || flag=""
 
 say() { printf '  %s\n' "$*"; }
+EXT=""
+[[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* ]] && EXT=".exe"
 die() { echo "bundle: $*" >&2; exit 1; }
 
 say "== build =="
@@ -43,6 +45,23 @@ done
 out=${out:-$root/.dev/dist/gongga}
 dir=$(dirname "$out")
 mkdir -p "$dir"
+
+say "== one build? =="
+# The programs carry `protocol::BUILD` and print it in `--version`. Asking each
+# one is the only check that cannot be fooled by a stale target/ or a copied
+# file: same line or no bundle.
+build=""
+for name in ${only//,/ }; do
+  line=$("$root/target/$profile/$name$EXT" --version 2>&1 | head -n 1 | tr -d '\r')
+  [[ -n "$line" ]] || die "$name does not answer --version"
+  echo "  $line"
+  # The name in front is each program's own; the parenthetical is the build.
+  this=$(printf '%s' "$line" | sed -n 's/.*(\(.*\)).*/\1/p')
+  [[ -n "$this" ]] || die "$name prints no build: $line"
+  [[ -n "$build" && "$this" != "$build" ]] && die "not one build: $this against $build"
+  build="$this"
+done
+say "  all carry build $build"
 
 say "== write =="
 python - "$root" "$profile" "$only" "$out" <<'PY'

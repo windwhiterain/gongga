@@ -9,7 +9,7 @@ use clap::Parser;
 use gongga_server::{Args, LogFormat};
 
 #[derive(Debug, Parser)]
-#[command(name = "gongga-server", about = "Gongga harness server", version)]
+#[command(name = "gongga-server", about = "Gongga harness server")]
 struct Command {
     /// Path to config.toml. Defaults to `$GONGGA_HOME/config.toml`.
     #[arg(long)]
@@ -49,5 +49,14 @@ impl From<Command> for Args {
 }
 
 fn main() -> anyhow::Result<()> {
+    // Built here rather than by `#[command(version)]`: the answer has to carry
+    // the build, which is not known to clap. See `protocol-lib.md`.
+    // `--version` before anything else: it must answer without a home, a config
+    // or a log line.
+    if std::env::args_os().any(|arg| arg == "--version" || arg == "-V") {
+        // The same line the other two print: crate, version, build.
+        println!("gongga-server {}", protocol::version_line());
+        return Ok(());
+    }
     gongga_server::main(Command::parse().into())
 }
