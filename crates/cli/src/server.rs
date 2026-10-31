@@ -38,7 +38,12 @@ pub fn serve(args: &Args, tokens: &[String]) -> anyhow::Result<()> {
     let port: u16 = port
         .parse()
         .with_context(|| format!("parsing --port {port:?}"))?;
-    let home = crate::home_of(args);
+    // `serve --home <dir>` wins over the flag written before the command name:
+    // the nearer one is the one the operator just typed.
+    let home = match parsed.get("home") {
+        Some(named) => crate::home_dir(Some(&PathBuf::from(named))),
+        None => crate::home_of(args),
+    };
     let server = server_program(&home)?;
     // Before a shell can exist: the command it will type is this program, and the
     // program that serves it sits beside it.
@@ -64,6 +69,22 @@ pub async fn ensure(home: &Path, addr: SocketAddr) -> anyhow::Result<bool> {
     }
     start(home, addr)?;
     Ok(true)
+}
+
+/// Starts one without asking first, and answers the pid of the process it spawned.
+///
+/// # Invariant
+///
+/// The pid is what makes "did *this* window start the server it is talking to"
+/// answerable: a home already served by somebody else refuses the lock, so the
+/// process started here exits at once and the pid never answers a dial. A caller
+/// therefore compares it with the pid the greeting carried rather than trusting
+/// the spawn. See `docs/notes/cli-server.md`.
+pub fn spawn(home: &Path, addr: SocketAddr) -> anyhow::Result<Option<u32>> {
+    if !starts_here(&addr) {
+        return Ok(None);
+    }
+    start(home, addr)
 }
 
 /// Whether a server on `addr` is this machine's to start.
@@ -97,7 +118,7 @@ async fn answers(home: &Path, addr: SocketAddr) -> bool {
 /// Nothing of this process goes with it: a one-shot command exits in
 /// milliseconds, and a server that died with its caller would take the turn it
 /// just started down with it.
-fn start(home: &Path, addr: SocketAddr) -> anyhow::Result<()> {
+fn start(home: &Path, addr: SocketAddr) -> anyhow::Result<Option<u32>> {
     let server = server_program(home)?;
     std::fs::create_dir_all(home).with_context(|| format!("creating {}", home.display()))?;
     // Before the server exists, because the server cannot do it: its own
@@ -120,14 +141,16 @@ fn start(home: &Path, addr: SocketAddr) -> anyhow::Result<()> {
         .stdout(Stdio::from(out))
         .stderr(Stdio::from(err));
     detach(&mut cmd);
-    cmd.spawn()
+    let child = cmd
+        .spawn()
         .with_context(|| format!("starting {}", server.display()))?;
     eprintln!(
-        "started {SERVE} for {} (log {})",
+        "started {SERVE} for {} (pid {}, log {})",
         home.display(),
+        child.id(),
         log.display()
     );
-    Ok(())
+    Ok(Some(child.id()))
 }
 
 /// Where the program that carries the server is.

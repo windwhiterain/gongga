@@ -10,7 +10,7 @@ pub mod server;
 pub use crate::catalog::Catalog;
 pub use crate::commands::{BlockSize, RenderModes, Sticky};
 pub use crate::complete::{Candidate, Completer, Completion, SharedCompleter, token_bounds};
-pub use crate::server::{ensure, starts_here};
+pub use crate::server::{ensure, spawn, starts_here};
 
 use std::collections::HashMap;
 
@@ -76,18 +76,27 @@ pub struct Args {
 impl Args {
     /// Rejects a global flag written after the command name, where clap would
     /// hide it.
+    ///
+    /// # Invariant
+    ///
+    /// `serve --home` is the one exception: that command's subject *is* a home,
+    /// so `gongga serve --home <dir>` reads as one sentence. Every other command
+    /// takes the flag before its name, where clap can see it.
     pub fn check_flag_order(&self) -> anyhow::Result<()> {
         let Some(Sub::Cmd(command)) = &self.command else {
             return Ok(());
         };
+        let serves = command.first().map(String::as_str) == Some("serve");
         // Every command flag takes one value, which may itself look like a flag:
         // walk pairs rather than match every token.
         let mut i = 1;
         while i < command.len() {
             let token = &command[i];
-            if let Some(flag) = ["--server", "--home", "--key", "--client-only"]
+            let ordered = ["--server", "--home", "--key", "--client-only"];
+            if let Some(flag) = ordered
                 .iter()
                 .find(|flag| token.as_str() == **flag || token.starts_with(&format!("{flag}=")))
+                .filter(|flag| !(serves && **flag == "--home"))
             {
                 anyhow::bail!(
                     "{flag} has to come before the command: `gongga {flag} <value> {} ...`",
@@ -144,8 +153,8 @@ pub const COMMAND: &str = "gongga-cli";
 /// `gongga-cli` is wrong when the file on their disk is called `gongga`, and the
 /// name is the only thing that knows which it is.
 pub fn typed_name() -> String {
-    // A bundle hands over to an extracted program, so argv[0] is the file it
-    // extracted; it passes the name it was started as in this variable.
+    // A bundle hands over to an extracted program, so argv[0] is that file; it
+    // passes its own name in this variable.
     if let Some(named) = std::env::var("GONGGA_NAME")
         .ok()
         .map(|name| name.trim().to_string())
@@ -1545,6 +1554,14 @@ pub async fn dial(endpoint: Endpoint) -> Result<(Link, Greeting), DialFailure> {
 pub struct Greeting(ServerMessage);
 
 impl Greeting {
+    /// The pid of the server that sent this: who is answering the dial.
+    pub fn pid(&self) -> u32 {
+        match &self.0 {
+            ServerMessage::Hello { server, .. } => server.pid,
+            _ => 0,
+        }
+    }
+
     /// Brings a client up to date: catalog, session list, model; this is the
     /// resync.
     pub fn apply(self, client: &mut Client, sink: &mut dyn Sink) {
@@ -1719,6 +1736,28 @@ mod tests {
                 "send_message --message {value} --session=--key"
             )));
             assert!(args.check_flag_order().is_ok(), "value was {value}");
+        }
+    }
+
+    /// `serve --home` is readable as one sentence, and the server it hands over
+    /// to serves that home -- so it is the one command that takes the flag after
+    /// its own name.
+    #[test]
+    fn only_serve_takes_a_home_after_its_name() {
+        for command in [
+            "serve --port 9700 --home /tmp/other",
+            "serve --port 9700 --home=/tmp/other",
+        ] {
+            let args = parsed_command(argv(command));
+            assert!(args.check_flag_order().is_ok(), "rejected {command}");
+        }
+        // The other three are still where clap can see them or nowhere.
+        for command in [
+            "serve --port 9700 --key secret",
+            "serve --port 9700 --server 127.0.0.1:9701",
+        ] {
+            let args = parsed_command(argv(command));
+            assert!(args.check_flag_order().is_err(), "accepted {command}");
         }
     }
 
