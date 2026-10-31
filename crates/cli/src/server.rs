@@ -49,12 +49,7 @@ pub fn serve(args: &Args, tokens: &[String]) -> anyhow::Result<()> {
     // Before a shell can exist: the command it will type is this program, and the
     // program that serves it sits beside it.
     install_commands(&home, &server);
-    let mut cmd = Command::new(&server);
-    cmd.arg("--home")
-        .arg(&home)
-        .arg("--bind")
-        .arg(format!("127.0.0.1:{port}"))
-        .current_dir(&home);
+    let cmd = server_command(&server, &home, &format!("127.0.0.1:{port}"));
     take_over(cmd, &server)
 }
 
@@ -279,16 +274,24 @@ fn start(
 
 /// What to start, before where its output goes.
 fn command(server: &Path, home: &Path, addr: SocketAddr, owner: Option<u32>) -> Command {
-    let mut cmd = Command::new(server);
-    cmd.arg("--home")
-        .arg(home)
-        .arg("--bind")
-        .arg(addr.to_string())
-        .current_dir(home);
+    let mut cmd = server_command(server, home, &addr.to_string());
     if let Some(owner) = owner {
         // Nobody is left to cancel it once the window is gone.
         cmd.arg("--parent").arg(owner.to_string());
     }
+    cmd
+}
+
+/// A server for `home` on `bind`, in the directory this process runs in.
+///
+/// # Invariant
+///
+/// Never `current_dir`: the child inherits where its starter runs, so a session
+/// with no `--cwd` opens where the operator launched the window, not in the home
+/// the binary was installed in. See `docs/notes/cli-server.md`.
+fn server_command(server: &Path, home: &Path, bind: &str) -> Command {
+    let mut cmd = Command::new(server);
+    cmd.arg("--home").arg(home).arg("--bind").arg(bind);
     cmd
 }
 
@@ -536,6 +539,20 @@ mod tests {
         // starting a second server for the same home.
         assert!(!starts_here(&addr("10.1.2.3:9700")));
         assert!(!starts_here(&addr("[2001:db8::1]:9700")));
+    }
+
+    /// What it starts lands where this process runs, not in the home it serves.
+    #[test]
+    fn the_server_starts_in_the_directory_its_starter_runs_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let server = dir.path().join(program_name(SERVER));
+        // No directory of its own means inherited, whatever this test's happens
+        // to be -- the home would be the other answer.
+        let started = command(&server, &home, addr("127.0.0.1:9700"), Some(7));
+        assert_eq!(started.get_current_dir(), None);
+        let served = server_command(&server, &home, "127.0.0.1:9700");
+        assert_eq!(served.get_current_dir(), None);
     }
 
     /// The command a shell and a script both run is this program, under the name

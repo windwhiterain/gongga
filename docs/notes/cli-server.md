@@ -47,6 +47,24 @@ instance lock, so this child exits at once and its pid never answers a dial. A c
 that wants to know whether it may stop the server compares that pid with the one the
 greeting carried.
 
+## where it runs
+
+The child is never given a `current_dir`: it inherits the one its starter runs in.
+The home is a place to keep data, not the place a shell should land, and a server
+started with the home as its directory answers every later "what directory is
+this?" with the install's -- a session with no `--cwd` was opening in
+`~/.gongga` because the window that started the server did not say otherwise.
+
+Whoever starts it is therefore the answer: a window makes new sessions open in
+the directory it was launched from, and `serve` typed in a console serves from
+that console's directory. Nothing in the server reads the directory it happens to
+have -- the home arrives as `--home`, the shipped content under the home, and
+`git` is told `--git-dir`/`-C` -- so the inherited one costs nothing to hand to
+the children a session starts.
+
+`the_server_starts_in_the_directory_its_starter_runs_in` is the pair of
+`Command`s: no directory of their own, for both `serve` and the spawn.
+
 ## ensure
 
 The one place that decides "start one". Called by the window, and only there: a
