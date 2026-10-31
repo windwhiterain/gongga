@@ -158,6 +158,36 @@ fn link_dir(target: &Path, at: &Path) -> std::io::Result<()> {
     }
 }
 
+/// A git command that gives up on a remote that stopped answering.
+///
+/// # Invariant
+///
+/// The refresh runs on the blocking pool, which the exit joins, so a stalled
+/// transfer is a stop that does not stop. Git's own bound does the work: below a
+/// trickle for longer than the limit it aborts, and a credential prompt -- which
+/// has no console to appear on -- is refused. Silence is what is bounded, never
+/// duration: a slow transfer is still allowed to finish.
+fn bounded(git: &str) -> Command {
+    let mut cmd = Command::new(git);
+    cmd.env("GIT_TERMINAL_PROMPT", "0")
+        .env(
+            "GIT_SSH_COMMAND",
+            format!("{} -o BatchMode=yes -o ConnectTimeout=10", ssh()),
+        )
+        .args([
+            "-c",
+            "http.lowSpeedLimit=1000",
+            "-c",
+            "http.lowSpeedTime=20",
+        ]);
+    cmd
+}
+
+/// OpenSSH, which a `git@` clone URL goes through; a fake git in a test ignores it.
+fn ssh() -> &'static str {
+    "ssh"
+}
+
 /// Makes the community root match its remote, cloning it when it is absent.
 ///
 /// # Invariant
@@ -174,7 +204,7 @@ pub fn sync(roots: &Roots, urls: &[String]) -> anyhow::Result<Sync> {
         return clone(dir, urls);
     }
     let before = head(dir);
-    let out = Command::new(crate::ship::git())
+    let out = bounded(crate::ship::git())
         .arg("-C")
         .arg(dir)
         .args(["pull", "--ff-only", "-q"])
@@ -200,7 +230,7 @@ fn clone(dir: &Path, urls: &[String]) -> anyhow::Result<Sync> {
     }
     let mut last = "no clone URL was configured".to_string();
     for url in urls {
-        let out = Command::new(crate::ship::git())
+        let out = bounded(crate::ship::git())
             .args(["clone", "-q"])
             .arg(url)
             .arg(dir)

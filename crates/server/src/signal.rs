@@ -130,46 +130,24 @@ fn asked(wake: &Notify) {
 ///
 /// # Invariant
 ///
-/// A named parent is the window that owns this server, so its death is a stop
-/// request -- not a kill: the turn in flight is preserved like any other stop.
-#[cfg(windows)]
-fn follows(pid: u32, wake: Arc<Notify>) {
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows_sys::Win32::System::Threading::{
-        INFINITE, OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
-    };
-
-    // SAFETY: asking for a wait handle on a pid that may already be gone.
-    let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
-    if handle.is_null() {
-        nudge(&wake);
-        return;
-    }
-    // As a number: a handle is not `Send`, and this thread only waits on it.
-    let raw = handle as usize;
-    // A thread of its own: the handle signals only when the window ends.
-    tokio::task::spawn_blocking(move || {
-        let handle = raw as HANDLE;
-        // SAFETY: the handle came from `OpenProcess`, and it is closed once.
-        unsafe {
-            WaitForSingleObject(handle, INFINITE);
-            CloseHandle(handle);
-        }
-        nudge(&wake);
-    });
-}
-
-/// The same on unix, by asking the kernel whether the pid still exists.
-#[cfg(unix)]
+/// The parent is the window that owns this server, so its death is a stop
+/// request, not a kill: the turn is preserved like any other stop. The wait holds
+/// no work, so the exit never waits for the window -- the pending row is written
+/// before a turn starts (`commands::deliver`). In the blocking pool, which
+/// `Runtime::drop` joins, it was a stop held for the window's lifetime.
 fn follows(pid: u32, wake: Arc<Notify>) {
     tokio::spawn(async move {
         while exists(pid) {
-            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            tokio::time::sleep(POLL).await;
         }
         nudge(&wake);
     });
 }
 
+/// How often a followed pid is asked whether it is still there.
+const POLL: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Whether a pid names a live process.
 #[cfg(unix)]
 fn exists(pid: u32) -> bool {
     // SAFETY: signal 0 delivers nothing; it only asks whether the pid is there.
@@ -177,6 +155,40 @@ fn exists(pid: u32) -> bool {
     let error = std::io::Error::last_os_error().raw_os_error();
     // Somebody else's process is still somebody there.
     !refused || error == Some(libc::EPERM)
+}
+
+/// Whether a pid names a live process, by its exit code.
+///
+/// # Invariant
+///
+/// Asking, not waiting: a timed wait would hold a runtime thread for its length,
+/// and an untimed one is the defect above.
+#[cfg(windows)]
+fn exists(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    if pid == 0 {
+        return false;
+    }
+    // SAFETY: a query handle on a pid that may already be gone is answered with
+    // null, and the handle is closed exactly once.
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return false;
+        }
+        let mut code = 0;
+        let alive = GetExitCodeProcess(process, &mut code) != 0 && code == STILL_ACTIVE as u32;
+        CloseHandle(process);
+        alive
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn exists(_pid: u32) -> bool {
+    false
 }
 
 #[cfg(windows)]

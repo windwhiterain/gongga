@@ -226,6 +226,33 @@ powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter 'ProcessI
 顺带一条：修完 `store.rs` 这类 schema 迁移之后，旧服务端的进程仍然持有旧代码，即使数据库
 已经被新二进制迁过了——两边对同一个库的假设不一样，这就是「什么都对不上」的来源。
 
+## 继任者带着旧服务端的命令行
+
+SPEC（Skill: evolve）：*restart server should still keep its lifetime, e.g. tui
+spawned server's lifetime bound to tui*。所以继任者不是「一个同名新进程」，而是
+**同一个服务端换了个二进制**：`stage` 在旧服务端还活着时把它自己的 argv 读出来，
+一个 token 一行写进 `$RUN/evolve-<stamp>-args`，launcher 原样 `exec "$NEW" "${ARGS[@]}"`。
+
+```bash
+$S stage
+old server: home C:\Users\x\.gongga, bind 127.0.0.1:9700, owner 8736
+# 继任者起来时：
+evolve: taking the home as C:\Users\x\.gongga on 127.0.0.1:9700 for window 8736 (6 argument(s) carried over)
+```
+
+四条由此而来的规矩：
+
+- **`--parent` 必须跟着走。** 丢它的继任者是「无主服务端」：关窗口不会停它，它会一直占着
+  端口和 home 锁，直到有人手动收。
+- **`--home` / `--bind` 也必须跟着走。** 它们只是**恰好**等于默认值时才看不出区别；换到
+  第二个 home 或非默认端口时，丢了就等于把服务端挪了家。
+- **读不到旧服务端的命令行 = 拒绝 stage。** 猜一个 argv 正是产出无主服务端的那条路。
+- **窗口在继任者接管前就没了 = 拒绝接管。** 带一个已死的 `--parent` 起来，它会 resume 你
+  的回合再立刻自杀；那时该做的是重开窗口。
+
+launcher 也因此从 `cd <repo>` 改成 `cd <home>`：家目录是新会话默认 cwd 的来源，和
+`cli::server::command` 起服务端时一致。
+
 ## 症状：TUI 关了，服务端还在
 
 说明那个服务端不是窗口起的（`--parent` 只管窗口自己 spawn 的），而是从别处来的——最常见

@@ -36,8 +36,17 @@ in `--parent`. When the window ends -- normally, by a crash, or by `taskkill /F`
 the server takes the same stop: the turn is preserved and the server exits, so a
 killed window does not leave a process holding the port and the home lock.
 
-Windows waits on the process handle, so pid reuse cannot fool it. Unix asks the
-kernel every 250 ms whether the pid still exists, which a reused pid can.
+Both platforms ask, every 250 ms, whether the pid is still running: Windows by
+reading the handle's exit code, Unix by `kill(pid, 0)`. Windows used to *wait* on
+the handle instead -- `WaitForSingleObject(handle, INFINITE)` inside
+`spawn_blocking` -- and that was a stop that did not stop: `Runtime::drop` joins
+the blocking pool, so a cancelled server kept its home lock until the window it
+followed ended, which is minutes after the window was restarted and forever for a
+window that was never closed. The port and the turn were already released by
+then, which is what made it look like a handover that hung rather than an exit
+that waited. A wait that outlives the stop must not be work `Runtime::drop` joins;
+nothing is lost by asking instead of waiting, because the pending row is written
+before a turn starts (`commands::deliver`), not when the server leaves.
 
 ## signal::adopt -- the window that did not start it
 

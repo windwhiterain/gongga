@@ -7,6 +7,20 @@ the roster and the quota scripts beside it; the module is named for the
 directory rather than for the two files because the next thing to live there
 will not be a roster, and a module renamed every time is a module nobody cites.
 
+## The refresh cannot hang
+
+`sync` runs on the blocking pool, which the runtime joins at the exit, so a `git
+pull` that never gives up would hold the exit for as long as the kernel keeps the
+connection -- the same failure as a wait on a window that never closes. Git is
+therefore told what a stalled transfer is: below a trickle for longer than the
+limit it aborts (`http.lowSpeedLimit` / `http.lowSpeedTime`), an ssh transport is
+asked not to prompt and to give up on a connection in ten seconds, and
+`GIT_TERMINAL_PROMPT=0` keeps a credential question from becoming a hang with no
+console to appear on.
+
+This bounds silence, not duration: a slow but moving transfer is still allowed to
+finish, because AGENTS.md forbids turning a wait into a budget.
+
 ## Roots
 
 Two directories, and the shape inside them is the same, so a relative path means
