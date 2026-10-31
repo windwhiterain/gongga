@@ -74,6 +74,25 @@ pub fn fnv_of(path: &Path) -> std::io::Result<u64> {
     }
 }
 
+/// Removes every other build's directory under `dir`, best effort.
+///
+/// # Invariant
+///
+/// A directory a process is still running from cannot be removed on Windows, and
+/// that is the answer worth having: what is in use stays, what is not goes. One
+/// file per release would otherwise leave 35 MB behind on every build.
+pub fn prune(dir: &Path, keep: &str) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy() == keep {
+            continue;
+        }
+        let _ = std::fs::remove_dir_all(entry.path());
+    }
+}
+
 /// One name for one set of payloads, so a build never rewrites another's files.
 pub fn stamp(programs: &[(&str, &[u8])]) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;

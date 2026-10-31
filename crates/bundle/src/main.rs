@@ -37,15 +37,16 @@ fn run() -> Result<u8, String> {
     }
     // Beside this build: a server may be running from `bin`, which no platform
     // can replace. See `bundle-main.md`.
-    let dir = home()
-        .join("payload")
-        .join(payload::stamp(payload::EMBEDDED));
+    let stamp = payload::stamp(payload::EMBEDDED);
+    let dir = home().join("payload").join(&stamp);
     // Every program, not only the one asked for: `serve` looks for the server
     // beside itself.
     for (name, bytes) in payload::EMBEDDED {
         payload::place(&dir, name, bytes)
             .map_err(|e| format!("placing {name} in {}: {e}", dir.display()))?;
     }
+    // Leftover builds go, except any a process is still running from.
+    payload::prune(&home().join("payload"), &stamp);
     take_over(&dir.join(payload::file_name(&wanted)), skip)
 }
 
@@ -53,7 +54,7 @@ fn run() -> Result<u8, String> {
 mod payload {
     include!(concat!(env!("OUT_DIR"), "/embedded.rs"));
 
-    pub use crate::payload_impl::{file_name, place, stamp};
+    pub use crate::payload_impl::{file_name, place, prune, stamp};
 }
 
 /// Which program to run, and how many arguments that choice consumed.
