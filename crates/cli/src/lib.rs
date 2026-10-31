@@ -530,6 +530,22 @@ impl Client {
                     LineKind::System,
                     &format!("connected to the server (model {})", self.model),
                 );
+                // Not fatal: the protocol is the contract and this crate speaks
+                // it, so a different build is a warning about *this machine* --
+                // somebody's other checkout, a stale install -- and the reader is
+                // the one who can fix it.
+                if !server.build.is_empty() && server.build != protocol::BUILD {
+                    sink.line(
+                        &self.command_window(),
+                        LineKind::System,
+                        &format!(
+                            "note: that server is build {}, this program is {} -- \
+                             same protocol, different builds",
+                            server.build,
+                            protocol::BUILD
+                        ),
+                    );
+                }
                 self.refresh(sink);
             }
             ServerMessage::Denied { reason } => {
@@ -1504,7 +1520,7 @@ async fn connect(args: &Args) -> anyhow::Result<(Client, Link)> {
         Err(failure) if failure.is_fatal() => return Err(failure.into_error()),
         Err(failure) => {
             return Err(anyhow!(
-                "{}; is a server running? Start one with `gongga serve --port <port>`",
+                "{}; is a server running? Start one with `gongga-cli serve --port <port>`",
                 failure.message()
             ));
         }
@@ -1518,6 +1534,7 @@ async fn connect(args: &Args) -> anyhow::Result<(Client, Link)> {
 fn client_info() -> ClientInfo {
     ClientInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
+        build: protocol::BUILD.to_string(),
         label: format!("cli/pid-{}", std::process::id()),
     }
 }

@@ -607,6 +607,7 @@ async fn dial(
     let hello = ClientMessage::Hello {
         client: ClientInfo {
             version: env!("CARGO_PKG_VERSION").to_string(),
+            build: protocol::BUILD.to_string(),
             label: format!("bridge/pid-{}", std::process::id()),
         },
         key,

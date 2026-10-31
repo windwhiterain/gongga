@@ -27,6 +27,9 @@ pub enum ClientMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientInfo {
     pub version: String,
+    /// The build of the program dialing: see [`crate::BUILD`].
+    #[serde(default)]
+    pub build: String,
     /// Free-form label shown by the server in logs, e.g. `cli/pid-1234`.
     pub label: String,
 }
@@ -53,6 +56,9 @@ pub enum ServerMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerInfo {
     pub version: String,
+    /// The build of the program that owns this session: see [`crate::BUILD`].
+    #[serde(default)]
+    pub build: String,
     pub pid: u32,
     pub started_at: i64,
     pub cwd: String,

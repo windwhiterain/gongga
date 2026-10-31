@@ -1,6 +1,16 @@
 //! Wire protocol and reliable-UDP transport for the server, CLI and TUI.
 //! See `docs/notes/protocol-lib.md`.
 
+/// Which build this is: one id for the server, the command line and the window.
+///
+/// # Invariant
+///
+/// Every program that links this crate carries the same string, so "are these
+/// three one build" is a comparison and not a guess. It is not the version:
+/// `0.1.0` says which release, this says which commit -- and two builds of one
+/// release are exactly the case a version cannot answer.
+pub const BUILD: &str = env!("GONGGA_BUILD");
+
 pub mod channel;
 pub mod frame;
 #[cfg(test)]

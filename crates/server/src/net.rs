@@ -198,6 +198,7 @@ async fn handle_connection(
             protocol: protocol::PROTOCOL_VERSION,
             server: ServerInfo {
                 version: env!("CARGO_PKG_VERSION").to_string(),
+                build: protocol::BUILD.to_string(),
                 pid: std::process::id(),
                 started_at: crate::store::now_millis(),
                 cwd: std::env::current_dir()
@@ -327,7 +328,13 @@ async fn authenticate(
         Ok(Some(bytes)) => match decode_client(&bytes) {
             Ok(ClientMessage::Hello { client, key }) => {
                 if key_matches(&key, expected) {
-                    tracing::info!(%peer, conn_id, label = %client.label, "client connected");
+                    tracing::info!(
+                        %peer,
+                        conn_id,
+                        label = %client.label,
+                        build = %client.build,
+                        "client connected"
+                    );
                     return true;
                 }
                 tracing::warn!(%peer, "rejected client: wrong key");
