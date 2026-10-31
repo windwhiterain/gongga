@@ -635,6 +635,15 @@ impl Tui {
             return None;
         }
 
+        // A key with nothing to erase acts on the sticky session: SPEC's delete/backspace.
+        if self.screen.input.is_empty()
+            && matches!(key.code, KeyCode::Delete | KeyCode::Backspace)
+            && let Some(target) = self.screen.sticky_session.clone()
+        {
+            self.close_completion();
+            return Some(UiEvent::Submit(delete_line(&target)));
+        }
+
         if edit_input(
             &mut self.screen.input,
             &mut self.screen.completion,
@@ -947,6 +956,11 @@ fn cycle_mode_line(session: &str, drawn_as: Option<crate::panes::Kind>) -> Strin
         _ => "full",
     };
     format!("/set_render_session --session {session} --mode {next}")
+}
+
+/// The command line a delete key asks for: the sticky session's own deletion.
+fn delete_line(session: &str) -> String {
+    format!("/del_session --session {session}")
 }
 
 /// Paints `screen` and leaves the console caret on the prompt.

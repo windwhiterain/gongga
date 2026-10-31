@@ -301,6 +301,19 @@ in every other editor. Shift is what says "move the view, not the line".
 A page is the log window, not a fixed ten rows: on a short terminal ten rows
 scrolls past what is visible and the jump looks arbitrary.
 
+## delete and backspace
+
+SPEC gives Delete and Backspace the sticky session, so a key with nothing to erase
+deletes it. The window asks for that the way a click does: it submits
+`/del_session --session <name>`, and the command layer owns the rule. The prompt
+comes first, though -- a backspace over typed text still edits the text, and a
+Delete with the caret inside it still removes a character. Only a key that would
+change nothing reaches the session, which is also why the binding needs a sticky
+session: with none set, both keys do what they always did.
+
+The binding deletes the session the sticky names; the sticky setting itself is
+the command layer's, and clearing it is a `del_sticky` nobody pressed.
+
 ## Tui::paste
 
 A bracketed paste arrives as one event carrying one string. It is inserted with

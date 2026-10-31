@@ -68,6 +68,7 @@ in cmd_input, those three should be auto complete.
   - Shift+Enter: new line in cmd_input.
   - PageUp/PageDown (Fn+Up/Down): scroll the sticky session.
   - Shift+Down: scroll the sticky session to bottom.
+  - delete/packspace: delete sticky session.
 
 
 ## Cmd
