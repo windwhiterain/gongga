@@ -12,6 +12,13 @@ _Post Modern Agent Harness_
 - Git managed configuration.
 - Streaming LLM reqwest optimized for minimal allocation.
 
+## Environment Requirement
+
+- bash
+- python
+- git
+- Github access
+
 ## Install
 
 ```sh
@@ -32,9 +39,4 @@ If the one file is not what you want, `cargo install --git ... --locked
 gongga-cli gongga-server` installs the programs separately; they find each other
 in `~/.cargo/bin`.
 
-## Environment Requirement
 
-- bash
-- python
-- git
-- Github access
