@@ -201,6 +201,7 @@ async fn handle_connection(
                 build: protocol::BUILD.to_string(),
                 pid: std::process::id(),
                 started_at: crate::store::now_millis(),
+                home: cfg.home.display().to_string(),
                 cwd: std::env::current_dir()
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_default(),

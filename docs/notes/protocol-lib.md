@@ -50,3 +50,18 @@ server upgrade break every client, which is what `--client_only` and
 So `BUILD` is compared and reported, and `PROTOCOL_VERSION` is what a refusal
 would key on if one were ever needed. Today nothing refuses; the protocol is at
 version 1 and the field is carried, which is the cheapest place to start.
+
+## ServerInfo::home
+
+Which home the server owns, so a client can tell it reached its own. Two homes on
+one machine share the default port, and the key is the only other thing that
+would stop the mistake -- so an exported `GONGGA_KEY`, or a home copied from
+another, is enough for one home's client to drive the other's server, writing
+sessions into the wrong database with no complaint.
+
+The client reports it (`sink.note` with `LineKind::Error`) and still works: a
+deliberate `connect_server` to another home is legitimate, and refusing would
+make it impossible. What it must not be is silent.
+
+`cwd` could have been read for this and is not: a server started by `evolve`'s
+launcher is `exec`ed after a `cd` to the repository, so its `cwd` is not its home.

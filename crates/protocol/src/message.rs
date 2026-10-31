@@ -61,6 +61,9 @@ pub struct ServerInfo {
     pub build: String,
     pub pid: u32,
     pub started_at: i64,
+    /// The home this server owns, so a client can tell it reached its own.
+    #[serde(default)]
+    pub home: String,
     pub cwd: String,
     pub model: String,
 }

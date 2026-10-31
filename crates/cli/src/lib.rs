@@ -601,6 +601,19 @@ impl Client {
                         ),
                     );
                 }
+                // Two homes on one machine share the default port, so a
+                // matching key is enough to drive the other one by accident.
+                let mine = self.sticky.home();
+                if !server.home.is_empty() && !same_home(&server.home, mine) {
+                    sink.note(
+                        LineKind::Error,
+                        &format!(
+                            "that server serves {}, not {} -- commands here would act                              on the other home",
+                            server.home,
+                            mine.display()
+                        ),
+                    );
+                }
             }
             ServerMessage::Denied { reason } => {
                 sink.note(LineKind::Error, &format!("connection refused: {reason}"));
@@ -1659,6 +1672,16 @@ fn resolve_key_with(args: &Connection, env: &Env) -> Option<String> {
     env("GONGGA_KEY").or_else(|| key_from_home(&home_dir(args.home.as_deref())))
 }
 
+/// Whether two spellings name one directory: one may be relative.
+fn same_home(server: &str, mine: &Path) -> bool {
+    let theirs = Path::new(server);
+    let theirs = theirs
+        .canonicalize()
+        .unwrap_or_else(|_| theirs.to_path_buf());
+    let mine = mine.canonicalize().unwrap_or_else(|_| mine.to_path_buf());
+    theirs == mine
+}
+
 /// The key this process would present to the server of `home`.
 pub(crate) fn key_of(home: &Path) -> Option<String> {
     process_env("GONGGA_KEY").or_else(|| key_from_home(home))
@@ -1739,9 +1762,7 @@ mod tests {
         }
     }
 
-    /// `serve --home` is readable as one sentence, and the server it hands over
-    /// to serves that home -- so it is the one command that takes the flag after
-    /// its own name.
+    /// `serve --home` reads as one sentence.
     #[test]
     fn only_serve_takes_a_home_after_its_name() {
         for command in [
