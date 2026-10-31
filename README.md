@@ -12,40 +12,29 @@ _Post Modern Agent Harness_
 - Git managed configuration.
 - Streaming LLM reqwest optimized for minimal allocation.
 
+## Install
+
+```sh
+cargo install --git https://github.com/windwhiterain/gongga.git --locked \
+  --features payload gongga-bundle
+gongga serve --port 9700
+```
+
+That is the whole install. `cargo install` compiles the three programs into one
+file, `gongga`, and its first run places them in `~/.gongga/bin` -- so a machine
+that only ever receives that file needs neither Rust nor cargo.
+
+`gongga` is the whole interface: `gongga tui` opens the window, `gongga` alone
+lists what the server publishes, and a copy named `gongga-server` is the server.
+`gongga --version` answers the commit it was built from.
+
+If the one file is not what you want, `cargo install --git ... --locked
+gongga-cli gongga-server` installs the programs separately; they find each other
+in `~/.cargo/bin`.
+
 ## Environment Requirement
 
 - bash
 - python
 - git
 - Github access
-
-## Install
-
-Two programs have to sit in one directory -- `gongga-cli` starts `gongga-server`
-and only looks beside itself and in the home's `bin` -- so install them in one
-command, from a tag or a commit:
-
-```sh
-cargo install --git https://github.com/windwhiterain/gongga.git --locked \
-  gongga-cli gongga-server
-cargo install --git https://github.com/windwhiterain/gongga.git --locked gongga-tui   # the window
-```
-
-`~/.cargo/bin` is one directory, so the two find each other. Then one start lays
-out the home: `gongga-cli serve --port 9700` writes `~/.gongga/bin/gongga-cli` +
-`gongga-server`, installs the pinned content and begins listening. `--rev <sha>`
-pins a build the same way [`crates/server/ship.toml`](crates/server/ship.toml)
-pins the prose.
-
-A single file carrying all of it, for a machine without Rust:
-
-```sh
-cargo install --git https://github.com/windwhiterain/gongga.git --locked \
-  --features payload gongga-bundle     # one file, the programs embedded
-scripts/bundle.sh --release            # or build it here, into .dev/dist/gongga
-```
-
-`--features payload` is what makes it one file: without it the head carries
-nothing and says so. The programs are built inside that build and embedded, so
-the artifact cargo hands you is the whole distribution.
-

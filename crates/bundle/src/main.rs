@@ -26,9 +26,8 @@ fn run() -> Result<u8, String> {
     if carried.is_empty() {
         return Err(format!(
             "this file carries no programs: it was built without `--features payload`, so \
-             there is nothing to place. Build it with one (`cargo build -p gongga-bundle \
-             --features payload`), or install the programs themselves \
-             (`cargo install --git ... gongga-cli gongga-server`)"
+             there is nothing to place. Install it with one \
+             (`cargo install --git <repo> --features payload gongga-bundle`)"
         ));
     }
     if !carried.contains(&wanted.as_str()) {

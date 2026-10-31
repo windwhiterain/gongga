@@ -17,7 +17,9 @@ description = "One file that carries the programs: the head of a release, nothin
 # three other crates it is not going to use.
 payload = []
 
+# The command a person types. `cargo install --features payload gongga-bundle`
+# puts it on PATH under this name, and it dispatches to what it carries.
 [[bin]]
-name = "gongga-bundle"
+name = "gongga"
 path = "src/main.rs"
 test = false
