@@ -364,7 +364,7 @@ impl Agent {
         Ok(prompt)
     }
 
-    /// One model request. Runs each tool call the moment it arrives.
+    /// Records the whole step around the narrower request and tool measurements.
     async fn step(
         &self,
         session: &SessionHandle,
@@ -374,6 +374,49 @@ impl Agent {
         cancel: &tokio_util::sync::CancellationToken,
         attempt: &Attempt<'_>,
     ) -> anyhow::Result<StepResult> {
+        let started_at = crate::store::now_millis();
+        let started = std::time::Instant::now();
+        let mut phases = StepPhases::default();
+        let result = self
+            .step_inner(session, id, name, turn, cancel, attempt, &mut phases)
+            .await;
+        let outcome = match &result {
+            Ok(StepResult::Finished) => "finished",
+            Ok(StepResult::RanTools) => "ran_tools",
+            Ok(StepResult::Stopped) => "stopped",
+            Err(_) => "failed",
+        };
+        let llm_ms = phases
+            .llm_started
+            .map(|started| started.elapsed().as_millis() as u64);
+        let _ = self.store.append_event(
+            Some(id),
+            "step_timing",
+            &json!({
+                "step": attempt.number,
+                "turn": turn,
+                "started_at": started_at,
+                "elapsed_ms": started.elapsed().as_millis() as u64,
+                "prompt_ms": phases.prompt_ms,
+                "source_ms": phases.source_ms,
+                "llm_ms": llm_ms,
+                "outcome": outcome,
+            }),
+        );
+        result
+    }
+
+    /// One model request. Runs each tool call the moment it arrives.
+    async fn step_inner(
+        &self,
+        session: &SessionHandle,
+        id: i64,
+        name: &str,
+        turn: u64,
+        cancel: &tokio_util::sync::CancellationToken,
+        attempt: &Attempt<'_>,
+        phases: &mut StepPhases,
+    ) -> anyhow::Result<StepResult> {
         let Attempt {
             number: step,
             llm,
@@ -381,17 +424,22 @@ impl Agent {
             cwd,
         } = *attempt;
         let note = self.store.handover(id)?;
+        let phase_started = std::time::Instant::now();
         let definitions = self.tools.definitions();
         let prompt = self.prompt_in_force(id, &name, cwd, note.as_deref(), step == 1)?;
+        phases.prompt_ms = phase_started.elapsed().as_millis() as u64;
         // Pinned here, so every retry of this request replays the window that was
         // current when it started.
+        let phase_started = std::time::Instant::now();
         let source = self.store.request_source(id)?;
+        phases.source_ms = phase_started.elapsed().as_millis() as u64;
         // One number for "how long the model took": the whole stream, retries
         // inside it included, because that is what the wall clock paid.
         let requested = std::time::Instant::now();
         // SPEC's ttft and tps both count from the first token: the wait for it,
         // then what came out over the time after.
         let mut first_token: Option<std::time::Instant> = None;
+        phases.llm_started = Some(requested);
         let mut rx = llm.stream(
             &prompt.instructions,
             prompt.handover.as_deref(),
@@ -489,12 +537,20 @@ impl Agent {
                     );
                     let _ = self.store.start_tool_call(id, &call_id, &tool, &arguments);
                     if self
-                        .run_one_call(session, id, name, cancel, llm, call_id, tool, arguments)
+                        .run_one_call(
+                            session, id, name, turn, step, cancel, llm, call_id, tool, arguments,
+                        )
                         .await
                     {
                         return Ok(StepResult::Stopped);
                     }
                     ran_tools = true;
+                }
+                LlmEvent::Attempt { probe } => {
+                    let mut payload = probe.to_json();
+                    payload["step"] = json!(step);
+                    payload["turn"] = json!(turn);
+                    let _ = self.store.append_event(Some(id), "llm_attempt", &payload);
                 }
                 LlmEvent::Completed { usage } => {
                     saw_completion = true;
@@ -658,12 +714,16 @@ impl Agent {
         session: &SessionHandle,
         id: i64,
         name: &str,
+        turn: u64,
+        step: u32,
         cancel: &tokio_util::sync::CancellationToken,
         llm: &LlmClient,
         call_id: String,
         tool: String,
         arguments_given: String,
     ) -> bool {
+        let started_at = crate::store::now_millis();
+        let started = std::time::Instant::now();
         if cancel.is_cancelled() {
             return true;
         }
@@ -695,10 +755,13 @@ impl Agent {
             vision: llm.vision(crate::prompts::shared()),
             inbox: session.inbox_signal(),
         };
-        let started = std::time::Instant::now();
+        let run_started = std::time::Instant::now();
         tracing::info!(session = %name, tool = %tool, "tool start");
         let outcome = self.tools.run(&tool, arguments, &ctx).await;
+        let run_ms = run_started.elapsed().as_millis() as u64;
+        let attach_started = std::time::Instant::now();
         let scanned = self.attach_references(&ctx, &outcome.output, llm).await;
+        let attach_ms = attach_started.elapsed().as_millis() as u64;
         drop(ctx);
         let _ = forwarder.await;
         tracing::info!(
@@ -738,6 +801,23 @@ impl Agent {
             "tool_result",
             &json!({"tool": tool, "call_id": call_id, "status": status}),
         );
+        let _ = self.store.append_event(
+            Some(id),
+            "tool_timing",
+            &json!({
+                "turn": turn,
+                "step": step,
+                "tool": tool,
+                "call_id": call_id,
+                "started_at": started_at,
+                "elapsed_ms": started.elapsed().as_millis() as u64,
+                "run_ms": run_ms,
+                "attach_ms": attach_ms,
+                "arguments_chars": arguments_given.chars().count(),
+                "output_chars": outcome.output.chars().count(),
+                "status": status,
+            }),
+        );
         false
     }
 
@@ -760,6 +840,13 @@ impl Agent {
             message: said,
         });
     }
+}
+
+#[derive(Default)]
+struct StepPhases {
+    prompt_ms: u64,
+    source_ms: u64,
+    llm_started: Option<std::time::Instant>,
 }
 
 enum StepResult {

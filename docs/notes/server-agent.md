@@ -194,6 +194,23 @@ inside a pair is the one thing no writer may do. The backstop is in the request
 builder, not the store: a step's buffer has its own calls, so it can tell an
 orphan from a pair and leave the orphan out (`docs/notes/server-body.md`).
 
+## `step_timing` and `tool_timing`
+
+`step` writes one event whether it finishes, stops, or fails. In addition to its
+wall time, it records prompt preparation, request-source creation and the full
+LLM stream interval. The remainder after those phases is harness time not yet
+attributed to one of them. `turn_end` already supplies the enclosing wall time,
+so step totals can be compared with turn overhead.
+
+Every executed tool writes one `tool_timing` event keyed by turn, step and call
+id. It separates the tool run from attachment processing and records argument
+and output character counts, status and absolute start time. These rows can be
+joined to `llm_attempt` on `(turn, step)` without parsing log text; overlap is
+expected because a tool runs as soon as its call arrives during the stream.
+
+`scripts/timing_report.py` renders the step, attempt and tool ledgers and can
+write the full joined data as JSON.
+
 ## Agent::maybe_notify_context
 
 The loop measures and asks; it never folds. Folding is a judgement about work

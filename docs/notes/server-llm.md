@@ -65,6 +65,30 @@ idle clock only when the attempt *said* something (`Outbox`), never when the
 socket merely carried bytes, so a long answer is cut by nothing but its own
 silence, and a keep-alive cannot hold a turn open.
 
+## AttemptProbe and the `llm_attempt` event
+
+Every HTTP attempt writes one aggregated event after its last response event,
+including failed and cancelled attempts. Deltas are counted in memory rather
+than appended to SQLite one by one, so instrumentation does not turn into the
+I/O bottleneck it is meant to measure.
+
+The payload separates request-head construction and transcript opening from the
+network attempt. It carries `started_at`/`ended_at`, outcome and HTTP status,
+headers and first/last reasoning, output and tool-argument delta times. Raw
+chunks and bytes, SSE event kinds, tail events and parse errors make the actual
+wire shape inspectable without storing another copy of the response.
+
+`process_total_us` and `process_max_us` measure JSON parsing, event handling and
+sending into the bounded LLM event channel. They are local work, not provider
+generation time. Comparing them with attempt wall time identifies local parse
+or backpressure overhead; tool execution is measured separately because tools
+run while the response is still streaming.
+
+The original provider `usage` object is included verbatim. Optional token
+details such as `output_tokens_details.reasoning_tokens` therefore survive when
+the provider supplies them, while character and delta counts remain available
+when it does not. Characters are never presented as estimated tokens.
+
 ## LlmClient::build_head
 
 The Responses API's spelling for "how hard to think", which the roster records

@@ -42,7 +42,7 @@ def spawn(cmd, env=None, out=None):
 
 
 def taskkill(pid):
-    subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
+    subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
 
 
 def main():
@@ -61,6 +61,7 @@ def main():
     env = dict(os.environ)
     env["GONGGA_API_KEY"] = "dummy"
     env["GONGGA_LLM_CATALOG"] = roster_path
+    env["GONGGA_PROVIDERS_CATALOG"] = roster_path
     env["RUST_LOG"] = "info"
     fake_env = dict(env, FAKE_LLM_DUMP=DUMP, FAKE_LLM_TOOL="bash", FAKE_LLM_IMAGE_GEN="1")
 
@@ -110,8 +111,8 @@ def main():
         db.row_factory = sqlite3.Row
         sid = db.execute("select id from sessions where name='audit'").fetchone()["id"]
         blobs_before = sorted(os.listdir(os.path.join(HOME, "blobs")))
-        rows = [(r["seq"], r["kind"], r["content"]) for r in db.execute(
-            "select seq, kind, content from messages where session_id=? order by seq", (sid,))]
+        rows = [(r["seq"], r["kind"], r["display"]) for r in db.execute(
+            "select seq, kind, display from messages where session_id=? order by seq", (sid,))]
         db.close()
         deleted = subprocess.run(base + ["del_session", "--session", "audit"],
                                  capture_output=True, text=True)
@@ -224,7 +225,10 @@ def main():
     check("deleting the session took the payload with it", not left, f"{left}")
 
     print("FAILURES:", failures or "none")
-    subprocess.run(["cmd", "/c", "rmdir", "/s", "/q", SCRATCH], capture_output=True)
+    if os.environ.get("GONGGA_REPLAY_KEEP"):
+        print("scratch:", SCRATCH)
+    else:
+        subprocess.run(["cmd", "/c", "rmdir", "/s", "/q", SCRATCH], capture_output=True)
     return 1 if failures else 0
 
 

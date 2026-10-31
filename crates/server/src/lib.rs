@@ -14,6 +14,7 @@ mod instance;
 mod llm;
 mod migrate;
 mod net;
+mod probe;
 mod prompts;
 mod providers;
 mod script;

@@ -174,10 +174,23 @@ def events(with_tool: bool, with_web: bool, with_image: bool, usage=(0, 0)):
 
 
 class Handler(BaseHTTPRequestHandler):
+    def request_body(self):
+        if "chunked" not in (self.headers.get("Transfer-Encoding") or "").lower():
+            length = int(self.headers.get("Content-Length") or 0)
+            return self.rfile.read(length) if length else b""
+        chunks = []
+        while True:
+            size = int(self.rfile.readline().strip().split(b";", 1)[0], 16)
+            if size == 0:
+                while self.rfile.readline() not in (b"\r\n", b"\n", b""):
+                    pass
+                return b"".join(chunks)
+            chunks.append(self.rfile.read(size))
+            self.rfile.read(2)
+
     def do_POST(self):  # noqa: N802
         global _requests
-        length = int(self.headers.get("Content-Length") or 0)
-        raw = self.rfile.read(length) if length else b""
+        raw = self.request_body()
         # The Files API is a different shape from the Responses stream: one JSON
         # id back, nothing to stream. Without this the harness's upload would be
         # answered with an SSE body and read as "no file id".

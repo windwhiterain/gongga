@@ -203,7 +203,10 @@ impl LlmClient {
         cancel: CancellationToken,
     ) -> mpsc::Receiver<LlmEvent> {
         let (tx, rx) = mpsc::channel(256);
+        let build_started = Instant::now();
         let head = self.build_head(instructions, handover, tools, effort);
+        let build_head_ms = build_started.elapsed().as_millis() as u64;
+        let head_bytes = head.len();
         let source = source.clone();
         let url = format!("{}/responses", self.base_url);
         let api_key = self.api_key.clone();
@@ -218,9 +221,16 @@ impl LlmClient {
             loop {
                 // Opened again for every attempt: a body is read once, and a retry
                 // has to send what the attempt before it sent.
-                let (body, bytes) = match source.open(&head) {
+                let open_started = Instant::now();
+                let opened = source.open(&head);
+                let transcript_open_ms = open_started.elapsed().as_millis() as u64;
+                let mut probe =
+                    crate::probe::AttemptProbe::new(build_head_ms, transcript_open_ms, head_bytes);
+                let (body, bytes) = match opened {
                     Ok(pair) => pair,
                     Err(e) => {
+                        probe.outcome("transcript_open_failed");
+                        let _ = tx.send(LlmEvent::Attempt { probe }).await;
                         let _ = tx
                             .send(LlmEvent::Failed {
                                 message: format!("could not read the transcript: {e}"),
@@ -239,6 +249,7 @@ impl LlmClient {
                     headers_timeout,
                     idle_timeout,
                     cancel.clone(),
+                    probe,
                 )
                 .await;
                 let mut produced = false;
@@ -468,6 +479,10 @@ pub enum LlmEvent {
     Completed {
         usage: Option<Usage>,
     },
+    /// Aggregated measurements for one HTTP attempt, emitted after its last event.
+    Attempt {
+        probe: crate::probe::AttemptProbe,
+    },
     Failed {
         message: String,
         /// Whether resending this request could succeed at all.
@@ -636,6 +651,7 @@ async fn stream_once(
     headers_timeout: Duration,
     idle_timeout: Duration,
     cancel: CancellationToken,
+    probe: crate::probe::AttemptProbe,
 ) -> mpsc::Receiver<LlmEvent> {
     let (tx, rx) = mpsc::channel(256);
     let url = url.to_string();
@@ -654,6 +670,7 @@ async fn stream_once(
             idle_timeout,
             &cancel,
             &tx,
+            probe,
         ))
         .catch_unwind()
         .await;
@@ -672,7 +689,6 @@ async fn stream_once(
     rx
 }
 
-/// Reads one streamed response into events until it ends, is cancelled, or goes quiet.
 async fn read_stream(
     http: &reqwest::Client,
     url: &str,
@@ -683,6 +699,50 @@ async fn read_stream(
     idle_timeout: Duration,
     cancel: &CancellationToken,
     tx: &mpsc::Sender<LlmEvent>,
+    mut probe: crate::probe::AttemptProbe,
+) {
+    let outcome = AssertUnwindSafe(read_stream_inner(
+        http,
+        url,
+        api_key,
+        body,
+        bytes,
+        headers_timeout,
+        idle_timeout,
+        cancel,
+        tx,
+        &mut probe,
+    ))
+    .catch_unwind()
+    .await;
+    match outcome {
+        Ok(()) => {
+            let _ = tx.send(LlmEvent::Attempt { probe }).await;
+        }
+        Err(payload) => {
+            probe.outcome("panicked");
+            let _ = tx
+                .send(LlmEvent::Attempt {
+                    probe: probe.clone(),
+                })
+                .await;
+            std::panic::resume_unwind(payload);
+        }
+    }
+}
+
+/// Reads the response while the outer attempt owns its final measurement event.
+async fn read_stream_inner(
+    http: &reqwest::Client,
+    url: &str,
+    api_key: &str,
+    body: crate::body::RequestBody,
+    bytes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    headers_timeout: Duration,
+    idle_timeout: Duration,
+    cancel: &CancellationToken,
+    tx: &mpsc::Sender<LlmEvent>,
+    probe: &mut crate::probe::AttemptProbe,
 ) {
     let started = Instant::now();
     tracing::info!(%url, "model request: sending");
@@ -698,6 +758,7 @@ async fn read_stream(
     let response = match tokio::time::timeout(headers_timeout, request.send()).await {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => {
+            probe.outcome("send_failed");
             tracing::warn!(error = %e, elapsed = ?started.elapsed(), "model request: send failed");
             let _ = tx
                 .send(LlmEvent::Failed {
@@ -708,6 +769,7 @@ async fn read_stream(
             return;
         }
         Err(_) => {
+            probe.outcome("headers_timeout");
             tracing::warn!(
                 limit = ?headers_timeout,
                 elapsed = ?started.elapsed(),
@@ -722,6 +784,10 @@ async fn read_stream(
             return;
         }
     };
+    probe.headers(
+        response.status(),
+        bytes.load(std::sync::atomic::Ordering::Relaxed),
+    );
     tracing::info!(
         status = %response.status(),
         bytes = bytes.load(std::sync::atomic::Ordering::Relaxed),
@@ -729,6 +795,7 @@ async fn read_stream(
         "model request: headers"
     );
     if !response.status().is_success() {
+        probe.outcome("http_error");
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
         tracing::warn!(%status, body = %shorten_body(&text), "model request: rejected");
@@ -755,10 +822,12 @@ async fn read_stream(
     loop {
         tokio::select! {
             _ = cancel.cancelled() => {
+                probe.outcome("cancelled");
                 let _ = out.send(LlmEvent::Cancelled).await;
                 return;
             }
             _ = &mut idle => {
+                probe.outcome("idle_timeout");
                 tracing::warn!(idle = ?idle_timeout, elapsed = ?started.elapsed(), "model request: no content");
                 let _ = out.send(LlmEvent::Failed {
                     message: format!("nothing said for {idle_timeout:?}"),
@@ -770,13 +839,24 @@ async fn read_stream(
                 let Some(chunk) = next else { break };
                 match chunk {
                     Ok(bytes) => {
+                        probe.chunk(bytes.len());
                         buf.push_str(&String::from_utf8_lossy(&bytes));
                         while let Some(block) = next_sse_block(&mut buf) {
+                            let process_started = Instant::now();
                             if let Some(event) = parse_sse_block(&block) {
-                                if let Err(e) = handle(event, &mut items, &mut out).await {
+                                probe.event(&event.name, &event.data, false);
+                                if event.name == "response.completed" {
+                                    probe.outcome("completed");
+                                }
+                                let result = handle(event, &mut items, &mut out).await;
+                                probe.process(process_started.elapsed());
+                                if let Err(e) = result {
+                                    probe.outcome("closed_early");
                                     tracing::debug!(error = %e, "llm stream closed early");
                                     return;
                                 }
+                            } else {
+                                probe.process(process_started.elapsed());
                             }
                         }
                         // Only content moves the clock. A chunk that held a
@@ -788,6 +868,7 @@ async fn read_stream(
                         }
                     }
                     Err(e) => {
+                        probe.outcome("stream_error");
                         let _ = out.send(LlmEvent::Failed { message: format!("{e}"), retryable: true }).await;
                         return;
                     }
@@ -799,8 +880,17 @@ async fn read_stream(
     // a final event.
     let tail = buf.trim_end_matches('\r').trim();
     if !tail.is_empty() {
+        let process_started = Instant::now();
         if let Some(event) = parse_sse_block(tail) {
-            let _ = handle(event, &mut items, &mut out).await;
+            probe.event(&event.name, &event.data, true);
+            if event.name == "response.completed" {
+                probe.outcome("completed");
+            }
+            let result = handle(event, &mut items, &mut out).await;
+            probe.process(process_started.elapsed());
+            let _ = result;
+        } else {
+            probe.process(process_started.elapsed());
         }
     }
     tracing::info!(elapsed = ?started.elapsed(), "model request: stream ended");
@@ -979,6 +1069,12 @@ fn parse_sse_block(block: &str) -> Option<SseEvent> {
     }
     if data.is_empty() {
         return None;
+    }
+    if data == "[DONE]" {
+        return Some(SseEvent {
+            name: "[DONE]".to_string(),
+            data: Value::Null,
+        });
     }
     let parsed = serde_json::from_str(&data).unwrap_or(Value::Null);
     Some(SseEvent { name, data: parsed })
