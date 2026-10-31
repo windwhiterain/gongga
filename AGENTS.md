@@ -16,6 +16,57 @@
   cargo install --git https://github.com/windwhiterain/comments-test comments-check --locked
   comments-check --config comments-check.toml
   ```
+
+### 验证要快：三层，每层只付一次
+
+慢的从来不是验证本身，是**每改一行就重新付一遍全栈的钱**（重新链接、重新起服务端、
+重新 sleep、重新读日志判断）。
+
+| 层 | 花多少 | 什么时候跑 |
+| --- | --- | --- |
+| L1 `cargo test --workspace` | 一次几秒 | 每轮，**一次跑完整个 workspace**，不要按 crate 拆成十次 |
+| L2 变异检查 | 一次半分钟 | 每加一条测试：把修复撤掉，看它是否变红，再恢复 |
+| L3 真进程 e2e | 一次几十秒起 | 只在单测**够不着**的地方：信号/进程生命周期、真实 `.db` 的迁移、跨进程握手 |
+
+优先用 L2。本轮第一个真 bug（改名后 `NOT NULL` 挡住插入）是 L2 抓的：半分钟。
+第二个（窗口与它自己 spawn 的服务端 key 不一致）只有 L3 能看见——但当时我拿 L3 当 L1 用，
+每轮几十秒、pid 读错、key 用错，三轮才把它逼出来。**L3 该省的是轮数，不是不该跑。**
+
+### L3 写成脚本，别每次手写 heredoc
+
+参考 `scripts/heir_selftest.sh`、`scripts/ship_selftest.sh`：它们自带临时 home、自己收尾、
+一行 verdict。硬性几条：
+
+- **pid 从 greeting 或 `server.lock` 读，永远不要 `$!`**。Git Bash 的 `$$` 是 MSYS 编号，
+  Windows 的 pid 是另一套；两者混用会得到「进程还活着」这种假失败。
+- **就绪用 dial 判断，不要 `sleep` + 探端口**。服务端回 greeting 才是「能干活」。
+- **临时 `GONGGA_HOME` + 端口让内核分配**，并按 session 名或 worktree 名加门牌；
+  多 agent 共机时固定端口和固定 `/tmp/xxx` 就是互相踩。
+- **key 显式传**。`GONGGA_KEY` 起的服务端**不写** `server.key`，只查 home 会拿到空。
+- **`trap` 里 kill + `rm`**，否则下一次删不掉 `gongga.db`（busy）。
+- **一行 verdict**：`PASS/FAIL · 耗时 · build sha`，别让下一个 agent 读日志自己判断。
+
+**一个服务端生命周期跑完 N 个场景**：写成 `scenario | args | expected` 的表，
+一次起服务端、跑完全表、一次收尾。进程生命周期类的场景（关窗口 → 服务端停）没法共用，
+另开一个脚本，别混进去。
+
+### 多 agent 共机的硬约束
+
+- **每个 worktree 自己的 `CARGO_TARGET_DIR`**。共用一个 `target/` 时并发 cargo 排队等锁，
+  而且 Windows 锁着正在跑的 `.exe`，会直接 `拒绝访问 (os error 5)`。
+- **`.dev/` 会长到 GB 级**：`evolve.sh stage` 把构建放 `.dev/target`（为了绕开 exe 锁），
+  历次 `*-home/` 各带一个 `ship.git`。验证脚本自带清理，或别在这里攒。
+- **不要并发跑 `evolve`**：它靠 `.dev/evolve-current` 单指针决定谁接管 home，两个 agent
+  同时 stage 会互相判成被 supersede。
+
+### 结果落成数据，不是笔记
+
+`.dev/verify/<sha>-<area>.json`：build、命令、场景、结果、耗时。下一个 agent **先读**，
+同一个 sha 命中就引用，只有 sha 或场景变了才付 L3 的钱。
+
+这与「不要写交接笔记」不冲突：笔记是散文，会撒谎；这里每条的失效条件是写死的（sha 或
+场景一变就重测）。**散文不写，测量要存。**
+
 ## 发布（改过 ship 内容之后）
 
 `ship/` 是内容仓库在本仓库里的 submodule，所以「发布」有两个名字要一致：远端的 commit 和
