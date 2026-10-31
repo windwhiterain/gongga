@@ -256,8 +256,8 @@ pub trait Sink {
     );
     fn status(&mut self, text: &str);
     fn footer(&mut self, text: &str);
-    /// The harness's own news: connected, refused, a server log line. Not a
-    /// command's line, so the front-end decides where it goes.
+    /// The harness's own news: refused, a log line, a build mismatch. Not a
+    /// command's, so the front-end decides where it goes.
     fn note(&mut self, _kind: LineKind, _text: &str) {}
     /// How tall one block may get, in wrapped rows; 0 caps nothing. A front-end
     /// that shows every row ignores it.
@@ -547,26 +547,22 @@ impl Client {
                 // sessions, so a redial comes up like a fresh client.
                 self.connected = true;
                 self.attempts = 0;
-                sink.note(
-                    LineKind::System,
-                    &format!("connected to the server (model {})", self.model),
-                );
-                // Not fatal: the protocol is the contract and this crate speaks
-                // it, so a different build is a warning about *this machine* --
-                // somebody's other checkout, a stale install -- and the reader is
-                // the one who can fix it.
+                // The facts are the announcement: "offline — reconnecting"
+                // becomes the model and the session count.
+                self.refresh(sink);
+                // After the facts, so they do not wipe it. A different build is
+                // a warning about this machine, and the reader can fix it.
                 if !server.build.is_empty() && server.build != protocol::BUILD {
                     sink.note(
                         LineKind::System,
                         &format!(
-                            "note: that server is build {}, this program is {} -- \
+                            "that server is build {}, this program is {} -- \
                              same protocol, different builds",
                             server.build,
                             protocol::BUILD
                         ),
                     );
                 }
-                self.refresh(sink);
             }
             ServerMessage::Denied { reason } => {
                 sink.note(LineKind::Error, &format!("connection refused: {reason}"));

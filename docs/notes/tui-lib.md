@@ -120,20 +120,27 @@ one, and it is now a rule per pane rather than for the whole area.
 
 ## Screen::note
 
-What the harness says about itself -- "nothing is listening — starting one",
-"connected to the server", "copied 42 characters", a server log line -- goes where
-the operator is reading, and never on the command line. SPEC gives that row to
-`cmd` and `cmd_result`, and it keeps only the newest entry, so a note there joins a
-ticker of things the operator typed: that is how "starting one" came to sit where
-an input line is expected.
+What the harness says about itself -- "nothing is listening at 127.0.0.1:9700 —
+starting one", "connection refused: bad key", "copied 42 characters", a server log
+line -- goes on the status line, with the kind it was said as, so the header bar can
+paint a failure as one.
 
-Two destinations, one rule:
+Nowhere else, and the two alternatives are wrong in the same way:
 
-- with a session in view, the news is history and joins that session's lines, so a
-  reconnect is still readable an hour later;
-- with no session in view there is nowhere to keep it, so it is the status line,
-  shown until the next fact replaces it -- and painted by its kind, so a failure
-  does not look like a fact.
+- the command row is SPEC's `[{cmd, cmd_result}]` and keeps only the newest entry, so
+  a note there joins a ticker of things the operator typed -- that is how "starting
+  one" came to sit where an input line is expected;
+- a session's lines are *that session's events*. "nothing is listening" is not
+  something a session said, and putting it there makes a conversation's log report
+  on the transport.
+
+A note replaces the previous one, so the line always reads as the newest thing this
+window knows, and a refresh from the server puts the facts back.
+
+`connected to the server` is deliberately not one of these: the status line going
+from `offline — reconnecting (attempt 1)` to `model x | 3 session(s)` is that
+sentence said in facts. A build mismatch is said *after* the refresh, so the facts
+do not wipe it in the same breath.
 
 ## Screen::sticky_session is the only state
 

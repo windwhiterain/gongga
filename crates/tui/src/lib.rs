@@ -132,22 +132,12 @@ impl Screen {
     ///
     /// # Invariant
     ///
-    /// Never the command line: SPEC gives that row to `cmd` and `cmd_result`, and
-    /// it keeps only the newest, so a note there joins a ticker of things the
-    /// operator typed. See `docs/notes/tui-lib.md`.
+    /// The status line, and nowhere else. Not the command row, which SPEC gives to
+    /// `cmd` and `cmd_result`; and not a session's lines, which are that session's
+    /// events -- "nothing is listening" is not something a session said. A note
+    /// replaces the previous one, so the line always reads as the newest thing
+    /// this window knows. See `docs/notes/tui-lib.md`.
     pub fn note(&mut self, kind: LineKind, text: impl Into<String>) {
-        let text = text.into();
-        // With a session in view the news is history; with none it is a status.
-        match self.sticky_session.clone() {
-            Some(name) if !name.is_empty() => {
-                self.panes.line(&name, kind, text);
-            }
-            _ => self.note_status(kind, text),
-        }
-    }
-
-    /// The status line's half of a note: shown until the next fact replaces it.
-    pub fn note_status(&mut self, kind: LineKind, text: impl Into<String>) {
         self.status_kind = kind;
         self.status = text.into();
     }
@@ -1835,36 +1825,35 @@ mod tests {
 
     /// A note about this window goes on the status line, never on the command row.
     #[test]
-    fn a_note_about_this_window_is_not_a_command_line() {
+    fn a_note_stays_on_the_status_line() {
         let mut h = Headless::new();
-        let before = h.screen.panes.rows(View::Window("cmd"), 40);
+        h.screen.sticky_session = Some("main".to_string());
+        h.screen.panes.line("main", LineKind::System, "first");
+        let cmd_before = h.screen.panes.rows(View::Window("cmd"), 40);
+
         h.screen
             .note(LineKind::System, "nothing is listening — starting one");
-        assert_eq!(
-            h.screen.panes.rows(View::Window("cmd"), 40),
-            before,
-            "the command line grew a line it was not given"
-        );
-        // No session in view: nowhere to keep news, so it is a status.
+
         assert_eq!(
             h.screen.status, "nothing is listening — starting one",
             "the note is on the status line"
         );
         assert_eq!(h.screen.status_kind, LineKind::System);
-        // An error keeps its kind, so the bar can paint it as one.
-        h.screen.note(LineKind::Error, "copy failed: no tool");
-        assert_eq!(h.screen.status_kind, LineKind::Error);
-
-        // With a session in view the note is history, and goes where it is read.
-        h.screen.sticky_session = Some("main".to_string());
-        h.screen.panes.line("main", LineKind::System, "first");
-        h.screen.note(LineKind::System, "connected");
         assert_eq!(
             h.screen.panes.rows(View::Window("main"), 40),
-            2,
-            "the note joined the session's own lines"
+            1,
+            "and not among the session's lines: a connection is not its event"
         );
-        assert_ne!(h.screen.status, "connected", "and did not become a status");
+        assert_eq!(
+            h.screen.panes.rows(View::Window("cmd"), 40),
+            cmd_before,
+            "nor on the command row"
+        );
+
+        // It replaces the previous note, and an error keeps its kind for the bar.
+        h.screen.note(LineKind::Error, "copy failed: no tool");
+        assert_eq!(h.screen.status, "copy failed: no tool");
+        assert_eq!(h.screen.status_kind, LineKind::Error);
     }
 
     /// A click asks for the sticky session, as the command line that sets it.
