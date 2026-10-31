@@ -1850,7 +1850,7 @@ fn resolve_server_with(args: &Connection, env: &Env) -> anyhow::Result<SocketAdd
 }
 
 /// `--key`, then `GONGGA_KEY`, then what the home itself carries.
-fn resolve_key(args: &Connection) -> Option<String> {
+pub(crate) fn resolve_key(args: &Connection) -> Option<String> {
     resolve_key_with(args, &process_env)
 }
 
@@ -2158,6 +2158,36 @@ mod tests {
             key: Some("zzz".into()),
         };
         assert_eq!(resolve_key_with(&args, &no_env).as_deref(), Some("zzz"));
+    }
+
+    /// `stop` presents the key this process would dial with, not the home's.
+    ///
+    /// # Invariant
+    ///
+    /// A server started with `GONGGA_KEY` writes no `server.key`, so a home-only
+    /// lookup finds nothing and the take-over never dials at all -- which leaves
+    /// the old server holding the port it was meant to give up.
+    #[test]
+    fn the_key_the_client_dials_with_is_a_key_to_stop_with() {
+        let d = home_with("[server]\nkey = \"abc\"\n");
+        let given = Connection {
+            server: None,
+            home: Some(d.path().to_path_buf()),
+            key: Some("from-flag".into()),
+        };
+        assert_eq!(
+            resolve_key(&given).as_deref(),
+            Some("from-flag"),
+            "the key the command line named is the one to ask with"
+        );
+        // With nothing named the home still answers, because a server that minted
+        // its own key wrote it down.
+        let stored = Connection {
+            server: None,
+            home: Some(d.path().to_path_buf()),
+            key: None,
+        };
+        assert_eq!(resolve_key(&stored).as_deref(), Some("abc"));
     }
 
     #[test]

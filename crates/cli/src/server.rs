@@ -10,7 +10,7 @@ use std::time::Duration;
 use anyhow::Context;
 
 use crate::commands::parse_args;
-use crate::{Args, COMMAND, Endpoint, dial};
+use crate::{Args, COMMAND, Connection, Endpoint, dial};
 
 /// The command that starts a server.
 const SERVE: &str = "serve";
@@ -109,12 +109,16 @@ const GONE_POLL: Duration = Duration::from_millis(100);
 /// server started next resumes it. A kill is the fallback for a server that does
 /// not answer, because a stale one holding the port is the worse outcome.
 /// Returns the pid that was stopped, if anything was serving.
+///
+/// The key is the one this process would *dial* with, not the one the home
+/// stored: a client started with `--key` proves its key by using it, and a
+/// server it cannot authenticate with is a server it cannot ask to stop.
 /// See `docs/notes/cli-server.md`.
-pub async fn stop(home: &Path, addr: SocketAddr) -> Option<u32> {
+pub async fn stop(conn: &Connection, home: &Path, addr: SocketAddr) -> Option<u32> {
     if !starts_here(&addr) {
         return None;
     }
-    let key = crate::key_of(home)?;
+    let key = crate::resolve_key(conn).or_else(|| crate::key_of(home))?;
     let (link, greeting) = dial(Endpoint {
         addr,
         key,

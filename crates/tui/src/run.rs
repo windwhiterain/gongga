@@ -213,7 +213,7 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
     let spawned: Option<u32> = match starts_a_server(args.client_only) {
         true => match cli::server_of(&args.conn) {
             Ok(addr) => {
-                if let Some(old) = cli::stop(&home, addr).await {
+                if let Some(old) = cli::stop(&args.conn, &home, addr).await {
                     TuiSink(&mut ui).say(
                         LineKind::System,
                         &format!("stopped the server that was serving this home (pid {old})"),
