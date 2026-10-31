@@ -180,6 +180,22 @@ impl Panes {
         pane.scroll = (pane.scroll as i64 + rows).clamp(0, pane.max_scroll as i64) as usize;
     }
 
+    /// The session list, which is drawn from the announcement rather than the log.
+    pub fn list(&self) -> Option<&Pane> {
+        self.panes.iter().find(|pane| pane.kind == Kind::List)
+    }
+
+    pub fn list_mut(&mut self) -> Option<&mut Pane> {
+        self.panes.iter_mut().find(|pane| pane.kind == Kind::List)
+    }
+
+    /// Scrolls the session list: SPEC gives it a vertical scroll of its own.
+    pub fn scroll_list_by(&mut self, rows: i64) {
+        if let Some(pane) = self.list_mut() {
+            pane.scroll = (pane.scroll as i64 + rows).clamp(0, pane.max_scroll as i64) as usize;
+        }
+    }
+
     /// Pins one pane to its newest line: what "back to the bottom" means.
     pub fn pin(&mut self, name: &str) {
         if let Some(pane) = self.get_mut(name) {

@@ -65,6 +65,26 @@ break, and a row that reaches `width` columns continues on the next one.
 The last row always exists, so an empty input -- or one that ends with a newline
 -- has somewhere for the cursor to sit.
 
+## draw_bottom
+
+SPEC's "show a go to bottom button", drawn on exactly the condition it names: the
+view is away from its newest row. A button that is always there says nothing about
+where the view is, so a frame at the bottom draws none.
+
+It sits on the last row of the view it belongs to, right-aligned, on a coloured
+strip so it reads as a control rather than as a line of the log. It says
+`↓ bottom · Shift+↓` when the width allows it; over a narrow session list -- whose
+columns are only as wide as its names -- it is the bare `↓`, one column, which lands
+on the list's spare column instead of on a name.
+
+## list_window
+
+The rows of the session list a frame shows: its tail, scrolled up by the list's own
+`scroll`.
+
+The frame and the click read this one function, so a click lands on the name the
+operator saw -- not on the row that would be there if the list were flat.
+
 ## draw_list
 
 SPEC's session list, on the left of the body: one row per session the command layer

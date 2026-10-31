@@ -93,6 +93,24 @@ pub enum UiEvent {
     Quit,
 }
 
+/// Which part of the window a pointer landed on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Part {
+    /// The session list, which scrolls its own rows.
+    List,
+    /// One session's pane of events.
+    Pane,
+    /// One session's line group.
+    Line,
+}
+
+/// What a pointer landed on: the session it names, and which part it hit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hit {
+    pub name: String,
+    pub part: Part,
+}
+
 /// Everything the renderer reads, separate from the terminal it draws to.
 pub struct Screen {
     /// The windows the events area is split into: a frame may not walk their logs.
@@ -154,7 +172,7 @@ impl Screen {
     }
 
     /// The session a click on `row` names, from the list, a pane, or a group.
-    pub fn session_at_row(&self, width: u16, height: u16, row: u16) -> Option<String> {
+    pub fn session_at_row(&self, width: u16, height: u16, row: u16) -> Option<Hit> {
         let area = Rect::new(0, 0, width, height);
         let input = render::input_rows(self.input.text(), width, height);
         let chunks = render::areas(
@@ -163,10 +181,23 @@ impl Screen {
             self.panes.command().is_some(),
             self.panes.of_kind(crate::panes::Kind::Line).count(),
         );
-        let (list, panes) = render::body(chunks[1], &self.panes);
-        render::list_at(list, &self.panes, row)
-            .or_else(|| render::pane_at(&self.slots(width, height), row).map(str::to_string))
-            .or_else(|| render::line_at(chunks[2], &self.panes, row))
+        let (list, _) = render::body(chunks[1], &self.panes);
+        if let Some(name) = render::list_at(list, &self.panes, row) {
+            return Some(Hit {
+                name,
+                part: Part::List,
+            });
+        }
+        if let Some(name) = render::pane_at(&self.slots(width, height), row) {
+            return Some(Hit {
+                name: name.to_string(),
+                part: Part::Pane,
+            });
+        }
+        render::line_at(chunks[2], &self.panes, row).map(|name| Hit {
+            name,
+            part: Part::Line,
+        })
     }
 
     /// Scrolls one pane: the wheel reads what the pointer is over, not the keys'.
@@ -657,23 +688,26 @@ impl Tui {
         let Ok(size) = self.terminal.size() else {
             return;
         };
-        let Some(name) = self
+        let Some(hit) = self
             .screen
             .session_at_row(size.width, size.height, mouse.row)
         else {
             return;
         };
-        self.screen.focus = name.clone();
+        self.screen.focus = hit.name.clone();
         if let Some(rows) = rows {
-            // The wheel reads what the pointer is over; it does not retarget keys.
-            self.screen.scroll_pane(&name, rows);
+            // The wheel reads what it is over; it does not retarget the keys.
+            match hit.part {
+                Part::List => self.screen.panes.scroll_list_by(rows),
+                Part::Pane | Part::Line => self.screen.scroll_pane(&hit.name, rows),
+            }
             self.dirty = true;
             return;
         }
         // SPEC: a click sets the sticky session, as the command that does it, so
         // the rule stays in the command layer.
         self.dirty = true;
-        self.clicked = Some(click_line(&name));
+        self.clicked = Some(click_line(&hit.name));
     }
 
     /// The window a line of this front-end's own belongs to.

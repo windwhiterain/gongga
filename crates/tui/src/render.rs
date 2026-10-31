@@ -194,12 +194,14 @@ pub fn list_at(area: Rect, panes: &Panes, row: u16) -> Option<String> {
     if !covers(&area, row) {
         return None;
     }
-    let index = (row - area.y) as usize;
+    let height = area.height as usize;
+    let scroll = panes.list().map(|pane| pane.scroll).unwrap_or(0);
+    let (start, end) = list_window(panes.listed().len(), height, scroll);
+    let index = start + (row - area.y) as usize;
     panes
         .listed()
-        .iter()
-        .take(area.height as usize)
-        .nth(index)
+        .get(start..end)
+        .and_then(|shown| shown.get(index - start))
         .map(|listed| listed.name.clone())
 }
 
@@ -319,16 +321,31 @@ fn draw_header(f: &mut Frame, s: &Screen, area: Rect) {
 /// Every session the command layer announced is here, whatever its render mode:
 /// the list is how a mode gets changed, so hiding one from it would hide the way
 /// back. See `docs/notes/tui-render.md`.
-fn draw_list(f: &mut Frame, s: &Screen, area: Rect) {
+fn draw_list(f: &mut Frame, s: &mut Screen, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
+    let height = area.height as usize;
+    let total = s.panes.listed().len();
+    let max_scroll = total.saturating_sub(height);
+    let scroll = s
+        .panes
+        .list()
+        .map(|pane| pane.scroll)
+        .unwrap_or(0)
+        .min(max_scroll);
+    if let Some(pane) = s.panes.list_mut() {
+        pane.max_scroll = max_scroll;
+        pane.scroll = scroll;
+    }
+    let (start, end) = list_window(total, height, scroll);
     let sticky = s.sticky_session.clone().unwrap_or_default();
     let rows: Vec<Line> = s
         .panes
         .listed()
+        .get(start..end)
+        .unwrap_or_default()
         .iter()
-        .take(area.height as usize)
         .map(|listed| {
             let here = listed.name == sticky;
             // The mark is one column, so the names line up down the list.
@@ -348,6 +365,56 @@ fn draw_list(f: &mut Frame, s: &Screen, area: Rect) {
         })
         .collect();
     f.render_widget(Paragraph::new(rows), area);
+    if scroll > 0 {
+        draw_bottom(f, area);
+    }
+}
+
+/// The rows of the list a frame shows: its tail, scrolled up by `scroll`.
+///
+/// # Invariant
+///
+/// The frame and the click read the same window, so a click lands on the name the
+/// operator saw. See `docs/notes/tui-render.md`.
+fn list_window(total: usize, height: usize, scroll: usize) -> (usize, usize) {
+    let end = total - scroll.min(total.saturating_sub(height));
+    (end.saturating_sub(height), end)
+}
+
+/// The way back to the newest row, over the last row of something scrolled up.
+///
+/// # Invariant
+///
+/// SPEC asks for it exactly when the view is away from its bottom: a button that
+/// is always there says nothing about where the view is. See
+/// `docs/notes/tui-render.md`.
+fn draw_bottom(f: &mut Frame, area: Rect) {
+    const FULL: &str = " \u{2193} bottom \u{00b7} Shift+\u{2193} ";
+    // A narrow view gets the bare arrow: one column fits the list's spare one.
+    const SHORT: &str = "\u{2193}";
+    let hint = if area.width > UnicodeWidthStr::width(FULL) as u16 {
+        FULL
+    } else {
+        SHORT
+    };
+    let width = UnicodeWidthStr::width(hint) as u16;
+    if area.height == 0 || area.width < width {
+        return;
+    }
+    let rect = Rect {
+        x: area.right() - width,
+        y: area.bottom() - 1,
+        width,
+        height: 1,
+    };
+    f.render_widget(Clear, rect);
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            hint,
+            Style::default().fg(Color::Black).bg(Color::Cyan),
+        ))),
+        rect,
+    );
 }
 
 /// The line groups: one line per event, for the sessions drawn that way.
@@ -450,6 +517,9 @@ fn draw_rows(f: &mut Frame, s: &mut Screen, name: &str, area: Rect) {
         pane.scroll = scroll.min(max_scroll);
     }
     f.render_widget(Paragraph::new(lines), area);
+    if scroll > 0 {
+        draw_bottom(f, area);
+    }
 }
 
 /// The rows of the input box a frame shows, from the first one it scrolls to.
@@ -670,6 +740,98 @@ mod tests {
             );
             assert_eq!(copied.last().unwrap(), "L29");
         }
+    }
+
+    /// SPEC's go-to-bottom, drawn only when a view is away from its newest row;
+    /// and the list's own scroll.
+    #[test]
+    fn a_view_away_from_its_bottom_says_how_to_get_back() {
+        let names: Vec<String> = (0..12).map(|i| format!("s{i}")).collect();
+        let listed: Vec<Listed> = names
+            .iter()
+            .map(|name| Listed {
+                name: name.clone(),
+                status: "idle".to_string(),
+            })
+            .collect();
+        let mut screen = screen_with(&[]);
+        screen.panes.layout(&Layout {
+            listed,
+            full: names.clone(),
+            line: Vec::new(),
+            command: "cmd".to_string(),
+        });
+        let (width, height) = (40u16, 8u16);
+        let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
+        term.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
+        let list = {
+            let parts = parts(width, height, 1, true, 0);
+            body(parts[1], &screen.panes).0
+        };
+        let buf = term.backend().buffer().clone();
+
+        // At the bottom the list shows its newest rows, and there is no button.
+        assert_eq!(list_at(list, &screen.panes, list.y), Some("s8".to_string()));
+        let last = row_text(&buf, list.bottom() - 1);
+        assert!(!last.contains("bottom"), "{last:?}");
+
+        // Scrolled up, the bottom row of the list says where the way back is, and
+        // a click reads the rows this frame drew.
+        screen.panes.scroll_list_by(3);
+        term.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+        assert_eq!(list_at(list, &screen.panes, list.y), Some("s5".to_string()));
+        // A narrow list has no room for the words, so the arrow is the button.
+        let last = row_text(&buf, list.bottom() - 1);
+        assert!(
+            last.ends_with('\u{2193}'),
+            "the way back is marked: {last:?}"
+        );
+        assert!(!last.contains("bottom"), "and only where it fits: {last:?}");
+
+        // Given the room, the same button says what it does and which key does it.
+        let mut wide = screen_with(&[]);
+        wide.panes.layout(&Layout {
+            listed: (0..12)
+                .map(|i| Listed {
+                    name: format!("a-much-longer-name-{i}"),
+                    status: "idle".to_string(),
+                })
+                .collect(),
+            full: Vec::new(),
+            line: Vec::new(),
+            command: "cmd".to_string(),
+        });
+        let mut term = Terminal::new(TestBackend::new(60, 8)).unwrap();
+        term.draw(|f| {
+            draw(f, &mut wide);
+        })
+        .unwrap();
+        wide.panes.scroll_list_by(2);
+        term.draw(|f| {
+            draw(f, &mut wide);
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+        let parts = parts(60, 8, 1, true, 0);
+        let (list, _) = body(parts[1], &wide.panes);
+        let last = row_text(&buf, list.bottom() - 1);
+        assert!(last.contains("bottom"), "{last:?}");
+    }
+
+    /// The list window is its tail: one row up is one row, and it never runs off.
+    #[test]
+    fn the_list_window_is_its_tail() {
+        assert_eq!(list_window(3, 8, 0), (0, 3), "shorter than the window");
+        assert_eq!(list_window(12, 8, 0), (4, 12), "the newest eight");
+        assert_eq!(list_window(12, 8, 3), (1, 9), "three rows up");
+        assert_eq!(list_window(12, 8, 99), (0, 8), "clamped at the top");
     }
 
     /// The caret sits on the input row, and a message that wraps keeps it inside

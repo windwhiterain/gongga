@@ -72,13 +72,24 @@ on whatever was last clicked; the click sets the sticky, and the keys follow it.
 With no sticky session there is nothing to scroll, and a page is a no-op rather than
 a guess at which pane the operator meant.
 
+## Screen::session_at_row
+
+What a pointer landed on, as a `Hit`: the session it names and which part it hit --
+the list, a pane, or a line group. The three have different scroll behaviour, so the
+part is part of the answer rather than something the caller re-derives.
+
 ## handle_mouse
 
-The wheel scrolls the pane under the pointer, which is a reading position. A click
-is a different thing: SPEC makes it "set the sticky session", so the click is turned
-into the command that does that (`set_sticky --name session --value <name>`) and
-handed to the loop as a submitted line. The rule stays in the command layer, and the
-window keeps one path for everything the operator asks for.
+The wheel scrolls what it is over, and retargets nothing: over a pane or a line
+group it scrolls that session's rows, and over the session list it scrolls the list,
+which has a scroll of its own (SPEC gives it one). The keys keep acting on the sticky
+session whatever the pointer did.
+
+A click is a different thing: SPEC makes it "set the sticky session", so the click is
+turned into the command that does that (`/set_sticky --name session --value <name>`)
+and handed to the loop as a submitted line. The rule stays in the command layer, and
+the window keeps one path for everything the operator asks for. The leading `/` is
+what makes it a command: a line without one is prose, and prose goes to the agent.
 
 ## Screen::sticky_session
 
