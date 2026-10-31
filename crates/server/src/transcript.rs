@@ -23,6 +23,9 @@ pub struct Row {
     /// The pictures this row's payload recorded, for a tool result that handed some
     /// back. Empty for every other row.
     pub images: Vec<ImageRef>,
+    /// Which model step wrote a call or a result; `None` for every other row and
+    /// for rows written before it was recorded.
+    pub step: Option<u64>,
 }
 
 /// A walk over one session's sendable rows in `(0, upto_seq]`, oldest first.
@@ -90,18 +93,22 @@ impl Iterator for Transcript {
         } else {
             None
         };
+        let value = serde_json::from_str(&display).unwrap_or(serde_json::Value::Null);
         let images = if kind == "tool_result" {
-            let value = serde_json::from_str(&display).unwrap_or(serde_json::Value::Null);
             images_of(&value)
         } else {
             Vec::new()
         };
+        let step = (kind == "tool_call" || kind == "tool_result")
+            .then(|| value.get("step").and_then(|v| v.as_u64()))
+            .flatten();
         Some(Ok(Row {
             item,
             kind,
             call_id,
             role,
             images,
+            step,
         }))
     }
 }

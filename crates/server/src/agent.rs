@@ -533,7 +533,8 @@ impl Agent {
                     let _ = self.store.append_message(
                         id,
                         "tool_call",
-                        &json!({"call_id": call_id, "name": tool, "arguments": arguments}),
+                        &json!({"call_id": call_id, "name": tool, "arguments": arguments,
+                                "step": step}),
                     );
                     let _ = self.store.start_tool_call(id, &call_id, &tool, &arguments);
                     if self
@@ -801,7 +802,8 @@ impl Agent {
         let _ = self.store.append_message(
             id,
             "tool_result",
-            &json!({"call_id": call_id, "output": outcome.output, "images": images}),
+            &json!({"call_id": call_id, "output": outcome.output, "images": images,
+                    "step": step}),
         );
         let _ = self
             .store
