@@ -36,15 +36,29 @@ dispatching between them is its whole job. The command layer does not learn a
 rule `cli::server::serve` follows, and for the same reason: one command, one
 console, one exit code (`cli-server.md`).
 
-## payload
+## payload (the feature)
 
-The table is the *last* thing in the file: `[footer_len: u64][MAGIC: 16]`, and
-before it a count and, per program, its name, offset, length and an FNV-1a
-checksum. Reading 24 bytes from the end is enough to know whether a file carries
-programs at all, and a plain executable cannot be mistaken for one.
+The programs are embedded at *compile* time: `build.rs` runs `cargo build -p
+gongga-cli -p gongga-server` in a target directory of its own and writes an
+`include_bytes!` table. So the file `cargo build` produces is the whole
+distribution, and so is the file `cargo install` installs:
 
-Appending after a PE image is what every self-extracting archive does: the loader
-ignores the overlay, and on unix nothing looks past what the headers describe.
+    cargo install --git <repo> --features payload gongga-bundle
+
+That is the point of the feature being opt-in: a workspace build must not build
+three other crates it is not going to use, and only a release wants the payload.
+
+Two details that are not optional:
+
+- the nested `cargo` gets `CARGO_TARGET_DIR` of its own. The parent holds a lock
+  on the directory it is using, and a child waiting for that lock deadlocks the
+  build that started it;
+- `--profile dev`, not `debug`: `PROFILE` is the directory name, and cargo
+  reserves `debug` as a profile name. The directory is still `debug`.
+
+Assembling one by appending after the image was the first shape and is gone: it
+needed a python heredoc to write a table, and it meant the file cargo produced
+could only say it carried nothing.
 
 ## payload::extract
 

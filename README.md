@@ -10,6 +10,14 @@ _Post Modern Agent Harness_
 - Infinite forward compatibility via chain of migrater.
 - Self evolve with elegant cancle, auto continue, interrupt no session.
 - Git managed configuration.
+- Streaming LLM reqwest optimized for minimal allocation.
+
+## Environment Requirement
+
+- bash
+- python
+- git
+- Github access
 
 ## Install
 
@@ -32,12 +40,12 @@ pins the prose.
 A single file carrying all of it, for a machine without Rust:
 
 ```sh
-scripts/bundle.sh --release      # .dev/dist/gongga: head + the programs, appended
+cargo install --git https://github.com/windwhiterain/gongga.git --locked \
+  --features payload gongga-bundle     # one file, the programs embedded
+scripts/bundle.sh --release            # or build it here, into .dev/dist/gongga
 ```
 
-## Environment Requirement
+`--features payload` is what makes it one file: without it the head carries
+nothing and says so. The programs are built inside that build and embedded, so
+the artifact cargo hands you is the whole distribution.
 
-- bash
-- python
-- git
-- Github access
