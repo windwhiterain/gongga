@@ -2,10 +2,10 @@
 //!
 //! See `docs/notes/tui-program.md`.
 
-/// The name and the sentence to answer with, both taken from argv[0].
+/// The name and the sentence to answer with: what was typed, then argv[0].
 pub fn describe() -> (&'static str, &'static str) {
-    if named(cli::COMMAND) {
-        (cli::COMMAND, cli::ABOUT)
+    if std::env::var_os("GONGGA_NAME").is_some() || named(cli::COMMAND) {
+        (cli::spoken_name(), cli::ABOUT)
     } else {
         ("gongga-tui", "Gongga harness terminal client")
     }

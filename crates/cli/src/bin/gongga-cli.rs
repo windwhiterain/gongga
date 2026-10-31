@@ -6,7 +6,7 @@
 use gongga_cli as cli;
 
 fn main() -> anyhow::Result<()> {
-    let args = cli::parse_argv(cli::COMMAND, cli::ABOUT);
+    let args = cli::parse_argv(cli::spoken_name(), cli::ABOUT);
     args.check_flag_order()?;
     cli::main(args)
 }

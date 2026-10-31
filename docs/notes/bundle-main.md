@@ -19,12 +19,30 @@ Two answers, in this order:
 1. **the file name**, byte for byte like `<home>/bin/gongga-cli` decides the
    command layer (`tui-program.md`): a copy named `gongga-server.exe` is the
    server. The name wins because a link cannot carry an argument;
-2. **the leading word `tui`** (or `window`), taken off before the program sees
-   it. Without this, opening a window would mean copying the file under a second
-   name -- true, and not something a person should be told. Verified:
-   `./gongga tui --version` answers as `gongga-tui` with its own build.
+2. **a leading word**: `cli`, `tui` (or `window`), `server`. It is taken off
+   before the program sees it, so all three are reachable from one file:
+
+```
+./gongga              the catalog, from a running server
+./gongga cli ...      the command layer, said out loud
+./gongga tui          the window
+./gongga server ...   the server program, with none of the layer around it
+```
 
 Anything else is the command layer, which is what a bare `./gongga` is.
+
+`serve` is not one of those words: it is the *command layer's* command for
+handing a console to a server, and it goes through the config, the pinned
+content and the install pass. `server` is the program with none of that. The
+difference is worth knowing; the flags are not, so `--port <p>` is accepted by
+both and rewritten to `--bind 127.0.0.1:<p>` for the server.
+
+The words are reserved by this file, which decides before it has a server to ask
+for a catalog. A script that registered a command named `cli`, `tui` or `server`
+would be reachable through `gongga-cli` and not through the bundle.
+
+Each program answers `--help` with the words typed (`GONGGA_NAME`), so
+`gongga server --help` says `Usage: gongga server [OPTIONS]`.
 
 The bundle is the only thing that knows all three exist, and it is allowed to:
 dispatching between them is its whole job. The command layer does not learn a

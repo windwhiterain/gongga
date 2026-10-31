@@ -122,8 +122,11 @@ pub enum Sub {
 
 /// Parses the command line, one way for both binaries, each naming itself.
 pub fn parse_argv(name: &'static str, about: &'static str) -> Args {
+    // `bin_name` is the word clap prints in `Usage:`, and it defaults to argv[0]:
+    // without this a bundle's `gongga cli --help` answers as `gongga-cli.exe`.
     let matches = Args::command()
         .name(name)
+        .bin_name(name)
         .about(about)
         .version(protocol::version_line())
         .get_matches();
@@ -171,6 +174,22 @@ pub fn typed_name() -> String {
         })
         .filter(|stem| !stem.is_empty())
         .unwrap_or_else(|| COMMAND.to_string())
+}
+
+/// The name to answer `--help` with: what was typed, or this program's own.
+///
+/// # Invariant
+///
+/// `gongga-cli` is right when the file is called that, and wrong inside a bundle,
+/// where the words typed were `gongga cli`. clap wants a `'static` str and this
+/// runs once, so the leak is the whole of the cost.
+pub fn spoken_name() -> &'static str {
+    let name = std::env::var("GONGGA_NAME")
+        .ok()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| COMMAND.to_string());
+    Box::leak(name.into_boxed_str())
 }
 
 /// What this program says it is, wherever it is asked -- one layer, one sentence.

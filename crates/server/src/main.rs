@@ -4,11 +4,11 @@
 
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 
 use gongga_server::{Args, LogFormat};
 
-#[derive(Debug, Parser)]
+#[derive(Debug, clap::Parser)]
 #[command(name = "gongga-server", about = "Gongga harness server")]
 struct Command {
     /// Path to config.toml. Defaults to `$GONGGA_HOME/config.toml`.
@@ -48,6 +48,25 @@ impl From<Command> for Args {
     }
 }
 
+/// The words the user typed, which `gongga server --help` has to answer with.
+fn spoken_name() -> Option<String> {
+    std::env::var("GONGGA_NAME")
+        .ok()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+}
+
+fn command() -> clap::Command {
+    match spoken_name() {
+        // `name` wants a `'static` str; this runs once, for the life of the process.
+        Some(name) => {
+            let name: &'static str = Box::leak(name.into_boxed_str());
+            Command::command().name(name).bin_name(name)
+        }
+        None => Command::command(),
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     // Built here rather than by `#[command(version)]`: the answer has to carry
     // the build, which is not known to clap. See `protocol-lib.md`.
@@ -58,5 +77,8 @@ fn main() -> anyhow::Result<()> {
         println!("gongga-server {}", protocol::version_line());
         return Ok(());
     }
-    gongga_server::main(Command::parse().into())
+    let matches = command().get_matches();
+    let command =
+        Command::from_arg_matches(&matches).expect("clap already rejected what it could not parse");
+    gongga_server::main(command.into())
 }
