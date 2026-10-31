@@ -295,30 +295,6 @@ pub fn server_catalog() -> Vec<CommandSpec> {
         },
         CommandSpec {
             target: CommandTarget::Server,
-            name: "skill".into(),
-            description: "Send one installed skill to a session: the row of `index_skill`'s \
-                      table that describes it, so that agent knows it exists. The answer \
-                      carries the SKILL.md whole."
-                .into(),
-            args: vec![
-                arg(
-                    "session",
-                    "Session to tell about the skill.",
-                    true,
-                    None,
-                    CompletionSource::Sessions,
-                ),
-                arg(
-                    "skill",
-                    "The skill's name, as `index_skill` spells it.",
-                    true,
-                    Some("name"),
-                    CompletionSource::Skills,
-                ),
-            ],
-        },
-        CommandSpec {
-            target: CommandTarget::Server,
             name: "cancel".into(),
             description: "Stop running turns, save what is left undone, and shut the server down. \
                       Detached jobs are left running."
@@ -386,7 +362,6 @@ pub async fn dispatch(d: &Dispatch, name: &str, args: &Args) -> Outcome {
         "interrupt_session" => interrupt_session(d, args).await,
         "cancel" => cancel(d).await,
         "get_messages" => get_messages(d, args).await,
-        "skill" => skill(d, args).await,
         // Published as a server command but unhandled: a catalog bug, named.
         other => Outcome::err(format!(
             "{other} is published as a server command but has no handler"
@@ -447,6 +422,23 @@ async fn send_message(d: &Dispatch, args: &Args) -> Outcome {
     deliver(d, &name, message).await
 }
 
+/// Resolves a message's `@image:` and `@skill:` references before it is stored.
+///
+/// # Invariant
+///
+/// A message is expanded once, so a stored row never carries a reference a later
+/// retry would resolve differently. A session whose llm cannot be resolved still
+/// takes its message: only the skills are expanded then.
+async fn expand_message(
+    d: &Dispatch,
+    session: &crate::session::SessionHandle,
+    message: String,
+) -> crate::meta::Expanded {
+    let llm = d.agent.route(session.name(), &session.tuning()).ok();
+    let llm = llm.as_ref().map(|(client, _)| client.as_ref());
+    crate::meta::expand(&session.cwd(), &message, llm).await
+}
+
 /// Puts `message` into `name`'s hands: a turn when it is free, an inbox row when not.
 ///
 /// # Invariant
@@ -461,6 +453,7 @@ async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcome {
     if session.is_deleted() {
         return Outcome::err(format!("session {name:?} is being deleted"));
     }
+    let message = expand_message(d, &session, message).await;
     let epoch = session.cancel_epoch();
     if let Some(gate) = session.try_claim() {
         // The gate is claimed before the durable write, so a second sender can only
@@ -481,11 +474,11 @@ async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcome {
             Err(e) => Outcome::err(format!("could not record the pending turn: {e}")),
         }
     } else {
-        match d.store.add_pending_task(
-            name,
-            "inject",
-            &json!({"session": name, "message": message}),
-        ) {
+        match d.store.add_pending_task(name, "inject", &{
+            let mut payload = message.to_json();
+            payload["session"] = json!(name);
+            payload
+        }) {
             Ok(_) => {
                 session.note_message();
                 Outcome::ok(format!(
@@ -906,57 +899,6 @@ async fn interrupt_session(d: &Dispatch, args: &Args) -> Outcome {
 ///
 /// Detached jobs keep running: they were started precisely so they would
 /// outlive this.
-/// `skill --session <name> --skill <name>`: the table's row, sent to an agent.
-///
-/// # Invariant
-///
-/// The name is looked up in the list `index_skill` publishes, so the table and
-/// the command cannot disagree about what exists. What travels is the row, not
-/// the prose: the agent reads the body when its line matches the task.
-async fn skill(d: &Dispatch, args: &Args) -> Outcome {
-    let wanted = args.get("skill").map(String::as_str).unwrap_or_default();
-    let Some(name) = args.get("session").cloned() else {
-        return Outcome::err("skill requires --session; it tells one session's agent");
-    };
-    let all = crate::tools::index_skill::installed();
-    let Some(found) = all.iter().find(|s| s.name == wanted) else {
-        let names: Vec<&str> = all.iter().map(|s| s.name.as_str()).collect();
-        return Outcome::err(format!(
-            "no skill named {wanted:?}; this machine has {}",
-            if names.is_empty() {
-                "none installed".to_string()
-            } else {
-                names.join(", ")
-            }
-        ));
-    };
-    // Read before telling: a body that cannot be read is not a skill to announce.
-    let text = match found.body() {
-        Ok(text) => text,
-        Err(e) => return Outcome::err(format!("could not read {}: {e}", found.path.display())),
-    };
-    let told = format!(
-        "skill `{}` ({}) is installed: {}\nits SKILL.md: {}",
-        found.name,
-        found.bucket,
-        found.description,
-        found.path.display()
-    );
-    let delivered = deliver(d, &name, told).await;
-    if !delivered.ok {
-        return delivered;
-    }
-    Outcome::ok_with(
-        text,
-        serde_json::json!({
-            "name": found.name,
-            "bucket": found.bucket,
-            "path": found.path.display().to_string(),
-            "session": name,
-        }),
-    )
-}
-
 /// A stop asked from outside the protocol -- a signal -- says what `cancel` says.
 pub(crate) async fn stop(d: &Dispatch) {
     // A window that cancelled as it left has already asked; this is the echo.
@@ -1148,7 +1090,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&dir.path().join("g.db")).unwrap();
         let id = store.create_session("main", "m", "C:/x").unwrap();
-        let task = store.begin_turn(id, "main", "go").unwrap();
+        let task = store.begin_turn(id, "main", &user_message("go")).unwrap();
 
         store
             .finish_turn(id, "main", &[task], protocol::SessionStatus::Idle, true)
@@ -1193,8 +1135,7 @@ mod tests {
                 "get_messages",
                 "interrupt_session",
                 "send_message",
-                "set_session",
-                "skill"
+                "set_session"
             ]
         );
         assert!(
@@ -1241,6 +1182,14 @@ mod tests {
     }
 
     /// The whole published catalog, as a greeting would carry it.
+    /// A message with no references: what most rows here hold.
+    fn user_message(text: &str) -> crate::meta::Expanded {
+        crate::meta::Expanded {
+            text: text.to_string(),
+            images: Vec::new(),
+        }
+    }
+
     fn published() -> Vec<CommandSpec> {
         let mut all = server_catalog();
         all.extend(protocol::client_commands());
@@ -1325,24 +1274,6 @@ mod tests {
             .find(|c| c.name == "cancel")
             .unwrap();
         assert!(spec.args.is_empty(), "cancel is a whole-server stop");
-    }
-
-    /// SPEC: `skill --session <name> --skill <name>`: the session is not optional.
-    #[test]
-    fn skill_names_the_session_it_tells() {
-        let spec = server_catalog()
-            .into_iter()
-            .find(|c| c.name == "skill")
-            .unwrap();
-        let names: Vec<&str> = spec.args.iter().map(|a| a.name.as_str()).collect();
-        assert_eq!(names, ["session", "skill"]);
-        let refused = resolve(
-            &published(),
-            "skill",
-            &Args::from([("skill".to_string(), "heir".to_string())]),
-        )
-        .unwrap_err();
-        assert!(refused.message.contains("session"), "{}", refused.message);
     }
 
     /// Interrupting names one session; guessing one is the hidden state we avoid.

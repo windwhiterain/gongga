@@ -94,7 +94,8 @@ impl Iterator for Transcript {
             None
         };
         let value = serde_json::from_str(&display).unwrap_or(serde_json::Value::Null);
-        let images = if kind == "tool_result" {
+        // Pictures ride in a tool's result and in a message with `@image:`.
+        let images = if kind == "tool_result" || kind == "text" {
             images_of(&value)
         } else {
             Vec::new()

@@ -59,25 +59,12 @@ impl Tool for IndexSkillTool {
     }
 }
 
-/// One installed skill, as both the table and the `skill` command need it.
+/// One installed skill, as both the table and an `@skill:` reference need it.
 pub struct Installed {
     pub name: String,
     pub description: String,
     pub path: std::path::PathBuf,
     pub bucket: &'static str,
-}
-
-impl Installed {
-    /// This skill's body: its SKILL.md, frontmatter and all.
-    ///
-    /// # Invariant
-    ///
-    /// The prose goes back whole -- frontmatter included -- because that is what
-    /// a reader of the file gets, and a command that trimmed it would be a
-    /// second, quieter reader of the same skill.
-    pub fn body(&self) -> std::io::Result<String> {
-        std::fs::read_to_string(&self.path)
-    }
 }
 
 /// Every skill this machine offers: the home's first, then the machine's.

@@ -1,4 +1,4 @@
-//! Pictures: formats, `@path` references, and what a provider will accept.
+//! Pictures: formats, media types, and what a provider will accept.
 
 use std::path::{Path, PathBuf};
 
@@ -104,37 +104,6 @@ pub fn media_type(path: &Path, bytes: &[u8]) -> Option<&'static str> {
     None
 }
 
-/// Every `@<path>` in `text` whose extension names a picture.
-///
-/// # Invariant
-///
-/// Only an `@` that starts a token counts (`@shot.png`, not `user@host`), and the
-/// path must name a picture by extension: a bare `@note.txt` is a mention, not a
-/// request to upload a text file.
-pub fn references(text: &str) -> Vec<String> {
-    let mut found = Vec::new();
-    for token in text.split(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | '"' | '\'')) {
-        let Some(rest) = token.strip_prefix('@') else {
-            continue;
-        };
-        // Trailing punctuation belongs to the sentence, not the path.
-        let path = rest.trim_end_matches([',', ';', ':', '.', '!', '?']);
-        if path.is_empty() {
-            continue;
-        }
-        let ext = Path::new(path)
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.to_ascii_lowercase());
-        if let Some(ext) = ext {
-            if KNOWN.iter().any(|(known, _)| *known == ext) && !found.iter().any(|f| f == path) {
-                found.push(path.to_string());
-            }
-        }
-    }
-    found
-}
-
 /// One picture as a request content part.
 ///
 /// # Invariant
@@ -191,30 +160,6 @@ fn base64(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_reference_is_a_token_that_starts_with_at() {
-        assert_eq!(references("see @shot.png"), vec!["shot.png"]);
-        assert_eq!(references("(@a/b.png)"), vec!["a/b.png"]);
-        // An email is not a reference, and neither is a non-picture.
-        assert!(references("mail me at user@host.png").is_empty());
-        assert!(references("@notes.txt").is_empty());
-        // Trailing punctuation belongs to the sentence.
-        assert_eq!(references("@shot.png."), vec!["shot.png"]);
-        // One file named twice is uploaded once.
-        assert_eq!(references("@a.png and @a.png"), vec!["a.png"]);
-        assert_eq!(references("@a.png @b.jpg"), vec!["a.png", "b.jpg"]);
-    }
-
-    #[test]
-    fn every_mime_type_is_the_extension_it_came_from() {
-        for (ext, media) in KNOWN {
-            assert_eq!(
-                media_type(Path::new(&format!("x.{ext}")), b""),
-                Some(*media)
-            );
-        }
-    }
 
     #[test]
     fn a_file_id_is_preferred_to_the_bytes() {

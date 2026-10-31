@@ -124,6 +124,11 @@ Both come from the session's tuning, falling back to the server's own
 configuration. A percentage only has a size once a context window is known,
 which is why the window travels with the model.
 
+`commands::deliver` calls this too, before a turn exists: a message's `@image:`
+reference is uploaded by the client its turn will send with, so the id in the row
+and the model that reads it are the same pairing. It is `pub(crate)` for that one
+caller -- a message must be accepted whether or not a turn is starting.
+
 ## Agent::budget
 
 Zero means "off", everywhere and without exception, so a server that wants no

@@ -26,6 +26,7 @@ pub mod frame;
 #[cfg(test)]
 mod loopback;
 pub mod message;
+pub mod reference;
 
 pub use channel::{
     Channel, ChannelConfig, ChannelError, ChannelSink, ChannelStream, MAX_MESSAGE_LEN, Role,
@@ -38,3 +39,4 @@ pub use message::{
     ToolAnswerEvent, ToolStream, Usage, UsageEvent, client_commands, decode_client, decode_server,
     encode_client, encode_server,
 };
+pub use reference::Reference;

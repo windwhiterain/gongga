@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use crate::complete::{Candidate, Completer, token_bounds};
-use protocol::{ArgSpec, CommandSpec, CommandTarget, CompletionSource};
+use protocol::{ArgSpec, CommandSpec, CommandTarget, CompletionSource, Reference};
 
 /// A catalog that can be swapped while the TUI holds a reference to it.
 #[derive(Clone, Default)]
@@ -20,7 +20,7 @@ struct Inner {
     /// The client's sticky argument names, for the sources the server names
     /// but cannot fill in.
     sticky_names: Vec<String>,
-    /// The skills installed on this machine, for `skill --skill`.
+    /// The skills installed on this machine, for an `@skill:` reference.
     skill_names: Vec<String>,
     /// Where a relative path value is read from: the client's own directory.
     cwd: PathBuf,
@@ -109,14 +109,7 @@ struct Ctx<'a> {
 
 impl Completer for Catalog {
     fn complete(&self, line: &str, cursor: usize) -> Vec<Candidate> {
-        // `/` starts a command; anything else is a message, which offers
-        // nothing. See `docs/notes/cli-catalog.md`.
-        if !line.trim_start().starts_with('/') {
-            return Vec::new();
-        }
         let (_, _, token) = token_bounds(line, cursor);
-        let words = shell_words::split(line).unwrap_or_default();
-        let position = line[..cursor.min(line.len())].split_whitespace().count();
         let (all, sessions, sticky, skills, cwd) = {
             let inner = self.read();
             (
@@ -127,6 +120,20 @@ impl Completer for Catalog {
                 inner.cwd.clone(),
             )
         };
+        let ctx = Ctx {
+            sessions: &sessions,
+            sticky: &sticky,
+            skills: &skills,
+            cwd: &cwd,
+            all: &all,
+        };
+        // `/` starts a command; a message completes only its `@` references.
+        // See `docs/notes/cli-catalog.md`.
+        if !line.trim_start().starts_with('/') {
+            return reference(&ctx, line, cursor, &token);
+        }
+        let words = shell_words::split(line).unwrap_or_default();
+        let position = line[..cursor.min(line.len())].split_whitespace().count();
         let cmd = words.first().map(|t| t.trim_start_matches('/'));
         // The word the cursor is in is about to be replaced, so it is not
         // already on the line.
@@ -185,14 +192,58 @@ impl Completer for Catalog {
         else {
             return Vec::new();
         };
-        let ctx = Ctx {
-            sessions: &sessions,
-            sticky: &sticky,
-            skills: &skills,
-            cwd: &cwd,
-            all: &all,
-        };
         resolve(&spec.completions, &token, &ctx, &words, 0)
+    }
+}
+
+/// Completes a message's `@image:`, `@skill:` and `@file:` references.
+///
+/// # Invariant
+///
+/// A reference is completed in two steps that never overlap: the prefix, while one
+/// is still being typed, and then the value it names -- a path for a picture or a
+/// file, a skill's name for a skill.
+fn reference(ctx: &Ctx, line: &str, cursor: usize, token: &str) -> Vec<Candidate> {
+    let (start, _, _) = token_bounds(line, cursor);
+    if let Some((kind, typed)) = split_reference(token) {
+        // `@image:pa`, written together: the prefix is already behind the cursor.
+        return value(kind, typed, ctx);
+    }
+    let previous = line[..start.min(line.len())].split_whitespace().last();
+    if let Some((kind, _)) = previous.and_then(split_reference) {
+        return value(kind, token, ctx);
+    }
+    // `@`, `@im`: the three prefixes themselves, and nothing else.
+    let Some(bare) = token.strip_prefix('@') else {
+        return Vec::new();
+    };
+    Reference::ALL
+        .into_iter()
+        .filter(|kind| kind.prefix()[1..].contains(bare))
+        .map(|kind| Candidate::word(kind.prefix(), reference_detail(kind)))
+        .collect()
+}
+
+/// What a reference is for, said in the popup's right-hand column.
+fn reference_detail(kind: Reference) -> &'static str {
+    match kind {
+        Reference::Image => "attach a picture",
+        Reference::Skill => "fetch a skill's metadata",
+        Reference::File => "mention a file",
+    }
+}
+
+/// The value part of `token` when it opens a reference, and the kind it opens.
+fn split_reference(token: &str) -> Option<(Reference, &str)> {
+    let kind = Reference::of_prefix(token)?;
+    Some((kind, &token[kind.prefix().len()..]))
+}
+
+/// Completes one reference's value.
+fn value(kind: Reference, typed: &str, ctx: &Ctx) -> Vec<Candidate> {
+    match kind {
+        Reference::Skill => pick(ctx.skills.iter().map(String::as_str), typed, "skill"),
+        Reference::Image | Reference::File => paths(ctx.cwd, typed),
     }
 }
 
@@ -401,18 +452,6 @@ mod tests {
             },
             CommandSpec {
                 target: CommandTarget::Server,
-                name: "skill".into(),
-                description: "Read one installed skill.".into(),
-                args: vec![arg(
-                    "skill",
-                    "The skill's name.",
-                    true,
-                    None,
-                    CompletionSource::Skills,
-                )],
-            },
-            CommandSpec {
-                target: CommandTarget::Server,
                 name: "set_session".into(),
                 description: "Create or configure.".into(),
                 args: vec![
@@ -507,6 +546,28 @@ mod tests {
         assert_eq!(got.first().map(String::as_str), Some("main"), "{got:?}");
     }
 
+    /// SPEC: a message's three references complete, prefix first and then value.
+    #[test]
+    fn a_message_completes_its_references() {
+        let c = catalog();
+        c.set_skill_names(&["evolve".to_string(), "heir".to_string()]);
+        let got = values(&c, "@");
+        assert_eq!(got, vec!["@image:", "@skill:", "@file:"]);
+        assert_eq!(values(&c, "@sk"), vec!["@skill:"]);
+        // A skill completes against what is installed here.
+        assert_eq!(values(&c, "@skill: he"), vec!["heir"]);
+        // A picture or a file completes against the filesystem.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("shot.png"), b"x").unwrap();
+        c.set_cwd(dir.path());
+        assert_eq!(values(&c, "@image: shot"), vec!["shot.png"]);
+        assert_eq!(values(&c, "@file: shot"), vec!["shot.png"]);
+        // Written together, the value completes the same way.
+        assert_eq!(values(&c, "@image:shot"), vec!["shot.png"]);
+        // A message with no reference in reach offers nothing.
+        assert!(values(&c, "hello ").is_empty());
+    }
+
     #[test]
     fn free_form_values_yield_nothing() {
         let c = catalog();
@@ -536,7 +597,6 @@ mod tests {
                 "name",
                 "port",
                 "session",
-                "skill",
                 "value"
             ]
         );
@@ -661,21 +721,6 @@ mod tests {
             values(&c, "/set_render_session --mode line --"),
             vec!["--session"]
         );
-    }
-
-    /// `skill --skill` completes what is installed here, which the client fills.
-    #[test]
-    fn the_skill_command_completes_installed_skills() {
-        let c = catalog();
-        assert!(values(&c, "/skill --skill ").is_empty(), "none listed yet");
-        c.set_skill_names(&["evolve".to_string(), "heir".to_string()]);
-        assert_eq!(
-            values(&c, "/skill --skill "),
-            vec!["evolve", "heir"],
-            "the installed names, in order"
-        );
-        assert_eq!(values(&c, "/skill --skill he"), vec!["heir"]);
-        assert_eq!(values(&c, "/skill --"), vec!["--skill"]);
     }
 
     #[test]

@@ -710,7 +710,12 @@ impl Store {
     }
 
     /// Accepts an idle session's first message and its turn obligation together.
-    pub fn begin_turn(&self, session_id: i64, session: &str, message: &str) -> anyhow::Result<i64> {
+    pub fn begin_turn(
+        &self,
+        session_id: i64,
+        session: &str,
+        expanded: &crate::meta::Expanded,
+    ) -> anyhow::Result<i64> {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
         tx.execute(
@@ -723,12 +728,7 @@ impl Store {
             ],
         )?;
         let id = tx.last_insert_rowid();
-        Self::append_message_conn(
-            &tx,
-            session_id,
-            "text",
-            &json!({"role": "user", "text": message}),
-        )?;
+        Self::append_message_conn(&tx, session_id, "text", &user_row(expanded))?;
         tx.commit()?;
         Ok(id)
     }
@@ -750,16 +750,9 @@ impl Store {
         let delivered = tasks.len();
         for (id, payload) in tasks {
             let payload: serde_json::Value = serde_json::from_str(&payload)?;
-            let message = payload
-                .get("message")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("pending inject {id} has no string message"))?;
-            Self::append_message_conn(
-                &tx,
-                session_id,
-                "text",
-                &json!({"role": "user", "text": message}),
-            )?;
+            let expanded = crate::meta::Expanded::from_json(&payload)
+                .ok_or_else(|| anyhow::anyhow!("pending inject {id} has no message"))?;
+            Self::append_message_conn(&tx, session_id, "text", &user_row(&expanded))?;
             tx.execute("DELETE FROM pending_tasks WHERE id = ?1", params![id])?;
         }
         tx.commit()?;
@@ -1036,6 +1029,21 @@ pub(crate) fn images_of(value: &serde_json::Value) -> Vec<ImageRef> {
 /// takes is computed on the way in. `None` is the row's own answer to "is any request
 /// built from you": a notice, the prompt in force, a reasoning entry with no encrypted
 /// blob, a provider item whose payload was stripped.
+/// The stored row of a user message: its text, and the pictures it named.
+fn user_row(expanded: &crate::meta::Expanded) -> serde_json::Value {
+    let mut row = json!({"role": "user", "text": expanded.text});
+    if !expanded.images.is_empty() {
+        row["images"] = json!(
+            expanded
+                .images
+                .iter()
+                .map(|i| i.to_json())
+                .collect::<Vec<_>>()
+        );
+    }
+    row
+}
+
 fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value> {
     let text_of = |key: &str| {
         value
@@ -1196,6 +1204,14 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// A message with no references: what most rows here hold.
+    fn user_message(text: &str) -> crate::meta::Expanded {
+        crate::meta::Expanded {
+            text: text.to_string(),
+            images: Vec::new(),
+        }
+    }
+
     fn temp_store() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&dir.path().join("g.db")).unwrap();
@@ -1236,13 +1252,19 @@ mod tests {
     fn a_new_turn_commits_its_obligation_and_first_message_together() {
         let (_d, store) = temp_store();
         let id = store.create_session("main", "m", "C:/x").unwrap();
-        let task = store.begin_turn(id, "main", "hello").unwrap();
+        let task = store
+            .begin_turn(id, "main", &user_message("hello"))
+            .unwrap();
         assert!(store.pending_tasks().unwrap().iter().any(|t| t.id == task));
         let rows = store.messages_between(id, 0, i64::MAX).unwrap();
         assert_eq!(rows.messages.len(), 1);
         assert_eq!(rows.messages[0].kind, "text");
 
-        assert!(store.begin_turn(i64::MAX, "broken", "rollback").is_err());
+        assert!(
+            store
+                .begin_turn(i64::MAX, "broken", &user_message("rollback"))
+                .is_err()
+        );
         assert!(
             !store
                 .pending_tasks()
@@ -1256,7 +1278,9 @@ mod tests {
     fn inbox_delivery_is_atomic_and_does_not_consume_turn_rows() {
         let (_d, store) = temp_store();
         let id = store.create_session("main", "m", "C:/x").unwrap();
-        let turn = store.begin_turn(id, "main", "first").unwrap();
+        let turn = store
+            .begin_turn(id, "main", &user_message("first"))
+            .unwrap();
         store
             .add_pending_task("main", "inject", &json!({"message": "second"}))
             .unwrap();

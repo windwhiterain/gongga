@@ -49,26 +49,7 @@ impl Entry {
                 step,
             });
         }
-        let bytes = if images.is_empty() {
-            item.into_bytes()
-        } else {
-            // A result with pictures is the one item whose stored text becomes a
-            // content array; every other row goes out untouched.
-            match serde_json::from_str::<Value>(&item) {
-                Ok(mut value) => {
-                    let text = value
-                        .get("output")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string();
-                    let mut parts = vec![json!({"type": "input_text", "text": text})];
-                    parts.extend(images.iter().map(content_part));
-                    value["output"] = Value::Array(parts);
-                    value.to_string().into_bytes()
-                }
-                Err(_) => item.into_bytes(),
-            }
-        };
+        let bytes = with_pictures(item, &kind, &images).into_bytes();
         Some(Self {
             bytes,
             kind,
@@ -77,6 +58,33 @@ impl Entry {
             step,
         })
     }
+}
+
+/// The one item whose text becomes a content array when the row carries pictures.
+///
+/// # Invariant
+///
+/// A picture rides in the field its kind keeps text in -- `content` for a message,
+/// `output` for a result -- and every other row goes out as stored.
+fn with_pictures(item: String, kind: &str, images: &[crate::image::ImageRef]) -> String {
+    if images.is_empty() {
+        return item;
+    }
+    let field = match kind {
+        "tool_result" => "output",
+        "text" => "content",
+        _ => return item,
+    };
+    let Ok(mut value) = serde_json::from_str::<Value>(&item) else {
+        return item;
+    };
+    let Some(text) = value.get(field).and_then(|v| v.as_str()) else {
+        return item;
+    };
+    let mut parts = vec![json!({"type": "input_text", "text": text})];
+    parts.extend(images.iter().map(content_part));
+    value[field] = Value::Array(parts);
+    value.to_string()
 }
 
 /// The rows of one model step, held until its results have all landed.
@@ -330,6 +338,25 @@ mod tests {
             json!({"type": "function_call_output", "call_id": id, "output": "ok"}),
             Some(step),
         )
+    }
+
+    /// A message with a picture sends a content array: its text, then the file id.
+    #[test]
+    fn a_message_with_a_picture_sends_a_content_array() {
+        let item = json!({"role": "user", "content": "look"}).to_string();
+        let mut image = crate::image::ImageRef::new("/shot.png", "image/png");
+        image.file_id = Some("file-1".to_string());
+        let out = with_pictures(item, "text", &[image]);
+        let value: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(value["role"], "user");
+        assert_eq!(
+            value["content"][0],
+            json!({"type": "input_text", "text": "look"})
+        );
+        assert_eq!(
+            value["content"][1],
+            json!({"type": "input_image", "file_id": "file-1"})
+        );
     }
 
     fn kinds(chunks: Vec<Vec<u8>>) -> Vec<String> {

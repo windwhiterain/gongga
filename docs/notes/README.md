@@ -22,6 +22,7 @@ note is a bug.
 | [`protocol-lib.md`](protocol-lib.md) | `crates/protocol/src/lib.rs` |
 | [`protocol-frame.md`](protocol-frame.md) | `crates/protocol/src/frame.rs` |
 | [`protocol-message.md`](protocol-message.md) | `crates/protocol/src/message.rs` |
+| [`protocol-reference.md`](protocol-reference.md) | `crates/protocol/src/reference.rs` |
 | [`protocol-channel.md`](protocol-channel.md) | `crates/protocol/src/channel.rs` |
 | [`protocol-loopback.md`](protocol-loopback.md) | `crates/protocol/src/loopback.rs` |
 
@@ -45,6 +46,7 @@ note is a bug.
 | [`server-config.md`](server-config.md) | `crates/server/src/config.rs` |
 | [`server-instance.md`](server-instance.md) | `crates/server/src/instance.rs` |
 | [`server-llm.md`](server-llm.md) | `crates/server/src/llm.rs` |
+| [`server-meta.md`](server-meta.md) | `crates/server/src/meta.rs` |
 | [`server-net.md`](server-net.md) | `crates/server/src/net.rs` |
 | [`server-prompts.md`](server-prompts.md) | `crates/server/src/prompts.rs` |
 | [`server-providers.md`](server-providers.md) | `crates/server/src/providers.rs` |

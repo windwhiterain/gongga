@@ -94,6 +94,13 @@ The command list is the same rule, and it was the one place still prefix-only:
 `set_render_session` have it in the middle. `a_command_name_matches_anywhere` is the
 test that would have caught it.
 
+## reference — a message's `@` references
+
+A line that does not start with `/` is a message, and the only thing worth
+completing in one is an `@` reference: `@image:`, `@skill:`, `@file:` first, then
+the value each one names -- a path for a picture or a file, a skill's name for a
+skill. Two steps, because the prefix is a decision and the value is a lookup.
+
 ## paths
 
 Directories come back with a trailing `/` and without the usual trailing space,

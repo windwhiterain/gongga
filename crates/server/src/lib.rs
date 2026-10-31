@@ -12,6 +12,7 @@ mod config;
 mod image;
 mod instance;
 mod llm;
+mod meta;
 mod migrate;
 mod net;
 mod probe;

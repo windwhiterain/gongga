@@ -190,7 +190,12 @@ impl Agent {
     }
 
     /// Where this turn sends, and how many input tokens it may carry before it is worth a notice.
-    fn route(
+    ///
+    /// # Invariant
+    ///
+    /// Cached by roster entry, so the notice a message's references get and the
+    /// turn that reads them are one client.
+    pub(crate) fn route(
         &self,
         name: &str,
         tuning: &crate::session::Tuning,
@@ -661,15 +666,13 @@ impl Agent {
         Ok(StepResult::RanTools)
     }
 
-    /// Turns `@<path>` mentions in a tool's output into attachments.
+    /// Turns the `@image:` references in a tool's output into attachments.
     ///
     /// # Invariant
     ///
-    /// A mention that names no readable picture is left as text: a command that
-    /// prints `@missing.png` must not fail the turn, and a model that has to learn
-    /// the file is gone should be told so by the note `image::content_part` emits.
-    /// A model that cannot take images gets those references reported once, in the
-    /// output, rather than silently dropped.
+    /// A reference that names no readable picture is left as text, so a command
+    /// printing one cannot fail the turn; a model that cannot take images is told
+    /// so once, in the output, rather than having them silently dropped.
     async fn attach_references(
         &self,
         ctx: &ToolContext,
@@ -677,7 +680,11 @@ impl Agent {
         llm: &LlmClient,
     ) -> Vec<crate::image::ImageRef> {
         let mut out = Vec::new();
-        for given in crate::image::references(output) {
+        let named = crate::meta::mentions(output)
+            .into_iter()
+            .filter(|m| m.kind == protocol::Reference::Image)
+            .map(|m| m.value);
+        for given in named {
             let path = crate::image::resolve(&ctx.cwd, &given);
             let bytes = match std::fs::read(&path) {
                 Ok(b) => b,
@@ -793,7 +800,7 @@ impl Agent {
         }));
 
         let status = if outcome.ok { "ok" } else { "error" };
-        // A command that printed `@shot.png` names a picture: it becomes an
+        // A command that printed `@image: <path>` names a picture: it becomes an
         // attachment, uploaded once per file.
         let images: Vec<_> = scanned
             .iter()

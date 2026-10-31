@@ -104,10 +104,14 @@ row for row.
 Production code always has a lower bound (a note), and a method nobody calls is a
 second way to ask the same question.
 
-## tool_result images
+## pictures in a row
 
-A tool result carries the text it always carried, plus `images`: a path and a
-media type per picture, never the bytes.
+A tool result, and a message written with `@image:`, carry the text they always
+carried plus `images`: a path and a media type per picture, never the bytes.
+
+`user_row` is where a message's pictures become a row, and `images_of` is how a
+row reads them back -- the same field both ways, so `deliver_pending` and
+`begin_turn` store what `transcript` then sends.
 
 That is the SPEC's "structured for agentic retrieval/mutation" taken seriously.
 Base64 in a `messages` row would turn the transcript into a binary dump: a

@@ -39,6 +39,20 @@ belong to one step, so this is decidable inside the step's own buffer without
 remembering what was already sent; it names a row whose partner was deleted from
 under it, and sent alone it is the request a provider rejects.
 
+## with_pictures — which field a picture rides in
+
+A row with pictures stops being a string once it reaches the request: the text
+becomes a content array with the pictures behind it. The field it replaces
+depends on the kind, and only on the kind -- `content` for a message, `output`
+for a result -- because those are the fields those two kinds keep their text in.
+Everything else goes out byte for byte as stored.
+
+## tests::a_message_with_a_picture_sends_a_content_array
+
+The text keeps its own part and the picture follows it, by file id: a message and
+a tool result reach the provider through the same array, differing only in the
+field it replaces.
+
 ## RequestSource — what a retry replays
 
 The source names a session and a pinned `upto_seq` rather than holding a body,
