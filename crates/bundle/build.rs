@@ -7,6 +7,20 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    // The payload is other packages' code; without this it stays stale until
+    // this file is touched.
+    if let Ok(root) = std::env::var("CARGO_MANIFEST_DIR") {
+        let root = Path::new(&root).join("../..");
+        println!("cargo:rerun-if-changed={}", root.join("crates").display());
+        println!(
+            "cargo:rerun-if-changed={}",
+            root.join("Cargo.toml").display()
+        );
+        println!(
+            "cargo:rerun-if-changed={}",
+            root.join("Cargo.lock").display()
+        );
+    }
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("cargo always sets OUT_DIR"));
     let mut generated = String::new();
     if std::env::var_os("CARGO_FEATURE_PAYLOAD").is_some() {

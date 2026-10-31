@@ -135,6 +135,35 @@ pub const CLI: &str = "cli";
 /// program and the link, so what a reader finds in `Cargo.toml` is what they type.
 pub const COMMAND: &str = "gongga-cli";
 
+/// The name this process was started as, which is what a reader can type back.
+///
+/// # Invariant
+///
+/// argv[0] rather than `COMMAND`, because the same code is also the `gongga` a
+/// bundle carries (`bundle-main.md`): a message that tells someone to run
+/// `gongga-cli` is wrong when the file on their disk is called `gongga`, and the
+/// name is the only thing that knows which it is.
+pub fn typed_name() -> String {
+    // A bundle hands over to an extracted program, so argv[0] is the file it
+    // extracted; it passes the name it was started as in this variable.
+    if let Some(named) = std::env::var("GONGGA_NAME")
+        .ok()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+    {
+        return named;
+    }
+    std::env::args_os()
+        .next()
+        .map(std::path::PathBuf::from)
+        .and_then(|path| {
+            path.file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+        })
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or_else(|| COMMAND.to_string())
+}
+
 /// What this program says it is, wherever it is asked -- one layer, one sentence.
 pub const ABOUT: &str = "Gongga harness commands: one command in, its events out";
 
@@ -995,7 +1024,10 @@ impl Client {
             "serve" => sink.line(
                 &self.command_window(),
                 LineKind::Error,
-                "serve takes over the process; run it in a shell: `gongga serve --port <port>`",
+                &format!(
+                    "serve takes over the process; run it in a shell: `{} serve --port <port>`",
+                    typed_name()
+                ),
             ),
             "set_render" => self.run_render(args, sink),
             "set_render_session" => self.run_render_session(args, sink),
@@ -1537,8 +1569,9 @@ async fn connect(args: &Args) -> anyhow::Result<(Client, Link)> {
         Err(failure) if failure.is_fatal() => return Err(failure.into_error()),
         Err(failure) => {
             return Err(anyhow!(
-                "{}; is a server running? Start one with `gongga-cli serve --port <port>`",
-                failure.message()
+                "{}; is a server running? Start one with `{} serve --port <port>`",
+                failure.message(),
+                typed_name()
             ));
         }
     };

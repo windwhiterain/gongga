@@ -105,6 +105,18 @@ fn take_over(program: &Path, skip: usize) -> Result<u8, String> {
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1 + skip).collect();
     let mut cmd = std::process::Command::new(program);
     cmd.args(&args);
+    // The name this file was typed as: what it hands over to knows only the
+    // name of the file it was extracted from.
+    if let Some(name) = std::env::args_os()
+        .next()
+        .map(PathBuf::from)
+        .and_then(|path| {
+            path.file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+        })
+    {
+        cmd.env("GONGGA_NAME", name);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
