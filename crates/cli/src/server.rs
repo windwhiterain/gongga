@@ -310,6 +310,7 @@ fn take_over(cmd: Command, server: &Path) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
+        let mut cmd = cmd;
         let error = cmd.exec();
         Err(error).with_context(|| format!("running {}", server.display()))
     }
