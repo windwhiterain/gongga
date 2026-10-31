@@ -115,9 +115,6 @@ pub struct Hit {
 pub struct Screen {
     /// The windows the events area is split into: a frame may not walk their logs.
     pub panes: Panes,
-    /// The pane the keyboard scrolls: the wheel points at a pane, and a frame
-    /// clamps each pane against its own bound.
-    pub focus: String,
     pub completion: Option<Completion>,
     pub input: InputLine,
     pub status: String,
@@ -157,7 +154,7 @@ impl Screen {
             self.panes.of_kind(crate::panes::Kind::Line).count(),
         );
         let (_, panes) = render::body(chunks[1], &self.panes);
-        render::pane_slots(panes, &self.panes, &self.focus).0
+        render::pane_slots(panes, &self.panes, self.sticky_session.as_deref()).0
     }
 
     /// Where a pane's rows come from and how far it is scrolled.
@@ -182,7 +179,8 @@ impl Screen {
             self.panes.of_kind(crate::panes::Kind::Line).count(),
         );
         let (list, _) = render::body(chunks[1], &self.panes);
-        if let Some(name) = render::list_at(list, &self.panes, row) {
+        if let Some(name) = render::list_at(list, &self.panes, self.sticky_session.as_deref(), row)
+        {
             return Some(Hit {
                 name,
                 part: Part::List,
@@ -240,11 +238,14 @@ impl Screen {
         window.rows.iter().map(|(_, row)| row.to_string()).collect()
     }
 
-    /// The rows the focused pane gets in a frame this size: what a page means.
+    /// The rows the sticky session gets in a frame this size: what a page means.
     pub fn page_height(&self, width: u16, height: u16) -> usize {
+        let Some(name) = self.sticky_session.as_deref() else {
+            return 1;
+        };
         self.slots(width, height)
             .iter()
-            .find(|slot| slot.name == self.focus)
+            .find(|slot| slot.name == name)
             .map(|slot| slot.body.height as usize)
             .unwrap_or(1)
     }
@@ -306,7 +307,6 @@ impl Tui {
             terminal,
             screen: Screen {
                 panes: Panes::new(),
-                focus: String::new(),
                 completion: None,
                 input: InputLine::default(),
                 status: "connecting".to_string(),
@@ -352,10 +352,6 @@ impl Tui {
     /// How the events area is divided, as the command layer last said.
     pub fn set_layout(&mut self, layout: &Layout) {
         self.screen.panes.layout(layout);
-        // A focus the new division dropped is no focus: point at what is there.
-        if self.screen.panes.get(&self.screen.focus).is_none() {
-            self.screen.focus = self.screen.panes.first_name();
-        }
         self.dirty = true;
     }
 
@@ -694,12 +690,10 @@ impl Tui {
         else {
             return;
         };
-        self.screen.focus = hit.name.clone();
         if let Some(rows) = rows {
-            // The wheel reads what it is over; it does not retarget the keys.
-            match hit.part {
-                Part::List => self.screen.panes.scroll_list_by(rows),
-                Part::Pane | Part::Line => self.screen.scroll_pane(&hit.name, rows),
+            // The wheel writes no state; a list has no scroll of its own.
+            if hit.part != Part::List {
+                self.screen.scroll_pane(&hit.name, rows);
             }
             self.dirty = true;
             return;
@@ -1228,7 +1222,6 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
         let mut screen = Screen {
             panes: Panes::new(),
-            focus: String::new(),
             completion: None,
             input: InputLine::default(),
             status: String::new(),
@@ -1288,7 +1281,6 @@ mod tests {
             Self {
                 screen: Screen {
                     panes,
-                    focus: String::new(),
                     completion: None,
                     input: InputLine::default(),
                     status: String::new(),
@@ -1821,14 +1813,18 @@ mod tests {
         let parts = crate::render::areas(area, 1, true, 1);
         let (list, _) = crate::render::body(parts[1], &panes);
         assert_eq!(
-            crate::render::list_at(list, &panes, list.y + 1),
+            crate::render::list_at(list, &panes, None, list.y + 1),
             Some("peer".to_string()),
             "a click on a name reads that name"
         );
-        assert_eq!(crate::render::list_at(list, &panes, 0), None, "the header");
+        assert_eq!(
+            crate::render::list_at(list, &panes, None, list.y - 1),
+            None,
+            "a row outside the list names nobody"
+        );
         // A row below the last name names nobody.
         assert_eq!(
-            crate::render::list_at(list, &panes, list.bottom() - 1),
+            crate::render::list_at(list, &panes, None, list.bottom() - 1),
             None
         );
         // The line group is its own area, and a click there names its session.

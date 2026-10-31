@@ -65,6 +65,32 @@ break, and a row that reaches `width` columns continues on the next one.
 The last row always exists, so an empty input -- or one that ends with a newline
 -- has somewhere for the cursor to sit.
 
+## style_for — one colour per kind
+
+Ten kinds of line and ten colours, because a colour that means two things means
+neither. The pairs that used to collide, and what they are now:
+
+| kind | colour | what it is |
+|---|---|---|
+| `System` | dark gray | the harness about itself |
+| `Command` | light magenta | a line that was asked for: `/cmd` or `$ cmd --args` |
+| `User` | light cyan | prose the operator typed |
+| `Assistant` | white | the answer |
+| `Reasoning` | gray, italic | the model thinking |
+| `ToolCall` | yellow | a tool being called |
+| `ToolOutput` | light blue | what it printed |
+| `ToolError` | light red | what it complained |
+| `Result` | green | a command's answer |
+| `Error` | red, bold | something needs looking at |
+
+`Command` exists because the echo used to be `System`, which is also what the
+status word and a connection notice are; a reader scrolling back for "what did I
+run" was looking for a colour that also meant "the harness is talking". Reasoning
+had the same trouble against `System` -- same gray, told apart only by italic.
+
+`no_two_kinds_of_line_share_a_colour` walks every kind and fails on a repeat, so
+the table above is checked rather than remembered.
+
 ## draw_bottom
 
 SPEC's "show a go to bottom button", drawn on exactly the condition it names: the
@@ -79,11 +105,16 @@ on the list's spare column instead of on a name.
 
 ## list_window
 
-The rows of the session list a frame shows: its tail, scrolled up by the list's own
-`scroll`.
+The rows of the session list a frame shows: the ones around the sticky session.
 
-The frame and the click read this one function, so a click lands on the name the
-operator saw -- not on the row that would be there if the list were flat.
+The list owns no scroll. SPEC gives it a vertical scroll, and the sticky session is
+that scroll's only position: the window follows the name, so the row that says where
+a message will go is never the one that scrolled away, and a click lands on a name
+the operator can see. A name nobody knows -- before the first `set_session` -- pins
+the window at the top.
+
+The frame and the click read this one function with the same sticky session, so
+they cannot disagree about which name sits on which row.
 
 ## draw_list
 
@@ -132,7 +163,7 @@ place that computed it is how a copy ends up including rows the screen never dre
 
 ## pane_slots
 
-Equal shares, with what the division leaves over going to the focused pane: the
+Equal shares, with what the division leaves over going to the sticky session: the
 operator is reading that one, so it should be the taller one. A pane that cannot get
 a row is not drawn and counts towards `hidden`, which the last drawn header says out
 loud -- silently dropping a session's window is how a user decides the log is broken.

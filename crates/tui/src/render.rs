@@ -1,7 +1,7 @@
 //! Rendering: header, scrollable log, footer, completion popup, input line.
 
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
@@ -124,13 +124,13 @@ pub struct Slot {
     pub body: Rect,
 }
 
-/// Rows the panes get, with `focus` taking what an even share leaves over.
+/// Rows the panes get, with the sticky session taking what an even share leaves.
 ///
 /// # Invariant
 ///
 /// A pane that cannot get a row is not drawn, and `hidden` counts them: a pane
 /// nobody can read is worse than one that says it is not on screen.
-pub fn pane_slots(area: Rect, panes: &Panes, focus: &str) -> (Vec<Slot>, usize) {
+pub fn pane_slots(area: Rect, panes: &Panes, sticky: Option<&str>) -> (Vec<Slot>, usize) {
     // Only the sessions drawn as panes: the line groups and the command line
     // have areas of their own.
     let events: Vec<&Pane> = panes.of_kind(crate::panes::Kind::Full).collect();
@@ -157,7 +157,7 @@ pub fn pane_slots(area: Rect, panes: &Panes, focus: &str) -> (Vec<Slot>, usize) 
         } else {
             0
         };
-        let share = per + u16::from(pane.name == focus) * extra;
+        let share = per + u16::from(Some(pane.name.as_str()) == sticky) * extra;
         let left = area.bottom().saturating_sub(y + head);
         let height = share.min(left);
         if height == 0 {
@@ -190,13 +190,12 @@ pub fn pane_slots(area: Rect, panes: &Panes, focus: &str) -> (Vec<Slot>, usize) 
 ///
 /// It reads the same rows `draw_list` writes, so a click lands on the name the
 /// operator read. See `docs/notes/tui-render.md`.
-pub fn list_at(area: Rect, panes: &Panes, row: u16) -> Option<String> {
+pub fn list_at(area: Rect, panes: &Panes, sticky: Option<&str>, row: u16) -> Option<String> {
     if !covers(&area, row) {
         return None;
     }
-    let height = area.height as usize;
-    let scroll = panes.list().map(|pane| pane.scroll).unwrap_or(0);
-    let (start, end) = list_window(panes.listed().len(), height, scroll);
+    let names = panes.listed_names();
+    let (start, end) = list_window(names.len(), area.height as usize, sticky, &names);
     let index = start + (row - area.y) as usize;
     panes
         .listed()
@@ -326,20 +325,9 @@ fn draw_list(f: &mut Frame, s: &mut Screen, area: Rect) {
         return;
     }
     let height = area.height as usize;
-    let total = s.panes.listed().len();
-    let max_scroll = total.saturating_sub(height);
-    let scroll = s
-        .panes
-        .list()
-        .map(|pane| pane.scroll)
-        .unwrap_or(0)
-        .min(max_scroll);
-    if let Some(pane) = s.panes.list_mut() {
-        pane.max_scroll = max_scroll;
-        pane.scroll = scroll;
-    }
-    let (start, end) = list_window(total, height, scroll);
+    let names = s.panes.listed_names();
     let sticky = s.sticky_session.clone().unwrap_or_default();
+    let (start, end) = list_window(names.len(), height, s.sticky_session.as_deref(), &names);
     let rows: Vec<Line> = s
         .panes
         .listed()
@@ -365,20 +353,30 @@ fn draw_list(f: &mut Frame, s: &mut Screen, area: Rect) {
         })
         .collect();
     f.render_widget(Paragraph::new(rows), area);
-    if scroll > 0 {
-        draw_bottom(f, area);
-    }
 }
 
-/// The rows of the list a frame shows: its tail, scrolled up by `scroll`.
+/// The rows of the list a frame shows: the ones around the sticky session.
 ///
 /// # Invariant
 ///
 /// The frame and the click read the same window, so a click lands on the name the
 /// operator saw. See `docs/notes/tui-render.md`.
-fn list_window(total: usize, height: usize, scroll: usize) -> (usize, usize) {
-    let end = total - scroll.min(total.saturating_sub(height));
-    (end.saturating_sub(height), end)
+fn list_window(
+    total: usize,
+    height: usize,
+    sticky: Option<&str>,
+    names: &[String],
+) -> (usize, usize) {
+    if total <= height {
+        return (0, total);
+    }
+    // The only position the list has is the sticky session, so the row that
+    // says where a message goes is never off screen.
+    let at = sticky
+        .and_then(|name| names.iter().position(|known| known == name))
+        .unwrap_or(0);
+    let start = at.saturating_sub(height / 2).min(total - height);
+    (start, start + height)
 }
 
 /// The way back to the newest row, over the last row of something scrolled up.
@@ -460,7 +458,8 @@ fn draw_stickys(f: &mut Frame, s: &Screen, area: Rect) {
 
 /// Draws every pane: the header that names it, then the rows that fit in its share.
 fn draw_panes(f: &mut Frame, s: &mut Screen, area: Rect) {
-    let (slots, hidden) = pane_slots(area, &s.panes, &s.focus);
+    let sticky = s.sticky_session.clone();
+    let (slots, hidden) = pane_slots(area, &s.panes, sticky.as_deref());
     for (index, slot) in slots.iter().enumerate() {
         // Only the borrow of one pane is live at a time.
         let last = index + 1 == slots.len();
@@ -469,7 +468,7 @@ fn draw_panes(f: &mut Frame, s: &mut Screen, area: Rect) {
             if last && hidden > 0 {
                 title.push_str(&format!("· {hidden} not shown "));
             }
-            let style = if slot.name == s.focus {
+            let style = if Some(slot.name.as_str()) == sticky.as_deref() {
                 Style::default().fg(Color::Black).bg(Color::DarkGray)
             } else {
                 dim()
@@ -671,21 +670,52 @@ fn dim() -> Style {
     Style::default().fg(Color::DarkGray)
 }
 
+/// The colour of each kind of line, and the reason there are ten of them.
+///
+/// # Invariant
+///
+/// No two kinds share a colour, because a colour that means two things means
+/// neither: what the operator asked for, what the model is thinking, what a tool
+/// printed and what the harness says are four different things to read. See
+/// `docs/notes/tui-render.md`.
 fn style_for(kind: LineKind) -> Style {
     match kind {
+        // The harness about itself: the quietest thing on screen.
         LineKind::System => dim(),
+        // What was asked for: magenta matches nothing else.
+        LineKind::Command => Style::default().fg(Color::LightMagenta),
+        // What the operator typed as prose: the other half of "asked for".
         LineKind::User => Style::default().fg(Color::LightCyan),
+        // The answer.
         LineKind::Assistant => Style::default().fg(Color::White),
+        // The model thinking: its own grey, plus italic, so it reads as an aside.
         LineKind::Reasoning => Style::default()
-            .fg(Color::DarkGray)
+            .fg(Color::Gray)
             .add_modifier(Modifier::ITALIC),
         LineKind::ToolCall => Style::default().fg(Color::Yellow),
         LineKind::ToolOutput => Style::default().fg(Color::LightBlue),
         LineKind::ToolError => Style::default().fg(Color::LightRed),
+        // A command's answer, and a failure, keep the two ends of the traffic
+        // light that already mean "fine" and "look here".
         LineKind::Result => Style::default().fg(Color::Green),
         LineKind::Error => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
     }
 }
+
+/// Every kind, so a test can prove the palette has no two alike.
+#[cfg(test)]
+pub const KINDS: &[LineKind] = &[
+    LineKind::System,
+    LineKind::Command,
+    LineKind::User,
+    LineKind::Assistant,
+    LineKind::Reasoning,
+    LineKind::ToolCall,
+    LineKind::ToolOutput,
+    LineKind::ToolError,
+    LineKind::Result,
+    LineKind::Error,
+];
 #[cfg(test)]
 mod tests {
     use ratatui::Terminal;
@@ -742,10 +772,9 @@ mod tests {
         }
     }
 
-    /// SPEC's go-to-bottom, drawn only when a view is away from its newest row;
-    /// and the list's own scroll.
+    /// The list shows the rows around the sticky session -- the only position.
     #[test]
-    fn a_view_away_from_its_bottom_says_how_to_get_back() {
+    fn the_list_window_follows_the_sticky_session() {
         let names: Vec<String> = (0..12).map(|i| format!("s{i}")).collect();
         let listed: Vec<Listed> = names
             .iter()
@@ -763,75 +792,91 @@ mod tests {
         });
         let (width, height) = (40u16, 8u16);
         let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
-        term.draw(|f| {
-            draw(f, &mut screen);
-        })
-        .unwrap();
         let list = {
             let parts = parts(width, height, 1, true, 0);
             body(parts[1], &screen.panes).0
         };
-        let buf = term.backend().buffer().clone();
+        let drawn = |screen: &mut Screen, term: &mut Terminal<TestBackend>| {
+            term.draw(|f| {
+                draw(f, screen);
+            })
+            .unwrap();
+            let buf = term.backend().buffer().clone();
+            (0..list.height)
+                .map(|offset| row_text(&buf, list.y + offset))
+                .collect::<Vec<String>>()
+        };
 
-        // At the bottom the list shows its newest rows, and there is no button.
-        assert_eq!(list_at(list, &screen.panes, list.y), Some("s8".to_string()));
-        let last = row_text(&buf, list.bottom() - 1);
-        assert!(!last.contains("bottom"), "{last:?}");
+        // No sticky session: the window starts at the top.
+        let rows = drawn(&mut screen, &mut term);
+        assert!(rows[0].contains("s0"), "{rows:?}");
 
-        // Scrolled up, the bottom row of the list says where the way back is, and
-        // a click reads the rows this frame drew.
-        screen.panes.scroll_list_by(3);
-        term.draw(|f| {
-            draw(f, &mut screen);
-        })
-        .unwrap();
-        let buf = term.backend().buffer().clone();
-        assert_eq!(list_at(list, &screen.panes, list.y), Some("s5".to_string()));
-        // A narrow list has no room for the words, so the arrow is the button.
-        let last = row_text(&buf, list.bottom() - 1);
+        // The sticky session moves the window, and a click reads the drawn row.
+        screen.sticky_session = Some("s9".to_string());
+        let rows = drawn(&mut screen, &mut term);
         assert!(
-            last.ends_with('\u{2193}'),
-            "the way back is marked: {last:?}"
+            rows.iter().any(|row| row.contains("s9")),
+            "the sticky session is on screen: {rows:?}"
         );
-        assert!(!last.contains("bottom"), "and only where it fits: {last:?}");
+        let at = rows
+            .iter()
+            .position(|row| row.contains("s9"))
+            .expect("drawn");
+        assert_eq!(
+            list_at(
+                list,
+                &screen.panes,
+                screen.sticky_session.as_deref(),
+                list.y + at as u16
+            ),
+            Some("s9".to_string()),
+            "a click on the drawn row names the drawn session"
+        );
 
-        // Given the room, the same button says what it does and which key does it.
-        let mut wide = screen_with(&[]);
-        wide.panes.layout(&Layout {
-            listed: (0..12)
-                .map(|i| Listed {
-                    name: format!("a-much-longer-name-{i}"),
-                    status: "idle".to_string(),
-                })
-                .collect(),
-            full: Vec::new(),
-            line: Vec::new(),
-            command: "cmd".to_string(),
-        });
-        let mut term = Terminal::new(TestBackend::new(60, 8)).unwrap();
-        term.draw(|f| {
-            draw(f, &mut wide);
-        })
-        .unwrap();
-        wide.panes.scroll_list_by(2);
-        term.draw(|f| {
-            draw(f, &mut wide);
-        })
-        .unwrap();
-        let buf = term.backend().buffer().clone();
-        let parts = parts(60, 8, 1, true, 0);
-        let (list, _) = body(parts[1], &wide.panes);
-        let last = row_text(&buf, list.bottom() - 1);
-        assert!(last.contains("bottom"), "{last:?}");
+        // And it never runs off either end.
+        screen.sticky_session = Some("s11".to_string());
+        let rows = drawn(&mut screen, &mut term);
+        assert!(rows.iter().any(|row| row.contains("s11")), "{rows:?}");
+        screen.sticky_session = Some("nobody".to_string());
+        let rows = drawn(&mut screen, &mut term);
+        assert!(
+            rows[0].contains("s0"),
+            "an unknown name pins the top: {rows:?}"
+        );
     }
 
-    /// The list window is its tail: one row up is one row, and it never runs off.
+    /// The window arithmetic: it holds the row it is asked for, clamped.
     #[test]
-    fn the_list_window_is_its_tail() {
-        assert_eq!(list_window(3, 8, 0), (0, 3), "shorter than the window");
-        assert_eq!(list_window(12, 8, 0), (4, 12), "the newest eight");
-        assert_eq!(list_window(12, 8, 3), (1, 9), "three rows up");
-        assert_eq!(list_window(12, 8, 99), (0, 8), "clamped at the top");
+    fn list_window_holds_the_row_it_is_asked_for() {
+        let names: Vec<String> = (0..12).map(|i| format!("s{i}")).collect();
+        let at = |want: Option<&str>| list_window(12, 8, want, &names);
+        assert_eq!(at(None), (0, 8), "nothing named: from the top");
+        assert_eq!(at(Some("s0")), (0, 8));
+        assert_eq!(at(Some("s11")), (4, 12), "the end never runs off");
+        assert_eq!(at(Some("nobody")), (0, 8), "an unknown name pins the top");
+        assert_eq!(
+            list_window(3, 8, Some("s1"), &names),
+            (0, 3),
+            "fewer names than rows: no window to move"
+        );
+    }
+
+    /// Ten kinds of line, ten colours: one that means two things means neither.
+    #[test]
+    fn no_two_kinds_of_line_share_a_colour() {
+        let mut seen: Vec<(Option<Color>, Modifier)> = Vec::new();
+        for kind in KINDS {
+            let style = style_for(*kind);
+            let fg = style.fg;
+            assert!(fg.is_some(), "{kind:?} has no colour of its own");
+            let pair = (fg, style.add_modifier);
+            assert!(
+                !seen.contains(&pair),
+                "{kind:?} looks exactly like another kind: {pair:?}"
+            );
+            seen.push(pair);
+        }
+        assert_eq!(seen.len(), KINDS.len(), "every kind was checked");
     }
 
     /// The caret sits on the input row, and a message that wraps keeps it inside
@@ -927,7 +972,6 @@ mod tests {
         }
         Screen {
             panes,
-            focus: String::new(),
             completion: None,
             input: crate::InputLine::default(),
             status: String::new(),
@@ -960,7 +1004,7 @@ mod tests {
             line: vec!["third".to_string()],
             command: "cmd".to_string(),
         });
-        screen.focus = "main".to_string();
+        screen.sticky_session = Some("main".to_string());
         screen
     }
 
@@ -1110,7 +1154,7 @@ mod tests {
         .unwrap();
         let buf = term.backend().buffer().clone();
 
-        // Events area: rows 1..8, of which 2 are headers. `main` is focused, so it
+        // Events area: rows 1..8, of which 2 are headers. `main` is sticky, so it
         // gets the row the even share left over.
         let body = parts(40, 12, 1, true, 1)[1];
         let rows: Vec<String> = (0..body.height)
@@ -1129,7 +1173,7 @@ mod tests {
         let parts = parts(40, 12, 1, true, 1);
         assert_eq!(row_text(&buf, parts[4].y), "$ get_messages");
 
-        // Scrolling the focus moves only that pane: the other keeps its newest.
+        // Scrolling the sticky session moves only that pane: the other keeps its newest.
         screen.scroll_by(1);
         term.draw(|f| {
             draw(f, &mut screen);
@@ -1141,7 +1185,7 @@ mod tests {
             .collect();
         assert!(
             rows.iter().any(|row| row == "another answer"),
-            "the peer pane moved with the focus: {rows:?}"
+            "the peer pane moved with the sticky session: {rows:?}"
         );
         assert_eq!(
             screen.panes.get("cmd").unwrap().max_scroll,

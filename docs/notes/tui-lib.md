@@ -118,11 +118,22 @@ holds the names it was handed. A `Log` is still its own type because a frame mus
 be allowed to walk it -- that is the difference between a usable window and a frozen
 one, and it is now a rule per pane rather than for the whole area.
 
-## Screen::focus
+## Screen::sticky_session is the only state
 
-Which pane the keyboard scrolls. The wheel sets it by hitting a pane's rectangle; an
-announcement that dropped the focused name moves the focus to the first window still
-there. A focus is a name rather than an index because the list changes length under it.
+There is no `focus`: no "which pane did the pointer last touch", no second name that
+can drift from the one the keys obey. The sticky session decides everything the
+keyboard does -- which pane a page scrolls, whose header is highlighted, which pane
+takes the rows an even share leaves over -- and a click is what changes it, by asking
+the command layer for the command that sets it.
+
+The wheel is momentary: it moves what it is over and writes no state, so a glance at
+an older line does not retarget the next page key. A click sets the sticky, and that
+is the only way the keys' target moves.
+
+The session list has no scroll of its own either. Its window is derived from the
+sticky session (`render::list_window`), which is what makes one name the whole of the
+state: the list cannot drift to showing a different set of rows than the loop is
+sending to.
 
 ## Screen::slots, Screen::visible_rows, Screen::page_height
 
@@ -134,10 +145,10 @@ what a page moves are what was on the screen. They live on `Screen` rather than 
 ## Screen::scroll_by
 
 Positive scrolls into the past, negative back towards the newest line, and both stop
-at the ends. It moves the focused pane only: an operator reading an older answer in
-one session should not lose their place in another that is still streaming. The
-upper bound is the renderer's, since only it knows how many rows the lines wrap into
-and how tall this pane's window is.
+at the ends. It moves the sticky session's view only: an operator reading an older
+answer in one session should not lose their place in another that is still streaming.
+The upper bound is the renderer's, since only it knows how many rows the lines wrap
+into and how tall this pane's window is.
 
 ## Tui::dirty
 
@@ -291,9 +302,13 @@ holds the mouse, the terminal never sees a drag and cannot select — which is w
 ## Tui::handle_mouse
 
 The mouse is the pointer the split needs: a notch is three rows, Shift slows it to
-one, and the pane under it -- hit through the same rectangle the renderer filled --
-takes the focus the keyboard scrolls. A press points without moving anything, which
-is the only reason a click does anything at all here: no click is an action on the
+one, and the view under it -- hit through the same rectangle the renderer filled --
+moves. Over the session list it scrolls the list, which has a scroll of its own
+(SPEC gives it one) because a list is not a session. Neither leaves state behind: the
+keys still act on the sticky session.
+
+A press is different, and it is the only reason a click does anything at all: it sets
+the sticky session, as the command that does so. No click is an action on the
 conversation, because everything that changes state is a command.
 
 ## Tui::wheel_rows

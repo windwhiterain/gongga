@@ -148,7 +148,16 @@ pub fn home_of(args: &Args) -> std::path::PathBuf {
 /// What a rendered line is; the front-end only colours it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineKind {
+    /// The harness talking about itself: connected, offline, a status word.
     System,
+    /// A command line, echoed: `/cmd` as typed, or `$ cmd --args` as it ran.
+    ///
+    /// # Invariant
+    ///
+    /// Its own kind, not `System`: the question and the model's thinking are two
+    /// different things to read, and a colour that says "something happened" for
+    /// both is a colour that says nothing.
+    Command,
     User,
     Assistant,
     Reasoning,
@@ -350,9 +359,11 @@ impl Client {
     fn show(&self, sink: &mut dyn Sink, echo: &Echo<'_>, tokens: &[String], session: Option<&str>) {
         let window = self.command_line(session);
         match echo {
-            Echo::Command => {
-                sink.line(&window, LineKind::System, &format!("/{}", tokens.join(" ")))
-            }
+            Echo::Command => sink.line(
+                &window,
+                LineKind::Command,
+                &format!("/{}", tokens.join(" ")),
+            ),
             Echo::Message(text) => sink.line(&window, LineKind::User, text),
         }
     }
@@ -569,7 +580,7 @@ impl Client {
                 self.results.insert(id, window.clone());
                 if shown {
                     let line = format!("$ {name}{}", render_args(&args));
-                    sink.line(&window, LineKind::System, &line);
+                    sink.line(&window, LineKind::Command, &line);
                 }
             }
             Event::CmdResult {

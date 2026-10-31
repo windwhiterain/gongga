@@ -66,6 +66,12 @@ This is the command layer's own vocabulary: the layer that reads events is the
 one that knows a line came from a tool call or a failure, so it says so. A
 front-end turns that into a colour; it does not decide what it is looking at.
 
+`Command` is the line that was *asked for* -- `/cmd` as typed, or `$ cmd --args`
+as it ran -- and it is deliberately not `System`. The status word and the
+connection notice are the harness talking; the command is the operator talking,
+and one colour for both leaves neither findable. See `docs/notes/tui-render.md`
+for the whole palette and why no two kinds share one.
+
 ## Sink
 
 The interactive client (`crates/tui`) implements it with styled lines; one-shot
