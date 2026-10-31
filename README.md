@@ -41,3 +41,9 @@ gongga tui
 cargo install --path crates/bundle --force
 gongga tui
 ```
+
+## Use
+type this command in the tui to create your fist session "hello":
+```tui
+/set_session --session hello
+```
