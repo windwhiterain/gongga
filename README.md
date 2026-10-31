@@ -20,7 +20,7 @@ _Post Modern Agent Harness_
 ## Environment Requirement
 
 - bash
-- python
+- python, uv (package manager)
 - git
 - Github access
 
