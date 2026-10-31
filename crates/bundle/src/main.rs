@@ -45,8 +45,9 @@ fn run() -> Result<u8, String> {
         payload::place(&dir, name, bytes)
             .map_err(|e| format!("placing {name} in {}: {e}", dir.display()))?;
     }
-    // Leftover builds go, except any a process is still running from.
-    payload::prune(&home().join("payload"), &stamp);
+    // A build this replaces is asked to stop, then removed -- a server through
+    // its own `cancel`, so its turn survives.
+    payload::retire(&home().join("payload"), &stamp, &dir);
     take_over(&dir.join(payload::file_name(&wanted)), skip)
 }
 
@@ -54,7 +55,7 @@ fn run() -> Result<u8, String> {
 mod payload {
     include!(concat!(env!("OUT_DIR"), "/embedded.rs"));
 
-    pub use crate::payload_impl::{file_name, place, prune, stamp};
+    pub use crate::payload_impl::{file_name, place, retire, stamp};
 }
 
 /// Which program to run, and how many arguments that choice consumed.
