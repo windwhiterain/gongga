@@ -4,11 +4,13 @@ _Post Modern Agent Harness_
 
 ## Features
 
-- Everything is skill, even compact context, spawn subagent.
+- Everything is skill, even compact context, spawn subagent, read_image.
+  - Skills give scripts, so agents can nest, chain them arbiarily.
+- Auto image reference replacement, so that agent can create arbitary tool return any contents with images embedded, no need seperate `read_image` tool call.  
 - Heir based context compact, new session can ask mentor session about the history.
 - Network traffic optimized for remote use.
-- Infinite forward compatibility via chain of migrater.
-- Self evolve with elegant cancle, auto continue, interrupt no session.
+- Infinite forward compatibility via chain of migraters.
+- Elegant cancle, restart auto continue, interrupt no session nor tasks, covinent for long running agents and self-evolve.
 - Git managed configuration.
 - Streaming LLM reqwest optimized for minimal allocation.
 - Large too_result save to file for agents to grep instead of directly return.

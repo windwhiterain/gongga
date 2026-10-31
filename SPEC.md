@@ -27,6 +27,7 @@ use `which("bash")` as bash.
 - bash{command, name = "default", task = "default", background = false, detached = false}:
   runs in the persistent shell `name`, or starts a detached bash of that name.
   - key = {session_name, bash_name}.
+  - background bash ended will notice its session.
 - list_bash{name_regex}: list matched bash with the caller session's name in key.
 - check_bash{name = "default"}: return bash's output that hasn't been read by the caller session.
 - del_bash{name_regex}: delete matched bash with the caller sessions' name in key. 
@@ -34,8 +35,11 @@ use `which("bash")` as bash.
 ## State
 everything in database (sqlite) under a home directory, structured for agentic retrieval/mutation.
 
-## File
-`@<path>.<supported image suffix>` in messages will be replaced as file id, referencing image will be upload via File API in advance.
+## Meta
+- `@image: <path>` in messages will be replaced as file id, referencing image will be upload via File API in advance.
+- `@skill: <name>` in message will be replaced as skill metadata{description, path}.
+- `@file: <file>` will be just as it is.
+in cmd_input, those three should be auto complete.
 
 ## UI
 - main (vertical)
@@ -86,7 +90,6 @@ everything in database (sqlite) under a home directory, structured for agentic r
   - `set_render_session --session <name> [--mode <none|line|full>]`
   - `connect_server [--ip <ip>](default: localhost) --port <port>`
   - `serve --port <port> [--home <path>](default: "~/.gongga")`
-  - `skill --session <name> --skill <name>`: send skill metadata to agents.
 
 ## Skill
 use python cripts read/write gongga home, calling server cmd.
