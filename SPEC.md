@@ -100,6 +100,9 @@ use python cripts read/write gongga home, calling server cmd.
 ## Skill: Self Control
 do whatever user can do to the server.
 
+## Skill: evolve
+restart server should still keep its lifetime, e.g. tui spawned server's lifetime bound to tui.
+
 ## Skill: Polity
 agents play certain roles to keep context focus.
 
