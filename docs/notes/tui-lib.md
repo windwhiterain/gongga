@@ -229,6 +229,13 @@ press Enter again and does not want to retype it.
 `key` identifies the stream (a response part, a tool's stdout) and `done` closes
 it, so the next chunk with the same key starts a new line.
 
+## Tui::forget
+
+`Sink::forget`, for a window: the command layer watched the session leave the
+announcement and says so, because the name can come back. The pane and its blocks go
+with the name; the status line and the sticky session are the command layer's, so
+neither is touched here -- a sticky session naming a deleted session scrolls nothing.
+
 ## Tui::draw
 
 Nothing changed, so nothing is written. This is what keeps a stream that arrives

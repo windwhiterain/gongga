@@ -348,6 +348,36 @@ impl Log {
         self.rebuild();
     }
 
+    /// Drops every block the window `window` holds: the session that wrote it is gone.
+    ///
+    /// # Invariant
+    ///
+    /// The name keeps nothing -- no block, no ledger, and no stream left open in
+    /// it -- so a block arriving under a reused name is that session's first and
+    /// starts at row zero. See `docs/notes/tui-log.md`.
+    pub fn forget(&mut self, window: &str) {
+        if self.views.remove(window).is_none() {
+            return;
+        }
+        // Where each surviving block lands, so an open stream still names its own
+        // block once the ones behind it are gone.
+        let mut moved = Vec::with_capacity(self.entries.len());
+        let mut kept = Vec::with_capacity(self.entries.len());
+        for entry in std::mem::take(&mut self.entries) {
+            moved.push((entry.window != window).then(|| kept.len()));
+            if entry.window != window {
+                kept.push(entry);
+            }
+        }
+        self.entries = kept;
+        self.open = self
+            .open
+            .drain()
+            .filter_map(|(key, at)| moved[at].map(|at| (key, at)))
+            .collect();
+        self.rebuild();
+    }
+
     /// Leaves these windows out of the merged view; an empty list shows every one.
     ///
     /// # Invariant
@@ -715,6 +745,47 @@ mod tests {
     /// Adds one delta to a block that stays open, the way a token arrives.
     fn grow(log: &mut Log, key: &str, tag: &str, chunk: &str) {
         log.stream("w", key, LineKind::Reasoning, tag, chunk, false);
+    }
+
+    /// A deleted session's name may come back, and it must open on nothing.
+    ///
+    /// # Invariant
+    ///
+    /// Forgetting a window takes its blocks, its ledger and any stream still open
+    /// in it: a chunk the dead session left half-written must not append to the
+    /// block the next session opens under the same key.
+    #[test]
+    fn forgetting_a_window_leaves_nothing_of_it() {
+        let mut log = Log::new();
+        log.push("peer", LineKind::System, "old");
+        log.stream(
+            "peer",
+            "live",
+            LineKind::Reasoning,
+            "",
+            "half a token",
+            false,
+        );
+        log.push("main", LineKind::System, "kept");
+        assert_eq!(log.rows(View::Window("peer"), 40), 2);
+
+        log.forget("peer");
+        assert_eq!(log.rows(View::Window("peer"), 40), 0, "the window's rows");
+        assert_eq!(shown(&mut log, 40, 10, 0), vec!["kept"], "the merged view");
+        assert_eq!(log.len(), 1, "only the kept block is left");
+        assert!(log.open.is_empty(), "the dead window's stream survived");
+
+        // The name comes back: the next line is that session's first.
+        log.push("peer", LineKind::System, "new");
+        assert_eq!(shown(&mut log, 40, 10, 0), vec!["kept", "new"]);
+        // And its own stream, under the key the dead session used, opens a block
+        // rather than appending to one that is gone.
+        log.stream("peer", "live", LineKind::Reasoning, "", "fresh", false);
+        assert_eq!(
+            shown(&mut log, 40, 10, 0),
+            vec!["kept", "new", "fresh"],
+            "the half-written token came back"
+        );
     }
 
     /// Two blocks streaming at once each keep growing, in the order they opened.

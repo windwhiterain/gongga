@@ -182,6 +182,18 @@ impl Panes {
         self.panes = panes;
     }
 
+    /// Drops what a window held: the session that name belonged to is gone.
+    ///
+    /// # Invariant
+    ///
+    /// The pane goes with its blocks, so a session that takes the name again
+    /// starts at its newest row rather than where the deleted one was scrolled to.
+    /// See `docs/notes/tui-panes.md`.
+    pub fn forget(&mut self, name: &str) {
+        self.log.forget(name);
+        self.panes.retain(|pane| pane.name != name);
+    }
+
     /// The panes of one kind, in order.
     pub fn of_kind(&self, kind: Kind) -> impl Iterator<Item = &Pane> {
         self.panes.iter().filter(move |pane| pane.kind == kind)

@@ -341,6 +341,8 @@ pub trait Sink {
     fn block_size(&mut self, _lines: usize) {}
     /// How the window lays itself out. A front-end that ignores it shows one list.
     fn layout(&mut self, _layout: &Layout) {}
+    /// Empties the window `window` names: the session that wrote it is deleted.
+    fn forget(&mut self, _window: &str) {}
     /// The session the sticky `session` names: what the keys scroll and what a
     /// click sets. See `docs/notes/cli-lib.md`.
     fn sticky_session(&mut self, _name: Option<&str>) {}
@@ -490,6 +492,21 @@ impl Client {
         }
     }
 
+    /// Where an answer may still be read: its own window while the client draws it,
+    /// and the command line otherwise.
+    ///
+    /// # Invariant
+    ///
+    /// A command that deletes its session is answered after the session left the
+    /// list, so writing there would leave a line under a name the server hands out
+    /// again -- and nobody would see it, because no pane draws that name any more.
+    /// See `docs/notes/cli-lib.md`.
+    fn answer_window(&self, window: String) -> String {
+        let live = window == self.command_window()
+            || self.sessions.iter().any(|session| session.name == window);
+        if live { window } else { self.command_window() }
+    }
+
     /// What a block opens with: the label says which part of the answer it is.
     ///
     /// # Invariant
@@ -630,9 +647,10 @@ impl Client {
                 ..
             } => {
                 self.model = server.model.clone();
-                self.sessions = sessions;
+                // A redial is a resync, so a session deleted while this client was
+                // away leaves the list here too.
+                self.set_sessions(sessions, sink);
                 self.catalog.set_commands(commands);
-                self.catalog.set_sessions(self.session_names());
                 self.sync_sticky();
                 // A greeting *is* the recovery: it carries the catalog and
                 // sessions, so a redial comes up like a fresh client.
@@ -686,6 +704,9 @@ impl Client {
                                 .and_then(|s| s.as_str()),
                         )
                     });
+                    // The session this answer was addressed to may be the one the
+                    // command just deleted, so its window is already gone.
+                    let window = self.answer_window(window);
                     if !message.is_empty() {
                         let kind = if ok {
                             LineKind::Result
@@ -707,8 +728,7 @@ impl Client {
                 }
             }
             Event::Sessions { sessions } => {
-                self.sessions = sessions;
-                self.catalog.set_sessions(self.session_names());
+                self.set_sessions(sessions, sink);
                 self.refresh(sink);
             }
             Event::Status {
@@ -799,6 +819,24 @@ impl Client {
 
     fn session_names(&self) -> Vec<String> {
         self.sessions.iter().map(|s| s.name.clone()).collect()
+    }
+
+    /// Replaces the session list, telling the front-end what left it.
+    ///
+    /// # Invariant
+    ///
+    /// A name leaving the list is a deletion: both announcements carry every
+    /// session, and nothing else takes one out. Its window is emptied here,
+    /// because the server hands the name out again -- a new session must not open
+    /// on the deleted one's lines. See `docs/notes/cli-lib.md`.
+    fn set_sessions(&mut self, sessions: Vec<SessionInfo>, sink: &mut dyn Sink) {
+        for old in &self.sessions {
+            if !sessions.iter().any(|new| new.name == old.name) {
+                sink.forget(&old.name);
+            }
+        }
+        self.sessions = sessions;
+        self.catalog.set_sessions(self.session_names());
     }
 
     /// Keeps the completer's state-backed sources in step: the sticky names, and
@@ -2076,22 +2114,126 @@ mod tests {
     fn client_with(catalog: Catalog, sticky: Sticky, sessions: Vec<&str>) -> Client {
         let mut c = Client::new(catalog, sticky);
         c.connected = true;
-        c.sessions = sessions
-            .into_iter()
-            .map(|n| SessionInfo {
-                name: n.into(),
-                status: SessionStatus::Idle,
-                created_at: 0,
-                updated_at: 0,
-                messages: 0,
-                cwd: String::new(),
-                usage: protocol::Usage::default(),
-                provider: None,
-                thinking_effort: None,
-                context_limit: None,
-            })
-            .collect();
+        c.sessions = sessions.into_iter().map(session).collect();
         c
+    }
+
+    /// One session as the server announces it, with nothing measured in it yet.
+    fn session(name: &str) -> SessionInfo {
+        SessionInfo {
+            name: name.into(),
+            status: SessionStatus::Idle,
+            created_at: 0,
+            updated_at: 0,
+            messages: 0,
+            cwd: String::new(),
+            usage: protocol::Usage::default(),
+            provider: None,
+            thinking_effort: None,
+            context_limit: None,
+        }
+    }
+
+    /// A greeting as a redial brings it: the catalog and the whole session list.
+    fn greeting(sessions: Vec<&str>) -> ServerMessage {
+        ServerMessage::Hello {
+            protocol: protocol::PROTOCOL_VERSION,
+            server: protocol::ServerInfo {
+                version: "test".into(),
+                build: protocol::BUILD.into(),
+                pid: 1,
+                started_at: 0,
+                home: String::new(),
+                cwd: String::new(),
+                model: "m".into(),
+            },
+            commands: Vec::new(),
+            sessions: sessions.into_iter().map(session).collect(),
+        }
+    }
+
+    /// A name leaving the announcement is a deletion: its window leaves with it.
+    ///
+    /// # Invariant
+    ///
+    /// The server hands a freed name out again, so a session made under it must not
+    /// open on the deleted one's lines -- on a streamed list, and on the greeting a
+    /// redial brings.
+    #[test]
+    fn a_deleted_session_forgets_its_window() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main", "peer"]);
+        let mut s = StreamSink::default();
+        c.handle_event(
+            Event::Sessions {
+                sessions: vec![session("main")],
+            },
+            &mut s,
+        );
+        assert_eq!(s.forgotten, vec!["peer"]);
+
+        // Nothing left the list, so nothing was forgotten.
+        c.handle_event(
+            Event::Sessions {
+                sessions: vec![session("main")],
+            },
+            &mut s,
+        );
+        assert_eq!(
+            s.forgotten,
+            vec!["peer"],
+            "an unchanged list forgot a window"
+        );
+
+        // A redial is the same announcement: a session deleted while this client
+        // was away is gone here too.
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main", "peer"]);
+        c.handle(greeting(vec!["main"]), &mut s);
+        assert_eq!(s.forgotten, vec!["peer", "peer"]);
+    }
+
+    /// The session an answer was addressed to may be the one the command deleted.
+    ///
+    /// # Invariant
+    ///
+    /// `del_session` publishes the shortened list before the command's result, so
+    /// the answer has to move to the command line: its own window is gone, and a
+    /// line left there would open the next session under that name.
+    #[test]
+    fn an_answer_to_a_deleted_session_goes_to_the_command_line() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main", "peer"]);
+        let mut s = StreamSink::default();
+        let mut args = protocol::Args::new();
+        args.insert("session".into(), "peer".into());
+        c.handle_event(
+            Event::Cmd {
+                id: 7,
+                name: "del_session".into(),
+                args,
+            },
+            &mut s,
+        );
+        c.handle_event(
+            Event::Sessions {
+                sessions: vec![session("main")],
+            },
+            &mut s,
+        );
+        c.handle_event(
+            Event::CmdResult {
+                id: 7,
+                ok: true,
+                message: "deleted session peer".into(),
+                data: None,
+            },
+            &mut s,
+        );
+        assert_eq!(s.windows, vec!["peer", COMMAND_WINDOW]);
+        assert_eq!(
+            s.lines,
+            vec!["$ del_session --session peer", "deleted session peer"]
+        );
     }
 
     /// A catalog whose one command is `set_session`: the server's, not ours.
@@ -2206,6 +2348,8 @@ mod tests {
         notes: Vec<String>,
         /// The last announcement, which is what a front-end lays out from.
         announced: Option<Layout>,
+        /// Windows a session's deletion emptied.
+        forgotten: Vec<String>,
     }
 
     impl Sink for StreamSink {
@@ -2232,6 +2376,9 @@ mod tests {
         fn status(&mut self, _t: &str) {}
         fn layout(&mut self, layout: &Layout) {
             self.announced = Some(layout.clone());
+        }
+        fn forget(&mut self, window: &str) {
+            self.forgotten.push(window.to_string());
         }
     }
 

@@ -152,6 +152,31 @@ The result event carries only the command's id, so the window is decided when th
 arrives and remembered until the answer does (`Client::results`). A link that dies
 mid-command forgets the map: an answer that will never arrive has nowhere to go.
 
+## Client::answer_window -- the window may be gone
+
+`del_session` publishes the shortened session list *before* its own result, so by the
+time the answer arrives the window it was routed to belongs to a session that no longer
+exists. Writing there would be invisible -- no pane draws that name any more -- and it
+would leave a row in the log under a name the server hands out again, which is exactly
+what the next session under that name would open on.
+
+So an answer keeps its window only while that window is one the client draws: a live
+session's, or the command line's. Anything else is said on the command line, where the
+commands that named nobody are read too.
+
+## Client::set_sessions and Sink::forget
+
+Both announcements -- the greeting a redial brings and the streamed `Sessions` -- carry
+every session, so a name in the old list and not in the new one was deleted. That is
+the only signal a client gets, and it is enough: `set_sessions` compares the two before
+replacing one with the other, and tells the front-end to empty that name's window
+(`Sink::forget`).
+
+The signal has to be the deletion, not the layout. A layout stops drawing the sessions
+a render mode hides, and their lines stay -- that is the announcement's own invariant,
+"what a frame shows, never what is held". A deleted session differs in the one way that
+matters here: the server frees the name, and the name is what the window is called.
+
 ## Sink::block_size and Sink::layout
 
 Both default to a no-op: a front-end that shows every row in one window has to know

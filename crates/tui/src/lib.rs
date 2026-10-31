@@ -416,6 +416,18 @@ impl Tui {
         self.dirty = true;
     }
 
+    /// Empties the window a deleted session's lines were read in.
+    ///
+    /// # Invariant
+    ///
+    /// The name may come back, so nothing of the last session survives it: a
+    /// session made again under the same name opens on its own first line. See
+    /// `docs/notes/tui-lib.md`.
+    pub fn forget(&mut self, name: &str) {
+        self.screen.panes.forget(name);
+        self.dirty = true;
+    }
+
     /// Puts a line back into the prompt, cursor at the end. The counterpart of Enter.
     pub fn restore_input(&mut self, text: &str) {
         self.screen.completion = None;
@@ -1577,6 +1589,38 @@ mod tests {
                 "[test1] 这是我的",
             ]
         );
+    }
+
+    /// A deleted session's pane and rows leave together, and the command line stays.
+    ///
+    /// # Invariant
+    ///
+    /// The window is emptied because the session is gone, not because a layout
+    /// stopped drawing it: a render mode that hides a session must keep its lines.
+    #[test]
+    fn forgetting_a_window_empties_its_pane() {
+        let mut panes = Panes::new();
+        panes.layout(&Layout {
+            listed: vec![Listed {
+                name: "main".to_string(),
+                status: "idle".to_string(),
+                title: String::new(),
+            }],
+            none: Vec::new(),
+            full: vec!["main".to_string()],
+            line: Vec::new(),
+            command: "cmd".to_string(),
+            quota: None,
+        });
+        panes.line("main", LineKind::System, "hi");
+        panes.line("cmd", LineKind::Command, "$ x");
+        assert_eq!(panes.rows(View::Window("main"), 40), 1);
+
+        panes.forget("main");
+        assert!(panes.get("main").is_none(), "the pane outlived its session");
+        assert_eq!(panes.rows(View::Window("main"), 40), 0);
+        // A line that names no session is not a session's, so it stays.
+        assert_eq!(panes.rows(View::Window("cmd"), 40), 1);
     }
 
     /// A pasted block lands in the prompt whole: no line break may press Enter.

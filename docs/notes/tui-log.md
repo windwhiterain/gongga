@@ -202,6 +202,18 @@ A block whose window is hidden therefore has a position in its own ledger and no
 in the merged one (`Entry::merged_at`), and `shift` moves a row sum only where a
 sum exists. That is the one place a block is in fewer than two ledgers.
 
+## Log::forget
+
+The only thing here that takes rows away, and it takes them one window at a time: that
+name is being handed to a new session. The blocks go, the window's ledger goes, and any
+stream still open in it goes too -- a half-written token must not append to the next
+session's block because it happens to carry the same key.
+
+The surviving blocks are renumbered, so the open streams of other windows keep naming
+their own blocks; `rebuild` then re-derives both ledgers from what is left. Nothing else
+removes a block: a cap trims rows from a view, and a hidden window keeps every row it
+had.
+
 ## Log::set_block_size
 
 `set_event_ui --block_size <lines>`: how many rows one block may fill. A display

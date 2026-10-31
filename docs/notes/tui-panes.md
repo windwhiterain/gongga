@@ -79,6 +79,18 @@ travel too: a session joining the split makes every other pane shorter, and that
 shape change `Pane::anchor` has to see -- a fresh pane with a row count of zero would
 otherwise read as "the whole log is new" and jump to the top of it.
 
+## Panes::forget
+
+The one thing here that empties the log, and it is not a layout change: the command
+layer says the session was deleted (`Sink::forget`), and that name is one the server
+may hand out again. `Panes::layout` cannot do it -- a hidden session keeps its lines on
+purpose (see `tui-log.md`) -- so an announcement that stops drawing a name says nothing
+about whether the session still exists.
+
+The pane goes with the blocks. A session created under the deleted one's name is a new
+pane, and it starts at its own newest row instead of inheriting the scroll of a view
+nobody can see any more.
+
 ## Panes::pin and Panes::scroll_by
 
 One pane's scroll, by name: SPEC's page keys act on the sticky session, not on
