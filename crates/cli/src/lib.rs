@@ -979,7 +979,7 @@ impl Client {
                         sink.line(
                             &self.command_window(),
                             LineKind::Result,
-                            &format!("{arg_name} = {value}"),
+                            &format!("sticky {arg_name} = {value}"),
                         );
                         self.after_sticky_change(sink);
                     }
@@ -995,7 +995,7 @@ impl Client {
                     sink.line(
                         &self.command_window(),
                         LineKind::Result,
-                        &format!("cleared {arg_name}"),
+                        &format!("sticky {arg_name} cleared"),
                     );
                     self.after_sticky_change(sink);
                 }
@@ -1022,6 +1022,9 @@ impl Client {
         }
     }
 
+    /// Every answer below names its own subject: the command line keeps only the
+    /// last row, so `session = peer` alone is a line with no sentence around it.
+    ///
     /// Runs `set_render`: how tall a block may get.
     ///
     /// # Invariant
@@ -1030,7 +1033,7 @@ impl Client {
     /// the setting rather than a reset of it.
     fn run_render(&mut self, args: &protocol::Args, sink: &mut dyn Sink) {
         let Some(raw) = args.get("block_size") else {
-            let report = format!("block_size = {}", self.block_size.0);
+            let report = format!("render block_size = {}", self.block_size.0);
             sink.line(&self.command_window(), LineKind::Result, &report);
             return;
         };
@@ -1047,7 +1050,7 @@ impl Client {
                 sink.line(
                     &self.command_window(),
                     LineKind::Result,
-                    &format!("block_size = {}", parsed.0),
+                    &format!("render block_size = {}", parsed.0),
                 );
                 self.after_sticky_change(sink);
             }
@@ -1072,7 +1075,7 @@ impl Client {
             sink.line(
                 &self.command_window(),
                 LineKind::Result,
-                &format!("{name} = {}", mode.as_str()),
+                &format!("render {name} = {}", mode.as_str()),
             );
             return;
         };
@@ -1088,7 +1091,7 @@ impl Client {
                 sink.line(
                     &self.command_window(),
                     LineKind::Result,
-                    &format!("{name} = {}", mode.as_str()),
+                    &format!("render {name} = {}", mode.as_str()),
                 );
                 self.after_sticky_change(sink);
             }
@@ -2334,6 +2337,38 @@ mod tests {
         assert_eq!(s.windows, vec!["cmd", "cmd"]);
     }
 
+    /// An answer names its own subject: the command line keeps only the last row,
+    /// so a bare `session = peer` stands there with no sentence around it.
+    #[test]
+    fn a_window_answer_names_its_own_subject() {
+        let d = tempfile::tempdir().unwrap();
+        let cat = published_catalog();
+        cat.set_sticky_names(&[]);
+        let mut c = client_with(cat, Sticky::load(d.path()), vec!["main", "peer"]);
+        let mut s = VecSink(Vec::new());
+
+        c.command(argv("set_sticky --name session --value peer"), &mut s);
+        assert_eq!(
+            s.0.last().map(String::as_str),
+            Some("sticky session = peer")
+        );
+        c.command(argv("del_sticky --name session"), &mut s);
+        assert_eq!(
+            s.0.last().map(String::as_str),
+            Some("sticky session cleared")
+        );
+        c.command(argv("set_render --block_size 2"), &mut s);
+        assert_eq!(
+            s.0.last().map(String::as_str),
+            Some("render block_size = 2")
+        );
+        c.command(
+            argv("set_render_session --session peer --mode line"),
+            &mut s,
+        );
+        assert_eq!(s.0.last().map(String::as_str), Some("render peer = line"));
+    }
+
     /// `set_render`: one setting, and no argument is a read of it.
     #[test]
     fn set_render_saves_the_block_size_and_reports_it() {
@@ -2348,7 +2383,11 @@ mod tests {
         ));
         assert_eq!(c.block_size, BlockSize(3));
         assert_eq!(BlockSize::load(d.path()), BlockSize(3));
-        assert_eq!(s.0.last().map(String::as_str), Some("block_size = 3"));
+        assert_eq!(
+            s.0.last().map(String::as_str),
+            Some("render block_size = 3"),
+            "the answer names its own subject: the ticker keeps one row"
+        );
 
         // A value nothing answers to is refused, and says what to type.
         s.0.clear();
@@ -2363,7 +2402,7 @@ mod tests {
             c.command(argv("set_render"), &mut s),
             Submission::Local
         ));
-        assert_eq!(s.0, vec!["/set_render", "block_size = 3"]);
+        assert_eq!(s.0, vec!["/set_render", "render block_size = 3"]);
     }
 
     /// `set_render_session`: the mode persists, and the answer is the mode.
@@ -2385,7 +2424,7 @@ mod tests {
             RenderModes::load(d.path()).mode_of("peer"),
             RenderMode::Line
         );
-        assert_eq!(s.0.last().map(String::as_str), Some("peer = line"));
+        assert_eq!(s.0.last().map(String::as_str), Some("render peer = line"));
 
         // A mode nothing answers to is refused, and the list is the answer.
         s.0.clear();
@@ -2403,10 +2442,10 @@ mod tests {
         // Without `--mode` it is a read of that session's mode.
         s.0.clear();
         c.command(argv("set_render_session --session peer"), &mut s);
-        assert_eq!(s.0.last().map(String::as_str), Some("peer = line"));
+        assert_eq!(s.0.last().map(String::as_str), Some("render peer = line"));
         s.0.clear();
         c.command(argv("set_render_session --session main"), &mut s);
-        assert_eq!(s.0.last().map(String::as_str), Some("main = full"));
+        assert_eq!(s.0.last().map(String::as_str), Some("render main = full"));
     }
 
     /// A mode that draws nothing has to be visible somewhere, or the log reads as
