@@ -74,7 +74,7 @@ in cmd_input, those three should be auto complete.
 - invocation: `gongga-cli <cmd> [--arg <v> ...]` -- argv is already tokens, so a command line
   carries no `/` and no prose form. `/` belongs to `cmd_input` only.
 - server:
-  - `set_session --session <name> [--cwd <path>] [--llm <provider/model>] [--thinking_effort <level>] [--context_limit <n%>]`:
+  - `set_session --session <name> [--cwd <path>] [--provider <provider/model>] [--thinking_effort <level>] [--context_limit <n%>]`:
     - plus `set_sticky_cmd_argument --name session --value <session>`
   - `del_session --session <name>`: also delete all bash with the session name in key.
   - `send_message --session <name> --message <string>`: inject message instantly, turn waiting bash to backgound.

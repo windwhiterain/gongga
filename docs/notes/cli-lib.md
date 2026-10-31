@@ -318,13 +318,14 @@ not make the window repaint.
 
 SPEC's `full` pane title, spelled once: what the last request measured -- `ctx`,
 `cached (in n%)`, `tps (latest)`, `ttft (latest)` -- then what the session runs on
--- `cwd`, `provider`, `thinking_effort`, `context_limit` -- in SPEC's order. Spelled
-here rather than in the window for the same reason `status` is a word: a front-end
+-- `cwd`, `provider`, `thinking_effort`, `context_limit` -- in SPEC's order, the
+last one shortened to `ctx_limit` so the title stays one row. Spelled here rather
+than in the window for the same reason `status` is a word: a front-end
 that knows no protocol type can still draw it, and the two front-ends cannot
 disagree about how a rate is rounded.
 
 `title_note` spells it: `ctx 12345 · cached 89% · tps 41.6 · ttft 820ms · cwd
-C:/work/svc · provider deepseek-official · thinking high · context_limit 70%`.
+C:/work/svc · provider deepseek-official · thinking high · ctx_limit 70%`.
 
 `cached` is a share, not a count: SPEC says `in n%`, and the client is where the
 division happens because the wire carries what the provider measured (two token
@@ -373,7 +374,7 @@ SPEC's `set_session` carries a second sentence: it also sets the sticky `session
 which is what keeps `send_message --message ...` from needing `--session` said
 every time. It runs on the acknowledgement, never on the submission, because a
 refused `set_session` must leave the client pointed where it was: following a
-session that `--llm nosuch/model` refused to create is the kind of wrong that
+session that `--provider nosuch/model` refused to create is the kind of wrong that
 reads as "the log stopped".
 
 `del_session` follows nothing. Which session a command goes to is the sticky's to
@@ -394,8 +395,8 @@ well put every command on the screen twice.
 Deliberately has no "current session" in it. The only thing that ever stood
 there was the sticky `session` argument, and printing it turned a persistant
 argument into something that looked like a mode the UI was in. What is left are
-facts about the server: its model and how many sessions exist -- and, when there
-is no link, that there is no link, because a model name with no server behind it
+facts about the server: how many sessions exist -- and, when there
+is no link, that there is no link, because a session count with no server behind it
 is a lie the operator cannot see through.
 
 ## Client::refresh — no footer

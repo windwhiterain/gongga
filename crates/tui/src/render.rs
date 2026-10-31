@@ -2006,7 +2006,7 @@ mod tests {
     fn a_long_pane_title_wraps_instead_of_being_cut() {
         let mut screen = screen_with(&[]);
         let title = "ctx 123456 · cached 92% · tps 41.6 · ttft 820ms · cwd C:/resource/gongga · \
-                     provider deepseek-official · thinking high · context_limit 70%";
+                     provider deepseek-official · thinking high · ctx_limit 70%";
         screen.panes.layout(&Layout {
             listed: vec![Listed {
                 name: "main".to_string(),

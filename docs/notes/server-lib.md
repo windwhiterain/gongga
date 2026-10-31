@@ -110,7 +110,7 @@ not the message.
 
 ## run (roster line)
 
-Which roster was read, and whether it was readable at all: "no --llm worked" is
+Which roster was read, and whether it was readable at all: "no --provider worked" is
 nearly always this line.
 
 ## run (close_shells)

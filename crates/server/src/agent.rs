@@ -27,9 +27,9 @@ pub const DEFAULT_CONTEXT_LIMIT_PERCENT: u8 = 70;
 
 pub struct Agent {
     pub store: Store,
-    /// What a session talks to unless it named its own `--llm`.
+    /// What a session talks to unless it named its own `--provider`.
     pub llm: Arc<LlmClient>,
-    /// The machine's roster, which `--llm` names resolve against. A live view:
+    /// The machine's roster, which `--provider` names resolve against. A live view:
     /// a reload reaches every later route.
     pub providers: providers::Handle,
     /// What a session's own entry inherits: timeouts and retries.
@@ -200,13 +200,13 @@ impl Agent {
         name: &str,
         tuning: &crate::session::Tuning,
     ) -> anyhow::Result<(Arc<LlmClient>, u64)> {
-        let (llm, context) = match &tuning.llm {
+        let (llm, context) = match &tuning.provider {
             None => (self.llm.clone(), self.default_context),
             Some(spec) => {
                 let choice = self
                     .providers
                     .resolve(spec)
-                    .map_err(|e| anyhow::anyhow!("--llm {spec}: {e}"))?;
+                    .map_err(|e| anyhow::anyhow!("--provider {spec}: {e}"))?;
                 let client = self.client_for(&choice.entry, choice.api_key)?;
                 (client, choice.entry.context)
             }

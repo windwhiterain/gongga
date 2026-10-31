@@ -22,7 +22,7 @@ pub const DEFAULT_BASH: &str = "default";
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Tuning {
     /// A roster entry, `provider/model`. `None` means "the server's own".
-    pub llm: Option<String>,
+    pub provider: Option<String>,
     /// The context level a notice is sent at, as a percentage of the window;
     /// `None` means the default share.
     pub context_limit: Option<u8>,
@@ -485,7 +485,7 @@ impl SessionManager {
                 name: name.to_string(),
                 status: protocol::SessionStatus::Idle,
                 model: self.model.clone(),
-                llm: pinned,
+                provider: pinned,
                 context_limit: None,
                 thinking_effort: None,
                 cwd: cwd.to_string_lossy().to_string(),
@@ -562,7 +562,7 @@ impl SessionManager {
                 turns: AtomicU64::new(0),
                 tuning: Mutex::new(Tuning {
                     // Prefer the pinned entry; a row that predates it is resolved from the roster.
-                    llm: row.llm.clone().or_else(|| {
+                    provider: row.provider.clone().or_else(|| {
                         crate::providers::roster()
                             .find_model_entry(&row.model)
                             .map(|e| e.spec())

@@ -817,7 +817,7 @@ impl Client {
         sink.layout(&self.layout());
         sink.sticky_session(self.sticky.get("session"));
         let mut facts = if self.connected {
-            format!("model {} | {} session(s)", self.model, self.sessions.len())
+            format!("{} session(s)", self.sessions.len())
         } else if self.attempts == 0 {
             "offline — connecting…".to_string()
         } else {
@@ -1265,8 +1265,8 @@ fn title_note(session: &protocol::SessionInfo) -> String {
     }
     if let Some(percent) = session.context_limit {
         parts.push(match percent {
-            0 => "context: no notice".to_string(),
-            percent => format!("context_limit {percent}%"),
+            0 => "ctx_limit off".to_string(),
+            percent => format!("ctx_limit {percent}%"),
         });
     }
     parts.join(" · ")
@@ -2380,7 +2380,7 @@ mod tests {
         assert_eq!(
             title_note(&session),
             "ctx 2100 · cached 95% · tps 40.0 · ttft 300ms · cwd C:/work/svc · \
-             provider deepseek-official · thinking high · context_limit 70%"
+             provider deepseek-official · thinking high · ctx_limit 70%"
         );
 
         // A session with no tuning of its own still says where it runs.
@@ -2392,7 +2392,7 @@ mod tests {
             context_limit: Some(0),
             ..session
         };
-        assert_eq!(title_note(&bare), "context: no notice");
+        assert_eq!(title_note(&bare), "ctx_limit off");
     }
 
     /// SPEC's `active_quota` row: the provider, then the figures it reported, in
@@ -2585,7 +2585,7 @@ mod tests {
             "send_message is missing required argument(s): session",
         );
         s.stream("", "k", LineKind::Assistant, "", "hello", true);
-        s.status("model x | 1 session(s)");
+        s.status("1 session(s)");
         assert_eq!(
             s.take_error().as_deref(),
             Some("send_message is missing required argument(s): session")

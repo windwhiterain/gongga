@@ -29,7 +29,7 @@ pub struct Dispatch {
     pub bus: EventBus,
     /// Commands registered by scripts, and the way to run one.
     pub scripts: Arc<crate::script::Scripts>,
-    /// The machine's LLM roster: what `set_session --llm` is checked against.
+    /// The machine's LLM roster: what `set_session --provider` is checked against.
     pub providers: crate::providers::Handle,
     /// Turns currently running. `cancel` waits for this to drain before the
     /// process is allowed to exit.
@@ -223,7 +223,7 @@ pub fn server_catalog() -> Vec<CommandSpec> {
                     CompletionSource::Paths,
                 ),
                 arg(
-                    "llm",
+                    "provider",
                     "Roster entry to run this session's turns on, as <provider>/<model> (or a \
                      bare model id). Defaults to the model the session was created with.",
                     false,
@@ -427,7 +427,7 @@ async fn send_message(d: &Dispatch, args: &Args) -> Outcome {
 /// # Invariant
 ///
 /// A message is expanded once, so a stored row never carries a reference a later
-/// retry would resolve differently. A session whose llm cannot be resolved still
+/// retry would resolve differently. A session whose provider cannot be resolved still
 /// takes its message: only the skills are expanded then.
 async fn expand_message(
     d: &Dispatch,
@@ -492,10 +492,10 @@ async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcome {
 
 async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     let name = args["session"].clone();
-    // Resolve `--llm` now: a typo should fail the command that made it.
-    let entry = match args.get("llm") {
+    // Resolve `--provider` now: a typo should fail the command that made it.
+    let entry = match args.get("provider") {
         None => None,
-        Some(spec) => match resolve_llm(d, spec) {
+        Some(spec) => match resolve_provider(d, spec) {
             Ok(entry) => Some(entry),
             Err(e) => return Outcome::err(e),
         },
@@ -518,7 +518,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
              no model involved here has one on record{}",
             match &entry {
                 Some(e) => format!(" ({} is not in the roster with a `context`)", e.spec()),
-                None => " (set --llm to a roster entry that states one)".to_string(),
+                None => " (set --provider to a roster entry that states one)".to_string(),
             }
         ));
     }
@@ -537,7 +537,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         // Check the level against the model this session will run on, so typos fail now.
         let target = entry.clone().or_else(|| {
             tuning
-                .llm
+                .provider
                 .as_deref()
                 .and_then(|spec| d.providers.entry(spec).ok())
         });
@@ -552,7 +552,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         changed = true;
     }
     if let Some(entry) = &entry {
-        tuning.llm = Some(entry.spec());
+        tuning.provider = Some(entry.spec());
         changed = true;
     }
     if let Some(percent) = threshold {
@@ -563,7 +563,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         // Persist before applying: a restart must restore what turns here read.
         if let Err(e) = d.store.set_session_tuning(
             session.id(),
-            tuning.llm.as_deref(),
+            tuning.provider.as_deref(),
             tuning.context_limit,
             tuning.thinking_effort.as_deref(),
             // The model the session will actually run on: the entry's, or the
@@ -587,15 +587,15 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         json!({
             "session": name,
             "cwd": cwd,
-            "llm": tuning.llm,
+            "provider": tuning.provider,
             "context_limit": tuning.context_limit,
             "thinking_effort": tuning.thinking_effort,
         }),
     )
 }
 
-/// Turns `--llm` into a roster entry, trying `provider/model` then a bare id.
-fn resolve_llm(d: &Dispatch, spec: &str) -> Result<crate::providers::Entry, String> {
+/// Turns `--provider` into a roster entry, trying `provider/model` then a bare id.
+fn resolve_provider(d: &Dispatch, spec: &str) -> Result<crate::providers::Entry, String> {
     match d.providers.resolve(spec) {
         Ok(choice) => Ok(choice.entry),
         Err(e) => d.providers.find_model(spec).map(|c| c.entry).ok_or(e),
@@ -1034,7 +1034,7 @@ pub fn session_info(d: &Dispatch, row: &crate::store::SessionRow) -> protocol::S
         .map(|s| s.tuning())
         .unwrap_or_default();
     let entry = tuning
-        .llm
+        .provider
         .as_deref()
         .and_then(|spec| d.providers.entry(spec).ok());
     let provider = entry
@@ -1357,9 +1357,12 @@ mod tests {
         let session = spec.args.iter().find(|a| a.name == "session").unwrap();
         assert!(session.required);
         assert!(matches!(session.completions, CompletionSource::Sessions));
-        let llm = spec.args.iter().find(|a| a.name == "llm").unwrap();
-        assert!(!llm.required, "omitting --llm keeps the server's model");
-        assert!(matches!(llm.completions, CompletionSource::Static(_)));
+        let provider = spec.args.iter().find(|a| a.name == "provider").unwrap();
+        assert!(
+            !provider.required,
+            "omitting --provider keeps the server's model"
+        );
+        assert!(matches!(provider.completions, CompletionSource::Static(_)));
         let threshold = spec
             .args
             .iter()

@@ -330,7 +330,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     });
 
     tracing::info!(tools = ?dispatch.agent.tools.names().join(", "), "tool registry ready");
-    // Which roster was read, and whether it was readable at all: "no --llm
+    // Which roster was read, and whether it was readable at all: "no --provider
     // worked" is nearly always this line.
     tracing::info!(
         rosters = ?providers::roster().paths(),

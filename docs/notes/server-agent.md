@@ -313,7 +313,7 @@ SPEC puts `active_quota` in the main column and says it updates at every step's
 end, so the same branch that writes `usage` also asks the quota reader to
 publish. Which provider that is comes from the client the step ran on
 (`LlmClient::provider`), not from the session's tuning: a step is what spends an
-allowance, and a session that named no `--llm` spends the server's.
+allowance, and a session that named no `--provider` spends the server's.
 
 The call is `quota::publish`, which spawns. Awaiting it here would put a
 provider's billing endpoint between the last token and the end of the step,

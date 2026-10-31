@@ -139,7 +139,7 @@ they cannot disagree about which name sits on which row.
 
 The bar spans the row and is painted by the status's kind: cyan for the server's
 facts, red for an error, green for a result. One colour for all three would make
-"copy failed" and "model x | 3 session(s)" look equally urgent.
+"copy failed" and "3 session(s)" look equally urgent.
 
 ## draw_list
 

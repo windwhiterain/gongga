@@ -99,7 +99,7 @@ before a fresh mint, so no home is told its own clients are suddenly wrong.
 
 The roster (`~/.agents/llm.toml`) is the machine's own list of providers,
 endpoints and model context windows. Consulting it means the common case needs
-no configuration at all, and it is the same list `--llm` accepts, so there is one
+no configuration at all, and it is the same list `--provider` accepts, so there is one
 answer to "what models exist".
 
 ## Config::load_with_home (api key order)
@@ -132,7 +132,7 @@ says what was actually used, which is how a typo is found.
 
 Both come from the roster entry the session is on, never from this file. They are
 capabilities of a *model*, not of the server: a session pointed at another
-`--llm` must not inherit the default entry's web tools or its eyes, which is why
+`--provider` must not inherit the default entry's web tools or its eyes, which is why
 `for_entry` copies them along with the base URL and the model name.
 
 `accepts_image` and `image_refusal` are the one reader of `modalities`, and
@@ -147,7 +147,7 @@ the copy is how this project lost the argument about which of the two was true.
 
 ## LlmConfig::for_entry
 
-A session that names its own `--llm` is choosing a different brain, not a
+A session that names its own `--provider` is choosing a different brain, not a
 different protocol: timeouts and retry policy stay exactly as configured.
 The prose is not part of this struct any more at all -- a prompt belongs to
 the request and is rendered per step, so a model swap cannot carry an
