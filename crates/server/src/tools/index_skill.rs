@@ -9,6 +9,12 @@ use serde_json::{Value, json};
 use crate::tools::{Tool, ToolContext, ToolOutcome};
 
 /// Which root a skill came from, in the words a reader already knows.
+///
+/// # Invariant
+///
+/// The order is the precedence: a name in more than one root is the first one
+/// read, so a project's own skill beats the home's, which beats the machine's.
+const PROJECT: &str = "project";
 const HARNESS: &str = "harness";
 const GENERAL: &str = "general";
 
@@ -40,10 +46,10 @@ impl Tool for IndexSkillTool {
     fn run<'a>(
         &'a self,
         _args: Value,
-        _ctx: &'a ToolContext,
+        ctx: &'a ToolContext,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
-            let rows = listed();
+            let rows = listed(&ctx.cwd);
             if rows.is_empty() {
                 return ToolOutcome::ok(
                     "no skill is installed: nothing under the home's `skills/` or the \
@@ -60,6 +66,9 @@ impl Tool for IndexSkillTool {
 }
 
 /// One installed skill, as both the table and an `@skill:` reference need it.
+///
+/// `bucket` is where it was found, which is also what decides precedence.
+#[derive(Debug)]
 pub struct Installed {
     pub name: String,
     pub description: String,
@@ -67,16 +76,21 @@ pub struct Installed {
     pub bucket: &'static str,
 }
 
-/// Every skill this machine offers: the home's first, then the machine's.
+/// Every skill a session in `cwd` can be offered: the project's, the home's,
+/// then the machine's.
 ///
 /// # Invariant
 ///
-/// The same order as `index_skill`'s table, and the same two roots, so a name
-/// read off the table is a name this can open.
-pub fn installed() -> Vec<Installed> {
+/// The order is the precedence, and it is the same order `installed_skills` walks
+/// for the command line, so a name read off the table is a name that can be
+/// opened. See `docs/notes/server-tools-index-skill.md`.
+pub fn installed(cwd: &Path) -> Vec<Installed> {
     let roots = crate::ship::roots();
     let mut all = Vec::new();
     for (bucket, root) in [
+        // The repository a session is working in. It is the most specific thing
+        // that can hold a skill: a checkout that says "here, do it this way".
+        (PROJECT, cwd.join(".agents").join("skills")),
         (HARNESS, roots.home.join("skills")),
         (GENERAL, roots.machine.join("skills")),
     ] {
@@ -111,8 +125,8 @@ fn in_dir(bucket: &'static str, root: &Path) -> Vec<Installed> {
 }
 
 /// The table's rows: the one walk, in the shape a reader's JSON wants.
-fn listed() -> Vec<Value> {
-    installed()
+fn listed(cwd: &Path) -> Vec<Value> {
+    installed(cwd)
         .into_iter()
         .map(|skill| {
             json!({
@@ -212,6 +226,40 @@ mod tests {
         assert_eq!(rows[0]["name"], "plain");
         assert_eq!(rows[0]["description"], "");
         assert_eq!(rows[0]["bucket"], "general");
+    }
+
+    /// A session's own directory is a skill root, and the first one.
+    ///
+    /// # Invariant
+    ///
+    /// The project's skill is found by `@skill:` and listed in the table, and a
+    /// name it shares with the home's resolves to the project's -- a checkout
+    /// that says "here, do it this way" outranks the home it sits in.
+    #[test]
+    fn a_projects_skills_are_found_and_come_first() {
+        let project = tempfile::tempdir().unwrap();
+        let own = project.path().join(".agents").join("skills");
+        skill(
+            &own,
+            "shared",
+            "---\nname: shared\ndescription: the project's\n---\n",
+        );
+        skill(
+            &own,
+            "only-here",
+            "---\nname: only-here\ndescription: local\n---\n",
+        );
+
+        let found = in_dir(PROJECT, &own);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_eq!(found[0].name, "only-here");
+        assert_eq!(found[0].bucket, "project");
+        assert_eq!(found[1].description, "the project's");
+
+        // A directory with no `.agents/skills` is not an error: most checkouts
+        // have none.
+        let bare = tempfile::tempdir().unwrap();
+        assert!(in_dir(PROJECT, &bare.path().join(".agents/skills")).is_empty());
     }
 
     #[test]

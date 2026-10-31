@@ -297,16 +297,17 @@ fn write_file(path: &Path, file: &File) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The skills installed for this home: the home's own first, then the machine's.
+/// The skills `cwd` can open: the project's, the home's, then the machine's.
 ///
 /// # Invariant
 ///
-/// The same two roots, in the same order, that the server reads for
-/// `index_skill` and `skill` -- so the list a reader completes is the list the
-/// command can open. See `docs/notes/cli-commands.md`.
-pub fn installed_skills(home: &Path) -> Vec<String> {
+/// The same three roots, in the same order, that the server walks for
+/// `index_skill` and `@skill:` -- so the list a reader completes is the list that
+/// can be opened. See `docs/notes/cli-commands.md`.
+pub fn installed_skills(home: &Path, cwd: &Path) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     for root in [
+        cwd.join(".agents").join("skills"),
         home.join("skills"),
         dirs::home_dir()
             .map(|h| h.join(".agents").join("skills"))
@@ -541,7 +542,7 @@ mod tests {
         assert_eq!(BlockSize::parse(" 2 "), Ok(BlockSize(2)));
     }
 
-    /// One walk of the same two roots, in order; not every directory is a skill.
+    /// One walk of the same three roots, in order; not every directory is a skill.
     #[test]
     fn installed_skills_lists_this_homes_skills() {
         let home = dir();
@@ -561,13 +562,42 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("SKILL.md"), "---\nname: from-file\n---\n\nbody\n").unwrap();
 
-        let got = installed_skills(home.path());
+        let got = installed_skills(home.path(), home.path());
         let mine: Vec<&String> = got
             .iter()
             .filter(|name| matches!(name.as_str(), "alpha" | "zeta" | "from-file"))
             .collect();
         assert_eq!(mine, vec!["alpha", "from-file", "zeta"], "{got:?}");
         assert!(!got.iter().any(|name| name == "notes"), "{got:?}");
+    }
+
+    /// A project's own skill is offered before the home's of the same name.
+    ///
+    /// # Invariant
+    ///
+    /// The order is the precedence: a checkout that says "here, do it this way"
+    /// is more specific than the home that holds it.
+    #[test]
+    fn a_projects_own_skill_comes_first() {
+        let home = dir();
+        let project = dir();
+        let write = |skills: &Path, name: &str| {
+            let dir = skills.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("SKILL.md"), format!("---\nname: {name}\n---\n")).unwrap();
+        };
+        write(&home.path().join("skills"), "shared");
+        write(&project.path().join(".agents/skills"), "shared");
+        write(&project.path().join(".agents/skills"), "only-project");
+
+        let got = installed_skills(home.path(), project.path());
+        // The machine's own skills are in this walk too, so only ours are checked
+        // by position: the project's come first, and then the home's.
+        let mine: Vec<&String> = got
+            .iter()
+            .filter(|name| matches!(name.as_str(), "shared" | "only-project"))
+            .collect();
+        assert_eq!(mine, vec!["only-project", "shared", "shared"], "{got:?}");
     }
 
     /// A mode survives a restart, and the three words it takes are the whole list.

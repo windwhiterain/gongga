@@ -8,12 +8,23 @@ the prompt to `grep` the skill directories -- makes each session re-implement th
 discovery, and gets it wrong in whichever way the repository layout moved since the
 prompt was written.
 
-## HARNESS, GENERAL
+## PROJECT, HARNESS, GENERAL
 
 The bucket is reported in the reader's own words rather than as a boolean, because the
 useful question after "does this task have a skill" is "whose skill is it": a harness
 skill describes this server and is reinstalled from the pinned content, while a general
 skill belongs to the machine and may have been edited by whoever sits at it.
+
+The project bucket is the checkout the session is working in, `<cwd>/.agents/skills`.
+It is the third and it comes first, because it is the most specific thing that can
+hold a procedure: a repository that says "here, do it this way" outranks the home it
+sits in. Reading the cwd is the whole reason `installed` takes one: the same server
+serves sessions in different checkouts, and a skill in one of them must not appear in
+another's table.
+
+`installed_skills` in the command layer walks the same three roots in the same order,
+from the client's own directory, so the names a reader completes are the names the
+server will find.
 
 ## description
 

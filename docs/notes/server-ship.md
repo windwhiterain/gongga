@@ -23,13 +23,37 @@ a real `~/.agents`.
 
 ## Roots, machine_root
 
-Two roots, because the two buckets have different lifetimes. The harness bucket
-speaks about *this server* -- `evolve`, `heir`, `image`, `self-control` -- so it
-belongs beside the database and follows the home. The general bucket speaks about
-*this machine* -- `proxy`, `remote`, `computer_use`, `web-search`, `latency` -- so
-it lives in `~/.agents/skills`, beside `providers.toml`, which the server
-also reads live. Installing the general bucket into a home would give one machine
-five copies of the same procedure and five chances to edit them apart.
+Two roots, because the two kinds of content have different lifetimes. What this
+repository owns -- the config, and the skills that describe *this server*
+(`heir`, `image`, `self-control`, `subagent`) -- belongs beside the database and
+follows the home. The machine's skills -- `proxy`, `remote`, `computer_use`,
+`web-search`, `latency` -- are the community clone's, which `agents::link_skills`
+puts in `~/.agents/skills` beside `providers.toml`. This repository does not ship
+them: installing them into a home would give one machine five copies of the same
+procedure and five chances to edit them apart, and installing them into `~/.agents`
+would fight the clone for the same names.
+
+## ship.skills, the flat layout
+
+`ship/skills/<name>` is one skill, and it lands as `<home>/skills/<name>`. No
+`harness/` level: the mapping is a tree copy, so a nesting in the repository
+becomes a nesting on disk, and `skills/harness/heir` would install as
+`skills/harness/heir` -- a skill whose directory says it belongs to a bucket that
+no longer exists. One level in the repository, one level in the home.
+
+## ship.skills.retired
+
+A path this repository used to ship and no longer does. It is collected from the
+*old* pin only, which is what makes the copies an earlier install left recognisable
+as ours: the new pin has no such tree, so nothing is installed there, and the old
+one still describes what is on disk. Without it the files stay forever, and the
+five skills under `~/.agents/skills` would shadow the community copy of the same
+name -- `link_skills` never replaces a name it finds.
+
+The same removal takes the nesting out of the home: a pin that installed
+`skills/general/remote` under `skills` left `<home>/skills/general/remote`, which
+the flat mapping no longer accounts for. The removal loop sees it in the old pin's
+tree and takes it away.
 
 ## install_at (refusal)
 

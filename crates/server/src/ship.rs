@@ -39,8 +39,32 @@ pub struct Ship {
 /// Where each bucket of skills belongs.
 #[derive(Debug, Clone, Default, Deserialize)]
 struct SkillRoots {
+    /// Where this repository keeps the skills it owns, one directory per skill.
     harness: String,
-    general: String,
+    /// Paths an older pin installed somewhere this one no longer does, so the
+    /// copies it left are removed instead of standing forever as stale skills.
+    ///
+    /// # Invariant
+    ///
+    /// Each one still names the root it was installed under, because that is
+    /// where its files have to be found to be recognised as ours.
+    #[serde(default)]
+    retired: Vec<Retired>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Retired {
+    /// The repository path, which no longer exists.
+    path: String,
+    /// Which root it was installed under.
+    root: RetiredRoot,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum RetiredRoot {
+    /// The machine's `~/.agents`, which is now the community clone's alone.
+    Machine,
 }
 
 /// The pin this build ships. A manifest that does not parse is a build bug, not
@@ -53,8 +77,8 @@ pub fn pinned() -> &'static Ship {
     })
 }
 
-/// Where content lands: a home owns the harness's config and its own
-/// skills, the machine owns the general ones.
+/// Where content lands: a home owns the harness's config and its skills. The
+/// machine's skills are the community clone's, not this repository's.
 #[derive(Debug, Clone)]
 pub struct Roots {
     pub home: PathBuf,
@@ -173,8 +197,8 @@ pub fn install_at(roots: &Roots, ship: &Ship) -> anyhow::Result<Report> {
         fetched,
         ..Default::default()
     };
-    for (root, mappings) in plans(roots, ship) {
-        reconcile(&cache, &root, &mappings, ship, &mut report)?;
+    for (root, mappings, retired) in plans(roots, ship) {
+        reconcile(&cache, &root, &mappings, &retired, ship, &mut report)?;
     }
     Ok(report)
 }
@@ -192,8 +216,9 @@ pub fn config_text() -> Option<String> {
         .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// Each root, with the repository paths that belong under it.
-fn plans(roots: &Roots, ship: &Ship) -> Vec<(PathBuf, Vec<Mapping>)> {
+/// Each root, with the repository paths that belong under it now and the ones an
+/// older pin put there.
+fn plans(roots: &Roots, ship: &Ship) -> Vec<(PathBuf, Vec<Mapping>, Vec<Mapping>)> {
     let home = vec![
         Mapping {
             source: ship.config.clone(),
@@ -206,12 +231,24 @@ fn plans(roots: &Roots, ship: &Ship) -> Vec<(PathBuf, Vec<Mapping>)> {
             tree: true,
         },
     ];
-    let machine = vec![Mapping {
-        source: ship.skills.general.clone(),
-        target: PathBuf::from("skills"),
-        tree: true,
-    }];
-    vec![(roots.home.clone(), home), (roots.machine.clone(), machine)]
+    // Nothing lands on the machine any more: that bucket is the community clone's,
+    // which `agents::link_skills` puts in place. What an older pin installed there
+    // is still reconciled, so its copies are recognised as ours and removed.
+    let retired = ship
+        .skills
+        .retired
+        .iter()
+        .filter(|old| old.root == RetiredRoot::Machine)
+        .map(|old| Mapping {
+            source: old.path.clone(),
+            target: PathBuf::from("skills"),
+            tree: true,
+        })
+        .collect();
+    vec![
+        (roots.home.clone(), home, Vec::new()),
+        (roots.machine.clone(), Vec::new(), retired),
+    ]
 }
 
 /// Reconciles one root against the pinned content.
@@ -227,6 +264,7 @@ fn reconcile(
     cache: &Path,
     root: &Path,
     mappings: &[Mapping],
+    retired: &[Mapping],
     ship: &Ship,
     report: &mut Report,
 ) -> anyhow::Result<()> {
@@ -243,10 +281,17 @@ fn reconcile(
         return Ok(());
     }
     let new = collect(cache, &ship.commit, mappings, root);
-    let before = old
-        .as_deref()
-        .map(|pin| collect(cache, pin, mappings, root))
-        .unwrap_or_default();
+    // `retired` is only ever collected from the old pin: this one has no such
+    // path, which is exactly why the files it left have to be found by the older
+    // pin's tree and taken away.
+    let before = match old.as_deref() {
+        Some(pin) => {
+            let mut everything: Vec<&Mapping> = mappings.iter().chain(retired).collect();
+            everything.sort_by_key(|m| m.source.len());
+            collect_refs(cache, pin, &everything, root)
+        }
+        None => Vec::new(),
+    };
 
     for file in &new {
         let Some(theirs) = blob(cache, &ship.commit, &file.source) else {
@@ -341,6 +386,12 @@ struct Planned {
 
 /// Every pinned file a set of mappings accounts for, as a path under `root`.
 fn collect(cache: &Path, commit: &str, mappings: &[Mapping], root: &Path) -> Vec<Planned> {
+    let refs: Vec<&Mapping> = mappings.iter().collect();
+    collect_refs(cache, commit, &refs, root)
+}
+
+/// The same, for a set assembled from more than one list.
+fn collect_refs(cache: &Path, commit: &str, mappings: &[&Mapping], root: &Path) -> Vec<Planned> {
     let mut out = Vec::new();
     for mapping in mappings {
         for (path, exec) in listed(cache, commit, &mapping.source) {
@@ -678,11 +729,9 @@ mod tests {
     /// A repository holding shipped content, shaped like the real one.
     fn content_repo(dir: &Path, config: &str, skill: &str) -> String {
         std::fs::create_dir_all(dir.join("config")).unwrap();
-        std::fs::create_dir_all(dir.join("skills/harness/heir")).unwrap();
-        std::fs::create_dir_all(dir.join("skills/general/remote")).unwrap();
+        std::fs::create_dir_all(dir.join("skills/heir")).unwrap();
         std::fs::write(dir.join("config/config.toml"), config).unwrap();
-        std::fs::write(dir.join("skills/harness/heir/SKILL.md"), skill).unwrap();
-        std::fs::write(dir.join("skills/general/remote/remote.py"), skill).unwrap();
+        std::fs::write(dir.join("skills/heir/SKILL.md"), skill).unwrap();
         git_in(dir, &["init", "-q", "-b", "main"]);
         git_in(dir, &["add", "-A"]);
         git_in(dir, &["commit", "-q", "-m", "content"]);
@@ -695,8 +744,11 @@ mod tests {
             commit: commit.to_string(),
             config: "config/config.toml".to_string(),
             skills: SkillRoots {
-                harness: "skills/harness".to_string(),
-                general: "skills/general".to_string(),
+                harness: "skills".to_string(),
+                retired: vec![Retired {
+                    path: "skills/general".to_string(),
+                    root: RetiredRoot::Machine,
+                }],
             },
         }
     }
@@ -767,12 +819,11 @@ mod tests {
             "a git url, or a local checkout while developing"
         );
         assert_eq!(ship.config, "config/config.toml");
-        assert_eq!(ship.skills.harness, "skills/harness");
-        assert_eq!(ship.skills.general, "skills/general");
+        assert_eq!(ship.skills.harness, "skills");
     }
 
     #[test]
-    fn a_first_start_lands_the_config_and_both_skill_buckets() {
+    fn a_first_start_lands_the_config_and_the_skills() {
         let d = tempfile::tempdir().unwrap();
         let f = fixture(d.path());
         let commit = content_repo(&f.content, "instructions here\n", "# skill\n");
@@ -783,12 +834,61 @@ mod tests {
             "instructions here\n"
         );
         assert!(f.home().join("skills/heir/SKILL.md").exists());
-        assert!(f.machine().join("skills/remote/remote.py").exists());
-        assert_eq!(report.written, 3, "{report:?}");
+        assert_eq!(report.written, 2, "{report:?}");
         assert!(report.conflicts.is_empty(), "{report:?}");
         assert!(report.fetched);
         assert_eq!(f.pin(f.home()), commit);
-        assert_eq!(f.pin(f.machine()), commit);
+    }
+
+    /// The machine root gets nothing from this repository.
+    ///
+    /// # Invariant
+    ///
+    /// The general bucket is the community clone's (`agents::link_skills`), so a
+    /// pin that still installed it there would shadow the community copy of the
+    /// same name with a stale one -- `link_skills` never replaces a name it finds.
+    #[test]
+    fn the_machine_root_is_emptied_rather_than_installed_into() {
+        let d = tempfile::tempdir().unwrap();
+        let f = fixture(d.path());
+        // An older pin, whose repository still held `skills/general`: this is the
+        // shape a machine that has been through the split is in.
+        let _ = content_repo(&f.content, "a\n", "b\n");
+        std::fs::create_dir_all(f.content.join("skills/general/remote")).unwrap();
+        std::fs::write(
+            f.content.join("skills/general/remote/SKILL.md"),
+            "an old install\n",
+        )
+        .unwrap();
+        git_in(&f.content, &["add", "-A"]);
+        git_in(&f.content, &["commit", "-q", "-m", "general"]);
+        let old = f.at();
+        assert_eq!(old.removed, 0, "nothing to remove yet: {old:?}");
+        // What that pin left behind, byte for byte.
+        std::fs::create_dir_all(f.machine().join("skills/remote")).unwrap();
+        std::fs::write(
+            f.machine().join("skills/remote/SKILL.md"),
+            "an old install\n",
+        )
+        .unwrap();
+        assert_eq!(f.pin(f.machine()), f.pin(f.home()), "the same pin");
+
+        // This pin: the path is gone from the repository.
+        std::fs::remove_dir_all(f.content.join("skills/general")).unwrap();
+        let commit = content_repo(&f.content, "a\n", "c\n");
+        let report = f.install(&commit).unwrap();
+        assert_eq!(
+            report.removed, 2,
+            "both copies that pin left are gone: {report:?}"
+        );
+        assert!(
+            !f.machine().join("skills/remote/SKILL.md").exists(),
+            "so the community copy can be linked in its place"
+        );
+        assert!(
+            !f.home().join("skills/general/remote/SKILL.md").exists(),
+            "and the file that pin nested under `skills/general` is gone too"
+        );
     }
 
     /// A root already at the pin is left alone, and not even read.
@@ -920,7 +1020,7 @@ mod tests {
         let first = content_repo(&f.content, "c\n", "skill text\n");
         f.install(&first).unwrap();
 
-        std::fs::remove_file(f.content.join("skills/harness/heir/SKILL.md")).unwrap();
+        std::fs::remove_file(f.content.join("skills/heir/SKILL.md")).unwrap();
         git_in(&f.content, &["add", "-A"]);
         git_in(&f.content, &["commit", "-q", "-m", "drop a skill"]);
         let report = f.at();
@@ -937,7 +1037,7 @@ mod tests {
         f.install(&first).unwrap();
         std::fs::write(f.home().join("skills/heir/SKILL.md"), "mine now\n").unwrap();
 
-        std::fs::remove_file(f.content.join("skills/harness/heir/SKILL.md")).unwrap();
+        std::fs::remove_file(f.content.join("skills/heir/SKILL.md")).unwrap();
         git_in(&f.content, &["add", "-A"]);
         git_in(&f.content, &["commit", "-q", "-m", "drop a skill"]);
         let report = f.at();
@@ -948,7 +1048,7 @@ mod tests {
         );
         assert_eq!(
             report.kept,
-            vec!["skills/harness/heir/SKILL.md (kept: removed upstream)".to_string()],
+            vec!["skills/heir/SKILL.md (kept: removed upstream)".to_string()],
             "{report:?}"
         );
         assert!(report.conflicts.is_empty(), "{report:?}");
@@ -967,10 +1067,7 @@ mod tests {
 
         let first = content_repo(&f.content, "one\n", "theirs\n");
         let report = f.install(&first).unwrap();
-        assert_eq!(
-            report.kept,
-            vec!["skills/harness/heir/SKILL.md".to_string()]
-        );
+        assert_eq!(report.kept, vec!["skills/heir/SKILL.md".to_string()]);
         assert!(
             f.home().join(PIN_FILE).exists(),
             "a kept file is not a reason to forget the base: {report:?}"
@@ -1004,11 +1101,7 @@ mod tests {
         std::fs::write(f.home().join("skills/heir/SKILL.md"), "older skill\n").unwrap();
 
         // The pin moves on, and this home never recorded where it was.
-        std::fs::write(
-            f.content.join("skills/harness/heir/SKILL.md"),
-            "newer skill\n",
-        )
-        .unwrap();
+        std::fs::write(f.content.join("skills/heir/SKILL.md"), "newer skill\n").unwrap();
         git_in(&f.content, &["commit", "-q", "-am", "upstream"]);
         let report = f.install(&head(&f.content)).unwrap();
 
@@ -1035,10 +1128,7 @@ mod tests {
             "my own words\n",
             "{report:?}"
         );
-        assert_eq!(
-            report.kept,
-            vec!["skills/harness/heir/SKILL.md".to_string()]
-        );
+        assert_eq!(report.kept, vec!["skills/heir/SKILL.md".to_string()]);
     }
 
     /// A commit the pin does not name changes nothing: a home installs the pin,
@@ -1075,11 +1165,7 @@ mod tests {
         let pinned = content_repo(&f.content, "one\n", "shipped\n");
         // On a branch the pin cannot reach: `rev-list --all` would see it.
         git_in(&f.content, &["checkout", "-q", "-b", "theirs"]);
-        std::fs::write(
-            f.content.join("skills/harness/heir/SKILL.md"),
-            "my own words\n",
-        )
-        .unwrap();
+        std::fs::write(f.content.join("skills/heir/SKILL.md"), "my own words\n").unwrap();
         git_in(&f.content, &["commit", "-q", "-am", "mine"]);
         git_in(&f.content, &["checkout", "-q", "main"]);
 
@@ -1093,10 +1179,7 @@ mod tests {
             "my own words\n",
             "kept, not replaced: {report:?}"
         );
-        assert_eq!(
-            report.kept,
-            vec!["skills/harness/heir/SKILL.md".to_string()]
-        );
+        assert_eq!(report.kept, vec!["skills/heir/SKILL.md".to_string()]);
     }
 
     /// The refusal that stops a promptless agent from looking healthy.

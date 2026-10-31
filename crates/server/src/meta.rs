@@ -137,7 +137,7 @@ pub async fn expand(cwd: &Path, text: &str, llm: Option<&LlmClient>) -> Expanded
         }
         let (replacement, image) = match mention.kind {
             Reference::File => continue,
-            Reference::Skill => match skill_metadata(&mention.value) {
+            Reference::Skill => match skill_metadata(cwd, &mention.value) {
                 Some(metadata) => (metadata, None),
                 None => continue,
             },
@@ -168,8 +168,8 @@ pub async fn expand(cwd: &Path, text: &str, llm: Option<&LlmClient>) -> Expanded
 }
 
 /// What `@skill: <name>` stands for: one row of `index_skill`'s table.
-fn skill_metadata(name: &str) -> Option<String> {
-    let found = crate::tools::index_skill::installed()
+fn skill_metadata(cwd: &Path, name: &str) -> Option<String> {
+    let found = crate::tools::index_skill::installed(cwd)
         .into_iter()
         .find(|skill| skill.name == name)?;
     Some(format!(

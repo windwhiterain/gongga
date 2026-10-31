@@ -59,6 +59,12 @@ impl Catalog {
         self.write().cwd = cwd.into();
     }
 
+    /// The directory this client reads relative paths from, which is also the
+    /// project whose own `.agents/skills` counts.
+    pub fn cwd(&self) -> PathBuf {
+        self.read().cwd.clone()
+    }
+
     /// The sticky arguments that exist, for the source the server names.
     pub fn set_sticky_names(&self, names: &[String]) {
         self.write().sticky_names = names.to_vec();

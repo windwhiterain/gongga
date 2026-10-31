@@ -114,21 +114,28 @@ provider 目录分两层，服务端只读不写，启动时按 provider `id` �
 `GONGGA_PROVIDERS_CATALOG=<path>` 仍然表示「就这一个文件」，两层合并整个跳过。
 
 ## 技能
-skill 是"任务相关才读"的散文 + 脚本，**不在这个仓库里**，分两层：harness 桶由内容仓库
-`ship` 提供，服务端 pin 一个 commit，启动时装进 `$GONGGA_HOME/skills/`；通用桶是社区内容
-`gongga-agents/skills/`（服务端已经 clone 的那个仓库），私有的 `~/.agents/skills/` 只用来
-覆盖同名的那一个。
+skill 是"任务相关才读"的散文 + 脚本。三个桶，**越近的越先**：
+
+| 桶 | 在哪 | 谁的 | 怎么改 |
+| --- | --- | --- | --- |
+| `project` | `<会话 cwd>/.agents/skills/<name>` | 这个 checkout | 直接改，随仓库走 |
+| `harness` | `$GONGGA_HOME/skills/<name>` | 内容仓库 `ship`，pin 一个 commit | 改 `ship/skills/<name>` 再发版 |
+| `general` | `~/.agents/skills/<name>` | 社区 clone `gongga-agents` | 改社区仓库 |
 
 **别全读，也别 grep 目录**：调用 `index_skill` 工具，它返回 name / description / path /
 bucket 一张表，命中才按它给的路径读正文。列表本身不写在这里——写在这里就等于每加一个
 skill 都要改一次这个文件，而读的人手上已经有那张表。
 
-内容仓库现在是这个仓库的 **submodule**，就在 `ship/`——所以「改 skill / 改默认 config」
-和「重新 pin」是同一件事：在 `ship/` 里改、在那边提交并 push，然后 `git add ship`（记下
-新的 commit）+ 把 `crates/server/ship.toml` 的 `commit` 改成同一个 sha。两处不一致时服务端
-装的是 `ship.toml` 里那个 commit，不是你工作树里的那个。
-在这里改 `.agents/skills/` 是改一个已经不存在的地方；改 `$GONGGA_HOME/skills/` 里的已安装
-副本会被下一次合并判成「读者自己写的」而不再更新。
+**需要源码的 skill 不属于 `ship`。** `evolve` 要往上找 `Cargo.toml`、要编服务端、要读
+`.dev/`，装进 `$GONGGA_HOME` 之后它找不到仓库根，所以它住在**这个仓库**的
+`.agents/skills/evolve/`，随 checkout 走，不随 pin 走。
+
+其余（`heir` / `image` / `self-control` / `subagent` + 默认 config）在内容仓库里，是这个仓库的
+**submodule**（`ship/`），所以「改 skill / 改默认 config」和「重新 pin」是同一件事：在 `ship/` 里
+改、在那边提交并 push，然后 `git add ship` + 把 `crates/server/ship.toml` 的 `commit` 改成同一个
+sha。两处不一致时服务端装的是 `ship.toml` 里那个 commit，不是你工作树里的那个。
+`ship/skills/<name>` 就是一层，没有 `harness/` 那一层——它原样映射成 `<home>/skills/<name>`。
+改 `$GONGGA_HOME/skills/` 里的已安装副本会被下一次合并判成「读者自己写的」而不再更新。
 - `proxy`：两层。`~/.agents/gongga-agents/skills/proxy/proxy` 是自实现的纯标准库分流代理（HTTP/SOCKS5/直连
   上游，用户可接任何 API 端点）：先 `doctor`，`upstream add` 加上游，`add host --via` 定规则，
   `check host` 看代理自己记下的去向。出口 IP 只在两条路由相同时才说明问题——`check` 会明说。

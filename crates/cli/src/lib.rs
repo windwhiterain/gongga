@@ -847,8 +847,11 @@ impl Client {
     /// the skills this home can open.
     pub fn sync_sticky(&self) {
         self.catalog.set_sticky_names(&self.sticky.names());
+        // The client's own directory: a project's `.agents/skills` is written
+        // beside the code it applies to.
+        let cwd = self.catalog.cwd();
         self.catalog
-            .set_skill_names(&installed_skills(self.sticky.home()));
+            .set_skill_names(&installed_skills(self.sticky.home(), &cwd));
     }
 
     /// The status line: server facts only, never a "current session".

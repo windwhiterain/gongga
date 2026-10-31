@@ -14,5 +14,5 @@ tmp="$root/target/heir-selftest"
 mkdir -p "$tmp"
 
 TMPDIR="$tmp" TMP="$tmp" TEMP="$tmp" \
-  "$python" "$root/ship/skills/harness/heir/test_heir.py" \
+  "$python" "$root/ship/skills/heir/test_heir.py" \
   --schema-source "$root/crates/server/src/store.rs"

@@ -31,22 +31,22 @@ GONGGA_SHIP_REMOTE="$base/shipremote.git" bash wt/scripts/ship.sh --check >fresh
 check "check passes on an untouched clone (detached HEAD == the pin)" "grep -q 'in agreement' fresh.txt"
 
 say "== dry run with changes: nothing must be written"
-printf '\nA line added by the release-script test.\n' >> wt/ship/skills/harness/heir/SKILL.md
+printf '\nA line added by the release-script test.\n' >> wt/ship/skills/heir/SKILL.md
 before=$(git -C wt/ship rev-parse HEAD)
 GONGGA_SHIP_REMOTE="$base/shipremote.git" bash wt/scripts/ship.sh --dry-run -m "test" >dry.txt 2>&1
 check "dry-run left HEAD alone" "[[ \$(git -C wt/ship rev-parse HEAD) == $before ]]"
 check "dry-run says what it would do" "grep -q 'would commit those changes' dry.txt"
-sed -i '/A line added by the release-script test./d' wt/ship/skills/harness/heir/SKILL.md
+sed -i '/A line added by the release-script test./d' wt/ship/skills/heir/SKILL.md
 
 say "== the guard: changes without a message"
-printf '\nAnother test line.\n' >> wt/ship/skills/harness/heir/SKILL.md
+printf '\nAnother test line.\n' >> wt/ship/skills/heir/SKILL.md
 GONGGA_SHIP_REMOTE="$base/shipremote.git" bash wt/scripts/ship.sh >noguard.txt 2>&1
 code=$?
 check "refuses to publish a message it invented (exit 2, saw: $(head -1 noguard.txt))" "[[ $code == 2 ]]"
-sed -i '/Another test line./d' wt/ship/skills/harness/heir/SKILL.md
+sed -i '/Another test line./d' wt/ship/skills/heir/SKILL.md
 
 say "== the real run, against the scratch remote"
-printf '\nPublished by the release-script test.\n' >> wt/ship/skills/harness/heir/SKILL.md
+printf '\nPublished by the release-script test.\n' >> wt/ship/skills/heir/SKILL.md
 GONGGA_SHIP_REMOTE="$base/shipremote.git" bash wt/scripts/ship.sh -m "test: the release script publishes itself" >run.txt 2>&1
 sed -n 's/^/   /p' run.txt
 sha=$(git -C wt/ship rev-parse HEAD)
@@ -56,7 +56,7 @@ check "the submodule committed and moved" "[[ $sha != $before ]]"
 check "the remote now advertises that commit" "[[ $remote_sha == $sha ]]"
 check "ship.toml pins the same sha" "[[ $pinned == $sha ]]"
 check "the pin and the submodule are staged here" "git -C wt diff --cached --name-only | grep -q crates/server/ship.toml"
-check "the published prose reached the remote" "git --git-dir=$base/shipremote.git cat-file blob $remote_sha:skills/harness/heir/SKILL.md | grep -q 'Published by the release-script test'"
+check "the published prose reached the remote" "git --git-dir=$base/shipremote.git cat-file blob $remote_sha:skills/heir/SKILL.md | grep -q 'Published by the release-script test'"
 
 say "== --check now agrees on the release; and it fails when somebody drifts"
 GONGGA_SHIP_REMOTE="$base/shipremote.git" bash wt/scripts/ship.sh --check >check.txt 2>&1

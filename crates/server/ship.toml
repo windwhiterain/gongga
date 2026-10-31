@@ -8,11 +8,21 @@
 # installed.
 [ship]
 url = "https://github.com/windwhiterain/gongga-ship.git"
-commit = "9112ad7d348099980554bf0c28dfc2afda9016a1"
+commit = "b3ffb5154c68571af459f100fade942b21c3671f"
 # Which path in that repository is the home's config.
 config = "config/config.toml"
 
-# The split between what belongs to a home and what belongs to the machine.
+# The skills this repository owns, flat: one directory per skill, and the home's
+# `skills/<name>` is the same name. The machine's skills are not here -- they are
+# the community clone's (`agents::link_skills`), which is where a machine's skills
+# are edited without a pin moving.
 [ship.skills]
-harness = "skills/harness"
-general = "skills/general"
+harness = "skills"
+
+# What an older pin installed on the machine and this one does not. The path is
+# gone from the repository, so nothing lands there any more; naming it is what
+# lets the install recognise the copies it left and remove them, instead of
+# letting them shadow the community skill of the same name forever.
+[[ship.skills.retired]]
+path = "skills/general"
+root = "machine"
