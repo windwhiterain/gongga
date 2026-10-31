@@ -74,6 +74,18 @@ pub fn fnv_of(path: &Path) -> std::io::Result<u64> {
     }
 }
 
+/// One name for one set of payloads, so a build never rewrites another's files.
+pub fn stamp(programs: &[(&str, &[u8])]) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for (name, bytes) in programs {
+        for byte in name.as_bytes().iter().chain(bytes.iter()) {
+            hash ^= *byte as u64;
+            hash = hash.wrapping_mul(0x100_0000_01b3);
+        }
+    }
+    format!("{hash:016x}")
+}
+
 /// The file name a program is started by on this platform.
 pub fn file_name(name: &str) -> String {
     if cfg!(windows) && !name.ends_with(".exe") {

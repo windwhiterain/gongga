@@ -35,7 +35,11 @@ fn run() -> Result<u8, String> {
             "this file does not carry {wanted}; it carries {carried:?}"
         ));
     }
-    let dir = home().join("bin");
+    // Beside this build: a server may be running from `bin`, which no platform
+    // can replace. See `bundle-main.md`.
+    let dir = home()
+        .join("payload")
+        .join(payload::stamp(payload::EMBEDDED));
     // Every program, not only the one asked for: `serve` looks for the server
     // beside itself.
     for (name, bytes) in payload::EMBEDDED {
@@ -49,7 +53,7 @@ fn run() -> Result<u8, String> {
 mod payload {
     include!(concat!(env!("OUT_DIR"), "/embedded.rs"));
 
-    pub use crate::payload_impl::{file_name, place};
+    pub use crate::payload_impl::{file_name, place, stamp};
 }
 
 /// Which program to run, and how many arguments that choice consumed.
