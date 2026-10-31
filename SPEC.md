@@ -7,9 +7,11 @@ all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, l
 - server: binary (the backend program; also a library for its own tests).
 - cli: binary.
   - cmd fully documented and diagnosed, transparent server cmd wrapper, do not know server cmd.
-  - does not carry the server: `serve` starts the server program.
-- tui: binary, transparent cli wrapper, auto spawn a server and connected to it.
-  - `--client_only`: suppress auto spawn server.
+- tui: binary, transparent cli wrapper.
+- bundle: binary, bundle server/cli/tui's binary, route the cmd.
+  - `tui [--client_only]`: `bundle server` and connected to it, kill/exit will cancle the server it spawn.
+    - `--client_only`: suppress auto spawn server.
+  - `server (route to server: [--home <path>])`: extract server/cli into `<home>/bin/`, if previous binary exists and are running and version does not match, cancle server, skill cli, then replace.
 - ...: more crates may be added, with the same naming and layout.
 
 ## Server Client Connection
@@ -39,10 +41,10 @@ everything in database (sqlite) under a home directory, structured for agentic r
 - main (vertical)
   - horizontal
     - [session (render mode = none){name (double click change mode to full)}] (vertical scroll)
-    - [{session (render mode = full){name (double click change mode to line), context (tok), tps (latest), ttft (latest)}, events (vertical scroll)}] (horizontal split):
+    - [{session (render mode = full){name (double click change mode to line), context (in tokens), cached (in n%, latest), tps (latest), ttft (latest)}, events (vertical scroll)}] (horizontal split):
   - [{session (render mode = line){name (double click change mode to none)}, event} (line)] (vertical)
+  - [active_quota{provider, [mouth n%] [week n%] [5h n%] [credit n] [money n¥]}]: update each step end.
   - [{cmd, cmd_result}] (line)
-  - stickys[{name, value}]: auto fill in cmd argument if required but not provided.
   - cmd_input: perfix select, auto complete (match candidates in any char position).
     - `/<cmd>`
     - `<pure text>` expand to `/send_message --message "<pure text>"`: need escape.
