@@ -234,6 +234,9 @@ fn reconcile(
     let conflicts_at = report.conflicts.len();
     let kept_at = report.kept.len();
     let old = read_pin(root);
+    // Paths this root already kept from its reader: still theirs, and no longer
+    // holding the pin back.
+    let mut kept: Vec<String> = read_kept(root);
     // Already at this pin, so upstream cannot have moved: one file read replaces
     // a `git` per installed file.
     if old.as_deref() == Some(ship.commit.as_str()) {
@@ -253,6 +256,7 @@ fn reconcile(
         let base = old
             .as_deref()
             .and_then(|pin| blob(cache, pin, &file.source));
+        let settled = kept.contains(&file.source);
         match decide(ours.as_deref(), base.as_deref(), &theirs) {
             Decision::Place => {
                 put(&file.dest, &theirs, file.exec)?;
@@ -273,7 +277,12 @@ fn reconcile(
             Decision::Conflict => {
                 report.conflicts.push(file.source.clone());
             }
-            Decision::Keep => report.kept.push(file.source.clone()),
+            // A file recorded as the reader's is not offered the merge at all.
+            _ if settled => report.kept.push(file.source.clone()),
+            Decision::Keep => {
+                report.kept.push(file.source.clone());
+                kept.push(file.source.clone());
+            }
         }
     }
 
@@ -296,15 +305,18 @@ fn reconcile(
                 report
                     .kept
                     .push(format!("{} (kept: removed upstream)", file.source));
+                if !kept.contains(&file.source) {
+                    kept.push(file.source.clone());
+                }
             }
             None => {}
         }
     }
 
-    // A conflict or a kept file means the root is not reconciled: its base has
-    // to stay what actually installed here.
-    if report.conflicts.len() == conflicts_at && report.kept.len() == kept_at {
-        write_pin(root, &ship.commit)?;
+    // A conflict holds the base and asks again. A kept file is written down, so
+    // it does not freeze the pin.
+    if report.conflicts.len() == conflicts_at {
+        write_pin(root, &ship.commit, &kept)?;
     }
     Ok(())
 }
@@ -466,16 +478,42 @@ pub fn blob(cache: &Path, commit: &str, path: &str) -> Option<Vec<u8>> {
         .map(|out| out.stdout)
 }
 
+/// The pin a root is at: the first line of its pin file.
 fn read_pin(root: &Path) -> Option<String> {
     std::fs::read_to_string(root.join(PIN_FILE))
         .ok()
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
+        .and_then(|text| text.lines().next().map(|line| line.trim().to_string()))
+        .filter(|line| !line.is_empty())
 }
 
-fn write_pin(root: &Path, commit: &str) -> anyhow::Result<()> {
+/// The paths this root kept from its reader: recorded under the pin.
+///
+/// # Invariant
+///
+/// Without this the pin could never advance past a root holding one file of the
+/// reader's own -- and a root with no pin has no merge base, so *every* later
+/// update reads as "the reader wrote this" and the content freezes at whatever
+/// was installed first. See `docs/notes/server-ship.md`.
+fn read_kept(root: &Path) -> Vec<String> {
+    std::fs::read_to_string(root.join(PIN_FILE))
+        .map(|text| {
+            text.lines()
+                .skip(1)
+                .map(|line| line.trim().to_string())
+                .filter(|line| !line.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn write_pin(root: &Path, commit: &str, kept: &[String]) -> anyhow::Result<()> {
     std::fs::create_dir_all(root)?;
-    std::fs::write(root.join(PIN_FILE), format!("{commit}\n"))?;
+    let mut text = format!("{commit}\n");
+    for path in kept {
+        text.push_str(path);
+        text.push('\n');
+    }
+    std::fs::write(root.join(PIN_FILE), text)?;
     Ok(())
 }
 
@@ -667,11 +705,9 @@ mod tests {
             git_in(&self.content, &["commit", "-q", "-am", "upstream edit"]);
         }
 
+        /// The pin, the way a start reads it: the first line, kept paths aside.
         fn pin(&self, root: &Path) -> String {
-            std::fs::read_to_string(root.join(PIN_FILE))
-                .unwrap()
-                .trim()
-                .to_string()
+            super::read_pin(root).unwrap_or_default()
         }
     }
 
@@ -782,7 +818,14 @@ mod tests {
             vec!["config/config.toml".to_string()],
             "{report:?}"
         );
-        assert!(!f.home().join(PIN_FILE).exists(), "nothing was reconciled");
+        // The pin is written and says which file is the reader's: that is what
+        // lets the rest of the content keep arriving.
+        assert_eq!(f.pin(f.home()), commit);
+        assert_eq!(
+            std::fs::read_to_string(f.home().join(PIN_FILE)).unwrap(),
+            format!("{commit}\nconfig/config.toml\n"),
+            "the kept path is written down, not forgotten"
+        );
         // The skills it never had still arrive.
         assert!(f.home().join("skills/heir/SKILL.md").exists());
     }
@@ -870,6 +913,43 @@ mod tests {
         );
         assert!(report.conflicts.is_empty(), "{report:?}");
         assert_eq!(report.removed, 0);
+    }
+
+    /// One file the reader wrote must not freeze the rest: no pin means no base,
+    /// so every update reads as the reader's.
+    #[test]
+    fn a_kept_file_does_not_freeze_the_others() {
+        let d = tempfile::tempdir().unwrap();
+        let f = fixture(d.path());
+        // A file of the reader's own, before anything was ever installed.
+        std::fs::create_dir_all(f.home().join("skills/heir")).unwrap();
+        std::fs::write(f.home().join("skills/heir/SKILL.md"), "mine\n").unwrap();
+
+        let first = content_repo(&f.content, "one\n", "theirs\n");
+        let report = f.install(&first).unwrap();
+        assert_eq!(
+            report.kept,
+            vec!["skills/harness/heir/SKILL.md".to_string()]
+        );
+        assert!(
+            f.home().join(PIN_FILE).exists(),
+            "a kept file is not a reason to forget the base: {report:?}"
+        );
+
+        // The pin moves and touches a file nobody edited. It has to land.
+        std::fs::write(f.content.join("config/config.toml"), "two\n").unwrap();
+        git_in(&f.content, &["commit", "-q", "-am", "upstream"]);
+        let report = f.at();
+        assert_eq!(
+            std::fs::read_to_string(f.home().join("config.toml")).unwrap(),
+            "two\n",
+            "{report:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(f.home().join("skills/heir/SKILL.md")).unwrap(),
+            "mine\n",
+            "and the reader's file is still theirs"
+        );
     }
 
     /// The refusal that stops a promptless agent from looking healthy.
