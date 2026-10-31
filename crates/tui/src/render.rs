@@ -472,7 +472,11 @@ fn layout_input(text: &str, cursor: usize, width: usize) -> InputLayout {
 fn draw_header(f: &mut Frame, s: &Screen, area: Rect) {
     // The bar spans the row: a coloured strip that stops where the text stops reads
     // as a selection, not as a header.
-    let mut title = format!(" gongga · {} ", s.status);
+    // The server comes first: whose build is answering explains the status beside it.
+    let mut title = match &s.server {
+        Some(server) => format!(" gongga · {} · {} ", server.label(), s.status),
+        None => format!(" gongga · {} ", s.status),
+    };
     let used = UnicodeWidthStr::width(title.as_str()).min(area.width as usize);
     title.push_str(&" ".repeat(area.width as usize - used));
     // Painted by the status's kind: a failure and a fact are not equally urgent.
@@ -1622,6 +1626,47 @@ mod tests {
         )
     }
 
+    /// The header says whose server the window is on, before what it is doing.
+    ///
+    /// # Invariant
+    ///
+    /// The two words are the whole vocabulary a reader needs: `own` stops with
+    /// this window, `adopted` stops with it too though this window found it
+    /// running, and the other two say the window cannot stop it at all.
+    #[test]
+    fn the_header_says_whose_server_it_is() {
+        let words = |server: Option<crate::Server>| {
+            let mut screen = screen_with(&[]);
+            screen.status = "idle".to_string();
+            screen.server = server;
+            let mut term = Terminal::new(TestBackend::new(40, 6)).unwrap();
+            term.draw(|f| {
+                draw(f, &mut screen);
+            })
+            .unwrap();
+            let buf = term.backend().buffer().clone();
+            read(&buf, 0, 39, 0)
+        };
+        assert_eq!(
+            words(Some(crate::Server::Ours { pid: 7 })),
+            " gongga · own #7 · idle"
+        );
+        assert_eq!(
+            words(Some(crate::Server::Adopted { pid: 9 })),
+            " gongga · adopted #9 · idle"
+        );
+        assert_eq!(
+            words(Some(crate::Server::Another { pid: 9 })),
+            " gongga · other #9 · idle"
+        );
+        assert_eq!(
+            words(Some(crate::Server::Unowned { pid: 9 })),
+            " gongga · unowned #9 · idle"
+        );
+        // Before the first answer there is nothing to say about a server.
+        assert_eq!(words(None), " gongga · idle");
+    }
+
     /// A screen whose one pane reads the unnamed window these lines go to.
     fn screen_with(lines: &[&str]) -> Screen {
         let mut panes = Panes::new();
@@ -1642,6 +1687,7 @@ mod tests {
             input: crate::InputLine::default(),
             status: String::new(),
             status_kind: LineKind::System,
+            server: None,
             placeholder: String::new(),
             sticky_session: None,
         }

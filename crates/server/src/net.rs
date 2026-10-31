@@ -206,6 +206,9 @@ async fn handle_connection(
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_default(),
                 model: cfg.model.model(),
+                // Already decided by now: `--parent` at startup, or this very
+                // handshake. A client says whether it is the window in charge.
+                owner: crate::signal::owner(),
             },
             // The one list: built-ins, client commands, and a script's.
             commands: d.catalog().await,

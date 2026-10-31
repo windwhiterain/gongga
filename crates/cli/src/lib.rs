@@ -10,7 +10,7 @@ pub mod server;
 pub use crate::catalog::Catalog;
 pub use crate::commands::{BlockSize, RenderModes, Sticky};
 pub use crate::complete::{Candidate, Completer, Completion, SharedCompleter, token_bounds};
-pub use crate::server::{ensure, spawn, starts_here};
+pub use crate::server::{ensure, spawn, starts_here, stop};
 
 use std::collections::HashMap;
 
@@ -1754,6 +1754,15 @@ impl Greeting {
         }
     }
 
+    /// The window that server follows, when one does: this client compares it
+    /// with its own pid to learn whether it is the window in charge.
+    pub fn owner(&self) -> Option<u32> {
+        match &self.0 {
+            ServerMessage::Hello { server, .. } => server.owner,
+            _ => None,
+        }
+    }
+
     /// Brings a client up to date: catalog, session list, model; this is the
     /// resync.
     pub fn apply(self, client: &mut Client, sink: &mut dyn Sink) {
@@ -2198,6 +2207,7 @@ mod tests {
                 home: String::new(),
                 cwd: String::new(),
                 model: "m".into(),
+                owner: None,
             },
             commands: Vec::new(),
             sessions: sessions.into_iter().map(session).collect(),

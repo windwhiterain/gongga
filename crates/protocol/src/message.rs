@@ -76,6 +76,11 @@ pub struct ServerInfo {
     pub home: String,
     pub cwd: String,
     pub model: String,
+    /// The process this server follows, if one does: a window that owns it dies,
+    /// and the server stops. A reader compares it with its own pid to learn
+    /// whether it is the window in charge. See `docs/notes/protocol-message.md`.
+    #[serde(default)]
+    pub owner: Option<u32>,
 }
 
 /// The `events[]` stream from the SPEC.

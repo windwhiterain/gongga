@@ -6,7 +6,7 @@ use std::pin::Pin;
 use cli::{DialFailure, Greeting, Layout, LineKind, Link, Sink};
 use tokio::time::Duration;
 
-use crate::{Tui, UiEvent};
+use crate::{Server, Tui, UiEvent};
 
 /// First redial delay, doubling up to the cap; a cadence, not a budget.
 ///
@@ -149,6 +149,25 @@ fn stops_a_server(spawned: Option<u32>, answering: Option<u32>) -> bool {
     matches!((spawned, answering), (Some(ours), Some(theirs)) if ours != 0 && ours == theirs)
 }
 
+/// Whose server answered, from what this window knows about it.
+///
+/// # Invariant
+///
+/// Starting it is the only way to *be* its owner without asking: otherwise the
+/// greeting's `owner` decides, and this process's pid is what makes it ours. A
+/// server with no owner at all is nobody's, which is worth saying because nothing
+/// will stop it. See `docs/notes/tui-run.md`.
+fn whose_server(spawned: Option<u32>, answering: u32, owner: Option<u32>, me: u32) -> Server {
+    if answering != 0 && spawned == Some(answering) {
+        return Server::Ours { pid: answering };
+    }
+    match owner {
+        Some(pid) if pid == me => Server::Adopted { pid: answering },
+        Some(_) => Server::Another { pid: answering },
+        None => Server::Unowned { pid: answering },
+    }
+}
+
 /// How long to wait before the next dial.
 ///
 /// # Invariant
@@ -188,15 +207,25 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
     let mut next_try = tokio::time::Instant::now();
     let mut backoff = RECONNECT_MIN;
     let mut attempts: u32 = 0;
-    // Started once, before any dial; what it spawned is its to stop.
-    let spawned: Option<u32> = if starts_a_server(args.client_only) {
-        cli::server_of(&args.conn).ok().and_then(|addr| {
-            cli::spawn(&home, addr, Some(std::process::id()))
-                .ok()
-                .flatten()
-        })
-    } else {
-        None
+    // Started once, before any dial; what it spawned is its to stop. A window
+    // that starts a server owns the address, so whatever serves it now is stopped
+    // first -- otherwise this window would silently read another build's answers.
+    let spawned: Option<u32> = match starts_a_server(args.client_only) {
+        true => match cli::server_of(&args.conn) {
+            Ok(addr) => {
+                if let Some(old) = cli::stop(&home, addr).await {
+                    TuiSink(&mut ui).say(
+                        LineKind::System,
+                        &format!("stopped the server that was serving this home (pid {old})"),
+                    );
+                }
+                cli::spawn(&home, addr, Some(std::process::id()))
+                    .ok()
+                    .flatten()
+            }
+            Err(_) => None,
+        },
+        false => None,
     };
     // The pid that answers the dial, which is not `spawned` when the home was
     // already served by somebody else.
@@ -230,6 +259,7 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                 // the next dial find the new one.
                 if client.take_server_change() {
                     link = None;
+                    ui.set_server(None);
                     backoff = RECONNECT_MIN;
                     attempts = 0;
                     next_try = tokio::time::Instant::now();
@@ -253,6 +283,7 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                                     ),
                                 );
                                 link = None;
+                                ui.set_server(None);
                                 backoff = RECONNECT_MIN;
                                 attempts = 0;
                                 next_try = tokio::time::Instant::now();
@@ -272,6 +303,7 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
             }
             Step::Wire(None) => {
                 link = None;
+                ui.set_server(None);
                 backoff = RECONNECT_MIN;
                 attempts = 0;
                 next_try = tokio::time::Instant::now();
@@ -288,6 +320,12 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                 match outcome {
                     Ok((open, greeting)) => {
                         answering = Some(greeting.pid());
+                        ui.set_server(Some(whose_server(
+                            spawned,
+                            greeting.pid(),
+                            greeting.owner(),
+                            std::process::id(),
+                        )));
                         // Applying the greeting is the resync: catalog, sessions, model.
                         greeting.apply(&mut client, &mut TuiSink(&mut ui));
                         link = Some(open);
@@ -349,6 +387,48 @@ mod tests {
         assert!(
             !stops_a_server(Some(0), Some(0)),
             "an unknown pid is nobody's"
+        );
+    }
+
+    /// The header says whose server answered, and every case is a different word.
+    ///
+    /// # Invariant
+    ///
+    /// Starting it is the only way to be its owner without asking: otherwise the
+    /// greeting's `owner` decides, and our own pid is what makes it ours.
+    #[test]
+    fn a_window_says_whose_server_it_is_on() {
+        let me = 100;
+        assert_eq!(
+            whose_server(Some(7), 7, Some(me), me),
+            Server::Ours { pid: 7 },
+            "started here, so the greeting's owner is us by construction"
+        );
+        assert_eq!(
+            whose_server(None, 9, Some(me), me),
+            Server::Adopted { pid: 9 },
+            "found running, and it took this window"
+        );
+        assert_eq!(
+            whose_server(None, 9, Some(55), me),
+            Server::Another { pid: 9 },
+            "another window is in charge of it"
+        );
+        assert_eq!(
+            whose_server(None, 9, None, me),
+            Server::Unowned { pid: 9 },
+            "nothing will stop a server nobody owns"
+        );
+        // A spawn that lost the lock exits, so the answering pid is somebody else's.
+        assert_eq!(
+            whose_server(Some(7), 9, Some(me), me),
+            Server::Adopted { pid: 9 },
+            "our child is gone; the answer is a server we took over"
+        );
+        // An unknown pid is nobody's, not ours.
+        assert_eq!(
+            whose_server(Some(0), 0, Some(me), me),
+            Server::Adopted { pid: 0 }
         );
     }
 

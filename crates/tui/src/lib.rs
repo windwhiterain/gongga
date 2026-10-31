@@ -113,6 +113,37 @@ pub struct Hit {
     pub part: Part,
 }
 
+/// Whose server the window is talking to, which the header says beside the status.
+///
+/// # Invariant
+///
+/// A window can only learn this from the greeting: `owner` is the pid the server
+/// follows, and this process's own pid is what makes it *our* server. See
+/// `docs/notes/tui-lib.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Server {
+    /// This window started it, so it goes when the window does.
+    Ours { pid: u32 },
+    /// It was already running; this window took it as its own, and it goes too.
+    Adopted { pid: u32 },
+    /// Another window owns it: this one reads and cannot stop it.
+    Another { pid: u32 },
+    /// Nobody owns it: nothing will stop it when its windows close.
+    Unowned { pid: u32 },
+}
+
+impl Server {
+    /// The words the header shows: two, because the status shares the row.
+    pub fn label(&self) -> String {
+        match self {
+            Server::Ours { pid } => format!("own #{pid}"),
+            Server::Adopted { pid } => format!("adopted #{pid}"),
+            Server::Another { pid } => format!("other #{pid}"),
+            Server::Unowned { pid } => format!("unowned #{pid}"),
+        }
+    }
+}
+
 /// Everything the renderer reads, separate from the terminal it draws to.
 pub struct Screen {
     /// The windows the events area is split into: a frame may not walk their logs.
@@ -122,6 +153,8 @@ pub struct Screen {
     pub status: String,
     /// What kind of thing the status line is saying, for its colour.
     pub status_kind: LineKind,
+    /// Whose server this window is on, once a dial has answered.
+    pub server: Option<Server>,
     pub placeholder: String,
     /// The session the sticky `session` argument names: what the keys scroll
     /// and what a click sets.
@@ -333,6 +366,7 @@ impl Tui {
                 input: InputLine::default(),
                 status: "connecting".to_string(),
                 status_kind: LineKind::System,
+                server: None,
                 placeholder: "message the agent, or / for a command (Tab completes)".to_string(),
                 sticky_session: None,
             },
@@ -361,6 +395,14 @@ impl Tui {
         let status = status.into();
         if status != self.screen.status {
             self.screen.status = status;
+            self.dirty = true;
+        }
+    }
+
+    /// Says whose server this window is on, or clears it when the link went away.
+    pub fn set_server(&mut self, server: Option<Server>) {
+        if self.screen.server != server {
+            self.screen.server = server;
             self.dirty = true;
         }
     }
@@ -1359,6 +1401,7 @@ mod tests {
             input: InputLine::default(),
             status: String::new(),
             status_kind: LineKind::System,
+            server: None,
             placeholder: String::new(),
             sticky_session: None,
         };
@@ -1421,6 +1464,7 @@ mod tests {
                     input: InputLine::default(),
                     status: String::new(),
                     status_kind: LineKind::System,
+                    server: None,
                     placeholder: String::new(),
                     sticky_session: None,
                 },

@@ -16,6 +16,18 @@ static WAKE: std::sync::OnceLock<Arc<Notify>> = std::sync::OnceLock::new();
 /// Whether a process already owns this server, so nothing else may claim it.
 static OWNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// The pid that owns it, once one does; 0 is nobody.
+static OWNER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// The pid this server follows. The greeting carries it, so a client can say
+/// whether it is the window in charge. See `docs/notes/server-signal.md`.
+pub fn owner() -> Option<u32> {
+    match OWNER.load(Ordering::SeqCst) {
+        0 => None,
+        pid => Some(pid),
+    }
+}
+
 /// Runs `stop` once, when the operating system asks this process to stop.
 ///
 /// # Invariant
@@ -35,8 +47,7 @@ where
         tracing::warn!("no signal handler: a Ctrl-C will not preserve the turn");
     }
     if let Some(pid) = parent {
-        OWNED.store(true, Ordering::SeqCst);
-        follows(pid, wake.clone());
+        adopt_pid(pid);
     }
     waiter(wake, stop);
 }
@@ -71,12 +82,23 @@ fn nudge(wake: &Notify) {
 pub fn adopt(pid: u32) -> bool {
     let claimed = claim(WAKE.get().cloned(), &OWNED, pid);
     if claimed {
+        OWNER.store(pid, Ordering::SeqCst);
         tracing::info!(
             owner = pid,
             "no owner yet: following the window that connected"
         );
     }
     claimed
+}
+
+/// Takes `pid` as the owner whatever the claim flag says: `--parent` is decided
+/// before any connection, so it wins by arriving first rather than by asking.
+fn adopt_pid(pid: u32) {
+    OWNED.store(true, Ordering::SeqCst);
+    OWNER.store(pid, Ordering::SeqCst);
+    if let Some(wake) = WAKE.get() {
+        follows(pid, wake.clone());
+    }
 }
 
 /// The decision, with the notifier and the flag handed in so a test can drive it.

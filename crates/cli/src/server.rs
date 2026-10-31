@@ -5,6 +5,7 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use anyhow::Context;
 
@@ -93,6 +94,101 @@ pub fn spawn(home: &Path, addr: SocketAddr, owner: Option<u32>) -> anyhow::Resul
         return Ok(None);
     }
     start(home, addr, owner)
+}
+
+/// How long a server is given to honour `cancel` before it is killed instead.
+const CANCEL_GRACE: Duration = Duration::from_secs(5);
+/// How often the process is asked whether it is gone.
+const GONE_POLL: Duration = Duration::from_millis(100);
+
+/// Stops whatever serves `addr`, so this process can start its own there.
+///
+/// # Invariant
+///
+/// Asked first: `cancel` preserves the running turn as a pending row, and the
+/// server started next resumes it. A kill is the fallback for a server that does
+/// not answer, because a stale one holding the port is the worse outcome.
+/// Returns the pid that was stopped, if anything was serving.
+/// See `docs/notes/cli-server.md`.
+pub async fn stop(home: &Path, addr: SocketAddr) -> Option<u32> {
+    if !starts_here(&addr) {
+        return None;
+    }
+    let key = crate::key_of(home)?;
+    let (link, greeting) = dial(Endpoint {
+        addr,
+        key,
+        owner: None,
+    })
+    .await
+    .ok()?;
+    let pid = greeting.pid();
+    link.cancel().await;
+    if waits_out(pid, CANCEL_GRACE).await {
+        return Some(pid);
+    }
+    kill(pid);
+    waits_out(pid, CANCEL_GRACE).await;
+    Some(pid)
+}
+
+/// Whether `pid` is gone before `grace` runs out.
+async fn waits_out(pid: u32, grace: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + grace;
+    loop {
+        if !alive(pid) {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(GONE_POLL).await;
+    }
+}
+
+/// Whether `pid` is a live process.
+///
+/// # Invariant
+///
+/// A pid is not a process: one that has been reused answers yes and would keep a
+/// stale server's place forever. Asking the machine is the only honest answer, so
+/// a failure to ask counts as alive -- the kill below is what resolves it.
+#[cfg(windows)]
+fn alive(pid: u32) -> bool {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    std::process::Command::new("tasklist")
+        .args(["/NH", "/FI", &format!("PID eq {pid}")])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map(|out| String::from_utf8_lossy(&out.stdout).contains(&pid.to_string()))
+        .unwrap_or(true)
+}
+
+#[cfg(not(windows))]
+fn alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// Ends `pid` and everything it started.
+#[cfg(windows)]
+fn kill(pid: u32) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let _ = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+}
+
+#[cfg(not(windows))]
+fn kill(pid: u32) {
+    let _ = std::process::Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .output();
 }
 
 /// Whether a server on `addr` is this machine's to start.
