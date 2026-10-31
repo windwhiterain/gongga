@@ -591,8 +591,7 @@ mod tests {
         write(&project.path().join(".agents/skills"), "only-project");
 
         let got = installed_skills(home.path(), project.path());
-        // The machine's own skills are in this walk too, so only ours are checked
-        // by position: the project's come first, and then the home's.
+        // The machine's skills are in this walk too; ours are the ones checked.
         let mine: Vec<&String> = got
             .iter()
             .filter(|name| matches!(name.as_str(), "shared" | "only-project"))

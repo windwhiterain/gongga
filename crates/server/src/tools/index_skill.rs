@@ -65,9 +65,7 @@ impl Tool for IndexSkillTool {
     }
 }
 
-/// One installed skill, as both the table and an `@skill:` reference need it.
-///
-/// `bucket` is where it was found, which is also what decides precedence.
+/// One installed skill: the table's row, and what `@skill:` opens.
 #[derive(Debug)]
 pub struct Installed {
     pub name: String,
@@ -88,8 +86,7 @@ pub fn installed(cwd: &Path) -> Vec<Installed> {
     let roots = crate::ship::roots();
     let mut all = Vec::new();
     for (bucket, root) in [
-        // The repository a session is working in. It is the most specific thing
-        // that can hold a skill: a checkout that says "here, do it this way".
+        // The checkout the session is in: the most specific holder of a skill.
         (PROJECT, cwd.join(".agents").join("skills")),
         (HARNESS, roots.home.join("skills")),
         (GENERAL, roots.machine.join("skills")),

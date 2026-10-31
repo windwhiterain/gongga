@@ -39,10 +39,9 @@ pub struct Ship {
 /// Where each bucket of skills belongs.
 #[derive(Debug, Clone, Default, Deserialize)]
 struct SkillRoots {
-    /// Where this repository keeps the skills it owns, one directory per skill.
+    /// Where this repository keeps the skills it owns, one dir per skill.
     harness: String,
-    /// Paths an older pin installed somewhere this one no longer does, so the
-    /// copies it left are removed instead of standing forever as stale skills.
+    /// Paths an older pin installed and this one does not, so their copies go.
     ///
     /// # Invariant
     ///
@@ -77,8 +76,8 @@ pub fn pinned() -> &'static Ship {
     })
 }
 
-/// Where content lands: a home owns the harness's config and its skills. The
-/// machine's skills are the community clone's, not this repository's.
+/// Where content lands: a home owns the config and its skills. The machine's
+/// skills are the community clone's.
 #[derive(Debug, Clone)]
 pub struct Roots {
     pub home: PathBuf,
@@ -231,9 +230,7 @@ fn plans(roots: &Roots, ship: &Ship) -> Vec<(PathBuf, Vec<Mapping>, Vec<Mapping>
             tree: true,
         },
     ];
-    // Nothing lands on the machine any more: that bucket is the community clone's,
-    // which `agents::link_skills` puts in place. What an older pin installed there
-    // is still reconciled, so its copies are recognised as ours and removed.
+    // Nothing lands on the machine now; the retired paths still reconcile.
     let retired = ship
         .skills
         .retired
@@ -281,9 +278,7 @@ fn reconcile(
         return Ok(());
     }
     let new = collect(cache, &ship.commit, mappings, root);
-    // `retired` is only ever collected from the old pin: this one has no such
-    // path, which is exactly why the files it left have to be found by the older
-    // pin's tree and taken away.
+    // Retired paths come from the old pin only: this one has no such tree.
     let before = match old.as_deref() {
         Some(pin) => {
             let mut everything: Vec<&Mapping> = mappings.iter().chain(retired).collect();
@@ -355,6 +350,7 @@ fn reconcile(
         match std::fs::read(&file.dest).ok() {
             Some(ours) if ours == base => {
                 let _ = std::fs::remove_file(&file.dest);
+                prune_dirs(root, &file.dest);
                 report.removed += 1;
             }
             Some(_) => {
@@ -375,6 +371,28 @@ fn reconcile(
         write_pin(root, &ship.commit, &kept)?;
     }
     Ok(())
+}
+
+/// Takes away the directories a removal left empty, up to `root`.
+///
+/// # Invariant
+///
+/// A directory left behind is a name that still exists, and `agents::link_skills`
+/// never replaces a name it finds -- so an empty `<machine>/skills/remote` would
+/// shadow the community skill of the same name forever, which is worse than the
+/// stale files this removal just took away. `root` itself stays: it is the
+/// install's own destination, not a skill.
+fn prune_dirs(root: &Path, removed: &Path) {
+    let mut dir = removed.parent();
+    while let Some(here) = dir {
+        if here == root || !here.starts_with(root) {
+            return;
+        }
+        if std::fs::remove_dir(here).is_err() {
+            return;
+        }
+        dir = here.parent();
+    }
 }
 
 /// One installed file: where it came from and where it sits.
@@ -851,8 +869,7 @@ mod tests {
     fn the_machine_root_is_emptied_rather_than_installed_into() {
         let d = tempfile::tempdir().unwrap();
         let f = fixture(d.path());
-        // An older pin, whose repository still held `skills/general`: this is the
-        // shape a machine that has been through the split is in.
+        // An older pin, whose repository still held `skills/general`.
         let _ = content_repo(&f.content, "a\n", "b\n");
         std::fs::create_dir_all(f.content.join("skills/general/remote")).unwrap();
         std::fs::write(
@@ -882,8 +899,9 @@ mod tests {
             "both copies that pin left are gone: {report:?}"
         );
         assert!(
-            !f.machine().join("skills/remote/SKILL.md").exists(),
-            "so the community copy can be linked in its place"
+            !f.machine().join("skills/remote").exists(),
+            "the directory goes with the file: an empty one still shadows the \
+             community skill of the same name, because a link never replaces a name"
         );
         assert!(
             !f.home().join("skills/general/remote/SKILL.md").exists(),
