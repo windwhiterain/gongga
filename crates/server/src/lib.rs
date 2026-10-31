@@ -53,7 +53,7 @@ pub struct Args {
     pub config: Option<PathBuf>,
     /// UDP address to listen on. Overrides `[server] bind`.
     pub bind: Option<String>,
-    /// Model name. Overrides `[llm] model`.
+    /// Model name. Overrides `[provider] model`.
     pub model: Option<String>,
     /// Path to bash. Overrides `[tools.bash] program`.
     pub bash: Option<PathBuf>,
@@ -204,7 +204,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     );
 
     let store = store::Store::open(&cfg.db_path)?;
-    let llm = Arc::new(LlmClient::new(&cfg.llm)?);
+    let llm = Arc::new(LlmClient::new(&cfg.provider)?);
     // A script drives this server by the same name a shell does: `gongga`, which
     // is this program under the command's name in the home's `bin`.
     // Before any shell exists: the command it types has to be there, and a
@@ -246,7 +246,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let sessions = SessionManager::new(
         store.clone(),
         cfg.bash.clone(),
-        cfg.llm.model.clone(),
+        cfg.provider.model.clone(),
         detached.clone(),
         shell_env,
     );
@@ -279,9 +279,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             store: store.clone(),
             llm: llm.clone(),
             providers: providers::Handle,
-            llm_config: cfg.llm.clone(),
+            provider_config: cfg.provider.clone(),
             clients: std::sync::Mutex::new(std::collections::HashMap::new()),
-            default_context: cfg.llm.context,
+            default_context: cfg.provider.context,
             tools: Arc::new(ToolRegistry::with_builtins(
                 cfg.bash.timeout,
                 cfg.bash.max_output_chars,
@@ -345,10 +345,10 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     tracing::info!(
         home = %cfg.home.display(),
         db = %cfg.db_path.display(),
-        provider = ?cfg.llm.provider,
-        model = %cfg.llm.model,
-        base_url = %cfg.llm.base_url,
-        context = ?cfg.llm.context,
+        provider = ?cfg.provider.provider,
+        model = %cfg.provider.model,
+        base_url = %cfg.provider.base_url,
+        context = ?cfg.provider.context,
         bash = ?cfg.bash.program,
         proxy = ?std::env::var("HTTPS_PROXY")
             .or_else(|_| std::env::var("https_proxy"))

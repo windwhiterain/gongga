@@ -87,7 +87,7 @@ and `set_session` is the only thing that writes them, so a half-applied tuning i
 not a state anything else has to handle.
 
 `model` is kept in step rather than derived on read: it is what list views show,
-and `llm` being cleared has to put it back to the server's own model, which only
+and `provider` being cleared has to put it back to the server's own model, which only
 the caller knows.
 
 ## Store::history
@@ -268,7 +268,7 @@ append the operator's line a second time.
 Written before the job is handed to the model, so a crash in between leaves a row
 the next start adopts rather than a process nobody knows about.
 
-## SessionRow::llm
+## SessionRow::provider
 
 `None` means "whatever the server is configured with", which is what most
 sessions are.
@@ -341,6 +341,11 @@ passes what that is, because only it knows.
 
 A database written before compression existed has to grow the columns rather than
 fail to open, or every existing session would be stranded.
+
+The one column that did not need adding is the one that was renamed: a sessions
+table from before the argument became `--provider` still says `llm`, and
+`migrate` renames it in place. Adding an empty `provider` beside it would have
+dropped every session's pinned entry, and the row is the only place it is kept.
 
 ## the_measured_context_size_survives_a_restart
 

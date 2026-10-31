@@ -24,7 +24,7 @@ would send an empty system prompt, run every tool, and look healthy in the log.
 `main.rs` refuses to start on a non-empty answer, naming the templates and the pin.
 
 `TABLE` is the one section read. The rest of the config is the loader's business, and
-this module must not learn to parse `[llm]` -- two readers of one file disagreeing
+this module must not learn to parse `[provider]` -- two readers of one file disagreeing
 about what a bad line means is worse than one of them being blind to it.
 
 ## Stamp, Stamp::of

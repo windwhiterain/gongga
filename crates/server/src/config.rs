@@ -31,7 +31,7 @@ pub struct Config {
     pub bind: SocketAddr,
     /// Shared secret a client must present before it may drive the harness.
     pub key: String,
-    pub llm: LlmConfig,
+    pub provider: ProviderConfig,
     pub bash: BashConfig,
     pub scripts: ScriptConfig,
     pub agent: AgentConfig,
@@ -39,7 +39,7 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone)]
-pub struct LlmConfig {
+pub struct ProviderConfig {
     /// Roster provider id this configuration points at; only used in messages.
     pub provider: Option<String>,
     /// Base URL of an OpenAI-compatible Responses API. Defaults to MiniMax CN.
@@ -172,7 +172,7 @@ pub struct AgentConfig {
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct FileConfig {
     server: Option<FileServer>,
-    llm: Option<FileLlm>,
+    provider: Option<FileProvider>,
     tools: Option<FileTools>,
     scripts: Option<FileScripts>,
     agent: Option<FileAgent>,
@@ -187,7 +187,7 @@ struct FileServer {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
-struct FileLlm {
+struct FileProvider {
     /// Roster provider id, e.g. `deepseek-official`. Optional: naming only a
     /// model finds the provider that has it.
     provider: Option<String>,
@@ -297,16 +297,16 @@ impl Config {
                 generated
             });
 
-        let llm_file = file.llm.unwrap_or_default();
+        let provider_file = file.provider.unwrap_or_default();
         // The roster is the machine's own provider list; using it needs no config.
         let roster = crate::providers::roster();
         let entry = pick_entry(
             &roster,
-            env_or("GONGGA_PROVIDER").or(llm_file.provider.clone()),
-            env_or("GONGGA_MODEL").or(llm_file.model.clone()),
+            env_or("GONGGA_PROVIDER").or(provider_file.provider.clone()),
+            env_or("GONGGA_MODEL").or(provider_file.model.clone()),
         );
         let api_key_env = env_or("GONGGA_API_KEY_ENV")
-            .or_else(|| llm_file.api_key_env.clone())
+            .or_else(|| provider_file.api_key_env.clone())
             .or_else(|| entry.as_ref().and_then(|e| e.api_key_env.clone()))
             .unwrap_or_else(|| DEFAULT_API_KEY_ENV.to_string());
         let api_key = env_or("GONGGA_API_KEY")
@@ -320,45 +320,49 @@ impl Config {
             })
             .unwrap_or_default();
 
-        let llm = LlmConfig {
+        let provider = ProviderConfig {
             provider: entry.as_ref().map(|e| e.provider.clone()),
             base_url: env_or("GONGGA_BASE_URL")
-                .or(llm_file.base_url)
+                .or(provider_file.base_url)
                 .or_else(|| entry.as_ref().map(|e| e.base_url.clone()))
                 .unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
             model: env_or("GONGGA_MODEL")
-                .or(llm_file.model)
+                .or(provider_file.model)
                 .or_else(|| entry.as_ref().map(|e| e.model.clone()))
                 .unwrap_or_else(|| DEFAULT_MODEL.to_string()),
             context: entry.as_ref().and_then(|e| e.context),
             api_key_env,
             api_key,
-            temperature: llm_file.temperature,
-            max_output_tokens: llm_file.max_output_tokens,
-            store: llm_file.store.unwrap_or(false),
+            temperature: provider_file.temperature,
+            max_output_tokens: provider_file.max_output_tokens,
+            store: provider_file.store.unwrap_or(false),
             headers_timeout: Duration::from_millis(
-                llm_file
+                provider_file
                     .headers_timeout_ms
                     .or_else(|| {
-                        env_or("GONGGA_LLM_HEADERS_TIMEOUT_MS").and_then(|v| v.parse().ok())
+                        env_or("GONGGA_PROVIDER_HEADERS_TIMEOUT_MS").and_then(|v| v.parse().ok())
                     })
                     .unwrap_or(180_000),
             ),
             idle_timeout: Duration::from_millis(
-                llm_file
+                provider_file
                     .idle_timeout_ms
-                    .or_else(|| env_or("GONGGA_LLM_IDLE_TIMEOUT_MS").and_then(|v| v.parse().ok()))
+                    .or_else(|| {
+                        env_or("GONGGA_PROVIDER_IDLE_TIMEOUT_MS").and_then(|v| v.parse().ok())
+                    })
                     .unwrap_or(60_000),
             ),
-            max_retries: llm_file
+            max_retries: provider_file
                 .max_retries
-                .or_else(|| env_or("GONGGA_LLM_MAX_RETRIES").and_then(|v| v.parse().ok()))
+                .or_else(|| env_or("GONGGA_PROVIDER_MAX_RETRIES").and_then(|v| v.parse().ok()))
                 // 0 is no ceiling: retry until the turn is cancelled.
                 .unwrap_or(0),
             retry_base: Duration::from_millis(
-                llm_file
+                provider_file
                     .retry_base_ms
-                    .or_else(|| env_or("GONGGA_LLM_RETRY_BASE_MS").and_then(|v| v.parse().ok()))
+                    .or_else(|| {
+                        env_or("GONGGA_PROVIDER_RETRY_BASE_MS").and_then(|v| v.parse().ok())
+                    })
                     .unwrap_or(1_000),
             ),
             builtin_tools: entry
@@ -427,7 +431,7 @@ impl Config {
             db_path,
             bind,
             key,
-            llm,
+            provider,
             bash,
             scripts,
             agent,
@@ -454,7 +458,7 @@ fn pick_entry(
             match roster.entry(&spec) {
                 Ok(entry) => Some(entry),
                 Err(e) => {
-                    tracing::warn!(spec = %spec, error = %e, "llm: the roster cannot place this; using the built-in default");
+                    tracing::warn!(spec = %spec, error = %e, "provider: the roster cannot place this; using the built-in default");
                     None
                 }
             }
@@ -462,14 +466,14 @@ fn pick_entry(
         (Some(p), None) => match roster.first_entry_of(&p) {
             Some(entry) => Some(entry),
             None => {
-                tracing::warn!(provider = %p, "llm: no such provider in the roster; using the built-in default");
+                tracing::warn!(provider = %p, "provider: no such provider in the roster; using the built-in default");
                 None
             }
         },
         (None, Some(m)) => match roster.find_model_entry(&m) {
             Some(entry) => Some(entry),
             None => {
-                tracing::warn!(model = %m, "llm: no provider in the roster has this model; using the built-in default");
+                tracing::warn!(model = %m, "provider: no provider in the roster has this model; using the built-in default");
                 None
             }
         },
@@ -477,7 +481,7 @@ fn pick_entry(
     }
 }
 
-impl LlmConfig {
+impl ProviderConfig {
     /// The same timeouts and retries, pointed at another model.
     ///
     /// See `docs/notes/server-config.md`.
@@ -593,8 +597,8 @@ mod tests {
 
     #[test]
     fn parses_a_minimal_config() {
-        let cfg: FileConfig = toml::from_str("[llm]\nmodel = \"x\"\n").unwrap();
-        assert_eq!(cfg.llm.unwrap().model.as_deref(), Some("x"));
+        let cfg: FileConfig = toml::from_str("[provider]\nmodel = \"x\"\n").unwrap();
+        assert_eq!(cfg.provider.unwrap().model.as_deref(), Some("x"));
         assert!(cfg.server.is_none());
     }
 
@@ -613,14 +617,14 @@ mod tests {
     fn the_key_is_a_file_of_its_own() {
         let d = tempfile::tempdir().unwrap();
         let config = d.path().join("config.toml");
-        std::fs::write(&config, "[llm]\nmodel = \"keep\"\n").unwrap();
+        std::fs::write(&config, "[provider]\nmodel = \"keep\"\n").unwrap();
         let key = d.path().join("server.key");
         persist_key(&key, "abc").unwrap();
         assert_eq!(std::fs::read_to_string(&key).unwrap(), "abc\n");
         assert_eq!(read_key_file(&key).as_deref(), Some("abc"));
         assert_eq!(
             std::fs::read_to_string(&config).unwrap(),
-            "[llm]\nmodel = \"keep\"\n",
+            "[provider]\nmodel = \"keep\"\n",
             "saving a key must not touch the config"
         );
         // An absent file and an empty one both mean the next source gets its turn.
@@ -653,7 +657,7 @@ mod tests {
     #[test]
     fn the_roster_answers_what_the_config_does_not_say() {
         let d = tempfile::tempdir().unwrap();
-        let path = d.path().join("llm.toml");
+        let path = d.path().join("provider.toml");
         std::fs::write(
             &path,
             r#"

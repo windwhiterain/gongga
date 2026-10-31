@@ -205,7 +205,7 @@ async fn handle_connection(
                 cwd: std::env::current_dir()
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_default(),
-                model: cfg.llm.model.clone(),
+                model: cfg.provider.model.clone(),
             },
             // The one list: built-ins, client commands, and a script's.
             commands: d.catalog().await,

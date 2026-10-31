@@ -14,7 +14,7 @@ use serde_json::json;
 use tokio::sync::mpsc;
 
 use crate::bus::EventBus;
-use crate::config::LlmConfig;
+use crate::config::ProviderConfig;
 use crate::llm::{LlmClient, LlmEvent};
 use crate::providers::{self};
 use crate::session::SessionHandle;
@@ -33,7 +33,7 @@ pub struct Agent {
     /// a reload reaches every later route.
     pub providers: providers::Handle,
     /// What a session's own entry inherits: timeouts and retries.
-    pub llm_config: LlmConfig,
+    pub provider_config: ProviderConfig,
     /// Clients for sessions that named their own entry, keyed by `provider/model`
     /// and by the roster read that produced it.
     pub clients: std::sync::Mutex<std::collections::HashMap<String, (u64, Arc<LlmClient>)>>,
@@ -130,7 +130,7 @@ impl Agent {
         let (llm, budget) = match self.route(&name, &session.tuning()) {
             Ok(route) => route,
             Err(e) => {
-                self.error(id, &name, "resolving the session's llm", e);
+                self.error(id, &name, "resolving the session's provider", e);
                 return (TurnOutcome::Failed, 0);
             }
         };
@@ -247,7 +247,9 @@ impl Agent {
             }
         }
         // Built outside the lock: a duplicate client is cheaper than serialising turns.
-        let client = Arc::new(LlmClient::new(&self.llm_config.for_entry(entry, api_key))?);
+        let client = Arc::new(LlmClient::new(
+            &self.provider_config.for_entry(entry, api_key),
+        )?);
         self.clients
             .lock()
             .unwrap_or_else(|e| e.into_inner())

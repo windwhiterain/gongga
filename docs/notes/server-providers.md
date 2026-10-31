@@ -94,7 +94,7 @@ roster never had -- while `[[provider.model]]` merges per model.
 Order is the base's, with private-only entries appended. File order is the
 default preference order (`Catalog::default_entry`), so a private layer can add
 a provider at the end and cannot silently promote itself above the community's
-first choice; making it the default is what `[llm] provider` in `config.toml`
+first choice; making it the default is what `[provider] provider` in `config.toml`
 is for.
 
 ## Model::context
