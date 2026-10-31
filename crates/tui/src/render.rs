@@ -304,10 +304,16 @@ fn draw_header(f: &mut Frame, s: &Screen, area: Rect) {
     let mut title = format!(" gongga · {} ", s.status);
     let used = UnicodeWidthStr::width(title.as_str()).min(area.width as usize);
     title.push_str(&" ".repeat(area.width as usize - used));
+    // Painted by the status's kind: a failure and a fact are not equally urgent.
+    let bg = match s.status_kind {
+        LineKind::Error => Color::Red,
+        LineKind::Command | LineKind::Result => Color::Green,
+        _ => Color::Cyan,
+    };
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
             title,
-            Style::default().fg(Color::Black).bg(Color::Cyan),
+            Style::default().fg(Color::Black).bg(bg),
         ))),
         area,
     );
@@ -670,14 +676,14 @@ fn dim() -> Style {
     Style::default().fg(Color::DarkGray)
 }
 
-/// The colour of each kind of line, and the reason there are ten of them.
+/// The look of each kind of line.
 ///
 /// # Invariant
 ///
-/// No two kinds share a colour, because a colour that means two things means
-/// neither: what the operator asked for, what the model is thinking, what a tool
-/// printed and what the harness says are four different things to read. See
-/// `docs/notes/tui-render.md`.
+/// No two kinds look alike -- colour *and* modifier, because a colour that means
+/// two things means neither. The one shared colour is deliberate: the harness's
+/// own remarks and the model's thinking are both asides, and italic is what tells
+/// the second from the first. See `docs/notes/tui-render.md`.
 fn style_for(kind: LineKind) -> Style {
     match kind {
         // The harness about itself: the quietest thing on screen.
@@ -688,9 +694,9 @@ fn style_for(kind: LineKind) -> Style {
         LineKind::User => Style::default().fg(Color::LightCyan),
         // The answer.
         LineKind::Assistant => Style::default().fg(Color::White),
-        // The model thinking: its own grey, plus italic, so it reads as an aside.
+        // The model thinking: dark gray, italic. Not `Gray`: near-white here.
         LineKind::Reasoning => Style::default()
-            .fg(Color::Gray)
+            .fg(Color::DarkGray)
             .add_modifier(Modifier::ITALIC),
         LineKind::ToolCall => Style::default().fg(Color::Yellow),
         LineKind::ToolOutput => Style::default().fg(Color::LightBlue),
@@ -861,9 +867,9 @@ mod tests {
         );
     }
 
-    /// Ten kinds of line, ten colours: one that means two things means neither.
+    /// No two kinds look alike: one that means two things means neither.
     #[test]
-    fn no_two_kinds_of_line_share_a_colour() {
+    fn no_two_kinds_of_line_look_alike() {
         let mut seen: Vec<(Option<Color>, Modifier)> = Vec::new();
         for kind in KINDS {
             let style = style_for(*kind);
@@ -975,6 +981,7 @@ mod tests {
             completion: None,
             input: crate::InputLine::default(),
             status: String::new(),
+            status_kind: LineKind::System,
             footer: String::new(),
             placeholder: String::new(),
             sticky_session: None,

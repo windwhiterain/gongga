@@ -72,6 +72,17 @@ connection notice are the harness talking; the command is the operator talking,
 and one colour for both leaves neither findable. See `docs/notes/tui-render.md`
 for the whole palette and why no two kinds share one.
 
+## Sink::note
+
+The harness talking about itself, as opposed to a line in a window: connected,
+refused, a build mismatch, a server log line. It is a separate method because the
+destination is the front-end's decision -- a line that names no session still needs
+a place, and "the command line" is the wrong place: SPEC gives that row to `cmd`
+and `cmd_result` only, and it keeps one entry.
+
+The one-shot mode still says them, on stderr, so a pipe of JSON keeps carrying
+exactly the events.
+
 ## Sink
 
 The interactive client (`crates/tui`) implements it with styled lines; one-shot

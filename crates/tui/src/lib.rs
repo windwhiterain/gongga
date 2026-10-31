@@ -118,6 +118,8 @@ pub struct Screen {
     pub completion: Option<Completion>,
     pub input: InputLine,
     pub status: String,
+    /// What kind of thing the status line is saying, for its colour.
+    pub status_kind: LineKind,
     pub footer: String,
     pub placeholder: String,
     /// The session the sticky `session` argument names: what the keys scroll
@@ -126,6 +128,30 @@ pub struct Screen {
 }
 
 impl Screen {
+    /// A note about this front-end, on the status line.
+    ///
+    /// # Invariant
+    ///
+    /// Never the command line: SPEC gives that row to `cmd` and `cmd_result`, and
+    /// it keeps only the newest, so a note there joins a ticker of things the
+    /// operator typed. See `docs/notes/tui-lib.md`.
+    pub fn note(&mut self, kind: LineKind, text: impl Into<String>) {
+        let text = text.into();
+        // With a session in view the news is history; with none it is a status.
+        match self.sticky_session.clone() {
+            Some(name) if !name.is_empty() => {
+                self.panes.line(&name, kind, text);
+            }
+            _ => self.note_status(kind, text),
+        }
+    }
+
+    /// The status line's half of a note: shown until the next fact replaces it.
+    pub fn note_status(&mut self, kind: LineKind, text: impl Into<String>) {
+        self.status_kind = kind;
+        self.status = text.into();
+    }
+
     /// Positive scrolls into the past, negative towards the newest line, on the
     /// sticky session -- which is SPEC's rule.
     pub fn scroll_by(&mut self, rows: i64) {
@@ -310,6 +336,7 @@ impl Tui {
                 completion: None,
                 input: InputLine::default(),
                 status: "connecting".to_string(),
+                status_kind: LineKind::System,
                 footer: String::new(),
                 placeholder: "message the agent, or / for a command (Tab completes)".to_string(),
                 sticky_session: None,
@@ -339,6 +366,14 @@ impl Tui {
         let status = status.into();
         if status != self.screen.status {
             self.screen.status = status;
+            self.dirty = true;
+        }
+    }
+
+    /// What kind of thing the status line says, for its colour.
+    pub fn set_status_kind(&mut self, kind: LineKind) {
+        if self.screen.status_kind != kind {
+            self.screen.status_kind = kind;
             self.dirty = true;
         }
     }
@@ -374,11 +409,18 @@ impl Tui {
         }
     }
 
-    /// A line this front-end says about itself, in the window for lines naming no
-    /// session.
+    /// Something this front-end says about itself: on the status line, where the
+    /// harness's own state is read.
+    ///
+    /// # Invariant
+    ///
+    /// Never the command line. SPEC gives that row to `cmd` and `cmd_result`, and
+    /// it keeps only the newest one, so a note about the window joins a ticker of
+    /// commands the operator typed -- which is how "starting one" came to sit
+    /// where an input line is expected. See `docs/notes/tui-lib.md`.
     pub fn say(&mut self, kind: LineKind, text: impl Into<String>) {
-        let window = self.command_window();
-        self.push(&window, kind, text);
+        self.screen.note(kind, text);
+        self.dirty = true;
     }
 
     /// Adds a finished line to the window `name` names.
@@ -1225,6 +1267,7 @@ mod tests {
             completion: None,
             input: InputLine::default(),
             status: String::new(),
+            status_kind: LineKind::System,
             footer: String::new(),
             placeholder: String::new(),
             sticky_session: None,
@@ -1284,6 +1327,7 @@ mod tests {
                     completion: None,
                     input: InputLine::default(),
                     status: String::new(),
+                    status_kind: LineKind::System,
                     footer: String::new(),
                     placeholder: String::new(),
                     sticky_session: None,
@@ -1787,6 +1831,40 @@ mod tests {
         h.measure("main", 10);
         h.screen.scroll_by(3);
         assert_eq!(h.pane_scroll("main"), 0);
+    }
+
+    /// A note about this window goes on the status line, never on the command row.
+    #[test]
+    fn a_note_about_this_window_is_not_a_command_line() {
+        let mut h = Headless::new();
+        let before = h.screen.panes.rows(View::Window("cmd"), 40);
+        h.screen
+            .note(LineKind::System, "nothing is listening — starting one");
+        assert_eq!(
+            h.screen.panes.rows(View::Window("cmd"), 40),
+            before,
+            "the command line grew a line it was not given"
+        );
+        // No session in view: nowhere to keep news, so it is a status.
+        assert_eq!(
+            h.screen.status, "nothing is listening — starting one",
+            "the note is on the status line"
+        );
+        assert_eq!(h.screen.status_kind, LineKind::System);
+        // An error keeps its kind, so the bar can paint it as one.
+        h.screen.note(LineKind::Error, "copy failed: no tool");
+        assert_eq!(h.screen.status_kind, LineKind::Error);
+
+        // With a session in view the note is history, and goes where it is read.
+        h.screen.sticky_session = Some("main".to_string());
+        h.screen.panes.line("main", LineKind::System, "first");
+        h.screen.note(LineKind::System, "connected");
+        assert_eq!(
+            h.screen.panes.rows(View::Window("main"), 40),
+            2,
+            "the note joined the session's own lines"
+        );
+        assert_ne!(h.screen.status, "connected", "and did not become a status");
     }
 
     /// A click asks for the sticky session, as the command line that sets it.

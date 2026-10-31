@@ -256,6 +256,9 @@ pub trait Sink {
     );
     fn status(&mut self, text: &str);
     fn footer(&mut self, text: &str);
+    /// The harness's own news: connected, refused, a server log line. Not a
+    /// command's line, so the front-end decides where it goes.
+    fn note(&mut self, _kind: LineKind, _text: &str) {}
     /// How tall one block may get, in wrapped rows; 0 caps nothing. A front-end
     /// that shows every row ignores it.
     fn block_size(&mut self, _lines: usize) {}
@@ -281,6 +284,14 @@ impl NullSink {
 
 impl Sink for NullSink {
     fn line(&mut self, _window: &str, kind: LineKind, text: &str) {
+        if matches!(kind, LineKind::Error) {
+            self.errors.push(text.to_string());
+        }
+    }
+    /// The one-shot mode has no window: a note goes to stderr, so a pipe of JSON
+    /// keeps carrying exactly the events.
+    fn note(&mut self, kind: LineKind, text: &str) {
+        eprintln!("{text}");
         if matches!(kind, LineKind::Error) {
             self.errors.push(text.to_string());
         }
@@ -536,8 +547,7 @@ impl Client {
                 // sessions, so a redial comes up like a fresh client.
                 self.connected = true;
                 self.attempts = 0;
-                sink.line(
-                    &self.command_window(),
+                sink.note(
                     LineKind::System,
                     &format!("connected to the server (model {})", self.model),
                 );
@@ -546,8 +556,7 @@ impl Client {
                 // somebody's other checkout, a stale install -- and the reader is
                 // the one who can fix it.
                 if !server.build.is_empty() && server.build != protocol::BUILD {
-                    sink.line(
-                        &self.command_window(),
+                    sink.note(
                         LineKind::System,
                         &format!(
                             "note: that server is build {}, this program is {} -- \
@@ -560,11 +569,7 @@ impl Client {
                 self.refresh(sink);
             }
             ServerMessage::Denied { reason } => {
-                sink.line(
-                    &self.command_window(),
-                    LineKind::Error,
-                    &format!("connection refused: {reason}"),
-                );
+                sink.note(LineKind::Error, &format!("connection refused: {reason}"));
             }
             ServerMessage::Event(event) => self.handle_event(event, sink),
         }
@@ -657,7 +662,7 @@ impl Client {
                         LogLevel::Debug | LogLevel::Info => LineKind::System,
                         LogLevel::Warn | LogLevel::Error => LineKind::Error,
                     };
-                    sink.line(&self.command_window(), kind, &message);
+                    sink.note(kind, &message);
                 }
             }
         }
@@ -1955,6 +1960,13 @@ mod tests {
     struct VecSink(Vec<String>);
 
     impl Sink for VecSink {
+        fn note(&mut self, kind: LineKind, text: &str) {
+            // A note is not a window line; a test that wants lines does not want
+            // these in the same list. See `docs/notes/cli-lib.md`.
+            if matches!(kind, LineKind::Error) {
+                self.0.push(format!("note: {text}"));
+            }
+        }
         fn line(&mut self, _window: &str, _kind: LineKind, text: &str) {
             self.0.push(text.to_string());
         }
@@ -1980,11 +1992,16 @@ mod tests {
         windows: Vec<String>,
         keys: Vec<String>,
         lines: Vec<String>,
+        /// The harness's own notes, which name no window at all.
+        notes: Vec<String>,
         /// The last announcement, which is what a front-end lays out from.
         announced: Option<Layout>,
     }
 
     impl Sink for StreamSink {
+        fn note(&mut self, _kind: LineKind, text: &str) {
+            self.notes.push(text.to_string());
+        }
         fn line(&mut self, window: &str, _kind: LineKind, text: &str) {
             self.windows.push(window.to_string());
             self.lines.push(text.to_string());
@@ -2117,7 +2134,11 @@ mod tests {
             },
             &mut s,
         );
-        assert_eq!(s.0, vec!["peer: delivered a message", "$ send_message"]);
+        assert_eq!(
+            s.0,
+            vec!["$ send_message"],
+            "a log line is not a window line"
+        );
     }
 
     /// Captures the status line and footer, which the other sinks throw away.
@@ -2559,8 +2580,12 @@ mod tests {
             },
             &mut s,
         );
-        assert_eq!(s.windows, vec!["cmd"]);
-        assert_eq!(s.lines, vec!["failed to run the turn: boom"]);
+        assert!(
+            s.windows.is_empty(),
+            "a notice names no window: {:?}",
+            s.windows
+        );
+        assert_eq!(s.notes, vec!["failed to run the turn: boom"]);
     }
 
     /// A result says how many rows it answered with; the rows are not in it.

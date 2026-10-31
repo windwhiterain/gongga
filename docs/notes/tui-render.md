@@ -65,31 +65,35 @@ break, and a row that reaches `width` columns continues on the next one.
 The last row always exists, so an empty input -- or one that ends with a newline
 -- has somewhere for the cursor to sit.
 
-## style_for — one colour per kind
+## style_for — one look per kind
 
-Ten kinds of line and ten colours, because a colour that means two things means
-neither. The pairs that used to collide, and what they are now:
+Ten kinds of line, and no two look alike — colour *and* modifier, because a colour
+that means two things means neither:
 
-| kind | colour | what it is |
+| kind | look | what it is |
 |---|---|---|
-| `System` | dark gray | the harness about itself |
+| `System` | dark gray | the harness's own remarks |
 | `Command` | light magenta | a line that was asked for: `/cmd` or `$ cmd --args` |
 | `User` | light cyan | prose the operator typed |
 | `Assistant` | white | the answer |
-| `Reasoning` | gray, italic | the model thinking |
+| `Reasoning` | dark gray, italic | the model thinking |
 | `ToolCall` | yellow | a tool being called |
 | `ToolOutput` | light blue | what it printed |
 | `ToolError` | light red | what it complained |
 | `Result` | green | a command's answer |
 | `Error` | red, bold | something needs looking at |
 
-`Command` exists because the echo used to be `System`, which is also what the
-status word and a connection notice are; a reader scrolling back for "what did I
-run" was looking for a colour that also meant "the harness is talking". Reasoning
-had the same trouble against `System` -- same gray, told apart only by italic.
+`Command` exists because the echo used to be `System`: a reader scrolling back for
+"what did I run" was looking for a colour that also meant "the harness is talking".
 
-`no_two_kinds_of_line_share_a_colour` walks every kind and fails on a repeat, so
-the table above is checked rather than remembered.
+One colour is shared on purpose — `System` and `Reasoning` are both dark gray,
+because both are asides; italic is what tells the model's thinking from the
+harness's remark. `Reasoning` was `Gray` for one revision and that was wrong: on a
+Windows console `Gray` renders as near-white, which is the answer's own colour, so
+the thinking read as part of the reply.
+
+`no_two_kinds_of_line_look_alike` walks every kind and fails on a repeat, so the
+table above is checked rather than remembered.
 
 ## draw_bottom
 
@@ -115,6 +119,12 @@ the window at the top.
 
 The frame and the click read this one function with the same sticky session, so
 they cannot disagree about which name sits on which row.
+
+## draw_header
+
+The bar spans the row and is painted by the status's kind: cyan for the server's
+facts, red for an error, green for a result. One colour for all three would make
+"copy failed" and "model x | 3 session(s)" look equally urgent.
 
 ## draw_list
 

@@ -39,11 +39,17 @@ impl Sink for TuiSink<'_> {
     }
 
     fn status(&mut self, text: &str) {
+        // The server's own facts: a note this window made is over.
+        self.0.set_status_kind(LineKind::System);
         self.0.set_status(text);
     }
 
     fn footer(&mut self, text: &str) {
         self.0.set_footer(text);
+    }
+
+    fn note(&mut self, kind: LineKind, text: &str) {
+        self.0.say(kind, text);
     }
 
     fn block_size(&mut self, lines: usize) {
@@ -352,8 +358,7 @@ mod tests {
         assert!(!stops_a_server(Some(here), None), "no link to ask with");
     }
 
-    /// A click asks for a command, and the loop agrees: the `/` is what keeps it
-    /// from being read as prose and sent to the agent.
+    /// A click asks for a command: the `/` is what keeps it from being prose.
     #[test]
     fn a_clicked_session_is_a_command_not_a_message() {
         let line = crate::click_line("peer");

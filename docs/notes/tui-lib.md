@@ -118,6 +118,23 @@ holds the names it was handed. A `Log` is still its own type because a frame mus
 be allowed to walk it -- that is the difference between a usable window and a frozen
 one, and it is now a rule per pane rather than for the whole area.
 
+## Screen::note
+
+What the harness says about itself -- "nothing is listening — starting one",
+"connected to the server", "copied 42 characters", a server log line -- goes where
+the operator is reading, and never on the command line. SPEC gives that row to
+`cmd` and `cmd_result`, and it keeps only the newest entry, so a note there joins a
+ticker of things the operator typed: that is how "starting one" came to sit where
+an input line is expected.
+
+Two destinations, one rule:
+
+- with a session in view, the news is history and joins that session's lines, so a
+  reconnect is still readable an hour later;
+- with no session in view there is nowhere to keep it, so it is the status line,
+  shown until the next fact replaces it -- and painted by its kind, so a failure
+  does not look like a fact.
+
 ## Screen::sticky_session is the only state
 
 There is no `focus`: no "which pane did the pointer last touch", no second name that
