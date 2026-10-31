@@ -17,6 +17,22 @@ The most rows the input box grows to before it scrolls.
 A message is prose, not a file: past a screenful of it, what the operator needs
 to see is the answer they are replying to, so the box stops growing.
 
+## HELP
+
+Every binding this window knows, on the frame's last row: the operator reads the
+keyboard here, so a key the row leaves out is a key nobody presses.
+
+It is one row because SPEC gives the window one -- `hot-keys reminder`, under
+`cmd_input` -- and the header already spends its row on the server's status. A
+window narrower than the line draws as much as fits, losing the keys at the end
+rather than a pane row: the last row has nowhere else to put them.
+
+## HELP_ROWS
+
+The row the help line takes out of the window: one. `input_rows` counts it before
+letting the prompt grow, so the three log rows, the chrome, the command line and
+the help line all come first.
+
 ## draw
 
 The log borrows the screen mutably: it is where the scroll offset gets clamped

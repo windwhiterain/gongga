@@ -10,14 +10,26 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::log::View;
 use crate::panes::{Pane, Panes};
 use crate::{LineKind, Screen};
-/// The whole keyboard, on one row: a key it does not name is a key nobody finds.
+
+/// Every binding this window knows, on the last row: a key it does not name is a
+/// key nobody finds.
 ///
 /// # Invariant
 ///
-/// Stays under 100 columns, because a clipped help line loses its last entry --
-/// which is the one that says how to leave.
+/// Every key the handler acts on is named here, and the line is one row; a
+/// window narrower than it shows as much as fits. See `docs/notes/tui-render.md`.
+pub const HELP: &str = "Enter send \u{00b7} Shift+Enter newline \u{00b7} Tab complete \
+     \u{00b7} Esc close \u{00b7} \u{2191}\u{2193} history \u{00b7} \u{2190}\u{2192} Home/End \
+     \u{00b7} Alt+\u{2190} word \u{00b7} Alt+K kill \u{00b7} PgUp/PgDn page \
+     \u{00b7} Shift+\u{2191}\u{2193} scroll \u{00b7} Shift+\u{2193} bottom \
+     \u{00b7} Shift+D delete session \u{00b7} Alt+Y copy \u{00b7} Alt+M mouse \
+     \u{00b7} Alt+Q quit";
+
+/// The one row the help line takes from the bottom of the window.
+pub const HELP_ROWS: u16 = 1;
+
 /// Rows spent on the header and the sticky line; the input's height is asked
-/// separately, and the line groups get what their sessions earn.
+/// separately, and so are the line groups'.
 pub const CHROME_ROWS: u16 = 2;
 
 /// The one row `cmd` and its result share, outside the panes.
@@ -51,6 +63,7 @@ pub fn draw(f: &mut Frame, s: &mut Screen) -> Rect {
     if s.completion.is_some() {
         draw_completion(f, s, chunks[5]);
     }
+    draw_help(f, chunks[6]);
     // The input area this frame laid out: the caret asks here, not a second
     // computation of the box.
     chunks[5]
@@ -73,7 +86,7 @@ pub struct Chrome {
     pub quota: bool,
 }
 
-/// The six parts of SPEC's window, in the order they are drawn.
+/// The seven parts of SPEC's window, in the order they are drawn.
 ///
 /// # Invariant
 ///
@@ -91,6 +104,7 @@ pub fn areas(area: Rect, input_rows: u16, chrome: Chrome) -> Vec<Rect> {
         Constraint::Length(if chrome.quota { 1 } else { 0 }),   // active_quota
         Constraint::Length(if chrome.command { 1 } else { 0 }), // cmd and its result
         Constraint::Length(input_rows),                         // the prompt
+        Constraint::Length(HELP_ROWS),                          // the whole keyboard
     ])
     .split(area)
     .to_vec()
@@ -389,7 +403,9 @@ pub fn input_rows(text: &str, width: u16, height: u16) -> u16 {
         .rows
         .len() as u16;
     // The floor: three log rows, and a command line counted even when absent.
-    let spare = height.saturating_sub(CHROME_ROWS + COMMAND_ROWS + 3).max(1);
+    let spare = height
+        .saturating_sub(CHROME_ROWS + HELP_ROWS + COMMAND_ROWS + 3)
+        .max(1);
     rows.clamp(1, MAX_INPUT_ROWS.min(spare))
 }
 
@@ -889,6 +905,11 @@ fn draw_input(f: &mut Frame, s: &Screen, area: Rect) {
     // The caller anchors the caret after applying the frame; a position set here
     // would be applied by nobody.
     f.render_widget(Paragraph::new(lines), area);
+}
+
+/// The whole keyboard, on the window's last row: the one place a binding is read.
+fn draw_help(f: &mut Frame, area: Rect) {
+    f.render_widget(Paragraph::new(Line::from(Span::styled(HELP, dim()))), area);
 }
 
 /// Where the caret goes for this input in this area.
@@ -1868,7 +1889,7 @@ mod tests {
         let (width, height) = (40u16, 12u16);
         // No reading: no row, so the prompt sits right under the command line.
         let without = parts(width, height, 1, true, 0);
-        assert_eq!(without.len(), 6);
+        assert_eq!(without.len(), 7);
         assert_eq!(without[3].height, 0, "no quota row");
         assert_eq!(without[5].y, without[4].y + 1, "the prompt follows it");
 
@@ -1902,9 +1923,57 @@ mod tests {
         assert_eq!(row_text(&buf, with[4].y), "$ get_messages");
         assert!(
             row_text(&buf, with[5].y).starts_with('>'),
-            "the prompt is still the last row: {:?}",
+            "the prompt sits above the help row: {:?}",
             row_text(&buf, with[5].y)
         );
+        assert_eq!(with[6].height, HELP_ROWS, "the help row is the last one");
+    }
+
+    /// The window's last row is the whole keyboard, and it names every binding.
+    ///
+    /// # Invariant
+    ///
+    /// Every key the handler acts on is spelled here: a binding the row omits is one
+    /// nobody finds. The row is the bottom one, so it costs no pane a row twice.
+    #[test]
+    fn the_help_line_is_the_last_row_and_names_every_binding() {
+        let mut screen = screen_with(&[]);
+        let width = UnicodeWidthStr::width(HELP) as u16;
+        let (width, height) = (width + 10, 12u16);
+        let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
+        term.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+        assert_eq!(row_text(&buf, height - 1), HELP, "the last row is the help");
+        // The row above it is the prompt, which is where the layout ends.
+        assert!(
+            row_text(&buf, height - 2).starts_with('>'),
+            "the prompt sits above the help: {:?}",
+            row_text(&buf, height - 2)
+        );
+
+        // Each one, as the row spells it.
+        for key in [
+            "Enter send",
+            "Shift+Enter newline",
+            "Tab complete",
+            "Esc close",
+            "\u{2191}\u{2193} history",
+            "\u{2190}\u{2192} Home/End",
+            "Alt+\u{2190} word",
+            "Alt+K kill",
+            "PgUp/PgDn page",
+            "Shift+\u{2191}\u{2193} scroll",
+            "Shift+\u{2193} bottom",
+            "Shift+D delete session",
+            "Alt+Y copy",
+            "Alt+M mouse",
+            "Alt+Q quit",
+        ] {
+            assert!(HELP.contains(key), "{key:?} is a key nobody finds");
+        }
     }
 
     /// A reading that failed is painted as a failure, in the same row.
@@ -2162,12 +2231,13 @@ mod tests {
                 .collect()
         }
 
-        let mut term = Terminal::new(TestBackend::new(20, 8)).unwrap();
+        // A window one row taller than the pane needs: the last row is the help.
+        let mut term = Terminal::new(TestBackend::new(20, 9)).unwrap();
         term.draw(|f| {
             draw(f, &mut screen);
         })
         .unwrap();
-        let short = parts(20, 8, 1, false, 0)[1];
+        let short = parts(20, 9, 1, false, 0)[1];
         let bottom = shown(&term.backend().buffer().clone(), short);
         assert_eq!(bottom.last().map(String::as_str), Some("L39"));
 
@@ -2182,12 +2252,12 @@ mod tests {
         assert_eq!(top, "L30", "five rows up from the bottom of 40 rows");
 
         // The same window, taller: the top row stays, the new rows land under it.
-        let mut tall = Terminal::new(TestBackend::new(20, 12)).unwrap();
+        let mut tall = Terminal::new(TestBackend::new(20, 13)).unwrap();
         tall.draw(|f| {
             draw(f, &mut screen);
         })
         .unwrap();
-        let grown = parts(20, 12, 1, false, 0)[1];
+        let grown = parts(20, 13, 1, false, 0)[1];
         let after = shown(&tall.backend().buffer().clone(), grown);
         assert_eq!(after[0], top, "the row that was at the top is still there");
         assert_eq!(after.len(), bottom.len() + 4, "four more rows are drawn");
@@ -2218,13 +2288,14 @@ mod tests {
         let lines: Vec<String> = (0..40).map(|i| format!("L{i:02}")).collect();
         let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
         let mut screen = screen_with(&refs);
-        let mut term = Terminal::new(TestBackend::new(20, 8)).unwrap();
+        // One row of the window is the help line, so the pane needs it outside.
+        let mut term = Terminal::new(TestBackend::new(20, 9)).unwrap();
         // One frame first: the scroll bound is what the renderer writes back.
         term.draw(|f| {
             draw(f, &mut screen);
         })
         .unwrap();
-        let area = parts(20, 8, 1, false, 0)[1];
+        let area = parts(20, 9, 1, false, 0)[1];
         // The pane's first row is its header, so its text starts one below.
         fn top(buf: &Buffer, screen: &Screen, area: Rect) -> String {
             pane_text(buf, screen, area.y + 1)

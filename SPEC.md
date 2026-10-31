@@ -52,6 +52,7 @@ in cmd_input, those three should be auto complete.
   - cmd_input: perfix select, auto complete (match candidates in any char position).
     - `/<cmd>`
     - `<pure text>` expand to `/send_message --message "<pure text>"`: need escape.
+  - hot-keys reminder
 
 - session{name}: click to set session sticky.
 
@@ -68,7 +69,7 @@ in cmd_input, those three should be auto complete.
   - Shift+Enter: new line in cmd_input.
   - PageUp/PageDown (Fn+Up/Down): scroll the sticky session.
   - Shift+Down: scroll the sticky session to bottom.
-  - delete/packspace: delete sticky session.
+  - Shift+D: delete sticky session.
 
 
 ## Cmd

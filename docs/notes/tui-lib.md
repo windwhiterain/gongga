@@ -301,15 +301,20 @@ in every other editor. Shift is what says "move the view, not the line".
 A page is the log window, not a fixed ten rows: on a short terminal ten rows
 scrolls past what is visible and the jump looks arbitrary.
 
-## delete and backspace
+## Shift+D
 
-SPEC gives Delete and Backspace the sticky session, so a key with nothing to erase
-deletes it. The window asks for that the way a click does: it submits
-`/del_session --session <name>`, and the command layer owns the rule. The prompt
-comes first, though -- a backspace over typed text still edits the text, and a
-Delete with the caret inside it still removes a character. Only a key that would
-change nothing reaches the session, which is also why the binding needs a sticky
-session: with none set, both keys do what they always did.
+SPEC gives Shift+D the sticky session, and not the editor's Delete or Backspace:
+those two erase a character, so the same key did two unrelated things depending on
+whether the line happened to be empty. The window asks for the deletion the way a
+click does -- it submits `/del_session --session <name>` -- and the command layer
+owns the rule.
+
+Shift+D arrives as an uppercase `'D'`, so the binding is read as that character
+rather than as Shift plus a letter: a terminal that keeps the lowercase letter
+beside the modifier still deletes. The prompt comes first -- with text on the
+line, Shift+D types a `D`, so a capital letter stays typeable -- and only an empty
+prompt reaches the session. That is also why the key needs a sticky session: with
+none set it does nothing.
 
 The binding deletes the session the sticky names; the sticky setting itself is
 the command layer's, and clearing it is a `del_sticky` nobody pressed.

@@ -588,6 +588,11 @@ impl Tui {
         }
     }
 
+    /// Whether this key is SPEC's delete: Shift+D, which arrives as an uppercase 'D'.
+    fn delete_key(key: &KeyEvent) -> bool {
+        key.modifiers.contains(KeyModifiers::SHIFT) && matches!(key.code, KeyCode::Char('d' | 'D'))
+    }
+
     /// Whether Enter breaks instead of sending: Shift or Alt (ESC CR), not plain Enter.
     fn line_break(key: &KeyEvent) -> bool {
         matches!(key.code, KeyCode::Enter)
@@ -635,9 +640,9 @@ impl Tui {
             return None;
         }
 
-        // A key with nothing to erase acts on the sticky session: SPEC's delete/backspace.
+        // With nothing typed to edit, Shift+D acts on the sticky session: SPEC's delete.
         if self.screen.input.is_empty()
-            && matches!(key.code, KeyCode::Delete | KeyCode::Backspace)
+            && Self::delete_key(&key)
             && let Some(target) = self.screen.sticky_session.clone()
         {
             self.close_completion();
@@ -958,7 +963,7 @@ fn cycle_mode_line(session: &str, drawn_as: Option<crate::panes::Kind>) -> Strin
     format!("/set_render_session --session {session} --mode {next}")
 }
 
-/// The command line a delete key asks for: the sticky session's own deletion.
+/// The command line Shift+D asks for: the sticky session's own deletion.
 fn delete_line(session: &str) -> String {
     format!("/del_session --session {session}")
 }
@@ -1820,6 +1825,33 @@ mod tests {
                 "{code:?} must not do anything"
             );
         }
+    }
+
+    /// Deleting the sticky session is Shift+D; a bare d is a letter to type.
+    ///
+    /// # Invariant
+    ///
+    /// No unmodified key deletes a session: Delete and Backspace are the editor's,
+    /// and a session is the one thing on screen a keystroke cannot take back.
+    #[test]
+    fn shift_d_is_the_delete_key() {
+        // Shift+D arrives as an uppercase 'D'; a terminal that keeps the lowercase
+        // letter still means the same binding.
+        for code in [KeyCode::Char('D'), KeyCode::Char('d')] {
+            assert!(Tui::delete_key(&KeyEvent::new(code, KeyModifiers::SHIFT)));
+        }
+        // Everything the old binding had: bare d, Delete and Backspace.
+        for code in [KeyCode::Char('d'), KeyCode::Delete, KeyCode::Backspace] {
+            assert!(
+                !Tui::delete_key(&KeyEvent::new(code, KeyModifiers::NONE)),
+                "{code:?} must not delete a session"
+            );
+        }
+        // Shift with another modifier is that other key first.
+        assert!(!Tui::delete_key(&KeyEvent::new(
+            KeyCode::Char('D'),
+            KeyModifiers::CONTROL
+        )));
     }
 
     /// Enter sends, the modified Enter breaks the line; backwards sends half a message.
