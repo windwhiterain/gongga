@@ -52,6 +52,28 @@ merged too, but nothing here reads them: they are merged because they are in the
 same file and a private layer that overrode one of them would otherwise be
 silently ignored by the tools that do read them.
 
+## QuotaQuery, resolve_scripts
+
+`[[provider.quota_query]]` is how this machine reads what a provider still
+allows: `unit` says what the numbers mean (`percent-left`, `cny-left`, ...), and
+`script` names the reader that fetches them. The roster's other fields there
+(`url`, `jsonpath`, `auth`, ...) describe the endpoint for a human; nothing in
+this crate speaks them.
+
+`script` is a path inside the layer that wrote it -- the AGENTS notes say a
+`providers/x.py` written in one layer means that layer's copy -- and the merge
+throws the layer away. So the path is resolved before `merge_into` sees the file:
+`resolve_scripts` turns each relative `script` into the absolute path it names,
+per file, while the file it came from is still known. Only a query that names a
+script is kept as something the server can read.
+
+## Catalog::quota_of
+
+A provider's quota queries in file order, plus the credential a request to that
+provider would use -- the scripts read the key from the environment variable
+their own entry names, and passing the resolved key in is what makes a literal
+key in the roster work as well as an exported one.
+
 ## merge_into
 
 Field-level, keyed by `id` for arrays of tables: `[[provider]]` and, under it,

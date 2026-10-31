@@ -71,6 +71,8 @@ pub struct Panes {
     listed: Vec<crate::Listed>,
     /// The names that announcement puts in the list: SPEC's `render mode = none`.
     list_names: Vec<String>,
+    /// SPEC's `active_quota` row, as the command layer spelled it.
+    quota: Option<crate::QuotaRow>,
 }
 
 impl Panes {
@@ -80,12 +82,27 @@ impl Panes {
             panes: Vec::new(),
             listed: Vec::new(),
             list_names: Vec::new(),
+            quota: None,
         }
     }
 
     /// The session list, as the command layer announced it.
     pub fn listed(&self) -> &[crate::Listed] {
         &self.listed
+    }
+
+    /// What a frame's chrome is made of, as [`crate::render::areas`] needs it.
+    pub fn chrome(&self) -> crate::render::Chrome {
+        crate::render::Chrome {
+            command: self.command().is_some(),
+            line_groups: self.of_kind(Kind::Line).count(),
+            quota: self.quota.is_some(),
+        }
+    }
+
+    /// SPEC's `active_quota` row, when the last step's reading arrived.
+    pub fn quota(&self) -> Option<&crate::QuotaRow> {
+        self.quota.as_ref()
     }
 
     /// The names the session list draws, in its order.
@@ -107,6 +124,7 @@ impl Panes {
     pub fn layout(&mut self, layout: &Layout) {
         self.listed = layout.listed.clone();
         self.list_names = layout.none.clone();
+        self.quota = layout.quota.clone();
         let mut panes = vec![Pane::of("", Kind::List)];
         panes.extend(layout.full.iter().map(|name| Pane::of(name, Kind::Full)));
         panes.extend(layout.line.iter().map(|name| Pane::of(name, Kind::Line)));

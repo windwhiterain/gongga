@@ -19,6 +19,35 @@ pub struct Provider {
     key: Option<String>,
     /// The variable that should hold the key instead, if one is named.
     key_env: Option<String>,
+    /// How to read what is left, in the roster's own order of preference.
+    quota: Vec<QuotaQuery>,
+}
+
+/// One `[[provider.quota_query]]`: how this machine reads what is left at a provider.
+///
+/// # Invariant
+///
+/// Only a query that names a `script` can be read: the roster's other fields
+/// (`url`, `jsonpath`, ...) describe the endpoint for a human, and this server
+/// does not speak them. See `docs/notes/server-providers.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuotaQuery {
+    pub id: String,
+    /// What the reading's numbers mean: `percent-left`, `cny-left`, `usd-left`, ...
+    pub unit: String,
+    /// The script, resolved against the layer that wrote it when the file was read.
+    pub script: Option<PathBuf>,
+    /// The variable that script reads the key from.
+    pub script_env: Option<String>,
+}
+
+/// A provider's quota queries, and the key they are to be read with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuotaAccess {
+    pub provider: String,
+    pub queries: Vec<QuotaQuery>,
+    /// The same credential a request would use, which is what the script expects.
+    pub key: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -170,10 +199,13 @@ impl Catalog {
                 }
             };
             match toml::from_str::<toml::Value>(&text) {
-                Ok(value) => match &mut merged {
-                    Some(base) => merge_into(base, value),
-                    None => merged = Some(value),
-                },
+                Ok(mut value) => {
+                    resolve_scripts(&mut value, path.parent());
+                    match &mut merged {
+                        Some(base) => merge_into(base, value),
+                        None => merged = Some(value),
+                    }
+                }
                 Err(e) => {
                     catalog
                         .problem
@@ -286,6 +318,17 @@ impl Catalog {
             }
         }
         None
+    }
+
+    /// A provider's allowance queries, and the key a request there would use.
+    pub fn quota_of(&self, provider_id: &str) -> Option<QuotaAccess> {
+        let provider = self.providers.iter().find(|p| p.id == provider_id)?;
+        let key = credential(provider, &lookup_env).map(|(key, _)| key);
+        Some(QuotaAccess {
+            provider: provider.id.clone(),
+            queries: provider.quota.clone(),
+            key,
+        })
     }
 
     fn resolve_with(
@@ -445,6 +488,20 @@ struct FileProvider {
     endpoint: Vec<FileEndpoint>,
     #[serde(default)]
     model: Vec<FileModel>,
+    #[serde(default)]
+    quota_query: Vec<FileQuota>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FileQuota {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    unit: String,
+    #[serde(default)]
+    script: Option<PathBuf>,
+    #[serde(default)]
+    script_env: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -524,6 +581,16 @@ fn parse_value(value: toml::Value) -> Result<Vec<Provider>, toml::de::Error> {
                         builtin_tools: m.builtin_tools,
                     })
                     .collect(),
+                quota: p
+                    .quota_query
+                    .into_iter()
+                    .map(|q| QuotaQuery {
+                        id: q.id,
+                        unit: q.unit,
+                        script: q.script,
+                        script_env: q.script_env,
+                    })
+                    .collect(),
                 id: p.id,
                 name,
                 key: p.key,
@@ -538,6 +605,46 @@ fn parse_value(value: toml::Value) -> Result<Vec<Provider>, toml::de::Error> {
 /// A roster read from text, for the cases that never touch a file.
 fn parse(text: &str) -> Result<Vec<Provider>, toml::de::Error> {
     parse_value(toml::from_str(text)?)
+}
+
+/// Turns every `quota_query.script` of one layer into the path it names, from
+/// that layer's own directory.
+///
+/// # Invariant
+///
+/// Done before the layers merge, because after it the file a path was written in
+/// is no longer known -- and a private layer's `providers/x.py` is not the
+/// community layer's. See `docs/notes/server-providers.md`.
+fn resolve_scripts(value: &mut toml::Value, dir: Option<&Path>) {
+    let Some(dir) = dir else {
+        return;
+    };
+    let Some(providers) = value.get_mut("provider").and_then(|p| p.as_array_mut()) else {
+        return;
+    };
+    for provider in providers {
+        let Some(queries) = provider
+            .get_mut("quota_query")
+            .and_then(|q| q.as_array_mut())
+        else {
+            continue;
+        };
+        for query in queries {
+            let Some(table) = query.as_table_mut() else {
+                continue;
+            };
+            let script = table
+                .get("script")
+                .and_then(|s| s.as_str())
+                .map(str::to_string);
+            if let Some(script) = script.filter(|s| !Path::new(s).is_absolute()) {
+                table.insert(
+                    "script".to_string(),
+                    toml::Value::String(dir.join(script).to_string_lossy().to_string()),
+                );
+            }
+        }
+    }
 }
 
 /// Lays `over` onto `base`: tables key by key, `[[tables]]` by their `id`.
@@ -857,6 +964,74 @@ key = "x"
         assert_eq!(p.endpoints[0].base_url, "https://api.deepseek.com/v1/");
         assert_eq!(p.models[0].id, "deepseek-flash");
         assert_eq!(p.models[0].context, Some(1_000_000));
+    }
+
+    /// The quota a provider publishes, and the key it is read with: the same
+    /// credential a request would use.
+    #[test]
+    fn quota_queries_come_with_the_providers_own_credential() {
+        let text = r#"[[provider]]
+id = "p"
+key_env = "P_KEY"
+[[provider.quota_query]]
+id = "wallet"
+unit = "cny-left"
+script = "providers/p.py"
+script_env = "P_KEY"
+[[provider.quota_query]]
+id = "second"
+unit = "percent-left"
+"#;
+        let catalog = Catalog {
+            generation: 0,
+            paths: Vec::new(),
+            providers: parse(text).unwrap(),
+            problem: None,
+        };
+        let env = |name: &str| (name == "P_KEY").then(|| "sk-env".to_string());
+        let provider = &catalog.providers()[0];
+        let key = credential(provider, &env).map(|(k, _)| k);
+        assert_eq!(key.as_deref(), Some("sk-env"));
+        assert_eq!(
+            provider.quota.len(),
+            2,
+            "file order is the preference order"
+        );
+        assert_eq!(provider.quota[0].id, "wallet");
+        assert_eq!(provider.quota[0].unit, "cny-left");
+        assert_eq!(provider.quota[0].script_env.as_deref(), Some("P_KEY"));
+        assert_eq!(
+            provider.quota[1].script, None,
+            "a query with no script is not one this server can read"
+        );
+        assert!(catalog.quota_of("nobody").is_none());
+    }
+
+    /// A `script` is a path inside the layer that wrote it: resolved before merging.
+    #[test]
+    fn a_quota_script_resolves_against_its_own_layer() {
+        let community = tempfile::tempdir().unwrap();
+        let private = tempfile::tempdir().unwrap();
+        let text = r#"[[provider]]
+id = "p"
+[[provider.model]]
+id = "m"
+[[provider.quota_query]]
+id = "wallet"
+script = "providers/p.py"
+"#;
+        let base = community.path().join("providers.toml");
+        let over = private.path().join("providers.toml");
+        std::fs::write(&base, text).unwrap();
+        std::fs::write(&over, text).unwrap();
+        let catalog = Catalog::load_layers(&[base.clone(), over.clone()]);
+        let script = catalog.providers()[0].quota[0]
+            .script
+            .clone()
+            .expect("a script");
+        // The later layer wins the merge, and its own directory comes with it.
+        assert_eq!(script, private.path().join("providers").join("p.py"));
+        assert!(script.is_absolute());
     }
 
     #[test]

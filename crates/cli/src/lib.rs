@@ -297,6 +297,22 @@ pub struct Layout {
     pub line: Vec<String>,
     /// The window `cmd` and `cmd_result` are drawn in.
     pub command: String,
+    /// SPEC's `active_quota` row, when the last step measured one.
+    pub quota: Option<QuotaRow>,
+}
+
+/// SPEC's `active_quota` row, spelled once for every front-end.
+///
+/// # Invariant
+///
+/// Only the numbers the provider reported appear, in SPEC's own units, and a row
+/// with no figures says why: a balance nobody could read is not a zero balance.
+/// See `docs/notes/cli-lib.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuotaRow {
+    pub text: String,
+    /// Where the row is drawn: a fact, or the reason there is no fact.
+    pub kind: LineKind,
 }
 
 /// What the command line's window is called.
@@ -411,6 +427,8 @@ pub struct Client {
     /// Another build or home: part of the facts, which no note can wipe.
     build_note: Option<String>,
     home_note: Option<String>,
+    /// SPEC's `active_quota` row, as the last step's reading spelled it.
+    quota: Option<QuotaRow>,
 }
 
 /// What the operator typed, for the purpose of echoing it back into the log.
@@ -533,6 +551,7 @@ impl Client {
                 .map(|s| s.name.clone())
                 .collect(),
             command: self.command_window(),
+            quota: self.quota.clone(),
         }
     }
 
@@ -555,6 +574,7 @@ impl Client {
             server_changed: false,
             build_note: None,
             home_note: None,
+            quota: None,
         }
     }
 
@@ -727,6 +747,15 @@ impl Client {
                     s.usage = e.usage;
                 }
                 self.refresh(sink);
+            }
+            // SPEC's `active_quota` row: one line under the command line, told
+            // again at every step's end.
+            Event::Quota(quota) => {
+                let row = quota_row(&quota);
+                if self.quota.as_ref() != Some(&row) {
+                    self.quota = Some(row);
+                    self.refresh(sink);
+                }
             }
             Event::Log { level, message } => {
                 if shown {
@@ -1254,6 +1283,57 @@ fn usage_note(usage: &protocol::Usage) -> String {
         });
     }
     parts.join(" · ")
+}
+
+/// SPEC's `active_quota` row: the provider, then the figures it reported.
+///
+/// # Invariant
+///
+/// The label is the name SPEC gives each figure -- `month`, `week`, `5h`,
+/// `credit`, `money` -- and one the provider did not report is left out rather
+/// than shown as zero. See `docs/notes/cli-lib.md`.
+fn quota_row(quota: &protocol::Quota) -> QuotaRow {
+    let mut parts: Vec<String> = Vec::new();
+    for (label, share) in [
+        ("month", quota.month_percent),
+        ("week", quota.week_percent),
+        ("5h", quota.five_hour_percent),
+    ] {
+        if let Some(share) = share {
+            parts.push(format!("{label} {share:.0}%"));
+        }
+    }
+    if let Some(credit) = quota.credit {
+        parts.push(format!("credit {}", amount(credit)));
+    }
+    if let Some(money) = quota.money {
+        parts.push(format!("money {}{}", quota.currency, amount(money)));
+    }
+    if let Some(note) = &quota.note {
+        parts.push(note.clone());
+    }
+    let text = if parts.is_empty() {
+        quota.provider.clone()
+    } else {
+        format!("{} · {}", quota.provider, parts.join(" · "))
+    };
+    // A row that only names its provider and a complaint is a failure to read;
+    // one with figures carries a note beside them and stays a fact.
+    let kind = match (&quota.note, parts.len()) {
+        (Some(_), 1) => LineKind::Error,
+        _ => LineKind::System,
+    };
+    QuotaRow { text, kind }
+}
+
+/// A money or credit figure: two decimals when the cents matter, none when the
+/// provider reports a whole count.
+fn amount(value: f64) -> String {
+    if (value.fract()).abs() < f64::EPSILON {
+        format!("{value:.0}")
+    } else {
+        format!("{value:.2}")
+    }
 }
 
 /// Which colour a stored row is drawn in; unknown kinds are context, not errors.
@@ -2289,6 +2369,100 @@ mod tests {
             vec!["$ send_message"],
             "a log line is not a window line"
         );
+    }
+
+    /// SPEC's `active_quota` row: the provider, then the figures it reported, in
+    /// SPEC's own units.
+    #[test]
+    fn an_active_quota_row_names_the_provider_and_its_figures() {
+        let wallet = protocol::Quota {
+            provider: "deepseek-official".into(),
+            money: Some(215.52),
+            currency: "¥".into(),
+            ..protocol::Quota::default()
+        };
+        assert_eq!(quota_row(&wallet).text, "deepseek-official · money ¥215.52");
+        assert_eq!(quota_row(&wallet).kind, LineKind::System);
+
+        // Three windows and a credit pool: one row, SPEC's labels, in its order.
+        let plan = protocol::Quota {
+            provider: "command-code-goat".into(),
+            month_percent: Some(75.4),
+            week_percent: Some(40.0),
+            five_hour_percent: Some(98.6),
+            credit: Some(37.5),
+            currency: "$".into(),
+            ..protocol::Quota::default()
+        };
+        assert_eq!(
+            quota_row(&plan).text,
+            "command-code-goat · month 75% · week 40% · 5h 99% · credit 37.50"
+        );
+
+        // A figure the provider did not report is left out, not shown as zero.
+        let partial = protocol::Quota {
+            provider: "qwen".into(),
+            week_percent: Some(12.0),
+            ..protocol::Quota::default()
+        };
+        assert_eq!(quota_row(&partial).text, "qwen · week 12%");
+    }
+
+    /// A reading that could not be made is the row's own error, not an empty row.
+    #[test]
+    fn an_unreadable_quota_row_says_why() {
+        let failed = protocol::Quota {
+            provider: "minimax-cn".into(),
+            note: Some("no credential: set MINIMAX_CN_API_KEY".into()),
+            ..protocol::Quota::default()
+        };
+        let row = quota_row(&failed);
+        assert_eq!(
+            row.text,
+            "minimax-cn · no credential: set MINIMAX_CN_API_KEY"
+        );
+        assert_eq!(row.kind, LineKind::Error);
+
+        // Figures beside a note stay a fact: the provider flagged one window.
+        let flagged = protocol::Quota {
+            provider: "command-code-goat".into(),
+            week_percent: Some(0.0),
+            note: Some("the weekly window is exhausted".into()),
+            ..protocol::Quota::default()
+        };
+        let row = quota_row(&flagged);
+        assert_eq!(row.kind, LineKind::System);
+        assert!(row.text.ends_with("· the weekly window is exhausted"));
+    }
+
+    /// The row reaches the window through the layout, and a repeat of the same
+    /// reading is not a second announcement.
+    #[test]
+    fn a_quota_event_sets_the_layout_row() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
+        let mut s = StreamSink::default();
+        c.refresh(&mut s);
+        assert!(s.announced.clone().expect("a layout").quota.is_none());
+
+        let reading = protocol::Quota {
+            provider: "deepseek-official".into(),
+            money: Some(12.5),
+            currency: "¥".into(),
+            ..protocol::Quota::default()
+        };
+        c.handle_event(Event::Quota(reading.clone()), &mut s);
+        let announced = s.announced.clone().expect("a layout").quota;
+        assert_eq!(
+            announced.map(|row| row.text),
+            Some("deepseek-official · money ¥12.50".to_string())
+        );
+
+        // The same numbers again: nothing to redraw, and the layout is not
+        // announced a second time.
+        s.announced = None;
+        c.handle_event(Event::Quota(reading), &mut s);
+        assert!(s.announced.is_none(), "an unchanged reading is not news");
     }
 
     /// SPEC's three numbers for a `full` pane's title, spelled the way a

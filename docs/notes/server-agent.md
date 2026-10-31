@@ -302,6 +302,18 @@ the stream. SPEC puts the latest pair in a `full` pane's title, and they belong
 in the ledger for the same reason as the tokens -- "was it slow, or was it
 talking the whole time" is asked after the turn.
 
+## quota at a step's end
+
+SPEC puts `active_quota` in the main column and says it updates at every step's
+end, so the same branch that writes `usage` also asks the quota reader to
+publish. Which provider that is comes from the client the step ran on
+(`LlmClient::provider`), not from the session's tuning: a step is what spends an
+allowance, and a session that named no `--llm` spends the server's.
+
+The call is `quota::publish`, which spawns. Awaiting it here would put a
+provider's billing endpoint between the last token and the end of the step,
+where nobody is waiting for it.
+
 ## outside the usage guard
 
 A provider that reports no counts still took the time, so the wait for the first

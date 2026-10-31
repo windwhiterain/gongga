@@ -224,6 +224,11 @@ async fn handle_connection(
         tracing::warn!(%peer, error = %e, "could not greet client");
         return;
     }
+    // A measurement, not part of the greeting: told here so a window attaching
+    // between two steps still has a row.
+    if let Some(reading) = crate::quota::last() {
+        let _ = send_event(&sink, Event::Quota(reading)).await;
+    }
 
     loop {
         tokio::select! {

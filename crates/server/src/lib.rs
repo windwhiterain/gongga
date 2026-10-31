@@ -17,6 +17,7 @@ mod net;
 mod probe;
 mod prompts;
 mod providers;
+mod quota;
 mod script;
 mod session;
 mod shell_command;

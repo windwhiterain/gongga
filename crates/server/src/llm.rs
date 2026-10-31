@@ -25,6 +25,8 @@ pub struct LlmClient {
     base_url: String,
     api_key: String,
     model: String,
+    /// The roster provider this client talks to: SPEC's `active_quota` row.
+    provider: Option<String>,
     temperature: Option<f32>,
     max_output_tokens: Option<u32>,
     store: bool,
@@ -110,6 +112,7 @@ impl LlmClient {
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
             api_key: cfg.api_key.clone(),
             model: cfg.model.clone(),
+            provider: cfg.provider.clone(),
             temperature: cfg.temperature,
             max_output_tokens: cfg.max_output_tokens,
             store: cfg.store,
@@ -125,6 +128,11 @@ impl LlmClient {
     /// The model this client asks for; logged at the start of every turn.
     pub fn model(&self) -> &str {
         &self.model
+    }
+
+    /// The roster provider behind this client, when the roster named one.
+    pub fn provider(&self) -> Option<&str> {
+        self.provider.as_deref()
     }
 
     /// Whether the roster says this model can look at a picture.

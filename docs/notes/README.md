@@ -48,6 +48,7 @@ note is a bug.
 | [`server-net.md`](server-net.md) | `crates/server/src/net.rs` |
 | [`server-prompts.md`](server-prompts.md) | `crates/server/src/prompts.rs` |
 | [`server-providers.md`](server-providers.md) | `crates/server/src/providers.rs` |
+| [`server-quota.md`](server-quota.md) | `crates/server/src/quota.rs` |
 | [`server-session.md`](server-session.md) | `crates/server/src/session.rs` |
 | [`server-shell-command.md`](server-shell-command.md) | `crates/server/src/shell_command.rs` |
 | [`server-ship.md`](server-ship.md) | `crates/server/src/ship.rs` |

@@ -110,6 +110,22 @@ reads a greeting from a server that has never heard of them instead of failing t
 decode it: a window against an older server draws titles without numbers, which is
 what that server measured.
 
+## Quota
+
+SPEC's `active_quota` row on the wire: the provider, the three window shares, a
+credit, a balance, and the currency the balance is in.
+
+Every figure is `Option`, and absent means "this provider did not report it" --
+a month's share and a wallet balance are different facts, and a `0.0` default
+would claim an allowance was spent. `note` is the provider's own words when it
+flagged something (a spent window, an unavailable account) or the reason no
+reading could be made at all, which is why the row can say why it is empty
+instead of vanishing.
+
+`Event::Quota` is a delta published at a step's end rather than a field of
+`SessionInfo`: the row is about the *provider*, not a session, and a step that
+names a new provider is what makes it "active".
+
 ## REPLAY_TURN
 
 A transcript row read back is an event, not a field of a result, and it is one of the

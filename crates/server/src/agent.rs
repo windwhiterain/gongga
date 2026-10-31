@@ -607,6 +607,12 @@ impl Agent {
                         ttft_ms,
                     };
                     let _ = self.store.set_usage(id, measured);
+                    // SPEC: the row updates at every step's end. Off the turn's
+                    // path, because reading an allowance is a network call.
+                    crate::quota::publish(
+                        self.bus.clone(),
+                        attempt.llm.provider().map(str::to_string),
+                    );
                     // A delta, not a whole list: republishing that every step
                     // would cost every view its scroll.
                     self.bus.publish(Event::Usage(protocol::UsageEvent {

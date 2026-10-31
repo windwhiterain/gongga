@@ -111,6 +111,19 @@ Named for what it is at the moment it is created, not for what it is doing.
 Authenticate before revealing anything: an unauthenticated peer must not even
 learn the command catalog or the session list.
 
+## the greeting, then the last reading
+
+Hello is the sessions, the catalog and the server's facts; the allowance is not
+part of it, because it is a measurement rather than a description of the server,
+and it is one value for the whole process rather than a field of anything Hello
+already carries.
+
+A window that attaches between two steps is told the cached reading straight
+after the greeting, to its own connection only. Without it the row would stay
+blank until the session happened to spend something, which reads as a feature
+that is not working. A broadcast would have reached every other window with a
+value it already has.
+
 ## key_matches
 
 The key travels in cleartext over UDP, so comparing with `==` would let an

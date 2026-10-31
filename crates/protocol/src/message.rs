@@ -99,6 +99,33 @@ pub enum Event {
     Log { level: LogLevel, message: String },
     /// What a session's last completed request measured. See [`UsageEvent`].
     Usage(UsageEvent),
+    /// What is left at a provider, read at a step's end. See [`Quota`].
+    Quota(Quota),
+}
+
+/// SPEC's `active_quota` row: what the provider the last step ran on still allows.
+///
+/// # Invariant
+///
+/// Every figure is optional and absent means "this provider did not report it":
+/// a month's share is not the same fact as a wallet balance, and a zero would
+/// claim the allowance was spent. See `docs/notes/protocol-message.md`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Quota {
+    /// Roster provider id, e.g. `deepseek-official`.
+    pub provider: String,
+    /// Shares left of the three windows SPEC names, as percentages.
+    pub month_percent: Option<f64>,
+    pub week_percent: Option<f64>,
+    pub five_hour_percent: Option<f64>,
+    /// An allowance reported without a ceiling: a credit count, not a share.
+    pub credit: Option<f64>,
+    /// A wallet balance.
+    pub money: Option<f64>,
+    /// The symbol `money` is in: `¥` or `$`.
+    pub currency: String,
+    /// Why there is no reading, or what the provider flagged, in its own words.
+    pub note: Option<String>,
 }
 
 /// One request, as the provider's own numbers and this server's clock measured it.

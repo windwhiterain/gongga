@@ -49,8 +49,8 @@ pub fn main(args: cli::Args) -> anyhow::Result<()> {
 // The vocabulary is the command layer's, re-exported so this crate can name it.
 pub use crate::log::View;
 pub use cli::{
-    Candidate, Completer, Completion, Layout, LineKind, Listed, RenderMode, SharedCompleter,
-    token_bounds,
+    Candidate, Completer, Completion, Layout, LineKind, Listed, QuotaRow, RenderMode,
+    SharedCompleter, token_bounds,
 };
 
 /// How long a keystroke waits to see whether the next one is part of a paste.
@@ -163,12 +163,7 @@ impl Screen {
     fn slots(&self, width: u16, height: u16) -> Vec<render::Slot> {
         let area = Rect::new(0, 0, width, height);
         let input = render::input_rows(self.input.text(), width, height);
-        let chunks = render::areas(
-            area,
-            input,
-            self.panes.command().is_some(),
-            self.panes.of_kind(crate::panes::Kind::Line).count(),
-        );
+        let chunks = render::areas(area, input, self.panes.chrome());
         let (_, panes) = render::body(chunks[1], &self.panes);
         render::pane_slots(panes, &self.panes, self.sticky_session.as_deref()).0
     }
@@ -188,12 +183,7 @@ impl Screen {
     pub fn session_at_row(&self, width: u16, height: u16, column: u16, row: u16) -> Option<Hit> {
         let area = Rect::new(0, 0, width, height);
         let input = render::input_rows(self.input.text(), width, height);
-        let chunks = render::areas(
-            area,
-            input,
-            self.panes.command().is_some(),
-            self.panes.of_kind(crate::panes::Kind::Line).count(),
-        );
+        let chunks = render::areas(area, input, self.panes.chrome());
         let (list, _) = render::body(chunks[1], &self.panes);
         if let Some(name) = render::list_at(
             list,
@@ -1353,6 +1343,7 @@ mod tests {
                 full: vec!["main".to_string()],
                 line: Vec::new(),
                 command: "cmd".to_string(),
+                quota: None,
             });
             Self {
                 screen: Screen {
@@ -1981,10 +1972,19 @@ mod tests {
             full: vec!["main".to_string()],
             line: vec!["fourth".to_string()],
             command: "cmd".to_string(),
+            quota: None,
         });
         // The list is the body's left column, one row per name from its top.
         let area = Rect::new(0, 0, 80, 24);
-        let parts = crate::render::areas(area, 1, true, 1);
+        let parts = crate::render::areas(
+            area,
+            1,
+            crate::render::Chrome {
+                command: true,
+                line_groups: 1,
+                quota: false,
+            },
+        );
         let (list, _) = crate::render::body(parts[1], &panes);
         assert_eq!(
             crate::render::list_at(list, &panes, None, list.x, list.y + 1),

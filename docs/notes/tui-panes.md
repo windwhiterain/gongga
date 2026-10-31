@@ -64,6 +64,16 @@ The merged announcement carries the sessions it leaves out, and this is where th
 log is told: split, a hidden session has no pane; merged, it has no lines. Both are
 the same set from the same command, so the two cannot disagree.
 
+## Panes::quota, Panes::chrome
+
+The allowance row is the second thing here that comes from the announcement rather
+than from the log -- the list is the first -- so it is held the same way: cloned by
+`layout`, with no history behind it.
+
+`chrome` exists so the frame's caller does not have to know which rows are
+conditional: it is the one place that asks "is there a command window, how many
+line groups, is there a reading", and `areas` sizes the frame from it.
+
 ## The command view
 
 `cmd` and `cmd_result` are drawn on a line of their own, between the footer and the

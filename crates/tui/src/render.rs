@@ -36,12 +36,7 @@ pub const LIST_MIN: u16 = 6;
 pub fn draw(f: &mut Frame, s: &mut Screen) -> Rect {
     let area = f.area();
     let input = input_rows(s.input.text(), area.width, area.height);
-    let chunks = areas(
-        area,
-        input,
-        s.panes.command().is_some(),
-        s.panes.of_kind(crate::panes::Kind::Line).count(),
-    );
+    let chunks = areas(area, input, s.panes.chrome());
 
     draw_header(f, s, chunks[0]);
     // The body is one horizontal split: the session list, then the panes.
@@ -52,13 +47,31 @@ pub fn draw(f: &mut Frame, s: &mut Screen) -> Rect {
     draw_lines(f, s, chunks[2]);
     draw_stickys(f, s, chunks[3]);
     draw_command(f, s, chunks[4]);
-    draw_input(f, s, chunks[5]);
+    draw_quota(f, s, chunks[5]);
+    draw_input(f, s, chunks[6]);
     if s.completion.is_some() {
-        draw_completion(f, s, chunks[5]);
+        draw_completion(f, s, chunks[6]);
     }
     // The input area this frame laid out: the caret asks here, not a second
     // computation of the box.
     chunks[5]
+}
+
+/// The rows of chrome that exist only when something is drawn in them.
+///
+/// # Invariant
+///
+/// One value rather than four arguments: SPEC's rows are positional, and two
+/// bare booleans in a row is a call that swaps them silently.
+/// See `docs/notes/tui-render.md`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Chrome {
+    /// SPEC's `[{cmd, cmd_result}]` row: the client's command window exists.
+    pub command: bool,
+    /// How many sessions are drawn as one line each.
+    pub line_groups: usize,
+    /// SPEC's `active_quota` row: a reading has been announced.
+    pub quota: bool,
 }
 
 /// The six parts of SPEC's window, in the order they are drawn.
@@ -69,16 +82,17 @@ pub fn draw(f: &mut Frame, s: &mut Screen) -> Rect {
 /// all ask here, so what an operator reads is what was on the screen. The body
 /// is one horizontal split, and what is left of it after the line groups is the
 /// panes' height.
-pub fn areas(area: Rect, input_rows: u16, command: bool, line_groups: usize) -> Vec<Rect> {
+pub fn areas(area: Rect, input_rows: u16, chrome: Chrome) -> Vec<Rect> {
     // One row per group, never more than half the window: the panes keep some.
-    let lines = (line_groups as u16).min(area.height / 2);
+    let lines = (chrome.line_groups as u16).min(area.height / 2);
     Layout::vertical([
-        Constraint::Length(1),                           // header
-        Constraint::Min(1),                              // sessions | panes
-        Constraint::Length(lines),                       // one line per event
-        Constraint::Length(1),                           // stickys
-        Constraint::Length(if command { 1 } else { 0 }), // cmd and its result
-        Constraint::Length(input_rows),                  // the prompt
+        Constraint::Length(1),                                  // header
+        Constraint::Min(1),                                     // sessions | panes
+        Constraint::Length(lines),                              // one line per event
+        Constraint::Length(1),                                  // stickys
+        Constraint::Length(if chrome.command { 1 } else { 0 }), // cmd and its result
+        Constraint::Length(if chrome.quota { 1 } else { 0 }),   // active_quota
+        Constraint::Length(input_rows),                         // the prompt
     ])
     .split(area)
     .to_vec()
@@ -556,6 +570,29 @@ fn draw_group_header_note(
     f.render_widget(Paragraph::new(Line::from(Span::styled(title, style))), area);
 }
 
+/// SPEC's `active_quota` row: the provider, then what it says is left.
+///
+/// # Invariant
+///
+/// One row under the command line, present only when a reading has arrived, and
+/// painted by the row's own kind: a balance nobody could read is an error, not a
+/// fact. See `docs/notes/tui-render.md`.
+fn draw_quota(f: &mut Frame, s: &Screen, area: Rect) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let Some(row) = s.panes.quota() else {
+        return;
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            row.text.clone(),
+            style_for(row.kind),
+        ))),
+        area,
+    );
+}
+
 /// The sticky arguments, and how each session is drawn beside them.
 fn draw_stickys(f: &mut Frame, s: &Screen, area: Rect) {
     f.render_widget(
@@ -701,9 +738,8 @@ pub fn input_area(area: Rect, s: &Screen) -> Rect {
     areas(
         area,
         input_rows(s.input.text(), area.width, area.height),
-        s.panes.command().is_some(),
-        s.panes.of_kind(crate::panes::Kind::Line).count(),
-    )[5]
+        s.panes.chrome(),
+    )[6]
 }
 
 /// Where each visible input row's text ends, as a column to erase from.
@@ -916,6 +952,7 @@ mod tests {
             full: vec!["main".to_string()],
             line: vec!["peer".to_string()],
             command: "cmd".to_string(),
+            quota: None,
         });
         screen.sticky_session = None;
         screen.panes.line("peer", LineKind::Assistant, "one");
@@ -985,6 +1022,7 @@ mod tests {
             full: vec!["main".to_string()],
             line: vec!["peer".to_string()],
             command: "cmd".to_string(),
+            quota: None,
         });
         let mut term = Terminal::new(TestBackend::new(60, 12)).unwrap();
         term.draw(|f| {
@@ -1069,6 +1107,7 @@ mod tests {
             full: Vec::new(),
             line: Vec::new(),
             command: "cmd".to_string(),
+            quota: None,
         });
         let (width, height) = (40u16, 8u16);
         let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -1257,7 +1296,29 @@ mod tests {
 
     /// Where a frame puts the parts a test looks at, for this size.
     fn parts(width: u16, height: u16, input: u16, command: bool, lines: usize) -> Vec<Rect> {
-        areas(Rect::new(0, 0, width, height), input, command, lines)
+        areas(
+            Rect::new(0, 0, width, height),
+            input,
+            Chrome {
+                command,
+                line_groups: lines,
+                quota: false,
+            },
+        )
+    }
+
+    /// The same, with SPEC's `active_quota` row present: one more row between the
+    /// command line and the prompt.
+    fn parts_with_quota(width: u16, height: u16, input: u16) -> Vec<Rect> {
+        areas(
+            Rect::new(0, 0, width, height),
+            input,
+            Chrome {
+                command: true,
+                line_groups: 0,
+                quota: true,
+            },
+        )
     }
 
     /// A screen whose one pane reads the unnamed window these lines go to.
@@ -1269,6 +1330,7 @@ mod tests {
             full: vec![String::new()],
             line: Vec::new(),
             command: String::new(),
+            quota: None,
         });
         for line in lines {
             panes.line("", LineKind::System, *line);
@@ -1311,6 +1373,7 @@ mod tests {
             full: vec!["main".to_string(), "peer".to_string()],
             line: vec!["third".to_string()],
             command: "cmd".to_string(),
+            quota: None,
         });
         screen.sticky_session = Some("main".to_string());
         screen
@@ -1549,6 +1612,97 @@ mod tests {
         assert_eq!(screen.pane_at_row(40, 12, 0, 0), None);
     }
 
+    /// SPEC's `active_quota` row: under the command line, and absent until a
+    /// reading arrives.
+    ///
+    /// # Invariant
+    ///
+    /// The row costs nothing when there is nothing to say, and once it exists it
+    /// sits between the command line and the input, in the order SPEC names.
+    #[test]
+    fn the_quota_row_sits_under_the_command_line() {
+        let mut screen = screen_with(&[]);
+        screen
+            .panes
+            .line("cmd", LineKind::Command, "$ get_messages");
+        let (width, height) = (40u16, 12u16);
+        // No reading: no row, so the prompt sits right under the command line.
+        let without = parts(width, height, 1, true, 0);
+        assert_eq!(without.len(), 7);
+        assert_eq!(without[5].height, 0, "no quota row");
+        assert_eq!(without[6].y, without[4].y + 1, "the prompt follows it");
+
+        screen.panes.layout(&Layout {
+            listed: Vec::new(),
+            none: Vec::new(),
+            full: vec![String::new()],
+            line: Vec::new(),
+            command: "cmd".to_string(),
+            quota: Some(crate::QuotaRow {
+                text: "deepseek-official · money ¥215.52".to_string(),
+                kind: LineKind::System,
+            }),
+        });
+        let with = parts_with_quota(width, height, 1);
+        assert_eq!(with[5].height, 1, "the quota row");
+        assert_eq!(
+            with[6].y,
+            with[5].y + 1,
+            "the prompt starts under the quota row"
+        );
+
+        let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
+        term.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+        assert_eq!(
+            row_text(&buf, with[5].y),
+            "deepseek-official · money ¥215.52"
+        );
+        assert_eq!(row_text(&buf, with[4].y), "$ get_messages");
+        assert!(
+            row_text(&buf, with[6].y).starts_with('>'),
+            "the prompt is still the last row: {:?}",
+            row_text(&buf, with[6].y)
+        );
+    }
+
+    /// A reading that failed is painted as a failure, in the same row.
+    #[test]
+    fn an_unreadable_quota_row_is_drawn_as_an_error() {
+        let mut screen = screen_with(&[]);
+        screen.panes.layout(&Layout {
+            listed: Vec::new(),
+            none: Vec::new(),
+            full: vec![String::new()],
+            line: Vec::new(),
+            command: "cmd".to_string(),
+            quota: Some(crate::QuotaRow {
+                text: "minimax-cn · no credential: set MINIMAX_CN_API_KEY".to_string(),
+                kind: LineKind::Error,
+            }),
+        });
+        let mut term = Terminal::new(TestBackend::new(60, 12)).unwrap();
+        term.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+        let parts = parts_with_quota(60, 12, 1);
+        let cell = buf[(parts[5].x, parts[5].y)].clone();
+        assert_eq!(
+            cell.fg,
+            style_for(LineKind::Error).fg.unwrap_or(Color::Reset),
+            "{cell:?}"
+        );
+        assert_eq!(
+            row_text(&buf, parts[5].y),
+            "minimax-cn · no credential: set MINIMAX_CN_API_KEY"
+        );
+    }
+
     /// SPEC's `full` pane title: the context, the rate and the first-token delay.
     ///
     /// # Invariant
@@ -1573,6 +1727,7 @@ mod tests {
             full: vec!["main".to_string(), "peer".to_string()],
             line: vec!["third".to_string()],
             command: "cmd".to_string(),
+            quota: None,
         });
         // Wide enough that a whole title fits its pane's column.
         let mut term = Terminal::new(TestBackend::new(130, 12)).unwrap();
@@ -1620,6 +1775,7 @@ mod tests {
             full: vec!["main".to_string(), "peer".to_string()],
             line: vec!["third".to_string()],
             command: "cmd".to_string(),
+            quota: None,
         });
         assert_eq!(
             screen.panes.get("main").expect("main").scroll,

@@ -218,6 +218,22 @@ One row, between the footer and the prompt, and only when the command layer
 announced a command window. It is drawn by the same code as a pane's body, so its
 rows carry the same colours and the same clipping.
 
+## draw_quota
+
+SPEC's `active_quota` row: one line under the command line and above the prompt,
+painted by the kind the command layer gave it -- a reading is dim chrome, a
+provider that could not be read is the error colour.
+
+No row exists before the first reading, so the frame is exactly what it was
+before the feature for a server that has nothing to report, and for a provider
+outside the roster.
+
+## Chrome
+
+The rows that exist only when something is drawn in them -- the command line, the
+line groups, the quota row -- as one value, because SPEC's rows are positional and
+two bare booleans next to each other is a call that swaps them silently.
+
 ## areas
 
 The layout a frame is made of, in one function, because three callers need it: the
@@ -344,3 +360,14 @@ cells carry one style between them.
 One name read at two places in one window -- the line group's row and a pane's
 header -- and the same black-on-cyan cell at both, which is what `name_style` is
 for.
+
+## the_quota_row_sits_under_the_command_line
+
+The row with a reading is one row (so the prompt moves down by exactly one), it is
+drawn between the command line and the prompt, and with no reading the prompt sits
+straight under the command line.
+
+## an_unreadable_quota_row_is_drawn_as_an_error
+
+The same row, painted by the kind the command layer chose: a failed reading is
+visible without a second kind of row.

@@ -289,6 +289,29 @@ them rather than three commands with one name. Two rules make that legible:
 with no `--mode` -- the mode that session has now. A mode is a view change: the
 blocks are untouched, so `full` after `none` brings the whole history back.
 
+## QuotaRow, quota_row
+
+SPEC's `active_quota` row, spelled once for every front-end, for the same reason
+`Listed::usage` is: a rate, a share and a currency are formatted in one place, and
+two front-ends cannot disagree about how many decimals a balance has.
+
+The spelling is `provider · month 75% · week 40% · 5h 90% · credit 37.50 · money
+¥215.52`, with SPEC's own labels and only the figures the provider reported. A
+balance with no cents keeps none (`money ¥215`) because a whole number of yuan
+printed as `215.00` reads as false precision; a credit with fractions keeps two,
+because the GOAT plan's monthly credit really is `37.50`.
+
+`kind` is the row's colour, and it is the command layer's decision: a row with
+figures is a fact (`System`), a row that only names the provider and a complaint is
+a failure (`Error`). A note beside real figures -- "the weekly window is
+exhausted" -- stays a fact, because the numbers are still true.
+
+## Event::Quota
+
+One line, updated at every step's end, and the layout is announced again only when
+the spelled row changed: a provider that reports the same balance on two steps does
+not make the window repaint.
+
 ## Listed::usage
 
 SPEC puts `context`, `cached (latest)`, `tps (latest)` and `ttft (latest)` in the
