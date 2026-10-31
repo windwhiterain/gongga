@@ -297,6 +297,55 @@ fn write_file(path: &Path, file: &File) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The skills installed for this home: the home's own first, then the machine's.
+///
+/// # Invariant
+///
+/// The same two roots, in the same order, that the server reads for
+/// `index_skill` and `skill` -- so the list a reader completes is the list the
+/// command can open. See `docs/notes/cli-commands.md`.
+pub fn installed_skills(home: &Path) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for root in [
+        home.join("skills"),
+        dirs::home_dir()
+            .map(|h| h.join(".agents").join("skills"))
+            .unwrap_or_default(),
+    ] {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            continue;
+        };
+        let mut here: Vec<String> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|dir| dir.join("SKILL.md").is_file())
+            .filter_map(|dir| {
+                // The skill's own name wins, as it does in the server's table.
+                let text = std::fs::read_to_string(dir.join("SKILL.md")).ok();
+                text.as_deref()
+                    .and_then(name_in_frontmatter)
+                    .or_else(|| dir.file_name().map(|n| n.to_string_lossy().into_owned()))
+            })
+            .collect();
+        here.sort();
+        names.extend(here);
+    }
+    names
+}
+
+/// The `name:` a skill's frontmatter declares, when it declares one.
+fn name_in_frontmatter(text: &str) -> Option<String> {
+    let mut lines = text.lines();
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
+    lines
+        .take_while(|line| line.trim() != "---")
+        .find_map(|line| line.strip_prefix("name:"))
+        .map(|rest| rest.trim().trim_matches('"').to_string())
+        .filter(|name| !name.is_empty())
+}
+
 /// `--flag value` or `--flag=value`; nothing positional, and a value may
 /// start with `--`.
 pub fn parse_args(tokens: &[String]) -> anyhow::Result<Args> {
@@ -490,6 +539,35 @@ mod tests {
             "all is not a size any more"
         );
         assert_eq!(BlockSize::parse(" 2 "), Ok(BlockSize(2)));
+    }
+
+    /// One walk of the same two roots, in order; not every directory is a skill.
+    #[test]
+    fn installed_skills_lists_this_homes_skills() {
+        let home = dir();
+        for name in ["zeta", "alpha"] {
+            let dir = home.path().join("skills").join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: d\n---\n\nbody\n"),
+            )
+            .unwrap();
+        }
+        // No SKILL.md, so not a skill however it is named.
+        std::fs::create_dir_all(home.path().join("skills").join("notes")).unwrap();
+        // The frontmatter's own name wins over the directory's.
+        let dir = home.path().join("skills").join("dir-name");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("SKILL.md"), "---\nname: from-file\n---\n\nbody\n").unwrap();
+
+        let got = installed_skills(home.path());
+        let mine: Vec<&String> = got
+            .iter()
+            .filter(|name| matches!(name.as_str(), "alpha" | "zeta" | "from-file"))
+            .collect();
+        assert_eq!(mine, vec!["alpha", "from-file", "zeta"], "{got:?}");
+        assert!(!got.iter().any(|name| name == "notes"), "{got:?}");
     }
 
     /// A mode survives a restart, and the three words it takes are the whole list.

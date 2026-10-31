@@ -394,8 +394,13 @@ pub enum CompletionSource {
     /// Client state stays client-side: the server names the source, the client
     /// fills it in, so publishing a client command needs no knowledge of it.
     StickyArguments,
-    /// Complete against the client's event-filter names, same shape.
-    EventFilters,
+    /// Complete against the skills installed on this machine.
+    ///
+    /// # Invariant
+    ///
+    /// The names are read where the server reads them -- the home's `skills/`
+    /// and the machine's -- so what a reader completes is what can be opened.
+    Skills,
 }
 
 // Encoding helpers
@@ -477,7 +482,7 @@ mod tests {
     fn client_state_completion_sources_round_trip() {
         for (source, spelled) in [
             (CompletionSource::StickyArguments, "sticky_arguments"),
-            (CompletionSource::EventFilters, "event_filters"),
+            (CompletionSource::Skills, "skills"),
         ] {
             let json = serde_json::to_string(&source).unwrap();
             assert_eq!(json, format!("\"{spelled}\""));
@@ -487,10 +492,7 @@ mod tests {
                 (
                     CompletionSource::StickyArguments,
                     CompletionSource::StickyArguments
-                ) | (
-                    CompletionSource::EventFilters,
-                    CompletionSource::EventFilters
-                )
+                ) | (CompletionSource::Skills, CompletionSource::Skills)
             ));
         }
     }

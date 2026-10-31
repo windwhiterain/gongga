@@ -43,14 +43,7 @@ impl Tool for IndexSkillTool {
         _ctx: &'a ToolContext,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
-            let roots = crate::ship::roots();
-            let mut rows = Vec::new();
-            for (bucket, root) in [
-                (HARNESS, roots.home.join("skills").as_path()),
-                (GENERAL, roots.machine.join("skills").as_path()),
-            ] {
-                rows.extend(listed(bucket, root));
-            }
+            let rows = listed();
             if rows.is_empty() {
                 return ToolOutcome::ok(
                     "no skill is installed: nothing under the home's `skills/` or the \
@@ -66,8 +59,47 @@ impl Tool for IndexSkillTool {
     }
 }
 
+/// One installed skill, as both the table and the `skill` command need it.
+pub struct Installed {
+    pub name: String,
+    pub description: String,
+    pub path: std::path::PathBuf,
+    pub bucket: &'static str,
+}
+
+impl Installed {
+    /// This skill's body: its SKILL.md, frontmatter and all.
+    ///
+    /// # Invariant
+    ///
+    /// The prose goes back whole -- frontmatter included -- because that is what
+    /// a reader of the file gets, and a command that trimmed it would be a
+    /// second, quieter reader of the same skill.
+    pub fn body(&self) -> std::io::Result<String> {
+        std::fs::read_to_string(&self.path)
+    }
+}
+
+/// Every skill this machine offers: the home's first, then the machine's.
+///
+/// # Invariant
+///
+/// The same order as `index_skill`'s table, and the same two roots, so a name
+/// read off the table is a name this can open.
+pub fn installed() -> Vec<Installed> {
+    let roots = crate::ship::roots();
+    let mut all = Vec::new();
+    for (bucket, root) in [
+        (HARNESS, roots.home.join("skills")),
+        (GENERAL, roots.machine.join("skills")),
+    ] {
+        all.extend(in_dir(bucket, &root));
+    }
+    all
+}
+
 /// One directory's skills, in name order so two calls read the same.
-fn listed(bucket: &str, root: &Path) -> Vec<Value> {
+fn in_dir(bucket: &'static str, root: &Path) -> Vec<Installed> {
     let Ok(entries) = std::fs::read_dir(root) else {
         return Vec::new();
     };
@@ -79,13 +111,28 @@ fn listed(bucket: &str, root: &Path) -> Vec<Value> {
     dirs.sort();
     dirs.iter()
         .map(|dir| {
-            let file = dir.join("SKILL.md");
-            let (name, description) = frontmatter(&file);
+            let path = dir.join("SKILL.md");
+            let (name, description) = frontmatter(&path);
+            Installed {
+                name: name.unwrap_or_else(|| dir_name(dir)),
+                description,
+                path,
+                bucket,
+            }
+        })
+        .collect()
+}
+
+/// The table's rows: the one walk, in the shape a reader's JSON wants.
+fn listed() -> Vec<Value> {
+    installed()
+        .into_iter()
+        .map(|skill| {
             json!({
-                "name": name.unwrap_or_else(|| dir_name(dir)),
-                "description": description,
-                "path": file.display().to_string(),
-                "bucket": bucket,
+                "name": skill.name,
+                "description": skill.description,
+                "path": skill.path.display().to_string(),
+                "bucket": skill.bucket,
             })
         })
         .collect()
@@ -138,7 +185,12 @@ mod tests {
             "heir",
             "---\nname: heir\ndescription: fold a session's context\n---\n\nbody\n",
         );
-        let rows = listed(HARNESS, d.path());
+        let rows: Vec<Value> = in_dir(HARNESS, d.path())
+            .iter()
+            .map(|s| {
+                json!({"name": s.name, "description": s.description, "bucket": s.bucket, "path": s.path.display().to_string()})
+            })
+            .collect();
         assert_eq!(rows.len(), 1, "{rows:?}");
         assert_eq!(rows[0]["name"], "heir");
         assert_eq!(rows[0]["description"], "fold a session's context");
@@ -163,7 +215,12 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         skill(d.path(), "plain", "# just prose\n");
         std::fs::create_dir_all(d.path().join("notes")).unwrap();
-        let rows = listed(GENERAL, d.path());
+        let rows: Vec<Value> = in_dir(GENERAL, d.path())
+            .iter()
+            .map(|s| {
+                json!({"name": s.name, "description": s.description, "bucket": s.bucket, "path": s.path.display().to_string()})
+            })
+            .collect();
         assert_eq!(rows.len(), 1, "{rows:?}");
         assert_eq!(rows[0]["name"], "plain");
         assert_eq!(rows[0]["description"], "");
@@ -173,7 +230,7 @@ mod tests {
     #[test]
     fn an_empty_root_says_there_is_nothing_installed() {
         let d = tempfile::tempdir().unwrap();
-        assert!(listed(HARNESS, d.path()).is_empty());
-        assert!(listed(HARNESS, &d.path().join("nowhere")).is_empty());
+        assert!(in_dir(HARNESS, d.path()).is_empty());
+        assert!(in_dir(HARNESS, &d.path().join("nowhere")).is_empty());
     }
 }

@@ -295,6 +295,20 @@ pub fn server_catalog() -> Vec<CommandSpec> {
         },
         CommandSpec {
             target: CommandTarget::Server,
+            name: "skill".into(),
+            description: "Read one installed skill's SKILL.md: what it teaches, in full. \
+                      `index_skill` is the table; this is the body behind a row of it."
+                .into(),
+            args: vec![arg(
+                "skill",
+                "The skill's name, as `index_skill` spells it.",
+                true,
+                Some("name"),
+                CompletionSource::Skills,
+            )],
+        },
+        CommandSpec {
+            target: CommandTarget::Server,
             name: "cancel".into(),
             description: "Stop running turns, save what is left undone, and shut the server down. \
                       Detached jobs are left running."
@@ -362,6 +376,7 @@ pub async fn dispatch(d: &Dispatch, name: &str, args: &Args) -> Outcome {
         "interrupt_session" => interrupt_session(d, args).await,
         "cancel" => cancel(d).await,
         "get_messages" => get_messages(d, args).await,
+        "skill" => skill(args),
         // Published as a server command but unhandled: a catalog bug, named.
         other => Outcome::err(format!(
             "{other} is published as a server command but has no handler"
@@ -890,6 +905,40 @@ async fn interrupt_session(d: &Dispatch, args: &Args) -> Outcome {
 ///
 /// Detached jobs keep running: they were started precisely so they would
 /// outlive this.
+/// `skill --skill <name>`: one installed skill's body, whole.
+///
+/// # Invariant
+///
+/// The name is looked up in the list `index_skill` publishes, so the table and
+/// the command cannot disagree about what exists. Nothing is summarised on the
+/// way out: a skill is prose whose wording is the point.
+fn skill(args: &Args) -> Outcome {
+    let wanted = args.get("skill").map(String::as_str).unwrap_or_default();
+    let all = crate::tools::index_skill::installed();
+    let Some(found) = all.iter().find(|s| s.name == wanted) else {
+        let names: Vec<&str> = all.iter().map(|s| s.name.as_str()).collect();
+        return Outcome::err(format!(
+            "no skill named {wanted:?}; this machine has {}",
+            if names.is_empty() {
+                "none installed".to_string()
+            } else {
+                names.join(", ")
+            }
+        ));
+    };
+    match found.body() {
+        Ok(text) => Outcome::ok_with(
+            text,
+            serde_json::json!({
+                "name": found.name,
+                "bucket": found.bucket,
+                "path": found.path.display().to_string(),
+            }),
+        ),
+        Err(e) => Outcome::err(format!("could not read {}: {e}", found.path.display())),
+    }
+}
+
 async fn cancel(d: &Dispatch) -> Outcome {
     // First: the listen loop keeps dispatching through the notice window; a turn
     // started there is not waited for.
@@ -1084,7 +1133,8 @@ mod tests {
                 "get_messages",
                 "interrupt_session",
                 "send_message",
-                "set_session"
+                "set_session",
+                "skill"
             ]
         );
         assert!(
@@ -1233,8 +1283,8 @@ mod tests {
     #[test]
     fn every_command_takes_a_session_or_a_message() {
         for spec in server_catalog() {
-            // `cancel` is the one command with nothing to configure.
-            if spec.name == "cancel" {
+            // Two name something else: `cancel` configures nothing, `skill` a skill.
+            if matches!(spec.name.as_str(), "cancel" | "skill") {
                 continue;
             }
             let required: Vec<&str> = spec

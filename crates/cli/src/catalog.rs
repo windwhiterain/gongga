@@ -20,7 +20,8 @@ struct Inner {
     /// The client's sticky argument names, for the sources the server names
     /// but cannot fill in.
     sticky_names: Vec<String>,
-    filter_names: Vec<String>,
+    /// The skills installed on this machine, for `skill --skill`.
+    skill_names: Vec<String>,
     /// Where a relative path value is read from: the client's own directory.
     cwd: PathBuf,
 }
@@ -31,7 +32,7 @@ impl Default for Inner {
             published: Vec::new(),
             sessions: Vec::new(),
             sticky_names: Vec::new(),
-            filter_names: Vec::new(),
+            skill_names: Vec::new(),
             cwd: std::env::current_dir().unwrap_or_default(),
         }
     }
@@ -63,9 +64,9 @@ impl Catalog {
         self.write().sticky_names = names.to_vec();
     }
 
-    /// The same for `del_event_filter --name`.
-    pub fn set_filter_names(&self, names: &[String]) {
-        self.write().filter_names = names.to_vec();
+    /// The skills installed here, for the source the server names.
+    pub fn set_skill_names(&self, names: &[String]) {
+        self.write().skill_names = names.to_vec();
     }
 
     pub fn commands(&self) -> Vec<CommandSpec> {
@@ -101,7 +102,7 @@ impl Catalog {
 struct Ctx<'a> {
     sessions: &'a [String],
     sticky: &'a [String],
-    filters: &'a [String],
+    skills: &'a [String],
     cwd: &'a Path,
     all: &'a [CommandSpec],
 }
@@ -116,13 +117,13 @@ impl Completer for Catalog {
         let (_, _, token) = token_bounds(line, cursor);
         let words = shell_words::split(line).unwrap_or_default();
         let position = line[..cursor.min(line.len())].split_whitespace().count();
-        let (all, sessions, sticky, filters, cwd) = {
+        let (all, sessions, sticky, skills, cwd) = {
             let inner = self.read();
             (
                 inner.published.clone(),
                 inner.sessions.clone(),
                 inner.sticky_names.clone(),
-                inner.filter_names.clone(),
+                inner.skill_names.clone(),
                 inner.cwd.clone(),
             )
         };
@@ -183,7 +184,7 @@ impl Completer for Catalog {
         let ctx = Ctx {
             sessions: &sessions,
             sticky: &sticky,
-            filters: &filters,
+            skills: &skills,
             cwd: &cwd,
             all: &all,
         };
@@ -220,9 +221,7 @@ fn resolve(
         CompletionSource::StickyArguments => {
             pick(ctx.sticky.iter().map(String::as_str), token, "argument")
         }
-        CompletionSource::EventFilters => {
-            pick(ctx.filters.iter().map(String::as_str), token, "filter")
-        }
+        CompletionSource::Skills => pick(ctx.skills.iter().map(String::as_str), token, "skill"),
         CompletionSource::OfNamedArgument if depth < 2 => {
             let Some(named) = flag_value(words, "name") else {
                 return Vec::new();
@@ -378,7 +377,7 @@ mod tests {
     fn catalog() -> Catalog {
         let c = Catalog::new();
         c.set_sticky_names(&["session".to_string()]);
-        c.set_filter_names(&[]);
+
         let mut published = protocol::client_commands();
         published.extend(vec![
             CommandSpec {
@@ -395,6 +394,18 @@ mod tests {
                         CompletionSource::Sessions,
                     ),
                 ],
+            },
+            CommandSpec {
+                target: CommandTarget::Server,
+                name: "skill".into(),
+                description: "Read one installed skill.".into(),
+                args: vec![arg(
+                    "skill",
+                    "The skill's name.",
+                    true,
+                    None,
+                    CompletionSource::Skills,
+                )],
             },
             CommandSpec {
                 target: CommandTarget::Server,
@@ -521,6 +532,7 @@ mod tests {
                 "name",
                 "port",
                 "session",
+                "skill",
                 "value"
             ]
         );
@@ -626,6 +638,21 @@ mod tests {
             values(&c, "/set_render_session --mode line --"),
             vec!["--session"]
         );
+    }
+
+    /// `skill --skill` completes what is installed here, which the client fills.
+    #[test]
+    fn the_skill_command_completes_installed_skills() {
+        let c = catalog();
+        assert!(values(&c, "/skill --skill ").is_empty(), "none listed yet");
+        c.set_skill_names(&["evolve".to_string(), "heir".to_string()]);
+        assert_eq!(
+            values(&c, "/skill --skill "),
+            vec!["evolve", "heir"],
+            "the installed names, in order"
+        );
+        assert_eq!(values(&c, "/skill --skill he"), vec!["heir"]);
+        assert_eq!(values(&c, "/skill --"), vec!["--skill"]);
     }
 
     #[test]

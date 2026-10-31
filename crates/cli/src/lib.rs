@@ -28,7 +28,7 @@ use protocol::{
 };
 use tokio::net::UdpSocket;
 
-use crate::commands::{parse_args, render_args};
+use crate::commands::{installed_skills, parse_args, render_args};
 
 const DEFAULT_SERVER: &str = "127.0.0.1:9700";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -62,7 +62,7 @@ impl Connection {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "gongga-cli", version)]
+#[command(name = "gongga-cli")]
 pub struct Args {
     #[command(flatten)]
     pub conn: Connection,
@@ -116,7 +116,7 @@ pub fn parse_argv(name: &'static str, about: &'static str) -> Args {
     let matches = Args::command()
         .name(name)
         .about(about)
-        .version(env!("CARGO_PKG_VERSION"))
+        .version(protocol::version_line())
         .get_matches();
     Args::from_arg_matches(&matches).expect("clap already rejected what it could not parse")
 }
@@ -656,10 +656,13 @@ impl Client {
         // One part is one block: the window already keeps the sessions apart.
         let key = format!("r:{}:{}:{:?}", e.session, e.turn, e.part);
         let (kind, label) = match e.part {
-            ResponsePart::Reasoning => (LineKind::Reasoning, "thinking: "),
+            // No label: the kind's colour (dim italic) already says this is the
+            // model thinking, and the label was the word twice.
+            ResponsePart::Reasoning => (LineKind::Reasoning, ""),
             // No label: the colour says a tool ran, and the text is the call.
             ResponsePart::ToolCall => (LineKind::ToolCall, ""),
-            // Not our tool: the provider ran it, so the label says where it ran.
+            // Kept: it shares the tool call's colour, so the word is the only
+            // thing saying who ran it.
             ResponsePart::Activity => (LineKind::ToolCall, "provider: "),
             ResponsePart::Output => (LineKind::Assistant, ""),
         };
@@ -685,9 +688,12 @@ impl Client {
         self.sessions.iter().map(|s| s.name.clone()).collect()
     }
 
-    /// Keeps the completer's `--name` candidates in step with the sticky set.
+    /// Keeps the completer's state-backed sources in step: the sticky names, and
+    /// the skills this home can open.
     pub fn sync_sticky(&self) {
         self.catalog.set_sticky_names(&self.sticky.names());
+        self.catalog
+            .set_skill_names(&installed_skills(self.sticky.home()));
     }
 
     /// The status line: server facts only, never a "current session".
@@ -1038,8 +1044,7 @@ impl Client {
         }
     }
 
-    /// Every answer below names its own subject: the command line keeps only the
-    /// last row, so `session = peer` alone is a line with no sentence around it.
+    /// Every answer names its own subject: the ticker keeps only the last row.
     ///
     /// Runs `set_render`: how tall a block may get.
     ///
@@ -2017,8 +2022,8 @@ mod tests {
         c.handle_response(response("peer", ResponsePart::Output, "hi there"), &mut s);
         assert_eq!(
             s.lines,
-            vec!["thinking: hmm", "bash", "hi there"],
-            "a tool call needs no `tool:` either: its colour says it ran"
+            vec!["hmm", "bash", "hi there"],
+            "no part needs a label: the colour says which part it is"
         );
 
         // Drawn as one line among others, the row has to name its session: there
@@ -2219,7 +2224,7 @@ mod tests {
             "a part is its own block in the session's window"
         );
         // The pane's header names the speaker; a tool call needs no `tool:`.
-        assert_eq!(s.lines, vec!["thinking: a", "b", "c"]);
+        assert_eq!(s.lines, vec!["a", "b", "c"]);
     }
 
     /// As a line among others, a row names its session: no header covers it.
@@ -2232,7 +2237,7 @@ mod tests {
         c.handle_response(response("main", ResponsePart::Reasoning, "a"), &mut s);
         // The mode is a view, not a rewrite: the window is still the session's.
         assert_eq!(s.windows, vec!["main"]);
-        assert_eq!(s.lines, vec!["[main] thinking: a"]);
+        assert_eq!(s.lines, vec!["[main] a"]);
     }
 
     /// The front-end is told SPEC's three lists: the session list, the panes, the
@@ -2354,8 +2359,7 @@ mod tests {
         assert_eq!(s.windows, vec!["cmd", "cmd"]);
     }
 
-    /// An answer names its own subject: the command line keeps only the last row,
-    /// so a bare `session = peer` stands there with no sentence around it.
+    /// An answer names its own subject: the ticker keeps only the last row.
     #[test]
     fn a_window_answer_names_its_own_subject() {
         let d = tempfile::tempdir().unwrap();
