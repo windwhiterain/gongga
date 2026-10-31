@@ -152,14 +152,18 @@ impl Completer for Catalog {
                 .collect();
         }
 
-        // Command names, only while the command itself is still unwritten.
+        // Command names, matched anywhere in the name: `/render` is `set_render`.
         if position == 1 && token.starts_with('/') {
-            let prefix = token.trim_start_matches('/');
-            return all
+            let typed = token.trim_start_matches('/');
+            let mut got: Vec<Candidate> = all
                 .iter()
-                .filter(|c| c.name.starts_with(prefix))
+                .filter(|c| c.name.contains(typed))
                 .map(|c| Candidate::word(format!("/{}", c.name), c.description.clone()))
                 .collect();
+            // A prefix match is what the operator is most likely typing; stable,
+            // so the catalog's order decides between equals.
+            got.sort_by_key(|c| !c.insert.trim_start_matches('/').starts_with(typed));
+            return got;
         }
 
         // Past the command name: a flag's value, whose flag sits one word back,
@@ -599,6 +603,25 @@ mod tests {
         assert_eq!(values(&c, "/set_session --cwd .h"), vec![".hidden"]);
         // A prefix that names nothing is not an error, just no candidates.
         assert!(values(&c, "/set_session --cwd nowhere/").is_empty());
+    }
+
+    /// SPEC: a command name matches anywhere, not only at the front.
+    #[test]
+    fn a_command_name_matches_anywhere() {
+        let c = catalog();
+        // `/render` is inside `set_render` and `set_render_session`.
+        let got = values(&c, "/render");
+        assert_eq!(got, vec!["/set_render", "/set_render_session"], "{got:?}");
+        // The words that did match before still match, and sort first.
+        assert_eq!(
+            values(&c, "/set_st")[0],
+            "/set_sticky",
+            "{:?}",
+            values(&c, "/set_st")
+        );
+        // A word inside a command's tail finds it too: `session` is not a prefix.
+        let got = values(&c, "/session");
+        assert!(got.contains(&"/set_session".to_string()), "{got:?}");
     }
 
     /// `set_render` takes one argument, and it completes to the sizes worth typing.

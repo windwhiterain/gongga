@@ -82,12 +82,17 @@ Both spellings count, `--name value` and `--name=value`. `skip` is the word the
 cursor is in: it is the one being completed, so it is not yet a flag the line
 has.
 
-## pick — a match is anywhere in the word
+## pick and the command list — a match is anywhere in the word
 
 SPEC asks for candidates "in any char position", so `pick` tests `contains` rather
 than `starts_with`. An exact prefix match sorts first (a stable sort, so the
 catalog's own order decides between equals): Tab on a word that is already whole
 completes nothing instead of reordering the popup under the operator's eyes.
+
+The command list is the same rule, and it was the one place still prefix-only:
+`/render` found nothing, because no command starts with "render" -- `set_render` and
+`set_render_session` have it in the middle. `a_command_name_matches_anywhere` is the
+test that would have caught it.
 
 ## paths
 

@@ -23,9 +23,6 @@ pub const CHROME_ROWS: u16 = 2;
 /// The one row `cmd` and its result share, outside the panes.
 pub const COMMAND_ROWS: u16 = 1;
 
-/// How many events one `line` group shows under its header.
-pub const LINE_ROWS: u16 = 3;
-
 /// The prompt on the first row; continuation rows pad behind it.
 const PREFIX: &str = "> ";
 const PREFIX_WIDTH: u16 = 2;
@@ -73,9 +70,8 @@ pub fn draw(f: &mut Frame, s: &mut Screen) -> Rect {
 /// is one horizontal split, and what is left of it after the line groups is the
 /// panes' height.
 pub fn areas(area: Rect, input_rows: u16, command: bool, line_groups: usize) -> Vec<Rect> {
-    // A header and a few events each; never more than half the window, because
-    // the panes have to keep some rows.
-    let lines = (line_groups as u16 * (1 + LINE_ROWS)).min(area.height / 2);
+    // One row per group, never more than half the window: the panes keep some.
+    let lines = (line_groups as u16).min(area.height / 2);
     Layout::vertical([
         Constraint::Length(1),                           // header
         Constraint::Min(1),                              // sessions | panes
@@ -461,48 +457,33 @@ fn draw_lines(f: &mut Frame, s: &mut Screen, area: Rect) {
     if names.is_empty() {
         return;
     }
-    // Laid out like the panes: a header each, rows shared, leftover to sticky.
+    // One row per session, name then newest event: not a pane, so no header and
+    // nothing to scroll.
     let sticky = s.sticky_session.clone();
     let (slots, _) = group_slots(area, &names, sticky.as_deref());
     for slot in &slots {
-        if let Some(header) = slot.header {
-            draw_group_header(f, &slot.name, header, sticky.as_deref());
-        }
-        draw_headlines(f, s, &slot.name, slot.body);
+        draw_headline(f, s, &slot.name, slot.body, sticky.as_deref());
     }
 }
 
-/// One group's rows: one line per event, cut rather than wrapped.
-///
-/// # Invariant
-///
-/// A row is an event, so a block that would wrap is cut and marked. Reading a
-/// sentence's tail instead of its subject -- or a blank continuation row -- is what
-/// this view did before, and it is why a ticker is drawn from blocks rather than
-/// from wrapped rows. See `docs/notes/tui-render.md`.
-fn draw_headlines(f: &mut Frame, s: &mut Screen, name: &str, area: Rect) {
-    if area.height == 0 {
+/// One session's row: its name, then its newest event.
+fn draw_headline(f: &mut Frame, s: &mut Screen, name: &str, area: Rect, sticky: Option<&str>) {
+    if area.height == 0 || area.width == 0 {
         return;
     }
-    let Some((name, scroll)) = s.pane_at(name) else {
-        return;
+    let style = if Some(name) == sticky {
+        Style::default().fg(Color::Black).bg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::White)
     };
-    let width = area.width.saturating_sub(1).max(1) as usize;
-    let (rows, max_scroll) =
-        s.panes
-            .headlines(View::Window(&name), width, area.height as usize, scroll);
-    let lines: Vec<Line> = rows
-        .iter()
-        .map(|(kind, text)| Line::from(Span::styled(text.clone(), style_for(*kind))))
-        .collect();
-    if let Some(pane) = s.panes.get_mut(&name) {
-        pane.max_scroll = max_scroll;
-        pane.scroll = scroll.min(max_scroll);
+    let mut spans = vec![Span::styled(format!("{name} "), style)];
+    // Cut to what is left beside the name, so a row is one line and the name never
+    // leaves the screen.
+    let room = (area.width as usize).saturating_sub(name.len() + 1).max(1);
+    if let Some((kind, text)) = s.panes.headline(View::Window(name), room) {
+        spans.push(Span::styled(text, style_for(kind)));
     }
-    f.render_widget(Paragraph::new(lines), area);
-    if scroll > 0 {
-        draw_bottom(f, area);
-    }
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 /// Where each line group goes: its header, then its rows.
@@ -902,7 +883,7 @@ mod tests {
 
     /// A session drawn `line` gets the header a pane gets, laid out the same way.
     #[test]
-    fn a_line_group_is_drawn_like_a_pane() {
+    fn a_line_group_is_a_name_and_its_newest_event() {
         let mut screen = screen_with(&[]);
         screen.panes.layout(&Layout {
             listed: vec![
@@ -930,27 +911,17 @@ mod tests {
         })
         .unwrap();
         let buf = term.backend().buffer().clone();
-        // Counted the way `draw` counts them, or the two would disagree.
         let parts = parts(width, height, 1, true, 1);
         let (slots, _) = group_slots(parts[2], &["peer".to_string()], None);
         assert_eq!(slots.len(), 1, "one group, one slot");
-        let slot = &slots[0];
-        let head = slot.header.expect("a line group has a header");
+        // One row: the name, then its newest event. No header, no rows below.
+        assert!(slots[0].header.is_none(), "{slots:?}");
+        assert_eq!(slots[0].body.height, 1);
         assert_eq!(
-            row_text(&buf, head.y),
-            " peer",
-            "the same header a pane gets, not `[peer]` in the text"
+            row_text(&buf, slots[0].body.y),
+            "peer two",
+            "the newest event, and the name in front of it"
         );
-        // And a pane's header reads the same way: read from the panes, since the
-        // list owns the columns on the left.
-        let pane_header = body(parts[1], &screen.panes).1;
-        assert_eq!(pane_text(&buf, &screen, pane_header.y), " main");
-        let drawn: Vec<String> = (slot.body.y..slot.body.bottom())
-            .map(|row| row_text(&buf, row))
-            .collect();
-        // The newest two, and the spare row a group has for the next event.
-        assert_eq!(&drawn[..2], &["one", "two"], "and its own rows under it");
-        assert!(drawn[2..].iter().all(String::is_empty), "{drawn:?}");
     }
 
     /// Two groups split the rows: neither gets rows the other already used.

@@ -1,7 +1,6 @@
 //! The interactive client: a window, a link, and the loop between them.
 
 use std::future::Future;
-use std::net::SocketAddr;
 use std::pin::Pin;
 
 use cli::{DialFailure, Greeting, Layout, LineKind, Link, Sink};
