@@ -166,7 +166,11 @@ fn wait_for(spawned: Option<u32>, attempts: u32, backoff: Duration) -> Duration 
 
 /// One attempt, resolving afresh: `connect_server` moves the address.
 async fn dial_now(conn: cli::Connection) -> Result<(Link, Greeting), DialFailure> {
-    let endpoint = conn.endpoint().map_err(DialFailure::Temporary)?;
+    // The pid claims an unowned server, so it stops when this window does.
+    let endpoint = conn
+        .endpoint()
+        .map_err(DialFailure::Temporary)?
+        .owning(std::process::id());
     cli::dial(endpoint).await
 }
 

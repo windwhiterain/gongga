@@ -32,6 +32,16 @@ pub struct ClientInfo {
     pub build: String,
     /// Free-form label shown by the server in logs, e.g. `cli/pid-1234`.
     pub label: String,
+    /// The process that would own this server if nobody does.
+    ///
+    /// # Invariant
+    ///
+    /// A window sets it to its own pid, so a server it did not start still stops
+    /// when that window closes; a one-shot command never sets it, because it exits
+    /// in milliseconds and would take the server with it.
+    /// See `docs/notes/protocol-message.md`.
+    #[serde(default)]
+    pub owner: Option<u32>,
 }
 
 // Server -> client

@@ -110,7 +110,13 @@ async fn answers(home: &Path, addr: SocketAddr) -> bool {
     let Some(key) = crate::key_of(home) else {
         return false;
     };
-    match dial(Endpoint { addr, key }).await {
+    match dial(Endpoint {
+        addr,
+        key,
+        owner: None,
+    })
+    .await
+    {
         Ok((link, _)) => {
             link.goodbye().await;
             true

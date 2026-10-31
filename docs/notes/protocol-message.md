@@ -110,6 +110,14 @@ reads a greeting from a server that has never heard of them instead of failing t
 decode it: a window against an older server draws titles without numbers, which is
 what that server measured.
 
+## ClientInfo — owner
+
+`label` says who is talking, for a log line. `owner` says something the server acts
+on: the pid of the window that would be this server's owner if it has none. Only a
+window sets it -- a one-shot command and a bridge send nothing -- because the server
+follows that pid, and a process that exits in milliseconds would take the server down
+with it. Absent is the normal case: `None` is not `Some(0)`.
+
 ## SessionInfo — model, thinking_effort, context_limit
 
 SPEC's `full` pane title lists them beside the measurements, so they travel with the

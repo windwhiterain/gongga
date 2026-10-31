@@ -39,6 +39,23 @@ killed window does not leave a process holding the port and the home lock.
 Windows waits on the process handle, so pid reuse cannot fool it. Unix asks the
 kernel every 250 ms whether the pid still exists, which a reused pid can.
 
+## signal::adopt -- the window that did not start it
+
+`--parent` only covers a server the window started. A server can also arrive from
+somewhere else -- `evolve`'s successor is `exec`ed by a launcher nobody typed into a
+window -- and then nothing watched it: closing every window left it holding the port
+and the home lock, and the next window could not start a server of its own.
+
+So a window that connects to an *unowned* server takes it. `ClientInfo::owner` is
+the pid of a window and only of a window: a one-shot command sends nothing, because
+it exits in milliseconds and would take the server with it. The handshake claims it
+through `signal::adopt`, which is the same follower `--parent` uses, so the death is
+a stop request rather than a kill.
+
+The first claim wins and a second window is refused -- two owners would mean one
+window closing ends a server another is reading. A server started for a window was
+owned before any connection arrived, so `--parent` and a claim never both apply.
+
 Two callers deliberately pass no parent. `cli serve` execs the server in its own
 console and watches it, and `ensure` starts one for a command that exits in
 milliseconds: both servers have to outlive the process that started them.

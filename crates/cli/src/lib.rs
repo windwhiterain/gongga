@@ -57,7 +57,11 @@ impl Connection {
                  once to generate one"
             )
         })?;
-        Ok(Endpoint { addr, key })
+        Ok(Endpoint {
+            addr,
+            key,
+            owner: None,
+        })
     }
 }
 
@@ -1462,9 +1466,13 @@ async fn connect_elsewhere(args: &Args, command: &[String]) -> anyhow::Result<()
             "{addr} is remembered as this client's server, but there is no key to dial it              with: pass --key, set GONGGA_KEY, or start the server once to generate one"
         )
     })?;
-    let (link, greeting) = dial(Endpoint { addr, key })
-        .await
-        .map_err(|failure| failure.into_error())?;
+    let (link, greeting) = dial(Endpoint {
+        addr,
+        key,
+        owner: None,
+    })
+    .await
+    .map_err(|failure| failure.into_error())?;
     let mut client = build_client(args);
     greeting.apply(&mut client, &mut NullSink::default());
     println!(
@@ -1612,6 +1620,17 @@ fn signature(args: &[protocol::ArgSpec]) -> String {
 pub struct Endpoint {
     addr: SocketAddr,
     key: String,
+    /// Who would own the server if it has no owner yet: see [`ClientInfo::owner`].
+    owner: Option<u32>,
+}
+
+impl Endpoint {
+    /// Says that this process is the window the server should follow when nobody
+    /// owns it. See `docs/notes/cli-lib.md`.
+    pub fn owning(mut self, pid: u32) -> Self {
+        self.owner = Some(pid);
+        self
+    }
 }
 
 /// The address this client would dial, without needing its key.
@@ -1624,7 +1643,11 @@ pub fn endpoint(args: &Connection) -> anyhow::Result<Endpoint> {
     let key = resolve_key(args).ok_or_else(|| {
         anyhow!("no connection key: pass --key, set GONGGA_KEY, or start the server once to generate one")
     })?;
-    Ok(Endpoint { addr, key })
+    Ok(Endpoint {
+        addr,
+        key,
+        owner: None,
+    })
 }
 
 /// Why a dial did not produce a link.
@@ -1678,7 +1701,7 @@ pub async fn dial(endpoint: Endpoint) -> Result<(Link, Greeting), DialFailure> {
     let (wire, mut stream) = channel.split();
 
     let hello = encode_client(&ClientMessage::Hello {
-        client: client_info(),
+        client: client_info(endpoint.owner),
         key: endpoint.key.clone(),
     })
     .map_err(|e| DialFailure::Fatal(e.into()))?;
@@ -1766,12 +1789,13 @@ async fn connect(args: &Args) -> anyhow::Result<(Client, Link)> {
     Ok((client, link))
 }
 
-/// Identifies this client to the server.
-fn client_info() -> ClientInfo {
+/// Identifies this client to the server, and says who owns it if nobody does.
+fn client_info(owner: Option<u32>) -> ClientInfo {
     ClientInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
         build: protocol::BUILD.to_string(),
         label: format!("cli/pid-{}", std::process::id()),
+        owner,
     }
 }
 
@@ -1884,6 +1908,34 @@ fn config_in(home: &Path, pick: impl Fn(&FileConfig) -> Option<String>) -> Optio
 mod tests {
     use super::*;
     use protocol::encode_server;
+
+    /// The window's pid travels in the greeting, and a one-shot command's does not.
+    ///
+    /// # Invariant
+    ///
+    /// `owner` is what lets a server nobody started for a window follow it, so the
+    /// field has to survive the wire; a command that never set it must send nothing
+    /// rather than zero, which would claim a server for a pid that is not a window.
+    #[test]
+    fn only_a_window_names_an_owner() {
+        let wire = |owner| {
+            let hello = ClientMessage::Hello {
+                client: client_info(owner),
+                key: "k".into(),
+            };
+            protocol::decode_client(&encode_client(&hello).unwrap()).unwrap()
+        };
+        match wire(Some(std::process::id())) {
+            ClientMessage::Hello { client, .. } => {
+                assert_eq!(client.owner, Some(std::process::id()));
+            }
+            _ => panic!("a hello decodes as a hello"),
+        }
+        match wire(None) {
+            ClientMessage::Hello { client, .. } => assert_eq!(client.owner, None),
+            _ => panic!("a hello decodes as a hello"),
+        }
+    }
 
     fn home_with(text: &str) -> tempfile::TempDir {
         let d = tempfile::tempdir().unwrap();

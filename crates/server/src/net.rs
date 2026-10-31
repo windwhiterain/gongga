@@ -335,6 +335,11 @@ async fn authenticate(
                         build = %client.build,
                         "client connected"
                     );
+                    // A window is a handle on this home: a server nobody started
+                    // for one still stops when that window closes.
+                    if let Some(owner) = client.owner {
+                        crate::signal::adopt(owner);
+                    }
                     return true;
                 }
                 tracing::warn!(%peer, "rejected client: wrong key");

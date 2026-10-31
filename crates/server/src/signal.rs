@@ -10,6 +10,12 @@ use tokio::sync::Notify;
 /// The asks so far: the first cancels, a second one leaves without waiting.
 static ASKS: AtomicUsize = AtomicUsize::new(0);
 
+/// The one notifier every ask reaches, and the one an adopted owner reaches too.
+static WAKE: std::sync::OnceLock<Arc<Notify>> = std::sync::OnceLock::new();
+
+/// Whether a process already owns this server, so nothing else may claim it.
+static OWNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Runs `stop` once, when the operating system asks this process to stop.
 ///
 /// # Invariant
@@ -22,10 +28,14 @@ where
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
     let wake = Arc::new(Notify::new());
+    // Before anything can connect: the handler and an adopted owner nudge one
+    // notifier, whichever of them arrives first.
+    let _ = WAKE.set(wake.clone());
     if !install(wake.clone()) {
         tracing::warn!("no signal handler: a Ctrl-C will not preserve the turn");
     }
     if let Some(pid) = parent {
+        OWNED.store(true, Ordering::SeqCst);
         follows(pid, wake.clone());
     }
     waiter(wake, stop);
@@ -47,6 +57,38 @@ where
 /// What a handler may call: no lock, no block, and a nudge is remembered.
 fn nudge(wake: &Notify) {
     wake.notify_one();
+}
+
+/// Takes the window that connected as this server's owner, if it has none.
+///
+/// # Invariant
+///
+/// The first window to say so owns it, and its death is a stop request on the
+/// same path a signal takes. A server started by `--parent` is owned already and
+/// refuses; so does a second window, because two owners would mean one of them
+/// closing ends a server the other is reading.
+/// See `docs/notes/server-signal.md`.
+pub fn adopt(pid: u32) -> bool {
+    let claimed = claim(WAKE.get().cloned(), &OWNED, pid);
+    if claimed {
+        tracing::info!(
+            owner = pid,
+            "no owner yet: following the window that connected"
+        );
+    }
+    claimed
+}
+
+/// The decision, with the notifier and the flag handed in so a test can drive it.
+fn claim(wake: Option<Arc<Notify>>, owned: &std::sync::atomic::AtomicBool, pid: u32) -> bool {
+    let Some(wake) = wake else {
+        return false;
+    };
+    if owned.swap(true, Ordering::SeqCst) {
+        return false;
+    }
+    follows(pid, wake);
+    true
 }
 
 /// A signal, asked once or insisted on.
@@ -116,15 +158,9 @@ fn exists(pid: u32) -> bool {
 }
 
 #[cfg(windows)]
-static WAKE: std::sync::OnceLock<Arc<Notify>> = std::sync::OnceLock::new();
-
-#[cfg(windows)]
-fn install(wake: Arc<Notify>) -> bool {
+fn install(_wake: Arc<Notify>) -> bool {
     use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
 
-    if WAKE.set(wake).is_err() {
-        return false;
-    }
     // SAFETY: `handle` is a plain function, and it only touches a `OnceLock`.
     unsafe { SetConsoleCtrlHandler(Some(handle), 1) != 0 }
 }
@@ -197,6 +233,41 @@ mod tests {
         stop.await.unwrap();
 
         assert_eq!(woke.load(Ordering::SeqCst), 1);
+    }
+
+    /// A window that connects to a server nobody owns takes it; nothing else can.
+    ///
+    /// # Invariant
+    ///
+    /// The first claim wins and an owned server refuses every later one.
+    #[tokio::test]
+    async fn one_window_claims_an_unowned_server() {
+        let owned = std::sync::atomic::AtomicBool::new(false);
+        let wake = Arc::new(Notify::new());
+        // A pid already gone: the claim's stop fires at once, not in a second.
+        let gone = u32::MAX;
+
+        assert!(
+            claim(Some(wake.clone()), &owned, gone),
+            "the first claims it"
+        );
+        assert!(
+            !claim(Some(wake.clone()), &owned, gone),
+            "a second window cannot take it from the first"
+        );
+
+        let already = std::sync::atomic::AtomicBool::new(true);
+        assert!(
+            !claim(Some(wake.clone()), &already, 1),
+            "`--parent` owned it before any window connected"
+        );
+
+        let unwatched = std::sync::atomic::AtomicBool::new(false);
+        assert!(!claim(None, &unwatched, 1), "no notifier, no claim");
+        assert!(
+            !unwatched.load(Ordering::SeqCst),
+            "a refused claim leaves it unowned, not owned by nobody"
+        );
     }
 
     /// A window that is already gone is a stop asked for at startup.

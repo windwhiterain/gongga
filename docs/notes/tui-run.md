@@ -101,6 +101,11 @@ match is cancelled on the way out. An address would say the wrong thing in both
 directions: another window's server for the same home has the same address, and a
 `connect_server` can move this window onto a server it did not start.
 
+Every dial says which pid this window is, so a server nobody started for it takes
+this window as its owner and stops when the window does. That is what keeps an
+`evolve` successor under the window's control: it arrives already running, and
+without the claim nothing would ever stop it. See `docs/notes/server-signal.md`.
+
 While a server this window spawned is coming up, the first failed dials are that and
 nothing else -- a fresh home has no connection key until the server writes it -- so
 the outage line is said only when nothing is starting. The status line still shows

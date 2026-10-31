@@ -633,6 +633,12 @@ survives none of those.
 Resolved once per process, for the reason `Connection::endpoint` gives: two
 attempts of one reconnect must not mean two different servers.
 
+`Endpoint::owning` adds one thing to it: the pid of a window, sent as
+`ClientInfo::owner`. A window is the only client that sets it, so a server nobody
+started for a window still stops when that window closes. A one-shot command leaves
+it `None`, and the resolution path never invents one: the process that typed the
+command is gone before the answer arrives.
+
 ## DialFailure::Fatal
 
 The key is wrong, the address is malformed. Retrying would only hide the reason
