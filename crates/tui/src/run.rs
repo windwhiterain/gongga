@@ -17,6 +17,10 @@ use crate::{Tui, UiEvent};
 /// Alt+Q still leaves. See `docs/notes/tui-run.md`.
 const RECONNECT_MIN: Duration = Duration::from_millis(250);
 const RECONNECT_MAX: Duration = Duration::from_secs(5);
+/// The wait between dials while a server this window started is coming up.
+const SPAWN_POLL: Duration = Duration::from_millis(50);
+/// How many of those are fast: past this it is not a start but a failure.
+const SPAWN_ATTEMPTS: u32 = 120;
 
 /// Renders the command layer's lines into the terminal.
 struct TuiSink<'a>(&'a mut Tui);
@@ -144,6 +148,21 @@ fn starts_a_server(client_only: bool) -> bool {
 /// window onto a server it did not start. See `docs/notes/tui-run.md`.
 fn stops_a_server(spawned: Option<u32>, answering: Option<u32>) -> bool {
     matches!((spawned, answering), (Some(ours), Some(theirs)) if ours != 0 && ours == theirs)
+}
+
+/// How long to wait before the next dial.
+///
+/// # Invariant
+///
+/// A server this window started is coming up, so its first seconds are worth
+/// [`SPAWN_POLL`] rather than the reconnect ladder, which exists for a server
+/// that went away. Only our own: somebody else's is not ours to hammer.
+fn wait_for(spawned: Option<u32>, attempts: u32, backoff: Duration) -> Duration {
+    if spawned.is_some() && attempts <= SPAWN_ATTEMPTS {
+        SPAWN_POLL
+    } else {
+        backoff
+    }
 }
 
 /// One attempt, resolving afresh: `connect_server` moves the address.
@@ -284,7 +303,8 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                             );
                         }
                         backoff = (backoff * 2).min(RECONNECT_MAX);
-                        next_try = tokio::time::Instant::now() + backoff;
+                        next_try =
+                            tokio::time::Instant::now() + wait_for(spawned, attempts, backoff);
                     }
                 }
             }
@@ -346,5 +366,30 @@ mod tests {
     fn this_window_starts_a_server_unless_told_not_to() {
         assert!(starts_a_server(false), "the default is to start one");
         assert!(!starts_a_server(true), "--client_only refuses here");
+    }
+}
+
+#[cfg(test)]
+mod fast_path_tests {
+    use super::*;
+
+    /// Our own server is polled fast, somebody else's is not.
+    #[test]
+    fn our_own_server_is_polled_fast() {
+        assert_eq!(
+            wait_for(Some(42), 1, Duration::from_millis(250)),
+            SPAWN_POLL,
+            "a server we started is worth polling"
+        );
+        assert_eq!(
+            wait_for(None, 1, Duration::from_millis(250)),
+            Duration::from_millis(250),
+            "somebody else's is not"
+        );
+        // Bounded: past the start-up window the ladder takes over.
+        assert_eq!(
+            wait_for(Some(42), SPAWN_ATTEMPTS + 1, Duration::from_millis(500)),
+            Duration::from_millis(500)
+        );
     }
 }

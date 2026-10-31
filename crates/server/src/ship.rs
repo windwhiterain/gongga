@@ -121,7 +121,13 @@ pub struct Report {
 /// network leaves the lookup to the caller, which names what it could not find.
 pub fn prepare(home: &Path) {
     let roots = Roots::of(home);
-    if let Err(e) = fetch(&roots.home.join(CACHE), &pinned().url) {
+    let ship = pinned();
+    let cache = roots.home.join(CACHE);
+    // Only when the commit is missing: a pin is a sha, so having it makes a
+    // fetch pointless.
+    if !have(&cache, &ship.commit)
+        && let Err(e) = fetch(&cache, &ship.url)
+    {
         tracing::warn!(error = %e, "cannot reach the content repository yet");
     }
     let _ = ROOTS.set(roots);
@@ -136,24 +142,23 @@ pub fn install(home: &Path) -> anyhow::Result<Report> {
 /// writes into a real `~/.agents`.
 pub fn install_at(roots: &Roots, ship: &Ship) -> anyhow::Result<Report> {
     let cache = roots.home.join(CACHE);
-    let fetched = match fetch(&cache, &ship.url) {
-        Ok(()) => true,
-        Err(e) => {
-            if has_commit(&cache, &ship.commit) {
-                tracing::warn!(
-                    error = %e,
-                    "cannot reach the content repository; the copy already fetched stands"
-                );
-                false
-            } else {
-                anyhow::bail!(
-                    "the shipped content is not installed here and cannot be fetched ({e}); \
-                     pin {} from {} -- there is no prompt to run a turn on without it",
-                    ship.commit,
-                    ship.url
-                );
-            }
-        }
+    // A pin is immutable: a fetch of a repository that has it adds nothing, and
+    // it is a round trip in front of every start.
+    let cached = have(&cache, &ship.commit);
+    let fetched = if cached {
+        false
+    } else if fetch(&cache, &ship.url).is_ok() {
+        true
+    } else if has_commit(&cache, &ship.commit) {
+        // It arrived by another route; being offline is not being broken.
+        false
+    } else {
+        anyhow::bail!(
+            "the shipped content is not installed here and cannot be fetched; \
+             pin {} from {} -- there is no prompt to run a turn on without it",
+            ship.commit,
+            ship.url
+        );
     };
     let _ = ROOTS.set(roots.clone());
     let mut report = Report {
@@ -222,6 +227,11 @@ fn reconcile(
     let conflicts_at = report.conflicts.len();
     let kept_at = report.kept.len();
     let old = read_pin(root);
+    // Already at this pin, so upstream cannot have moved: one file read replaces
+    // a `git` per installed file.
+    if old.as_deref() == Some(ship.commit.as_str()) {
+        return Ok(());
+    }
     let new = collect(cache, &ship.commit, mappings, root);
     let before = old
         .as_deref()
@@ -517,6 +527,11 @@ fn fetch(cache: &Path, url: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Whether the cache already holds this pin, so no network is needed for it.
+pub fn have(cache: &Path, commit: &str) -> bool {
+    cache.is_dir() && has_commit(cache, commit)
+}
+
 fn has_commit(cache: &Path, commit: &str) -> bool {
     Command::new(git())
         .arg("--git-dir")
@@ -693,16 +708,26 @@ mod tests {
         assert_eq!(f.pin(f.machine()), commit);
     }
 
+    /// A root already at the pin is left alone, and not even read.
     #[test]
     fn a_second_start_with_the_same_pin_writes_nothing() {
         let d = tempfile::tempdir().unwrap();
         let f = fixture(d.path());
         let commit = content_repo(&f.content, "a\n", "b\n");
-        f.install(&commit).unwrap();
+        let first = f.install(&commit).unwrap();
+        assert!(first.written > 0, "{first:?}");
         let again = f.at();
         assert_eq!(again.written, 0, "{again:?}");
-        assert_eq!(again.current, 3, "{again:?}");
-        assert_eq!(again.merged, 0);
+        assert_eq!(again.updated, 0, "{again:?}");
+        assert_eq!(again.merged, 0, "{again:?}");
+        assert_eq!(again.removed, 0, "{again:?}");
+        assert!(
+            again.conflicts.is_empty() && again.kept.is_empty(),
+            "{again:?}"
+        );
+        assert_eq!(f.pin(f.home()), commit);
+        // Counted as nothing at all: it did not look.
+        assert_eq!(again.current, 0, "{again:?}");
     }
 
     /// Why a merge exists: both sides keep what they wrote, on lines git cannot
