@@ -80,12 +80,24 @@ first is someone typing, the second is damage.
 
 ## Sticky::fill
 
-Only a *required* argument is filled. An argument the command makes optional is a
-question the caller answered by leaving it out, and `set_event_ui` -- which now takes
-`--session` beside `--block_size` and `--split` -- is the case that proves the rule: a
-sticky `session` filling it would make every change of block height silently change
-what is on screen. `send_message --session` is required, so the sticky value still
-routes every message the way SPEC's auto-set line says.
+A *required* argument is filled, and so is an optional one the spec declares
+`sticky` -- SPEC writes those `(sticky)`, and `set_session --model` is the one that
+has it. That flag is what keeps the other optional arguments out: an argument the
+command makes optional is a question the caller answered by leaving it out, and
+`set_event_ui` is the case that proves the rule: a sticky `session` filling its
+`--session` would make every change of block height silently change what is on
+screen.
+
+Which arguments those are belongs to the catalog the server publishes, not to the
+client: a transparent wrapper knows no command by name.
+
+## Sticky::settle_follow
+
+`set_session` writes the sticky `session` **and** `model` on the acknowledgement, not
+on the submission, so a refusal retargets nothing. Both are modes the next command
+inherits: the session it acts on, and the model it runs on. A `set_session` that
+names no model leaves the remembered one alone, which is what lets `--model` be a
+setting rather than a repetition.
 
 ## EVENT_FIELDS
 

@@ -240,17 +240,18 @@ impl Sticky {
         write_file(&self.path, &file)
     }
 
-    /// Fills in a required argument the caller omitted, when a sticky value exists.
+    /// Fills in an argument the caller omitted, when a sticky value stands for it.
     ///
     /// # Invariant
     ///
-    /// An optional argument is left alone, because absence there is a decision:
-    /// `set_event_ui` with no `--session` means "keep the filter as it is", and a
-    /// sticky value would make every other setting change it.
+    /// Only a required argument, or one the spec declares `sticky`, is filled --
+    /// SPEC spells those `(sticky)`. Every other optional argument is left alone,
+    /// because absence there is a decision: a filter that keeps what it had must
+    /// not be overwritten by a value meant for a different command.
     pub fn fill(&self, spec: Option<&CommandSpec>, args: &mut Args) {
         let Some(spec) = spec else { return };
         for a in &spec.args {
-            if a.required && !args.contains_key(&a.name) {
+            if (a.required || a.sticky) && !args.contains_key(&a.name) {
                 if let Some(v) = self.args.get(&a.name) {
                     args.insert(a.name.clone(), v.clone());
                 }
@@ -661,6 +662,7 @@ mod tests {
                     required: true,
                     value_hint: None,
                     completions: protocol::CompletionSource::None,
+                    sticky: false,
                 },
                 // Leaving an optional argument out is the caller's decision, not a
                 // gap for a sticky value to fill.
@@ -670,6 +672,7 @@ mod tests {
                     required: false,
                     value_hint: None,
                     completions: protocol::CompletionSource::None,
+                    sticky: false,
                 },
             ],
         };
@@ -683,6 +686,63 @@ mod tests {
         let mut args = Args::from([("session".to_string(), "scratch".to_string())]);
         s.fill(Some(&spec), &mut args);
         assert_eq!(args["session"], "scratch");
+    }
+
+    /// SPEC's `(sticky)` is what makes an *optional* argument fillable.
+    #[test]
+    fn a_declared_sticky_argument_is_filled_even_when_optional() {
+        let d = dir();
+        let mut s = Sticky::load(d.path());
+        s.set("model", "kimi-coding/k3").unwrap();
+        s.set("cwd", "/tmp/scratch").unwrap();
+        let spec = CommandSpec {
+            target: protocol::CommandTarget::Server,
+            name: "set_session".into(),
+            description: String::new(),
+            args: vec![
+                ArgSpec {
+                    name: "session".into(),
+                    description: String::new(),
+                    required: false,
+                    value_hint: None,
+                    completions: protocol::CompletionSource::None,
+                    sticky: false,
+                },
+                ArgSpec {
+                    name: "model".into(),
+                    description: String::new(),
+                    required: false,
+                    value_hint: None,
+                    completions: protocol::CompletionSource::None,
+                    sticky: true,
+                },
+                ArgSpec {
+                    name: "cwd".into(),
+                    description: String::new(),
+                    required: false,
+                    value_hint: None,
+                    completions: protocol::CompletionSource::None,
+                    sticky: false,
+                },
+            ],
+        };
+        let mut args = Args::new();
+        s.fill(Some(&spec), &mut args);
+        assert_eq!(args["model"], "kimi-coding/k3");
+        assert!(
+            !args.contains_key("cwd") && !args.contains_key("session"),
+            "only the declared one fills: {args:?}"
+        );
+
+        let mut named = Args::from([(
+            "model".to_string(),
+            "deepseek-official/deepseek-v4-pro".to_string(),
+        )]);
+        s.fill(Some(&spec), &mut named);
+        assert_eq!(
+            named["model"], "deepseek-official/deepseek-v4-pro",
+            "what the caller typed wins over the sticky"
+        );
     }
 
     #[test]

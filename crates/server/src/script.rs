@@ -400,6 +400,8 @@ fn parse_arg(raw: &Value) -> Option<ArgSpec> {
             .and_then(Value::as_str)
             .map(str::to_string),
         completions,
+        // A script may ask for it: `"sticky": true` in its manifest.
+        sticky: raw.get("sticky").and_then(Value::as_bool).unwrap_or(false),
     })
 }
 
