@@ -95,13 +95,15 @@ pub fn file_name(name: &str) -> String {
     }
 }
 
-/// Stops the programs another build left running, then removes its directory.
+/// Stops the server another build left running, then removes its directory.
 ///
 /// # Invariant
 ///
 /// Asked, not killed: a server that receives `cancel` keeps its turn as pending
-/// work (`commands.rs`). Files go only once nothing of that build runs.
-/// `ours` is the command layer that asks, because the retired one may be gone.
+/// work (`commands.rs`). A window or a command in flight is never touched, so a
+/// build whose clients are still up keeps its directory until they exit and the
+/// next install retires it. `ours` is the command layer that asks, because the
+/// retired one may be gone.
 pub fn retire(dir: &Path, keep: &str, ours: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -118,31 +120,31 @@ pub fn retire(dir: &Path, keep: &str, ours: &Path) {
     }
 }
 
-/// Stops every process running from `dir`, and says whether none is left.
+/// Stops the server running from `dir`, and says whether the directory can go.
 fn stop_programs_in(dir: &Path, ours: &Path) -> bool {
     let running = running_in(dir);
-    let server = running
-        .iter()
-        .find(|process| process.name.starts_with("gongga-server"))
-        .cloned();
-    let mut stopped = true;
-    if let Some(process) = server.clone() {
-        stopped = ask_to_cancel(ours, dir, &process);
-        if !stopped {
-            // No key, no command layer, or no answer: a stale server holding
-            // the port is the worse outcome.
-            kill(process.pid);
-            stopped = !alive(process.pid);
-        }
+    let Some(server) = running.iter().find(|process| !outlives_its_build(process)) else {
+        // Only clients: nothing holds a port, and their directory is theirs.
+        return running.is_empty();
+    };
+    if !ask_to_cancel(ours, dir, server) {
+        // No key, no command layer, or no answer: a stale server holding the port
+        // is the worse outcome.
+        kill(server.pid);
     }
-    for process in &running {
-        if Some(process.pid) == server.as_ref().map(|server| server.pid) {
-            continue;
-        }
-        kill(process.pid);
-        stopped &= !alive(process.pid);
-    }
-    stopped
+    // The port is free either way; the directory waits for a client still running.
+    !alive(server.pid) && running.len() == 1
+}
+
+/// Whether `process` may outlive the build that started it.
+///
+/// # Invariant
+///
+/// A window is where the reader is typing and a `cli` call is a command halfway
+/// through; killing either to free a directory would be a build upgrade taking
+/// work with it. Only a server is replaced, because only a server holds the port.
+fn outlives_its_build(process: &Process) -> bool {
+    process.name != "gongga-server"
 }
 
 /// Whether a server running from `dir` answered a `cancel` and stopped.
@@ -347,6 +349,24 @@ mod tests {
 
         assert!(!old.exists(), "the replaced build is gone");
         assert!(keep.exists(), "the current one is not");
+    }
+
+    /// A window is not something an install may close.
+    ///
+    /// # Invariant
+    ///
+    /// Only a server is replaced, because only a server holds the port; a window
+    /// or a `cli` call outlives its build and keeps the directory it runs from.
+    #[test]
+    fn a_client_outlives_its_build_and_a_server_does_not() {
+        let process = |name: &str| Process {
+            name: name.to_string(),
+            pid: 1,
+            port: None,
+        };
+        assert!(!outlives_its_build(&process("gongga-server")));
+        assert!(outlives_its_build(&process("gongga-tui")));
+        assert!(outlives_its_build(&process("gongga-cli")));
     }
 
     /// A stamp is one per set of bytes: two builds that differ get two names, and

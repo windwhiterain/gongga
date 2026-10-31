@@ -104,6 +104,17 @@ The retries are there for the scanner, not for the lock: a freshly written 20 MB
 executable is exactly what an on-access scanner opens, and Windows answers a
 rename over one with "access denied" for a few tens of milliseconds.
 
+## payload::retire
+
+A build this one replaces is asked to stop, then removed: a server through its own
+`cancel`, so its turn stays pending work for the next start.
+
+Nothing else is touched. `gongga-tui` is a window somebody is typing in and
+`gongga-cli` may be a command halfway through, so neither is killed to free a
+directory -- the directory simply stays, and the next install retires it once those
+processes have exited. Killing the client was the first shape of this and it made
+every upgrade close the reader's window.
+
 ## What this is not
 
 A build of the programs into one image. `gongga` used to include the server as a
