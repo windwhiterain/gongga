@@ -2,7 +2,7 @@
 //!
 //! See `docs/notes/bundle-main.md`.
 
-mod payload;
+mod payload_impl;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -21,25 +21,17 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<u8, String> {
-    let me = std::env::current_exe().map_err(|e| format!("finding this file: {e}"))?;
-    let mut file =
-        std::fs::File::open(&me).map_err(|e| format!("opening {}: {e}", me.display()))?;
-    let start = payload::footer_of(&mut file)
-        .map_err(|e| format!("reading {}: {e}", me.display()))?
-        .ok_or_else(|| {
-            format!(
-                "{} carries no programs: this is the head alone, which \
-                 `cargo install --git ... gongga-bundle` cannot fill. Install the \
-                 programs instead (`cargo install --git ... gongga-cli gongga-server`), \
-                 or run scripts/bundle.sh to get a file with them inside",
-                me.display()
-            )
-        })?;
-    let programs = payload::programs(&mut file, start)
-        .map_err(|e| format!("reading the table of {}: {e}", me.display()))?;
     let (wanted, skip) = wanted_program();
-    if !programs.iter().any(|p| p.name == wanted) {
-        let carried: Vec<&str> = programs.iter().map(|p| p.name.as_str()).collect();
+    let carried: Vec<&str> = payload::EMBEDDED.iter().map(|(name, _)| *name).collect();
+    if carried.is_empty() {
+        return Err(format!(
+            "this file carries no programs: it was built without `--features payload`, so \
+             there is nothing to place. Build it with one (`cargo build -p gongga-bundle \
+             --features payload`), or install the programs themselves \
+             (`cargo install --git ... gongga-cli gongga-server`)"
+        ));
+    }
+    if !carried.contains(&wanted.as_str()) {
         return Err(format!(
             "this file does not carry {wanted}; it carries {carried:?}"
         ));
@@ -47,11 +39,18 @@ fn run() -> Result<u8, String> {
     let dir = home().join("bin");
     // Every program, not only the one asked for: `serve` looks for the server
     // beside itself.
-    for program in &programs {
-        payload::extract(&mut file, program, &dir)
-            .map_err(|e| format!("placing {} in {}: {e}", program.name, dir.display()))?;
+    for (name, bytes) in payload::EMBEDDED {
+        payload::place(&dir, name, bytes)
+            .map_err(|e| format!("placing {name} in {}: {e}", dir.display()))?;
     }
     take_over(&dir.join(payload::file_name(&wanted)), skip)
+}
+
+/// The programs, embedded at build time by the `payload` feature.
+mod payload {
+    include!(concat!(env!("OUT_DIR"), "/embedded.rs"));
+
+    pub use crate::payload_impl::{file_name, place};
 }
 
 /// Which program to run, and how many arguments that choice consumed.

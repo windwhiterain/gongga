@@ -5,11 +5,17 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "One file that carries the programs: the stub at the front of a release, nothing else"
+description = "One file that carries the programs: the head of a release, nothing else"
 
 # No dependencies at all, on purpose: this program is the head of every
 # distribution and has to build on a machine that has nothing.
 [dependencies]
+
+[features]
+# Builds the programs and embeds them, so the file `cargo install` gives you is
+# the whole distribution. Off by default: a normal workspace build must not build
+# three other crates it is not going to use.
+payload = []
 
 [[bin]]
 name = "gongga-bundle"
