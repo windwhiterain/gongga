@@ -296,7 +296,7 @@ impl Agent {
             return;
         }
         // The size the provider last measured for this session; never an estimate.
-        let Ok(tokens) = self.store.context_tokens(id) else {
+        let Ok((tokens, generation)) = self.store.context_measurement(id) else {
             return;
         };
         if tokens < budget {
@@ -311,7 +311,11 @@ impl Agent {
         if let Err(e) = self.store.add_pending_task(
             name,
             "inject",
-            &json!({"session": name, "message": message}),
+            &json!({
+                "session": name,
+                "message": message,
+                "context_notice": {"tokens": tokens, "limit": budget, "generation": generation},
+            }),
         ) {
             self.error(id, name, "queueing the context notice", e);
             return;
@@ -437,6 +441,7 @@ impl Agent {
             cwd,
         } = *attempt;
         let note = self.store.handover(id)?;
+        let generation = self.store.context_generation(id)?;
         let phase_started = std::time::Instant::now();
         let definitions = self.tools.definitions();
         let prompt = self.prompt_in_force(id, &name, cwd, note.as_deref(), step == 1)?;
@@ -620,7 +625,9 @@ impl Agent {
                         tps,
                         ttft_ms,
                     };
-                    let _ = self.store.set_usage(id, measured);
+                    let _ = self
+                        .store
+                        .set_usage_for_generation(id, generation, measured);
                     // SPEC: the row updates at every step's end. Off the turn's
                     // path, because reading an allowance is a network call.
                     crate::quota::publish(

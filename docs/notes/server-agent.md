@@ -239,7 +239,15 @@ at, so two things earn another notice: growing a quarter of the budget past that
 size, and a handover, which empties the session and therefore re-arms it.
 
 The notice is queued as an `inject` row and does not touch the inbox signal, so
-it never ends a running command's wait the way an operator's message does.
+it never ends a running command's wait the way an operator's message does. Its
+payload also records its context generation and token limit, with tokens and
+generation read in one statement. A handover's token
+reset advances that generation through a database trigger, and usage writes are
+conditional on the generation their request started with. `deliver_pending` drops
+a marked notice when its generation is old or the current context is below its
+limit, so a response that streamed its heir tool cannot restore the old context
+or revive its notices. Ordinary injected messages have no such validity condition
+and are always delivered.
 
 ## notice_budget
 

@@ -17,12 +17,15 @@ The threshold still exists, because somebody has to notice. The judgement does n
 
 ## Why a script and not a tool
 
-A handover is two statements:
+A handover's destructive state changes are two statements:
 
 ```sql
 update sessions set handover = ?, context_tokens = 0 where id = ?;
 delete from messages where session_id = ?;
 ```
+
+The token reset also advances `context_generation` through a database trigger, so
+notices queued for the old transcript can be rejected without changing the skill.
 
 Reading is one `select` over `kind = 'text'`. A server-side tool for that means a
 change to the read shape costs a rebuild, a restart and a cancelled turn — which
@@ -54,7 +57,12 @@ spoke at, so two things earn another notice: growing a quarter of the budget pas
 that size, and a handover, which empties the session and therefore re-arms it.
 
 The notice is queued as an `inject` row and does not touch the inbox signal, so it
-never ends a running command's wait the way an operator's message does.
+never ends a running command's wait the way an operator's message does. A
+structured marker records its context generation and token limit. Usage writes
+are conditional on the request's generation, and delivery drops a marked notice
+when the generation changed or the current context is below that limit. The
+response that streamed the heir tool therefore cannot restore its old measurement
+or notices. Ordinary user and background-job messages remain owed to the heir.
 
 ## notice_budget
 
@@ -108,7 +116,7 @@ Four things make that acceptable rather than dangerous:
   it, which is what every client already does. An archive nobody can query is a file
   with extra steps.
 - **The copy is verified before anything is deleted, in the same transaction.** Every
-  row is re-read from the mentor and compared on `(kind, content)`; one mismatch rolls
+  row is re-read from the mentor and compared on `(kind, content, display, call_id)`; one mismatch rolls
   the whole thing back, including the `sessions` update. So the failure mode "the
   archive is half-written and the original is empty" cannot be reached -- the script
   exits non-zero and the transcript is untouched.
