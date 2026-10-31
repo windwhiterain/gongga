@@ -51,7 +51,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     id         INTEGER PRIMARY KEY,
     name       TEXT NOT NULL UNIQUE,
     status     TEXT NOT NULL DEFAULT 'idle',
+    -- The model this session runs on, `provider/model_name`. Not the model's own
+    -- name: a name alone does not say who serves it.
     model      TEXT NOT NULL,
+    -- The name a row was created with, before `model` carried the provider too.
+    -- Only a row that predates that spelling reads it; nothing writes it now.
+    model_name TEXT,
     cwd        TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
@@ -64,9 +69,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     handover TEXT,
     -- Per-session overrides given by `set_session`. NULL means "the server's
     -- configuration", so a session that never asked is indistinguishable from
-    -- one created before these columns existed. `provider` is a roster entry,
-    -- `provider/model`.
-    provider TEXT,
+    -- one created before these columns existed. `model` holds the whole model,
+    -- `provider/model_name`; `model_name` above is the row's own name for it.
     context_limit INTEGER,
     -- How hard the model should think, in the roster's spelling. NULL means the
     -- model's own default, which is what a session that never asked should get.
@@ -184,14 +188,25 @@ fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
 
 /// Adds columns a `CREATE TABLE IF NOT EXISTS` cannot add to an old database.
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-    // Renamed once, when the argument became `--provider`: an old row keeps its
-    // value, and the column is not left behind under the old spelling.
+    // Renamed twice, each time the vocabulary settled under it: the model a
+    // session runs on is `provider/model_name`, and the model's own name is what
+    // it used to be called. An old row keeps its value either way.
     if has_column(conn, "sessions", "llm") && !has_column(conn, "sessions", "provider") {
         conn.execute("ALTER TABLE sessions RENAME COLUMN llm TO provider", [])?;
     }
+    if has_column(conn, "sessions", "model") && !has_column(conn, "sessions", "model_name") {
+        conn.execute("ALTER TABLE sessions RENAME COLUMN model TO model_name", [])?;
+    }
+    if has_column(conn, "sessions", "provider") && !has_column(conn, "sessions", "model") {
+        conn.execute("ALTER TABLE sessions RENAME COLUMN provider TO model", [])?;
+    }
     for (column, ddl) in [
         ("handover", "ALTER TABLE sessions ADD COLUMN handover TEXT"),
-        ("provider", "ALTER TABLE sessions ADD COLUMN provider TEXT"),
+        ("model", "ALTER TABLE sessions ADD COLUMN model TEXT"),
+        (
+            "model_name",
+            "ALTER TABLE sessions ADD COLUMN model_name TEXT",
+        ),
         (
             "context_limit",
             "ALTER TABLE sessions ADD COLUMN context_limit INTEGER",
@@ -295,6 +310,8 @@ impl Store {
 
     // -- sessions ----------------------------------------------------------
 
+    /// Creates a session on `model`, which is `provider/model_name` whenever the
+    /// roster can place the name.
     pub fn create_session(&self, name: &str, model: &str, cwd: &str) -> anyhow::Result<i64> {
         if name.trim().is_empty() {
             anyhow::bail!("session name must not be empty");
@@ -378,10 +395,13 @@ impl Store {
 
     /// The columns every session lookup returns, so the list and the single
     /// lookup cannot drift apart.
-    const SESSION_SELECT: &'static str = "SELECT s.id, s.name, s.status, s.model, s.cwd,
+    /// `model_name` is the fallback for a row written before `model` carried the
+    /// provider with it; it is the same model, named less precisely.
+    const SESSION_SELECT: &'static str = "SELECT s.id, s.name, s.status,
+                    COALESCE(s.model, s.model_name), s.cwd,
                     s.created_at, s.updated_at,
                     (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS messages,
-                    s.provider, s.context_limit, s.thinking_effort,
+                    s.context_limit, s.thinking_effort,
                     s.context_tokens, s.cached_tokens, s.tps, s.ttft_ms
              FROM sessions s";
 
@@ -403,44 +423,44 @@ impl Store {
             created_at: r.get(5)?,
             updated_at: r.get(6)?,
             messages: r.get::<_, i64>(7)? as u64,
-            provider: r.get(8)?,
-            context_limit: r.get::<_, Option<i64>>(9)?.map(|v| v as u8),
-            thinking_effort: r.get(10)?,
+            context_limit: r.get::<_, Option<i64>>(8)?.map(|v| v as u8),
+            thinking_effort: r.get(9)?,
             usage: protocol::Usage {
-                context_tokens: r.get::<_, i64>(11)?.max(0) as u64,
-                cached_tokens: r.get::<_, Option<i64>>(12)?.map(|n| n.max(0) as u64),
-                tps: r.get(13)?,
-                ttft_ms: r.get::<_, Option<i64>>(14)?.map(|ms| ms.max(0) as u64),
+                context_tokens: r.get::<_, i64>(10)?.max(0) as u64,
+                cached_tokens: r.get::<_, Option<i64>>(11)?.map(|n| n.max(0) as u64),
+                tps: r.get(12)?,
+                ttft_ms: r.get::<_, Option<i64>>(13)?.map(|ms| ms.max(0) as u64),
             },
         })
     }
 
-    /// Records what a session was told to use: tuning columns and `model` at once.
+    /// Records what a session was told to use: the model and the tuning beside it.
     ///
     /// # Invariant
     ///
-    /// All of it in one statement, so no reader sees half-applied tuning.
+    /// All of it in one statement, so no reader sees half-applied tuning. `model`
+    /// is `provider/model_name`, and `None` puts the session back on the server's
+    /// own model, whose name only the caller knows.
     pub fn set_session_tuning(
         &self,
         id: i64,
-        provider: Option<&str>,
+        model: Option<&str>,
         context_limit: Option<u8>,
         thinking_effort: Option<&str>,
-        model: &str,
+        default_model: &str,
     ) -> anyhow::Result<()> {
         self.lock().execute(
             "UPDATE sessions
-                SET provider = ?1,
-                    context_limit = ?2,
-                    thinking_effort = ?3,
-                    model = ?4,
+                SET model = COALESCE(?1, ?2),
+                    context_limit = ?3,
+                    thinking_effort = ?4,
                     updated_at = ?5
               WHERE id = ?6",
             params![
-                provider,
+                model,
+                default_model,
                 context_limit.map(|v| v as i64),
                 thinking_effort,
-                model,
                 now_millis(),
                 id
             ],
@@ -918,9 +938,9 @@ pub struct SessionRow {
     pub id: i64,
     pub name: String,
     pub status: SessionStatus,
+    /// The model this session runs on, `provider/model_name`; the bare name when
+    /// the roster could not place it.
     pub model: String,
-    /// Roster entry this session talks to, when `set_session --provider` gave it one.
-    pub provider: Option<String>,
     /// The context level a notice is sent at, as a share of the window, when the
     /// session was given one.
     pub context_limit: Option<u8>,
@@ -1349,8 +1369,8 @@ mod tests {
             .unwrap();
         let row = store.get_session("s").unwrap().unwrap();
         assert_eq!(
-            row.provider, None,
-            "a session starts on the server's own entry"
+            row.model, "MiniMax-M3.1-Flash",
+            "a session starts on the server's own model"
         );
         assert_eq!(row.context_limit, None);
         assert_eq!(row.thinking_effort, None, "no level means the model's own");
@@ -1365,13 +1385,10 @@ mod tests {
             )
             .unwrap();
         let row = store.get_session("s").unwrap().unwrap();
-        assert_eq!(
-            row.provider.as_deref(),
-            Some("deepseek-official/deepseek-flash")
-        );
+        assert_eq!(row.model, "deepseek-official/deepseek-flash");
         assert_eq!(row.context_limit, Some(30));
         assert_eq!(row.thinking_effort.as_deref(), Some("high"));
-        assert_eq!(row.model, "deepseek-flash");
+        assert_eq!(row.model, "deepseek-official/deepseek-flash");
 
         // Splitting by sequence adds up; counting rows does not, so the halves must match.
         store
@@ -1399,7 +1416,6 @@ mod tests {
             .set_session_tuning(id, None, None, None, "MiniMax-M3.1-Flash")
             .unwrap();
         let row = store.get_session("s").unwrap().unwrap();
-        assert_eq!(row.provider, None);
         assert_eq!(row.context_limit, None);
         assert_eq!(row.model, "MiniMax-M3.1-Flash");
     }
@@ -1424,6 +1440,72 @@ mod tests {
         // The tuning columns arrive the same way; a session that predates them
         // reads as "no overrides", not as an error.
         assert!(store.list_sessions().is_ok());
+    }
+
+    /// A database from the spelling before this one: the model's own name in
+    /// `model`, the whole model in `provider`.
+    ///
+    /// # Invariant
+    ///
+    /// Both halves come back renamed rather than blanked, so a session that was
+    /// pinned to a model is still pinned to it after the upgrade.
+    #[test]
+    fn the_older_model_columns_are_renamed_not_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("g.db");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE sessions (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, \
+                 status TEXT NOT NULL, model TEXT NOT NULL, cwd TEXT NOT NULL, \
+                 created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, \
+                 provider TEXT, context_limit INTEGER, thinking_effort TEXT);",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sessions (id, name, status, model, cwd, created_at, updated_at, provider) \
+                 VALUES (1, 's', 'idle', 'deepseek-flash', '/tmp', 0, 0, 'deepseek-official/deepseek-flash')",
+                [],
+            )
+            .unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        let row = store.get_session("s").unwrap().unwrap();
+        assert_eq!(
+            row.model, "deepseek-official/deepseek-flash",
+            "the pinned model is what the row kept"
+        );
+    }
+
+    /// A database whose model column holds only a name, from before the provider
+    /// travelled with it.
+    ///
+    /// # Invariant
+    ///
+    /// The name is still readable as the row's model, so a session survives the
+    /// rename without needing the roster to have changed.
+    #[test]
+    fn a_row_that_only_knows_the_name_still_reads_its_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("g.db");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE sessions (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, \
+                 status TEXT NOT NULL, model TEXT NOT NULL, cwd TEXT NOT NULL, \
+                 created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sessions (id, name, status, model, cwd, created_at, updated_at) \
+                 VALUES (1, 's', 'idle', 'deepseek-flash', '/tmp', 0, 0)",
+                [],
+            )
+            .unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        let row = store.get_session("s").unwrap().unwrap();
+        assert_eq!(row.model, "deepseek-flash");
     }
 
     #[test]

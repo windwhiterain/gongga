@@ -19,10 +19,12 @@ headers, `idle_timeout` on the content.
 
 ## LlmClient::model
 
-The model this client asks for.
+The model this client asks for, `provider/model_name`.
 
 Logged at the start of every turn, so "which model answered this one" is a
-fact rather than something to infer from the transcript.
+fact rather than something to infer from the transcript. The request's own `model`
+field carries the other half -- the name alone -- because a provider does not take
+its own id back.
 
 ## LlmClient::stream
 

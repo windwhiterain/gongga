@@ -29,7 +29,7 @@ pub struct Dispatch {
     pub bus: EventBus,
     /// Commands registered by scripts, and the way to run one.
     pub scripts: Arc<crate::script::Scripts>,
-    /// The machine's LLM roster: what `set_session --provider` is checked against.
+    /// The machine's LLM roster: what `set_session --model` is checked against.
     pub providers: crate::providers::Handle,
     /// Turns currently running. `cancel` waits for this to drain before the
     /// process is allowed to exit.
@@ -223,12 +223,12 @@ pub fn server_catalog() -> Vec<CommandSpec> {
                     CompletionSource::Paths,
                 ),
                 arg(
-                    "provider",
-                    "Roster entry to run this session's turns on, as <provider>/<model> (or a \
-                     bare model id). Defaults to the model the session was created with.",
+                    "model",
+                    "The model to run this session's turns on, as <provider>/<model name> (or \
+                     a bare model name). Defaults to the model the session was created with.",
                     false,
-                    Some("provider/model"),
-                    CompletionSource::Static(crate::providers::roster().specs()),
+                    Some("model"),
+                    CompletionSource::Static(crate::providers::roster().models()),
                 ),
                 arg(
                     "context_limit",
@@ -492,10 +492,10 @@ async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcome {
 
 async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     let name = args["session"].clone();
-    // Resolve `--provider` now: a typo should fail the command that made it.
-    let entry = match args.get("provider") {
+    // Resolve `--model` now: a typo should fail the command that made it.
+    let entry = match args.get("model") {
         None => None,
-        Some(spec) => match resolve_provider(d, spec) {
+        Some(model) => match resolve_model(d, model) {
             Ok(entry) => Some(entry),
             Err(e) => return Outcome::err(e),
         },
@@ -517,8 +517,8 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             "--context_limit {percent}% needs a context window to be a percentage of, and \
              no model involved here has one on record{}",
             match &entry {
-                Some(e) => format!(" ({} is not in the roster with a `context`)", e.spec()),
-                None => " (set --provider to a roster entry that states one)".to_string(),
+                Some(e) => format!(" ({} is not in the roster with a `context`)", e.model),
+                None => " (set --model to one whose roster entry states it)".to_string(),
             }
         ));
     }
@@ -537,9 +537,9 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         // Check the level against the model this session will run on, so typos fail now.
         let target = entry.clone().or_else(|| {
             tuning
-                .provider
+                .model
                 .as_deref()
-                .and_then(|spec| d.providers.entry(spec).ok())
+                .and_then(|model| d.providers.entry(model).ok())
         });
         tuning.thinking_effort = Some(match &target {
             Some(e) => match e.reasoning_effort(level) {
@@ -552,7 +552,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         changed = true;
     }
     if let Some(entry) = &entry {
-        tuning.provider = Some(entry.spec());
+        tuning.model = Some(entry.model.clone());
         changed = true;
     }
     if let Some(percent) = threshold {
@@ -563,15 +563,16 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         // Persist before applying: a restart must restore what turns here read.
         if let Err(e) = d.store.set_session_tuning(
             session.id(),
-            tuning.provider.as_deref(),
+            tuning.model.as_deref(),
             tuning.context_limit,
             tuning.thinking_effort.as_deref(),
-            // The model the session will actually run on: the entry's, or the
-            // server's own when it has none of its own.
+            // The model the session will actually run on: the one it named, or the
+            // server's own when it named none.
             entry
                 .as_ref()
-                .map(|e| e.model.as_str())
-                .unwrap_or_else(|| d.agent.llm.model()),
+                .map(|e| e.model.clone())
+                .unwrap_or_else(|| d.agent.llm.model().to_string())
+                .as_str(),
         ) {
             return Outcome::err(format!("could not save the session settings: {e}"));
         }
@@ -587,18 +588,25 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         json!({
             "session": name,
             "cwd": cwd,
-            "provider": tuning.provider,
+            "model": tuning.model,
             "context_limit": tuning.context_limit,
             "thinking_effort": tuning.thinking_effort,
         }),
     )
 }
 
-/// Turns `--provider` into a roster entry, trying `provider/model` then a bare id.
-fn resolve_provider(d: &Dispatch, spec: &str) -> Result<crate::providers::Entry, String> {
-    match d.providers.resolve(spec) {
+/// Turns `--model` into a roster entry, trying `provider/model_name` then a bare
+/// model name: one model, spelled as precisely as the caller knows it.
+fn resolve_model(d: &Dispatch, model: &str) -> Result<crate::providers::Entry, String> {
+    match d.providers.resolve(model) {
         Ok(choice) => Ok(choice.entry),
-        Err(e) => d.providers.find_model(spec).map(|c| c.entry).ok_or(e),
+        // A bare name is not an error the roster should answer twice: the second
+        // search is only reached when the first found no such pair.
+        Err(e) => d
+            .providers
+            .resolve_by_name(model)
+            .map(|c| c.entry)
+            .ok_or_else(|| format!("--model {model}: {e}")),
     }
 }
 
@@ -1026,7 +1034,7 @@ pub fn publish_sessions(d: &Dispatch) {
 /// The tuning fields are what the session *would send now*, not what its row was
 /// last given: a session that never named a level runs on the model's own, and one
 /// that never named a share is noticed at the default. One function, because the
-/// greeting and the list must not disagree about a session's provider.
+/// greeting and the list must not disagree about a session's model.
 pub fn session_info(d: &Dispatch, row: &crate::store::SessionRow) -> protocol::SessionInfo {
     let tuning = d
         .sessions
@@ -1034,13 +1042,18 @@ pub fn session_info(d: &Dispatch, row: &crate::store::SessionRow) -> protocol::S
         .map(|s| s.tuning())
         .unwrap_or_default();
     let entry = tuning
-        .provider
+        .model
         .as_deref()
-        .and_then(|spec| d.providers.entry(spec).ok());
-    let provider = entry
-        .as_ref()
-        .map(|e| e.provider.clone())
-        .or_else(|| d.agent.llm.provider().map(str::to_string));
+        .and_then(|model| d.providers.place(model));
+    // The roster's own spelling when it can place the model, the name it was given
+    // when it cannot, and the server's own when the session named none.
+    let model = Some(
+        entry
+            .as_ref()
+            .map(|e| e.model.clone())
+            .or_else(|| tuning.model.clone())
+            .unwrap_or_else(|| d.agent.llm.model().to_string()),
+    );
     let thinking_effort = tuning
         .thinking_effort
         .clone()
@@ -1053,7 +1066,7 @@ pub fn session_info(d: &Dispatch, row: &crate::store::SessionRow) -> protocol::S
         messages: row.messages,
         cwd: row.cwd.clone(),
         usage: row.usage,
-        provider,
+        model,
         thinking_effort,
         context_limit: tuning
             .context_limit
@@ -1357,12 +1370,9 @@ mod tests {
         let session = spec.args.iter().find(|a| a.name == "session").unwrap();
         assert!(session.required);
         assert!(matches!(session.completions, CompletionSource::Sessions));
-        let provider = spec.args.iter().find(|a| a.name == "provider").unwrap();
-        assert!(
-            !provider.required,
-            "omitting --provider keeps the server's model"
-        );
-        assert!(matches!(provider.completions, CompletionSource::Static(_)));
+        let model = spec.args.iter().find(|a| a.name == "model").unwrap();
+        assert!(!model.required, "omitting --model keeps the server's model");
+        assert!(matches!(model.completions, CompletionSource::Static(_)));
         let threshold = spec
             .args
             .iter()

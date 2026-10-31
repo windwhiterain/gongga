@@ -1295,8 +1295,8 @@ fn title_note(session: &protocol::SessionInfo) -> String {
     if !session.cwd.is_empty() {
         parts.push(format!("cwd {}", session.cwd));
     }
-    if let Some(provider) = &session.provider {
-        parts.push(format!("provider {provider}"));
+    if let Some(model) = &session.model {
+        parts.push(format!("model {model}"));
     }
     if let Some(level) = &session.thinking_effort {
         parts.push(format!("thinking {level}"));
@@ -2128,7 +2128,7 @@ mod tests {
             messages: 0,
             cwd: String::new(),
             usage: protocol::Usage::default(),
-            provider: None,
+            model: None,
             thinking_effort: None,
             context_limit: None,
         }
@@ -2520,21 +2520,21 @@ mod tests {
                 tps: Some(40.0),
                 ttft_ms: Some(300),
             },
-            provider: Some("deepseek-official".into()),
+            model: Some("deepseek-official/deepseek-flash".into()),
             thinking_effort: Some("high".into()),
             context_limit: Some(70),
         };
         assert_eq!(
             title_note(&session),
             "ctx 2100 · cached 95% · tps 40.0 · ttft 300ms · cwd C:/work/svc · \
-             provider deepseek-official · thinking high · ctx_limit 70%"
+             model deepseek-official/deepseek-flash · thinking high · ctx_limit 70%"
         );
 
         // A session with no tuning of its own still says where it runs.
         let bare = protocol::SessionInfo {
             usage: protocol::Usage::default(),
             cwd: String::new(),
-            provider: None,
+            model: None,
             thinking_effort: None,
             context_limit: Some(0),
             ..session
@@ -2691,7 +2691,7 @@ mod tests {
             messages: 0,
             cwd: String::new(),
             usage: protocol::Usage::default(),
-            provider: None,
+            model: None,
             thinking_effort: None,
             context_limit: None,
         };

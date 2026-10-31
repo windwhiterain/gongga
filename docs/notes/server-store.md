@@ -86,9 +86,9 @@ Both columns at once: they are one decision ("how should this session behave"),
 and `set_session` is the only thing that writes them, so a half-applied tuning is
 not a state anything else has to handle.
 
-`model` is kept in step rather than derived on read: it is what list views show,
-and `provider` being cleared has to put it back to the server's own model, which only
-the caller knows.
+The model is the column list views show, so it is written with the tuning rather
+than derived on read, and clearing it has to put the session back on the server's
+own model, which only the caller knows.
 
 ## Store::history
 
@@ -268,10 +268,12 @@ append the operator's line a second time.
 Written before the job is handed to the model, so a crash in between leaves a row
 the next start adopts rather than a process nobody knows about.
 
-## SessionRow::provider
+## SessionRow::model
 
-`None` means "whatever the server is configured with", which is what most
-sessions are.
+The whole model, `provider/model_name`, because a name alone does not say who serves
+it. A row written before the column said that keeps its bare name in `model_name`,
+and the select reads `COALESCE(model, model_name)`: the same model, named as well as
+that row knew how.
 
 ## SessionRow::context_limit
 
@@ -322,9 +324,9 @@ this design takes away from the server.
 
 ## session_tuning_round_trips
 
-`set_session --provider` and `--context_limit` have to survive a restart like
-everything else. `model` follows the entry, because that is the column list views
-read.
+`set_session --model` and `--context_limit` have to survive a restart like
+everything else. The model column is written by the same statement, because that is
+what list views read.
 
 The two halves of a fold have to add up to the transcript. Splitting by
 sequence does that by construction; counting rows did not, because a `notice` is
@@ -334,18 +336,20 @@ Four rows, four items -- but not four rows' worth: the notice contributes nothin
 and the unanswered call contributes two. That is exactly why a row count is the
 wrong way to find the cut.
 
-Clearing the entry goes back to the server's own, model included: the caller
-passes what that is, because only it knows.
+Clearing the model goes back to the server's own: the caller passes what that is,
+because only it knows.
 
 ## opening_an_old_database_adds_the_new_columns
 
 A database written before compression existed has to grow the columns rather than
 fail to open, or every existing session would be stranded.
 
-The one column that did not need adding is the one that was renamed: a sessions
-table from before the argument became `--provider` still says `llm`, and
-`migrate` renames it in place. Adding an empty `provider` beside it would have
-dropped every session's pinned entry, and the row is the only place it is kept.
+Two of them did not need adding, because they were renamed instead: a sessions
+table from before the vocabulary settled says `llm` for the model, and `model` for
+what is now `model_name`. `migrate` renames each in place, in that order, so a table
+that has both old names ends up with the new pair. Adding empty columns beside them
+would have dropped every session's pinned model, and the row is the only place it is
+kept.
 
 ## the_measured_context_size_survives_a_restart
 

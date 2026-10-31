@@ -343,20 +343,21 @@ not make the window repaint.
 
 SPEC's `full` pane title, spelled once: what the last request measured -- `ctx`,
 `cached (in n%)`, `tps (latest)`, `ttft (latest)` -- then what the session runs on
--- `cwd`, `provider`, `thinking_effort`, `context_limit` -- in SPEC's order, the
+-- `cwd`, `model`, `thinking_effort`, `context_limit` -- in SPEC's order, the
 last one shortened to `ctx_limit` so the title stays one row. Spelled here rather
 than in the window for the same reason `status` is a word: a front-end
 that knows no protocol type can still draw it, and the two front-ends cannot
 disagree about how a rate is rounded.
 
 `title_note` spells it: `ctx 12345 · cached 89% · tps 41.6 · ttft 820ms · cwd
-C:/work/svc · provider deepseek-official · thinking high · ctx_limit 70%`.
+C:/work/svc · model deepseek-official/deepseek-flash · thinking high · ctx_limit 70%`.
 
 `cached` is a share, not a count: SPEC says `in n%`, and the client is where the
 division happens because the wire carries what the provider measured (two token
 counts) rather than a number derived from them. `cwd` is the session's own directory
-and says where a turn's commands run. `provider` is the roster id the session would
-spend, which is how an operator knows whose balance a turn is drawing on;
+and says where a turn's commands run. `model` is the model the session would spend,
+provider and all: whose balance a turn draws on is the provider half, and which
+brain answers is the pair.
 `thinking_effort` is the level in force, the model's default included, because a
 session that never named one still runs at some level. A figure the last request did
 not produce is left out rather than shown as zero --
@@ -399,7 +400,7 @@ SPEC's `set_session` carries a second sentence: it also sets the sticky `session
 which is what keeps `send_message --message ...` from needing `--session` said
 every time. It runs on the acknowledgement, never on the submission, because a
 refused `set_session` must leave the client pointed where it was: following a
-session that `--provider nosuch/model` refused to create is the kind of wrong that
+session that `--model nosuch/model` refused to create is the kind of wrong that
 reads as "the log stopped".
 
 `del_session` follows nothing. Which session a command goes to is the sticky's to

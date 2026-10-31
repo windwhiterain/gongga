@@ -13,7 +13,7 @@ pub const DEFAULT_DB: &str = "gongga.db";
 
 /// Default provider: MiniMax's China endpoint, OpenAI-compatible Responses API.
 pub const DEFAULT_BASE_URL: &str = "https://api.minimax.cn/v1";
-pub const DEFAULT_MODEL: &str = "MiniMax-M3.1-Flash";
+pub const DEFAULT_MODEL_NAME: &str = "MiniMax-M3.1-Flash";
 pub const DEFAULT_API_KEY_ENV: &str = "MINIMAX_CN_API_KEY";
 /// Tool output larger than this is capped and spilled to disk, keeping `cat`s out
 /// of later requests.
@@ -31,21 +31,24 @@ pub struct Config {
     pub bind: SocketAddr,
     /// Shared secret a client must present before it may drive the harness.
     pub key: String,
-    pub provider: ProviderConfig,
+    /// The model the server runs on when a session names none.
+    pub model: ModelConfig,
     pub bash: BashConfig,
     pub scripts: ScriptConfig,
     pub agent: AgentConfig,
     pub transport: TransportConfig,
 }
 
+/// The model the server talks to by default: which provider serves it, and how.
 #[derive(Debug, Clone)]
-pub struct ProviderConfig {
-    /// Roster provider id this configuration points at; only used in messages.
+pub struct ModelConfig {
+    /// The provider's id, e.g. `deepseek-official`; only used in messages.
     pub provider: Option<String>,
+    /// The name the provider's API takes in its `model` field.
+    pub model_name: String,
     /// Base URL of an OpenAI-compatible Responses API. Defaults to MiniMax CN.
     pub base_url: String,
-    pub model: String,
-    /// Context window of `model`; `--context_limit` is a percentage of it.
+    /// Context window of the model; `--context_limit` is a percentage of it.
     pub context: Option<u64>,
     /// Name of the environment variable holding the API key.
     pub api_key_env: String,
@@ -172,7 +175,9 @@ pub struct AgentConfig {
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct FileConfig {
     server: Option<FileServer>,
-    provider: Option<FileProvider>,
+    /// `[model]`; `[provider]` is where this table used to live.
+    #[serde(alias = "provider")]
+    model: Option<FileModel>,
     tools: Option<FileTools>,
     scripts: Option<FileScripts>,
     agent: Option<FileAgent>,
@@ -187,12 +192,13 @@ struct FileServer {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
-struct FileProvider {
-    /// Roster provider id, e.g. `deepseek-official`. Optional: naming only a
-    /// model finds the provider that has it.
+struct FileModel {
+    /// A provider's id, e.g. `deepseek-official`. Optional: naming only a model
+    /// name finds the provider that has it.
     provider: Option<String>,
     base_url: Option<String>,
-    model: Option<String>,
+    #[serde(alias = "model")]
+    model_name: Option<String>,
     api_key_env: Option<String>,
     temperature: Option<f32>,
     max_output_tokens: Option<u32>,
@@ -297,16 +303,16 @@ impl Config {
                 generated
             });
 
-        let provider_file = file.provider.unwrap_or_default();
+        let model_file = file.model.unwrap_or_default();
         // The roster is the machine's own provider list; using it needs no config.
         let roster = crate::providers::roster();
-        let entry = pick_entry(
+        let entry = pick_model(
             &roster,
-            env_or("GONGGA_PROVIDER").or(provider_file.provider.clone()),
-            env_or("GONGGA_MODEL").or(provider_file.model.clone()),
+            env_or("GONGGA_PROVIDER").or(model_file.provider.clone()),
+            env_or("GONGGA_MODEL").or(model_file.model_name.clone()),
         );
         let api_key_env = env_or("GONGGA_API_KEY_ENV")
-            .or_else(|| provider_file.api_key_env.clone())
+            .or_else(|| model_file.api_key_env.clone())
             .or_else(|| entry.as_ref().and_then(|e| e.api_key_env.clone()))
             .unwrap_or_else(|| DEFAULT_API_KEY_ENV.to_string());
         let api_key = env_or("GONGGA_API_KEY")
@@ -320,24 +326,24 @@ impl Config {
             })
             .unwrap_or_default();
 
-        let provider = ProviderConfig {
+        let model = ModelConfig {
             provider: entry.as_ref().map(|e| e.provider.clone()),
+            model_name: env_or("GONGGA_MODEL")
+                .or(model_file.model_name)
+                .or_else(|| entry.as_ref().map(|e| e.model_name.clone()))
+                .unwrap_or_else(|| DEFAULT_MODEL_NAME.to_string()),
             base_url: env_or("GONGGA_BASE_URL")
-                .or(provider_file.base_url)
+                .or(model_file.base_url)
                 .or_else(|| entry.as_ref().map(|e| e.base_url.clone()))
                 .unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
-            model: env_or("GONGGA_MODEL")
-                .or(provider_file.model)
-                .or_else(|| entry.as_ref().map(|e| e.model.clone()))
-                .unwrap_or_else(|| DEFAULT_MODEL.to_string()),
             context: entry.as_ref().and_then(|e| e.context),
             api_key_env,
             api_key,
-            temperature: provider_file.temperature,
-            max_output_tokens: provider_file.max_output_tokens,
-            store: provider_file.store.unwrap_or(false),
+            temperature: model_file.temperature,
+            max_output_tokens: model_file.max_output_tokens,
+            store: model_file.store.unwrap_or(false),
             headers_timeout: Duration::from_millis(
-                provider_file
+                model_file
                     .headers_timeout_ms
                     .or_else(|| {
                         env_or("GONGGA_PROVIDER_HEADERS_TIMEOUT_MS").and_then(|v| v.parse().ok())
@@ -345,20 +351,20 @@ impl Config {
                     .unwrap_or(180_000),
             ),
             idle_timeout: Duration::from_millis(
-                provider_file
+                model_file
                     .idle_timeout_ms
                     .or_else(|| {
                         env_or("GONGGA_PROVIDER_IDLE_TIMEOUT_MS").and_then(|v| v.parse().ok())
                     })
                     .unwrap_or(60_000),
             ),
-            max_retries: provider_file
+            max_retries: model_file
                 .max_retries
                 .or_else(|| env_or("GONGGA_PROVIDER_MAX_RETRIES").and_then(|v| v.parse().ok()))
                 // 0 is no ceiling: retry until the turn is cancelled.
                 .unwrap_or(0),
             retry_base: Duration::from_millis(
-                provider_file
+                model_file
                     .retry_base_ms
                     .or_else(|| {
                         env_or("GONGGA_PROVIDER_RETRY_BASE_MS").and_then(|v| v.parse().ok())
@@ -431,7 +437,7 @@ impl Config {
             db_path,
             bind,
             key,
-            provider,
+            model,
             bash,
             scripts,
             agent,
@@ -440,29 +446,33 @@ impl Config {
     }
 }
 
-/// Picks the roster entry the server should talk to.
+/// Picks the model the server should talk to.
 ///
 /// # Invariant
 ///
-/// A provider and a model name an exact entry, a model alone finds its provider,
-/// neither takes the first usable entry; a spec the roster cannot place warns and
-/// falls back rather than failing. See `docs/notes/server-config.md`.
-fn pick_entry(
+/// A model named in full (`provider/model_name`) is that entry whatever else is
+/// said; otherwise a provider and a model name are its two halves, a model name
+/// alone finds the provider that carries it, and nothing named takes the first
+/// usable entry. A name the roster cannot place warns and falls back rather than
+/// failing. See `docs/notes/server-config.md`.
+fn pick_model(
     roster: &crate::providers::Catalog,
     provider: Option<String>,
     model: Option<String>,
 ) -> Option<crate::providers::Entry> {
-    match (provider, model) {
-        (Some(p), Some(m)) => {
-            let spec = format!("{p}/{m}");
-            match roster.entry(&spec) {
-                Ok(entry) => Some(entry),
-                Err(e) => {
-                    tracing::warn!(spec = %spec, error = %e, "provider: the roster cannot place this; using the built-in default");
-                    None
-                }
+    fn place(roster: &crate::providers::Catalog, model: &str) -> Option<crate::providers::Entry> {
+        match roster.entry(model) {
+            Ok(entry) => Some(entry),
+            Err(e) => {
+                tracing::warn!(model = %model, error = %e, "model: the roster cannot place this; using the built-in default");
+                None
             }
         }
+    }
+    match (provider, model) {
+        // The model as a caller names it, provider and all.
+        (_, Some(whole)) if whole.contains('/') => place(roster, &whole),
+        (Some(p), Some(m)) => place(roster, &format!("{p}/{m}")),
         (Some(p), None) => match roster.first_entry_of(&p) {
             Some(entry) => Some(entry),
             None => {
@@ -470,10 +480,10 @@ fn pick_entry(
                 None
             }
         },
-        (None, Some(m)) => match roster.find_model_entry(&m) {
+        (None, Some(m)) => match roster.entry_by_name(&m) {
             Some(entry) => Some(entry),
             None => {
-                tracing::warn!(model = %m, "provider: no provider in the roster has this model; using the built-in default");
+                tracing::warn!(model = %m, "model: no provider in the roster has this name; using the built-in default");
                 None
             }
         },
@@ -481,7 +491,17 @@ fn pick_entry(
     }
 }
 
-impl ProviderConfig {
+impl ModelConfig {
+    /// The model itself: `provider/model_name` when the provider is known, and
+    /// the bare name when the roster could not place it. See
+    /// `docs/notes/server-config.md`.
+    pub fn model(&self) -> String {
+        match &self.provider {
+            Some(provider) => format!("{provider}/{}", self.model_name),
+            None => self.model_name.clone(),
+        }
+    }
+
     /// The same timeouts and retries, pointed at another model.
     ///
     /// See `docs/notes/server-config.md`.
@@ -489,7 +509,7 @@ impl ProviderConfig {
         let mut cfg = self.clone();
         cfg.provider = Some(entry.provider.clone());
         cfg.base_url = entry.base_url.clone();
-        cfg.model = entry.model.clone();
+        cfg.model_name = entry.model_name.clone();
         cfg.context = entry.context;
         cfg.api_key_env = entry.api_key_env.clone().unwrap_or_default();
         cfg.api_key = api_key;
@@ -597,9 +617,24 @@ mod tests {
 
     #[test]
     fn parses_a_minimal_config() {
-        let cfg: FileConfig = toml::from_str("[provider]\nmodel = \"x\"\n").unwrap();
-        assert_eq!(cfg.provider.unwrap().model.as_deref(), Some("x"));
+        let cfg: FileConfig = toml::from_str("[model]\nmodel_name = \"x\"\n").unwrap();
+        assert_eq!(cfg.model.unwrap().model_name.as_deref(), Some("x"));
         assert!(cfg.server.is_none());
+    }
+
+    /// A home whose config.toml still says `[provider]` and `model` keeps working.
+    ///
+    /// # Invariant
+    ///
+    /// Both older spellings are read, so the rename costs a home nothing and the
+    /// next install can merge the new table over the old one.
+    #[test]
+    fn the_older_table_and_field_names_are_still_read() {
+        let cfg: FileConfig =
+            toml::from_str("[provider]\nmodel = \"x\"\nprovider = \"p\"\n").unwrap();
+        let model = cfg.model.unwrap();
+        assert_eq!(model.model_name.as_deref(), Some("x"));
+        assert_eq!(model.provider.as_deref(), Some("p"));
     }
 
     #[test]
@@ -687,32 +722,47 @@ key = "k2"
         let roster = crate::providers::Catalog::load(&path);
 
         // Nothing said: the first entry that works.
-        let entry = pick_entry(&roster, None, None).expect("a default exists");
-        assert_eq!(entry.spec(), "p1/m1");
+        let entry = pick_model(&roster, None, None).expect("a default exists");
+        assert_eq!(entry.model, "p1/m1");
         assert_eq!(entry.base_url, "https://one.example/v1");
 
         // A model alone finds the provider that carries it.
         assert_eq!(
-            pick_entry(&roster, None, Some("m2".into())).unwrap().spec(),
+            pick_model(&roster, None, Some("m2".into())).unwrap().model,
             "p2/m2"
         );
         // A provider alone takes its first model.
         assert_eq!(
-            pick_entry(&roster, Some("p2".into()), None).unwrap().spec(),
+            pick_model(&roster, Some("p2".into()), None).unwrap().model,
             "p2/m2"
+        );
+        // The model named in full is that model, and the provider beside it is
+        // then only a claim about whose it is.
+        assert_eq!(
+            pick_model(&roster, None, Some("p2/m2".into()))
+                .unwrap()
+                .model,
+            "p2/m2"
+        );
+        assert_eq!(
+            pick_model(&roster, Some("p1".into()), Some("p2/m2".into()))
+                .unwrap()
+                .model,
+            "p2/m2",
+            "the name carries its own provider"
         );
         // Both is exact.
         assert_eq!(
-            pick_entry(&roster, Some("p2".into()), Some("m2".into()))
+            pick_model(&roster, Some("p2".into()), Some("m2".into()))
                 .unwrap()
-                .spec(),
+                .model,
             "p2/m2"
         );
         // A typo is a warning and a fallback, not a refusal to start.
-        assert!(pick_entry(&roster, Some("nope".into()), Some("m2".into())).is_none());
-        assert!(pick_entry(&roster, None, Some("nope".into())).is_none());
+        assert!(pick_model(&roster, Some("nope".into()), Some("m2".into())).is_none());
+        assert!(pick_model(&roster, None, Some("nope".into())).is_none());
         // An empty roster is simply no opinion.
-        assert!(pick_entry(&crate::providers::Catalog::empty(), None, None).is_none());
+        assert!(pick_model(&crate::providers::Catalog::empty(), None, None).is_none());
     }
 
     #[test]

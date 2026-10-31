@@ -14,7 +14,7 @@ use serde_json::json;
 use tokio::sync::mpsc;
 
 use crate::bus::EventBus;
-use crate::config::ProviderConfig;
+use crate::config::ModelConfig;
 use crate::llm::{LlmClient, LlmEvent};
 use crate::providers::{self};
 use crate::session::SessionHandle;
@@ -27,14 +27,14 @@ pub const DEFAULT_CONTEXT_LIMIT_PERCENT: u8 = 70;
 
 pub struct Agent {
     pub store: Store,
-    /// What a session talks to unless it named its own `--provider`.
+    /// What a session talks to unless it named its own `--model`.
     pub llm: Arc<LlmClient>,
-    /// The machine's roster, which `--provider` names resolve against. A live view:
+    /// The machine's roster, which `--model` names resolve against. A live view:
     /// a reload reaches every later route.
     pub providers: providers::Handle,
     /// What a session's own entry inherits: timeouts and retries.
-    pub provider_config: ProviderConfig,
-    /// Clients for sessions that named their own entry, keyed by `provider/model`
+    pub model_config: ModelConfig,
+    /// Clients for sessions that named their own model, keyed by `provider/model_name`
     /// and by the roster read that produced it.
     pub clients: std::sync::Mutex<std::collections::HashMap<String, (u64, Arc<LlmClient>)>>,
     /// [`Self::llm`]'s context window, for a percentage set without naming a model.
@@ -200,13 +200,14 @@ impl Agent {
         name: &str,
         tuning: &crate::session::Tuning,
     ) -> anyhow::Result<(Arc<LlmClient>, u64)> {
-        let (llm, context) = match &tuning.provider {
+        let (llm, context) = match &tuning.model {
             None => (self.llm.clone(), self.default_context),
-            Some(spec) => {
+            Some(model) => {
                 let choice = self
                     .providers
-                    .resolve(spec)
-                    .map_err(|e| anyhow::anyhow!("--provider {spec}: {e}"))?;
+                    .resolve(model)
+                    .or_else(|e| self.providers.resolve_by_name(model).ok_or(e))
+                    .map_err(|e| anyhow::anyhow!("--model {model}: {e}"))?;
                 let client = self.client_for(&choice.entry, choice.api_key)?;
                 (client, choice.entry.context)
             }
@@ -233,13 +234,13 @@ impl Agent {
         entry: &providers::Entry,
         api_key: String,
     ) -> anyhow::Result<Arc<LlmClient>> {
-        let spec = entry.spec();
+        let model = entry.model.clone();
         let generation = self.providers.generation();
         let cached = self
             .clients
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get(&spec)
+            .get(&model)
             .cloned();
         if let Some((pinned, client)) = cached {
             if pinned == generation {
@@ -248,12 +249,12 @@ impl Agent {
         }
         // Built outside the lock: a duplicate client is cheaper than serialising turns.
         let client = Arc::new(LlmClient::new(
-            &self.provider_config.for_entry(entry, api_key),
+            &self.model_config.for_entry(entry, api_key),
         )?);
         self.clients
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(spec, (generation, client.clone()));
+            .insert(model, (generation, client.clone()));
         Ok(client)
     }
 

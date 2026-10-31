@@ -110,7 +110,7 @@ reads a greeting from a server that has never heard of them instead of failing t
 decode it: a window against an older server draws titles without numbers, which is
 what that server measured.
 
-## SessionInfo — provider, thinking_effort, context_limit
+## SessionInfo — model, thinking_effort, context_limit
 
 SPEC's `full` pane title lists them beside the measurements, so they travel with the
 session rather than with a turn. They are what the session would send *now*: a session
@@ -118,6 +118,12 @@ that never named a level runs on the model's own default, and one that never nam
 share is noticed at the server's -- resolved on the server, because only the server
 holds the roster. All three are `#[serde(default)]`, so an older server's greeting
 still decodes into a client that expects them.
+
+`model` carries the whole model, `provider/model_name`, and not the provider alone: a
+provider is only half of what a turn spends, and a title that named it without the
+model would say whose account a step draws on but not what answered. `Quota` is where
+the provider stands alone, because an allowance belongs to the account, not to the
+model.
 
 `cwd` was already here; it is part of the same title.
 

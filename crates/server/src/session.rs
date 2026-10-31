@@ -21,8 +21,9 @@ pub const DEFAULT_BASH: &str = "default";
 /// What a session was told to use, as `set_session` left it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Tuning {
-    /// A roster entry, `provider/model`. `None` means "the server's own".
-    pub provider: Option<String>,
+    /// The model this session runs on, `provider/model_name`. `None` means "the
+    /// server's own".
+    pub model: Option<String>,
     /// The context level a notice is sent at, as a percentage of the window;
     /// `None` means the default share.
     pub context_limit: Option<u8>,
@@ -408,6 +409,8 @@ impl ShellSet {
 pub struct SessionManager {
     store: Store,
     bash: BashConfig,
+    /// The model every session here runs on unless it named one, as
+    /// `provider/model_name` when the roster can place it.
     model: String,
     /// Detached jobs outlive shell, cancel and restart; `del_session` still deletes
     /// that session's bash.
@@ -470,22 +473,21 @@ impl SessionManager {
         let id = self
             .store
             .create_session(name, &self.model, &cwd.to_string_lossy())?;
-        // Pin the model's entry: reasoning blobs replay only on the producing provider.
+        // Pin the model itself: reasoning blobs replay only where they were produced.
         let pinned = crate::providers::roster()
-            .find_model_entry(&self.model)
-            .map(|e| e.spec());
-        if let Some(spec) = &pinned {
+            .place(&self.model)
+            .map(|e| e.model);
+        if let Some(model) = &pinned {
             let _ = self
                 .store
-                .set_session_tuning(id, Some(spec), None, None, &self.model);
+                .set_session_tuning(id, Some(model), None, None, &self.model);
         }
         self.materialise_locked(
             SessionRow {
                 id,
                 name: name.to_string(),
                 status: protocol::SessionStatus::Idle,
-                model: self.model.clone(),
-                provider: pinned,
+                model: pinned.unwrap_or_else(|| self.model.clone()),
                 context_limit: None,
                 thinking_effort: None,
                 cwd: cwd.to_string_lossy().to_string(),
@@ -561,12 +563,14 @@ impl SessionManager {
                 gate: Arc::new(AsyncMutex::new(())),
                 turns: AtomicU64::new(0),
                 tuning: Mutex::new(Tuning {
-                    // Prefer the pinned entry; a row that predates it is resolved from the roster.
-                    provider: row.provider.clone().or_else(|| {
+                    // The row's own spelling first; a row that only knows the name
+                    // still finds its provider through the roster.
+                    model: Some(
                         crate::providers::roster()
-                            .find_model_entry(&row.model)
-                            .map(|e| e.spec())
-                    }),
+                            .place(&row.model)
+                            .map(|e| e.model)
+                            .unwrap_or_else(|| row.model.clone()),
+                    ),
                     context_limit: row.context_limit,
                     thinking_effort: row.thinking_effort,
                 }),

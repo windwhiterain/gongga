@@ -15,6 +15,11 @@ two sessions on one server can run different models at different notice
 points, and a turn reads this when it starts so a change applies to the next turn
 instead of restarting anything.
 
+`Tuning::model` is the model a turn here spends: `provider/model_name`, or `None` for
+"the server's own". It is one field because a model is one choice -- whose account
+pays and which brain answers are not separable, and a struct that could hold a
+provider without a model would be a state nothing could send.
+
 ## Tuning::context_limit
 
 `None` is the default percentage, not "off" and not a token count:/n`notice_budget` multiplies the percentage by the window the chosen model
@@ -176,9 +181,10 @@ nothing.
 
 ## SessionManager::materialise
 
-`provider` is what the session was pinned to; a row that predates it still knows its
-model, and the roster is what turns that name back into a provider. Only a model
-the roster has never heard of falls back to the server's own.
+The row's `model` is what the session is pinned to, `provider/model_name`. A row that
+predates that spelling knows the bare name, and the roster is what turns that name
+back into a model; a row the roster has never heard of keeps the name it has, and only
+a session that named nothing at all falls back to the server's own.
 
 ## SessionManager::delete
 

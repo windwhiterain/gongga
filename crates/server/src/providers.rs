@@ -86,15 +86,21 @@ impl Model {
     }
 }
 
-/// One resolved entry: where a request goes, nothing about whose key pays.
+/// One model as a caller picks it: which provider serves it, and where to ask.
 ///
 /// See `docs/notes/server-providers.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
+    /// The provider's id, e.g. `deepseek-official`.
     pub provider: String,
+    /// The provider's display name.
     pub provider_name: String,
+    /// The model a caller names: `provider/model_name`.
     pub model: String,
+    /// The name the provider's API takes in its `model` field.
     pub model_name: String,
+    /// The model's display name.
+    pub model_title: String,
     pub base_url: String,
     /// Variable the provider says its key lives in, when it says.
     pub api_key_env: Option<String>,
@@ -136,12 +142,6 @@ impl Entry {
             self.reasoning_levels.join(", ")
         ))
     }
-
-    /// The `provider/model` spelling, which is what `--provider` takes and what the
-    /// session records.
-    pub fn spec(&self) -> String {
-        format!("{}/{}", self.provider, self.model)
-    }
 }
 
 /// An [`Entry`] plus the key that resolved for it.
@@ -177,7 +177,7 @@ impl Catalog {
     /// # Invariant
     ///
     /// A missing layer is not a problem worth a line, and a broken one costs only
-    /// itself: the layers that did parse still answer `--provider`. See
+    /// itself: the layers that did parse still answer `--model`. See
     /// `docs/notes/server-providers.md`.
     pub fn load_layers(paths: &[PathBuf]) -> Self {
         let mut catalog = Self {
@@ -255,8 +255,9 @@ impl Catalog {
         &self.providers
     }
 
-    /// Every `provider/model` worth offering, in file order, keys unresolved too.
-    pub fn specs(&self) -> Vec<String> {
+    /// Every model worth offering, as `provider/model_name`, in file order, keys
+    /// unresolved too.
+    pub fn models(&self) -> Vec<String> {
         let mut out = Vec::new();
         for p in &self.providers {
             for m in &p.models {
@@ -266,29 +267,35 @@ impl Catalog {
         out
     }
 
-    /// Resolves `provider/model` into a destination plus the key to use for it.
-    pub fn resolve(&self, spec: &str) -> Result<Choice, String> {
-        self.resolve_with(spec, &lookup_env)
+    /// Resolves a model into a destination plus the key to use for it.
+    pub fn resolve(&self, model: &str) -> Result<Choice, String> {
+        self.resolve_with(model, &lookup_env)
     }
 
     /// Resolves the destination only. The caller brings its own key.
-    pub fn entry(&self, spec: &str) -> Result<Entry, String> {
-        self.entry_with(spec)
+    pub fn entry(&self, model: &str) -> Result<Entry, String> {
+        self.entry_with(model)
     }
 
-    /// A bare model id, looked for in every provider in file order. Handy when
+    /// A model however it was written: `provider/model_name` when the name carries
+    /// its provider, the provider's own search when it does not.
+    pub fn place(&self, model: &str) -> Option<Entry> {
+        self.entry(model).ok().or_else(|| self.entry_by_name(model))
+    }
+
+    /// A bare model name, looked for in every provider in file order. Handy when
     /// there is only one provider that could mean it.
-    pub fn find_model(&self, model: &str) -> Option<Choice> {
-        self.find_model_entry(model)
-            .and_then(|e| self.resolve_with(&e.spec(), &lookup_env).ok())
+    pub fn resolve_by_name(&self, model_name: &str) -> Option<Choice> {
+        self.entry_by_name(model_name)
+            .and_then(|e| self.resolve_with(&e.model, &lookup_env).ok())
     }
 
-    /// The same search as [`Self::find_model`], without requiring a key at all.
-    pub fn find_model_entry(&self, model: &str) -> Option<Entry> {
+    /// The same search as [`Self::resolve_by_name`], without requiring a key.
+    pub fn entry_by_name(&self, model_name: &str) -> Option<Entry> {
         self.providers
             .iter()
-            .find(|p| p.models.iter().any(|m| m.id == model))
-            .and_then(|p| self.entry_with(&format!("{}/{}", p.id, model)).ok())
+            .find(|p| p.models.iter().any(|m| m.id == model_name))
+            .and_then(|p| self.entry_with(&format!("{}/{}", p.id, model_name)).ok())
     }
 
     /// The first model of `provider`, for a provider configured without a model.
@@ -333,10 +340,10 @@ impl Catalog {
 
     fn resolve_with(
         &self,
-        spec: &str,
+        model: &str,
         lookup: &dyn Fn(&str) -> Option<String>,
     ) -> Result<Choice, String> {
-        let entry = self.entry_with(spec)?;
+        let entry = self.entry_with(model)?;
         let provider = self
             .providers
             .iter()
@@ -360,12 +367,12 @@ impl Catalog {
         })
     }
 
-    /// Splits at the first `/`: provider ids never contain one, model ids
+    /// Splits at the first `/`: provider ids never contain one, model names
     /// sometimes do (`goat/deepseek/deepseek-v4.1-flash`).
-    fn entry_with(&self, spec: &str) -> Result<Entry, String> {
-        let (provider_id, model_id) = spec
+    fn entry_with(&self, model: &str) -> Result<Entry, String> {
+        let (provider_id, model_name) = model
             .split_once('/')
-            .ok_or_else(|| format!("expected <provider>/<model>, got {spec:?}"))?;
+            .ok_or_else(|| format!("expected <provider>/<model name>, got {model:?}"))?;
         let provider = self
             .providers
             .iter()
@@ -379,15 +386,15 @@ impl Catalog {
                     format!("no provider {provider_id:?}; known: {}", known.join(", "))
                 }
             })?;
-        let model = provider
+        let found = provider
             .models
             .iter()
-            .find(|m| m.id == model_id)
+            .find(|m| m.id == model_name)
             .ok_or_else(|| {
                 let mut known: Vec<&str> = provider.models.iter().map(|m| m.id.as_str()).collect();
                 known.sort_unstable();
                 format!(
-                    "provider {} has no model {model_id:?}; known: {}",
+                    "provider {} has no model {model_name:?}; known: {}",
                     provider.id,
                     known.join(", ")
                 )
@@ -397,17 +404,18 @@ impl Catalog {
         Ok(Entry {
             provider: provider.id.clone(),
             provider_name: provider.name.clone(),
-            model: model.id.clone(),
-            model_name: model.name.clone(),
+            model: format!("{}/{}", provider.id, found.id),
+            model_name: found.id.clone(),
+            model_title: found.name.clone(),
             base_url: endpoint.base_url.trim_end_matches('/').to_string(),
             api_key_env: provider.key_env.clone(),
             key: provider.key.clone(),
-            context: model.context,
-            reasoning_levels: model.reasoning_levels.clone(),
-            reasoning_default: model.reasoning_default.clone(),
-            reasoning_mapping: model.reasoning_mapping.clone(),
-            modalities: model.modalities.clone(),
-            builtin_tools: model.builtin_tools.clone(),
+            context: found.context,
+            reasoning_levels: found.reasoning_levels.clone(),
+            reasoning_default: found.reasoning_default.clone(),
+            reasoning_mapping: found.reasoning_mapping.clone(),
+            modalities: found.modalities.clone(),
+            builtin_tools: found.builtin_tools.clone(),
         })
     }
 }
@@ -541,7 +549,7 @@ struct FileModel {
 /// The providers a merged roster describes, first claim on an id winning.
 fn parse_value(value: toml::Value) -> Result<Vec<Provider>, toml::de::Error> {
     let file: FileRoster = value.try_into()?;
-    // Duplicate ids make `--provider` ambiguous; keep the first, drop the rest.
+    // Duplicate ids make `--model` ambiguous; keep the first, drop the rest.
     let mut seen: HashMap<String, ()> = HashMap::new();
     let providers = file
         .provider
@@ -723,22 +731,26 @@ struct Live {
 ///
 /// Nothing here holds a `Catalog`. Holding one would freeze the roster at the
 /// moment the server started -- which is exactly what a reload is meant to undo
-/// -- and the next `set_session --provider` would refuse a model the user had just
+/// -- and the next `set_session --model` would refuse a model the user had just
 /// written into the file.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Handle;
 
 impl Handle {
-    pub fn resolve(&self, spec: &str) -> Result<Choice, String> {
-        roster().resolve(spec)
+    pub fn resolve(&self, model: &str) -> Result<Choice, String> {
+        roster().resolve(model)
     }
 
-    pub fn entry(&self, spec: &str) -> Result<Entry, String> {
-        roster().entry(spec)
+    pub fn entry(&self, model: &str) -> Result<Entry, String> {
+        roster().entry(model)
     }
 
-    pub fn find_model(&self, model: &str) -> Option<Choice> {
-        roster().find_model(model)
+    pub fn resolve_by_name(&self, model_name: &str) -> Option<Choice> {
+        roster().resolve_by_name(model_name)
+    }
+
+    pub fn place(&self, model: &str) -> Option<Entry> {
+        roster().place(model)
     }
 
     pub fn generation(&self) -> u64 {
@@ -874,7 +886,7 @@ id = "m2"
         );
         let third = read_fresh(std::slice::from_ref(&path));
         assert_eq!(
-            third.specs().len(),
+            third.models().len(),
             2,
             "the new roster is what the next route resolves against"
         );
@@ -883,7 +895,8 @@ id = "m2"
         let added = third
             .entry("p/m2")
             .unwrap_or_else(|e| panic!("the added model must resolve: {e}"));
-        assert_eq!(added.model, "m2");
+        assert_eq!(added.model_name, "m2");
+        assert_eq!(added.model, "p/m2", "a model is named provider and name");
     }
 
     use super::*;
@@ -1040,7 +1053,7 @@ script = "providers/p.py"
         let choice = c
             .resolve_with("deepseek-official/deepseek-flash", &no_env)
             .unwrap();
-        assert_eq!(choice.entry.spec(), "deepseek-official/deepseek-flash");
+        assert_eq!(choice.entry.model, "deepseek-official/deepseek-flash");
         // The trailing slash in the file must not become a double slash in the
         // URL the request is built from.
         assert_eq!(choice.entry.base_url, "https://api.deepseek.com/v1");
@@ -1055,7 +1068,11 @@ script = "providers/p.py"
             .resolve_with("goat/deepseek/deepseek-v4.1-flash", &no_env)
             .unwrap();
         assert_eq!(choice.entry.provider, "goat");
-        assert_eq!(choice.entry.model, "deepseek/deepseek-v4.1-flash");
+        assert_eq!(choice.entry.model_name, "deepseek/deepseek-v4.1-flash");
+        assert_eq!(
+            choice.entry.model, "goat/deepseek/deepseek-v4.1-flash",
+            "the first slash is the providers"
+        );
     }
 
     #[test]
@@ -1096,18 +1113,18 @@ script = "providers/p.py"
         assert!(err.contains("DEEPSEEK_API_KEY"), "{err}");
     }
 
-    /// `--provider opus` should find the one provider that has it, and skip the one
+    /// `--model opus` should find the one provider that has it, and skip the one
     /// whose endpoint this server cannot speak.
     #[test]
     fn a_bare_model_id_finds_its_provider() {
         let c = catalog();
         assert_eq!(
-            c.find_model("deepseek-flash").unwrap().entry.provider,
+            c.resolve_by_name("deepseek-flash").unwrap().entry.provider,
             "deepseek-official"
         );
         // Only an Anthropic endpoint: not usable through the Responses API.
-        assert!(c.find_model("opus").is_none());
-        assert!(c.find_model("nope").is_none());
+        assert!(c.resolve_by_name("opus").is_none());
+        assert!(c.resolve_by_name("nope").is_none());
     }
 
     #[test]
@@ -1115,10 +1132,11 @@ script = "providers/p.py"
         let c = catalog();
         let entry = c.default_entry().expect("some entry is usable");
         assert_eq!(entry.provider, "deepseek-official");
-        assert_eq!(entry.model, "deepseek-flash");
+        assert_eq!(entry.model_name, "deepseek-flash");
+        assert_eq!(entry.model, "deepseek-official/deepseek-flash");
         // The point of picking it by default is that it is usable, not merely
         // listed: its key has to resolve too.
-        assert!(c.resolve(&entry.spec()).is_ok());
+        assert!(c.resolve(&entry.model).is_ok());
     }
 
     /// A model that only declares `/chat/completions` is not a Responses
@@ -1273,7 +1291,7 @@ id = "p"
         assert!(c.problem().unwrap().contains("providers.toml"));
     }
 
-    /// A duplicate id would make `--provider` ambiguous; the first one wins so the
+    /// A duplicate id would make `--model` ambiguous; the first one wins so the
     /// answer does not depend on map iteration order.
     #[test]
     fn duplicate_provider_ids_keep_the_first() {
@@ -1371,8 +1389,9 @@ key = "k"
         let entry = Entry {
             provider: "p".into(),
             provider_name: "P".into(),
-            model: "m".into(),
-            model_name: "M".into(),
+            model: "p/m".into(),
+            model_name: "m".into(),
+            model_title: "M".into(),
             base_url: String::new(),
             api_key_env: None,
             key: None,

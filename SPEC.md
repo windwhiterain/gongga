@@ -45,7 +45,7 @@ in cmd_input, those three should be auto complete.
 - main (vertical)
   - horizontal
     - [session (render mode = none){name (double click change mode to full)}] (vertical scroll)
-    - [{session (render mode = full){name (double click change mode to line), context (in tokens), cached (in n%, latest), tps (latest), ttft (latest), cwd, provider, thinking_effort, context_limit}, events (vertical scroll)}] (horizontal split):
+    - [{session (render mode = full){name (double click change mode to line), context (in tokens), cached (in n%, latest), tps (latest), ttft (latest), cwd, model, thinking_effort, context_limit}, events (vertical scroll)}] (horizontal split):
   - [{session (render mode = line){name (double click change mode to none)}, event} (line)] (vertical)
   - [active_quota{provider, [mouth n%] [week n%] [5h n%] [credit n] [money n¥]}]: update each step end.
   - [{cmd, cmd_result}] (line)
@@ -69,14 +69,15 @@ in cmd_input, those three should be auto complete.
   - Shift+Enter: new line in cmd_input.
   - PageUp/PageDown (Fn+Up/Down): scroll the sticky session.
   - Shift+Down: scroll the sticky session to bottom.
-  - Shift+D: delete sticky session.
+  - Shift+Delete: delete sticky session.
+  - Ctr+V: paste.
 
 
 ## Cmd
 - invocation: `gongga-cli <cmd> [--arg <v> ...]` -- argv is already tokens, so a command line
   carries no `/` and no prose form. `/` belongs to `cmd_input` only.
 - server:
-  - `set_session --session <name> [--cwd <path>] [--provider <provider/model>] [--thinking_effort <level>] [--context_limit <n%>]`:
+  - `set_session --session <name> [--cwd <path>] [--model <provider>/<model name>] [--thinking_effort <level>] [--context_limit <n%>]`:
     - plus `set_sticky_cmd_argument --name session --value <session>`
   - `del_session --session <name>`: also delete all bash with the session name in key.
   - `send_message --session <name> --message <string>`: inject message instantly, turn waiting bash to backgound.

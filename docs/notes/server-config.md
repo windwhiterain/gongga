@@ -17,25 +17,33 @@ otherwise the threshold is a share of the window itself.
 Messages kept verbatim after a compression: enough that the model still has the
 last few steps in full, not just a paraphrase of them.
 
-## ProviderConfig::provider
+## ModelConfig::provider
 
 Roster id of the provider this configuration points at, when it points at one.
 `None` means the built-in default was used because the machine has no roster,
 and it is only used in messages.
 
-## ProviderConfig::context
+## ModelConfig::model_name
 
-Context window of `model`, when something told us. `--context_limit` is a
+The half of a model the API takes in its own `model` field. `ModelConfig::model` is
+the whole thing -- `provider/model_name` when the provider is known, the bare name
+when the roster could not place it -- and it is what a session records and a title
+shows. The two exist because a request needs the second and every answer about "what
+are you running" needs the first.
+
+## ModelConfig::context
+
+Context window of the model, when something told us. `--context_limit` is a
 percentage of this, so without it a percentage has no meaning.
 
-## ProviderConfig::headers_timeout
+## ModelConfig::headers_timeout
 
 The provider has this long to answer with response headers, the upload of a
 request included. A provider that accepts the connection and then goes quiet
 never sends them, and nothing else in the process is waiting to notice. It
 bounds nothing about the body: see `idle_timeout`.
 
-## ProviderConfig::idle_timeout
+## ModelConfig::idle_timeout
 
 The longest the model may go without *saying* something. Only an event that
 carries content moves this clock -- a chunk holding nothing but keep-alive
@@ -49,12 +57,12 @@ output tokens), and every cut-off landed at the deadline to the millisecond
 rather than at any network event. A response's length is bounded by the
 provider's own output cap, not by a socket timer.
 
-## ProviderConfig::max_retries
+## ModelConfig::max_retries
 
 Extra attempts after a request fails, times out, or comes back with no content
 at all. `0` is no ceiling: retry until the turn is cancelled.
 
-## ProviderConfig::retry_base
+## ModelConfig::retry_base
 
 First retry delay; every further attempt doubles it, capped at `MAX_RETRY_DELAY`,
 so a provider having a bad minute is waited out rather than hammered.
@@ -99,7 +107,7 @@ before a fresh mint, so no home is told its own clients are suddenly wrong.
 
 The roster (`~/.agents/providers.toml`) is the machine's own list of providers,
 endpoints and model context windows. Consulting it means the common case needs
-no configuration at all, and it is the same list `--provider` accepts, so there is one
+no configuration at all, and it is the same list `--model` accepts, so there is one
 answer to "what models exist".
 
 ## Config::load_with_home (api key order)
@@ -118,21 +126,26 @@ Nothing outside this repository is consulted.
 because a provider had a bad minute at hour three, and nothing about a
 provider's recovery time is knowable in advance.
 
-## pick_entry
+## pick_model
 
-Precedence is "the more specific word wins": a provider and a model name an exact
-entry; a model alone finds the provider that carries it; nothing at all takes the
-roster's first usable entry.
+Precedence is "the more specific word wins": a model named in full carries its own
+provider and is placed whatever else is said; otherwise a provider and a model name
+are the two halves of one model; a model name alone finds the provider that carries
+it; nothing at all takes the roster's first usable entry.
+
+The first rule is what lets `model = "deepseek-official/deepseek-flash"` and
+`model_name = "deepseek-flash"` be the same setting written two ways, instead of two
+settings that could disagree.
 
 A configuration that names something the roster cannot place is a warning rather
 than a failure -- the built-in default still gets the server up, and the line
 says what was actually used, which is how a typo is found.
 
-## ProviderConfig::builtin_tools / ProviderConfig::modalities
+## ModelConfig::builtin_tools / ModelConfig::modalities
 
 Both come from the roster entry the session is on, never from this file. They are
 capabilities of a *model*, not of the server: a session pointed at another
-`--provider` must not inherit the default entry's web tools or its eyes, which is why
+`--model` must not inherit the default entry's web tools or its eyes, which is why
 `for_entry` copies them along with the base URL and the model name.
 
 `accepts_image` and `image_refusal` are the one reader of `modalities`, and
@@ -145,9 +158,9 @@ actually receives -- see `docs/notes/server-ship.md`. Nothing here writes a conf
 a value the loader invented would have to be copied into a file to be edited, and
 the copy is how this project lost the argument about which of the two was true.
 
-## ProviderConfig::for_entry
+## ModelConfig::for_entry
 
-A session that names its own `--provider` is choosing a different brain, not a
+A session that names its own `--model` is choosing a different brain, not a
 different protocol: timeouts and retry policy stay exactly as configured.
 The prose is not part of this struct any more at all -- a prompt belongs to
 the request and is rendered per step, so a model swap cannot carry an
@@ -175,7 +188,7 @@ next.
 
 ## tests::the_roster_answers_what_the_config_does_not_say
 
-The roster is what makes "no `[provider]` section" work. These are the four ways a
+The roster is what makes "no `[model]` section" work. These are the four ways a
 configuration can name something, and the one way it can be wrong: a typo must
 not stop the server from starting.
 
@@ -187,13 +200,15 @@ the same thing -- "not here" -- so a half-written key file falls through to the
 next source instead of authenticating with an empty string, which would be the
 same hole as having no key at all.
 
-## the section is `[provider]`
+## the section is `[model]`
 
-File, table and environment variable say the same word as everything else: the
-`[provider]` table, `ProviderConfig`, `GONGGA_PROVIDER_*`. It was `[llm]`, and an
-argument called `--provider` naming a setting called `llm` was two words for one
-thing. A home whose config.toml still says `[llm]` falls back to the roster, which
-is what the shipped file leaves it to anyway -- the install merges the new table in.
+The table says what a session runs on, so it is named after the thing it holds: the
+`[model]` table, `ModelConfig`, and a `model_name` inside it for the half the API
+takes. It was `[llm]`, then `[provider]`, and the second name was the mistake: a
+provider is the company, not the brain, and a table called `[provider]` holding a
+`model` was the same confusion one level down. Both older spellings are still read
+-- `[llm]` fell back to the roster, `[provider]` is a serde alias -- so an old home
+keeps working and the next install merges the new table in.
 
 ## who writes config.toml
 

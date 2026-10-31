@@ -222,9 +222,10 @@ pub struct SessionInfo {
     /// The last measurement, so a window attached now draws it without a turn.
     #[serde(default)]
     pub usage: Usage,
-    /// The roster provider id a turn here would spend; `None` before one is placed.
+    /// The model a turn here would spend on, `provider/model_name`; `None` is a
+    /// server that does not know what it would send.
     #[serde(default)]
-    pub provider: Option<String>,
+    pub model: Option<String>,
     /// Reasoning level in force, in the roster's spelling; `None` is the model's own.
     #[serde(default)]
     pub thinking_effort: Option<String>,

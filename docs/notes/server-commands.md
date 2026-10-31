@@ -40,7 +40,7 @@ making a caller read the entire history.
 
 ## Dispatch::providers
 
-The machine's LLM roster, which is what `set_session --provider` is checked against
+The machine's LLM roster, which is what `set_session --model` is checked against
 and where its completion list comes from.
 
 ## ActiveGuard
@@ -57,18 +57,18 @@ A stored row as a client is told about it. One function, because more than one p
 reports the same row -- the greeting and `publish_sessions` -- and two copies of the
 fields drift apart the first time one of them asks for another.
 
-Three of those fields are not in the row at all: `provider`, `thinking_effort` and
+Three of those fields are not in the row at all: `model`, `thinking_effort` and
 `context_limit` are what the session *would send now*, resolved through the roster
 and filled in with the defaults a session that never named them runs on. A title that
 showed only what was written down would say nothing about the sessions that name
-nothing, which is most of them. `provider` is the id, not the model, because SPEC's
-title has a `provider` field and whose account a turn spends is the fact an operator
-needs beside the balance row.
+nothing, which is most of them. `model` is the whole model and not the provider
+alone: the balance row already says whose account is being spent, and a title that
+repeated it without saying which model answered would be the narrower fact twice.
 
 ## set_session — what the answer says
 
 The confirmation is `session is now <name>` and nothing else. It used to append the
-provider spec, the thinking level and the notice threshold, which put
+model spec, the thinking level and the notice threshold, which put
 `(provider deepseek-official/deepseek-flash)` at the top of every new session's window --
 the first line of the pane, above the conversation. Those three are SPEC's title
 fields now, drawn over the pane, so repeating them in the answer was the same
@@ -130,7 +130,7 @@ so nothing downstream has to know any of this happened.
 
 ## set_session
 
-`--provider` is resolved here rather than at the next turn: a typo should fail the
+`--model` is resolved here rather than at the next turn: a typo should fail the
 command that made it, and the roster can answer with what would have worked
 instead of leaving a turn to die later.
 
@@ -158,11 +158,11 @@ The `cwd` it answers with is read without taking the default shell's lock
 and a session whose shell is mid-command was enough to leave the answer -- and the
 `gongga-cli` call waiting for it -- hanging until that command finished.
 
-## resolve_provider
+## resolve_model
 
-`provider/model` first, then a bare model id: model ids may themselves contain a
-slash, so the fallback is what makes `--provider deepseek-flash` work without making
-`--provider goat/deepseek/...` ambiguous.
+`provider/model_name` first, then a bare model name: model names may themselves
+contain a slash, so the fallback is what makes `--model deepseek-flash` work without
+making `--model goat/deepseek/...` ambiguous.
 
 ## parse_percent
 

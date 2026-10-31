@@ -16,11 +16,11 @@ request's own output, and the tool results it asks for.
 
 ## Agent::clients
 
-Clients built for sessions that named their own entry, by `provider/model`.
+Clients built for sessions that named their own model, by `provider/model_name`.
 
 A client builds a connection pool, so a turn that used one per step would pay
-for it on every request. Keyed by spec rather than by session because sessions
-that choose the same model should share it.
+for it on every request. Keyed by the model rather than by session because
+sessions that choose the same model should share it.
 
 ## Agent::output_dir
 
@@ -313,7 +313,7 @@ SPEC puts `active_quota` in the main column and says it updates at every step's
 end, so the same branch that writes `usage` also asks the quota reader to
 publish. Which provider that is comes from the client the step ran on
 (`LlmClient::provider`), not from the session's tuning: a step is what spends an
-allowance, and a session that named no `--provider` spends the server's.
+allowance, and a session that named no `--model` spends the server's.
 
 The call is `quota::publish`, which spawns. Awaiting it here would put a
 provider's billing endpoint between the last token and the end of the step,

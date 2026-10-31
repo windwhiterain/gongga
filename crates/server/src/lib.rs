@@ -204,7 +204,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     );
 
     let store = store::Store::open(&cfg.db_path)?;
-    let llm = Arc::new(LlmClient::new(&cfg.provider)?);
+    let llm = Arc::new(LlmClient::new(&cfg.model)?);
     // A script drives this server by the same name a shell does: `gongga`, which
     // is this program under the command's name in the home's `bin`.
     // Before any shell exists: the command it types has to be there, and a
@@ -246,7 +246,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let sessions = SessionManager::new(
         store.clone(),
         cfg.bash.clone(),
-        cfg.provider.model.clone(),
+        cfg.model.model(),
         detached.clone(),
         shell_env,
     );
@@ -279,9 +279,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             store: store.clone(),
             llm: llm.clone(),
             providers: providers::Handle,
-            provider_config: cfg.provider.clone(),
+            model_config: cfg.model.clone(),
             clients: std::sync::Mutex::new(std::collections::HashMap::new()),
-            default_context: cfg.provider.context,
+            default_context: cfg.model.context,
             tools: Arc::new(ToolRegistry::with_builtins(
                 cfg.bash.timeout,
                 cfg.bash.max_output_chars,
@@ -330,7 +330,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     });
 
     tracing::info!(tools = ?dispatch.agent.tools.names().join(", "), "tool registry ready");
-    // Which roster was read, and whether it was readable at all: "no --provider
+    // Which roster was read, and whether it was readable at all: "no --model
     // worked" is nearly always this line.
     tracing::info!(
         rosters = ?providers::roster().paths(),
@@ -345,10 +345,10 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     tracing::info!(
         home = %cfg.home.display(),
         db = %cfg.db_path.display(),
-        provider = ?cfg.provider.provider,
-        model = %cfg.provider.model,
-        base_url = %cfg.provider.base_url,
-        context = ?cfg.provider.context,
+        provider = ?cfg.model.provider,
+        model = %cfg.model.model_name,
+        base_url = %cfg.model.base_url,
+        context = ?cfg.model.context,
         bash = ?cfg.bash.program,
         proxy = ?std::env::var("HTTPS_PROXY")
             .or_else(|_| std::env::var("https_proxy"))

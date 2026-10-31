@@ -24,7 +24,10 @@ pub struct LlmClient {
     http: reqwest::Client,
     base_url: String,
     api_key: String,
+    /// The model as a caller names it, `provider/model_name`.
     model: String,
+    /// The name the API takes in its `model` field.
+    model_name: String,
     /// The roster provider this client talks to: SPEC's `active_quota` row.
     provider: Option<String>,
     temperature: Option<f32>,
@@ -91,7 +94,7 @@ impl RequestSource {
 }
 
 impl LlmClient {
-    pub fn new(cfg: &crate::config::ProviderConfig) -> anyhow::Result<Self> {
+    pub fn new(cfg: &crate::config::ModelConfig) -> anyhow::Result<Self> {
         if cfg.api_key.is_empty() {
             anyhow::bail!(
                 "no API key: set {} (or GONGGA_API_KEY) before starting the server",
@@ -111,7 +114,8 @@ impl LlmClient {
             http,
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
             api_key: cfg.api_key.clone(),
-            model: cfg.model.clone(),
+            model: cfg.model(),
+            model_name: cfg.model_name.clone(),
             provider: cfg.provider.clone(),
             temperature: cfg.temperature,
             max_output_tokens: cfg.max_output_tokens,
@@ -125,7 +129,8 @@ impl LlmClient {
         })
     }
 
-    /// The model this client asks for; logged at the start of every turn.
+    /// The model this client asks for, `provider/model_name`; logged at the start
+    /// of every turn.
     pub fn model(&self) -> &str {
         &self.model
     }
@@ -351,7 +356,7 @@ impl LlmClient {
         effort: Option<&str>,
     ) -> Vec<u8> {
         let mut body = json!({
-            "model": self.model,
+            "model": self.model_name,
             "stream": true,
             "store": self.store,
         });
@@ -1432,10 +1437,10 @@ mod tests {
 
     /// A client with no roster behind it: what a test drives is the body it builds.
     fn client_with(model: &str, builtin_tools: &[&str], modalities: &[&str]) -> LlmClient {
-        let cfg = crate::config::ProviderConfig {
+        let cfg = crate::config::ModelConfig {
             provider: None,
+            model_name: model.to_string(),
             base_url: "http://127.0.0.1:1/v1".to_string(),
-            model: model.to_string(),
             context: None,
             api_key_env: String::new(),
             api_key: "k".to_string(),
