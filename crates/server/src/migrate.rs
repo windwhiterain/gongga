@@ -45,6 +45,12 @@ pub fn version(home: &Path) -> u32 {
         .unwrap_or(0)
 }
 
+/// Whether a migrator has to be found: not for a home at this version, nor for
+/// a first start.
+pub fn needs_content(home: &Path, db: &Path) -> bool {
+    version(home) < VERSION && (db.is_file() || home.join(STAMP).is_file())
+}
+
 /// Runs every step between this home's version and [`VERSION`].
 pub fn bring_forward(home: &Path, db: &Path) -> anyhow::Result<Report> {
     let mut report = Report {

@@ -121,16 +121,23 @@ pub struct Report {
 /// network leaves the lookup to the caller, which names what it could not find.
 pub fn prepare(home: &Path) {
     let roots = Roots::of(home);
-    let ship = pinned();
-    let cache = roots.home.join(CACHE);
-    // Only when the commit is missing: a pin is a sha, so having it makes a
-    // fetch pointless.
-    if !have(&cache, &ship.commit)
-        && let Err(e) = fetch(&cache, &ship.url)
+    let _ = ROOTS.set(roots);
+}
+
+/// Fetches the pinned content only if this home cannot answer for itself.
+///
+/// # Invariant
+///
+/// Called by a caller that has already found out whether anything needs the
+/// cache: a home at this build's version migrates nothing, so nothing it starts
+/// needs a commit it does not have. See `migrate::needs_content`.
+pub fn prepare_for_migration(home: &Path) {
+    let cache = Roots::of(home).home.join(CACHE);
+    if !have(&cache, &pinned().commit)
+        && let Err(e) = fetch(&cache, &pinned().url)
     {
         tracing::warn!(error = %e, "cannot reach the content repository yet");
     }
-    let _ = ROOTS.set(roots);
 }
 
 /// Fetches the pinned content and reconciles it into both roots.
