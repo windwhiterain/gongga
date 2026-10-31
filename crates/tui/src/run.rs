@@ -121,27 +121,29 @@ enum Step {
 /// A dial kept alive between loop iterations, boxed so the loop never blocks.
 type Dialing = Pin<Box<dyn Future<Output = Result<(Link, Greeting), DialFailure>>>>;
 
-/// Whether this failed dial is the one that starts a server here.
+/// Whether this window starts a server of its own.
 ///
 /// # Invariant
 ///
-/// Only a cold start spawns one: once this window has been linked, a server that
-/// is not there is the operator's doing -- a `cancel`, a stop -- and raising it
-/// back from the dead is a window nobody can stop. `--client_only` refuses here.
-fn starts_a_server(cold: bool, attempts: u32, client_only: bool) -> bool {
-    cold && attempts == 1 && !client_only
+/// Once, at the start, before any dial: asking first costs the first seconds of
+/// every launch. `--client_only` is the whole refusal, and nothing is restarted
+/// later -- a server that goes away is the operator's doing. See
+/// `docs/notes/tui-run.md`.
+fn starts_a_server(client_only: bool) -> bool {
+    !client_only
 }
 
 /// Whether the window on the way out stops the server it started.
 ///
 /// # Invariant
 ///
-/// Only a server this window started, and only the one listening where it
-/// started it: a server somebody else runs is not a window's to stop, and a
-/// `connect_server` that moved elsewhere must not stop the old one. See
-/// `docs/notes/tui-run.md`.
-fn stops_a_server(started: Option<SocketAddr>, here: Option<SocketAddr>) -> bool {
-    matches!((started, here), (Some(started), Some(here)) if started == here)
+/// Only the *process* this window spawned: a home somebody else already serves
+/// refuses the lock, so this window's child exits at once and the pid answering
+/// the dial is somebody else's. Comparing pids is what makes that answerable --
+/// an address would say the wrong thing, because a `connect_server` can move the
+/// window onto a server it did not start. See `docs/notes/tui-run.md`.
+fn stops_a_server(spawned: Option<u32>, answering: Option<u32>) -> bool {
+    matches!((spawned, answering), (Some(ours), Some(theirs)) if ours != 0 && ours == theirs)
 }
 
 /// One attempt, resolving afresh: `connect_server` moves the address.
@@ -164,12 +166,17 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
     let mut next_try = tokio::time::Instant::now();
     let mut backoff = RECONNECT_MIN;
     let mut attempts: u32 = 0;
-    // Until the first link, a server that is not there is this window's to
-    // start. See `docs/notes/tui-run.md`.
-    let mut cold = true;
-    // What this window started, so leaving can stop it rather than leave it.
-    let mut started: Option<SocketAddr> = None;
-    let mut began_flags: Vec<std::sync::Arc<std::sync::atomic::AtomicBool>> = Vec::new();
+    // Started once, before any dial; what it spawned is its to stop.
+    let spawned: Option<u32> = if starts_a_server(args.client_only) {
+        cli::server_of(&args.conn)
+            .ok()
+            .and_then(|addr| cli::spawn(&home, addr).ok().flatten())
+    } else {
+        None
+    };
+    // The pid that answers the dial, which is not `spawned` when the home was
+    // already served by somebody else.
+    let mut answering: Option<u32> = None;
 
     let result = loop {
         // Every arm keeps the keyboard branch, so no state stops it answering keys.
@@ -256,57 +263,25 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                 drop(dialing.take());
                 match outcome {
                     Ok((open, greeting)) => {
+                        answering = Some(greeting.pid());
                         // Applying the greeting is the resync: catalog, sessions, model.
                         greeting.apply(&mut client, &mut TuiSink(&mut ui));
                         link = Some(open);
                         backoff = RECONNECT_MIN;
-                        // From here on this window is a client: it dials, it does
-                        // not start anything.
-                        cold = false;
                     }
                     Err(failure) if failure.is_fatal() => break Err(failure.into_error()),
                     Err(failure) => {
                         client.set_offline(attempts, &mut TuiSink(&mut ui));
-                        // Once per outage: start what is not there, and the
-                        // loop keeps dialing while the task does it.
-                        let starting = if starts_a_server(cold, attempts, args.client_only) {
-                            cli::server_of(&args.conn)
-                                .ok()
-                                .filter(|addr| cli::starts_here(addr))
-                        } else {
-                            None
-                        };
-                        if let Some(addr) = starting {
-                            let home = home.clone();
-                            let began =
-                                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                            let flag = began.clone();
-                            tokio::spawn(async move {
-                                // Only what this task started is this window's to stop.
-                                let ok = cli::ensure(&home, addr).await.unwrap_or(false);
-                                flag.store(ok, std::sync::atomic::Ordering::SeqCst);
-                            });
-                            started = Some(addr);
-                            began_flags.push(began);
-                        }
-                        // Once per outage: the status line already carries "attempt N".
-                        if attempts == 1 {
-                            // A cold start is not a fault: nothing is
-                            // listening yet, and the server coming up is news.
-                            let (kind, line) = match (failure.nothing_listening(), starting) {
-                                (true, Some(_)) => (
-                                    LineKind::System,
-                                    format!("{} — starting one", failure.message()),
+                        // A spawned server is coming up: a fresh home has no key
+                        // until it writes one, so that is not news yet.
+                        if attempts == 1 && spawned.is_none() {
+                            TuiSink(&mut ui).say(
+                                LineKind::Error,
+                                &format!(
+                                    "{} — retrying in the background, Alt+Q still leaves",
+                                    failure.message()
                                 ),
-                                _ => (
-                                    LineKind::Error,
-                                    format!(
-                                        "{} — retrying in the background, Alt+Q still leaves",
-                                        failure.message()
-                                    ),
-                                ),
-                            };
-                            TuiSink(&mut ui).say(kind, &line);
+                            );
                         }
                         backoff = (backoff * 2).min(RECONNECT_MAX);
                         next_try = tokio::time::Instant::now() + backoff;
@@ -318,15 +293,7 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
 
     // Nothing this window started is left behind: `cancel` is SPEC's stop, and
     // it stores what cannot be serialised.
-    let here = link
-        .is_some()
-        .then(|| cli::server_of(&args.conn).ok())
-        .flatten();
-    if stops_a_server(started, here)
-        && began_flags
-            .iter()
-            .any(|f| f.load(std::sync::atomic::Ordering::SeqCst))
-    {
+    if stops_a_server(spawned, answering) {
         if let Some(open) = link.as_ref() {
             open.cancel().await;
         }
@@ -344,18 +311,20 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
-    /// Leaving stops the server this window started, and nothing else.
+    /// Leaving stops the process this window spawned, and nothing else.
     #[test]
-    fn only_a_server_this_window_started_is_stopped_on_the_way_out() {
-        let here: SocketAddr = "127.0.0.1:9700".parse().unwrap();
-        let elsewhere: SocketAddr = "127.0.0.1:9800".parse().unwrap();
-        assert!(stops_a_server(Some(here), Some(here)), "ours, still here");
+    fn only_the_process_this_window_spawned_is_stopped() {
+        assert!(stops_a_server(Some(42), Some(42)), "ours, and it answers");
         assert!(
-            !stops_a_server(None, Some(here)),
-            "somebody else started it"
+            !stops_a_server(Some(42), Some(43)),
+            "another server already held the home: ours exited"
         );
-        assert!(!stops_a_server(Some(here), Some(elsewhere)), "moved away");
-        assert!(!stops_a_server(Some(here), None), "no link to ask with");
+        assert!(!stops_a_server(None, Some(43)), "we started nothing");
+        assert!(!stops_a_server(Some(42), None), "no link to ask with");
+        assert!(
+            !stops_a_server(Some(0), Some(0)),
+            "an unknown pid is nobody's"
+        );
     }
 
     /// A click asks for a command: the `/` is what keeps it from being prose.
@@ -371,18 +340,11 @@ mod tests {
         assert!(classified("set_sticky --name session --value peer").is_none());
     }
 
-    /// A server is started once, at the start, and never to undo a `cancel`.
+    /// The window starts its own server, once, before it dials: `--client_only`
+    /// is the whole refusal.
     #[test]
-    fn only_a_cold_start_starts_a_server() {
-        assert!(
-            starts_a_server(true, 1, false),
-            "nothing there yet: start one"
-        );
-        assert!(
-            !starts_a_server(false, 1, false),
-            "we were linked once already"
-        );
-        assert!(!starts_a_server(true, 2, false), "one start per outage");
-        assert!(!starts_a_server(true, 1, true), "--client_only");
+    fn this_window_starts_a_server_unless_told_not_to() {
+        assert!(starts_a_server(false), "the default is to start one");
+        assert!(!starts_a_server(true), "--client_only refuses here");
     }
 }

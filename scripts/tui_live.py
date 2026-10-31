@@ -1992,7 +1992,12 @@ def run_live(options, script):
     raw_stream = open(raw_path, "wb")
     try:
         say("fake endpoint: port %d" % stack.start_fake())
-        say("server: 127.0.0.1:%d, home %s" % (stack.start_server(stack.fake_port), options.home))
+        if options.no_server:
+            # Left free on purpose: what is being watched is the client starting one.
+            stack.server_port = free_port("udp")
+            say("server: none, port %d left free, home %s" % (stack.server_port, options.home))
+        else:
+            say("server: 127.0.0.1:%d, home %s" % (stack.start_server(stack.fake_port), options.home))
         conpty = stack.start_client(options.cols, options.rows)
         say("client: bridge pid %d, %dx%d pseudo-console\n         %s" % (conpty.pid, options.cols, options.rows, stack.client_command))
         driver.conpty = conpty
@@ -2109,6 +2114,11 @@ def build_parser():
     parser.add_argument("--frames-out", help="where the frames land")
     parser.add_argument("--stdout-frames", action="store_true", help="also dump the frame file at the end")
     parser.add_argument("--home", default=os.path.join(DEV, "live-home"), help="server home, inside the worktree")
+    parser.add_argument(
+        "--no-server",
+        action="store_true",
+        help="start no server: the port is left free so the client can start one itself",
+    )
     parser.add_argument("--keep-home", action="store_true", help="reuse the home instead of wiping it")
     parser.add_argument("--python", default=sys.executable, help="interpreter for the fake endpoint")
     parser.add_argument("--fake", choices=("plain", "stream"), default="stream")

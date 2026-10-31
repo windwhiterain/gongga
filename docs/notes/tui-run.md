@@ -86,23 +86,29 @@ home for the server it may start, and nothing else. The command an agent's shell
 types is not this front-end's to write -- a shell only exists inside a server, and
 the server writes it from its own program as it comes up (`cli-server.md`).
 
-Starting a server is SPEC's job for this front-end, and it happens on the *first
-failed dial* rather than at startup: that is the same moment the operator learns
-nothing is there, and `--client_only` has exactly one place to say no. The task is
-spawned rather than awaited, so the window keeps taking keys while a first start
-migrates a home and fetches its content.
+Starting a server is SPEC's job for this front-end, and it happens *before the first
+dial*, not on the first failed dial. Asking first cost the first seconds of every
+launch in a backoff nobody needed, and reported a fault that is not one: a window
+whose server is three milliseconds behind was already saying "nothing is listening".
 
-Only a *cold* start does it -- before the first link, once. After this window has
-been connected, a server that is not there is the operator's doing: `cancel` is how
-SPEC stops a server (it finishes what cannot be serialised, stores the rest and
-exits), and a front-end that answered the loss by starting another one would make
-`cancel` impossible to perform. From then on the loop dials and reports, and a
-server that comes back is picked up by the same dial: `starts_a_server` is the whole
-rule.
+`starts_a_server` is the whole rule -- not `--client_only` -- and `cli::spawn` does
+it without asking. The home's instance lock is what arbitrates when two windows open
+at once: the loser's child exits and the winner serves.
 
-Resolved before the terminal is taken over: a bad address or a missing key is not
-fixed by retrying, and an error is far easier to read on the normal screen than
-after `restore()` flashed the alternate screen away.
+Which process is "ours" is answered by pid, not by address. `spawn` returns the pid
+of the child it started, the greeting carries the pid of whoever answers, and only a
+match is cancelled on the way out. An address would say the wrong thing in both
+directions: another window's server for the same home has the same address, and a
+`connect_server` can move this window onto a server it did not start.
+
+While a server this window spawned is coming up, the first failed dials are that and
+nothing else -- a fresh home has no connection key until the server writes it -- so
+the outage line is said only when nothing is starting. The status line still shows
+`offline — reconnecting (attempt N)`, which is the truth.
+
+Resolved before the terminal is taken over: a bad address is not fixed by retrying,
+and an error is far easier to read on the normal screen than after `restore()`
+flashed the alternate screen away.
 
 Every arm keeps the keyboard branch, so no state -- connected, waiting, or
 mid-handshake -- can make the window stop answering keys.

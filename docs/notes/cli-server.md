@@ -36,6 +36,17 @@ ran `serve` has to be able to tell why the server stopped.
 every interface would need the operator to think about keys and firewalls, which
 is a decision for the config file, not for a one-keystroke start.
 
+## spawn
+
+`spawn` starts one without asking and answers the pid of the child it started.
+
+Not `ensure`: a front-end that starts its server *before* dialling has nothing to ask
+about yet, and asking would put the same wait back where it was removed. The pid is
+the point of the return value -- a home already served by somebody else refuses the
+instance lock, so this child exits at once and its pid never answers a dial. A caller
+that wants to know whether it may stop the server compares that pid with the one the
+greeting carried.
+
 ## ensure
 
 The one place that decides "start one". Called by the window, and only there: a
