@@ -283,12 +283,6 @@ took, and `ttft_ms` is the wait for its first token. A session that has never
 completed a request has 0 context and no rate, and SPEC's title says nothing
 rather than zero.
 
-## SessionRow::info
-
-The row as a client is told about it. One function, because more than one place
-reports the same row -- the greeting and `publish_sessions` -- and two copies of
-six fields drift apart the first time one of them asks for a seventh.
-
 ## MessageRow
 
 Deliberately not the request's view of the same row: a caller that only wants

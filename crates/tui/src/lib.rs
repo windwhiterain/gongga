@@ -1326,7 +1326,7 @@ mod tests {
                 listed: vec![Listed {
                     name: "main".to_string(),
                     status: "idle".to_string(),
-                    usage: String::new(),
+                    title: String::new(),
                 }],
                 none: Vec::new(),
                 full: vec!["main".to_string()],
@@ -1939,7 +1939,7 @@ mod tests {
         Listed {
             name: name.to_string(),
             status: "idle".to_string(),
-            usage: String::new(),
+            title: String::new(),
         }
     }
 

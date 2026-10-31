@@ -979,21 +979,6 @@ pub struct SessionRow {
     pub usage: protocol::Usage,
 }
 
-impl SessionRow {
-    /// The row as a client is told about it, so no two reports can differ.
-    pub fn info(&self) -> protocol::SessionInfo {
-        protocol::SessionInfo {
-            name: self.name.clone(),
-            status: self.status,
-            created_at: self.created_at,
-            updated_at: self.updated_at,
-            messages: self.messages,
-            cwd: self.cwd.clone(),
-            usage: self.usage,
-        }
-    }
-}
-
 /// A window of the transcript plus where it ends, as `get_messages` reports it.
 ///
 /// # Invariant

@@ -147,6 +147,11 @@ highlighted patch its name gets in a pane header and at the start of a line grou
 It is one state -- what the page keys scroll and where a message goes -- and one
 look, wherever the name happens to be.
 
+A name is bracketed -- `▸[main]` -- in the list, in a pane's title and at the start
+of a line group's row: one spelling in all three areas, so a name cannot be mistaken
+for the first word of the events beside it. `bracketed` is that spelling, and
+`list_width` counts the two extra columns.
+
 ## name_style
 
 The look of a session's name: the sticky one is black on cyan, every other name is
@@ -195,17 +200,36 @@ the share of rows its neighbours do not use. The header only appears for a windo
 with a name, so the unsplit area -- whose one window is named nothing -- looks exactly
 like it did before splitting existed.
 
-The header carries the numbers SPEC gives a `full` pane -- context, tps, ttft -- read
-from the announcement as the command layer spelled them, and then the note about a
-pane the division hid. One title, parts joined by `·`, because two strings written by
-two functions is how `main · 1 not shown · 1 not shown` happens.
+The header carries everything SPEC gives a `full` pane -- the measurements and the
+session's own tuning -- read from the announcement as the command layer spelled them,
+and then the note about a pane the division hid. One title, parts joined by `·`,
+because two strings written by two functions is how `main · 1 not shown · 1 not shown`
+happens.
 
-## usage_note
+## pane_note
 
-The three numbers, and only on a `full` pane. SPEC's list row is a name, and a
-`line` group's row is one event: putting a rate in either would be a fourth thing
-that row says. A session that has measured nothing contributes no part at all, so
-the title falls back to the name it always had.
+Everything SPEC's `full` pane title carries, and only on a `full` pane. SPEC's list row
+is a name, and a `line` group's row is one event: putting a rate or a provider in
+either would be a fourth thing that row says. A session that has measured nothing and
+named nothing contributes no part at all, so the title falls back to the name.
+
+## pane_header_rows, wrap_words
+
+A title that does not fit its column is drawn over several rows instead of being cut.
+`pane_header_rows` is the one place that decides where it breaks, and it is asked
+twice for one frame -- once by `pane_slots` to reserve the rows, once by
+`draw_group_header_note` to fill them -- so the reservation and the drawing cannot
+disagree. Two wrapping rules (the layout using one, ratatui's `Wrap` using another)
+was exactly the bug that followed the first attempt: the header reserved four rows and
+needed five, and the last field of the session's title was silently gone.
+
+The name is bracketed -- `[main]` -- in all three areas, so a name reads as a name
+rather than as the first word of the events beside it. That is also why the client
+stopped prefixing `[session] ` to the text: one place says who is speaking.
+
+A header never takes the pane's last row: a title that needs more room than the column
+has is cut by the column's own height, and `pane_slots` keeps one row for the events,
+which are what the pane is for.
 
 ## draw_command
 
@@ -371,3 +395,9 @@ and with no reading the prompt sits straight under the command line.
 
 The same row, painted by the kind the command layer chose: a failed reading is
 visible without a second kind of row.
+
+## a_long_pane_title_wraps_instead_of_being_cut
+
+A title wide enough to need several rows, drawn at a real pane's width: every field is
+on screen somewhere in the header, the body starts under the last header row, and a
+one-row body keeps its row with no header at all.

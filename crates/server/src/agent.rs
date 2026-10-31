@@ -23,7 +23,7 @@ use crate::tools::detached::DetachedRegistry;
 use crate::tools::{ToolContext, ToolRegistry};
 
 /// Share of the window the notice is sent at; the rest is headroom for one step's output.
-const DEFAULT_CONTEXT_LIMIT_PERCENT: u8 = 70;
+pub const DEFAULT_CONTEXT_LIMIT_PERCENT: u8 = 70;
 
 pub struct Agent {
     pub store: Store,

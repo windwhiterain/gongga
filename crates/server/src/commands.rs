@@ -587,27 +587,8 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     publish_sessions(d);
 
     let cwd = session.cwd();
-    let mut message = format!("session is now {name}");
-    let mut notes: Vec<String> = Vec::new();
-    if let Some(llm) = &tuning.llm {
-        notes.push(format!("llm {llm}"));
-    }
-    if let Some(level) = &tuning.thinking_effort {
-        notes.push(format!("thinking {level}"));
-    }
-    if let Some(percent) = tuning.context_limit {
-        let budget = context.map(|c| crate::providers::tokens_for_percent(c, percent));
-        notes.push(match (percent, budget) {
-            // 0 is how the agent spells "never notice"; saying "0 tokens"
-            // would read as the opposite.
-            (0, _) => "no notice".to_string(),
-            (percent, Some(tokens)) => format!("noticing at {percent}% ({tokens} tokens)"),
-            (percent, None) => format!("noticing at {percent}%"),
-        });
-    }
-    if !notes.is_empty() {
-        message.push_str(&format!(" ({})", notes.join(", ")));
-    }
+    // Confirms the write and stops: what the session runs on is its pane's title.
+    let message = format!("session is now {name}");
     Outcome::ok_with(
         message,
         json!({
@@ -1091,8 +1072,50 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
 pub fn publish_sessions(d: &Dispatch) {
     if let Ok(rows) = d.sessions.list() {
         d.bus.publish(Event::Sessions {
-            sessions: rows.iter().map(|r| r.info()).collect(),
+            sessions: rows.iter().map(|r| session_info(d, r)).collect(),
         });
+    }
+}
+
+/// A stored row as a client is told about it, whatever told it.
+///
+/// # Invariant
+///
+/// The tuning fields are what the session *would send now*, not what its row was
+/// last given: a session that never named a level runs on the model's own, and one
+/// that never named a share is noticed at the default. One function, because the
+/// greeting and the list must not disagree about a session's provider.
+pub fn session_info(d: &Dispatch, row: &crate::store::SessionRow) -> protocol::SessionInfo {
+    let tuning = d
+        .sessions
+        .peek(&row.name)
+        .map(|s| s.tuning())
+        .unwrap_or_default();
+    let entry = tuning
+        .llm
+        .as_deref()
+        .and_then(|spec| d.providers.entry(spec).ok());
+    let provider = entry
+        .as_ref()
+        .map(|e| e.provider.clone())
+        .or_else(|| d.agent.llm.provider().map(str::to_string));
+    let thinking_effort = tuning
+        .thinking_effort
+        .clone()
+        .or_else(|| entry.as_ref().and_then(|e| e.reasoning_default.clone()));
+    protocol::SessionInfo {
+        name: row.name.clone(),
+        status: row.status,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        messages: row.messages,
+        cwd: row.cwd.clone(),
+        usage: row.usage,
+        provider,
+        thinking_effort,
+        context_limit: tuning
+            .context_limit
+            .or(Some(crate::agent::DEFAULT_CONTEXT_LIMIT_PERCENT)),
     }
 }
 

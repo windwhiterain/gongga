@@ -51,6 +51,31 @@ count with no deadline: a task that died on its last line would leave the
 counter at one forever and stop the process from ever exiting -- the exact
 failure a deadline used to hide.
 
+## session_info
+
+A stored row as a client is told about it. One function, because more than one place
+reports the same row -- the greeting and `publish_sessions` -- and two copies of the
+fields drift apart the first time one of them asks for another.
+
+Three of those fields are not in the row at all: `provider`, `thinking_effort` and
+`context_limit` are what the session *would send now*, resolved through the roster
+and filled in with the defaults a session that never named them runs on. A title that
+showed only what was written down would say nothing about the sessions that name
+nothing, which is most of them. `provider` is the id, not the model, because SPEC's
+title has a `provider` field and whose account a turn spends is the fact an operator
+needs beside the balance row.
+
+## set_session — what the answer says
+
+The confirmation is `session is now <name>` and nothing else. It used to append the
+llm spec, the thinking level and the notice threshold, which put
+`(llm deepseek-official/deepseek-flash)` at the top of every new session's window --
+the first line of the pane, above the conversation. Those three are SPEC's title
+fields now, drawn over the pane, so repeating them in the answer was the same
+sentence twice in the place the operator looks first.
+
+The values themselves still travel in the result's `data`, where a script reads them.
+
 ## send_message
 
 No implicit current session: the name is either here or the command is wrong. A

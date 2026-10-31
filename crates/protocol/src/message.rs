@@ -222,6 +222,15 @@ pub struct SessionInfo {
     /// The last measurement, so a window attached now draws it without a turn.
     #[serde(default)]
     pub usage: Usage,
+    /// The roster provider id a turn here would spend; `None` before one is placed.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Reasoning level in force, in the roster's spelling; `None` is the model's own.
+    #[serde(default)]
+    pub thinking_effort: Option<String>,
+    /// The share of the window a context notice is sent at, when this session has one.
+    #[serde(default)]
+    pub context_limit: Option<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

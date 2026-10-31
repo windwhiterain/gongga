@@ -129,10 +129,12 @@ was sealed. Two events can never be glued onto one row.
 
 ## Client::tag, Client::session_window, Client::command_window
 
-The label says which part of an answer this is; the window says whose answer it is.
-In a split area the window header already names the session, so the tag drops the
-`[<session>] ` prefix -- keeping it would print the same name twice, one column
-shorter. In the one window it stays, because nothing else says who is speaking.
+The label says which part of an answer this is. The name is the window's job: every
+area the client can send a line to is labelled with the session it belongs to -- the
+list column, a `full` pane's title, a `line` group's row -- so the text never carries
+`[<session>] `. It used to, for the two modes that had no header; once the window
+bracketed the name in all three places, keeping it in the text printed it twice
+(`[peer] [peer] hi there`).
 
 `command_window` is the window for a line that names no session: the server's log
 lines, every refusal the client makes, and the commands addressed to no one.
@@ -312,20 +314,26 @@ One line, updated at every step's end, and the layout is announced again only wh
 the spelled row changed: a provider that reports the same balance on two steps does
 not make the window repaint.
 
-## Listed::usage
+## Listed::title
 
-SPEC puts `context`, `cached (latest)`, `tps (latest)` and `ttft (latest)` in the
-title of a `full` pane. The numbers arrive as numbers and leave as a sentence,
-spelled here rather than in the window for the same reason `status` is a word: a
-front-end that knows no protocol type can still draw it, and the two front-ends
-cannot disagree about how a rate is rounded.
+SPEC's `full` pane title, spelled once: what the last request measured -- `ctx`,
+`cached (in n%)`, `tps (latest)`, `ttft (latest)` -- then what the session runs on
+-- `cwd`, `provider`, `thinking_effort`, `context_limit` -- in SPEC's order. Spelled
+here rather than in the window for the same reason `status` is a word: a front-end
+that knows no protocol type can still draw it, and the two front-ends cannot
+disagree about how a rate is rounded.
 
-`usage_note` spells it: `ctx 12345 · cached 89% · tps 41.6 · ttft 820ms` -- the
-unit SPEC names for each figure, one decimal for the rate, milliseconds under a
-second and seconds above it. `cached` is a share, not a count: SPEC says `in n%`,
-and the client is where the division happens because the wire carries what the
-provider measured (two token counts) rather than a number derived from them. A
-figure the last request did not produce is left out rather than shown as zero --
+`title_note` spells it: `ctx 12345 · cached 89% · tps 41.6 · ttft 820ms · cwd
+C:/work/svc · provider deepseek-official · thinking high · context_limit 70%`.
+
+`cached` is a share, not a count: SPEC says `in n%`, and the client is where the
+division happens because the wire carries what the provider measured (two token
+counts) rather than a number derived from them. `cwd` is the session's own directory
+and says where a turn's commands run. `provider` is the roster id the session would
+spend, which is how an operator knows whose balance a turn is drawing on;
+`thinking_effort` is the level in force, the model's default included, because a
+session that never named one still runs at some level. A figure the last request did
+not produce is left out rather than shown as zero --
 an empty context and a session that has never made a request are different facts,
 and `ctx 0` cannot say which it is.
 
@@ -811,3 +819,9 @@ Five pairs of modes over three sessions, so the invariant is walked rather than
 sampled: the three lists between them always hold every session exactly once, and a
 layout body that named one twice -- or dropped one -- fails here rather than in a
 frame nobody re-read.
+
+## a_pane_title_says_what_the_session_runs_on
+
+The tuning half of SPEC's title, field by field, and the zero case: a `--context_limit
+0` session says `context: no notice`, because 0 is how the agent spells "never" and
+`context_limit 0%` would read as the opposite.

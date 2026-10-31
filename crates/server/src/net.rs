@@ -215,7 +215,7 @@ async fn handle_connection(
                 .list()
                 .unwrap_or_default()
                 .iter()
-                .map(|r| r.info())
+                .map(|r| crate::commands::session_info(&d, r))
                 .collect(),
         },
     )

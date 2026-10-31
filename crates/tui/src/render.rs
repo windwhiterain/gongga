@@ -125,8 +125,8 @@ pub fn list_width(panes: &Panes) -> u16 {
         .map(|name| UnicodeWidthStr::width(name.as_str()))
         .max()
         .unwrap_or(0);
-    // The mark on the left, the name, and one column so a cursor can sit after it.
-    (longest as u16 + 2).max(LIST_MIN)
+    // The mark on the left, the brackets around the name, and one column of air.
+    (longest as u16 + 4).max(LIST_MIN)
 }
 
 /// Where one pane is drawn: its header, if it has one, and the rows below it.
@@ -135,6 +135,13 @@ pub struct Slot {
     pub name: String,
     pub header: Option<Rect>,
     pub body: Rect,
+    /// What the header says beside the name, and how many rows it needed.
+    pub note: Option<String>,
+}
+
+/// A session's name as every area draws it: bracketed, so it reads as a name.
+pub fn bracketed(name: &str) -> String {
+    format!("[{name}]")
 }
 
 /// Rows the panes get, with the sticky session taking what an even share leaves.
@@ -142,7 +149,8 @@ pub struct Slot {
 /// # Invariant
 ///
 /// A pane that cannot get a row is not drawn, and `hidden` counts them: a pane
-/// nobody can read is worse than one that says it is not on screen.
+/// nobody can read is worse than one that says it is not on screen. A header takes
+/// the rows its text wraps to, but never the pane's last one.
 pub fn pane_slots(area: Rect, panes: &Panes, sticky: Option<&str>) -> (Vec<Slot>, usize) {
     // Only the sessions drawn as panes: the line groups and the command line
     // have areas of their own.
@@ -150,16 +158,13 @@ pub fn pane_slots(area: Rect, panes: &Panes, sticky: Option<&str>) -> (Vec<Slot>
     if events.is_empty() || area.width == 0 || area.height == 0 {
         return (Vec::new(), 0);
     }
-    // A header per pane, at the top of its own column, but never at the price of
-    // a pane having no rows under it.
-    let labels = u16::from(area.height >= 2);
-    let rows = area.height - labels;
     let n = events.len() as u16;
     // SPEC: the panes are a horizontal split, so the width is what is shared.
     let per = (area.width / n).max(1);
     let extra = area.width.saturating_sub(per * n);
 
-    let mut slots: Vec<Slot> = Vec::with_capacity(events.len());
+    // Columns first: a header's own height needs the width it will be drawn at.
+    let mut columns: Vec<(String, Rect)> = Vec::with_capacity(events.len());
     let mut x = area.x;
     let mut hidden = 0usize;
     for pane in &events {
@@ -170,27 +175,129 @@ pub fn pane_slots(area: Rect, panes: &Panes, sticky: Option<&str>) -> (Vec<Slot>
             hidden += 1;
             continue;
         }
-        let column = Rect {
-            x,
-            y: area.y,
-            width,
-            height: area.height,
+        columns.push((
+            pane.name.clone(),
+            Rect {
+                x,
+                y: area.y,
+                width,
+                height: area.height,
+            },
+        ));
+        x += width;
+    }
+
+    let mut slots: Vec<Slot> = Vec::with_capacity(columns.len());
+    let drawn = columns.len();
+    for (index, (name, column)) in columns.into_iter().enumerate() {
+        let mut note = pane_note(panes, &name);
+        // The last drawn pane says when the division hid one: a session whose
+        // window is missing has to be explained somewhere.
+        if index + 1 == drawn && hidden > 0 {
+            note = Some(match note {
+                Some(note) => format!("{note} · {hidden} not shown"),
+                None => format!("{hidden} not shown"),
+            });
+        }
+        let rows = match area.height {
+            0 | 1 => 0,
+            height => (pane_header_rows(&name, note.as_deref(), column.width).len() as u16)
+                .min(height - 1)
+                .max(1),
         };
         slots.push(Slot {
-            name: pane.name.clone(),
-            header: (labels > 0).then_some(Rect {
-                height: 1,
+            name,
+            header: (rows > 0).then_some(Rect {
+                height: rows,
                 ..column
             }),
             body: Rect {
-                y: area.y + labels,
-                height: rows,
+                y: column.y + rows,
+                height: column.height - rows,
                 ..column
             },
+            note,
         });
-        x += width;
     }
     (slots, hidden)
+}
+
+/// What a pane's title says beside the name, as the command layer spelled it.
+///
+/// # Invariant
+///
+/// The measurements and the session's own tuning, read from the announcement: a
+/// frame cannot say a session runs on something the client was not told.
+pub fn pane_note(panes: &Panes, name: &str) -> Option<String> {
+    panes
+        .listed()
+        .iter()
+        .find(|listed| listed.name == name)
+        .map(|listed| listed.title.clone())
+        .filter(|title| !title.is_empty())
+}
+
+/// A pane's header, broken into the rows it is drawn on.
+///
+/// # Invariant
+///
+/// The one function that decides where a title breaks -- the layout reserves these
+/// rows and the frame draws these rows -- and every row it returns fits `width`.
+pub fn pane_header_rows(name: &str, note: Option<&str>, width: u16) -> Vec<String> {
+    let text = match note {
+        Some(note) if !note.is_empty() => format!("{} {note}", bracketed(name)),
+        _ => bracketed(name),
+    };
+    wrap_words(&text, width.saturating_sub(1).max(1))
+        .into_iter()
+        .map(|row| format!(" {row}"))
+        .collect()
+}
+
+/// `text` broken into rows: greedy on spaces, and a word wider than the column is
+/// cut where it runs out.
+fn wrap_words(text: &str, width: u16) -> Vec<String> {
+    let width = width.max(1) as usize;
+    let mut rows: Vec<String> = Vec::new();
+    let mut row = String::new();
+    let mut used = 0usize;
+    for word in text.split_whitespace() {
+        let size = UnicodeWidthStr::width(word);
+        if used > 0 && used + 1 + size > width {
+            rows.push(std::mem::take(&mut row));
+            used = 0;
+        }
+        if used > 0 {
+            row.push(' ');
+            used += 1;
+        }
+        // A word wider than a whole row is cut, because one row cannot hold it.
+        let mut rest = word;
+        while UnicodeWidthStr::width(rest) > width - used {
+            let (head, tail) = split_at_width(rest, width - used);
+            row.push_str(&head);
+            rows.push(std::mem::take(&mut row));
+            used = 0;
+            rest = tail;
+        }
+        row.push_str(rest);
+        used += UnicodeWidthStr::width(rest);
+    }
+    rows.push(row);
+    rows
+}
+
+/// `text` split where `width` columns end, at a character boundary.
+fn split_at_width(text: &str, width: usize) -> (String, &str) {
+    let mut used = 0usize;
+    for (index, ch) in text.char_indices() {
+        let size = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + size > width {
+            return (text[..index].to_string(), &text[index..]);
+        }
+        used += size;
+    }
+    (text.to_string(), "")
 }
 
 /// The session whose row in the list covers `row`, for a click.
@@ -368,7 +475,7 @@ fn draw_list(f: &mut Frame, s: &Screen, area: Rect) {
             let here = Some(name.as_str()) == sticky;
             let mark = if here { "\u{25b8}" } else { " " };
             Line::from(Span::styled(
-                format!("{mark}{name}"),
+                format!("{mark}{}", bracketed(name)),
                 name_style(here, dim()),
             ))
         })
@@ -486,10 +593,13 @@ fn draw_headline(f: &mut Frame, s: &mut Screen, name: &str, area: Rect, sticky: 
         return;
     }
     let style = name_style(Some(name) == sticky, Style::default().fg(Color::White));
-    let mut spans = vec![Span::styled(format!("{name} "), style)];
+    let label = bracketed(name);
+    let mut spans = vec![Span::styled(format!("{label} "), style)];
     // Cut to what is left beside the name, so a row is one line and the name never
     // leaves the screen.
-    let room = (area.width as usize).saturating_sub(name.len() + 1).max(1);
+    let room = (area.width as usize)
+        .saturating_sub(UnicodeWidthStr::width(label.as_str()) + 1)
+        .max(1);
     if let Some((kind, text)) = s.panes.headline(View::Window(name), room) {
         spans.push(Span::styled(text, style_for(kind)));
     }
@@ -540,6 +650,7 @@ pub fn group_slots(area: Rect, names: &[String], sticky: Option<&str>) -> (Vec<S
                 width: area.width,
                 height,
             },
+            note: None,
         });
         y += head + height;
     }
@@ -560,12 +671,12 @@ fn draw_group_header_note(
     sticky: Option<&str>,
     note: Option<&str>,
 ) {
-    let mut title = format!(" {name} ");
-    if let Some(note) = note {
-        title.push_str(&format!("{note} "));
-    }
     let style = name_style(Some(name) == sticky, dim());
-    f.render_widget(Paragraph::new(Line::from(Span::styled(title, style))), area);
+    let rows: Vec<Line> = pane_header_rows(name, note, area.width)
+        .into_iter()
+        .map(|row| Line::from(Span::styled(row, style)))
+        .collect();
+    f.render_widget(Paragraph::new(rows), area);
 }
 
 /// SPEC's `active_quota` row: the provider, then what it says is left.
@@ -594,41 +705,14 @@ fn draw_quota(f: &mut Frame, s: &Screen, area: Rect) {
 /// Draws every pane: the header that names it, then the rows that fit in its share.
 fn draw_panes(f: &mut Frame, s: &mut Screen, area: Rect) {
     let sticky = s.sticky_session.clone();
-    let (slots, hidden) = pane_slots(area, &s.panes, sticky.as_deref());
-    for (index, slot) in slots.iter().enumerate() {
-        // Only the borrow of one pane is live at a time.
-        let last = index + 1 == slots.len();
+    let (slots, _hidden) = pane_slots(area, &s.panes, sticky.as_deref());
+    for slot in &slots {
         if let Some(header) = slot.header {
-            let mut pieces: Vec<String> = Vec::new();
-            // SPEC puts the measured numbers in the title of a `full` pane.
-            if let Some(usage) = usage_note(&s.panes, &slot.name) {
-                pieces.push(usage);
-            }
-            // The last drawn pane says when the division hid one: a session whose
-            // window is missing has to be explained somewhere.
-            if last && hidden > 0 {
-                pieces.push(format!("{hidden} not shown"));
-            }
-            let note = (!pieces.is_empty()).then(|| pieces.join(" · "));
-            draw_group_header_note(f, &slot.name, header, sticky.as_deref(), note.as_deref());
+            let note = slot.note.as_deref();
+            draw_group_header_note(f, &slot.name, header, sticky.as_deref(), note);
         }
         draw_rows(f, s, &slot.name, slot.body);
     }
-}
-
-/// The numbers a `full` pane's title carries, as the command layer spelled them.
-///
-/// # Invariant
-///
-/// Here and nowhere else: SPEC gives context, tps and ttft to the title of a
-/// `full` pane, while a `line` session's row is one event and the list is names.
-fn usage_note(panes: &Panes, name: &str) -> Option<String> {
-    panes
-        .listed()
-        .iter()
-        .find(|listed| listed.name == name)
-        .map(|listed| listed.usage.clone())
-        .filter(|usage| !usage.is_empty())
 }
 
 /// Draws the single line `cmd` and its result share, when the area is split.
@@ -930,12 +1014,12 @@ mod tests {
                 Listed {
                     name: "main".to_string(),
                     status: "idle".to_string(),
-                    usage: String::new(),
+                    title: String::new(),
                 },
                 Listed {
                     name: "peer".to_string(),
                     status: "idle".to_string(),
-                    usage: String::new(),
+                    title: String::new(),
                 },
             ],
             none: Vec::new(),
@@ -963,7 +1047,7 @@ mod tests {
         assert_eq!(slots[0].body.height, 1);
         assert_eq!(
             row_text(&buf, slots[0].body.y),
-            "peer two",
+            "[peer] two",
             "the newest event, and the name in front of it"
         );
     }
@@ -999,7 +1083,7 @@ mod tests {
         let listed = |name: &str, usage: &str| Listed {
             name: name.to_string(),
             status: "idle".to_string(),
-            usage: usage.to_string(),
+            title: usage.to_string(),
         };
         screen.panes.layout(&Layout {
             listed: vec![
@@ -1026,7 +1110,7 @@ mod tests {
         let rows: Vec<String> = (0..list.height)
             .map(|offset| read(&buf, list.x, list.width, list.y + offset))
             .collect();
-        assert_eq!(&rows[..2], [" third", " fourth"], "{rows:?}");
+        assert_eq!(&rows[..2], [" [third]", " [fourth]"], "{rows:?}");
         assert!(
             !rows
                 .iter()
@@ -1087,7 +1171,7 @@ mod tests {
             .map(|name| Listed {
                 name: name.clone(),
                 status: "idle".to_string(),
-                usage: String::new(),
+                title: String::new(),
             })
             .collect();
         let mut screen = screen_with(&[]);
@@ -1129,7 +1213,7 @@ mod tests {
         );
         let at = rows
             .iter()
-            .position(|row| row.trim().trim_start_matches('\u{25b8}').trim() == "s9")
+            .position(|row| row.trim().trim_start_matches('\u{25b8}').trim() == "[s9]")
             .unwrap_or_else(|| panic!("s9 is not drawn: {rows:?}"));
         assert_eq!(
             list_at(
@@ -1345,17 +1429,17 @@ mod tests {
                 Listed {
                     name: "main".to_string(),
                     status: "idle".to_string(),
-                    usage: String::new(),
+                    title: String::new(),
                 },
                 Listed {
                     name: "peer".to_string(),
                     status: "idle".to_string(),
-                    usage: String::new(),
+                    title: String::new(),
                 },
                 Listed {
                     name: "third".to_string(),
                     status: "idle".to_string(),
-                    usage: String::new(),
+                    title: String::new(),
                 },
             ],
             none: Vec::new(),
@@ -1535,7 +1619,7 @@ mod tests {
             "the sticky pane is the wider one: {slots:?}"
         );
         let head = slots[0].header.expect("a header on the column");
-        assert_eq!(read(&buf, head.x, head.width, head.y), " main");
+        assert_eq!(read(&buf, head.x, head.width, head.y), " [main]");
         assert_eq!(
             slot_text(&buf, &screen, "main", slots[0].body.y),
             "the answer"
@@ -1702,7 +1786,7 @@ mod tests {
         let listed = |name: &str, usage: &str| Listed {
             name: name.to_string(),
             status: "idle".to_string(),
-            usage: usage.to_string(),
+            title: usage.to_string(),
         };
         screen.panes.layout(&Layout {
             listed: vec![
@@ -1729,19 +1813,74 @@ mod tests {
         let head = slots[0].header.expect("a header on the column");
         assert_eq!(
             read(&buf, head.x, head.width, head.y),
-            " main ctx 12345 · cached 89% · tps 41.6 · ttft 820ms"
+            " [main] ctx 12345 · cached 89% · tps 41.6 · ttft 820ms"
         );
         let head = slots[1].header.expect("a header on the column");
-        assert_eq!(read(&buf, head.x, head.width, head.y), " peer");
+        assert_eq!(read(&buf, head.x, head.width, head.y), " [peer]");
 
         // SPEC gives them to a `full` pane: a `line` group's row is one event,
         // so the numbers stop at the pane.
         let groups = parts(130, 12, 1, true, 1)[2];
         assert_eq!(
             read(&buf, groups.x, groups.width, groups.y),
-            "third",
+            "[third]",
             "one row per group: the name, and no measurement"
         );
+    }
+
+    /// A title too wide for its column takes the rows it needs, and never the
+    /// pane's last one.
+    ///
+    /// # Invariant
+    ///
+    /// The header grows downwards, so the rows below it start lower; a pane keeps
+    /// at least one row of its own whatever the title says.
+    #[test]
+    fn a_long_pane_title_wraps_instead_of_being_cut() {
+        let mut screen = screen_with(&[]);
+        let title = "ctx 123456 · cached 92% · tps 41.6 · ttft 820ms · cwd C:/resource/gongga · \
+                     provider deepseek-official · thinking high · context_limit 70%";
+        screen.panes.layout(&Layout {
+            listed: vec![Listed {
+                name: "main".to_string(),
+                status: "idle".to_string(),
+                title: title.to_string(),
+            }],
+            none: Vec::new(),
+            full: vec!["main".to_string()],
+            line: Vec::new(),
+            command: String::new(),
+            quota: None,
+        });
+        let (_, area) = crate::render::body(parts(40, 20, 1, false, 0)[1], &screen.panes);
+        let (slots, _) = pane_slots(area, &screen.panes, None);
+        let header = slots[0].header.expect("a header");
+        assert!(
+            header.height > 1,
+            "a title this long needs more than one row: {header:?}"
+        );
+        assert_eq!(slots[0].body.y, header.bottom(), "the rows start under it");
+
+        // Drawn: every word is on screen, so nothing was cut.
+        let mut term = Terminal::new(TestBackend::new(40, 20)).unwrap();
+        term.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+        let drawn: String = (0..header.height)
+            .map(|row| read(&buf, header.x, header.width, header.y + row))
+            .collect::<Vec<_>>()
+            .join(" ");
+        for word in ["[main]", "cached", "provider", "deepseek-official", "70%"] {
+            assert!(drawn.contains(word), "{word:?} is on screen: {drawn:?}");
+        }
+
+        // A pane one row tall has nowhere for a title: it keeps its row and the
+        // title is not drawn at all.
+        let (slots, _) = pane_slots(Rect::new(0, 0, 40, 1), &screen.panes, None);
+        assert!(slots[0].header.is_none(), "{slots:?}");
+        assert_eq!(slots[0].body.height, 1);
     }
 
     /// A layout says what is drawn; where each view is scrolled is not its business.
@@ -1756,7 +1895,7 @@ mod tests {
             listed: vec![Listed {
                 name: "main".to_string(),
                 status: "running".to_string(),
-                usage: "ctx 900 · tps 12.0".to_string(),
+                title: "ctx 900 · tps 12.0".to_string(),
             }],
             none: Vec::new(),
             full: vec!["main".to_string(), "peer".to_string()],

@@ -272,8 +272,8 @@ pub struct Listed {
     /// The status word, spelled: `idle`, `running`, `error`. A front-end that
     /// knows no protocol type can still draw it.
     pub status: String,
-    /// SPEC's context, tps and ttft, spelled for a `full` pane's title.
-    pub usage: String,
+    /// SPEC's `full` pane title: the measurements, then what the session runs on.
+    pub title: String,
 }
 
 /// Everything the window needs to lay itself out, as SPEC's UI section has it.
@@ -494,14 +494,12 @@ impl Client {
     ///
     /// # Invariant
     ///
-    /// The name is added only where the destination does not already say it: a
-    /// session drawn `full` has a pane headed with its name, so repeating it on
-    /// every row is the same word twice in one line. See `docs/notes/cli-lib.md`.
-    fn tag(&self, session: &str, label: &str) -> String {
-        match self.render.mode_of(session) {
-            RenderMode::Full => label.to_string(),
-            RenderMode::Line | RenderMode::None => format!("[{session}] {label}"),
-        }
+    /// The session's name is never in the text: the window draws it, bracketed, in
+    /// whichever area the session's mode puts it -- the list, a pane's title, or a
+    /// line group's row. Two places saying it is how `[main] [main] ...` happened.
+    /// See `docs/notes/cli-lib.md`.
+    fn tag(&self, _session: &str, label: &str) -> String {
+        label.to_string()
     }
 
     /// How the window lays itself out: SPEC's UI section, as three lists.
@@ -524,7 +522,7 @@ impl Client {
                         SessionStatus::Error => "error",
                     }
                     .to_string(),
-                    usage: usage_note(&s.usage),
+                    title: title_note(s),
                 })
                 .collect(),
             // SPEC's list is the `none` mode, so it holds what no other area draws.
@@ -1227,14 +1225,15 @@ impl Client {
     }
 }
 
-/// The numbers SPEC puts in a `full` pane's title, spelled for a terminal.
+/// SPEC's `full` pane title: the measurements, then what the session runs on.
 ///
 /// # Invariant
 ///
-/// Each figure carries the unit SPEC names for it, and one the last request did
-/// not measure is left out rather than shown as zero: `ctx 0` would read as an
-/// empty context, which is not a request that never happened.
-fn usage_note(usage: &protocol::Usage) -> String {
+/// Each figure carries SPEC's unit, and one nobody measured is left out rather than
+/// shown as zero: `ctx 0` reads as an empty context, not a request that never
+/// happened. See `docs/notes/cli-lib.md`.
+fn title_note(session: &protocol::SessionInfo) -> String {
+    let usage = &session.usage;
     let mut parts: Vec<String> = Vec::new();
     if usage.context_tokens > 0 {
         parts.push(format!("ctx {}", usage.context_tokens));
@@ -1253,6 +1252,21 @@ fn usage_note(usage: &protocol::Usage) -> String {
         parts.push(match ms {
             0..1000 => format!("ttft {ms}ms"),
             _ => format!("ttft {:.1}s", ms as f64 / 1000.0),
+        });
+    }
+    if !session.cwd.is_empty() {
+        parts.push(format!("cwd {}", session.cwd));
+    }
+    if let Some(provider) = &session.provider {
+        parts.push(format!("provider {provider}"));
+    }
+    if let Some(level) = &session.thinking_effort {
+        parts.push(format!("thinking {level}"));
+    }
+    if let Some(percent) = session.context_limit {
+        parts.push(match percent {
+            0 => "context: no notice".to_string(),
+            percent => format!("context_limit {percent}%"),
         });
     }
     parts.join(" · ")
@@ -2072,6 +2086,9 @@ mod tests {
                 messages: 0,
                 cwd: String::new(),
                 usage: protocol::Usage::default(),
+                provider: None,
+                thinking_effort: None,
+                context_limit: None,
             })
             .collect();
         c
@@ -2229,14 +2246,17 @@ mod tests {
         }
     }
 
-    /// A line names its session only where the destination does not: a pane is
-    /// headed with the name, a line group is not.
+    /// A line never names its session: the window draws the name, in every mode.
+    ///
+    /// # Invariant
+    ///
+    /// The text is the same whatever the mode is. Two places saying the name is
+    /// how a row comes to read `[peer] [peer] hi there`.
     #[test]
-    fn a_response_line_names_its_session_only_where_the_pane_does_not() {
+    fn a_response_line_never_carries_its_session_name() {
         let d = tempfile::tempdir().unwrap();
         let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["peer"]);
         let mut s = StreamSink::default();
-        // The default mode is `full`: the pane is headed `peer`, so no tag.
         c.handle_response(response("peer", ResponsePart::Reasoning, "hmm"), &mut s);
         c.handle_response(response("peer", ResponsePart::ToolCall, "bash"), &mut s);
         c.handle_response(response("peer", ResponsePart::Output, "hi there"), &mut s);
@@ -2246,12 +2266,11 @@ mod tests {
             "no part needs a label: the colour says which part it is"
         );
 
-        // Drawn as one line among others, the row has to name its session: there
-        // is no header over a line group's rows.
+        // Drawn as one line among others: the row's own name says whose it is.
         s.lines.clear();
         c.render.set("peer", RenderMode::Line).unwrap();
         c.handle_response(response("peer", ResponsePart::Output, "hi there"), &mut s);
-        assert_eq!(s.lines, vec!["[peer] hi there"]);
+        assert_eq!(s.lines, vec!["hi there"]);
     }
 
     /// The key stays what it was: the session there is for routing, not display.
@@ -2264,8 +2283,7 @@ mod tests {
         assert_eq!(s.keys, vec!["r:peer:1:Output"]);
     }
 
-    /// stdout and stderr stay separate streams, and carry the tag a line group
-    /// needs -- not the one a pane already has.
+    /// stdout and stderr stay separate streams, and neither carries the name.
     #[test]
     fn a_tool_answer_line_names_its_session_where_it_must() {
         let d = tempfile::tempdir().unwrap();
@@ -2285,7 +2303,7 @@ mod tests {
                 &mut s,
             );
         }
-        assert_eq!(s.lines, vec!["[peer] out", "[peer] err"]);
+        assert_eq!(s.lines, vec!["out", "err"]);
         assert_eq!(s.keys, vec!["t:c1:Stdout", "t:c1:Stderr"]);
 
         // In a pane of its own, the output needs no name over it.
@@ -2331,6 +2349,50 @@ mod tests {
             vec!["$ send_message"],
             "a log line is not a window line"
         );
+    }
+
+    /// SPEC's `full` pane title carries what the session runs on, after what the
+    /// last request measured.
+    ///
+    /// # Invariant
+    ///
+    /// One field per figure, in SPEC's order, each omitted when there is nothing
+    /// to say: a session that named neither a directory nor a level shows neither.
+    #[test]
+    fn a_pane_title_says_what_the_session_runs_on() {
+        let session = protocol::SessionInfo {
+            name: "main".into(),
+            status: SessionStatus::Idle,
+            created_at: 0,
+            updated_at: 0,
+            messages: 0,
+            cwd: "C:/work/svc".into(),
+            usage: protocol::Usage {
+                context_tokens: 2_100,
+                cached_tokens: Some(2_000),
+                tps: Some(40.0),
+                ttft_ms: Some(300),
+            },
+            provider: Some("deepseek-official".into()),
+            thinking_effort: Some("high".into()),
+            context_limit: Some(70),
+        };
+        assert_eq!(
+            title_note(&session),
+            "ctx 2100 · cached 95% · tps 40.0 · ttft 300ms · cwd C:/work/svc · \
+             provider deepseek-official · thinking high · context_limit 70%"
+        );
+
+        // A session with no tuning of its own still says where it runs.
+        let bare = protocol::SessionInfo {
+            usage: protocol::Usage::default(),
+            cwd: String::new(),
+            provider: None,
+            thinking_effort: None,
+            context_limit: Some(0),
+            ..session
+        };
+        assert_eq!(title_note(&bare), "context: no notice");
     }
 
     /// SPEC's `active_quota` row: the provider, then the figures it reported, in
@@ -2453,7 +2515,7 @@ mod tests {
         );
         let announced = s.announced.clone().expect("a layout");
         assert_eq!(
-            announced.listed[0].usage,
+            announced.listed[0].title,
             "ctx 12345 · cached 89% · tps 41.6 · ttft 820ms"
         );
 
@@ -2471,10 +2533,22 @@ mod tests {
             &mut s,
         );
         let announced = s.announced.clone().expect("a layout");
-        assert_eq!(announced.listed[0].usage, "ctx 900 · cached 0% · ttft 1.5s");
+        assert_eq!(announced.listed[0].title, "ctx 900 · cached 0% · ttft 1.5s");
 
         // A session that has never made a request says nothing rather than zero.
-        assert_eq!(usage_note(&protocol::Usage::default()), "");
+        let quiet = protocol::SessionInfo {
+            name: "peer".into(),
+            status: SessionStatus::Idle,
+            created_at: 0,
+            updated_at: 0,
+            messages: 0,
+            cwd: String::new(),
+            usage: protocol::Usage::default(),
+            provider: None,
+            thinking_effort: None,
+            context_limit: None,
+        };
+        assert_eq!(title_note(&quiet), "");
     }
 
     /// Captures the status line, which the other sinks throw away.
@@ -2589,9 +2663,10 @@ mod tests {
         assert_eq!(s.lines, vec!["a", "b", "c"]);
     }
 
-    /// As a line among others, a row names its session: no header covers it.
+    /// As a line among others, the row's own name says whose it is, so the text
+    /// does not repeat it.
     #[test]
-    fn a_line_group_row_names_its_session() {
+    fn a_line_group_row_is_drawn_under_its_own_name() {
         let d = tempfile::tempdir().unwrap();
         let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
         c.render.set("main", RenderMode::Line).unwrap();
@@ -2599,7 +2674,7 @@ mod tests {
         c.handle_response(response("main", ResponsePart::Reasoning, "a"), &mut s);
         // The mode is a view, not a rewrite: the window is still the session's.
         assert_eq!(s.windows, vec!["main"]);
-        assert_eq!(s.lines, vec!["[main] a"]);
+        assert_eq!(s.lines, vec!["a"]);
     }
 
     /// The front-end is told SPEC's three lists: the session list, the panes, the
