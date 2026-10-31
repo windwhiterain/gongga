@@ -109,6 +109,19 @@ window is the *modifier*: a pasted newline arrives as `Enter` with `CONTROL`, wh
 is the subject of the first section. Both rules are kept, because the terminals
 differ: one for a paste replayed as fast keystrokes, one for a paste that says so.
 
+## Ctrl+V, for the terminals that forward it
+
+SPEC makes `Ctrl+V` the paste. Bracketed paste is the other half of the same
+feature: a terminal that pastes by itself (Windows Terminal, VS Code) never sends
+the key at all, it sends the text. A terminal that forwards `^V` gets the
+clipboard read here instead — `clipboard::paste()` — and the answer goes in
+through `Tui::paste`, so both roads end in the same place and neither replays
+keystrokes.
+
+Nothing is said when the clipboard is empty. When there is no tool to read it, or
+the tool refuses, the status line says so and the prompt is untouched: a paste
+that quietly did nothing is the failure mode this note keeps coming back to.
+
 ## What the run holds back
 
 Whatever ended a run is returned as `Tui::stashed` and read at the top of the

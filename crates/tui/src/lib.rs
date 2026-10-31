@@ -600,9 +600,15 @@ impl Tui {
         }
     }
 
-    /// Whether this key is SPEC's delete: Shift+D, which arrives as an uppercase 'D'.
+    /// Whether this key asks for the clipboard: SPEC's Ctrl+V, case either way.
+    fn clipboard_paste(key: &KeyEvent) -> bool {
+        key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('v' | 'V'))
+    }
+
+    /// Whether this key is SPEC's delete: Shift+Delete, never a bare Delete.
     fn delete_key(key: &KeyEvent) -> bool {
-        key.modifiers.contains(KeyModifiers::SHIFT) && matches!(key.code, KeyCode::Char('d' | 'D'))
+        key.code == KeyCode::Delete && key.modifiers.contains(KeyModifiers::SHIFT)
     }
 
     /// Whether Enter breaks instead of sending: Shift or Alt (ESC CR), not plain Enter.
@@ -647,12 +653,18 @@ impl Tui {
             return None;
         }
 
+        // A terminal that pastes itself sends the text, not this key.
+        if Self::clipboard_paste(&key) {
+            self.paste_from_clipboard();
+            return None;
+        }
+
         // Ctrl+<letter> must not insert its letter where a terminal delivers it.
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return None;
         }
 
-        // With nothing typed to edit, Shift+D acts on the sticky session: SPEC's delete.
+        // With nothing typed to edit, Shift+Delete acts on the sticky session.
         if self.screen.input.is_empty()
             && Self::delete_key(&key)
             && let Some(target) = self.screen.sticky_session.clone()
@@ -810,6 +822,28 @@ impl Tui {
         // The popup was about the token before the paste, not about what it means now.
         self.screen.completion = None;
         self.screen.input.insert_str(&text);
+        self.dirty = true;
+    }
+
+    /// Ctrl+V: the clipboard, when the terminal did not paste it for us.
+    ///
+    /// # Invariant
+    ///
+    /// The text goes in through [`Tui::paste`], never key by key: a pasted
+    /// programme must not submit at its first line break. A clipboard this machine
+    /// cannot read says so on the status line; nothing else about the window moves.
+    fn paste_from_clipboard(&mut self) {
+        match clipboard::paste() {
+            clipboard::FromClipboard::Ok(text) => self.paste(&text),
+            clipboard::FromClipboard::Empty => {}
+            clipboard::FromClipboard::NoTool => self.screen.note(
+                LineKind::Error,
+                "paste: no clipboard tool here; the terminal's own paste still works",
+            ),
+            clipboard::FromClipboard::Failed(why) => {
+                self.screen.note(LineKind::Error, format!("paste: {why}"))
+            }
+        }
         self.dirty = true;
     }
 
@@ -975,7 +1009,7 @@ fn cycle_mode_line(session: &str, drawn_as: Option<crate::panes::Kind>) -> Strin
     format!("/set_render_session --session {session} --mode {next}")
 }
 
-/// The command line Shift+D asks for: the sticky session's own deletion.
+/// The command line Shift+Delete asks for: the sticky session's own deletion.
 fn delete_line(session: &str) -> String {
     format!("/del_session --session {session}")
 }
@@ -1871,31 +1905,55 @@ mod tests {
         }
     }
 
-    /// Deleting the sticky session is Shift+D; a bare d is a letter to type.
+    /// Ctrl+V is the clipboard; every other Ctrl+letter still does nothing.
+    ///
+    /// # Invariant
+    ///
+    /// The key is read before the swallow below it, or a terminal that forwards
+    /// Ctrl+V (instead of pasting the text itself) would look like a dead key.
+    #[test]
+    fn ctrl_v_is_the_clipboard() {
+        for code in [KeyCode::Char('v'), KeyCode::Char('V')] {
+            assert!(Tui::clipboard_paste(&KeyEvent::new(
+                code,
+                KeyModifiers::CONTROL
+            )));
+        }
+        // Typing a `v` is typing a letter; the rest of the Ctrl row stays silent.
+        for key in [
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+        ] {
+            assert!(!Tui::clipboard_paste(&key), "{key:?} is not a paste");
+        }
+    }
+
+    /// Deleting the sticky session is Shift+Delete; a bare key never deletes it.
     ///
     /// # Invariant
     ///
     /// No unmodified key deletes a session: Delete and Backspace are the editor's,
     /// and a session is the one thing on screen a keystroke cannot take back.
     #[test]
-    fn shift_d_is_the_delete_key() {
-        // Shift+D arrives as an uppercase 'D'; a terminal that keeps the lowercase
-        // letter still means the same binding.
-        for code in [KeyCode::Char('D'), KeyCode::Char('d')] {
-            assert!(Tui::delete_key(&KeyEvent::new(code, KeyModifiers::SHIFT)));
-        }
-        // Everything the old binding had: bare d, Delete and Backspace.
-        for code in [KeyCode::Char('d'), KeyCode::Delete, KeyCode::Backspace] {
+    fn shift_delete_is_the_delete_key() {
+        let shift = |code| KeyEvent::new(code, KeyModifiers::SHIFT);
+        assert!(Tui::delete_key(&shift(KeyCode::Delete)));
+        // Every earlier binding of this action is gone: bare Delete, Backspace, Shift+D.
+        for key in [
+            KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::SHIFT),
+            shift(KeyCode::Char('d')),
+            shift(KeyCode::Char('D')),
+        ] {
             assert!(
-                !Tui::delete_key(&KeyEvent::new(code, KeyModifiers::NONE)),
-                "{code:?} must not delete a session"
+                !Tui::delete_key(&key),
+                "{:?} + {:?} must not delete a session",
+                key.code,
+                key.modifiers
             );
         }
-        // Shift with another modifier is that other key first.
-        assert!(!Tui::delete_key(&KeyEvent::new(
-            KeyCode::Char('D'),
-            KeyModifiers::CONTROL
-        )));
     }
 
     /// Enter sends, the modified Enter breaks the line; backwards sends half a message.

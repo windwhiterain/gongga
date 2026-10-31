@@ -24,6 +24,77 @@ fn candidates() -> &'static [(&'static str, &'static [&'static str])] {
     }
 }
 
+/// Programs that print the clipboard on stdout, tried in order, for a paste the
+/// terminal did not deliver itself.
+fn readers() -> &'static [(&'static str, &'static [&'static str])] {
+    if cfg!(windows) {
+        // `Get-Clipboard` is a cmdlet, so it needs a host to run in.
+        &[("powershell", &["-NoProfile", "-Command", "Get-Clipboard"])]
+    } else if cfg!(target_os = "macos") {
+        &[("pbpaste", &[])]
+    } else {
+        &[
+            ("wl-paste", &["--no-newline"]),
+            ("xclip", &["-selection", "clipboard", "-o"]),
+            ("xsel", &["--clipboard", "--output"]),
+        ]
+    }
+}
+
+/// What a read of the clipboard produced.
+pub enum FromClipboard {
+    /// The text, as the tool printed it.
+    Ok(String),
+    /// The clipboard holds nothing a prompt could take.
+    Empty,
+    /// No clipboard tool could be run at all.
+    NoTool,
+    /// A tool ran and refused; the message is its own words.
+    Failed(String),
+}
+
+/// The clipboard's text, for a Ctrl+V the terminal forwarded instead of pasting.
+///
+/// # Invariant
+///
+/// A failure is reported, never swallowed, and an empty clipboard is not a
+/// failure: nothing to paste has no words to say. See `docs/notes/tui-paste.md`.
+pub fn paste() -> FromClipboard {
+    paste_with(readers())
+}
+
+/// [`paste`] against a named list, so a test exercises the spawn and the pipe
+/// without touching the real clipboard.
+pub fn paste_with(tools: &[(&'static str, &'static [&'static str])]) -> FromClipboard {
+    let mut last: Option<String> = None;
+    for (program, args) in tools {
+        match Command::new(program).args(*args).output() {
+            Ok(out) if out.status.success() => {
+                let text = String::from_utf8_lossy(&out.stdout).to_string();
+                return if text.is_empty() {
+                    FromClipboard::Empty
+                } else {
+                    FromClipboard::Ok(text)
+                };
+            }
+            Ok(out) => {
+                let said = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                last = Some(if said.is_empty() {
+                    format!("{program}: exit {:?}", out.status.code())
+                } else {
+                    format!("{program}: {said}")
+                });
+            }
+            // Not installed: the next candidate is the answer, not an error.
+            Err(_) => continue,
+        }
+    }
+    match last {
+        Some(message) => FromClipboard::Failed(message),
+        None => FromClipboard::NoTool,
+    }
+}
+
 /// What happened, so the caller can say it in one line.
 pub enum Copied {
     /// A tool took the text.
@@ -133,6 +204,34 @@ mod tests {
     fn a_tool_is_always_named() {
         assert!(!candidates().is_empty());
         assert!(candidates().iter().all(|(p, _)| !p.is_empty()));
+        assert!(!readers().is_empty());
+        assert!(readers().iter().all(|(p, _)| !p.is_empty()));
+    }
+
+    /// A read hands back exactly what the tool printed, and an empty clip is a
+    /// verdict of its own rather than a failure.
+    #[test]
+    fn a_read_reports_what_the_tool_printed() {
+        let printing: &[(&str, &[&str])] = if cfg!(windows) {
+            &[("cmd", &["/c", "echo hello"])]
+        } else {
+            &[("echo", &["hello"])]
+        };
+        match paste_with(printing) {
+            FromClipboard::Ok(text) => assert_eq!(text.trim_end(), "hello"),
+            other => panic!(
+                "a printing tool must read as text: {}",
+                matches!(other, FromClipboard::Empty)
+            ),
+        }
+        let silent: &[(&str, &[&str])] = if cfg!(windows) {
+            &[("cmd", &["/c", "exit 0"])]
+        } else {
+            &[("true", &[])]
+        };
+        assert!(matches!(paste_with(silent), FromClipboard::Empty));
+        let none: &[(&str, &[&str])] = &[("a-program-that-does-not-exist-anywhere", &[])];
+        assert!(matches!(paste_with(none), FromClipboard::NoTool));
     }
 
     /// A missing tool is skipped, not fatal: the next candidate still gets a turn.

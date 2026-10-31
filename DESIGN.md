@@ -810,10 +810,13 @@ TUI 和 CLI **共用这一套模型**，TUI 不持有任何额外状态：它只
 
 TUI 布局：头部状态条 / 事件窗口（分屏时是若干面板，每个上面一行写它是哪个会话）/
 sticky 参数行 / `cmd` 与回执那一线（只在分屏时占一行，位于 footer 与输入框之间）/
-输入框 / 帮助行，补全弹窗浮在输入框上方。帮助行是窗口的**最后一行**，写的是这个窗口认
-的全部键位：键位不写在屏幕上就等于不存在，而 SPEC 给了它一行，它就不该和状态条抢同一行
-（状态条只说服务端事实）。窗口太矮时先让出的是面板的行，不是帮助行 —— 约束不够时求解器
-怎么分是不确定的，所以这一行在布局里**先扣掉**，其余六块在剩下的行里再分。
+输入框 / 帮助行，补全弹窗浮在输入框上方。
+帮助行是窗口的**最后几行**，写的是 SPEC 那一串 hot-key（`Shift+Enter` 换行、`PageUp/PageDown`
+翻页、`Shift+Down` 回底部、`Shift+Delete` 删会话、`Ctrl+V` 粘贴），不写别的：键位表是 SPEC 的，窗口自己另外还认
+哪些键是文档的事，写进提醒里就成了「SPEC 说过的键」——而它并不是。窗口窄到放不下时**换行**，
+不是截断：被切掉的那一条键，恰恰是没人会知道的那条。一行放得下 `Shift+Delete delete session`
+就一行（≥106 列），80 列两行，20 列一条一行。行数在布局里**先算、先扣**（`help_rows`），
+所以矮窗口先让出的是面板的行，不是提醒——约束不够时求解器怎么分是不确定的。
 输入框是**多行**的，高度随内容变：超出行宽自动折行，`Shift+Enter`（或 `Alt+Enter`）插入
 硬换行，行数上限 8 行 —— 到顶就不再长、改为内部滚动跟随光标，因为一个吃掉半屏的输入框
 会把「正在回复的那段话」藏起来。折行是渲染算的，文本里只有用户自己打的 `\n`，
@@ -877,16 +880,22 @@ Ctrl+C 和 Ctrl+X 都删了：一手 `Ctrl+C` 的老习惯在 TUI 里意味着�
 最后没人记得住；现在键盘只负责行内编辑、翻页、补全和退出。其余会改变服务端状态的动作，
 都是一个能补全、能进历史、能被脚本复制的命令。
 
-**唯一的例外是 `Shift+D`：删掉 sticky 会话**（SPEC 的 hot-key 那一条）。这是对上面那条规则
+**唯一的例外是 `Shift+Delete`：删掉 sticky 会话**（SPEC 的 hot-key 那一条）。这是对上面那条规则
 的一处退让，理由只有一个：会话是屏幕上唯一「按一下就没了」的东西，删错了没有回执可读、没有
 历史可补 —— 越是这样的动作，人越想按一个键。它走的还是点击那条老路：提交
 `/del_session --session <name>`，规则归命令层，所以脚本、模型、前端说的仍是同一句话。
 
-这个键原来是 `Delete`/`Backspace`，换掉的原因是**一个键不能有两个意思**：行里没字的时候它删
-会话，行里有字的时候它删一个字符 —— 到底发生哪件事取决于你打字打到哪儿了，而这两件事的代价
-差着几个数量级。`Shift+D` 只有一个意思。它到达时是大写 `'D'`，所以判据是「这个字符 + Shift」，
-不是「Shift + 一个小写字母」；行里已经有字时它照旧打出一个 `D`（大写字母还得能打），
-所以只有**空的**输入行才真的删会话，没有 sticky 会话时它什么都不做。
+这个键先是 `Delete`/`Backspace`，中间一版是 `Shift+D`，落到 `Shift+Delete` 的理由是
+**一个键不能有两个意思**：行里没字的时候它删会话，行里有字的时候它删一个字符 —— 到底发生
+哪件事取决于你打字打到哪儿了，而这两件事的代价差着几个数量级。`Shift+Delete` 只有一个
+意思：判据是「`Delete` + Shift」，与光标在哪儿无关。行里已经有字时它和 `Delete` 一样删一个
+字符（提示行是编辑器的地盘），只有**空的**输入行才真的删会话，没有 sticky 会话时它什么都不做。
+
+**`Ctrl+V` 是 SPEC 的粘贴，两条路都通。** 自己粘贴的终端（Windows Terminal、VS Code）
+根本不会把这个键送上来，它送的是文本（bracketed paste）；转发 `^V` 的终端则由窗口自己读
+剪贴板（`clipboard::paste()`），拿到的文本走同一条 `Tui::paste`——所以两边的落点一样，都
+不是「把按键重放一遍」。读不到就只在状态条上说一句，提示行不动：空剪贴板不算错，什么都不说。
+这个键读在「Ctrl+其余字母一律吞掉」那一条**之前**，否则转发 `^V` 的终端里它看着像个死键。
 
 ### 断线与重连
 
@@ -1184,8 +1193,9 @@ Git Bash 自动探测常见安装路径，找不到再退回 PATH 上的 `bash`�
 | TUI 渲染整链路（`TestBackend`，不需要 TTY）：布局、窗口、最新行在 footer 上方、按**行**滚动 | 通过（2 个单测） |
 | 输入框折行：超宽自动换行、行数随内容变、上限后内部滚动、`\n` 是硬换行、光标落在正确的行 | 通过（`TestBackend` 3 个单测 + `layout_input` 断言）|
 | `Enter` 发送 / `Shift+Enter`（`Alt+Enter`）换行 | 判定逻辑有单测，**真 TTY 未验证**（见下）|
-| `Shift+D` 删 sticky 会话，`Delete`/`Backspace` 只编辑；空行 + 有 sticky 才删 | 通过（`shift_d_is_the_delete_key`；`Delete`/`Backspace`/裸 `d` 均不删）|
-| 帮助行在窗口最后一行，写全每一个键位；窗口矮到放不下时先让出面板的行 | 通过（`the_help_line_is_the_last_row_and_names_every_binding`、`a_short_window_still_ends_on_the_help_row`，高度 3–7）|
+| `Shift+Delete` 删 sticky 会话，`Delete`/`Backspace` 只编辑；空行 + 有 sticky 才删 | 通过（`shift_delete_is_the_delete_key`；裸 `Delete`/`Backspace`/`Shift+D` 均不删）|
+| 帮助行是 SPEC 的 hot-key、按宽度换行，且在窗口最后几行；矮窗口先让出面板的行 | 通过（`the_reminder_names_specs_hot_keys_and_nothing_else`、`the_reminder_wraps_to_the_rows_the_window_allows`、`a_short_window_still_ends_on_the_help_row`）|
+| `Ctrl+V` 读剪贴板并走 `Tui::paste`；读不到只在状态条报错，`Ctrl+` 其余字母仍无绑定 | 键位判定有单测（`ctrl_v_is_the_clipboard`），读剪贴板有单测（`a_read_reports_what_the_tool_printed`），**真终端未验证** |
 | 补全：已填的 `--flag` 不再列出；Tab 完 flag 自动接上它的值列表 | 通过（catalog 单测 3 个 + tui 的 `apply_and_continue` 单测）|
 | 长日志的一帧成本与日志长度无关（20k 行 156ns / 旧 8.1ms）| 通过（`examples/frame_cost`）+ 单测 `a_frame_touches_only_a_screenful` |
 | 流式追加 = 整行重排（折行偏移一致）| 通过（单测 `appending_equals_rewrapping_from_the_top`，9 组 × 6 种宽度）|
@@ -1394,7 +1404,7 @@ bash --detached: <launcher>      # 继任者在旧进程之外等端口
 ```
 
 **为什么先起继任者再 cancel**：反过来（先 cancel、再起新进程）一旦新二进制起不来，
-home 就空着，没有进程去 resume 这个回合 ���— 一次失败的进化会吃掉用户的活。现在失败模式是
+home 就空着，没有进程去 resume 这个回合 —— 一次失败的进化会吃掉用户的活。现在失败模式是
 「继任者起不来 → swap 检查到 launcher 不在 → 拒绝 cancel → 旧服务端照常活着」。
 
 **为什么 `stage` 用 `.dev/target` 而不是 `target/`**：Windows 锁住正在运行的 `.exe`，

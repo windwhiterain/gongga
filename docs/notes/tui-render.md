@@ -19,27 +19,47 @@ to see is the answer they are replying to, so the box stops growing.
 
 ## HELP
 
-Every binding this window knows, on the frame's last row: the operator reads the
-keyboard here, so a key the row leaves out is a key nobody presses.
+SPEC's `hot-key` list, one entry per binding, in SPEC's order: five of them, the
+ones the reminder may name.
 
-It is one row because SPEC gives the window one -- `hot-keys reminder`, under
-`cmd_input` -- and the header already spends its row on the server's status. A
-window narrower than the line draws as much as fits, losing the keys at the end
-rather than a pane row: the last row has nowhere else to put them.
+`Shift+Delete` is the delete and `Ctrl+V` the paste. Both are SPEC's, so they are
+on the row; `Ctrl+V` also arrives as a bracketed paste from a terminal that
+pastes by itself, and the entry is right either way.
 
-## HELP_ROWS
+Nothing else goes on the row even though this window binds more: the operator
+reads a reminder as the whole keyboard, and SPEC is the source of truth for which
+keys exist. `Alt+Q` still quits, `Tab` still completes — they are in
+`docs/notes/tui-lib.md` and in DESIGN, not on the row. The first version of the
+row listed every binding the handler knows, which was wrong in the direction that
+costs more: a key that is not a SPEC key looked like one.
 
-The row the help line takes out of the window: one. `input_rows` counts it before
-letting the prompt grow, so the three log rows, the chrome, the command line and
-the help line all come first.
+## HELP_SEP
+
+What sits between two entries on one row: ` · `. A row that starts with an entry
+carries no leading separator, so a wrapped reminder reads as a list of keys.
+
+## help_rows
+
+Packs the entries into the rows a window `width` columns wide allows, and the
+layout asks here for how many rows the reminder will take.
+
+An entry is never split across two rows: a row that cannot hold the next one ends
+before it, and an entry wider than the whole window keeps a row to itself, where
+the terminal cuts it. Splitting `PageUp/PageDown scroll` after `PageUp/` would
+turn one key into two rows that read as two keys.
 
 ## areas
 
-Seven rects, and the help row is the last of them by construction: it is cut off
-the bottom of the window first, and the six above it are laid out in what is
-left. A window too short for its parts therefore loses a pane row, not the keys —
-the solver returns whatever it likes when the constraints cannot all hold, and
-"the help row is the last row" has to survive a three-row terminal.
+Seven rects, and the reminder is the last of them by construction: `help_rows`
+says how many rows it needs at this width, those are cut off the bottom first,
+and the six above are laid out in what is left. A window too short for its parts
+therefore loses a pane row, not the keys — the solver returns whatever it likes
+when the constraints cannot all hold, and "the reminder is the last rows" has to
+survive a three-row terminal.
+
+The count is a function of the width, so a resized window re-lays out the
+reminder: 140 columns fit it on one row, 80 on two, and a 20-column terminal
+gives each entry its own.
 
 ## draw
 

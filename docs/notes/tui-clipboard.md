@@ -35,6 +35,26 @@ than one that says it could not.
 A Linux box with only `xclip` must not fail because `wl-copy` is absent. The
 first candidate that runs and exits zero wins; the rest are never spawned.
 
+## readers
+
+The same idea in the other direction: `Get-Clipboard` on Windows, `pbpaste` on
+macOS, `wl-paste` / `xclip -o` / `xsel -o` on Linux. They print the clipboard on
+stdout, which is what a paste needs.
+
+Only reached when a terminal forwards Ctrl+V instead of pasting the text itself:
+Windows Terminal and VS Code both paste on their own, so this path is for the
+others, and a `powershell` startup is why it is not the one everybody takes.
+
+## FromClipboard
+
+Four outcomes, matching `Copied`: an empty clipboard is not a failure and has no
+words to say, a missing tool is, and a tool that refuses carries its own message.
+
+## paste_with
+
+The same seam as `copy_with`: `paste` is `paste_with(readers())`, so a test reads
+a real process's stdout without touching the operator's clipboard.
+
 ## paste_text
 
 Normalizes `\r\n` and lone `\r` to `\n`. A Windows clipboard hands back CRLF, and
@@ -50,3 +70,8 @@ The breaks survive. In the paste path a newline is text, not a keystroke — see
 
 The negative of the happy path, and the one that bites silently: a tool that
 exits non-zero must not read as a successful copy.
+
+## a_read_reports_what_the_tool_printed
+
+Three outcomes in one test: a tool that prints is text, a tool that prints nothing
+is `Empty` rather than a failure, and a tool that is not installed moves on.

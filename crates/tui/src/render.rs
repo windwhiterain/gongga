@@ -11,22 +11,24 @@ use crate::log::View;
 use crate::panes::{Pane, Panes};
 use crate::{LineKind, Screen};
 
-/// Every binding this window knows, on the last row: a key it does not name is a
-/// key nobody finds.
+/// SPEC's `hot-key` list, one binding per entry: the reminder row says these and
+/// nothing else.
 ///
 /// # Invariant
 ///
-/// Every key the handler acts on is named here, and the line is one row; a
-/// window narrower than it shows as much as fits. See `docs/notes/tui-render.md`.
-pub const HELP: &str = "Enter send \u{00b7} Shift+Enter newline \u{00b7} Tab complete \
-     \u{00b7} Esc close \u{00b7} \u{2191}\u{2193} history \u{00b7} \u{2190}\u{2192} Home/End \
-     \u{00b7} Alt+\u{2190} word \u{00b7} Alt+K kill \u{00b7} PgUp/PgDn page \
-     \u{00b7} Shift+\u{2191}\u{2193} scroll \u{00b7} Shift+\u{2193} bottom \
-     \u{00b7} Shift+D delete session \u{00b7} Alt+Y copy \u{00b7} Alt+M mouse \
-     \u{00b7} Alt+Q quit";
+/// SPEC is the source of truth, so a binding SPEC does not name is not on the row
+/// -- an operator reads a reminder as the whole keyboard. See
+/// `docs/notes/tui-render.md`.
+pub const HELP: &[&str] = &[
+    "Shift+Enter newline",
+    "PageUp/PageDown scroll",
+    "Shift+\u{2193} bottom",
+    "Shift+Delete delete session",
+    "Ctrl+V paste",
+];
 
-/// The one row the help line takes from the bottom of the window.
-pub const HELP_ROWS: u16 = 1;
+/// What separates two entries on one row of the reminder.
+const HELP_SEP: &str = " \u{00b7} ";
 
 /// Rows spent on the header and the sticky line; the input's height is asked
 /// separately, and so are the line groups'.
@@ -96,9 +98,10 @@ pub struct Chrome {
 pub fn areas(area: Rect, input_rows: u16, chrome: Chrome) -> Vec<Rect> {
     // One row per group, never more than half the window: the panes keep some.
     let lines = (chrome.line_groups as u16).min(area.height / 2);
-    // The help row first: on a short window the rest shrinks, so the keys stay.
+    // The reminder first: on a short window the rest shrinks, so the keys stay.
+    let reminder = help_rows(area.width).len() as u16;
     let [rest, help] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(HELP_ROWS)]).areas(area);
+        Layout::vertical([Constraint::Min(0), Constraint::Length(reminder)]).areas(area);
     let mut chunks: Vec<Rect> = Layout::vertical([
         Constraint::Length(1),                                  // header
         Constraint::Min(1),                                     // sessions | panes
@@ -406,8 +409,9 @@ pub fn input_rows(text: &str, width: u16, height: u16) -> u16 {
         .rows
         .len() as u16;
     // The floor: three log rows, and a command line counted even when absent.
+    let help = help_rows(width).len() as u16;
     let spare = height
-        .saturating_sub(CHROME_ROWS + HELP_ROWS + COMMAND_ROWS + 3)
+        .saturating_sub(CHROME_ROWS + help + COMMAND_ROWS + 3)
         .max(1);
     rows.clamp(1, MAX_INPUT_ROWS.min(spare))
 }
@@ -910,9 +914,45 @@ fn draw_input(f: &mut Frame, s: &Screen, area: Rect) {
     f.render_widget(Paragraph::new(lines), area);
 }
 
-/// The whole keyboard, on the window's last row: the one place a binding is read.
+/// SPEC's hot-keys, packed into the rows a window `width` columns wide allows.
+///
+/// # Invariant
+///
+/// One binding is never split across two rows: a row that cannot hold the next
+/// entry ends before it, and an entry wider than the window keeps a row of its
+/// own. The layout and the frame both ask here, so they cannot disagree about how
+/// many rows the reminder takes. See `docs/notes/tui-render.md`.
+pub fn help_rows(width: u16) -> Vec<String> {
+    let width = width.max(1) as usize;
+    let mut rows: Vec<String> = Vec::new();
+    let mut row = String::new();
+    for entry in HELP {
+        if row.is_empty() {
+            row.push_str(entry);
+            continue;
+        }
+        let grown = UnicodeWidthStr::width(row.as_str())
+            + UnicodeWidthStr::width(HELP_SEP)
+            + UnicodeWidthStr::width(*entry);
+        if grown <= width {
+            row.push_str(HELP_SEP);
+            row.push_str(entry);
+        } else {
+            rows.push(std::mem::take(&mut row));
+            row.push_str(entry);
+        }
+    }
+    rows.push(row);
+    rows
+}
+
+/// The reminder, on the window's last rows: the one place a binding is read.
 fn draw_help(f: &mut Frame, area: Rect) {
-    f.render_widget(Paragraph::new(Line::from(Span::styled(HELP, dim()))), area);
+    let rows: Vec<Line> = help_rows(area.width)
+        .into_iter()
+        .map(|row| Line::from(Span::styled(row, dim())))
+        .collect();
+    f.render_widget(Paragraph::new(rows), area);
 }
 
 /// Where the caret goes for this input in this area.
@@ -1464,7 +1504,8 @@ mod tests {
     #[test]
     fn the_caret_stays_on_the_input_row() {
         let mut screen = screen_with(&["a"]);
-        let area = Rect::new(0, 0, 30, 12);
+        // Tall enough for the reminder's rows and still a box that can grow.
+        let area = Rect::new(0, 0, 30, 14);
         let input = input_area(area, &screen);
         assert_eq!(input.height, 1);
         assert_eq!(caret(&screen, input), (2, input.y), "an empty prompt");
@@ -1929,54 +1970,104 @@ mod tests {
             "the prompt sits above the help row: {:?}",
             row_text(&buf, with[5].y)
         );
-        assert_eq!(with[6].height, HELP_ROWS, "the help row is the last one");
+        assert_eq!(
+            with[6].height,
+            help_rows(width).len() as u16,
+            "the reminder rows are the last ones"
+        );
     }
 
-    /// The window's last row is the whole keyboard, and it names every binding.
+    /// The reminder is SPEC's `hot-key` list and nothing else, in SPEC's order.
     ///
     /// # Invariant
     ///
-    /// Every key the handler acts on is spelled here: a binding the row omits is one
-    /// nobody finds. The row is the bottom one, so it costs no pane a row twice.
+    /// An entry SPEC does not name is a key the row must not advertise: the
+    /// operator reads the row as the whole keyboard, and a binding this window
+    /// happens to have is not SPEC's to show.
     #[test]
-    fn the_help_line_is_the_last_row_and_names_every_binding() {
-        let mut screen = screen_with(&[]);
-        let width = UnicodeWidthStr::width(HELP) as u16;
-        let (width, height) = (width + 10, 12u16);
-        let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
-        term.draw(|f| {
-            draw(f, &mut screen);
-        })
-        .unwrap();
-        let buf = term.backend().buffer().clone();
-        assert_eq!(row_text(&buf, height - 1), HELP, "the last row is the help");
-        // The row above it is the prompt, which is where the layout ends.
-        assert!(
-            row_text(&buf, height - 2).starts_with('>'),
-            "the prompt sits above the help: {:?}",
-            row_text(&buf, height - 2)
+    fn the_reminder_names_specs_hot_keys_and_nothing_else() {
+        assert_eq!(
+            HELP,
+            [
+                "Shift+Enter newline",
+                "PageUp/PageDown scroll",
+                "Shift+\u{2193} bottom",
+                "Shift+Delete delete session",
+                "Ctrl+V paste",
+            ],
+            "the row is SPEC's hot-keys, in its order"
         );
-
-        // Each one, as the row spells it.
-        for key in [
+        // Keys this window does bind are not SPEC's, so they are not on the row.
+        let row = help_rows(200).join(" ");
+        for ours in [
+            "Alt+Q",
+            "Alt+Y",
+            "Alt+M",
+            "Alt+K",
+            "Tab",
+            "Esc",
             "Enter send",
-            "Shift+Enter newline",
-            "Tab complete",
-            "Esc close",
-            "\u{2191}\u{2193} history",
-            "\u{2190}\u{2192} Home/End",
-            "Alt+\u{2190} word",
-            "Alt+K kill",
-            "PgUp/PgDn page",
-            "Shift+\u{2191}\u{2193} scroll",
-            "Shift+\u{2193} bottom",
-            "Shift+D delete session",
-            "Alt+Y copy",
-            "Alt+M mouse",
-            "Alt+Q quit",
         ] {
-            assert!(HELP.contains(key), "{key:?} is a key nobody finds");
+            assert!(
+                !row.contains(ours),
+                "{ours:?} is not in SPEC's hot-key list"
+            );
         }
+    }
+
+    /// The reminder wraps instead of being clipped, and it ends the frame.
+    ///
+    /// # Invariant
+    ///
+    /// A row too narrow for the whole list gets more rows, not a shorter list: a
+    /// clipped entry is a key nobody finds. The rows are the bottom ones, and the
+    /// prompt sits directly above them.
+    #[test]
+    fn the_reminder_wraps_to_the_rows_the_window_allows() {
+        let mut screen = screen_with(&[]);
+        // Wide enough for every entry on its own, so nothing is the terminal's cut.
+        for width in [31u16, 40, 60, 90, 140] {
+            let rows = help_rows(width);
+            let height = 12u16;
+            let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
+            term.draw(|f| {
+                draw(f, &mut screen);
+            })
+            .unwrap();
+            let buf = term.backend().buffer().clone();
+            // Every row of the reminder, from the bottom of the window up.
+            let drawn: Vec<String> = (0..rows.len() as u16)
+                .rev()
+                .map(|up| row_text(&buf, height - 1 - up))
+                .collect();
+            assert_eq!(drawn, rows, "at width {width} the reminder rows are drawn");
+            // The prompt is the row above them, which is where the layout ends.
+            let above = height - 1 - rows.len() as u16;
+            assert!(
+                row_text(&buf, above).starts_with('>'),
+                "at width {width} the prompt sits above the reminder: {:?}",
+                row_text(&buf, above)
+            );
+            // Nothing was cut: every entry is somewhere in the rows.
+            let shown = drawn.join(" ");
+            for entry in HELP {
+                assert!(shown.contains(entry), "at width {width} {entry:?} is cut");
+            }
+            // A row holds at most one entry at this width, so nothing is lost.
+            assert!(
+                rows.len() <= HELP.len(),
+                "at width {width} the packing crossed an entry: {rows:?}"
+            );
+        }
+        // The list is 106 columns, so the rows it takes fall as the window widens.
+        assert_eq!(help_rows(106).len(), 1, "the whole list fits on one row");
+        assert_eq!(help_rows(105).len(), 2, "one column less needs a second");
+        // A window narrower than one entry: one row each, never split.
+        let narrow = help_rows(10);
+        assert_eq!(
+            narrow,
+            HELP.iter().map(|e| e.to_string()).collect::<Vec<_>>()
+        );
     }
 
     /// A window too short for its parts still ends on the help row.
@@ -1998,10 +2089,12 @@ mod tests {
             })
             .unwrap();
             let buf = term.backend().buffer().clone();
+            // The last row the window can hold is the reminder's own last row.
+            let rows = help_rows(width);
             let last = row_text(&buf, height - 1);
-            // A line cut off by the window starts it; a whole one is it.
             assert!(
-                HELP.starts_with(&last) || last == HELP,
+                rows.last()
+                    .is_some_and(|row| row.starts_with(&last) || *row == last),
                 "at height {height} the last row reads {last:?}"
             );
         }
@@ -2183,7 +2276,8 @@ mod tests {
         let lines: Vec<String> = (0..10).map(|i| format!("L{i}")).collect();
         let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
         let mut screen = screen_with(&refs);
-        let mut term = Terminal::new(TestBackend::new(20, 10)).unwrap();
+        let (width, height) = (20u16, 10u16);
+        let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
         term.draw(|f| {
             draw(f, &mut screen);
         })
@@ -2191,7 +2285,7 @@ mod tests {
 
         // The body gives one row of its height to the header the column draws.
         let buf = term.backend().buffer().clone();
-        let body = parts(40, 10, 1, false, 0)[1];
+        let body = parts(width, height, 1, false, 0)[1];
         let rows = body.height - 1;
         let shown: Vec<String> = (0..rows)
             .map(|offset| pane_text(&buf, &screen, body.y + 1 + offset))
@@ -2208,14 +2302,16 @@ mod tests {
     #[test]
     fn scrolling_moves_the_window_by_rows() {
         let mut screen = screen_with(&["aaaaaaa", "bbbbbbb", "ccccccc"]);
-        let mut term = Terminal::new(TestBackend::new(40, 8)).unwrap();
+        // Wide enough for the reminder to take one row, so the pane keeps the rest.
+        let (width, height) = (120u16, 8u16);
+        let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
         term.draw(|f| {
             draw(f, &mut screen);
         })
         .unwrap();
         // Three lines in a pane this wide: nothing scrolls until the text is
         // longer than the window.
-        let body = parts(40, 8, 1, false, 0)[1];
+        let body = parts(width, height, 1, false, 0)[1];
         let rows = screen.panes.rows(View::Window(""), 8);
         assert_eq!(
             screen.panes.get("").unwrap().max_scroll,
@@ -2262,13 +2358,14 @@ mod tests {
                 .collect()
         }
 
-        // A window one row taller than the pane needs: the last row is the help.
-        let mut term = Terminal::new(TestBackend::new(20, 9)).unwrap();
+        // A window one row taller than the pane needs: the last row is the reminder,
+        // and it is wide enough to fit on one.
+        let mut term = Terminal::new(TestBackend::new(120, 9)).unwrap();
         term.draw(|f| {
             draw(f, &mut screen);
         })
         .unwrap();
-        let short = parts(20, 9, 1, false, 0)[1];
+        let short = parts(120, 9, 1, false, 0)[1];
         let bottom = shown(&term.backend().buffer().clone(), short);
         assert_eq!(bottom.last().map(String::as_str), Some("L39"));
 
@@ -2283,12 +2380,12 @@ mod tests {
         assert_eq!(top, "L30", "five rows up from the bottom of 40 rows");
 
         // The same window, taller: the top row stays, the new rows land under it.
-        let mut tall = Terminal::new(TestBackend::new(20, 13)).unwrap();
+        let mut tall = Terminal::new(TestBackend::new(120, 13)).unwrap();
         tall.draw(|f| {
             draw(f, &mut screen);
         })
         .unwrap();
-        let grown = parts(20, 13, 1, false, 0)[1];
+        let grown = parts(120, 13, 1, false, 0)[1];
         let after = shown(&tall.backend().buffer().clone(), grown);
         assert_eq!(after[0], top, "the row that was at the top is still there");
         assert_eq!(after.len(), bottom.len() + 4, "four more rows are drawn");
@@ -2319,14 +2416,14 @@ mod tests {
         let lines: Vec<String> = (0..40).map(|i| format!("L{i:02}")).collect();
         let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
         let mut screen = screen_with(&refs);
-        // One row of the window is the help line, so the pane needs it outside.
-        let mut term = Terminal::new(TestBackend::new(20, 9)).unwrap();
+        // One row of the window is the reminder, so the pane needs it outside.
+        let mut term = Terminal::new(TestBackend::new(120, 9)).unwrap();
         // One frame first: the scroll bound is what the renderer writes back.
         term.draw(|f| {
             draw(f, &mut screen);
         })
         .unwrap();
-        let area = parts(20, 9, 1, false, 0)[1];
+        let area = parts(120, 9, 1, false, 0)[1];
         // The pane's first row is its header, so its text starts one below.
         fn top(buf: &Buffer, screen: &Screen, area: Rect) -> String {
             pane_text(buf, screen, area.y + 1)
@@ -2371,16 +2468,16 @@ mod tests {
     fn a_long_input_wraps_into_more_rows_and_takes_them_from_the_log() {
         let mut screen = screen_with(&["L0", "L1", "L2", "L3", "L4"]);
         screen.input.insert_str("1234567890");
-        // 10 wide: a two-column prompt and one column spared, so seven of text.
-        assert_eq!(input_rows("1234567890", 10, 10), 2);
-        let mut term = Terminal::new(TestBackend::new(10, 10)).unwrap();
+        // 10 wide: seven columns of text, so it wraps. Height pays the reminder.
+        assert_eq!(input_rows("1234567890", 10, 16), 2);
+        let mut term = Terminal::new(TestBackend::new(10, 16)).unwrap();
         term.draw(|f| {
             draw(f, &mut screen);
         })
         .unwrap();
 
         let buf = term.backend().buffer().clone();
-        let input = parts(10, 10, 2, false, 0)[5];
+        let input = parts(10, 16, 2, false, 0)[5];
         assert_eq!(row_text(&buf, input.y), "> 1234567");
         assert_eq!(row_text(&buf, input.y + 1), "  890");
     }
@@ -2390,15 +2487,15 @@ mod tests {
     fn a_typed_newline_starts_a_new_row() {
         let mut screen = screen_with(&[]);
         screen.input.insert_str("one\ntwo");
-        let mut term = Terminal::new(TestBackend::new(20, 10)).unwrap();
+        let mut term = Terminal::new(TestBackend::new(20, 16)).unwrap();
         term.draw(|f| {
             draw(f, &mut screen);
         })
         .unwrap();
 
-        assert_eq!(input_rows("one\ntwo", 20, 10), 2);
+        assert_eq!(input_rows("one\ntwo", 20, 16), 2);
         let buf = term.backend().buffer().clone();
-        let input = parts(20, 10, 2, false, 0)[5];
+        let input = parts(20, 16, 2, false, 0)[5];
         assert_eq!(row_text(&buf, input.y), "> one");
         assert_eq!(row_text(&buf, input.y + 1), "  two");
     }

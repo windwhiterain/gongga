@@ -308,23 +308,38 @@ in every other editor. Shift is what says "move the view, not the line".
 A page is the log window, not a fixed ten rows: on a short terminal ten rows
 scrolls past what is visible and the jump looks arbitrary.
 
-## Shift+D
+## Shift+Delete
 
-SPEC gives Shift+D the sticky session, and not the editor's Delete or Backspace:
-those two erase a character, so the same key did two unrelated things depending on
-whether the line happened to be empty. The window asks for the deletion the way a
-click does -- it submits `/del_session --session <name>` -- and the command layer
-owns the rule.
+SPEC gives Shift+Delete the sticky session, and not the editor's Delete or
+Backspace: those two erase a character, so the same key did two unrelated things
+depending on whether the line happened to be empty. The window asks for the
+deletion the way a click does -- it submits `/del_session --session <name>` --
+and the command layer owns the rule.
 
-Shift+D arrives as an uppercase `'D'`, so the binding is read as that character
-rather than as Shift plus a letter: a terminal that keeps the lowercase letter
-beside the modifier still deletes. The prompt comes first -- with text on the
-line, Shift+D types a `D`, so a capital letter stays typeable -- and only an empty
-prompt reaches the session. That is also why the key needs a sticky session: with
-none set it does nothing.
+The modifier is what makes the binding a delete and not an edit, so a bare
+Delete still erases a character, in the prompt as everywhere else: this key is
+the one action that is never decided by where the caret happens to be. It needs
+an empty prompt anyway, because the prompt is the editor's -- and it needs a
+sticky session, because with none set there is nothing to delete.
+
+A terminal that does not report Shift for Delete sends the plain one, which the
+editor takes: the binding then simply never fires. That is the safe direction --
+a session deleted by a key that was not pressed is not recoverable.
 
 The binding deletes the session the sticky names; the sticky setting itself is
 the command layer's, and clearing it is a `del_sticky` nobody pressed.
+
+## clipboard_paste and paste_from_clipboard
+
+SPEC makes `Ctrl+V` the paste. Where the terminal pastes by itself the key never
+arrives; where it forwards `^V`, `paste_from_clipboard` reads the clipboard and
+hands the text to `Tui::paste`, so a paste from the key and a paste from the
+terminal take the same road.
+
+The key is read before the Ctrl swallow below it, or a terminal that forwards
+`^V` would look like a dead key. What the read says when it fails is the status
+line's business, never the prompt's — and an empty clipboard says nothing at all,
+because "nothing to paste" is not news.
 
 ## Tui::paste
 
