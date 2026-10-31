@@ -1849,6 +1849,9 @@ fn resolve_server_with(args: &Connection, env: &Env) -> anyhow::Result<SocketAdd
     Ok(DEFAULT_SERVER.parse().unwrap())
 }
 
+/// The variable a server reads a key from, and a client looks one up in.
+pub const KEY_ENV: &str = "GONGGA_KEY";
+
 /// `--key`, then `GONGGA_KEY`, then what the home itself carries.
 pub(crate) fn resolve_key(args: &Connection) -> Option<String> {
     resolve_key_with(args, &process_env)
@@ -1858,7 +1861,7 @@ fn resolve_key_with(args: &Connection, env: &Env) -> Option<String> {
     if let Some(k) = &args.key {
         return Some(k.clone());
     }
-    env("GONGGA_KEY").or_else(|| key_from_home(&home_dir(args.home.as_deref())))
+    env(KEY_ENV).or_else(|| key_from_home(&home_dir(args.home.as_deref())))
 }
 
 /// Whether two spellings name one directory: one may be relative.

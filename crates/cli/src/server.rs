@@ -68,7 +68,7 @@ pub async fn ensure(home: &Path, addr: SocketAddr) -> anyhow::Result<bool> {
     if answers(home, addr).await {
         return Ok(false);
     }
-    let pid = start(home, addr, None)?;
+    let pid = start(home, addr, None, None)?;
     // Only here: `ensure` is the one-shot path, whose stderr is being read.
     if let Some(pid) = pid {
         eprintln!(
@@ -89,11 +89,20 @@ pub async fn ensure(home: &Path, addr: SocketAddr) -> anyhow::Result<bool> {
 /// here exits at once and its pid never answers a dial. A caller compares it
 /// with the pid the greeting carried. `owner` is the process whose death stops
 /// it; `None` is a one-shot caller. See `docs/notes/cli-server.md`.
-pub fn spawn(home: &Path, addr: SocketAddr, owner: Option<u32>) -> anyhow::Result<Option<u32>> {
+/// `key` is what this process will dial with, when it was given one explicitly:
+/// a server that minted a key of its own would refuse every dial from the window
+/// that started it. `None` lets the home decide, which is what a client started
+/// without a key already does.
+pub fn spawn(
+    home: &Path,
+    addr: SocketAddr,
+    owner: Option<u32>,
+    key: Option<&str>,
+) -> anyhow::Result<Option<u32>> {
     if !starts_here(&addr) {
         return Ok(None);
     }
-    start(home, addr, owner)
+    start(home, addr, owner, key)
 }
 
 /// How long a server is given to honour `cancel` before it is killed instead.
@@ -232,7 +241,12 @@ async fn answers(home: &Path, addr: SocketAddr) -> bool {
 /// Nothing of this process goes with it: a one-shot command exits in
 /// milliseconds, and a server that died with its caller would take the turn it
 /// just started down with it.
-fn start(home: &Path, addr: SocketAddr, owner: Option<u32>) -> anyhow::Result<Option<u32>> {
+fn start(
+    home: &Path,
+    addr: SocketAddr,
+    owner: Option<u32>,
+    key: Option<&str>,
+) -> anyhow::Result<Option<u32>> {
     let server = server_program(home)?;
     std::fs::create_dir_all(home).with_context(|| format!("creating {}", home.display()))?;
     // Before the server exists, because the server cannot do it: its own
@@ -246,6 +260,11 @@ fn start(home: &Path, addr: SocketAddr, owner: Option<u32>) -> anyhow::Result<Op
         .with_context(|| format!("opening {}", log.display()))?;
     let err = out.try_clone().context("duplicating the log handle")?;
     let mut cmd = command(&server, home, addr, owner);
+    if let Some(key) = key {
+        // The variable the server reads; a flag each way would be one spelling
+        // more than the pair needs.
+        cmd.env(crate::KEY_ENV, key);
+    }
     cmd.stdin(Stdio::null())
         .stdout(Stdio::from(out))
         .stderr(Stdio::from(err));

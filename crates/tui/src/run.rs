@@ -219,7 +219,10 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                         &format!("stopped the server that was serving this home (pid {old})"),
                     );
                 }
-                cli::spawn(&home, addr, Some(std::process::id()))
+                // The key this window dials with, so the child does not mint
+                // another one and refuse the window that started it.
+                let key = args.conn.key.clone();
+                cli::spawn(&home, addr, Some(std::process::id()), key.as_deref())
                     .ok()
                     .flatten()
             }
