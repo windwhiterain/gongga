@@ -59,7 +59,9 @@ fields drift apart the first time one of them asks for another.
 
 Three of those fields are not in the row at all: `model`, `thinking_effort` and
 `context_limit` are what the session *would send now*, resolved through the roster
-and filled in with the defaults a session that never named them runs on. A title that
+and filled in with the defaults a session that never named them runs on. `model` has
+no such default: a session that states none reports none, rather than the server's
+own -- the title would otherwise name a model the session cannot send on. A title that
 showed only what was written down would say nothing about the sessions that name
 nothing, which is most of them. `model` is the whole model and not the provider
 alone: the balance row already says whose account is being spent, and a title that
@@ -140,6 +142,21 @@ look like the setting was applied.
 
 `set_session` doubles as creation: naming a session is the only way to get one,
 and refusing to create it would make the command useless.
+
+# Invariant
+
+A session's model is the session's. Three sources, in this order: `--model` now,
+the model its row already carries, [[DEFAULT_SESSION_MODEL]]. There is no fourth --
+the `[model]` section of the config says what *the server itself* thinks with and
+never becomes a session's model, which is why the model is written on every
+`set_session` that changes anything: a row left holding the config's model is a
+session that silently runs on a model nobody chose for it.
+
+While that constant is empty, the second and third sources are the only ones, so
+creating a session without `--model` is refused with a message naming the flag and
+`model_pool pick`. The refusal is the point: a session with no model cannot send a
+request at all ([[Agent::route]]), and discovering that at the first turn rather
+than at the command that made the session is a worse place to discover it.
 
 Checked against the model this session will run on: the entry named here, or the
 one it already had. A level the model does not take is a typo in the command
@@ -369,7 +386,9 @@ out would make Tab silently offer nothing.
 ## set_session_offers_the_roster_and_a_percentage
 
 `set_session` is where a session's model and notice point are chosen, so both
-flags have to be described well enough to complete.
+flags have to be described well enough to complete. The model list is only the
+providers whose key resolves ([[Catalog::models]]), so Tab never offers a model whose
+every request would fail.
 
 ## a_seq_slice_is_parsed_like_a_python_slice
 

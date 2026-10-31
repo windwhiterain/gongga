@@ -202,10 +202,16 @@ broken file.
 
 ## Catalog::models
 
-Every model worth offering a caller, spelled `provider/model_name` in file order.
-This is the completion list for `--model`, so it includes entries whose key does not
-resolve yet: choosing one and then being told to set a variable is a better path than
-the model never appearing at all.
+Every model a request could actually be sent on here, spelled `provider/model_name`
+in file order. This is the completion list for `--model`, so it promises only what
+will run: a provider whose credential resolves takes part, and one that names a key
+this machine does not have is left out.
+
+The opposite choice -- offering the model and reporting the missing variable when it
+is picked -- was tried and rejected: it makes Tab a list of what the roster knows
+rather than a list of what this machine can do, and the failure it produces is one a
+draw across providers cannot see coming. [[Catalog::resolve]] stays the authority on
+whether a named model can run; `models` is only its answer, published early.
 
 ## Catalog::resolve
 

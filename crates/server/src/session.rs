@@ -455,8 +455,35 @@ impl SessionManager {
         self.live.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// The model a session's row already carries, in the roster's spelling.
+    ///
+    /// `None` when the session does not exist yet or its row names no model: that
+    /// is what makes `set_session` ask for `--model` instead of inventing one.
+    pub fn recorded_model(&self, name: &str) -> Option<String> {
+        let row = self.store.get_session(name).ok().flatten()?;
+        let model = row.model.trim();
+        if model.is_empty() {
+            return None;
+        }
+        Some(
+            crate::providers::roster()
+                .place(model)
+                .map(|e| e.model)
+                .unwrap_or_else(|| model.to_string()),
+        )
+    }
+
     /// Creates a session, or returns the existing one unchanged.
-    pub fn ensure(&self, name: &str, cwd: Option<&str>) -> anyhow::Result<SessionHandle> {
+    ///
+    /// `model` is the model the caller states for a session it is creating; a
+    /// session made without one carries the server's own, which `set_session`
+    /// never does -- it resolves a model first and refuses without one.
+    pub fn ensure(
+        &self,
+        name: &str,
+        cwd: Option<&str>,
+        model: Option<&str>,
+    ) -> anyhow::Result<SessionHandle> {
         // Hold the live lock through the build: competing callers must not each
         // materialise and then overwrite one name.
         let mut live = self.live();
@@ -470,24 +497,23 @@ impl SessionManager {
             Some(p) => PathBuf::from(p),
             None => std::env::current_dir()?,
         };
+        let source = model.unwrap_or(&self.model);
         let id = self
             .store
-            .create_session(name, &self.model, &cwd.to_string_lossy())?;
+            .create_session(name, source, &cwd.to_string_lossy())?;
         // Pin the model itself: reasoning blobs replay only where they were produced.
-        let pinned = crate::providers::roster()
-            .place(&self.model)
-            .map(|e| e.model);
-        if let Some(model) = &pinned {
+        let pinned = crate::providers::roster().place(source).map(|e| e.model);
+        if let Some(pinned) = &pinned {
             let _ = self
                 .store
-                .set_session_tuning(id, Some(model), None, None, &self.model);
+                .set_session_tuning(id, Some(pinned), None, None, pinned);
         }
         self.materialise_locked(
             SessionRow {
                 id,
                 name: name.to_string(),
                 status: protocol::SessionStatus::Idle,
-                model: pinned.unwrap_or_else(|| self.model.clone()),
+                model: pinned.unwrap_or_else(|| source.to_string()),
                 context_limit: None,
                 thinking_effort: None,
                 cwd: cwd.to_string_lossy().to_string(),
@@ -787,7 +813,7 @@ mod tests {
             tasks.push(tokio::task::spawn_blocking(move || {
                 barrier.wait();
                 match caller % 3 {
-                    0 => manager.ensure("shared", None),
+                    0 => manager.ensure("shared", None, None),
                     1 => manager.get("shared"),
                     _ => manager.materialise(row),
                 }

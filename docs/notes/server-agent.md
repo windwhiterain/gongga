@@ -120,9 +120,11 @@ number restarting.
 
 ## Agent::route
 
-Both come from the session's tuning, falling back to the server's own
-configuration. A percentage only has a size once a context window is known,
-which is why the window travels with the model.
+Both come from the session's tuning. A session that states no model is refused
+here rather than sent on the server's own: the config's `[model]` is what the server
+thinks with, never what a session runs on, so the one place that would have made it a
+session's model is the one place that says so. A percentage only has a size once a
+context window is known, which is why the window travels with the model.
 
 `commands::deliver` calls this too, before a turn exists: a message's `@image:`
 reference is uploaded by the client its turn will send with, so the id in the row

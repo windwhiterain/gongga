@@ -225,7 +225,8 @@ pub fn server_catalog() -> Vec<CommandSpec> {
                 arg(
                     "model",
                     "The model to run this session's turns on, as <provider>/<model name> (or \
-                     a bare model name). Defaults to the model the session was created with.",
+                     a bare model name). Required for a session that has no model yet; \
+                     naming one here overwrites what the session ran on.",
                     false,
                     Some("model"),
                     CompletionSource::Static(crate::providers::roster().models()),
@@ -493,11 +494,37 @@ async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcome {
 async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     let name = args["session"].clone();
     // Resolve `--model` now: a typo should fail the command that made it.
-    let entry = match args.get("model") {
+    let stated = match args.get("model") {
         None => None,
         Some(model) => match resolve_model(d, model) {
             Ok(entry) => Some(entry),
             Err(e) => return Outcome::err(e),
+        },
+    };
+    // The model this session runs on: the one it names here, else the one its row
+    // already carries, else the server's constant. The config's `[model]` section
+    // is what the server itself thinks with, and is never a session's model.
+    let entry = match stated {
+        Some(entry) => entry,
+        None => match d.sessions.recorded_model(&name) {
+            Some(model) => match resolve_model(d, &model) {
+                Ok(entry) => entry,
+                Err(e) => return Outcome::err(e),
+            },
+            None => {
+                let stated_default = crate::config::DEFAULT_SESSION_MODEL;
+                if stated_default.is_empty() {
+                    return Outcome::err(
+                        "set_session requires --model: a session states its own model, and this \
+                         server states no default (DEFAULT_SESSION_MODEL is empty). \
+                         `model_pool pick` names one this machine can run now",
+                    );
+                }
+                match resolve_model(d, stated_default) {
+                    Ok(entry) => entry,
+                    Err(e) => return Outcome::err(format!("DEFAULT_SESSION_MODEL: {e}")),
+                }
+            }
         },
     };
     let threshold = match args.get("context_limit") {
@@ -508,25 +535,20 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         },
     };
     // A percentage needs a window; silently keeping the old budget would lie.
-    let context = entry
-        .as_ref()
-        .map(|e| e.context)
-        .unwrap_or(d.agent.default_context);
+    let context = entry.context.or(d.agent.default_context);
     if let (Some(percent), None) = (threshold, context) {
         return Outcome::err(format!(
             "--context_limit {percent}% needs a context window to be a percentage of, and \
-             no model involved here has one on record{}",
-            match &entry {
-                Some(e) => format!(" ({} is not in the roster with a `context`)", e.model),
-                None => " (set --model to one whose roster entry states it)".to_string(),
-            }
+             {} is not in the roster with a `context`",
+            entry.model
         ));
     }
     // Naming a session creates it: that is the only way to get one.
-    let session = match d
-        .sessions
-        .ensure(&name, args.get("cwd").map(String::as_str))
-    {
+    let session = match d.sessions.ensure(
+        &name,
+        args.get("cwd").map(String::as_str),
+        Some(&entry.model),
+    ) {
         Ok(session) => session,
         Err(e) => return Outcome::err(e.to_string()),
     };
@@ -534,24 +556,15 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     let mut tuning = session.tuning();
     let mut changed = false;
     if let Some(level) = args.get("thinking_effort") {
-        // Check the level against the model this session will run on, so typos fail now.
-        let target = entry.clone().or_else(|| {
-            tuning
-                .model
-                .as_deref()
-                .and_then(|model| d.providers.entry(model).ok())
-        });
-        tuning.thinking_effort = Some(match &target {
-            Some(e) => match e.reasoning_effort(level) {
-                Ok(level) => level,
-                Err(message) => return Outcome::err(message),
-            },
-            // Not in the roster, so nothing to check against: pass it to the provider.
-            None => level.clone(),
+        // Check the level against the model this session runs on, so typos fail now.
+        tuning.thinking_effort = Some(match entry.reasoning_effort(level) {
+            Ok(level) => level,
+            Err(message) => return Outcome::err(message),
         });
         changed = true;
     }
-    if let Some(entry) = &entry {
+    // Writing the session's own model is what keeps the config's out of its row.
+    if tuning.model.as_deref() != Some(entry.model.as_str()) {
         tuning.model = Some(entry.model.clone());
         changed = true;
     }
@@ -563,16 +576,10 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         // Persist before applying: a restart must restore what turns here read.
         if let Err(e) = d.store.set_session_tuning(
             session.id(),
-            tuning.model.as_deref(),
+            Some(&entry.model),
             tuning.context_limit,
             tuning.thinking_effort.as_deref(),
-            // The model the session will actually run on: the one it named, or the
-            // server's own when it named none.
-            entry
-                .as_ref()
-                .map(|e| e.model.clone())
-                .unwrap_or_else(|| d.agent.llm.model().to_string())
-                .as_str(),
+            &entry.model,
         ) {
             return Outcome::err(format!("could not save the session settings: {e}"));
         }
@@ -1044,14 +1051,12 @@ pub fn session_info(d: &Dispatch, row: &crate::store::SessionRow) -> protocol::S
         .model
         .as_deref()
         .and_then(|model| d.providers.place(model));
-    // The roster's spelling, else the name given, else the server's own.
-    let model = Some(
-        entry
-            .as_ref()
-            .map(|e| e.model.clone())
-            .or_else(|| tuning.model.clone())
-            .unwrap_or_else(|| d.agent.llm.model().to_string()),
-    );
+    // The roster's spelling, else the name the session itself gave. Never the
+    // server's own: that is not a model any session runs on.
+    let model = entry
+        .as_ref()
+        .map(|e| e.model.clone())
+        .or_else(|| tuning.model.clone());
     let thinking_effort = tuning
         .thinking_effort
         .clone()

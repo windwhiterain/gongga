@@ -15,6 +15,18 @@ pub const DEFAULT_DB: &str = "gongga.db";
 pub const DEFAULT_BASE_URL: &str = "https://api.minimax.cn/v1";
 pub const DEFAULT_MODEL_NAME: &str = "MiniMax-M3.1-Flash";
 pub const DEFAULT_API_KEY_ENV: &str = "MINIMAX_CN_API_KEY";
+
+/// The model a session runs on when the session itself names none.
+///
+/// # Invariant
+///
+/// A session's model belongs to the session: `set_session --model` writes it, and
+/// nothing re-derives it from the `[model]` section above. That section still says
+/// what *the server itself* thinks with, never what a session runs on. While this
+/// constant is empty, `set_session` refuses to create a session that names no
+/// model -- a session with no model cannot send a request at all.
+pub const DEFAULT_SESSION_MODEL: &str = "";
+
 /// Tool output larger than this is capped and spilled to disk, keeping `cat`s out
 /// of later requests.
 pub const DEFAULT_MAX_OUTPUT_CHARS: usize = 8_000;

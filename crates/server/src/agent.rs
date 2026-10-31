@@ -206,7 +206,12 @@ impl Agent {
         tuning: &crate::session::Tuning,
     ) -> anyhow::Result<(Arc<LlmClient>, u64)> {
         let (llm, context) = match &tuning.model {
-            None => (self.llm.clone(), self.default_context),
+            // A session's model is the session's: the config's `[model]` is what
+            // the server thinks with, never what a session runs on.
+            None => anyhow::bail!(
+                "this session states no model; run `set_session --session <name> --model \
+                 <provider>/<model>` (or `model_pool pick`) before sending it work"
+            ),
             Some(model) => {
                 let choice = self
                     .providers

@@ -255,13 +255,27 @@ impl Catalog {
         &self.providers
     }
 
-    /// Every model worth offering, as `provider/model_name`, in file order, keys
-    /// unresolved too.
+    /// Every model a request could actually be sent on, as `provider/model_name`,
+    /// in file order.
+    ///
+    /// # Invariant
+    ///
+    /// A provider whose credential resolves takes part; one that names a key this
+    /// machine does not have is left out, because offering it would offer a model
+    /// on which every request fails. See `docs/notes/server-providers.md`.
     pub fn models(&self) -> Vec<String> {
+        self.models_with(&lookup_env)
+    }
+
+    /// The same list, with the credential looked up by `lookup`: what a test drives.
+    pub fn models_with(&self, lookup: &dyn Fn(&str) -> Option<String>) -> Vec<String> {
         let mut out = Vec::new();
-        for p in &self.providers {
-            for m in &p.models {
-                out.push(format!("{}/{}", p.id, m.id));
+        for provider in &self.providers {
+            if credential(provider, lookup).is_none() {
+                continue;
+            }
+            for model in &provider.models {
+                out.push(format!("{}/{}", provider.id, model.id));
             }
         }
         out
@@ -962,6 +976,48 @@ key = "x"
 
     fn no_env(_: &str) -> Option<String> {
         None
+    }
+
+    /// # Invariant
+    ///
+    /// Completion is a promise that the model can be run here. A provider whose
+    /// credential resolves is offered; one that names a key this machine does not
+    /// have is not, because the request it would name fails with the roster's own
+    /// "no key" error before it leaves. `models()` asks the environment; this test
+    /// drives `models_with` with its own answer.
+    #[test]
+    fn a_provider_without_a_key_is_not_offered() {
+        let c = catalog();
+        let none = c.models_with(&|_| None);
+        // Every provider in the fixture carries a literal key except this one.
+        assert!(
+            none.iter().any(|m| m.starts_with("deepseek-official/")),
+            "a literal key counts: {none:?}"
+        );
+        assert!(
+            none.iter().any(|m| m.starts_with("goat/")),
+            "a literal key counts: {none:?}"
+        );
+
+        let mut no_literal = catalog();
+        for provider in &mut no_literal.providers {
+            provider.key = None;
+        }
+        let by_env =
+            no_literal.models_with(&|name| (name == "DEEPSEEK_API_KEY").then(|| "k".to_string()));
+        assert!(
+            by_env.iter().all(|m| m.starts_with("deepseek-official/")),
+            "only the provider whose variable is set is offered: {by_env:?}"
+        );
+        assert_eq!(
+            by_env.len(),
+            no_literal.providers[0].models.len(),
+            "every model of a keyed provider is offered"
+        );
+        assert!(
+            no_literal.models_with(&|_| None).is_empty(),
+            "no key anywhere offers nothing, rather than what cannot run"
+        );
     }
 
     #[test]

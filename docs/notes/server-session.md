@@ -16,7 +16,8 @@ points, and a turn reads this when it starts so a change applies to the next tur
 instead of restarting anything.
 
 `Tuning::model` is the model a turn here spends: `provider/model_name`, or `None` for
-"the server's own". It is one field because a model is one choice -- whose account
+"nothing chosen for this session", which [[Agent::route]] refuses rather than filling
+in with the server's own. It is one field because a model is one choice -- whose account
 pays and which brain answers are not separable, and a struct that could hold a
 provider without a model would be a state nothing could send.
 
@@ -183,8 +184,8 @@ nothing.
 
 The row's `model` is what the session is pinned to, `provider/model_name`. A row that
 predates that spelling knows the bare name, and the roster is what turns that name
-back into a model; a row the roster has never heard of keeps the name it has, and only
-a session that named nothing at all falls back to the server's own.
+back into a model; a row the roster has never heard of keeps the name it has, and a
+session whose row names no model has none: nothing here fills in the server's own.
 
 ## SessionManager::delete
 
