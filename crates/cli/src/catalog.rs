@@ -426,6 +426,7 @@ fn arg(
         required,
         value_hint: value_hint.map(str::to_string),
         completions,
+        sticky: false,
     }
 }
 

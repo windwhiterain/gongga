@@ -437,6 +437,7 @@ fn spec_arg(
         required,
         value_hint: value_hint.map(str::to_string),
         completions,
+        sticky: false,
     }
 }
 
@@ -451,6 +452,17 @@ pub struct ArgSpec {
     /// Where the CLI should source completion candidates.
     #[serde(default)]
     pub completions: CompletionSource,
+    /// Whether a sticky value may fill this argument when the caller omits it.
+    ///
+    /// # Invariant
+    ///
+    /// A required argument is filled from `Sticky` whether or not this is set, so
+    /// the flag exists for the optional ones a reader thinks of as a mode rather
+    /// than a fact about one command -- SPEC spells those `(sticky)`. Absence is
+    /// still a decision everywhere else: a filter that keeps what it had must not
+    /// be overwritten by a sticky value meant for a different command.
+    #[serde(default)]
+    pub sticky: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -222,14 +222,18 @@ pub fn server_catalog() -> Vec<CommandSpec> {
                     // machine, and it is the one the user was looking at.
                     CompletionSource::Paths,
                 ),
-                arg(
-                    "model",
-                    "The model to run this session's turns on, as <provider>/<model name> (or \
-                     a bare model name). Overwrites what the session ran on; a session that \
-                     names none, or has none yet, runs on the server's default.",
-                    false,
-                    Some("model"),
-                    CompletionSource::Static(crate::providers::roster().models()),
+                // SPEC: `--model (sticky)`, so a model set once is a mode rather
+                // than a repetition in every command.
+                sticky_arg(
+                    arg_spec(
+                        "model",
+                        "The model to run this session's turns on, as <provider>/<model \
+                         name>. Remembered: a later `set_session` that names none uses it.",
+                        false,
+                        Some("model"),
+                        CompletionSource::Static(crate::providers::roster().models()),
+                    ),
+                    true,
                 ),
                 arg(
                     "context_limit",
@@ -338,13 +342,33 @@ fn arg(
     value_hint: Option<&str>,
     completions: CompletionSource,
 ) -> protocol::ArgSpec {
+    sticky_arg(
+        arg_spec(name, description, required, value_hint, completions),
+        false,
+    )
+}
+
+fn arg_spec(
+    name: &str,
+    description: &str,
+    required: bool,
+    value_hint: Option<&str>,
+    completions: CompletionSource,
+) -> protocol::ArgSpec {
     protocol::ArgSpec {
         name: name.into(),
         description: description.into(),
         required,
         value_hint: value_hint.map(str::to_string),
         completions,
+        sticky: false,
     }
+}
+
+/// SPEC's `(sticky)`: a value the caller set once, applied to every later command.
+fn sticky_arg(mut spec: protocol::ArgSpec, sticky: bool) -> protocol::ArgSpec {
+    spec.sticky = sticky;
+    spec
 }
 
 pub async fn dispatch(d: &Dispatch, name: &str, args: &Args) -> Outcome {
@@ -1287,6 +1311,24 @@ mod tests {
     }
 
     #[test]
+    /// SPEC spells `set_session --model (sticky)`: declared here and nowhere else.
+    #[test]
+    fn only_the_model_is_a_sticky_argument() {
+        let sticky: Vec<(String, String)> = server_catalog()
+            .into_iter()
+            .flat_map(|c| {
+                c.args
+                    .into_iter()
+                    .filter(|a| a.sticky)
+                    .map(move |a| (c.name.clone(), a.name))
+            })
+            .collect();
+        assert_eq!(
+            sticky,
+            vec![("set_session".to_string(), "model".to_string())]
+        );
+    }
+
     /// The sentence a session with no model gets is the catalog's own, so a rule
     /// enforced later reads exactly like an argument the spec could declare.
     #[test]

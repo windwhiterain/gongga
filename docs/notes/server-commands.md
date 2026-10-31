@@ -389,6 +389,10 @@ flags have to be described well enough to complete. The model list is only the
 providers whose key resolves ([[Catalog::models]]), so Tab never offers a model whose
 every request would fail.
 
+`--model` is the catalog's one `sticky` argument (SPEC writes it `(sticky)`), which
+is how the client knows to fill it from the remembered value: a session's model is a
+mode a reader sets once, and every later `set_session` that names none inherits it.
+
 ## a_seq_slice_is_parsed_like_a_python_slice
 
 The grammar, case by case, because a slice is the kind of thing that is right

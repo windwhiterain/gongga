@@ -372,7 +372,7 @@ pub struct Client {
     results: HashMap<u64, String>,
     /// A `set_session` waiting for its acknowledgement, so a refused one writes
     /// nothing. See `docs/notes/cli-lib.md`.
-    follows: Vec<(u64, String)>,
+    follows: Vec<(u64, String, Option<String>)>,
     sessions: Vec<SessionInfo>,
     model: String,
     next_id: u64,
@@ -983,7 +983,8 @@ impl Client {
         // SPEC: the sticky follows what the server accepted, never a submission.
         if head == "set_session" {
             if let Some(session) = args.get("session") {
-                self.follows.push((id, session.clone()));
+                self.follows
+                    .push((id, session.clone(), args.get("model").cloned()));
             }
         }
         Submission::Send(ClientMessage::Command {
@@ -1033,14 +1034,19 @@ impl Client {
     /// It runs on the acknowledgement, not on the submission: a refused
     /// `set_session` must not retarget the next message.
     fn settle_follow(&mut self, id: u64, ok: bool, sink: &mut dyn Sink) {
-        let Some(at) = self.follows.iter().position(|(i, _)| *i == id) else {
+        let Some(at) = self.follows.iter().position(|(i, _, _)| *i == id) else {
             return;
         };
-        let (_, session) = self.follows.remove(at);
+        let (_, session, model) = self.follows.remove(at);
         if !ok {
             return;
         }
-        if let Err(e) = self.sticky.set("session", &session) {
+        // Both are modes the next command inherits; no model named leaves it.
+        let saved = self
+            .sticky
+            .set("session", &session)
+            .and_then(|()| model.map_or(Ok(()), |model| self.sticky.set("model", &model)));
+        if let Err(e) = saved {
             sink.line(
                 &self.command_window(),
                 LineKind::Error,
@@ -2306,13 +2312,32 @@ mod tests {
             target: protocol::CommandTarget::Server,
             name: "set_session".into(),
             description: "Create or configure a session.".into(),
-            args: vec![protocol::ArgSpec {
-                name: "session".into(),
-                description: "Target.".into(),
-                required: true,
-                value_hint: None,
-                completions: protocol::CompletionSource::Sessions,
-            }],
+            args: vec![
+                protocol::ArgSpec {
+                    name: "session".into(),
+                    description: "Target.".into(),
+                    required: true,
+                    value_hint: None,
+                    completions: protocol::CompletionSource::Sessions,
+                    sticky: false,
+                },
+                protocol::ArgSpec {
+                    name: "model".into(),
+                    description: "Model.".into(),
+                    required: false,
+                    value_hint: None,
+                    completions: protocol::CompletionSource::None,
+                    sticky: true,
+                },
+                protocol::ArgSpec {
+                    name: "context_limit".into(),
+                    description: "Notice point.".into(),
+                    required: false,
+                    value_hint: None,
+                    completions: protocol::CompletionSource::None,
+                    sticky: false,
+                },
+            ],
         }]);
         cat
     }
@@ -2360,6 +2385,7 @@ mod tests {
                     required: true,
                     value_hint: None,
                     completions: protocol::CompletionSource::None,
+                    sticky: false,
                 },
                 protocol::ArgSpec {
                     name: "session".into(),
@@ -2367,6 +2393,7 @@ mod tests {
                     required: false,
                     value_hint: None,
                     completions: protocol::CompletionSource::None,
+                    sticky: false,
                 },
             ],
         }]);
@@ -2833,6 +2860,7 @@ mod tests {
                     required: true,
                     value_hint: None,
                     completions: protocol::CompletionSource::None,
+                    sticky: false,
                 },
                 protocol::ArgSpec {
                     name: "session".into(),
@@ -2840,6 +2868,7 @@ mod tests {
                     required: true,
                     value_hint: None,
                     completions: protocol::CompletionSource::None,
+                    sticky: false,
                 },
             ],
         }]);
@@ -3282,6 +3311,7 @@ mod tests {
                 required: true,
                 value_hint: None,
                 completions: protocol::CompletionSource::None,
+                sticky: false,
             }],
         }]);
         let mut c = client_with(cat, Sticky::load(d.path()), vec!["main"]);
@@ -3350,6 +3380,7 @@ mod tests {
                     required: true,
                     value_hint: None,
                     completions: protocol::CompletionSource::Sessions,
+                    sticky: false,
                 },
                 protocol::ArgSpec {
                     name: "message".into(),
@@ -3357,6 +3388,7 @@ mod tests {
                     required: true,
                     value_hint: None,
                     completions: protocol::CompletionSource::None,
+                    sticky: false,
                 },
             ],
         });
@@ -3421,6 +3453,34 @@ mod tests {
         assert_eq!(c.sticky.get("session"), Some("main"));
     }
 
+    /// SPEC spells `--model` `(sticky)` too: the accepted one is remembered.
+    #[test]
+    fn an_accepted_set_session_remembers_its_model() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(set_session_catalog(), Sticky::load(d.path()), vec!["main"]);
+        let mut s = VecSink(Vec::new());
+        c.command(
+            argv("set_session --session main --model kimi-coding/k3"),
+            &mut s,
+        );
+        ack(&mut c, true, &mut s);
+        assert_eq!(c.sticky.get("model"), Some("kimi-coding/k3"));
+
+        // A later command that names no model keeps the remembered one.
+        c.command(
+            argv("set_session --session main --context_limit 30%"),
+            &mut s,
+        );
+        ack(&mut c, true, &mut s);
+        assert_eq!(c.sticky.get("model"), Some("kimi-coding/k3"));
+
+        // A refusal rewrites neither.
+        c.command(argv("set_session --session typo --model nope/nope"), &mut s);
+        ack(&mut c, false, &mut s);
+        assert_eq!(c.sticky.get("model"), Some("kimi-coding/k3"));
+        assert_eq!(Sticky::load(d.path()).get("model"), Some("kimi-coding/k3"));
+    }
+
     /// A client command is echoed on the command line, where it answers.
     #[test]
     fn a_window_command_is_echoed_where_it_answers() {
@@ -3457,6 +3517,7 @@ mod tests {
                 required: true,
                 value_hint: None,
                 completions: protocol::CompletionSource::None,
+                sticky: false,
             }],
         }]);
         let mut c = client_with(cat, Sticky::load(d.path()), vec!["main"]);
