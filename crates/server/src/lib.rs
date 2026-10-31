@@ -196,10 +196,25 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let llm = Arc::new(LlmClient::new(&cfg.llm)?);
     // A script drives this server by the same name a shell does: `gongga`, which
     // is this program under the command's name in the home's `bin`.
-    let base_env = vec![
+    // Before any shell exists: the command it types has to be there, and a
+    // server started by something other than the command layer has none beside
+    // it. Best effort -- a server with no command still serves, and says so.
+    let command = shell_command::ensure_command(&cfg.home);
+    if command.is_none() {
+        shell_command::warn_missing_command(&cfg.home);
+    }
+    let mut base_env = vec![
         ("GONGGA_SERVER".to_string(), cfg.bind.to_string()),
         ("GONGGA_HOME".to_string(), cfg.home.display().to_string()),
     ];
+    // Named and absolute, so a script or a launcher does not have to resolve it
+    // through a `PATH` that a shell may have rewritten.
+    if let Some(command) = &command {
+        base_env.push((
+            "GONGGA_CLI".to_string(),
+            command.to_string_lossy().into_owned(),
+        ));
+    }
     // A script's interpreter reads a native `PATH`; a shell this server starts
     // reads a POSIX one. Both begin with the same directory.
     let mut script_env = base_env.clone();

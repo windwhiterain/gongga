@@ -5,6 +5,75 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+/// The command layer's own name, the one a shell types.
+const CLI: &str = "gongga-cli";
+
+/// A variable naming the command layer when it is somewhere unusual.
+const CLI_BIN: &str = "GONGGA_CLI_BIN";
+
+/// Puts the command layer in this home's `bin`, and says where it landed.
+///
+/// # Invariant
+///
+/// A shell this server starts must be able to drive it, and this home's `bin` is
+/// the only name it has: a launcher or `cargo run` starts a server with nothing
+/// beside it, so one is fetched from three named places and never from `PATH`.
+/// See `docs/notes/server-shell-command.md`.
+pub fn ensure_command(home: &Path) -> Option<PathBuf> {
+    let installed = home.join("bin").join(file_name(CLI));
+    if installed.is_file() {
+        return Some(installed);
+    }
+    let named = std::env::var_os(CLI_BIN).map(PathBuf::from);
+    let source = named
+        .into_iter()
+        .chain(
+            std::env::current_exe()
+                .ok()
+                .and_then(|me| me.parent().map(|dir| dir.join(file_name(CLI)))),
+        )
+        .find(|candidate| candidate.is_file())?;
+    let bin = home.join("bin");
+    std::fs::create_dir_all(&bin).ok()?;
+    // Beside it, then renamed in: a shell may be running the old one.
+    let temp = bin.join(format!(".{}.{}", file_name(CLI), std::process::id()));
+    let _ = std::fs::remove_file(&temp);
+    if copy(&source, &temp).is_ok() && std::fs::rename(&temp, &installed).is_ok() {
+        return Some(installed);
+    }
+    let _ = std::fs::remove_file(&temp);
+    None
+}
+
+/// Says, once, that no command layer could be found and where it looked.
+pub fn warn_missing_command(home: &Path) {
+    let sibling = std::env::current_exe()
+        .ok()
+        .and_then(|me| me.parent().map(|dir| dir.join(file_name(CLI))));
+    tracing::warn!(
+        looked_in = ?[std::env::var_os(CLI_BIN).map(PathBuf::from), sibling],
+        "no {CLI} in {}/bin: a shell this server starts cannot drive it",
+        home.display()
+    );
+}
+
+/// The file name a program is started by on this platform.
+fn file_name(name: &str) -> String {
+    if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    }
+}
+
+/// A link where one can be made, a copy where it cannot cross a volume.
+fn copy(from: &Path, to: &Path) -> std::io::Result<()> {
+    if std::fs::hard_link(from, to).is_ok() {
+        return Ok(());
+    }
+    std::fs::copy(from, to).map(|_| ())
+}
+
 /// The `PATH` value that finds a home's `bin` first.
 ///
 /// # Invariant
@@ -88,5 +157,23 @@ mod tests {
                 .to_string_lossy()
                 .starts_with(&*home.path().to_string_lossy())
         );
+    }
+
+    /// A server with no command beside it places one.
+    #[test]
+    fn a_home_with_no_command_gets_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let source = dir.path().join("gongga-cli-source");
+        std::fs::write(&source, b"the command layer").unwrap();
+        // SAFETY: no other test in this crate reads this variable.
+        unsafe { std::env::set_var(CLI_BIN, &source) };
+        let placed = ensure_command(&home).expect("a placeable command");
+        unsafe { std::env::remove_var(CLI_BIN) };
+        assert_eq!(placed, home.join("bin").join(file_name(CLI)));
+        assert_eq!(std::fs::read(&placed).unwrap(), b"the command layer");
+        // And a second start finds it there rather than placing it twice.
+        assert_eq!(ensure_command(&home).unwrap(), placed);
     }
 }
