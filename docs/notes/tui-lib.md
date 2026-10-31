@@ -202,9 +202,13 @@ which an alternate screen has none of.
 
 ## Tui::set_status
 
-`set_status` and `set_footer` only ask for a frame when the text actually
-changed: the caller recomputes the status from the session list as events
-arrive, and most of those recomputations say the same thing as the last one.
+`set_status` only asks for a frame when the text actually changed: the caller
+recomputes the status from the session list as events arrive, and most of those
+recomputations say the same thing as the last one.
+
+The footer is gone (see `docs/notes/cli-lib.md`: SPEC dropped its row, and the
+information lives on the canvas), so the status line is the only chrome this window
+owns.
 
 ## Tui::restore_input
 

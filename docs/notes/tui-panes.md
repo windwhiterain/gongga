@@ -76,10 +76,10 @@ line groups, is there a reading", and `areas` sizes the frame from it.
 
 ## The command view
 
-`cmd` and `cmd_result` are drawn on a line of their own, between the footer and the
-prompt, and every block in it is one row whatever `block_size` says: it is a ticker of
-what the operator asked and what came back, not a place to read a transcript. Its one
-row cannot scroll, so `Alt+Y` copying it takes that row alone.
+`cmd` and `cmd_result` are drawn on a line of their own, under the `active_quota` row
+and above the prompt, and every block in it is one row whatever `block_size` says: it
+is a ticker of what the operator asked and what came back, not a place to read a
+transcript. Its one row cannot scroll, so `Alt+Y` copying it takes that row alone.
 
 A command that named a session is *not* drawn there: its echo, its rows and its
 result line are read in that session's view, where the transcript they came from already

@@ -334,7 +334,6 @@ pub trait Sink {
         done: bool,
     );
     fn status(&mut self, text: &str);
-    fn footer(&mut self, text: &str);
     /// The harness's own news, never a command's line.
     fn note(&mut self, _kind: LineKind, _text: &str) {}
     /// How tall one block may get, in wrapped rows; 0 caps nothing. A front-end
@@ -385,7 +384,6 @@ impl Sink for NullSink {
     ) {
     }
     fn status(&mut self, _text: &str) {}
-    fn footer(&mut self, _text: &str) {}
 }
 
 /// What an input line turned into.
@@ -832,31 +830,6 @@ impl Client {
             facts.push_str(note);
         }
         sink.status(&facts);
-        let sticky = pairs(&self.sticky.pairs());
-        let mut footer = if sticky.is_empty() {
-            "sticky: (none)".to_string()
-        } else {
-            format!("sticky: {sticky}")
-        };
-        if self.block_size.0 > 0 {
-            footer.push_str(&format!("  | block_size: {}", self.block_size.0));
-        }
-        // A session drawn as something other than the default says so, or a log
-        // that never appears has no explanation on screen.
-        let mut modes: Vec<String> = Vec::new();
-        for (mode, tag) in [
-            (RenderMode::Full, "full"),
-            (RenderMode::Line, "line"),
-            (RenderMode::None, "none"),
-        ] {
-            for name in self.render.named(mode) {
-                modes.push(format!("{name}={tag}"));
-            }
-        }
-        if !modes.is_empty() {
-            footer.push_str(&format!("  | render: {}", modes.join(",")));
-        }
-        sink.footer(&footer);
     }
 
     /// Records that there is no link, and how many dials have failed since.
@@ -1334,15 +1307,6 @@ fn amount(value: f64) -> String {
     } else {
         format!("{value:.2}")
     }
-}
-
-/// Which colour a stored row is drawn in; unknown kinds are context, not errors.
-fn pairs(pairs: &[(String, String)]) -> String {
-    pairs
-        .iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect::<Vec<_>>()
-        .join("  ")
 }
 
 // Front-ends
@@ -2212,7 +2176,6 @@ mod tests {
             self.0.push(text.to_string());
         }
         fn status(&mut self, _t: &str) {}
-        fn footer(&mut self, _t: &str) {}
     }
 
     /// Keeps the window and the prefix, which `VecSink` drops: routing is what the
@@ -2250,7 +2213,6 @@ mod tests {
             self.lines.push(format!("{prefix}{text}"));
         }
         fn status(&mut self, _t: &str) {}
-        fn footer(&mut self, _t: &str) {}
         fn layout(&mut self, layout: &Layout) {
             self.announced = Some(layout.clone());
         }
@@ -2515,11 +2477,10 @@ mod tests {
         assert_eq!(usage_note(&protocol::Usage::default()), "");
     }
 
-    /// Captures the status line and footer, which the other sinks throw away.
+    /// Captures the status line, which the other sinks throw away.
     #[derive(Debug, Default)]
     struct StatusSink {
         status: String,
-        footer: String,
     }
 
     impl Sink for StatusSink {
@@ -2537,9 +2498,6 @@ mod tests {
         fn status(&mut self, t: &str) {
             self.status = t.to_string();
         }
-        fn footer(&mut self, t: &str) {
-            self.footer = t.to_string();
-        }
     }
 
     /// One-shot mode renders nothing, so a rejection has to keep its reason.
@@ -2554,7 +2512,6 @@ mod tests {
         );
         s.stream("", "k", LineKind::Assistant, "", "hello", true);
         s.status("model x | 1 session(s)");
-        s.footer("Tab completes");
         assert_eq!(
             s.take_error().as_deref(),
             Some("send_message is missing required argument(s): session")
@@ -2573,7 +2530,6 @@ mod tests {
         c.refresh(&mut s);
         assert!(!s.status.contains("session main"), "status was {s:?}");
         assert!(s.status.contains("2 session(s)"), "status was {s:?}");
-        assert!(s.footer.contains("session=main"), "footer was {s:?}");
     }
 
     #[test]
@@ -2915,21 +2871,6 @@ mod tests {
         s.0.clear();
         c.command(argv("set_render_session --session main"), &mut s);
         assert_eq!(s.0.last().map(String::as_str), Some("render main = full"));
-    }
-
-    /// A mode that draws nothing has to be visible somewhere, or the log reads as
-    /// broken.
-    #[test]
-    fn the_footer_shows_the_render_modes() {
-        let d = tempfile::tempdir().unwrap();
-        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
-        let mut s = StatusSink::default();
-        c.refresh(&mut s);
-        assert!(!s.footer.contains("render"), "footer was {s:?}");
-
-        c.render.set("main", RenderMode::None).unwrap();
-        c.refresh(&mut s);
-        assert!(s.footer.contains("render: main=none"), "{s:?}");
     }
 
     /// Every other result keeps its old look: one line, no invented content.

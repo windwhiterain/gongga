@@ -177,11 +177,6 @@ into an empty line" was.
 The block's label rides on that row (`[peer] …`): a line group has no header per
 block, so the row is the only place to say who is speaking.
 
-## draw_stickys
-
-The sticky arguments, and the render modes that are not the default, on one row.
-A session drawn as `none` has to be visible somewhere, or the log reads as broken.
-
 ## body
 
 The body split into the session list and the panes beside it. The list is as wide as
@@ -214,19 +209,24 @@ the title falls back to the name it always had.
 
 ## draw_command
 
-One row, between the footer and the prompt, and only when the command layer
-announced a command window. It is drawn by the same code as a pane's body, so its
-rows carry the same colours and the same clipping.
+One row, under the `active_quota` row and above the prompt, and only when the command
+layer announced a command window. It is drawn by the same code as a pane's body, so
+its rows carry the same colours and the same clipping.
 
 ## draw_quota
 
-SPEC's `active_quota` row: one line under the command line and above the prompt,
-painted by the kind the command layer gave it -- a reading is dim chrome, a
-provider that could not be read is the error colour.
+SPEC's `active_quota` row: one line above the command line, under the line groups,
+painted by the kind the command layer gave it -- a reading is dim chrome, a provider
+that could not be read is the error colour.
 
-No row exists before the first reading, so the frame is exactly what it was
-before the feature for a server that has nothing to report, and for a provider
-outside the roster.
+Above rather than below, because the command line is SPEC's `[{cmd, cmd_result}]`
+ticker and the prompt under it is where the operator's attention sits: a balance is
+read once in a while, a command's answer every time. It is also the order SPEC lists
+them in.
+
+No row exists before the first reading, so the frame is exactly what it was before the
+feature for a server that has nothing to report, and for a provider whose roster entry
+publishes no reader.
 
 ## Chrome
 
@@ -298,13 +298,14 @@ The window follows the selection. `move_selection` walks the whole list, so draw
 only the first screenful leaves the ninth candidate selected with nothing
 highlighted -- and Tab still inserts it.
 
-## the_log_window_shows_the_newest_rows_above_the_footer
+## the_log_window_shows_the_newest_rows_above_the_prompt
 
 Whole-path check without a terminal: layout, window, and the rows the bottom of the
 log actually shows. The TUI cannot be run in a test, but "the newest line is the
-one above the footer" can be.
+one above the prompt" can be.
 
-10 rows tall: header, six rows of log, footer, input, help.
+10 rows tall: the header, the body, and the prompt -- and the pane's own header takes
+one of the body's rows, which is why the log is not eight.
 
 ## scrolling_moves_the_window_by_rows
 
@@ -322,7 +323,7 @@ off the right edge: the input is where the text gets edited, and text that canno
 be seen cannot be edited.
 
 10 wide: a two-column prompt and one column spared, so seven of text. The frame is
-header, five rows of log, footer, two input rows, help.
+the header, the log, and two input rows.
 
 ## a_typed_newline_starts_a_new_row
 
@@ -361,11 +362,10 @@ One name read at two places in one window -- the line group's row and a pane's
 header -- and the same black-on-cyan cell at both, which is what `name_style` is
 for.
 
-## the_quota_row_sits_under_the_command_line
+## the_quota_row_sits_above_the_command_line
 
-The row with a reading is one row (so the prompt moves down by exactly one), it is
-drawn between the command line and the prompt, and with no reading the prompt sits
-straight under the command line.
+The row with a reading is one row, SPEC's order holds (quota, then cmd, then prompt),
+and with no reading the prompt sits straight under the command line.
 
 ## an_unreadable_quota_row_is_drawn_as_an_error
 

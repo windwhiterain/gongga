@@ -1,4 +1,4 @@
-//! Rendering: header, scrollable log, footer, completion popup, input line.
+//! Rendering: header, scrollable log, completion popup, input line.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -45,12 +45,11 @@ pub fn draw(f: &mut Frame, s: &mut Screen) -> Rect {
     // The panes borrow the screen mutably: here each scroll offset gets clamped.
     draw_panes(f, s, panes);
     draw_lines(f, s, chunks[2]);
-    draw_stickys(f, s, chunks[3]);
+    draw_quota(f, s, chunks[3]);
     draw_command(f, s, chunks[4]);
-    draw_quota(f, s, chunks[5]);
-    draw_input(f, s, chunks[6]);
+    draw_input(f, s, chunks[5]);
     if s.completion.is_some() {
-        draw_completion(f, s, chunks[6]);
+        draw_completion(f, s, chunks[5]);
     }
     // The input area this frame laid out: the caret asks here, not a second
     // computation of the box.
@@ -89,9 +88,8 @@ pub fn areas(area: Rect, input_rows: u16, chrome: Chrome) -> Vec<Rect> {
         Constraint::Length(1),                                  // header
         Constraint::Min(1),                                     // sessions | panes
         Constraint::Length(lines),                              // one line per event
-        Constraint::Length(1),                                  // stickys
-        Constraint::Length(if chrome.command { 1 } else { 0 }), // cmd and its result
         Constraint::Length(if chrome.quota { 1 } else { 0 }),   // active_quota
+        Constraint::Length(if chrome.command { 1 } else { 0 }), // cmd and its result
         Constraint::Length(input_rows),                         // the prompt
     ])
     .split(area)
@@ -593,14 +591,6 @@ fn draw_quota(f: &mut Frame, s: &Screen, area: Rect) {
     );
 }
 
-/// The sticky arguments, and how each session is drawn beside them.
-fn draw_stickys(f: &mut Frame, s: &Screen, area: Rect) {
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(s.footer.clone(), dim()))),
-        area,
-    );
-}
-
 /// Draws every pane: the header that names it, then the rows that fit in its share.
 fn draw_panes(f: &mut Frame, s: &mut Screen, area: Rect) {
     let sticky = s.sticky_session.clone();
@@ -739,7 +729,7 @@ pub fn input_area(area: Rect, s: &Screen) -> Rect {
         area,
         input_rows(s.input.text(), area.width, area.height),
         s.panes.chrome(),
-    )[6]
+    )[5]
 }
 
 /// Where each visible input row's text ends, as a column to erase from.
@@ -1341,7 +1331,6 @@ mod tests {
             input: crate::InputLine::default(),
             status: String::new(),
             status_kind: LineKind::System,
-            footer: String::new(),
             placeholder: String::new(),
             sticky_session: None,
         }
@@ -1556,7 +1545,7 @@ mod tests {
             "another answer"
         );
 
-        // The command line sits above the input, under the stickys.
+        // The command line sits above the input, which is the last row.
         let parts = parts(40, 12, 1, true, 1);
         assert_eq!(row_text(&buf, parts[4].y), "$ get_messages");
 
@@ -1620,7 +1609,7 @@ mod tests {
     /// The row costs nothing when there is nothing to say, and once it exists it
     /// sits between the command line and the input, in the order SPEC names.
     #[test]
-    fn the_quota_row_sits_under_the_command_line() {
+    fn the_quota_row_sits_above_the_command_line() {
         let mut screen = screen_with(&[]);
         screen
             .panes
@@ -1628,9 +1617,9 @@ mod tests {
         let (width, height) = (40u16, 12u16);
         // No reading: no row, so the prompt sits right under the command line.
         let without = parts(width, height, 1, true, 0);
-        assert_eq!(without.len(), 7);
-        assert_eq!(without[5].height, 0, "no quota row");
-        assert_eq!(without[6].y, without[4].y + 1, "the prompt follows it");
+        assert_eq!(without.len(), 6);
+        assert_eq!(without[3].height, 0, "no quota row");
+        assert_eq!(without[5].y, without[4].y + 1, "the prompt follows it");
 
         screen.panes.layout(&Layout {
             listed: Vec::new(),
@@ -1643,13 +1632,11 @@ mod tests {
                 kind: LineKind::System,
             }),
         });
+        // Which row is above which is SPEC's order: quota, then cmd, then input.
         let with = parts_with_quota(width, height, 1);
-        assert_eq!(with[5].height, 1, "the quota row");
-        assert_eq!(
-            with[6].y,
-            with[5].y + 1,
-            "the prompt starts under the quota row"
-        );
+        assert_eq!(with[3].height, 1, "the quota row");
+        assert_eq!(with[4].y, with[3].y + 1, "the command line follows it");
+        assert_eq!(with[5].y, with[4].y + 1, "and the prompt follows that");
 
         let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
         term.draw(|f| {
@@ -1658,14 +1645,14 @@ mod tests {
         .unwrap();
         let buf = term.backend().buffer().clone();
         assert_eq!(
-            row_text(&buf, with[5].y),
+            row_text(&buf, with[3].y),
             "deepseek-official · money ¥215.52"
         );
         assert_eq!(row_text(&buf, with[4].y), "$ get_messages");
         assert!(
-            row_text(&buf, with[6].y).starts_with('>'),
+            row_text(&buf, with[5].y).starts_with('>'),
             "the prompt is still the last row: {:?}",
-            row_text(&buf, with[6].y)
+            row_text(&buf, with[5].y)
         );
     }
 
@@ -1691,14 +1678,14 @@ mod tests {
         .unwrap();
         let buf = term.backend().buffer().clone();
         let parts = parts_with_quota(60, 12, 1);
-        let cell = buf[(parts[5].x, parts[5].y)].clone();
+        let cell = buf[(parts[3].x, parts[3].y)].clone();
         assert_eq!(
             cell.fg,
             style_for(LineKind::Error).fg.unwrap_or(Color::Reset),
             "{cell:?}"
         );
         assert_eq!(
-            row_text(&buf, parts[5].y),
+            row_text(&buf, parts[3].y),
             "minimax-cn · no credential: set MINIMAX_CN_API_KEY"
         );
     }
@@ -1786,7 +1773,7 @@ mod tests {
 
     /// Layout, window and the rows the bottom of the log shows, without a terminal.
     #[test]
-    fn the_log_window_shows_the_newest_rows_above_the_footer() {
+    fn the_log_window_shows_the_newest_rows_above_the_prompt() {
         let lines: Vec<String> = (0..10).map(|i| format!("L{i}")).collect();
         let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
         let mut screen = screen_with(&refs);

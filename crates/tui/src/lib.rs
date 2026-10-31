@@ -120,7 +120,6 @@ pub struct Screen {
     pub status: String,
     /// What kind of thing the status line is saying, for its colour.
     pub status_kind: LineKind,
-    pub footer: String,
     pub placeholder: String,
     /// The session the sticky `session` argument names: what the keys scroll
     /// and what a click sets.
@@ -324,7 +323,6 @@ impl Tui {
                 input: InputLine::default(),
                 status: "connecting".to_string(),
                 status_kind: LineKind::System,
-                footer: String::new(),
                 placeholder: "message the agent, or / for a command (Tab completes)".to_string(),
                 sticky_session: None,
             },
@@ -386,14 +384,6 @@ impl Tui {
         // The target moved, so the view starts at its own newest line.
         self.screen.sticky_session = name;
         self.dirty = true;
-    }
-
-    pub fn set_footer(&mut self, footer: impl Into<String>) {
-        let footer = footer.into();
-        if footer != self.screen.footer {
-            self.screen.footer = footer;
-            self.dirty = true;
-        }
     }
 
     /// Something this front-end says about itself: on the status line, where the
@@ -1289,7 +1279,6 @@ mod tests {
             input: InputLine::default(),
             status: String::new(),
             status_kind: LineKind::System,
-            footer: String::new(),
             placeholder: String::new(),
             sticky_session: None,
         };
@@ -1352,7 +1341,6 @@ mod tests {
                     input: InputLine::default(),
                     status: String::new(),
                     status_kind: LineKind::System,
-                    footer: String::new(),
                     placeholder: String::new(),
                     sticky_session: None,
                 },

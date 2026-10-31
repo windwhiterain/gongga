@@ -47,10 +47,6 @@ impl Sink for TuiSink<'_> {
         self.0.set_status(text);
     }
 
-    fn footer(&mut self, text: &str) {
-        self.0.set_footer(text);
-    }
-
     fn note(&mut self, kind: LineKind, text: &str) {
         self.0.say(kind, text);
     }

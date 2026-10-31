@@ -390,13 +390,21 @@ facts about the server: its model and how many sessions exist -- and, when there
 is no link, that there is no link, because a model name with no server behind it
 is a lie the operator cannot see through.
 
-## Client::refresh — the footer
+## Client::refresh — no footer
 
-The footer is the only place the client's own state is visible, which is why the
-filters and the hidden sessions join the sticky arguments there: a line that never
-appears has to be explained somewhere, or the operator concludes the server stopped
-talking. Each half is omitted entirely when it is empty, so the common case stays
-one line of text.
+There used to be a second line under the status, listing the sticky arguments, the
+block size and every session whose render mode was not the default. It is gone with
+SPEC's `stickys` row, and the reason SPEC gives for the row being gone is the
+better argument for not moving it somewhere else: what that line said is now on the
+screen itself. Which session is the sticky one is the mark its name carries in the
+list, in a pane's header and at the start of its line group; how each session is
+drawn is the area its name appears in; and a sticky value shows up in the echo of
+every command it fills (`$ send_message --message "…" --session main`).
+
+Nothing is lost that a reader could not see: a session drawn `none` has a row in
+the list, and a session drawn `line` has its row under the panes. The one thing the
+line carried that the canvas does not is `block_size`, and that is a setting read
+back through `set_render`, which is where a setting belongs.
 
 ## Client::command
 
