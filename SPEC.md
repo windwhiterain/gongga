@@ -25,40 +25,16 @@ use `which("bash")` as bash.
 - bash{command, name = "default", task = "default", background = false, detached = false}:
   runs in the persistent shell `name`, or starts a detached bash of that name.
   - key = {session_name, bash_name}.
-  - `@<path>.<supported image suffix>` will be replaced as file id, referencing image will be upload via File API in advance.
 - list_bash{name_regex}: list matched bash with the caller session's name in key.
 - check_bash{name = "default"}: return bash's output that hasn't been read by the caller session.
 - del_bash{name_regex}: delete matched bash with the caller sessions' name in key. 
 
 ## State
-- everything in database (sqlite) under a home directory, structured for agentic retrieval/mutation.
-- `messages` is the transcript: one row per entry, ordered by `seq`, each row written as it happens --
-  a tool result lands when that tool finished, not when its step did.
-  - `content`: the entry as the LLM API takes it, one standard OpenAI Response API input item, sent
-    verbatim; `NULL` means no request is built from that row (a notice, the prompt in force).
-  - `display`: what only the reader needs -- a reasoning summary, an image reference, a notice's text, the
-    prompt in force -- and is never sent.
-  - `call_id`: the call a call or result row names, so a request pairs them by name rather than by
-    opening the item's bytes.
-- a request's `input` is the `content` of the non-`NULL` rows in `seq` order, with the handover note first.
-  Two transforms are allowed, and no others:
-  - a reference becomes its content: `display`'s image becomes an `input_image` part -- the provider's file
-    id once the File API has minted one, otherwise the bytes read as the request is written -- and a
-    provider tool item's payload file is read the same way. Either way a transcript replayed ten times does
-    not carry ten copies of a screenshot, and an item whose file is gone leaves the request out.
-  - a step: each `function_call` is followed directly by its own `function_call_output`. A step is over when
-    its last open call is answered, or when a new user prompt ends a turn that never finished -- that step's
-    unanswered calls are then sent as a placeholder saying they were interrupted. Rows a step wrote between
-    its calls (its own reasoning) stay inside the step. A result whose call is not in the same step is left
-    out: a call and its result belong to one step, which is what makes that decidable without remembering
-    what was already sent.
-- the request body streams. Repairing a step holds that step's rows and nothing older, so what a request
-  costs in memory is O(one step), never O(history).
-- `upto_seq` is pinned when a request starts, and every retry of that request replays the same window.
-- migration: the home's version step renames the payload version 1 stored to `display` and opens an empty
-  `content`; the server fills `content` as it opens, because the rule that says what a row sends lives
-  beside the code that writes rows. A transcript that stored its results in completion order is not
-  rewritten -- the step repair handles it on the way out, like any other.
+everything in database (sqlite) under a home directory, structured for agentic retrieval/mutation.
+
+## File
+`@<path>.<supported image suffix>` will be replaced as file id, referencing image will be upload via File API in advance.
+
 ## UI
 - main (vertical)
   - horizontal
@@ -75,8 +51,9 @@ use `which("bash")` as bash.
     - `<pure text>` expand to `/send_message --message "<pure text>"`: need escape.
 
 - event
-  - | message_item{session | reasoning | toolcall | output}: streaming.
-  - | tool_result{session, toocall, ...}: 
+  - | user_message
+  - | assistant_message_item{reasoning | toolcall | output}: streaming.
+  - | tool_result: 
     - bash's output streaming.
 
 - scroll
@@ -108,6 +85,7 @@ use `which("bash")` as bash.
   - `set_render_session --session <name> [--mode <none|line|full>]`
   - `connect_server [--ip <ip>](default: localhost) --port <port>`
   - `serve --port <port> [--home <path>](default: "~/.gongga")`
+  - `skill --skill <name>`: send skill metadata to agents.
 
 ## Skill
 use python cripts read/write gongga home, calling server cmd.

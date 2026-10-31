@@ -171,7 +171,10 @@ impl Step {
                 continue;
             };
             let Entry {
-                bytes, kind, call_id, ..
+                bytes,
+                kind,
+                call_id,
+                ..
             } = entry;
             if kind == "tool_result" {
                 // Already written beside the call it answers.
