@@ -37,8 +37,8 @@ fn main() {
 /// that started it. The profile is the parent's, so an embedded program is the
 /// same kind of build as the head that carries it.
 fn built() -> Vec<(&'static str, PathBuf)> {
-    // `PROFILE` is the directory name; `--profile` wants the profile's name, and
-    // the development one is `dev` -- `debug` is reserved and cargo refuses it.
+    // `PROFILE` is a directory name; `--profile` wants the profile name, and
+    // cargo reserves `debug` for the `dev` profile.
     let profile = match std::env::var("PROFILE").as_deref() {
         Ok("release") => "release",
         _ => "dev",
@@ -47,7 +47,14 @@ fn built() -> Vec<(&'static str, PathBuf)> {
         .join("../../target/bundle-payload");
     let mut cmd = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string()));
     cmd.args(["build", "--profile", profile])
-        .args(["-p", "gongga-cli", "-p", "gongga-server", "-p", "gongga-tui"])
+        .args([
+            "-p",
+            "gongga-cli",
+            "-p",
+            "gongga-server",
+            "-p",
+            "gongga-tui",
+        ])
         .current_dir(Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("../.."))
         .env("CARGO_TARGET_DIR", &target)
         .env_remove("CARGO_FEATURE_PAYLOAD");
