@@ -152,11 +152,10 @@ never becomes a session's model, which is why the model is written on every
 `set_session` that changes anything: a row left holding the config's model is a
 session that silently runs on a model nobody chose for it.
 
-While that constant is empty, the second and third sources are the only ones, so
-creating a session without `--model` is refused with a message naming the flag and
-`model_pool pick`. The refusal is the point: a session with no model cannot send a
-request at all ([[Agent::route]]), and discovering that at the first turn rather
-than at the command that made the session is a worse place to discover it.
+The third source is filled, so creating a session without `--model` works and
+takes the constant. A build that empties it gets the refusal instead, naming the
+flag and `model_pool pick`: a session with no model cannot send a request at all
+([[Agent::route]]), and failing at the command beats failing at the first turn.
 
 Checked against the model this session will run on: the entry named here, or the
 one it already had. A level the model does not take is a typo in the command

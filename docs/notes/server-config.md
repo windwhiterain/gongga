@@ -3,10 +3,15 @@
 ## DEFAULT_SESSION_MODEL
 
 The model a session runs on when the session itself names none, as
-`provider/model_name`. Empty means this server states no default, and `set_session`
-requires `--model` to create a session. It is a constant and not a config key on
-purpose: a config key would be a *server* setting that quietly decides what every
-session runs on, and a session's model is something a caller states.
+`provider/model_name`. It is a constant and not a config key on purpose: a config
+key would be a *server* setting that quietly decides what every session runs on,
+and a session's model is something a caller states.
+
+`set_session --model` still overwrites it per session, and that write is what the
+session keeps. A build that leaves this empty instead makes `set_session` require
+`--model`, which is the right answer for a machine with no fleet-wide default but a
+poor one for interacting: creating a session from a window would mean typing a
+model name every time.
 
 ## DEFAULT_MAX_OUTPUT_CHARS
 

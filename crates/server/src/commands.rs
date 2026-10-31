@@ -225,8 +225,8 @@ pub fn server_catalog() -> Vec<CommandSpec> {
                 arg(
                     "model",
                     "The model to run this session's turns on, as <provider>/<model name> (or \
-                     a bare model name). Required for a session that has no model yet; \
-                     naming one here overwrites what the session ran on.",
+                     a bare model name). Overwrites what the session ran on; a session that \
+                     names none, or has none yet, runs on the server's default.",
                     false,
                     Some("model"),
                     CompletionSource::Static(crate::providers::roster().models()),
@@ -501,9 +501,8 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             Err(e) => return Outcome::err(e),
         },
     };
-    // The model this session runs on: the one it names here, else the one its row
-    // already carries, else the server's constant. The config's `[model]` section
-    // is what the server itself thinks with, and is never a session's model.
+    // Three sources, never the config's `[model]`: what this command names, what
+    // the row already carries, then the constant.
     let entry = match stated {
         Some(entry) => entry,
         None => match d.sessions.recorded_model(&name) {
@@ -602,7 +601,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     )
 }
 
-/// Turns `--model` into a roster entry, trying the pair and then a bare name.
+/// `--model` to a roster entry: the pair first, then a bare name.
 fn resolve_model(d: &Dispatch, model: &str) -> Result<crate::providers::Entry, String> {
     match d.providers.resolve(model) {
         Ok(choice) => Ok(choice.entry),

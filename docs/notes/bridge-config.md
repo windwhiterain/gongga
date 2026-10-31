@@ -22,11 +22,11 @@ to add.
 The model a session this bridge creates runs on, as `<provider>/<model name>`.
 Empty means the bridge creates no session and relays only to the ones that exist.
 
-A session states its own model -- the server has no default for one -- so the
-creator names it. That makes this key the bridge's one answer to "who pays for a
-chat that nobody set up": naming a model here creates the session on that model,
-and relaying to a session a person created leaves the model that person chose
-alone, because selecting never names one (`ensure_args`).
+A session states its own model, and the server has one constant to fall back on, so
+this key is an *override*: naming a model here creates the sessions this bridge
+makes on that model, and leaving it empty uses the server's default. Relaying to a
+session a person created never names one, so that person's choice survives
+(`ensure_args`).
 
 ## Bridge::max_chars
 

@@ -49,33 +49,24 @@ struct Args {
 ///
 /// # Invariant
 ///
-/// A session states its own model, so creating one means naming it and selecting
-/// one must not -- naming it again would overwrite the model a person chose. Which
-/// this is comes from the greeting's session list, never from a guess about a
-/// server default, which does not exist.
-///
-/// `Err` is the reply when the session is missing and no model was named.
+/// Selecting never names a model, so a person's choice for that session survives;
+/// creating names `model` when the bridge was given one, and otherwise leaves it to
+/// the server's own default. Which this is comes from the greeting's list of the
+/// sessions that exist.
 fn ensure_args<'a>(
     session: &'a str,
     cwd: &'a str,
     model: &'a str,
     exists: bool,
-) -> Result<Vec<(&'a str, &'a str)>, String> {
-    if !exists && model.is_empty() {
-        return Err(format!(
-            "这台机器上没有会话 {session}，而 bridge.toml 没有写 model。会话的模型由创建它的人\
-指定，桥不替你选：请在 ~/.gongga/bridge.toml 的 [bridge] 里写 \
-model = \"<provider>/<model>\"（`model_pool pick` 会给出一个当前能跑的）。"
-        ));
-    }
+) -> Vec<(&'a str, &'a str)> {
     let mut args = vec![("session", session)];
     if !cwd.is_empty() {
         args.push(("cwd", cwd));
     }
-    if !exists {
+    if !exists && !model.is_empty() {
         args.push(("model", model));
     }
-    Ok(args)
+    args
 }
 
 // ------------------------------- The bridge -------------------------------
@@ -229,20 +220,12 @@ impl Bridge {
                 continue;
             }
 
-            let ensure = match ensure_args(
+            let ensure = ensure_args(
                 &session,
                 &self.cwd,
                 &self.model,
                 self.existing.contains(&session),
-            ) {
-                Ok(args) => args,
-                Err(said) => {
-                    tracing::warn!(session = %session, "refusing to create a session without a model");
-                    let _ = deliver(out, &incoming.chat, &incoming.reply, 1, &said).await;
-                    self.queue.pop_front();
-                    continue;
-                }
-            };
+            );
             self.command(sink, "set_session", args_of(&ensure)).await?;
             self.existing.insert(session.clone());
             self.command(
@@ -816,42 +799,28 @@ mod tests {
         assert!(!is_stop("请取消上一条"));
     }
 
-    /// Selecting a session keeps its model; creating one names it; a bridge told no
-    /// model refuses to create.
+    /// Selecting a session keeps its model; creating one names the bridge's, or
+    /// leaves it to the server's default.
     #[test]
     fn a_session_is_created_with_a_model_and_selected_without_one() {
-        let created = ensure_args(
-            "qq-d-u",
-            "C:/work",
-            "deepseek-official/deepseek-flash",
-            false,
-        )
-        .expect("a bridge told a model creates the session");
         assert_eq!(
-            created,
+            ensure_args("qq-d-u", "C:/work", "kimi-coding/k3", false),
             vec![
                 ("session", "qq-d-u"),
                 ("cwd", "C:/work"),
-                ("model", "deepseek-official/deepseek-flash")
+                ("model", "kimi-coding/k3")
             ]
         );
-
-        let selected = ensure_args(
-            "qq-d-u",
-            "C:/work",
-            "deepseek-official/deepseek-flash",
-            true,
-        )
-        .expect("selecting needs no model");
-        assert_eq!(selected, vec![("session", "qq-d-u"), ("cwd", "C:/work")]);
-
-        let no_cwd = ensure_args("qq-d-u", "", "m", false).expect("creating");
-        assert_eq!(no_cwd, vec![("session", "qq-d-u"), ("model", "m")]);
-
-        let refused = ensure_args("qq-d-u", "C:/work", "", false)
-            .expect_err("a bridge told no model creates nothing");
-        assert!(refused.contains("bridge.toml"), "{refused}");
-        assert!(refused.contains("model_pool"), "{refused}");
+        assert_eq!(
+            ensure_args("qq-d-u", "C:/work", "kimi-coding/k3", true),
+            vec![("session", "qq-d-u"), ("cwd", "C:/work")],
+            "selecting must not overwrite the model a person chose"
+        );
+        assert_eq!(
+            ensure_args("qq-d-u", "", "", false),
+            vec![("session", "qq-d-u")],
+            "no model here means the server's own default"
+        );
     }
 
     #[test]

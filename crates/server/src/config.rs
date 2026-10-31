@@ -21,11 +21,15 @@ pub const DEFAULT_API_KEY_ENV: &str = "MINIMAX_CN_API_KEY";
 /// # Invariant
 ///
 /// A session's model belongs to the session: `set_session --model` writes it, and
-/// nothing re-derives it from the `[model]` section above. That section still says
-/// what *the server itself* thinks with, never what a session runs on. While this
-/// constant is empty, `set_session` refuses to create a session that names no
-/// model -- a session with no model cannot send a request at all.
-pub const DEFAULT_SESSION_MODEL: &str = "";
+/// nothing re-derives it from the `[model]` section above. That section says what
+/// *the server itself* thinks with, never what a session runs on.
+///
+/// This is a constant, not a config key, because a config key would be a server
+/// setting quietly deciding what every session runs on. A build that leaves it
+/// empty makes `set_session` require `--model` instead: a session with no model
+/// cannot send a request at all, and refusing at the command beats failing at the
+/// first turn.
+pub const DEFAULT_SESSION_MODEL: &str = "deepseek-official/deepseek-flash";
 
 /// Tool output larger than this is capped and spilled to disk, keeping `cat`s out
 /// of later requests.
