@@ -37,7 +37,7 @@ fn run() -> Result<u8, String> {
         })?;
     let programs = payload::programs(&mut file, start)
         .map_err(|e| format!("reading the table of {}: {e}", me.display()))?;
-    let wanted = program_name();
+    let (wanted, skip) = wanted_program();
     if !programs.iter().any(|p| p.name == wanted) {
         let carried: Vec<&str> = programs.iter().map(|p| p.name.as_str()).collect();
         return Err(format!(
@@ -51,17 +51,30 @@ fn run() -> Result<u8, String> {
         payload::extract(&mut file, program, &dir)
             .map_err(|e| format!("placing {} in {}: {e}", program.name, dir.display()))?;
     }
-    take_over(&dir.join(payload::file_name(&wanted)))
+    take_over(&dir.join(payload::file_name(&wanted)), skip)
 }
 
-/// Which program this file was started as, decided by its own file name.
+/// Which program to run, and how many arguments that choice consumed.
 ///
 /// # Invariant
 ///
-/// The name, not a flag: a copy named `gongga-server` is the server and one with
-/// no claim is the command line, so one file can be installed under the name a
-/// user types without carrying its own arguments.
-fn program_name() -> String {
+/// The file name wins, because a link cannot carry an argument: a copy named
+/// `gongga-server` is the server. Failing that the leading word `tui` asks for
+/// the window and is taken off before the program sees it -- opening a window
+/// must not mean copying this file under a second name.
+fn wanted_program() -> (String, usize) {
+    if let Some(name) = by_file_name() {
+        return (name, 0);
+    }
+    let word = std::env::args_os().nth(1);
+    if word.is_some_and(|arg| arg == "tui" || arg == "window") {
+        return ("gongga-tui".to_string(), 1);
+    }
+    (DEFAULT.to_string(), 0)
+}
+
+/// The program this file is named after, when it is named after one of them.
+fn by_file_name() -> Option<String> {
     std::env::args_os()
         .next()
         .map(PathBuf::from)
@@ -71,7 +84,6 @@ fn program_name() -> String {
         })
         .map(|stem| stem.to_ascii_lowercase())
         .filter(|stem| matches!(stem.as_str(), "gongga-server" | "gongga-tui"))
-        .unwrap_or_else(|| DEFAULT.to_string())
 }
 
 /// The home: `GONGGA_HOME`, else `~/.gongga`. Same order as the programs carry.
@@ -91,8 +103,8 @@ fn home() -> PathBuf {
 /// One command, one console, one exit code: `exec` where the platform has it,
 /// and inherited stdio plus the child's code where it does not, so a script that
 /// ran this file sees the program it asked for and nothing of the head.
-fn take_over(program: &Path) -> Result<u8, String> {
-    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+fn take_over(program: &Path, skip: usize) -> Result<u8, String> {
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1 + skip).collect();
     let mut cmd = std::process::Command::new(program);
     cmd.args(&args);
     #[cfg(unix)]

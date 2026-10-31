@@ -12,13 +12,23 @@ The head is the only part that has to exist before anything is extracted, so it
 has no dependencies at all -- not even `anyhow`: it must build on a machine that
 has nothing.
 
-## program_name
+## wanted_program
 
-The name this file was started under decides which program it becomes, byte for
-byte like `<home>/bin/gongga-cli` decides the command layer
-(`tui-program.md`). A copy named `gongga-server.exe` is a server; anything else
-is the command line. No flag, because the shell that types the name has nowhere
-to put one.
+Two answers, in this order:
+
+1. **the file name**, byte for byte like `<home>/bin/gongga-cli` decides the
+   command layer (`tui-program.md`): a copy named `gongga-server.exe` is the
+   server. The name wins because a link cannot carry an argument;
+2. **the leading word `tui`** (or `window`), taken off before the program sees
+   it. Without this, opening a window would mean copying the file under a second
+   name -- true, and not something a person should be told. Verified:
+   `./gongga tui --version` answers as `gongga-tui` with its own build.
+
+Anything else is the command layer, which is what a bare `./gongga` is.
+
+The bundle is the only thing that knows all three exist, and it is allowed to:
+dispatching between them is its whole job. The command layer does not learn a
+`tui` verb -- that would break `tui -> cli` never the reverse.
 
 ## take_over
 
@@ -58,3 +68,17 @@ A build of the programs into one image. `gongga` used to include the server as a
 library and every command linked it -- 23 MB to send one datagram. One *file* on
 the wire is a packaging question; one *image* is a link-time one, and the answer
 to the first is an overlay, not a bigger binary.
+
+## Using it
+
+```sh
+./gongga --version        # this is gongga-cli, and here is the build
+./gongga serve --port 9700
+./gongga                  # the catalog, from that server
+./gongga tui              # the window
+```
+
+Every run places all payloads in `$GONGGA_HOME/bin` first (all of them, because
+`serve` looks for the server beside itself, and `tui` looks for nothing but its
+own two halves). A file already holding those bytes is left alone, so the second
+run costs a checksum per program and nothing else.
