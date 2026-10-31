@@ -85,27 +85,14 @@ scripts/ship.sh -m "..." --push-main  # 再把本仓库的 pin 提交并 push
 - 它自己有测试：`bash scripts/ship_selftest.sh` 拿一个临时 bare 仓库当远端，跑通提交、push、写 pin、
   漂移拒绝全过程，不碰 GitHub。
 
-## 自我进化（改服务端之后怎么让自己用上）
+## 改过服务端代码之后
 
-整套流程在 `evolve` skill（`$GONGGA_HOME/skills/evolve/SKILL.md`），脚本是它旁边的
-`evolve.sh`：
+跑着的进程还是旧二进制，新代码要接管这个 home 才算生效。整套流程在 `evolve` skill 里
+（`index_skill` 会给出路径），**不在这里重述**：那份散文和 `evolve.sh` 一起版本化，写第二遍
+就一定会有一份是旧的。
 
-```bash
-S=$GONGGA_HOME/skills/evolve/evolve.sh
-$S stage        # 跑测试 + 构建 + 暂存 + 生成 launcher（不重启任何东西，先报磁盘）
-$S stage --clean # 同上，并让继任者在旧服务端退出后跑 cargo clean（磁盘紧张时用）
-# 然后用 bash --detached 启动它打印的 launcher
-$S swap <stamp> # 确认继任者真在等，再发 cancel
-$S status       # 当前 stamp、谁在等、端口与锁
-$S clean        # 收掉没人会 swap 的旧继任者（--artifacts 连旧暂存件）
-```
-
-三条必须记住的：
-
-- **先起继任者，再 cancel**。反过来一旦新二进制起不来，home 就空着、没人 resume 本回合。
-- **不要写交接笔记**。resume 会把完整 transcript 原样重放，笔记不会多提供任何信息；
-  要验的是外部状态（pid / 端口 / pending），那部分只能重新测量。
-- **换完看继任者自己的日志**有没有 `replaying a turn ... resumed=true`，那才是"接上了"。
+这里只留一条不随 skill 变的：改 server 代码的人**必须**走完它，否则你自己、下一个 agent、
+以及用户手上的窗口都还连着旧 build——症状是"代码改了但命令目录还是旧的"。
 
 ## LLM 目录（`~/.agents/providers.toml`）
 
