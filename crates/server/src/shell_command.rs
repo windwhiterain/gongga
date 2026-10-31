@@ -74,19 +74,33 @@ fn copy(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::copy(from, to).map(|_| ())
 }
 
-/// The `PATH` value that finds a home's `bin` first.
+/// The `PATH` value that finds a home's `bin` first, then the shell's own tools.
 ///
 /// # Invariant
 ///
 /// The value is POSIX-shaped: a native `C:\a;C:\b` handed to Git Bash is mangled
 /// at its startup, and the shell would then find no command at all.
 pub fn path(home: &Path) -> String {
-    entries(home)
-        .iter()
-        .map(|entry| shell_path(entry))
-        .collect::<Vec<_>>()
-        .join(":")
+    let inherited = entries(home);
+    // This home's `bin` stays first: nothing here may shadow the command layer.
+    let mut parts = vec![shell_path(&inherited[0])];
+    parts.extend(SHELL_TOOLS.iter().map(|tool| tool.to_string()));
+    parts.extend(inherited.iter().skip(1).map(|entry| shell_path(entry)));
+    parts.join(":")
 }
+
+/// The directories a shell keeps its own tools in, when `PATH` names none of them.
+///
+/// # Invariant
+///
+/// Windows only, in the shell's own spelling: an MSYS root is mounted at `/`, so
+/// `/usr/bin` holds the coreutils a native `PATH` never names. On Unix the tools a
+/// shell runs are the ones it inherited, and this would put a distribution's copy
+/// first. The story is in `docs/notes/server-shell-command.md`.
+#[cfg(windows)]
+const SHELL_TOOLS: &[&str] = &["/usr/bin", "/bin"];
+#[cfg(not(windows))]
+const SHELL_TOOLS: &[&str] = &[];
 
 /// The same value for a native process: a script's interpreter reads this one.
 ///
@@ -140,6 +154,24 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let joined = path(home.path());
         assert!(!joined.contains("::"), "{joined}");
+    }
+
+    /// An agent's shell can run `ls`, and its `find` is the one an agent means.
+    #[test]
+    fn the_shells_own_tools_come_after_this_homes_bin() {
+        let home = tempfile::tempdir().unwrap();
+        let joined = path(home.path());
+        let parts: Vec<&str> = joined.split(':').collect();
+        assert_eq!(parts[0], shell_path(&home.path().join("bin")), "{joined}");
+        assert_eq!(parts[1..1 + SHELL_TOOLS.len()], *SHELL_TOOLS, "{joined}");
+        // And only once: an entry repeated is a lookup that answers twice as slow.
+        for tool in SHELL_TOOLS {
+            assert_eq!(
+                parts.iter().filter(|part| *part == tool).count(),
+                1,
+                "{joined}"
+            );
+        }
     }
 
     /// The same directory, in the shape a script's interpreter reads, so `gongga`

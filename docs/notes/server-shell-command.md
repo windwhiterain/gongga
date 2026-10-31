@@ -51,6 +51,31 @@ That POSIX `PATH` is for a shell. A script interpreter launched with it would
 lose its own native lookups, so `script::Scripts` is handed the `GONGGA_*`
 variables and the native `PATH` -- the same directory, spelled the way it reads.
 
+## The shell's own tools are named, not inherited
+
+`PATH` for a shell is not the server's `PATH` retyped: it is the home's `bin`,
+then the shell's own tool directories, then what the server inherited.
+
+The third of those was for a while the first two as well, and the result was a
+shell that could not run `ls` -- `command not found`, while `find` resolved to
+`C:\Windows\system32\find.exe`, a text search with none of GNU `find`'s flags.
+An agent reads a shell that cannot `ls` as a broken shell, and the cause is not
+the server's environment but the child's: Git Bash's coreutils live in
+`<git>/usr/bin`, which a native `PATH` (`C:\Windows\system32`, `Git\cmd`,
+`Git\bin`) never names. A terminal a person opens gets them from `/etc/profile`;
+this shell is started `--norc --noprofile` and inherits nothing of the sort.
+
+So `path` names them itself, as the shell spells them: an MSYS root is mounted at
+`/`, so `/usr/bin` and `/bin` are right wherever Git is installed. They sit after
+the home's `bin` -- the command layer still wins -- and before the inherited
+entries, so that `find`, `sort` and `tar` mean the POSIX tools and not the
+operating system's namesakes.
+
+Only for a shell. `native_path` is what a script's interpreter reads, and on Unix
+nothing is added at all: there the tools a shell runs *are* the ones it inherited,
+and an injected `/usr/bin` would put a distribution's copy ahead of whatever this
+server was started with.
+
 ## Why `gongga-cli` and not `cmd`
 
 `cmd` is the shorter name and the one SPEC uses for a harness command, but in
