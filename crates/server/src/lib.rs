@@ -61,6 +61,8 @@ pub struct Args {
     pub log: String,
     /// How each log line is written: text for a reader, json for a tool.
     pub log_format: LogFormat,
+    /// The process that started this server, when its death should stop it.
+    pub parent: Option<u32>,
 }
 
 /// The same as an empty command line: every value comes from the home's config.
@@ -74,6 +76,7 @@ impl Default for Args {
             home: None,
             log: "info".to_string(),
             log_format: LogFormat::Text,
+            parent: None,
         }
     }
 }
@@ -353,9 +356,11 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         "gongga server starting"
     );
 
-    // A signal is a stop request, not a kill: the same path as `cancel`.
+    // A signal, or a dead window: a stop request, on the path `cancel` takes.
     let signalled = dispatch.clone();
-    signal::watch(move || async move { commands::stop(&signalled).await });
+    signal::watch(args.parent, move || async move {
+        commands::stop(&signalled).await
+    });
 
     let served = net::serve(Arc::new(cfg), dispatch, bus).await;
     // Every exit from `serve` lands here, so nothing it started outlives the

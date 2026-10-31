@@ -29,9 +29,26 @@ ignores it: the console would stop answering. The second ask therefore leaves at
 once with exit code 130. Nothing is lost by leaving then -- the pending row was
 written by the first ask.
 
+## The window that started the server
+
+A server started by the TUI is started for that window, and `cli::spawn` names it
+in `--parent`. When the window ends -- normally, by a crash, or by `taskkill /F` --
+the server takes the same stop: the turn is preserved and the server exits, so a
+killed window does not leave a process holding the port and the home lock.
+
+Windows waits on the process handle, so pid reuse cannot fool it. Unix asks the
+kernel every 250 ms whether the pid still exists, which a reused pid can.
+
+Two callers deliberately pass no parent. `cli serve` execs the server in its own
+console and watches it, and `ensure` starts one for a command that exits in
+milliseconds: both servers have to outlive the process that started them.
+
 ## What a signal cannot fix
 
-Killing the process (`taskkill /F`, `kill -9`) still bypasses all of this. The
-server that a killed client leaves behind keeps the port and the home lock until
-something cancels it, because `net::serve` has no idle timeout. That is the open
-question in `docs/notes/server-main.md`, not something a handler can answer.
+Killing a server itself (`taskkill /F`, `kill -9`) bypasses all of this: no
+process can prepare for its own murder. What is left behind then is nothing --
+the port and the home lock go with the process.
+
+A window that leaves normally has already cancelled over the protocol, so the
+parent watcher's ask finds `shutting_down` set and returns: one stop, whichever
+source reaches it first.

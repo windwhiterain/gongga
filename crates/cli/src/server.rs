@@ -67,7 +67,7 @@ pub async fn ensure(home: &Path, addr: SocketAddr) -> anyhow::Result<bool> {
     if answers(home, addr).await {
         return Ok(false);
     }
-    let pid = start(home, addr)?;
+    let pid = start(home, addr, None)?;
     // Only here: `ensure` is the one-shot path, whose stderr is being read.
     if let Some(pid) = pid {
         eprintln!(
@@ -83,16 +83,16 @@ pub async fn ensure(home: &Path, addr: SocketAddr) -> anyhow::Result<bool> {
 ///
 /// # Invariant
 ///
-/// The pid is what makes "did *this* window start the server it is talking to"
-/// answerable: a home already served by somebody else refuses the lock, so the
-/// process started here exits at once and the pid never answers a dial. A caller
-/// therefore compares it with the pid the greeting carried rather than trusting
-/// the spawn. See `docs/notes/cli-server.md`.
-pub fn spawn(home: &Path, addr: SocketAddr) -> anyhow::Result<Option<u32>> {
+/// The pid is what makes "did this window start the server it is talking to"
+/// answerable: a home already served refuses the lock, so the process started
+/// here exits at once and its pid never answers a dial. A caller compares it
+/// with the pid the greeting carried. `owner` is the process whose death stops
+/// it; `None` is a one-shot caller. See `docs/notes/cli-server.md`.
+pub fn spawn(home: &Path, addr: SocketAddr, owner: Option<u32>) -> anyhow::Result<Option<u32>> {
     if !starts_here(&addr) {
         return Ok(None);
     }
-    start(home, addr)
+    start(home, addr, owner)
 }
 
 /// Whether a server on `addr` is this machine's to start.
@@ -126,7 +126,7 @@ async fn answers(home: &Path, addr: SocketAddr) -> bool {
 /// Nothing of this process goes with it: a one-shot command exits in
 /// milliseconds, and a server that died with its caller would take the turn it
 /// just started down with it.
-fn start(home: &Path, addr: SocketAddr) -> anyhow::Result<Option<u32>> {
+fn start(home: &Path, addr: SocketAddr, owner: Option<u32>) -> anyhow::Result<Option<u32>> {
     let server = server_program(home)?;
     std::fs::create_dir_all(home).with_context(|| format!("creating {}", home.display()))?;
     // Before the server exists, because the server cannot do it: its own
@@ -139,13 +139,8 @@ fn start(home: &Path, addr: SocketAddr) -> anyhow::Result<Option<u32>> {
         .open(&log)
         .with_context(|| format!("opening {}", log.display()))?;
     let err = out.try_clone().context("duplicating the log handle")?;
-    let mut cmd = Command::new(&server);
-    cmd.arg("--home")
-        .arg(home)
-        .arg("--bind")
-        .arg(addr.to_string())
-        .current_dir(home)
-        .stdin(Stdio::null())
+    let mut cmd = command(&server, home, addr, owner);
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::from(out))
         .stderr(Stdio::from(err));
     detach(&mut cmd);
@@ -155,6 +150,21 @@ fn start(home: &Path, addr: SocketAddr) -> anyhow::Result<Option<u32>> {
     // Silent: a window that starts its own server owns the screen, and a line on
     // stderr lands in the middle of it.
     Ok(Some(child.id()))
+}
+
+/// What to start, before where its output goes.
+fn command(server: &Path, home: &Path, addr: SocketAddr, owner: Option<u32>) -> Command {
+    let mut cmd = Command::new(server);
+    cmd.arg("--home")
+        .arg(home)
+        .arg("--bind")
+        .arg(addr.to_string())
+        .current_dir(home);
+    if let Some(owner) = owner {
+        // Nobody is left to cancel it once the window is gone.
+        cmd.arg("--parent").arg(owner.to_string());
+    }
+    cmd
 }
 
 /// Where the program that carries the server is.
@@ -559,6 +569,20 @@ mod tests {
     async fn a_home_with_no_key_is_not_answering() {
         let dir = tempfile::tempdir().unwrap();
         assert!(!answers(dir.path(), addr("127.0.0.1:9")).await);
+    }
+
+    /// A window's server stops with its window; a one-shot caller's does not.
+    #[test]
+    fn a_window_names_itself_and_a_one_shot_names_nobody() {
+        let home = Path::new("home");
+        let ours = command(Path::new("srv"), home, addr("127.0.0.1:9700"), Some(41));
+        let args: Vec<String> = ours
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.windows(2).any(|w| w == ["--parent", "41"]), "{args:?}");
+        let one_shot = command(Path::new("srv"), home, addr("127.0.0.1:9700"), None);
+        assert!(!one_shot.get_args().any(|a| a == "--parent"));
     }
 
     /// A key in `config.toml` is a key: `server.key` is where a *minted* one

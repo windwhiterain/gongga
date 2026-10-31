@@ -43,6 +43,10 @@ regex = "1"
 tokio-util = "0.7"
 tempfile = "3"
 
+[target.'cfg(unix)'.dependencies]
+# Asking whether the process that started this server still exists.
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 # A job object is the only Windows primitive that means "this process and
 # everything it started", which is what ending a persistent shell needs.

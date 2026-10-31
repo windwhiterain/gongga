@@ -32,6 +32,9 @@ struct Command {
     /// How each log line is written: text for a reader, json for a tool.
     #[arg(long, value_enum, default_value = "text")]
     log_format: LogFormat,
+    /// Stop when this process ends: the window that started this server.
+    #[arg(long, value_name = "PID")]
+    parent: Option<u32>,
 }
 
 impl From<Command> for Args {
@@ -44,6 +47,7 @@ impl From<Command> for Args {
             home: c.home,
             log: c.log,
             log_format: c.log_format,
+            parent: c.parent,
         }
     }
 }

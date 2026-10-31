@@ -186,9 +186,11 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
     let mut attempts: u32 = 0;
     // Started once, before any dial; what it spawned is its to stop.
     let spawned: Option<u32> = if starts_a_server(args.client_only) {
-        cli::server_of(&args.conn)
-            .ok()
-            .and_then(|addr| cli::spawn(&home, addr).ok().flatten())
+        cli::server_of(&args.conn).ok().and_then(|addr| {
+            cli::spawn(&home, addr, Some(std::process::id()))
+                .ok()
+                .flatten()
+        })
     } else {
         None
     };

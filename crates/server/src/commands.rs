@@ -941,6 +941,10 @@ fn skill(args: &Args) -> Outcome {
 
 /// A stop asked from outside the protocol -- a signal -- says what `cancel` says.
 pub(crate) async fn stop(d: &Dispatch) {
+    // A window that cancelled as it left has already asked; this is the echo.
+    if d.shutting_down.load(Ordering::SeqCst) {
+        return;
+    }
     let said = cancel(d).await;
     tracing::info!(answer = %said.message, "stopped as a signal asks");
 }
