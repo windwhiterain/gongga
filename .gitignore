@@ -5,3 +5,7 @@
 *.db-wal
 __pycache__/
 *.pyc
+
+# Each session works in its own worktree; the directories are clones of this
+# repository, not content, and a gitlink for one makes a plain `git clone` fail.
+/.worktrees/
