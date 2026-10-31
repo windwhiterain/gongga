@@ -154,7 +154,7 @@ A note replaces the previous one, so the line always reads as the newest thing t
 window knows, and a refresh from the server puts the facts back.
 
 `connected to the server` is deliberately not one of these: the status line going
-from `offline — reconnecting (attempt 1)` to `model x | 3 session(s)` is that
+from `offline — reconnecting (attempt 1)` to `3 session(s)` is that
 sentence said in facts. A build mismatch is said *after* the refresh, so the facts
 do not wipe it in the same breath.
 

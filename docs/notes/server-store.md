@@ -322,7 +322,7 @@ this design takes away from the server.
 
 ## session_tuning_round_trips
 
-`set_session --llm` and `--context_limit` have to survive a restart like
+`set_session --provider` and `--context_limit` have to survive a restart like
 everything else. `model` follows the entry, because that is the column list views
 read.
 

@@ -6,7 +6,7 @@ The machine's LLM roster: the community `providers.toml`, with the user's own ov
 
 One file already describes every provider a group of machines can reach: endpoints,
 keys, model catalogue, context windows. Reading it is what lets a session say
-`--llm deepseek-official/deepseek-flash` and be understood, instead of every
+`--provider deepseek-official/deepseek-flash` and be understood, instead of every
 caller restating a base URL and the name of an environment variable.
 
 The file carries a lot this server has no use for -- prices, quota endpoints,
@@ -45,7 +45,7 @@ Merges the layers in order, so the last file read wins a disputed field and the
 first file read provides everything nobody disputed. A missing layer is the
 normal case (a fresh machine, a machine that never wrote a private roster) and
 is not worth a line; a layer that does not parse costs only itself, because the
-other one still answers `--llm` and a roster half the size beats no roster.
+other one still answers `--provider` and a roster half the size beats no roster.
 
 Merging stops at what a request needs. `[calendar]` and `[peak_off_peak]` are
 merged too, but nothing here reads them: they are merged because they are in the
@@ -118,10 +118,10 @@ inventing a mapping.
 ## Entry
 
 One resolved entry: everything a request needs, and nothing else. Where a
-request goes: everything `--llm` names, and nothing about whose key pays for it.
+request goes: everything `--provider` names, and nothing about whose key pays for it.
 
 Kept separate from `Choice` because the two callers need different things.
-`--llm` must be able to say "this is wrong" at the moment it is typed, so it
+`--provider` must be able to say "this is wrong" at the moment it is typed, so it
 wants a key. Startup must not: the server's own key comes from a longer chain
 (an exported `GONGGA_API_KEY`, its `key_env` variable, or the roster's `key`),
 and refusing to boot because `providers.toml` did not hold one would be a step
@@ -197,14 +197,14 @@ broken file.
 ## Catalog::specs
 
 Every `provider/model` worth offering a caller, in file order. This is the
-completion list for `--llm`, so it includes entries whose key does not resolve
+completion list for `--provider`, so it includes entries whose key does not resolve
 yet: choosing one and then being told to set a variable is a better path than
 the model never appearing at all.
 
 ## Catalog::resolve
 
 Resolves `provider/model` into a destination plus the key to use for it. This is
-what `--llm` is checked against: if it resolves, the next turn has somewhere to
+what `--provider` is checked against: if it resolves, the next turn has somewhere to
 go and something to authenticate with.
 
 ## Catalog::find_model_entry
@@ -252,14 +252,14 @@ does not say, which is the common case for anything older than the field.
 
 Takes the merged tree rather than text, because merging happens on TOML values:
 a layer can only override a field it can see, and the parse is what assigns the
-merged result its meaning. Duplicate ids would make `--llm` ambiguous, and the
+merged result its meaning. Duplicate ids would make `--provider` ambiguous, and the
 resolution above silently takes the first. Keep the first and drop the rest
 rather than pretend both exist.
 
 ## roster, Live, read_fresh
 
 Read once per file, not once per process: an edit to either `providers.toml` reaches
-the next `set_session --llm` and the next `get_messages` completion list without a
+the next `set_session --provider` and the next `get_messages` completion list without a
 restart, which is the whole reason a roster is a file rather than a build-time
 table. The stamp is taken per file, because the files change for different
 reasons: the community one when the clone is refreshed, the private one when a

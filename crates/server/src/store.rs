@@ -64,8 +64,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     handover TEXT,
     -- Per-session overrides given by `set_session`. NULL means "the server's
     -- configuration", so a session that never asked is indistinguishable from
-    -- one created before these columns existed.
-    llm TEXT,
+    -- one created before these columns existed. `provider` is a roster entry,
+    -- `provider/model`.
+    provider TEXT,
     context_limit INTEGER,
     -- How hard the model should think, in the roster's spelling. NULL means the
     -- model's own default, which is what a session that never asked should get.
@@ -183,9 +184,14 @@ fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
 
 /// Adds columns a `CREATE TABLE IF NOT EXISTS` cannot add to an old database.
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
+    // Renamed once, when the argument became `--provider`: an old row keeps its
+    // value, and the column is not left behind under the old spelling.
+    if has_column(conn, "sessions", "llm") && !has_column(conn, "sessions", "provider") {
+        conn.execute("ALTER TABLE sessions RENAME COLUMN llm TO provider", [])?;
+    }
     for (column, ddl) in [
         ("handover", "ALTER TABLE sessions ADD COLUMN handover TEXT"),
-        ("llm", "ALTER TABLE sessions ADD COLUMN llm TEXT"),
+        ("provider", "ALTER TABLE sessions ADD COLUMN provider TEXT"),
         (
             "context_limit",
             "ALTER TABLE sessions ADD COLUMN context_limit INTEGER",
@@ -375,7 +381,7 @@ impl Store {
     const SESSION_SELECT: &'static str = "SELECT s.id, s.name, s.status, s.model, s.cwd,
                     s.created_at, s.updated_at,
                     (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS messages,
-                    s.llm, s.context_limit, s.thinking_effort,
+                    s.provider, s.context_limit, s.thinking_effort,
                     s.context_tokens, s.cached_tokens, s.tps, s.ttft_ms
              FROM sessions s";
 
@@ -397,7 +403,7 @@ impl Store {
             created_at: r.get(5)?,
             updated_at: r.get(6)?,
             messages: r.get::<_, i64>(7)? as u64,
-            llm: r.get(8)?,
+            provider: r.get(8)?,
             context_limit: r.get::<_, Option<i64>>(9)?.map(|v| v as u8),
             thinking_effort: r.get(10)?,
             usage: protocol::Usage {
@@ -417,21 +423,21 @@ impl Store {
     pub fn set_session_tuning(
         &self,
         id: i64,
-        llm: Option<&str>,
+        provider: Option<&str>,
         context_limit: Option<u8>,
         thinking_effort: Option<&str>,
         model: &str,
     ) -> anyhow::Result<()> {
         self.lock().execute(
             "UPDATE sessions
-                SET llm = ?1,
+                SET provider = ?1,
                     context_limit = ?2,
                     thinking_effort = ?3,
                     model = ?4,
                     updated_at = ?5
               WHERE id = ?6",
             params![
-                llm,
+                provider,
                 context_limit.map(|v| v as i64),
                 thinking_effort,
                 model,
@@ -913,8 +919,8 @@ pub struct SessionRow {
     pub name: String,
     pub status: SessionStatus,
     pub model: String,
-    /// Roster entry this session talks to, when `set_session --llm` gave it one.
-    pub llm: Option<String>,
+    /// Roster entry this session talks to, when `set_session --provider` gave it one.
+    pub provider: Option<String>,
     /// The context level a notice is sent at, as a share of the window, when the
     /// session was given one.
     pub context_limit: Option<u8>,
@@ -1342,7 +1348,10 @@ mod tests {
             .create_session("s", "MiniMax-M3.1-Flash", "/tmp")
             .unwrap();
         let row = store.get_session("s").unwrap().unwrap();
-        assert_eq!(row.llm, None, "a session starts on the server's own entry");
+        assert_eq!(
+            row.provider, None,
+            "a session starts on the server's own entry"
+        );
         assert_eq!(row.context_limit, None);
         assert_eq!(row.thinking_effort, None, "no level means the model's own");
 
@@ -1356,7 +1365,10 @@ mod tests {
             )
             .unwrap();
         let row = store.get_session("s").unwrap().unwrap();
-        assert_eq!(row.llm.as_deref(), Some("deepseek-official/deepseek-flash"));
+        assert_eq!(
+            row.provider.as_deref(),
+            Some("deepseek-official/deepseek-flash")
+        );
         assert_eq!(row.context_limit, Some(30));
         assert_eq!(row.thinking_effort.as_deref(), Some("high"));
         assert_eq!(row.model, "deepseek-flash");
@@ -1387,7 +1399,7 @@ mod tests {
             .set_session_tuning(id, None, None, None, "MiniMax-M3.1-Flash")
             .unwrap();
         let row = store.get_session("s").unwrap().unwrap();
-        assert_eq!(row.llm, None);
+        assert_eq!(row.provider, None);
         assert_eq!(row.context_limit, None);
         assert_eq!(row.model, "MiniMax-M3.1-Flash");
     }

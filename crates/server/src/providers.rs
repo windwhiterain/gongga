@@ -137,7 +137,7 @@ impl Entry {
         ))
     }
 
-    /// The `provider/model` spelling, which is what `--llm` takes and what the
+    /// The `provider/model` spelling, which is what `--provider` takes and what the
     /// session records.
     pub fn spec(&self) -> String {
         format!("{}/{}", self.provider, self.model)
@@ -177,7 +177,7 @@ impl Catalog {
     /// # Invariant
     ///
     /// A missing layer is not a problem worth a line, and a broken one costs only
-    /// itself: the layers that did parse still answer `--llm`. See
+    /// itself: the layers that did parse still answer `--provider`. See
     /// `docs/notes/server-providers.md`.
     pub fn load_layers(paths: &[PathBuf]) -> Self {
         let mut catalog = Self {
@@ -541,7 +541,7 @@ struct FileModel {
 /// The providers a merged roster describes, first claim on an id winning.
 fn parse_value(value: toml::Value) -> Result<Vec<Provider>, toml::de::Error> {
     let file: FileRoster = value.try_into()?;
-    // Duplicate ids make `--llm` ambiguous; keep the first, drop the rest.
+    // Duplicate ids make `--provider` ambiguous; keep the first, drop the rest.
     let mut seen: HashMap<String, ()> = HashMap::new();
     let providers = file
         .provider
@@ -723,7 +723,7 @@ struct Live {
 ///
 /// Nothing here holds a `Catalog`. Holding one would freeze the roster at the
 /// moment the server started -- which is exactly what a reload is meant to undo
-/// -- and the next `set_session --llm` would refuse a model the user had just
+/// -- and the next `set_session --provider` would refuse a model the user had just
 /// written into the file.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Handle;
@@ -1096,7 +1096,7 @@ script = "providers/p.py"
         assert!(err.contains("DEEPSEEK_API_KEY"), "{err}");
     }
 
-    /// `--llm opus` should find the one provider that has it, and skip the one
+    /// `--provider opus` should find the one provider that has it, and skip the one
     /// whose endpoint this server cannot speak.
     #[test]
     fn a_bare_model_id_finds_its_provider() {
@@ -1273,7 +1273,7 @@ id = "p"
         assert!(c.problem().unwrap().contains("providers.toml"));
     }
 
-    /// A duplicate id would make `--llm` ambiguous; the first one wins so the
+    /// A duplicate id would make `--provider` ambiguous; the first one wins so the
     /// answer does not depend on map iteration order.
     #[test]
     fn duplicate_provider_ids_keep_the_first() {

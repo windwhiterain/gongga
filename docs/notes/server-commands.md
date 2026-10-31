@@ -40,7 +40,7 @@ making a caller read the entire history.
 
 ## Dispatch::providers
 
-The machine's LLM roster, which is what `set_session --llm` is checked against
+The machine's LLM roster, which is what `set_session --provider` is checked against
 and where its completion list comes from.
 
 ## ActiveGuard
@@ -130,7 +130,7 @@ so nothing downstream has to know any of this happened.
 
 ## set_session
 
-`--llm` is resolved here rather than at the next turn: a typo should fail the
+`--provider` is resolved here rather than at the next turn: a typo should fail the
 command that made it, and the roster can answer with what would have worked
 instead of leaving a turn to die later.
 
@@ -161,8 +161,8 @@ and a session whose shell is mid-command was enough to leave the answer -- and t
 ## resolve_llm
 
 `provider/model` first, then a bare model id: model ids may themselves contain a
-slash, so the fallback is what makes `--llm deepseek-flash` work without making
-`--llm goat/deepseek/...` ambiguous.
+slash, so the fallback is what makes `--provider deepseek-flash` work without making
+`--provider goat/deepseek/...` ambiguous.
 
 ## parse_percent
 
