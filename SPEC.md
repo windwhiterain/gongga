@@ -32,7 +32,33 @@ use `which("bash")` as bash.
 
 ## State
 - everything in database (sqlite) under a home directory, structured for agentic retrieval/mutation.
-
+- `messages` is the transcript: one row per entry, ordered by `seq`, each row written as it happens --
+  a tool result lands when that tool finished, not when its step did.
+  - `content`: the entry as the LLM API takes it, one standard OpenAI Response API input item, sent
+    verbatim; `NULL` means no request is built from that row (a notice, the prompt in force).
+  - `display`: what only the reader needs -- a reasoning summary, an image reference, a notice's text, the
+    prompt in force -- and is never sent.
+  - `call_id`: the call a call or result row names, so a request pairs them by name rather than by
+    opening the item's bytes.
+- a request's `input` is the `content` of the non-`NULL` rows in `seq` order, with the handover note first.
+  Two transforms are allowed, and no others:
+  - a reference becomes its content: `display`'s image becomes an `input_image` part -- the provider's file
+    id once the File API has minted one, otherwise the bytes read as the request is written -- and a
+    provider tool item's payload file is read the same way. Either way a transcript replayed ten times does
+    not carry ten copies of a screenshot, and an item whose file is gone leaves the request out.
+  - a step: each `function_call` is followed directly by its own `function_call_output`. A step is over when
+    its last open call is answered, or when a new user prompt ends a turn that never finished -- that step's
+    unanswered calls are then sent as a placeholder saying they were interrupted. Rows a step wrote between
+    its calls (its own reasoning) stay inside the step. A result whose call is not in the same step is left
+    out: a call and its result belong to one step, which is what makes that decidable without remembering
+    what was already sent.
+- the request body streams. Repairing a step holds that step's rows and nothing older, so what a request
+  costs in memory is O(one step), never O(history).
+- `upto_seq` is pinned when a request starts, and every retry of that request replays the same window.
+- migration: the home's version step renames the payload version 1 stored to `display` and opens an empty
+  `content`; the server fills `content` as it opens, because the rule that says what a row sends lives
+  beside the code that writes rows. A transcript that stored its results in completion order is not
+  rewritten -- the step repair handles it on the way out, like any other.
 ## UI
 - main (vertical)
   - horizontal

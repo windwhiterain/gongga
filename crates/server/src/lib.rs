@@ -5,6 +5,7 @@
 mod agent;
 mod agents;
 mod blobs;
+mod body;
 mod bus;
 mod commands;
 mod config;
@@ -21,6 +22,7 @@ mod shell_command;
 mod ship;
 mod store;
 mod tools;
+mod transcript;
 mod transport;
 
 use std::path::PathBuf;
@@ -47,8 +49,6 @@ pub struct Args {
     pub config: Option<PathBuf>,
     /// UDP address to listen on. Overrides `[server] bind`.
     pub bind: Option<String>,
-    /// SQLite path; missing dirs created, `:memory:` throwaway, beats `[server] db`.
-    pub db: Option<PathBuf>,
     /// Model name. Overrides `[llm] model`.
     pub model: Option<String>,
     /// Path to bash. Overrides `[tools.bash] program`.
@@ -67,7 +67,6 @@ impl Default for Args {
         Self {
             config: None,
             bind: None,
-            db: None,
             model: None,
             bash: None,
             home: None,
@@ -98,11 +97,7 @@ pub enum LogFormat {
 /// once after, for everything else: a value read from a file that had not
 /// arrived yet is the loader's default, not this home's.
 fn config_from(args: &Args) -> anyhow::Result<Config> {
-    let mut cfg = Config::load_with_home(args.config.as_deref(), args.home.as_deref())?;
-    if let Some(db) = &args.db {
-        cfg.db_path = config::expand(db.clone());
-    }
-    Ok(cfg)
+    Config::load_with_home(args.config.as_deref(), args.home.as_deref())
 }
 
 pub fn main(args: Args) -> anyhow::Result<()> {
@@ -359,7 +354,6 @@ mod tests {
         let args = Args::default();
         assert!(args.home.is_none());
         assert!(args.bind.is_none());
-        assert!(args.db.is_none());
         assert_eq!(args.log, "info");
     }
 }

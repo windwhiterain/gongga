@@ -182,7 +182,6 @@ struct FileConfig {
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct FileServer {
     home: Option<PathBuf>,
-    db: Option<PathBuf>,
     bind: Option<String>,
     key: Option<String>,
 }
@@ -274,12 +273,9 @@ impl Config {
         // must resolve the same home.
         let home = std::path::absolute(&home).unwrap_or(home);
 
-        let db_path = file
-            .server
-            .as_ref()
-            .and_then(|s| s.db.clone())
-            .map(expand)
-            .unwrap_or_else(|| home.join(DEFAULT_DB));
+        // The home owns its database: no flag names it elsewhere, so a scratch
+        // home cannot drive a real one.
+        let db_path = home.join(DEFAULT_DB);
 
         let bind: SocketAddr = env_or("GONGGA_BIND")
             .or_else(|| file.server.as_ref().and_then(|s| s.bind.clone()))

@@ -23,13 +23,22 @@ history is being assembled, so a wording fix reaches a conversation that started
 months ago -- and nothing in the database changes, which is the part a stored
 sentence could never do.
 
-## close_dangling_calls
+## wire_item
 
-Read from raw rows, not from `history_since`: history closes an unanswered call with
-a placeholder of its own, and that placeholder is exactly what must not hide the gap
-from this write. Providers reject a `function_call` with no `function_call_output`, so
-the closing row has to exist; writing it at the turn boundary means the next request's
-array is the rows, and what a request sends is never partly imaginary.
+One row's answer to "what do I send": a standard Responses input item, computed as
+the row is written and stored beside the payload the reader reads. A request writes
+those bytes and parses none of them, which is what lets it stream.
+
+`None` is not "no item yet" but "no request is built from this row": a notice, the
+prompt in force, a reasoning entry whose encrypted blob was never recorded, a
+provider tool item whose binary payload was stripped on the way in. Deciding that at
+write time is why the read path has no drop rules of its own.
+
+Providers reject a `function_call` with no `function_call_output`, and a transcript
+that reaches a request that way fails the same way on every later turn -- the same
+`call_id` returning minutes apart with only a new `request_id` to tell the attempts
+apart. Nothing here closes such a gap: the request builder says what happened at the
+moment it writes (`docs/notes/server-body.md`), so the transcript keeps what did.
 
 ## migrate
 
@@ -39,8 +48,8 @@ and a running harness must not lose its transcript just because the schema grew.
 ## Store::open
 
 `:memory:` is taken literally: it has no directory to create, and creating one
-called `:` would be the wrong answer to `--db :memory:`, which is how a throwaway
-run keeps its hands off the operator's data.
+called `:` would be the wrong answer to a caller that asked SQLite for a database
+that never touches disk.
 
 ## Store::lock
 
@@ -95,7 +104,7 @@ row for row.
 Production code always has a lower bound (a note), and a method nobody calls is a
 second way to ask the same question.
 
-## HistoryItem::ToolResult — images
+## tool_result images
 
 A tool result carries the text it always carried, plus `images`: a path and a
 media type per picture, never the bytes.
@@ -139,7 +148,7 @@ reader the row is damaged; a blank line would read as "nothing happened here".
 The status suffix (`(failed)`, ...) is kept, because a search that failed is not
 the same row as one that found something.
 
-## HistoryItem::BuiltinCall
+## builtin_call
 
 A provider tool item (`web_search_call`, ...), stored as the JSON the provider
 sent plus whether it is still replayable.
@@ -153,23 +162,23 @@ until the next request fails.
 stripped on the way in, which is why that field is not derivable from the item
 itself.
 
-## Store::history_between
+## Transcript
 
-A fold needs both bounds, and it needs them as one query: the mapping inside
-is not one-to-one with rows -- a `notice` row is skipped, an unanswered tool call
-gains a placeholder -- so "how many items does the old half hold" cannot be
-answered by counting rows, which is how the note used to cover a range that
-was not the one it was asked for.
+A read-only connection walking one session's sendable rows, one keyset seek per
+row, so a request never holds the transcript as a value. It brings its own
+connection because it reads *while* the request is being written: taking the
+store's would park the turn that is waiting on that write.
 
-A call whose result never got recorded -- the turn was interrupted between asking
-for the tool and hearing back -- cannot be sent as a bare `function_call`:
-providers reject the whole request ("No tool output found for tool call ..."),
-which makes the session fail the same way on every later turn. The placeholder is
-the honest fix: it says what happened instead of pretending the call is open.
+The window is closed at a seq when the walk is made, which is what lets a retry
+replay the same bytes as the attempt it follows. Without it, a row landing
+mid-request would make attempt two send a longer transcript than attempt one --
+and a retry that is not the same request is not a retry.
 
 A notice is written for the operator, not for the model: it explains why a turn
-stopped. Feeding it back as history would put our own bookkeeping in the
-transcript the provider sees, and make the model answer questions nobody asked.
+stopped. Feeding it back would put our own bookkeeping in the transcript the
+provider sees, and make the model answer questions nobody asked. That is decided
+where the row is written (`wire_item`), not here, so the walk has no drop rules
+of its own.
 
 ## Store::last_seq
 
@@ -225,10 +234,6 @@ appending it as a row inside the transcript would send the instructions twice --
 read from which directory. An operator reading a session back should see that the
 prompt changed and where, without a 10k-character row in the middle of the dialogue.
 
-## Store::context
-
-Returns `(None, full history)` when nothing has been compressed.
-
 ## Store::add_pending_task
 
 An aborted process is indistinguishable from a deliberate `cancel`: either way,
@@ -261,18 +266,20 @@ the config field is `compress_above_tokens`, so the wording may be stale.
 
 ## MessageRow
 
-Deliberately not [`HistoryItem`]: a caller that only wants "what did it say"
-should not have to know about encrypted reasoning blobs or reassemble the
-Responses API shape. `text` carries whichever field is the human-meaningful one
-for the kind (message body, tool arguments, tool output, reasoning summary), so
-one column is enough to display any row.
+Deliberately not the request's view of the same row: a caller that only wants
+"what did it say" should not have to know about encrypted reasoning blobs or
+reassemble the Responses API shape. It reads `display`, the payload as written,
+while a request reads `content`. `text` carries whichever field is the
+human-meaningful one for the kind (message body, tool arguments, tool output,
+reasoning summary), so one column is enough to display any row.
 
 ## the_database_path_brings_its_directory
 
-`--db <path>` has to bring its directory with it, and `--db :memory:` has to be
-taken literally: that is how a throwaway run keeps its hands off the operator's
-real database, and creating a directory called `:` would be the wrong answer to
-it.
+A path handed to `Store::open` has to bring its directory with it, and `:memory:`
+has to be taken literally: creating a directory called `:` would be the wrong
+answer to a caller that asked SQLite for a database that never touches disk. The
+server itself can no longer be pointed at a database outside its home, so this is
+the library's own contract rather than a command line's.
 
 ## finishing_one_pending_task_leaves_the_others
 

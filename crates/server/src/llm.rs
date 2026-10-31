@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::store::{HistoryItem, activity_detail, activity_name};
+use crate::store::{activity_detail, activity_name};
 
 /// A connect that takes this long is a broken route, not a slow provider: the
 /// answer itself is bounded by `headers_timeout` and `idle_timeout`.
@@ -47,6 +47,45 @@ pub struct LlmClient {
     builtin_tools: Vec<String>,
     /// What the roster says this model takes in; empty is "unstated".
     modalities: Vec<String>,
+}
+
+/// Where a request's input comes from: one session's transcript, up to a seq pinned
+/// when the request started.
+///
+/// # Invariant
+///
+/// The source names the window rather than holding the body, because a body is read
+/// once and a retry has to send the same bytes as the attempt it follows. The window
+/// is closed before the request is sent, so a row landing while the network is still
+/// writing belongs to the next request, not to a retry of this one.
+#[derive(Clone)]
+pub struct RequestSource {
+    pub db_path: std::path::PathBuf,
+    pub session_id: i64,
+    pub upto_seq: i64,
+    /// What a call that never got its result is said to have been.
+    pub placeholder: String,
+}
+
+impl RequestSource {
+    fn open(
+        &self,
+        head: &[u8],
+    ) -> anyhow::Result<(
+        crate::body::RequestBody,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    )> {
+        let rows =
+            crate::transcript::Transcript::open(&self.db_path, self.session_id, self.upto_seq)?;
+        let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let body = crate::body::RequestBody::new(
+            head.to_vec(),
+            rows,
+            self.placeholder.clone(),
+            counter.clone(),
+        );
+        Ok((body, counter))
+    }
 }
 
 impl LlmClient {
@@ -158,13 +197,14 @@ impl LlmClient {
         &self,
         instructions: &str,
         handover: Option<&str>,
-        history: &[HistoryItem],
+        source: &RequestSource,
         tools: &[ToolDefinition],
         effort: Option<&str>,
         cancel: CancellationToken,
     ) -> mpsc::Receiver<LlmEvent> {
         let (tx, rx) = mpsc::channel(256);
-        let body = self.build_body(instructions, handover, history, tools, effort);
+        let head = self.build_head(instructions, handover, tools, effort);
+        let source = source.clone();
         let url = format!("{}/responses", self.base_url);
         let api_key = self.api_key.clone();
         let http = self.http.clone();
@@ -176,11 +216,26 @@ impl LlmClient {
         tokio::spawn(async move {
             let mut attempt: u32 = 0;
             loop {
+                // Opened again for every attempt: a body is read once, and a retry
+                // has to send what the attempt before it sent.
+                let (body, bytes) = match source.open(&head) {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        let _ = tx
+                            .send(LlmEvent::Failed {
+                                message: format!("could not read the transcript: {e}"),
+                                retryable: false,
+                            })
+                            .await;
+                        return;
+                    }
+                };
                 let mut once = stream_once(
                     &http,
                     &url,
                     &api_key,
-                    &body,
+                    body,
+                    bytes,
                     headers_timeout,
                     idle_timeout,
                     cancel.clone(),
@@ -269,28 +324,15 @@ impl LlmClient {
         rx
     }
 
-    fn build_body(
+    fn build_head(
         &self,
         instructions: &str,
-        handover: Option<&str>,
-        history: &[HistoryItem],
+        note: Option<&str>,
         tools: &[ToolDefinition],
         effort: Option<&str>,
-    ) -> Value {
-        let mut input: Vec<Value> = Vec::with_capacity(history.len() + 1);
-        // Both are the caller's prose: this module builds requests and writes no
-        // sentence of its own.
-        if let Some(note) = handover {
-            input.push(json!({
-                "role": "user",
-                "content": [{"type": "input_text", "text": note}],
-            }));
-        }
-        input.extend(history.iter().filter_map(history_item_to_input));
-
+    ) -> Vec<u8> {
         let mut body = json!({
             "model": self.model,
-            "input": input,
             "stream": true,
             "store": self.store,
         });
@@ -334,7 +376,23 @@ impl LlmClient {
             // its encrypted blob.
             body["include"] = json!(["reasoning.encrypted_content"]);
         }
-        body
+        // Reopened at `input`, whose array the body fills as the network asks: the
+        // transcript is never one value.
+        let mut head = body.to_string();
+        head.pop();
+        head.push_str(",\"input\":[");
+        // The note is the array's first item, so the transcript never displaces it.
+        if let Some(note) = note {
+            head.push_str(
+                &json!({
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": note}],
+                })
+                .to_string(),
+            );
+            head.push(',');
+        }
+        head.into_bytes()
     }
 }
 
@@ -573,23 +631,25 @@ async fn stream_once(
     http: &reqwest::Client,
     url: &str,
     api_key: &str,
-    body: &Value,
+    body: crate::body::RequestBody,
+    bytes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     headers_timeout: Duration,
     idle_timeout: Duration,
     cancel: CancellationToken,
 ) -> mpsc::Receiver<LlmEvent> {
     let (tx, rx) = mpsc::channel(256);
-    let body = body.clone();
     let url = url.to_string();
     let api_key = api_key.to_string();
     let http = http.clone();
 
     tokio::spawn(async move {
+        let body = body;
         let outcome = AssertUnwindSafe(read_stream(
             &http,
             &url,
             &api_key,
-            &body,
+            body,
+            bytes,
             headers_timeout,
             idle_timeout,
             &cancel,
@@ -617,20 +677,23 @@ async fn read_stream(
     http: &reqwest::Client,
     url: &str,
     api_key: &str,
-    body: &Value,
+    body: crate::body::RequestBody,
+    bytes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     headers_timeout: Duration,
     idle_timeout: Duration,
     cancel: &CancellationToken,
     tx: &mpsc::Sender<LlmEvent>,
 ) {
-    let chars = body.to_string().len();
     let started = Instant::now();
-    tracing::info!(%url, chars, "model request: sending");
+    tracing::info!(%url, "model request: sending");
+    // The count is known only afterwards. The type must be stated: a provider
+    // answers 415 for a streamed body without it.
     let request = http
         .post(url)
         .header("Accept", "text/event-stream")
+        .header("Content-Type", "application/json")
         .bearer_auth(api_key)
-        .json(body);
+        .body(reqwest::Body::wrap_stream(body));
 
     let response = match tokio::time::timeout(headers_timeout, request.send()).await {
         Ok(Ok(r)) => r,
@@ -661,6 +724,7 @@ async fn read_stream(
     };
     tracing::info!(
         status = %response.status(),
+        bytes = bytes.load(std::sync::atomic::Ordering::Relaxed),
         elapsed = ?started.elapsed(),
         "model request: headers"
     );
@@ -840,7 +904,7 @@ fn storable_activity(item: &Value) -> (Value, bool) {
 }
 
 /// The item as a request should carry it, payload read back from `dir`.
-fn sendable_activity(
+pub(crate) fn sendable_activity(
     item: &Value,
     replayable: bool,
     dir: Option<&std::path::Path>,
@@ -1239,66 +1303,6 @@ async fn handle(
     Ok(())
 }
 
-/// Renders a stored transcript entry as a Responses-API input item.
-fn history_item_to_input(item: &HistoryItem) -> Option<Value> {
-    Some(match item {
-        HistoryItem::Text { role, text } => match role.as_str() {
-            "assistant" => json!({
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": text}],
-            }),
-            _ => json!({"role": role, "content": text}),
-        },
-        HistoryItem::ToolCall {
-            call_id,
-            name,
-            arguments,
-        } => {
-            json!({"type":"function_call","call_id":call_id,"name":name,"arguments":arguments})
-        }
-        // Back as it came, payload read back from the file beside the home.
-        HistoryItem::BuiltinCall { item, replayable } => {
-            match sendable_activity(item, *replayable, crate::blobs::dir()) {
-                Some(item) => item,
-                None => return None,
-            }
-        }
-        HistoryItem::ToolResult {
-            call_id,
-            output,
-            images,
-        } => {
-            // A plain string is the shape every provider takes; the content
-            // array is only needed when there is a picture in it.
-            if images.is_empty() {
-                json!({"type":"function_call_output","call_id":call_id,"output":output})
-            } else {
-                let mut content = vec![json!({"type": "input_text", "text": output})];
-                content.extend(images.iter().map(crate::image::content_part));
-                json!({"type":"function_call_output","call_id":call_id,"output":content})
-            }
-        }
-        // The summary is for the UI; the model gets only the encrypted blob.
-        HistoryItem::Reasoning {
-            item_id,
-            encrypted,
-            summary: _summary,
-        } => {
-            // Replay needs the blob; without it drop the item, never send a shape
-            // the API would reject.
-            let Some(enc) = encrypted else {
-                return None;
-            };
-            let mut item = json!({"type":"reasoning","summary":[]});
-            if let Some(id) = item_id {
-                item["id"] = json!(id);
-            }
-            item["encrypted_content"] = json!(enc);
-            item
-        }
-    })
-}
-
 /// One stored picture as an `input_image` part, read from disk now.
 ///
 /// # Invariant
@@ -1321,7 +1325,6 @@ fn shorten_body(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::image::ImageRef;
 
     /// A client with no roster behind it: what a test drives is the body it builds.
     fn client_with(model: &str, builtin_tools: &[&str], modalities: &[&str]) -> LlmClient {
@@ -1373,6 +1376,26 @@ mod tests {
         );
     }
 
+    /// The head as an object, with the array it opens left empty: a test of the
+    /// envelope needs no transcript.
+    fn head(
+        client: &LlmClient,
+        instructions: &str,
+        note: Option<&str>,
+        tools: &[ToolDefinition],
+        effort: Option<&str>,
+    ) -> Value {
+        let mut text = String::from_utf8(client.build_head(instructions, note, tools, effort))
+            .expect("a head is built from text");
+        // Cut at the marker: a note is written after it.
+        let at = text
+            .find(",\"input\":[")
+            .expect("a head ends by opening its input array");
+        text.truncate(at);
+        text.push('}');
+        serde_json::from_str(&text).expect("the head is one JSON object")
+    }
+
     /// The tool schema is out of band, so a fold cannot drop it -- and this
     /// pins that every request still carries it.
     #[test]
@@ -1388,7 +1411,7 @@ mod tests {
         // A folded prefix must not change what the model is offered: the
         // schema is out of band, not part of the history.
         for handover in [None, Some("earlier work, folded out")] {
-            let body = client.build_body("instructions", handover, &[], &tools, None);
+            let body = head(&client, "instructions", handover, &tools, None);
             let sent = &body["tools"][0];
             assert_eq!(sent["name"], "bash");
             assert_eq!(sent["parameters"]["required"][0], "cmd");
@@ -1397,7 +1420,7 @@ mod tests {
 
         // An empty registry means no `tools` key at all, rather than an empty
         // array that some providers reject.
-        let body = client.build_body("instructions", None, &[], &[], None);
+        let body = head(&client, "instructions", None, &[], None);
         assert!(body.get("tools").is_none(), "{body}");
     }
 
@@ -1413,16 +1436,6 @@ mod tests {
     fn ignores_keepalive_comments() {
         assert!(parse_sse_block(": ping").is_none());
         assert!(parse_sse_block("event: ping\ndata: {}").is_some());
-    }
-
-    #[test]
-    fn reasoning_without_encrypted_content_is_dropped() {
-        let item = HistoryItem::Reasoning {
-            item_id: Some("rs_1".into()),
-            encrypted: None,
-            summary: "thinking".into(),
-        };
-        assert!(history_item_to_input(&item).is_none());
     }
 
     /// Some providers send an empty `summary` on `output_item.done`, so the
@@ -1597,19 +1610,6 @@ mod tests {
             }
         }
         assert_eq!(summary.as_deref(), Some("thinking out loud"));
-    }
-
-    #[test]
-    fn reasoning_replays_the_blob_without_its_summary_text() {
-        let item = HistoryItem::Reasoning {
-            item_id: Some("rs_1".into()),
-            encrypted: Some("blob".into()),
-            summary: "a long thought".into(),
-        };
-        let v = history_item_to_input(&item).unwrap();
-        assert_eq!(v["type"], "reasoning");
-        assert_eq!(v["encrypted_content"], "blob");
-        assert_eq!(v["summary"], json!([]));
     }
 
     #[test]
@@ -1803,26 +1803,14 @@ mod tests {
         assert_eq!(cold.input_tokens, Some(10));
     }
 
-    #[test]
-    fn tool_results_use_the_output_item_shape() {
-        let item = HistoryItem::ToolResult {
-            call_id: "c1".into(),
-            output: "ok".into(),
-            images: Vec::new(),
-        };
-        let v = history_item_to_input(&item).unwrap();
-        assert_eq!(v["type"], "function_call_output");
-        assert_eq!(v["call_id"], "c1");
-    }
-
     /// `--thinking_effort` rides on the request as the API spells it; unset sends
     /// no `reasoning` object at all.
     #[test]
     fn a_thinking_level_rides_on_the_request() {
         let client = client_with("m", &[], &[]);
-        let body = client.build_body("instructions", None, &[], &[], Some("high"));
+        let body = head(&client, "instructions", None, &[], Some("high"));
         assert_eq!(body["reasoning"]["effort"], "high");
-        let body = client.build_body("instructions", None, &[], &[], None);
+        let body = head(&client, "instructions", None, &[], None);
         assert!(
             body.get("reasoning").is_none(),
             "an unset level must not become an empty reasoning object"
@@ -1839,7 +1827,7 @@ mod tests {
             description: "run".into(),
             parameters: json!({"type": "object"}),
         }];
-        let body = client.build_body("instructions", None, &[], &tools, None);
+        let body = head(&client, "instructions", None, &tools, None);
         let offered = body["tools"].as_array().expect("tools");
         assert_eq!(offered.len(), 3, "{body}");
         assert_eq!(offered[0]["type"], "function");
@@ -1852,14 +1840,14 @@ mod tests {
     #[test]
     fn a_model_that_declares_no_builtin_tools_sends_none() {
         let client = client_with("m", &[], &[]);
-        let body = client.build_body("instructions", None, &[], &[], None);
+        let body = head(&client, "instructions", None, &[], None);
         assert!(
             body.get("tools").is_none(),
             "an empty tools array is not the same as no tools key: {body}"
         );
         // Only a builtin tool, no local ones, still sends the key.
         let client = client_with("m", &["web_search"], &[]);
-        let body = client.build_body("instructions", None, &[], &[], None);
+        let body = head(&client, "instructions", None, &[], None);
         assert_eq!(body["tools"], json!([{"type": "web_search"}]));
     }
 
@@ -2059,52 +2047,6 @@ mod tests {
     }
 
     /// The only encoding `image_url` takes for a data URL.
-
-    /// A picture goes as `input_image`, not as base64 prose to puzzle over.
-    #[test]
-    fn a_picture_rides_in_the_tool_result_as_input_image() {
-        let d = tempfile::tempdir().unwrap();
-        let path = d.path().join("shot.png");
-        std::fs::write(&path, [0x89, b'P', b'N', b'G']).unwrap();
-        let item = HistoryItem::ToolResult {
-            call_id: "c1".into(),
-            output: "the model is looking at shot.png".into(),
-            images: vec![ImageRef::new(
-                path.to_string_lossy().to_string(),
-                "image/png",
-            )],
-        };
-        let v = history_item_to_input(&item).unwrap();
-        assert_eq!(v["type"], "function_call_output");
-        let content = v["output"].as_array().expect("a content array");
-        assert_eq!(content[0]["type"], "input_text");
-        assert_eq!(content[0]["text"], "the model is looking at shot.png");
-        assert_eq!(content[1]["type"], "input_image");
-        assert_eq!(
-            content[1]["image_url"],
-            json!(format!(
-                "data:image/png;base64,{}",
-                crate::image::base64_for_test(&[0x89, b'P', b'N', b'G'])
-            ))
-        );
-    }
-
-    /// A file that is gone degrades to a sentence: one unreadable picture must not
-    /// take the whole turn with it.
-    #[test]
-    fn a_missing_picture_degrades_to_a_sentence() {
-        let item = HistoryItem::ToolResult {
-            call_id: "c1".into(),
-            output: "looked at it".into(),
-            images: vec![ImageRef::new("C:/nowhere/gone.png", "image/png")],
-        };
-        let v = history_item_to_input(&item).unwrap();
-        let content = v["output"].as_array().expect("a content array");
-        assert_eq!(content[1]["type"], "input_text");
-        let text = content[1]["text"].as_str().unwrap();
-        assert!(text.contains("C:/nowhere/gone.png"), "{text}");
-        assert!(text.contains("no longer readable"), "{text}");
-    }
 
     /// The roster's `modalities` is the whole of the image question.
     #[test]

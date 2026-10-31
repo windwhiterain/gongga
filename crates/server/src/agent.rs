@@ -126,15 +126,6 @@ impl Agent {
         }
         let (turn, cancel) = session.new_turn();
         let started = std::time::Instant::now();
-        // A call the last turn left open is closed before anything is asked:
-        // providers reject the pair.
-        match self.store.close_dangling_calls(session.id()) {
-            Ok(0) => {}
-            Ok(n) => tracing::info!(session = %name, closed = n, "calls that never got a result"),
-            Err(e) => {
-                tracing::warn!(session = %name, error = %e, "could not close a dangling call")
-            }
-        }
         // Resolved once: every step of a turn sends to the model it started on.
         let (llm, budget) = match self.route(&name, &session.tuning()) {
             Ok(route) => route,
@@ -389,16 +380,19 @@ impl Agent {
             effort,
             cwd,
         } = *attempt;
-        let (note, history) = self.store.context(id)?;
+        let note = self.store.handover(id)?;
         let definitions = self.tools.definitions();
         let prompt = self.prompt_in_force(id, &name, cwd, note.as_deref(), step == 1)?;
+        // Pinned here, so every retry of this request replays the window that was
+        // current when it started.
+        let source = self.store.request_source(id)?;
         // One number for "how long the model took": the whole stream, retries
         // inside it included, because that is what the wall clock paid.
         let requested = std::time::Instant::now();
         let mut rx = llm.stream(
             &prompt.instructions,
             prompt.handover.as_deref(),
-            &history,
+            &source,
             &definitions,
             effort,
             cancel.clone(),
@@ -722,8 +716,8 @@ impl Agent {
     ///
     /// # Invariant
     ///
-    /// The line goes into the transcript as a `notice`, which `history_since`
-    /// skips. An `Event::Log` alone is broadcast and forgotten: "why did that
+    /// The line goes into the transcript as a `notice`, which no request is built
+    /// from. An `Event::Log` alone is broadcast and forgotten: "why did that
     /// turn fail" was unanswerable a minute later, and the failure of the
     /// *first* attempt of a request exists nowhere else at all.
     fn error(&self, id: i64, session: &str, what: &str, e: anyhow::Error) {
@@ -854,13 +848,6 @@ fn notice_budget(configured: u64, context: Option<u64>, percent: Option<u8>) -> 
     };
     providers::tokens_for_percent(window, percent.unwrap_or(DEFAULT_CONTEXT_LIMIT_PERCENT))
 }
-
-/// Where the note takes over: up to and including the seq is folded out.
-///
-/// # Invariant
-///
-/// The boundary is followed by a `text` or `tool_call`, never by an orphaned
-/// `tool_result`, which providers reject.
 
 #[cfg(test)]
 mod tests {

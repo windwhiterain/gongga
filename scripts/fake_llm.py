@@ -4,7 +4,7 @@
 Used for smoke tests so a full run never has to reach a real provider:
 
     python scripts/fake_llm.py 8787
-    GONGGA_BASE_URL=http://127.0.0.1:8787/v1 gongga-server --db ... --bash ...
+    GONGGA_BASE_URL=http://127.0.0.1:8787/v1 gongga-server --home .dev/fake-home --bash ...
 
 Knobs, all environment variables:
 

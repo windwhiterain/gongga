@@ -161,12 +161,6 @@ pub fn content_part(image: &ImageRef) -> Value {
     }
 }
 
-/// The encoder, exposed so a caller's own test can state the expected bytes.
-#[cfg(test)]
-pub fn base64_for_test(bytes: &[u8]) -> String {
-    base64(bytes)
-}
-
 /// Minimal base64, so the harness carries no dependency for one encoding.
 fn base64(bytes: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

@@ -65,7 +65,7 @@ idle clock only when the attempt *said* something (`Outbox`), never when the
 socket merely carried bytes, so a long answer is cut by nothing but its own
 silence, and a keep-alive cannot hold a turn open.
 
-## LlmClient::build_body
+## LlmClient::build_head
 
 The Responses API's spelling for "how hard to think", which the roster records
 per model as `reasoning_field.responses`. It is the only surface this server
@@ -156,7 +156,7 @@ a provider changes.
 Undeclared means unsent. Offering a tool a provider does not recognise is a
 plain 400 on every request of every turn, so the default has to be silence.
 
-## LlmClient::build_body — one `tools` array
+## LlmClient::build_head — one `tools` array
 
 Local functions and provider tools share a single array: the API has one
 `tools` field, and splitting it would mean inventing a second key no provider
@@ -226,7 +226,7 @@ session rather than a bad item.
 
 If that shows up: `[llm] store = true` is already a knob here, and the shape to
 send becomes `previous_response_id` plus only the new items, which is a change to
-`build_body` and to what `store` is allowed to hold. See
+`build_head` and to what `store` is allowed to hold. See
 `docs/notes/server-store.md` for why the item is stored verbatim in the first
 place.
 

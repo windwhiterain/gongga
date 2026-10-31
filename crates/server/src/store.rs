@@ -1,7 +1,7 @@
 //! Everything durable lives in SQLite.
 //! See `docs/notes/server-store.md`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use protocol::SessionStatus;
@@ -83,7 +83,15 @@ CREATE TABLE IF NOT EXISTS messages (
     session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     seq        INTEGER NOT NULL,
     kind       TEXT NOT NULL,
-    content    TEXT NOT NULL,
+    -- The entry as the LLM API takes it: one standard Responses input item, sent verbatim.
+    -- NULL is the marker for a row no request is built from -- a notice, the prompt in force,
+    -- an item whose binary payload was gone before it could be replayed.
+    content    TEXT,
+    -- What the reader needs: the payload as it was written, never sent.
+    display    TEXT NOT NULL,
+    -- The tool this row calls or answers, so a request can pair them without
+    -- opening the item's bytes. NULL for every other kind of row.
+    call_id    TEXT,
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS messages_by_session ON messages(session_id, seq);
@@ -139,7 +147,11 @@ CREATE INDEX IF NOT EXISTS detached_by_session ON detached_jobs(session);
 "#;
 
 #[derive(Debug, Clone)]
-pub struct Store(Arc<Mutex<Connection>>);
+pub struct Store {
+    conn: Arc<Mutex<Connection>>,
+    /// Where the database is, so a request can open its own read-only view of it.
+    path: PathBuf,
+}
 
 /// Whether `table` already has `column`, and adds it when it does not.
 fn add_column_if_missing(
@@ -191,6 +203,48 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "UPDATE detached_jobs SET name = shell || '-' || job WHERE name = ''",
         [],
     )?;
+    add_column_if_missing(
+        conn,
+        "messages",
+        "call_id",
+        "ALTER TABLE messages ADD COLUMN call_id TEXT",
+    )?;
+    backfill_wire_items(conn)?;
+    Ok(())
+}
+
+/// Gives the rows a version-1 home wrote the item their requests will send.
+///
+/// # Invariant
+///
+/// The split itself is the version step, which renames the column before the database
+/// opens; this applies the writer's own rule to the rows that predate it, so what a row
+/// sends has one spelling. A row with no `content` was never split, which makes this a
+/// no-op on a home that has been through it.
+fn backfill_wire_items(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    if !has_column(conn, "messages", "content") || !has_column(conn, "messages", "display") {
+        return Ok(());
+    }
+    let rows: Vec<(i64, String)> = conn
+        .prepare("SELECT id, kind FROM messages WHERE content IS NULL ORDER BY id")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    for (id, kind) in rows {
+        let display: String = conn.query_row(
+            "SELECT display FROM messages WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )?;
+        let value = serde_json::from_str(&display).unwrap_or(serde_json::Value::Null);
+        conn.execute(
+            "UPDATE messages SET content = ?1, call_id = ?2 WHERE id = ?3",
+            params![
+                wire_item(&kind, &value).map(|item| item.to_string()),
+                value.get("call_id").and_then(|v| v.as_str()),
+                id
+            ],
+        )?;
+    }
     Ok(())
 }
 
@@ -207,12 +261,15 @@ impl Store {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(SCHEMA)?;
         migrate(&conn)?;
-        Ok(Self(Arc::new(Mutex::new(conn))))
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+            path: path.to_path_buf(),
+        })
     }
 
     fn lock(&self) -> MutexGuard<'_, Connection> {
         // A poisoned mutex is safe to recover: the WAL keeps the database consistent.
-        self.0.lock().unwrap_or_else(|e| e.into_inner())
+        self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     // -- sessions ----------------------------------------------------------
@@ -271,14 +328,14 @@ impl Store {
     pub fn orphaned_blobs(&self, name: &str) -> anyhow::Result<Vec<String>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT DISTINCT json_extract(content, '$.item.result_blob') FROM messages
+            "SELECT DISTINCT json_extract(display, '$.item.result_blob') FROM messages
               WHERE session_id = (SELECT id FROM sessions WHERE name = ?1)
                 AND kind = 'builtin_call'
-                AND json_extract(content, '$.item.result_blob') IS NOT NULL
-                AND json_extract(content, '$.item.result_blob') NOT IN (
-                    SELECT json_extract(content, '$.item.result_blob') FROM messages
+                AND json_extract(display, '$.item.result_blob') IS NOT NULL
+                AND json_extract(display, '$.item.result_blob') NOT IN (
+                    SELECT json_extract(display, '$.item.result_blob') FROM messages
                      WHERE session_id != (SELECT id FROM sessions WHERE name = ?1)
-                       AND json_extract(content, '$.item.result_blob') IS NOT NULL)",
+                       AND json_extract(display, '$.item.result_blob') IS NOT NULL)",
         )?;
         let ids = stmt
             .query_map(params![name], |r| r.get::<_, String>(0))?
@@ -390,191 +447,28 @@ impl Store {
         content: &serde_json::Value,
     ) -> anyhow::Result<i64> {
         let seq: i64 = conn.query_row(
-            "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?1",
-            params![session_id],
-            |r| r.get(0),
-        )?;
-        conn.execute(
-            "INSERT INTO messages (session_id, seq, kind, content, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO messages (session_id, seq, kind, content, display, call_id, created_at)
+             VALUES (
+                ?1,
+                (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?1),
+                ?2,
+                ?3,
+                ?4,
+                ?5,
+                ?6
+             )
+             RETURNING seq",
             params![
                 session_id,
-                seq,
                 kind,
+                wire_item(kind, content).map(|item| item.to_string()),
                 serde_json::to_string(content)?,
+                content.get("call_id").and_then(|v| v.as_str()),
                 now_millis()
             ],
+            |r| r.get(0),
         )?;
         Ok(seq)
-    }
-
-    /// The whole transcript, as a request would see it. Test-only: nothing else needs it.
-    #[cfg(test)]
-    pub fn history(&self, session_id: i64) -> anyhow::Result<Vec<HistoryItem>> {
-        self.history_between(session_id, 0, i64::MAX)
-    }
-
-    pub fn history_since(
-        &self,
-        session_id: i64,
-        after_seq: i64,
-    ) -> anyhow::Result<Vec<HistoryItem>> {
-        self.history_between(session_id, after_seq, i64::MAX)
-    }
-
-    /// The rows in `(after_seq, upto_seq]`, mapped exactly like [`Self::history_since`].
-    pub fn history_between(
-        &self,
-        session_id: i64,
-        after_seq: i64,
-        upto_seq: i64,
-    ) -> anyhow::Result<Vec<HistoryItem>> {
-        let rows = {
-            let conn = self.lock();
-            let mut stmt = conn.prepare(
-                "SELECT kind, content FROM messages
-                  WHERE session_id = ?1 AND seq > ?2 AND seq <= ?3
-                  ORDER BY seq",
-            )?;
-            stmt.query_map(params![session_id, after_seq, upto_seq], |r| {
-                let kind: String = r.get(0)?;
-                let content: String = r.get(1)?;
-                Ok((kind, content))
-            })?
-            .collect::<Result<Vec<_>, _>>()?
-        };
-
-        let mut out = Vec::with_capacity(rows.len());
-        // An unanswered call gets a placeholder; providers reject a bare `function_call`.
-        let answered: std::collections::HashSet<String> = rows
-            .iter()
-            .filter(|(kind, _)| kind == "tool_result")
-            .filter_map(|(_, content)| {
-                serde_json::from_str::<serde_json::Value>(content)
-                    .ok()
-                    .and_then(|v| {
-                        v.get("call_id")
-                            .and_then(|c| c.as_str())
-                            .map(str::to_string)
-                    })
-            })
-            .collect();
-        // The same rule backwards: a result whose call is not in this window is a
-        // lone output, and the provider rejects that.
-        let called: std::collections::HashSet<String> = rows
-            .iter()
-            .filter(|(kind, _)| kind == "tool_call")
-            .filter_map(|(_, content)| {
-                serde_json::from_str::<serde_json::Value>(content)
-                    .ok()
-                    .and_then(|v| {
-                        v.get("call_id")
-                            .and_then(|c| c.as_str())
-                            .map(str::to_string)
-                    })
-            })
-            .collect();
-        for (kind, content) in rows {
-            let value: serde_json::Value =
-                serde_json::from_str(&content).unwrap_or(serde_json::Value::Null);
-            match kind.as_str() {
-                "text" => out.push(HistoryItem::Text {
-                    role: value
-                        .get("role")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("user")
-                        .to_string(),
-                    text: value
-                        .get("text")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                }),
-                "reasoning" => out.push(HistoryItem::Reasoning {
-                    item_id: value
-                        .get("item_id")
-                        .and_then(|v| v.as_str())
-                        .map(str::to_string),
-                    encrypted: value
-                        .get("encrypted")
-                        .and_then(|v| v.as_str())
-                        .map(str::to_string),
-                    summary: value
-                        .get("summary")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                }),
-                "tool_call" => {
-                    let call_id = value
-                        .get("call_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string();
-                    out.push(HistoryItem::ToolCall {
-                        call_id: call_id.clone(),
-                        name: value
-                            .get("name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default()
-                            .to_string(),
-                        arguments: value
-                            .get("arguments")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default()
-                            .to_string(),
-                    });
-                    if !answered.contains(&call_id) {
-                        out.push(HistoryItem::ToolResult {
-                            call_id,
-                            output: interrupted_call().into(),
-                            images: Vec::new(),
-                        });
-                    }
-                }
-                "tool_result" => {
-                    let call_id = value
-                        .get("call_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string();
-                    if called.contains(&call_id) {
-                        out.push(HistoryItem::ToolResult {
-                            call_id,
-                            output: value
-                                .get("output")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or_default()
-                                .to_string(),
-                            images: images_of(&value),
-                        });
-                    } else {
-                        tracing::debug!(call_id, "a tool result lost its call: not sent");
-                    }
-                }
-                "builtin_call" => {
-                    let item = value
-                        .get("item")
-                        .cloned()
-                        .unwrap_or(serde_json::Value::Null);
-                    if !item.is_null() {
-                        out.push(HistoryItem::BuiltinCall {
-                            item,
-                            replayable: value
-                                .get("replayable")
-                                .and_then(serde_json::Value::as_bool)
-                                .unwrap_or(true),
-                        });
-                    }
-                }
-                // Operator-only: feeding a notice back would put our bookkeeping in the prompt.
-                "notice" => {}
-                // This *is* the prompt: sending it back as history would double it.
-                "system" => {}
-                other => tracing::warn!("unknown message kind {other}"),
-            }
-        }
-        Ok(out)
     }
 
     /// Where the transcript now ends, `0` for an empty one.
@@ -604,7 +498,7 @@ impl Store {
             |r| Ok((r.get(0)?, parse_status(&r.get::<_, String>(1)?))),
         )?;
         let mut stmt = conn.prepare(
-            "SELECT seq, kind, content FROM messages
+            "SELECT seq, kind, display FROM messages
              WHERE session_id = ?1 AND seq >= ?2 AND seq <= ?3
              ORDER BY seq ASC",
         )?;
@@ -626,19 +520,6 @@ impl Store {
             status,
             messages,
         })
-    }
-
-    /// `(seq, kind)` of every message, oldest first. Test-only: folding left the
-    /// server.
-    #[cfg(test)]
-    pub fn message_index(&self, session_id: i64) -> anyhow::Result<Vec<(i64, String)>> {
-        let conn = self.lock();
-        let mut stmt =
-            conn.prepare("SELECT seq, kind FROM messages WHERE session_id = ?1 ORDER BY seq")?;
-        let rows = stmt
-            .query_map(params![session_id], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows)
     }
 
     /// The handover note, if the agent has written one.
@@ -678,7 +559,7 @@ impl Store {
         let row = {
             let conn = self.lock();
             conn.query_row(
-                "SELECT content FROM messages \
+                "SELECT display FROM messages \
                   WHERE session_id = ?1 AND kind = 'system' ORDER BY seq DESC LIMIT 1",
                 params![session_id],
                 |r| r.get::<_, String>(0),
@@ -695,64 +576,14 @@ impl Store {
         self.append_message(session_id, "system", &payload)
     }
 
-    /// Closes every call that never got a result, and returns how many.
-    ///
-    /// # Invariant
-    ///
-    /// A read path must not invent an item the database does not hold: providers
-    /// reject the call without its result, so the closing row has to exist, and
-    /// writing it here is what makes the next request's array the stored rows and
-    /// not a rendering of a gap.
-    pub fn close_dangling_calls(&self, session_id: i64) -> anyhow::Result<usize> {
-        // Raw rows: history closes an unanswered call itself, and that
-        // placeholder must not hide the gap from this write.
-        let rows = {
-            let conn = self.lock();
-            let mut stmt = conn
-                .prepare("SELECT kind, content FROM messages WHERE session_id = ?1 ORDER BY seq")?;
-            stmt.query_map(params![session_id], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })?
-            .collect::<Result<Vec<_>, _>>()?
-        };
-        let call_id = |content: &str| {
-            serde_json::from_str::<serde_json::Value>(content)
-                .ok()
-                .and_then(|v| v.get("call_id")?.as_str().map(str::to_string))
-        };
-        let mut open: Vec<String> = Vec::new();
-        let mut answered: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for (kind, content) in &rows {
-            let Some(id) = call_id(content) else { continue };
-            match kind.as_str() {
-                "tool_call" => open.push(id),
-                "tool_result" => {
-                    answered.insert(id);
-                }
-                _ => {}
-            }
-        }
-        let text = interrupted_call();
-        let mut closed = 0;
-        for call_id in open.iter().filter(|id| !answered.contains(*id)) {
-            self.append_message(
-                session_id,
-                "tool_result",
-                &json!({"call_id": call_id, "output": text, "images": []}),
-            )?;
-            closed += 1;
-        }
-        Ok(closed)
-    }
-
-    /// What a request is built from: the handover note plus every row still here.
-    ///
-    /// A handover leaves the note and nothing else -- the rows that explained it
-    /// are in the mentor -- so there is no boundary to cut at.
-    pub fn context(&self, session_id: i64) -> anyhow::Result<(Option<String>, Vec<HistoryItem>)> {
-        let note = self.handover(session_id)?;
-        let items = self.history_since(session_id, 0)?;
-        Ok((note, items))
+    /// The transcript a request reads, closed at the row that exists right now.
+    pub fn request_source(&self, session_id: i64) -> anyhow::Result<crate::llm::RequestSource> {
+        Ok(crate::llm::RequestSource {
+            db_path: self.path.clone(),
+            session_id,
+            upto_seq: self.last_seq(session_id)?,
+            placeholder: interrupted_call(),
+        })
     }
 
     // -- tool calls --------------------------------------------------------
@@ -1150,12 +981,78 @@ impl MessageRow {
 }
 
 /// The pictures a stored `tool_result` row recorded, by path.
-fn images_of(value: &serde_json::Value) -> Vec<ImageRef> {
+pub(crate) fn images_of(value: &serde_json::Value) -> Vec<ImageRef> {
     value
         .get("images")
         .and_then(|v| v.as_array())
         .map(|list| list.iter().filter_map(ImageRef::from_json).collect())
         .unwrap_or_default()
+}
+
+/// The item a row is sent as: one standard Responses input item, decided once, here.
+///
+/// # Invariant
+///
+/// A request sends what is stored rather than re-deriving it, so the shape a provider
+/// takes is computed on the way in. `None` is the row's own answer to "is any request
+/// built from you": a notice, the prompt in force, a reasoning entry with no encrypted
+/// blob, a provider item whose payload was stripped.
+fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value> {
+    let text_of = |key: &str| {
+        value
+            .get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    match kind {
+        "text" => {
+            let role = text_of("role");
+            let text = text_of("text");
+            Some(if role == "assistant" {
+                json!({"role": "assistant", "content": [{"type": "output_text", "text": text}]})
+            } else {
+                json!({"role": role, "content": text})
+            })
+        }
+        "reasoning" => {
+            let encrypted = value.get("encrypted").and_then(|v| v.as_str())?;
+            let mut item = json!({
+                "type": "reasoning",
+                "summary": [],
+                "encrypted_content": encrypted,
+            });
+            if let Some(id) = value.get("item_id").and_then(|v| v.as_str()) {
+                item["id"] = json!(id);
+            }
+            Some(item)
+        }
+        "tool_call" => Some(json!({
+            "type": "function_call",
+            "call_id": text_of("call_id"),
+            "name": text_of("name"),
+            "arguments": text_of("arguments"),
+        })),
+        // The pictures ride in `display`: a stored item names a file, and the bytes
+        // are read when the request is written.
+        "tool_result" => Some(json!({
+            "type": "function_call_output",
+            "call_id": text_of("call_id"),
+            "output": text_of("output"),
+        })),
+        "builtin_call" => {
+            let item = value.get("item")?;
+            if item.is_null() {
+                return None;
+            }
+            let replayable = value
+                .get("replayable")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true);
+            replayable.then(|| item.clone())
+        }
+        _ => None,
+    }
 }
 
 /// The operator-facing name of a provider tool: `web_search_call` -> `web_search`.
@@ -1221,38 +1118,6 @@ pub(crate) fn activity_brief(item: &serde_json::Value) -> String {
     format!("{}{}", activity_name(kind), activity_detail(item))
 }
 
-/// A transcript entry, already decoded into the shape the LLM adapter wants.
-#[derive(Debug, Clone)]
-pub enum HistoryItem {
-    Text {
-        role: String,
-        text: String,
-    },
-    Reasoning {
-        item_id: Option<String>,
-        encrypted: Option<String>,
-        summary: String,
-    },
-    ToolCall {
-        call_id: String,
-        name: String,
-        arguments: String,
-    },
-    ToolResult {
-        call_id: String,
-        output: String,
-        /// Pictures the tool handed back, by path: read at request time.
-        images: Vec<ImageRef>,
-    },
-    /// A tool the provider ran itself (`web_search_call`, ...), kept verbatim
-    /// so the next request can replay it.
-    BuiltinCall {
-        item: serde_json::Value,
-        /// False when a binary payload was stripped and the item must not be sent back.
-        replayable: bool,
-    },
-}
-
 // One shape for every reader: the scan, the store and the request all agree.
 pub use crate::image::ImageRef;
 
@@ -1298,18 +1163,7 @@ mod tests {
         (dir, store)
     }
 
-    /// Folds like the `heir` skill: a second connection, the same statement.
-    /// The store owns no writer for a handover.
-    fn fold_from_outside(dir: &std::path::Path, session_id: i64, note: &str) {
-        let conn = rusqlite::Connection::open(dir.join("g.db")).unwrap();
-        conn.execute(
-            "UPDATE sessions SET handover = ?1 WHERE id = ?2",
-            params![note, session_id],
-        )
-        .unwrap();
-    }
-
-    /// `--db <path>` brings its directory, and `:memory:` must not become a directory.
+    /// `<path>` brings its directory, and `:memory:` must not become a directory.
     #[test]
     fn the_database_path_brings_its_directory() {
         let dir = tempfile::tempdir().unwrap();
@@ -1398,90 +1252,6 @@ mod tests {
         );
     }
 
-    /// A picture is a path in the row, not bytes: the request reads the file.
-    #[test]
-    fn a_tool_result_keeps_its_pictures_by_path() {
-        let (_d, store) = temp_store();
-        let id = store.create_session("main", "m", "C:/x").unwrap();
-        store
-            .append_message(
-                id,
-                "tool_call",
-                &json!({"call_id": "c1", "name": "read_image", "arguments": "{}"}),
-            )
-            .unwrap();
-        store
-            .append_message(
-                id,
-                "tool_result",
-                &json!({
-                    "call_id": "c1",
-                    "output": "looked at it",
-                    "images": [{"path": "C:/w/shot.png", "media_type": "image/png"}]
-                }),
-            )
-            .unwrap();
-        let history = store.history(id).unwrap();
-        match &history[1] {
-            HistoryItem::ToolResult { output, images, .. } => {
-                assert_eq!(output, "looked at it");
-                assert_eq!(images, &vec![ImageRef::new("C:/w/shot.png", "image/png")]);
-            }
-            other => panic!("unexpected {other:?}"),
-        }
-    }
-
-    /// A row written before pictures existed still reads back as a plain result.
-    #[test]
-    fn a_tool_result_without_pictures_reads_back_empty() {
-        let (_d, store) = temp_store();
-        let id = store.create_session("main", "m", "C:/x").unwrap();
-        store
-            .append_message(
-                id,
-                "tool_call",
-                &json!({"call_id": "c1", "name": "bash", "arguments": "{}"}),
-            )
-            .unwrap();
-        store
-            .append_message(id, "tool_result", &json!({"call_id": "c1", "output": "ok"}))
-            .unwrap();
-        match &store.history(id).unwrap()[1] {
-            HistoryItem::ToolResult { images, .. } => assert!(images.is_empty()),
-            other => panic!("unexpected {other:?}"),
-        }
-    }
-
-    /// The provider's own tool item is kept verbatim, or the next request is rejected.
-    #[test]
-    fn a_provider_tool_item_survives_a_round_trip() {
-        let (_d, store) = temp_store();
-        let id = store.create_session("main", "m", "C:/x").unwrap();
-        let item = json!({
-            "id": "ws_1",
-            "type": "web_search_call",
-            "status": "completed",
-            "action": {"type": "search", "query": "q"}
-        });
-        store
-            .append_message(
-                id,
-                "builtin_call",
-                &json!({"item": item, "replayable": true}),
-            )
-            .unwrap();
-        match &store.history(id).unwrap()[0] {
-            HistoryItem::BuiltinCall {
-                item: kept,
-                replayable,
-            } => {
-                assert_eq!(kept, &item);
-                assert!(replayable);
-            }
-            other => panic!("unexpected {other:?}"),
-        }
-    }
-
     #[test]
     fn sessions_round_trip() {
         let (_d, store) = temp_store();
@@ -1499,97 +1269,6 @@ mod tests {
         store.create_session("a", "m", "C:/x").unwrap();
         let err = store.create_session("a", "m", "C:/x").unwrap_err();
         assert!(err.to_string().contains("already exists"), "{err}");
-    }
-
-    #[test]
-    fn history_preserves_order_and_types() {
-        let (_d, store) = temp_store();
-        let id = store.create_session("s", "m", "C:/x").unwrap();
-        store
-            .append_message(id, "text", &serde_json::json!({"role":"user","text":"hi"}))
-            .unwrap();
-        store
-            .append_message(
-                id,
-                "tool_call",
-                &serde_json::json!({"call_id":"c1","name":"bash","arguments":"{}"}),
-            )
-            .unwrap();
-        store
-            .append_message(
-                id,
-                "tool_result",
-                &serde_json::json!({"call_id":"c1","output":"ok"}),
-            )
-            .unwrap();
-        let h = store.history(id).unwrap();
-        assert_eq!(h.len(), 3);
-        assert!(matches!(h[0], HistoryItem::Text { .. }));
-        assert!(matches!(h[1], HistoryItem::ToolCall { .. }));
-        assert!(matches!(h[2], HistoryItem::ToolResult { .. }));
-    }
-
-    /// A result whose call is gone is not sent: a lone output is rejected.
-    #[test]
-    fn a_result_without_its_call_is_not_sent() {
-        let (_d, store) = temp_store();
-        let id = store.create_session("s", "m", "C:/x").unwrap();
-        store
-            .append_message(id, "text", &json!({"role":"user","text":"ask"}))
-            .unwrap();
-        store
-            .append_message(
-                id,
-                "tool_result",
-                &json!({"call_id":"call_gone","output":"rows moved"}),
-            )
-            .unwrap();
-        let (_, items) = store.context(id).unwrap();
-        assert_eq!(items.len(), 1, "the orphan is dropped: {items:?}");
-
-        store
-            .append_message(
-                id,
-                "tool_call",
-                &json!({"call_id":"call_here","name":"bash","arguments":"{}"}),
-            )
-            .unwrap();
-        store
-            .append_message(
-                id,
-                "tool_result",
-                &json!({"call_id":"call_here","output":"ok"}),
-            )
-            .unwrap();
-        let (_, items) = store.context(id).unwrap();
-        assert_eq!(items.len(), 3, "text, call, result: {items:?}");
-    }
-
-    /// A handover note shrinks the request but never touches the transcript rows.
-    #[test]
-    fn a_folded_prefix_shrinks_the_request_without_touching_the_transcript() {
-        let (d, store) = temp_store();
-        let id = store.create_session("s", "m", "C:/x").unwrap();
-        for i in 0..5 {
-            store
-                .append_message(
-                    id,
-                    "text",
-                    &serde_json::json!({"role":"user","text":format!("m{i}")}),
-                )
-                .unwrap();
-        }
-        assert_eq!(store.handover(id).unwrap(), None);
-
-        fold_from_outside(d.path(), id, "the first three");
-
-        // A handover leaves the note behind and nothing else: the rows it
-        // covered are in the mentor, so every row still here is sent.
-        let (note, items) = store.context(id).unwrap();
-        assert_eq!(note.as_deref(), Some("the first three"));
-        assert_eq!(items.len(), 5, "everything the session still holds");
-        assert_eq!(store.history(id).unwrap().len(), 5);
-        assert_eq!(store.message_index(id).unwrap().len(), 5);
     }
 
     /// `set_session` tuning is per-session state, so it must survive a restart.
@@ -1640,19 +1319,6 @@ mod tests {
                 &serde_json::json!({"role":"assistant","text":"b"}),
             )
             .unwrap();
-        let all = store.history_between(id, 0, i64::MAX).unwrap();
-        // Four rows, four items: the notice adds none, the unanswered call adds two.
-        assert_eq!(all.len(), 4);
-        for (seq, _) in store.message_index(id).unwrap() {
-            let old = store.history_between(id, 0, seq).unwrap();
-            let new = store.history_between(id, seq, i64::MAX).unwrap();
-            assert_eq!(
-                old.len() + new.len(),
-                all.len(),
-                "splitting at seq {seq} lost or duplicated an item"
-            );
-        }
-
         // Clearing goes back to the server's model, which only the caller knows.
         store
             .set_session_tuning(id, None, None, None, "MiniMax-M3.1-Flash")
@@ -1751,7 +1417,13 @@ mod tests {
             .append_message(id, "text", &serde_json::json!({"role":"user","text":"hi"}))
             .unwrap();
         store.delete_session("s").unwrap();
-        assert!(store.history(id).unwrap().is_empty());
+        assert!(
+            store
+                .messages_between(id, 1, i64::MAX)
+                .unwrap()
+                .messages
+                .is_empty()
+        );
     }
 
     /// Events have no foreign key, so deleting a session must take them explicitly.
@@ -1772,53 +1444,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 0);
-    }
-
-    /// An interrupted call is closed for the model, or every later turn fails too.
-    #[test]
-    fn a_call_interrupted_before_its_result_is_closed_for_the_model() {
-        let (_d, store) = temp_store();
-        let id = store.create_session("main", "m", "C:/x").unwrap();
-        store
-            .append_message(
-                id,
-                "tool_call",
-                &serde_json::json!({"call_id": "c1", "name": "bash", "arguments": "{}"}),
-            )
-            .unwrap();
-        // A second call that did come back must not be closed twice.
-        store
-            .append_message(
-                id,
-                "tool_call",
-                &serde_json::json!({"call_id": "c2", "name": "bash", "arguments": "{}"}),
-            )
-            .unwrap();
-        store
-            .append_message(
-                id,
-                "tool_result",
-                &serde_json::json!({"call_id": "c2", "output": "ok"}),
-            )
-            .unwrap();
-
-        let history = store.history(id).unwrap();
-        let pairs: Vec<(String, String)> = history
-            .iter()
-            .map(|item| match item {
-                HistoryItem::ToolCall { call_id, .. } => (call_id.clone(), "call".into()),
-                HistoryItem::ToolResult {
-                    call_id, output, ..
-                } => (call_id.clone(), format!("result: {output}")),
-                _ => ("?".into(), "other".into()),
-            })
-            .collect();
-        assert_eq!(pairs.len(), 4, "{pairs:?}");
-        // c1 gets a closing row too, in order; its words are the template's.
-        assert_eq!(pairs[0], ("c1".to_string(), "call".to_string()));
-        assert_eq!(pairs[1].0, "c1", "{pairs:?}");
-        assert_eq!(pairs[2], ("c2".to_string(), "call".to_string()));
-        assert_eq!(pairs[3].1, "result: ok");
     }
 
     /// What ran at the provider has no output to show, so the row describes it.
@@ -1955,77 +1580,6 @@ mod tests {
         );
     }
 
-    /// The prompt row is what a request is built from, not a row inside it.
-    #[test]
-    fn a_prompt_row_is_sent_and_never_repeated_as_history() {
-        let (d, store) = temp_store();
-        let id = store.create_session("main", "m", "C:/x").unwrap();
-        fold_from_outside(d.path(), id, "the note");
-        let prompt = Prompt {
-            instructions: "You are gongga".into(),
-            handover: Some("Earlier in this session: the note".into()),
-            cwd: "C:/x".into(),
-            stamp: stamp(Some("the note")),
-        };
-        store.append_prompt(id, &prompt).unwrap();
-        store
-            .append_message(id, "text", &json!({"role": "user", "text": "go"}))
-            .unwrap();
-
-        let (_, history) = store.context(id).unwrap();
-        assert_eq!(
-            history.len(),
-            1,
-            "the prompt row is not history: {history:?}"
-        );
-
-        let read = store
-            .prompt(id)
-            .unwrap()
-            .expect("the newest row reads back");
-        assert_eq!(read.instructions, "You are gongga");
-        assert_eq!(read.cwd, "C:/x");
-        assert_eq!(read.stamp, stamp(Some("the note")));
-
-        // A reader of the transcript gets the shape of it, not 10k characters.
-        let t = store.messages_between(id, 1, i64::MAX).unwrap();
-        assert!(
-            t.messages[0].text.contains("[prompt in force]"),
-            "{:?}",
-            t.messages[0].text
-        );
-        assert_eq!(t.messages[1].kind, "text");
-    }
-
-    /// A call left open by the last turn gets its result written, once.
-    #[test]
-    fn a_dangling_call_is_closed_with_a_row_not_a_fiction() {
-        let (_d, store) = temp_store();
-        let id = store.create_session("main", "m", "C:/x").unwrap();
-        store
-            .append_message(
-                id,
-                "tool_call",
-                &json!({"call_id": "c1", "name": "bash", "arguments": "{}"}),
-            )
-            .unwrap();
-
-        assert_eq!(store.close_dangling_calls(id).unwrap(), 1);
-        assert_eq!(
-            store.close_dangling_calls(id).unwrap(),
-            0,
-            "closed once is closed"
-        );
-        let rows = store.messages_between(id, 1, i64::MAX).unwrap();
-        assert_eq!(
-            rows.messages.len(),
-            2,
-            "the closure is a row: {:?}",
-            rows.messages
-        );
-        assert_eq!(rows.messages[1].kind, "tool_result");
-    }
-
     /// A payload another session still names is not this session's to take with it.
     #[test]
     fn only_an_unreferenced_blob_is_orphaned() {
@@ -2053,39 +1607,9 @@ mod tests {
         );
 
         store.delete_session("a").unwrap();
-        let history = store.history_since(b, 0).unwrap();
-        assert_eq!(history.len(), 1, "b's row is intact: {history:?}");
+        let rows = store.messages_between(b, 1, i64::MAX).unwrap().messages;
+        assert_eq!(rows.len(), 1, "b's row is intact: {rows:?}");
         assert_eq!(store.orphaned_blobs("b").unwrap(), vec!["ig_2".to_string()]);
-    }
-
-    /// A notice is readable but never sent back to the model, or it answers the harness.
-    #[test]
-    fn a_notice_is_readable_but_never_sent_back_to_the_model() {
-        let (_d, store) = temp_store();
-        let id = store.create_session("main", "m", "C:/x").unwrap();
-        store
-            .append_message(
-                id,
-                "text",
-                &serde_json::json!({"role": "user", "text": "do the thing"}),
-            )
-            .unwrap();
-        store
-            .append_message(
-                id,
-                "notice",
-                &serde_json::json!({"text": "stopped after 64 steps"}),
-            )
-            .unwrap();
-
-        let (_, history) = store.context(id).unwrap();
-        assert_eq!(history.len(), 1, "the notice is not history: {history:?}");
-
-        let t = store.messages_between(id, 1, i64::MAX).unwrap();
-        assert_eq!(t.last_seq, 2);
-        assert_eq!(t.messages[1].kind, "notice");
-        assert_eq!(t.messages[1].text, "stopped after 64 steps");
-        assert_eq!(t.messages[1].role, None);
     }
 
     /// The window carries the status of *that* session.

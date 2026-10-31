@@ -1,16 +1,18 @@
 # server/lib.rs
 
-## Args::db
+## Args
 
 The whole of what a server can be told. `Default` is the empty command line, and
 that is what `gongga-cli serve` passes on: it names a home and a port, and every
 other value comes from that home's config.
 
-SQLite database path. Overrides `[server] db`.
-
-Missing directories are created, and `:memory:` gives a throwaway database --
-which is what makes a clean end-to-end run possible without touching the
-operator's real one.
+The database has no path of its own: it is `<home>/gongga.db`, and no flag or
+config key names it elsewhere. A throwaway run is a throwaway *home*, which moves
+the database, the log, the blob directory, the job records and the instance lock
+together. They used to be movable apart, and that is how a scratch server ended up
+driving the operator's real database: the lock is per-home and the database was
+per-config, so the two could disagree, and nothing noticed a second writer on one
+file.
 
 ## Args::home
 
@@ -63,9 +65,7 @@ single-threaded and no other code can observe these writes.
 The config is loaded twice: once to learn the home, which is what the lock and the
 install both need, and once after the install, which is what everything else runs
 on. A value from the first read is the loader's guess at a file that had not been
-placed yet. `config_from` exists so the flags win in both reads -- `--db` on the
-first keeps the lock and the home agreeing, and on the second keeps being this
-run's database rather than moving every later run to it.
+placed yet.
 
 ## run (instance lock)
 
