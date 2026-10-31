@@ -109,9 +109,9 @@ skill 都要改一次这个文件，而读的人手上已经有那张表。
   base64 落盘执行、输出按 base64 分帧——所以引号、GBK、退出码这三个坑不存在。会话复用一条
   ssh（~390ms vs 一次性 ~800ms）；带 `--runner`（如 Windows 上跑 Git Bash）的目标没有会话，
   自动走一次性。传文件用 `put`/`get`，默认读回大小核对——sftp 会报告成功而文件没到。
-- `heir`：收到 `Context notice` 就立即开始培养继承人，继承人继续当前工作；不要求先完成任务、commit、
-  整理 git 或让测试全绿，未提交和未验证的真实状态写进继承人的第一课。用
-  `$GONGGA_HOME/skills/heir/transcript`（脚本，不是服务端工具）——服务端只测量和提醒。
+- `heir`：把上下文交接出去。收到 `Context notice` 就是**要求尽快交棒**，不是询问——但也不是立刻
+  砍断：先提交、把只存在脑子里的状态写下来、把 git 状态整理好，再交棒；不要再开新活。用
+  `$GONGGA_HOME/skills/heir/transcript`（脚本，不是服务端工具）——服务端只测量和要求。
   `heir` 先把整份 transcript 拷进一个 mentor 会话、逐行校验副本，然后**删空自己**——只留在
   飞的那个 tool call（服务端一收到 call 就执行，所以它总在最后一行），指引就写在它的结果里，
   不再多插一行；mentor 那边会补一条 tool_result 告它自己成了 mentor，只答被问的。

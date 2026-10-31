@@ -91,6 +91,14 @@ and handed to the loop as a submitted line. The rule stays in the command layer,
 the window keeps one path for everything the operator asks for. The leading `/` is
 what makes it a command: a line without one is prose, and prose goes to the agent.
 
+SPEC also gives every name a *double* click, which moves the session to its next
+render mode. A terminal cannot be trusted to report one -- ConPTY delivers a press and
+a release, and nothing says whether they were the second of a pair -- so the state a
+real double click would leave is what stands in for it: **clicking the session that is
+already sticky** asks for the next mode (`/set_render_session --mode <next>`). One
+click sets, the next one walks, and the cycle is SPEC's own: `full` -> `line` ->
+`none` -> `full`.
+
 ## Screen::sticky_session
 
 Filled from `Sink::sticky_session` on every refresh, so the list's mark, the keys and

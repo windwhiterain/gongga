@@ -38,17 +38,16 @@ everything in database (sqlite) under a home directory, structured for agentic r
 ## UI
 - main (vertical)
   - horizontal
-    - sessions[] (vertical scroll)
-      - click to set sticky session.
-    - [{session{render mode = full}, events (scroll)}] (horizontal split):
-      - click to set sticky session.
-  - [{session{render mode = line}, event}] (vertical lines scroll)
-    - click to set sticky session.
+    - [session (render mode = none){name (double click change mode to full)}] (vertical scroll)
+    - [{session (render mode = full){name (double click change mode to line), context (tok), tps (latest), ttft (latest)}, events (vertical scroll)}] (horizontal split):
+  - [{session (render mode = line){name (double click change mode to none)}, event} (line)] (vertical)
   - [{cmd, cmd_result}] (line)
   - stickys[{name, value}]: auto fill in cmd argument if required but not provided.
   - cmd_input: perfix select, auto complete (match candidates in any char position).
     - `/<cmd>`
     - `<pure text>` expand to `/send_message --message "<pure text>"`: need escape.
+
+- session{name}: click to set session sticky.
 
 - event
   - | user_message
@@ -85,7 +84,7 @@ everything in database (sqlite) under a home directory, structured for agentic r
   - `set_render_session --session <name> [--mode <none|line|full>]`
   - `connect_server [--ip <ip>](default: localhost) --port <port>`
   - `serve --port <port> [--home <path>](default: "~/.gongga")`
-  - `skill --skill <name>`: send skill metadata to agents.
+  - `skill --session <name> --skill <name>`: send skill metadata to agents.
 
 ## Skill
 use python cripts read/write gongga home, calling server cmd.

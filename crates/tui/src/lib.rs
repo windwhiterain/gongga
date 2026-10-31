@@ -736,10 +736,16 @@ impl Tui {
             self.dirty = true;
             return;
         }
-        // SPEC: a click sets the sticky session, as the command that does it, so
-        // the rule stays in the command layer.
+        // Again on the sticky session: walk its mode.
         self.dirty = true;
-        self.clicked = Some(click_line(&hit.name));
+        self.clicked = Some(
+            if self.screen.sticky_session.as_deref() == Some(hit.name.as_str()) {
+                let drawn = self.screen.panes.get(&hit.name).map(|pane| pane.kind);
+                cycle_mode_line(&hit.name, drawn)
+            } else {
+                click_line(&hit.name)
+            },
+        );
     }
 
     /// The window a line of this front-end's own belongs to.
@@ -928,6 +934,24 @@ impl Drop for Tui {
 /// exactly the bug this spelling exists to prevent. See `docs/notes/tui-lib.md`.
 fn click_line(session: &str) -> String {
     format!("/set_sticky --name session --value {session}")
+}
+
+/// What a second click on the sticky session asks for: its next render mode.
+///
+/// # Invariant
+///
+/// The cycle is SPEC's own -- a session nobody set is `full`, `full` goes to
+/// `line`, `line` to `none`, `none` back to `full` -- so clicking a name walks it
+/// round rather than jumping. What the window knows is what it draws: a session
+/// with a pane is `full`, one with a group is `line`, and one in neither is `none`.
+/// See `docs/notes/tui-lib.md`.
+fn cycle_mode_line(session: &str, drawn_as: Option<crate::panes::Kind>) -> String {
+    let next = match drawn_as {
+        Some(crate::panes::Kind::Full) => "line",
+        Some(crate::panes::Kind::Line) => "none",
+        _ => "full",
+    };
+    format!("/set_render_session --session {session} --mode {next}")
 }
 
 /// Paints `screen` and leaves the console caret on the prompt.
@@ -1900,6 +1924,33 @@ mod tests {
         h.screen.note(LineKind::Error, "copy failed: no tool");
         assert_eq!(h.screen.status, "copy failed: no tool");
         assert_eq!(h.screen.status_kind, LineKind::Error);
+    }
+
+    /// A second click on the sticky session asks for its next render mode.
+    #[test]
+    fn a_second_click_on_the_sticky_session_asks_for_the_next_mode() {
+        use crate::panes::Kind;
+        // One click: set it sticky.
+        assert_eq!(
+            click_line("peer"),
+            "/set_sticky --name session --value peer"
+        );
+        // Again: walk the cycle SPEC names, from what the window draws.
+        assert_eq!(
+            cycle_mode_line("peer", Some(Kind::Full)),
+            "/set_render_session --session peer --mode line",
+            "a pane goes to a line"
+        );
+        assert_eq!(
+            cycle_mode_line("peer", Some(Kind::Line)),
+            "/set_render_session --session peer --mode none",
+            "a line goes to nothing"
+        );
+        assert_eq!(
+            cycle_mode_line("peer", None),
+            "/set_render_session --session peer --mode full",
+            "and nothing comes back to a pane"
+        );
     }
 
     /// A click asks for the sticky session, as the command line that sets it.
