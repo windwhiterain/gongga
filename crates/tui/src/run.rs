@@ -438,7 +438,7 @@ mod tests {
     /// A click asks for a command: the `/` is what keeps it from being prose.
     #[test]
     fn a_clicked_session_is_a_command_not_a_message() {
-        let line = crate::click_line("peer");
+        let line = crate::sticky_line("peer");
         assert_eq!(line, "/set_sticky --name session --value peer");
         assert!(
             matches!(classified(&line), Some(Ok(tokens)) if tokens[0] == "set_sticky"),

@@ -49,8 +49,8 @@ pub fn main(args: cli::Args) -> anyhow::Result<()> {
 // The vocabulary is the command layer's, re-exported so this crate can name it.
 pub use crate::log::View;
 pub use cli::{
-    Candidate, Completer, Completion, Layout, LineKind, Listed, QuotaRow, RenderMode,
-    SharedCompleter, token_bounds,
+    Candidate, Completer, Completion, Layout, LineKind, Listed, QuotaRow, SharedCompleter,
+    token_bounds,
 };
 
 /// How long a keystroke waits to see whether the next one is part of a paste.
@@ -98,10 +98,10 @@ pub enum UiEvent {
 pub enum Part {
     /// The session list, which scrolls its own rows.
     List,
-    /// One session's pane of events.
+    /// One session's header: its name and the figures beside it.
+    Header,
+    /// One session's events.
     Pane,
-    /// One session's line group.
-    Line,
     /// The way back to the newest row, drawn over a pane's last row.
     Bottom,
 }
@@ -239,15 +239,15 @@ impl Screen {
                 part: Part::Bottom,
             });
         }
-        if let Some(name) = render::pane_at(&slots, column, row) {
+        if let Some(name) = render::header_at(&slots, column, row) {
             return Some(Hit {
                 name: name.to_string(),
-                part: Part::Pane,
+                part: Part::Header,
             });
         }
-        render::line_at(chunks[2], &self.panes, column, row).map(|name| Hit {
-            name,
-            part: Part::Line,
+        render::pane_at(&slots, column, row).map(|name| Hit {
+            name: name.to_string(),
+            part: Part::Pane,
         })
     }
 
@@ -812,15 +812,20 @@ impl Tui {
             self.screen.panes.pin(&hit.name);
             return;
         }
-        // Again on the sticky session: walk its mode.
-        self.clicked = Some(
-            if self.screen.sticky_session.as_deref() == Some(hit.name.as_str()) {
-                let drawn = self.screen.panes.get(&hit.name).map(|pane| pane.kind);
-                cycle_mode_line(&hit.name, drawn)
-            } else {
-                click_line(&hit.name)
-            },
-        );
+        // SPEC's two clicks: a name shows or hides its window, a header points
+        // the reading at it.
+        match hit.part {
+            Part::Header => self.clicked = Some(sticky_line(&hit.name)),
+            Part::List => {
+                let shown = self
+                    .screen
+                    .panes
+                    .get(&hit.name)
+                    .is_some_and(|pane| pane.kind == crate::panes::Kind::Shown);
+                self.clicked = Some(toggle_line(&hit.name, shown));
+            }
+            _ => {}
+        }
     }
 
     /// The window a line of this front-end's own belongs to.
@@ -1029,26 +1034,20 @@ impl Drop for Tui {
 /// It starts with `/`: a line without one is prose, and prose goes to the agent.
 /// A click that sent "set_sticky --name session --value peer" as a message was
 /// exactly the bug this spelling exists to prevent. See `docs/notes/tui-lib.md`.
-fn click_line(session: &str) -> String {
+fn sticky_line(session: &str) -> String {
     format!("/set_sticky --name session --value {session}")
 }
 
-/// What a second click on the sticky session asks for: its next render mode.
+/// What a click on a name asks for: its window, the other way round.
 ///
 /// # Invariant
 ///
-/// The cycle is SPEC's own -- a session nobody set is `full`, `full` goes to
-/// `line`, `line` to `none`, `none` back to `full` -- so clicking a name walks it
-/// round rather than jumping. What the window knows is what it draws: a session
-/// with a pane is `full`, one with a group is `line`, and one in neither is `none`.
-/// See `docs/notes/tui-lib.md`.
-fn cycle_mode_line(session: &str, drawn_as: Option<crate::panes::Kind>) -> String {
-    let next = match drawn_as {
-        Some(crate::panes::Kind::Full) => "line",
-        Some(crate::panes::Kind::Line) => "none",
-        _ => "full",
-    };
-    format!("/set_render_session --session {session} --mode {next}")
+/// "The other way round" is what a click means, and what the window knows is what
+/// it draws: a session with a band beside the list is shown, one without it is
+/// hidden. SPEC hangs the sticky session off the same click, and the client
+/// command does that. See `docs/notes/tui-lib.md`.
+fn toggle_line(session: &str, shown: bool) -> String {
+    format!("/set_render_session --session {session} --show {}", !shown)
 }
 
 /// The command line Shift+Delete asks for: the sticky session's own deletion.
@@ -1451,9 +1450,7 @@ mod tests {
                     status: "idle".to_string(),
                     title: String::new(),
                 }],
-                none: Vec::new(),
-                full: vec!["main".to_string()],
-                line: Vec::new(),
+                shown: vec!["main".to_string()],
                 command: "cmd".to_string(),
                 quota: None,
             });
@@ -1674,7 +1671,7 @@ mod tests {
     /// # Invariant
     ///
     /// The window is emptied because the session is gone, not because a layout
-    /// stopped drawing it: a render mode that hides a session must keep its lines.
+    /// stopped drawing it: hiding a session must keep every line it carried.
     #[test]
     fn forgetting_a_window_empties_its_pane() {
         let mut panes = Panes::new();
@@ -1684,9 +1681,7 @@ mod tests {
                 status: "idle".to_string(),
                 title: String::new(),
             }],
-            none: Vec::new(),
-            full: vec!["main".to_string()],
-            line: Vec::new(),
+            shown: vec!["main".to_string()],
             command: "cmd".to_string(),
             quota: None,
         });
@@ -2158,33 +2153,6 @@ mod tests {
         assert_eq!(h.screen.status_kind, LineKind::Error);
     }
 
-    /// A second click on the sticky session asks for its next render mode.
-    #[test]
-    fn a_second_click_on_the_sticky_session_asks_for_the_next_mode() {
-        use crate::panes::Kind;
-        // One click: set it sticky.
-        assert_eq!(
-            click_line("peer"),
-            "/set_sticky --name session --value peer"
-        );
-        // Again: walk the cycle SPEC names, from what the window draws.
-        assert_eq!(
-            cycle_mode_line("peer", Some(Kind::Full)),
-            "/set_render_session --session peer --mode line",
-            "a pane goes to a line"
-        );
-        assert_eq!(
-            cycle_mode_line("peer", Some(Kind::Line)),
-            "/set_render_session --session peer --mode none",
-            "a line goes to nothing"
-        );
-        assert_eq!(
-            cycle_mode_line("peer", None),
-            "/set_render_session --session peer --mode full",
-            "and nothing comes back to a pane"
-        );
-    }
-
     /// One announcement entry: a name, idle, with nothing measured yet.
     fn listed(name: &str) -> Listed {
         Listed {
@@ -2194,7 +2162,79 @@ mod tests {
         }
     }
 
-    /// A click asks for the sticky session, as the command line that sets it.
+    /// The cell a click lands on decides which of SPEC's gestures it is: a row
+    /// toggles a window, a header makes it sticky.
+    ///
+    /// # Invariant
+    ///
+    /// One press, one answer: the window asks for the command the gesture is, and
+    /// never for both. The events under a header are read, not clicked.
+    #[test]
+    fn a_press_answers_with_the_gesture_it_landed_on() {
+        let mut h = Headless::new();
+        h.screen.panes.layout(&Layout {
+            listed: vec![listed("main"), listed("peer")],
+            shown: vec!["main".to_string()],
+            command: "cmd".to_string(),
+            quota: None,
+        });
+        let (width, height) = (60u16, 16u16);
+        let (list, _) = crate::render::body(
+            crate::render::areas(
+                Rect::new(0, 0, width, height),
+                1,
+                crate::render::Chrome {
+                    command: true,
+                    quota: false,
+                },
+            )[1],
+            &h.screen.panes,
+        );
+        // The row of a shown session: a click there hides it.
+        assert_eq!(
+            h.screen
+                .session_at_row(width, height, list.x, list.y)
+                .map(|hit| hit.part),
+            Some(Part::List),
+            "every name is a row, shown or not"
+        );
+        let shown = h
+            .screen
+            .panes
+            .get("main")
+            .is_some_and(|pane| pane.kind == crate::panes::Kind::Shown);
+        assert_eq!(
+            toggle_line("main", shown),
+            "/set_render_session --session main --show false"
+        );
+        // The header of the window beside it: a click there makes it sticky.
+        let slot = h
+            .screen
+            .slots(width, height)
+            .into_iter()
+            .find(|slot| slot.name == "main")
+            .expect("a window named main");
+        let head = slot.header.expect("a header on the window");
+        assert_eq!(
+            h.screen
+                .session_at_row(width, height, head.x + 1, head.y)
+                .map(|hit| hit.part),
+            Some(Part::Header)
+        );
+        assert_eq!(
+            sticky_line("main"),
+            "/set_sticky --name session --value main"
+        );
+        // And the events under it are nobody's click.
+        assert_eq!(
+            h.screen
+                .session_at_row(width, height, slot.body.x + 1, slot.body.y)
+                .map(|hit| hit.part),
+            Some(Part::Pane)
+        );
+    }
+
+    /// A click on a name reads that name, and the list holds every session.
     #[test]
     fn a_click_names_the_session_it_landed_on() {
         let mut panes = Panes::new();
@@ -2205,11 +2245,7 @@ mod tests {
                 listed("third"),
                 listed("fourth"),
             ],
-            // SPEC's list is the `none` mode, so these are its rows and the
-            // sessions drawn elsewhere are not among them.
-            none: vec!["peer".to_string(), "third".to_string()],
-            full: vec!["main".to_string()],
-            line: vec!["fourth".to_string()],
+            shown: vec!["main".to_string(), "fourth".to_string()],
             command: "cmd".to_string(),
             quota: None,
         });
@@ -2220,19 +2256,19 @@ mod tests {
             1,
             crate::render::Chrome {
                 command: true,
-                line_groups: 1,
                 quota: false,
             },
         );
         let (list, _) = crate::render::body(parts[1], &panes);
         assert_eq!(
             crate::render::list_at(list, &panes, None, list.x, list.y + 1),
-            Some("third".to_string()),
+            Some("peer".to_string()),
             "a click on a name reads that name"
         );
         assert_eq!(
             crate::render::list_at(list, &panes, None, list.x, list.y),
-            Some("peer".to_string())
+            Some("main".to_string()),
+            "a shown session is still a row: the list is where it is hidden"
         );
         assert_eq!(
             crate::render::list_at(list, &panes, None, list.x, list.y - 1),
@@ -2244,17 +2280,36 @@ mod tests {
             crate::render::list_at(list, &panes, None, list.x, list.bottom() - 1),
             None
         );
-        // The line group is its own area, and a click there names its session.
+    }
+
+    /// SPEC's two clicks: a name toggles its window, a header points the reading
+    /// at it.
+    #[test]
+    fn a_name_toggles_its_window_and_a_header_makes_it_sticky() {
         assert_eq!(
-            crate::render::line_at(parts[2], &panes, parts[2].x, parts[2].y),
-            Some("fourth".to_string())
+            toggle_line("peer", true),
+            "/set_render_session --session peer --show false",
+            "a shown session is clicked to hide it"
         );
-        // A press on a name becomes the command that sets it.
         assert_eq!(
-            format!("/set_sticky --name session --value {}", "peer"),
-            "/set_sticky --name session --value peer",
-            "the loop reads a `/` line as a command"
+            toggle_line("peer", false),
+            "/set_render_session --session peer --show true"
         );
+        assert_eq!(
+            sticky_line("peer"),
+            "/set_sticky --name session --value peer"
+        );
+    }
+
+    /// The two lines a click can ask for are commands, not prose.
+    #[test]
+    fn a_click_is_a_command_line() {
+        for line in [toggle_line("peer", true), sticky_line("peer")] {
+            assert!(
+                matches!(line.strip_prefix('/'), Some(tokens) if tokens.starts_with("set_")),
+                "{line} was read as prose"
+            );
+        }
     }
 
     #[test]

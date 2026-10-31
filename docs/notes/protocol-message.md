@@ -84,8 +84,8 @@ two sources say "complete against that list" without shipping the list, which is
 the same arrangement as `Sessions` -- the server names where a value comes from,
 and the side that owns it fills it in.
 
-`set_render_session --mode` completes through a static list, because the three modes
-are the protocol's own words (`RENDER_MODES`), not the client's state. Its
+`set_render_session --show` completes through a static list, because `true` and
+`false` are the protocol's own words (`SHOW_VALUES`), not the client's state. Its
 `--session` completes through `Sessions` like every other session argument.
 
 ## UsageEvent, Usage

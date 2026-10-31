@@ -599,10 +599,10 @@ mod tests {
                 "cwd",
                 "ip",
                 "message",
-                "mode",
                 "name",
                 "port",
                 "session",
+                "show",
                 "value"
             ]
         );
@@ -704,27 +704,27 @@ mod tests {
         assert_eq!(values(&c, "/set_render --block_size 1"), vec!["1"]);
     }
 
-    /// `set_render_session` names a session and then one of the three modes.
+    /// `set_render_session` names a session and then one of the two values.
     #[test]
-    fn the_render_session_command_completes_sessions_and_modes() {
+    fn the_render_session_command_completes_sessions_and_values() {
         let c = catalog();
         // Catalog order, which is the order the command declares them in.
         assert_eq!(
             values(&c, "/set_render_session --"),
-            vec!["--session", "--mode"]
+            vec!["--session", "--show"]
         );
         assert_eq!(
             values(&c, "/set_render_session --session "),
             vec!["main", "scratch"]
         );
         assert_eq!(
-            values(&c, "/set_render_session --mode "),
-            vec!["none", "line", "full"]
+            values(&c, "/set_render_session --show "),
+            vec!["true", "false"]
         );
-        assert_eq!(values(&c, "/set_render_session --mode f"), vec!["full"]);
+        assert_eq!(values(&c, "/set_render_session --show t"), vec!["true"]);
         // An argument the line already carries is not offered again.
         assert_eq!(
-            values(&c, "/set_render_session --mode line --"),
+            values(&c, "/set_render_session --show true --"),
             vec!["--session"]
         );
     }

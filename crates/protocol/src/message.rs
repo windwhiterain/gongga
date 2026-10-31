@@ -285,9 +285,8 @@ pub struct CommandSpec {
 /// Any number is accepted; this is the set worth offering, not the set allowed.
 pub const BLOCK_SIZES: &[&str] = &["0", "1", "2", "3", "5"];
 
-/// The ways one session's events can be drawn, as `set_render_session --mode`
-/// spells them.
-pub const RENDER_MODES: &[&str] = &["none", "line", "full"];
+/// The values `set_render_session --show` takes.
+pub const SHOW_VALUES: &[&str] = &["true", "false"];
 
 /// Where a command runs.
 ///
@@ -363,22 +362,22 @@ pub fn client_commands() -> Vec<CommandSpec> {
         ),
         (
             "set_render_session",
-            "How one session's events are drawn; with no `--mode`, what it has now.",
+            "Whether one session is shown beside the list; with no `--show`, what it is now.",
             vec![
                 spec_arg(
                     "session",
-                    "The session whose rendering this sets.",
+                    "The session whose window this shows or hides.",
                     true,
                     Some("name"),
                     CompletionSource::Sessions,
                 ),
                 spec_arg(
-                    "mode",
-                    "`full` gives the session a pane of its own; `line` pastes its events \
-                     as one line each below the panes; `none` draws nothing of it.",
+                    "show",
+                    "`true` gives the session a header and its events beside the list; \
+                     `false` leaves it as a name in the list.",
                     false,
-                    Some("none|line|full"),
-                    CompletionSource::Static(RENDER_MODES.iter().map(|m| m.to_string()).collect()),
+                    Some("true|false"),
+                    CompletionSource::Static(SHOW_VALUES.iter().map(|m| m.to_string()).collect()),
                 ),
             ],
         ),

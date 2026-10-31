@@ -181,15 +181,12 @@ The same block is counted twice, once per ledger that holds it, and the two coun
 differ: a window may cap its blocks apart from the rest (the command line's are single
 rows), so `contributions` returns both and every mutation moves both sums.
 
-## Log::headlines
+## Log::headlines (gone)
 
-One row per block, for a view drawn as "one line per event": the last `limit`
-blocks, with a block's own label in front of its text, breaks turned into spaces,
-and anything past `width` columns cut with `…`.
-
-Not `Log::window` with height 1 per block: that would show a wrapped sentence's tail,
-and a block whose last row is empty would show as a blank row. This view reads
-blocks, so its scroll counts events rather than rows.
+One row per block, for a view drawn as "one line per event" -- the `line` render mode
+SPEC no longer has. `Log::headline` went with the mode: a session is either a window
+with its wrapped rows or a name in the list, so nothing asks for a block flattened to
+one row.
 
 ## Log::set_hidden
 
@@ -415,10 +412,11 @@ command, in the error colour.
 A block's trailing newline is trimmed when it seals, while a blank line *inside*
 the block survives.
 
-## headline
+## headline (gone)
 
-The newest block of one view, as one row: that is what a `line` session shows.
-Not `window`'s rows -- those are wrapped rows of a block, so a sentence's
-continuation and a trailing blank row would both be what the session "is on".
-The block's tag is left out, because the row that draws it already starts with
-the session's name (see `tui-render.md`).
+The newest block of one view, as one row: that is what a `line` session showed. Not
+`window`'s rows -- those are wrapped rows of a block, so a sentence's continuation and
+a trailing blank row would both be what the session "was on". The block's tag was left
+out, because the row that drew it already started with the session's name.
+
+Gone with the `line` mode and with the flattening it needed (`one_line`).

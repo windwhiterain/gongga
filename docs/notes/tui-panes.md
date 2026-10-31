@@ -58,16 +58,15 @@ case, the taller-window case and the arriving-row case disagree about `last_heig
 and the view drifts by the difference; as one, a frame at a new shape is a frame at a
 new shape.
 
-`Kind` is which part of SPEC's window a pane is: the session list, a full pane, a
-line group, or the command line. Only `Full` panes are laid out in the body's right
-half; the line groups and the command line have areas of their own, so the body's
-arithmetic never counts them.
+`Kind` is which part of SPEC's window a pane is: the session list, a shown session, or
+the command line. Only `Shown` panes are laid out in the body's right half; the command
+line has a row of its own, so the body's arithmetic never counts it.
 
 ## Panes::layout
 
-One pane per announcement, in its order: the list, then the full panes, then the
-line groups, then the command line. An empty command name is no command line at all,
-which is what a frame of events alone asks for.
+One pane per announcement, in its order: the list, then the shown sessions, then the
+command line. An empty command name is no command line at all, which is what a frame
+of events alone asks for.
 
 A relayout carries each surviving pane's scroll over. The announcement is sent on
 every event that changes what is drawn -- a status, and the measurement that puts
@@ -112,8 +111,8 @@ than from the log -- the list is the first -- so it is held the same way: cloned
 `layout`, with no history behind it.
 
 `chrome` exists so the frame's caller does not have to know which rows are
-conditional: it is the one place that asks "is there a command window, how many
-line groups, is there a reading", and `areas` sizes the frame from it.
+conditional: it is the one place that asks "is there a command window, is there a
+reading", and `areas` sizes the frame from it.
 
 ## The command view
 

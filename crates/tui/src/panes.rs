@@ -29,10 +29,8 @@ pub struct Pane {
 pub enum Kind {
     /// The session list, which draws names rather than events.
     List,
-    /// A session drawn as its own pane of events.
-    Full,
-    /// A session drawn as one line per event, below the panes.
-    Line,
+    /// A session drawn as a header and its own events.
+    Shown,
     /// The single line `cmd` and its result share.
     Command,
 }
@@ -40,12 +38,12 @@ pub enum Kind {
 impl Kind {
     /// Whether this pane reads events at all: the list draws its own rows.
     pub fn is_events(self) -> bool {
-        matches!(self, Kind::Full | Kind::Line | Kind::Command)
+        matches!(self, Kind::Shown | Kind::Command)
     }
 
     /// Whether the wheel and the keyboard may scroll it.
     pub fn scrolls(self) -> bool {
-        matches!(self, Kind::Full | Kind::Line)
+        self == Kind::Shown
     }
 }
 
@@ -96,7 +94,7 @@ pub struct Panes {
     /// The session list, which is drawn from the command layer's announcement
     /// rather than from the log.
     listed: Vec<crate::Listed>,
-    /// The names that announcement puts in the list: SPEC's `render mode = none`.
+    /// The names that announcement puts in the list: SPEC's session list.
     list_names: Vec<String>,
     /// SPEC's `active_quota` row, as the command layer spelled it.
     quota: Option<crate::QuotaRow>,
@@ -122,7 +120,6 @@ impl Panes {
     pub fn chrome(&self) -> crate::render::Chrome {
         crate::render::Chrome {
             command: self.command().is_some(),
-            line_groups: self.of_kind(Kind::Line).count(),
             quota: self.quota.is_some(),
         }
     }
@@ -136,8 +133,8 @@ impl Panes {
     ///
     /// # Invariant
     ///
-    /// Only the sessions whose render mode is `none`: SPEC gives each mode one
-    /// area, and a name in two areas is the same name said twice.
+    /// Every session the server knows, shown or not: the list is where a name is
+    /// clicked, so a name missing from it is a session nobody can show again.
     pub fn list_names(&self) -> &[String] {
         &self.list_names
     }
@@ -150,11 +147,10 @@ impl Panes {
     /// always last of the panes: it is drawn under everything else.
     pub fn layout(&mut self, layout: &Layout) {
         self.listed = layout.listed.clone();
-        self.list_names = layout.none.clone();
+        self.list_names = layout.listed.iter().map(|l| l.name.clone()).collect();
         self.quota = layout.quota.clone();
         let mut panes = vec![Pane::of("", Kind::List)];
-        panes.extend(layout.full.iter().map(|name| Pane::of(name, Kind::Full)));
-        panes.extend(layout.line.iter().map(|name| Pane::of(name, Kind::Line)));
+        panes.extend(layout.shown.iter().map(|name| Pane::of(name, Kind::Shown)));
         // An empty name is no command line: a frame of events alone.
         if !layout.command.is_empty() {
             panes.push(Pane::of(&layout.command, Kind::Command));
@@ -268,11 +264,6 @@ impl Panes {
     /// Rows this view holds at `width`.
     pub fn rows(&mut self, view: View<'_>, width: usize) -> usize {
         self.log.rows(view, width)
-    }
-
-    /// The newest event as one row, for a session drawn as a line.
-    pub fn headline(&mut self, view: View<'_>, width: usize) -> Option<(LineKind, String)> {
-        self.log.headline(view, width)
     }
 
     /// The rows one frame of one view shows.

@@ -1,4 +1,4 @@
-//! Sticky arguments and render modes: the client's own state in `cli.toml`.
+//! Sticky arguments and shown windows: the client's own state in `cli.toml`.
 //!
 //! See `docs/notes/cli-commands.md`.
 
@@ -47,65 +47,73 @@ impl BlockSize {
     }
 }
 
-/// How each session is drawn: `set_render_session --mode`.
+/// Which sessions are shown: `set_render_session --show`.
 ///
 /// # Invariant
 ///
-/// It is a view, never a deletion: a session in mode `none` keeps every block it
-/// ever carried, so giving it `full` or `line` brings the whole history back.
-/// A session nobody set is `full`: a window has to show something.
-pub struct RenderModes {
+/// It is a view, never a deletion: a session left hidden keeps every block it ever
+/// carried, so showing it again brings the whole history back. A session nobody
+/// set is shown: a window has to show something.
+pub struct Shown {
     path: PathBuf,
-    modes: BTreeMap<String, crate::RenderMode>,
+    show: BTreeMap<String, bool>,
 }
 
-impl RenderModes {
-    /// Loads `home/cli.toml`; a missing or unreadable file draws nothing.
+impl Shown {
+    /// Loads `home/cli.toml`; a missing or unreadable file shows everything.
     pub fn load(home: &Path) -> Self {
         let path = home.join("cli.toml");
-        let modes = read_file(&path)
+        let show = read_file(&path)
             .render_session
             .into_iter()
-            .filter_map(|e| crate::RenderMode::parse(&e.value).ok().map(|m| (e.name, m)))
+            .filter_map(|e| stored_show(&e.value).map(|show| (e.name, show)))
             .collect();
-        Self { path, modes }
+        Self { path, show }
     }
 
-    /// The sessions in this mode, sorted, which is the order a list is read in.
-    pub fn named(&self, mode: crate::RenderMode) -> Vec<String> {
-        self.modes
-            .iter()
-            .filter(|(_, m)| **m == mode)
-            .map(|(name, _)| name.clone())
-            .collect()
+    /// Whether this session gets a window beside the list; nobody set is shown.
+    pub fn is_shown(&self, name: &str) -> bool {
+        self.show.get(name).copied().unwrap_or(true)
     }
 
-    /// What this session is drawn as; a session nobody set is `none`.
-    pub fn mode_of(&self, name: &str) -> crate::RenderMode {
-        self.modes.get(name).copied().unwrap_or_default()
-    }
-
-    pub fn set(&mut self, name: &str, mode: crate::RenderMode) -> anyhow::Result<()> {
-        self.modes.insert(name.to_string(), mode);
+    pub fn set(&mut self, name: &str, show: bool) -> anyhow::Result<()> {
+        self.show.insert(name.to_string(), show);
         self.save()
     }
 
     fn save(&self) -> anyhow::Result<()> {
         let mut file = read_file(&self.path);
-        file.render_session = entries_mode(&self.modes);
+        file.render_session = self
+            .show
+            .iter()
+            .map(|(name, show)| Entry {
+                name: name.clone(),
+                value: show.to_string(),
+            })
+            .collect();
         write_file(&self.path, &file)
     }
 }
 
-/// The modes as the file spells them, sorted by session so a diff reads.
-fn entries_mode(modes: &BTreeMap<String, crate::RenderMode>) -> Vec<Entry> {
-    modes
-        .iter()
-        .map(|(name, mode)| Entry {
-            name: name.clone(),
-            value: mode.as_str().to_string(),
-        })
-        .collect()
+/// `--show` as a value, or what is wrong with it: never a silent default.
+pub fn parse_show(raw: &str) -> Result<bool, String> {
+    match raw.trim() {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        other => Err(format!(
+            "no show value {other:?}; it takes {}",
+            protocol::SHOW_VALUES.join(", ")
+        )),
+    }
+}
+
+/// A stored value as a show state, including the three words a mode once spelled.
+fn stored_show(raw: &str) -> Option<bool> {
+    match raw.trim() {
+        "true" | "full" | "line" => Some(true),
+        "false" | "none" => Some(false),
+        _ => None,
+    }
 }
 
 /// The pre-rename key for sticky arguments: read once, then rewritten
@@ -461,7 +469,7 @@ mod tests {
     ///
     /// # Invariant
     ///
-    /// Every argument stays intact -- including through a render-mode write, which
+    /// Every argument stays intact -- including through a window write, which
     /// never touched the sticky pairs.
     #[test]
     fn any_save_migrates_the_old_key_without_dropping_arguments() {
@@ -471,49 +479,44 @@ mod tests {
             format!("[[{OLD_STICKY_KEY}]]\nname = \"session\"\nvalue = \"test1\"\n"),
         )
         .unwrap();
-        let mut modes = RenderModes::load(d.path());
-        modes.set("main", crate::RenderMode::Full).unwrap();
+        let mut shown = Shown::load(d.path());
+        shown.set("main", false).unwrap();
 
         let text = std::fs::read_to_string(d.path().join("cli.toml")).unwrap();
         assert!(!text.contains(OLD_STICKY_KEY), "{text}");
         assert_eq!(Sticky::load(d.path()).get("session"), Some("test1"));
-        assert_eq!(
-            RenderModes::load(d.path()).mode_of("main"),
-            crate::RenderMode::Full
-        );
+        assert!(!Shown::load(d.path()).is_shown("main"));
     }
 
     /// The two writers share one file, so each has to keep the other's rows.
     #[test]
-    fn render_modes_persist_beside_sticky_arguments() {
+    fn the_shown_list_persists_beside_sticky_arguments() {
         let d = dir();
         let mut sticky = Sticky::load(d.path());
         sticky.set("session", "main").unwrap();
-        let mut modes = RenderModes::load(d.path());
-        modes.set("peer", crate::RenderMode::Line).unwrap();
+        let mut shown = Shown::load(d.path());
+        shown.set("peer", false).unwrap();
 
         let sticky = Sticky::load(d.path());
-        let modes = RenderModes::load(d.path());
+        let shown = Shown::load(d.path());
         assert_eq!(sticky.get("session"), Some("main"));
-        assert_eq!(modes.mode_of("peer"), crate::RenderMode::Line);
-        assert_eq!(
-            modes.mode_of("nobody"),
-            crate::RenderMode::Full,
-            "a session nobody set is drawn in full"
+        assert!(!shown.is_shown("peer"));
+        assert!(
+            shown.is_shown("nobody"),
+            "a session nobody set is shown beside the list"
         );
     }
 
-    /// The modes are a view: setting one, then another, keeps them apart.
+    /// The windows are a view: hiding one, then another, keeps them apart.
     #[test]
-    fn each_session_keeps_its_own_mode() {
+    fn each_session_keeps_its_own_window() {
         let d = dir();
-        let mut modes = RenderModes::load(d.path());
-        modes.set("main", crate::RenderMode::Full).unwrap();
-        modes.set("peer", crate::RenderMode::Line).unwrap();
-        let modes = RenderModes::load(d.path());
-        assert_eq!(modes.named(crate::RenderMode::Full), vec!["main"]);
-        assert_eq!(modes.named(crate::RenderMode::Line), vec!["peer"]);
-        assert!(modes.named(crate::RenderMode::None).is_empty());
+        let mut shown = Shown::load(d.path());
+        shown.set("main", true).unwrap();
+        shown.set("peer", false).unwrap();
+        let shown = Shown::load(d.path());
+        assert!(shown.is_shown("main"));
+        assert!(!shown.is_shown("peer"));
     }
 
     /// The size survives a restart; an unknown one on disk falls back rather
@@ -599,34 +602,45 @@ mod tests {
         assert_eq!(mine, vec!["only-project", "shared", "shared"], "{got:?}");
     }
 
-    /// A mode survives a restart, and the three words it takes are the whole list.
+    /// A window survives a restart, and the two words it takes are the whole list.
     #[test]
-    fn a_render_mode_round_trips() {
+    fn a_show_round_trips() {
         let d = dir();
+        assert!(Shown::load(d.path()).is_shown("main"));
+        let mut shown = Shown::load(d.path());
+        shown.set("main", false).unwrap();
+        assert!(!Shown::load(d.path()).is_shown("main"));
+        assert_eq!(parse_show(" true "), Ok(true));
         assert_eq!(
-            RenderModes::load(d.path()).mode_of("main"),
-            crate::RenderMode::Full
+            parse_show("sideways"),
+            Err("no show value \"sideways\"; it takes true, false".into())
         );
-        let mut modes = RenderModes::load(d.path());
-        modes.set("main", crate::RenderMode::Full).unwrap();
-        assert_eq!(
-            RenderModes::load(d.path()).mode_of("main"),
-            crate::RenderMode::Full
-        );
-        assert_eq!(
-            crate::RenderMode::parse(" line "),
-            Ok(crate::RenderMode::Line)
-        );
-        assert_eq!(
-            crate::RenderMode::parse("sideways"),
-            Err("no render mode \"sideways\"; it takes none, line, full".into())
-        );
-        // A mode is saved without losing the block size beside it.
+        // A window is saved without losing the block size beside it.
         BlockSize(3).save(d.path()).unwrap();
         assert_eq!(BlockSize::load(d.path()), BlockSize(3));
-        assert_eq!(
-            RenderModes::load(d.path()).mode_of("main"),
-            crate::RenderMode::Full
+        assert!(!Shown::load(d.path()).is_shown("main"));
+    }
+
+    /// A file from before SPEC had one flag per session still reads: a mode's
+    /// word said whether that session was on screen.
+    #[test]
+    fn the_words_a_mode_spelled_still_say_whether_a_session_was_shown() {
+        let d = dir();
+        std::fs::write(
+            d.path().join("cli.toml"),
+            "[[render_session]]\nname = \"hidden\"\nvalue = \"none\"\n\
+             [[render_session]]\nname = \"pane\"\nvalue = \"full\"\n\
+             [[render_session]]\nname = \"ticker\"\nvalue = \"line\"\n\
+             [[render_session]]\nname = \"junk\"\nvalue = \"sideways\"\n",
+        )
+        .unwrap();
+        let shown = Shown::load(d.path());
+        assert!(!shown.is_shown("hidden"));
+        assert!(shown.is_shown("pane"));
+        assert!(shown.is_shown("ticker"), "a ticker row was on screen too");
+        assert!(
+            shown.is_shown("junk"),
+            "a word with no meaning shows nothing"
         );
     }
 

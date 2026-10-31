@@ -132,33 +132,6 @@ impl Entry {
     }
 }
 
-/// One block's text as a single row of at most `width` columns.
-///
-/// # Invariant
-///
-/// A line break becomes a space rather than an end: this view is one row per
-/// event, and a row that ends mid-sentence says less than one that is cut with a
-/// mark. See `docs/notes/tui-log.md`.
-fn one_line(text: &str, width: usize) -> String {
-    let flat: String = text
-        .chars()
-        .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
-        .collect();
-    let mut out = String::new();
-    let mut used = 0usize;
-    for c in flat.chars() {
-        let advance = c.width().unwrap_or(0);
-        // One column is kept for the mark, so a cut row still says it was cut.
-        if used + advance > width.saturating_sub(1) {
-            out.push('\u{2026}');
-            return out;
-        }
-        out.push(c);
-        used += advance;
-    }
-    out
-}
-
 /// The greedy wrap state machine, movable so an append can pick it up mid-line.
 ///
 /// # Invariant
@@ -597,28 +570,6 @@ impl Log {
         self.ledger(view)
             .map(|ledger| ledger.index.total())
             .unwrap_or(0)
-    }
-
-    /// One row per block: the last `limit` blocks, newest last, as single lines.
-    ///
-    /// # Invariant
-    ///
-    /// One block is one row, however tall it would be wrapped: a view drawn as
-    /// "one line per event" must not show a sentence's tail or a blank
-    /// continuation row. Text past `width` columns is cut and marked, so a row is
-    /// always exactly what fits. See `docs/notes/tui-log.md`.
-    /// The newest event of one view, flattened to one row.
-    ///
-    /// # Invariant
-    ///
-    /// The event, not a row of it: a `line` session is one line, so a sentence's
-    /// continuation and a block's trailing blank row must not be what it shows.
-    pub fn headline(&mut self, view: View<'_>, width: usize) -> Option<(LineKind, String)> {
-        self.reflow(width);
-        let at = *self.ledger(view)?.blocks.last()?;
-        let entry = &self.entries[at];
-        // No tag: the row that draws this already starts with the name.
-        Some((entry.kind, one_line(&entry.text, width.max(1))))
     }
 
     /// The rows for one frame of one view: the last `height` rows, in order.
@@ -1207,36 +1158,6 @@ mod tests {
             shown(&mut log, 40, 10, 0),
             vec!["[main] one!", "[peer] two more"]
         );
-    }
-
-    /// One row per block: a wrapped event is cut, never continued.
-    #[test]
-    /// The newest event of a view as one row, tag left out: see `tui-render.md`.
-    #[test]
-    fn a_headline_is_the_newest_event_on_one_row() {
-        let mut log = Log::new();
-        let view = View::Window("peer");
-        assert!(log.headline(view, 40).is_none(), "no events, no row");
-
-        log.stream(
-            "peer",
-            "k1",
-            LineKind::Assistant,
-            "[peer] ",
-            "first\nsecond",
-            true,
-        );
-        let (kind, text) = log.headline(view, 40).expect("a row");
-        assert_eq!(kind, LineKind::Assistant);
-        assert_eq!(text, "first second", "one event is one row, no tag");
-
-        log.stream("peer", "k2", LineKind::Assistant, "", "two", true);
-        assert_eq!(log.headline(view, 40).unwrap().1, "two", "the newest wins");
-
-        log.stream("peer", "k3", LineKind::Assistant, "", &"x".repeat(80), true);
-        let last = log.headline(view, 10).unwrap().1;
-        assert_eq!(last.chars().count(), 10, "{last:?}");
-        assert!(last.ends_with('\u{2026}'), "{last:?}");
     }
 
     /// A window can cap its blocks apart from the rest.

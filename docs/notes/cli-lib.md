@@ -173,9 +173,10 @@ replacing one with the other, and tells the front-end to empty that name's windo
 (`Sink::forget`).
 
 The signal has to be the deletion, not the layout. A layout stops drawing the sessions
-a render mode hides, and their lines stay -- that is the announcement's own invariant,
-"what a frame shows, never what is held". A deleted session differs in the one way that
-matters here: the server frees the name, and the name is what the window is called.
+whose window is hidden, and their lines stay -- that is the announcement's own
+invariant, "what a frame shows, never what is held". A deleted session differs in the
+one way that matters here: the server frees the name, and the name is what the window
+is called.
 
 ## Sink::block_size and Sink::layout
 
@@ -310,11 +311,20 @@ them rather than three commands with one name. Two rules make that legible:
 - **The answer is the whole setting**, on a write as on a read: `block_size = 3
   split = false` in one line, because two answers to one command is an argument.
 
-## Client::run_render_session
+## Client::run_render_session and Client::follow_shown
 
-`set_render_session` writes `RenderModes` and answers with the mode it wrote, or --
-with no `--mode` -- the mode that session has now. A mode is a view change: the
-blocks are untouched, so `full` after `none` brings the whole history back.
+`set_render_session` writes `Shown` and answers with the flag it wrote, or -- with no
+`--show` -- the flag that session has now. It is a view change: the blocks are
+untouched, so `--show true` after `--show false` brings the whole history back.
+
+SPEC hangs two more facts off the click that sends this command, and they live here
+rather than in the window so a typed `/set_render_session` behaves the same: showing a
+session makes it the sticky one, and hiding the *sticky* one clears the sticky.
+Hiding another session says nothing about which window the operator is reading, so it
+leaves the sticky where it was.
+
+The window's click is therefore one command line, not three: `!shown` is what it
+knows, and everything else follows from the flag changing.
 
 ## QuotaRow, quota_row
 
@@ -366,27 +376,25 @@ and `ctx 0` cannot say which it is.
 
 ## Client::layout
 
-SPEC's three lists, from one place: the sessions drawn as list rows (`none`), the
-ones drawn as panes (`full`), and the ones drawn as a line each (`line`). A session
-is in exactly one of the three, and `listed` carries every session beside them, with
-its status and its numbers, so a front-end can read a name it draws in any area.
+SPEC's window, from one place: `listed` is every session's name with its status and
+its numbers, and `shown` is the ones that also get a header and their events beside
+the list.
 
-The earlier shape had only `full`/`line` and left the list reading `listed`, which
-meant a session drawn `full` was in the list *and* over its pane. That was the
-reading that "the list is how a mode gets changed" invited: a way back for every
-session. SPEC says otherwise -- each mode is one area of the window -- and the
-sticky-click cycle is what keeps every session reachable without a second name on
-screen.
+The two lists overlap on purpose. SPEC's session list is every session -- a click on a
+name toggles its window -- so the list is not a list of what is hidden. The earlier
+shape gave each render mode one area and kept a name out of the list when another area
+drew it, which made the list the only way back to a hidden session and cost the window
+two more areas (`line`, and the modes as words).
 
-The mode is read off each session rather than off the file's entries, because a
-session nobody set is `full`: reading the map would leave a new session with no
-pane at all.
+The flag is read off each session rather than off the file's entries, because a
+session nobody set is shown: reading the map would leave a new session with no window
+at all.
 
 ## Client::drawn
 
 Which events are drawn, which is not which events are kept. A `Status` for a
-session drawn as `none` still updates the list, or the list would lie about the
-mode it is in.
+session whose window is hidden still updates the list, or the list would lie about
+what that session is doing.
 
 ## Sink::sticky_session
 
@@ -408,8 +416,8 @@ say, and the SPEC sentence about it names only `set_session`.
 
 ## Client::submit_tokens
 
-Nothing else is followed: naming a session writes no render mode, and
-`set_render_session` is the only command that changes what the events area draws.
+Nothing else is followed by the submission path: naming a session writes no window,
+and `set_render_session` is the only command that changes what the events area draws.
 
 One echo per command. A client command is drawn where it answers -- the command
 line. A server command is drawn from the `cmd` event the server sends, which is
@@ -432,14 +440,14 @@ block size and every session whose render mode was not the default. It is gone w
 SPEC's `stickys` row, and the reason SPEC gives for the row being gone is the
 better argument for not moving it somewhere else: what that line said is now on the
 screen itself. Which session is the sticky one is the mark its name carries in the
-list, in a pane's header and at the start of its line group; how each session is
-drawn is the area its name appears in; and a sticky value shows up in the echo of
-every command it fills (`$ send_message --message "…" --session main`).
+list and its box around the window it scrolls; whether a session is shown is the
+window beside the list; and a sticky value shows up in the echo of every command it
+fills (`$ send_message --message "…" --session main`).
 
-Nothing is lost that a reader could not see: a session drawn `none` has a row in
-the list, and a session drawn `line` has its row under the panes. The one thing the
-line carried that the canvas does not is `block_size`, and that is a setting read
-back through `set_render`, which is where a setting belongs.
+Nothing is lost that a reader could not see: every session has a row in the list,
+and a shown one has its own window beside it. The one thing the line carried that the
+canvas does not is `block_size`, and that is a setting read back through
+`set_render`, which is where a setting belongs.
 
 ## Client::command
 
@@ -846,12 +854,12 @@ half of the test is the point: the next request's measurement replaces the whole
 title, so a rate the latest request did not report cannot survive from the one
 before it.
 
-## a_session_is_drawn_in_one_area_only
+## a_listed_name_is_shown_exactly_when_its_flag_says_so
 
-Five pairs of modes over three sessions, so the invariant is walked rather than
-sampled: the three lists between them always hold every session exactly once, and a
-layout body that named one twice -- or dropped one -- fails here rather than in a
-frame nobody re-read.
+Four pairs of flags over three sessions, so the invariant is walked rather than
+sampled: every session is listed, and `shown` holds exactly the ones whose flag is
+true -- a layout body that named one twice, or dropped one, fails here rather than in
+a frame nobody re-read.
 
 ## a_pane_title_says_what_the_session_runs_on
 

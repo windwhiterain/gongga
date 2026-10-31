@@ -75,37 +75,38 @@ a guess at which pane the operator meant.
 ## Screen::session_at_row
 
 What a pointer landed on, as a `Hit`: the session it names and which part it hit --
-the list, a pane, a line group, or the way back to a pane's newest row. They have
-different behaviour, so the part is part of the answer rather than something the
+the list, a header, a window's events, or the way back to a window's newest row. They
+have different behaviour, so the part is part of the answer rather than something the
 caller re-derives.
 
-The order is the drawing order: the list, then the go-to-bottom hint, then the panes,
-then the line groups. The hint is drawn over the last row of the pane it belongs to,
-so asking the pane first is how a click on the button became a click on the session --
-which asked the command layer for a `set_sticky` nobody pressed.
+The order is the drawing order: the list, then the go-to-bottom hint, then the
+headers, then the events. The hint is drawn over the last row of the window it belongs
+to, so asking the window first is how a click on the button became a click on the
+session -- which asked the command layer for a `set_sticky` nobody pressed.
 
 ## handle_mouse
 
-The wheel scrolls what it is over, and retargets nothing: over a pane or a line
-group it scrolls that session's rows, and over the session list it scrolls the list,
-which has a scroll of its own (SPEC gives it one). The keys keep acting on the sticky
-session whatever the pointer did.
+The wheel scrolls what it is over, and retargets nothing: over a window it scrolls
+that session's rows, and over the session list it scrolls the list, which has a scroll
+of its own (SPEC gives it one). The keys keep acting on the sticky session whatever
+the pointer did.
 
-A click is a different thing: SPEC makes it "set the sticky session", so the click is
-turned into the command that does that (`/set_sticky --name session --value <name>`)
-and handed to the loop as a submitted line -- except on the go-to-bottom hint, which
-is not the session: it pins that pane to its newest row (`Panes::pin`) and asks the
-command layer for nothing. The rule stays in the command layer, and
-the window keeps one path for everything the operator asks for. The leading `/` is
-what makes it a command: a line without one is prose, and prose goes to the agent.
+A click is a different thing, and SPEC gives it two jobs. On a name it toggles that
+session's window: the line is `/set_render_session --session <name> --show <!shown>`,
+with "shown" read from what the window draws (`Kind::Shown`). On a header it sets the
+sticky session: `/set_sticky --name session --value <name>`. Both are handed to the
+loop as a submitted line, so the rule stays in the command layer and the window keeps
+one path for everything the operator asks for. The leading `/` is what makes it a
+command: a line without one is prose, and prose goes to the agent.
 
-SPEC also gives every name a *double* click, which moves the session to its next
-render mode. A terminal cannot be trusted to report one -- ConPTY delivers a press and
-a release, and nothing says whether they were the second of a pair -- so the state a
-real double click would leave is what stands in for it: **clicking the session that is
-already sticky** asks for the next mode (`/set_render_session --mode <next>`). One
-click sets, the next one walks, and the cycle is SPEC's own: `full` -> `line` ->
-`none` -> `full`.
+Hiding a session that is shown therefore sends one line, not three. The sticky
+follow-on -- showing makes it sticky, hiding the sticky one clears it -- is
+`Client::follow_shown`, on the other side of the wire, so a typed
+`/set_render_session` behaves the same as the click.
+
+The go-to-bottom hint is not a session: it pins that window to its newest row
+(`Panes::pin`) and asks the command layer for nothing. A click in the events area
+does nothing at all -- the header is what a session is clicked by.
 
 ## Screen::sticky_session
 
@@ -391,9 +392,10 @@ moves. Over the session list it scrolls the list, which has a scroll of its own
 (SPEC gives it one) because a list is not a session. Neither leaves state behind: the
 keys still act on the sticky session.
 
-A press is different, and it is the only reason a click does anything at all: it sets
-the sticky session, as the command that does so. No click is an action on the
-conversation, because everything that changes state is a command.
+A press is different, and it is the only reason a click does anything at all: on a
+name it toggles the session's window, on a header it sets the sticky session, each as
+the command that does so. No click is an action on the conversation, because
+everything that changes state is a command.
 
 ## Tui::wheel_rows
 
