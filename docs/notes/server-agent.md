@@ -196,11 +196,14 @@ orphan from a pair and leave the orphan out (`docs/notes/server-body.md`).
 
 ## Agent::maybe_notify_context
 
-The loop measures and asks; it never folds. Folding is a judgement about work
-only the agent has seen -- which failure was decisive, which output is still
-needed -- so the agent acts with `$GONGGA_HOME/skills/heir/transcript`:
-`collapse` folds a stretch out of the request, `heir` copies the whole transcript
-into a mentor session and empties this one (see `server-handover.md`).
+The loop measures and reminds; it never folds. Choosing what the heir needs is a
+judgement about work only the agent has seen -- which failure was decisive, which
+output is still needed -- so the agent acts with `$GONGGA_HOME/skills/heir/transcript`:
+`collapse` folds a stretch out of the request, while `heir` copies the whole
+transcript into a mentor session and empties this one so it continues as the heir
+(see `server-handover.md`). The notice asks for that immediately: a commit, clean
+tree, or green suite is not a prerequisite, and the first lesson records the
+unfinished state and next action.
 
 How full the context is, as the provider last measured it. Not an estimate and
 not derived from text length: `usage.input_tokens` already covers the

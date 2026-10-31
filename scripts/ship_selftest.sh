@@ -20,7 +20,7 @@ git clone -q --bare "$src/ship" shipremote.git
 git clone -q "$src" wt || { echo "cloning $src failed" >&2; exit 1; }
 [[ -d wt/.git ]] || { echo "no clone at $(pwd)/wt" >&2; exit 1; }
 git -C wt config submodule.ship.url "$base/shipremote.git"
-git -C wt submodule update --init -q >/dev/null 2>&1
+git -C wt -c protocol.file.allow=always submodule update --init -q >/dev/null 2>&1
 # a clone of a *dirty* repo lacks the untracked script under test; copy the working
 # copy in, or the test would only ever check what was already committed.
 cp "$src/scripts/ship.sh" wt/scripts/ship.sh

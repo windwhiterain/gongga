@@ -42,6 +42,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# A content release must work against the server schema in the same checkout.
+# Checking only a skill's own fixture let the destructive path ship broken once.
+if [[ $mode == ship ]]; then
+  "$root/scripts/heir_selftest.sh"
+fi
+
 [[ -d "$ship/.git" || -f "$ship/.git" ]] || {
   echo "no ship/ here: git submodule update --init" >&2
   exit 1
