@@ -188,13 +188,25 @@ place that computed it is how a copy ends up including rows the screen never dre
 
 ## pane_slots
 
-Equal shares, with what the division leaves over going to the sticky session: the
-operator is reading that one, so it should be the taller one. A pane that cannot get
-a row is not drawn and counts towards `hidden`, which the last drawn header says out
-loud -- silently dropping a session's window is how a user decides the log is broken.
+SPEC's horizontal split: the panes sit side by side, so what is shared out is the
+*width*, and what the division leaves over goes to the sticky session -- the operator
+is reading that one, so it should be the wider column.
 
-Headers give up before rows do: if the area cannot cover a header plus one row per
-pane, the headers go first, because a pane showing nothing is not a pane at all.
+Each pane gets a header on the first row of its own column and the rest of the height
+under it, so a header is per column rather than a per-pane band across the window. A
+pane that cannot get a column is not drawn and counts towards `hidden`, which the
+last drawn header says out loud -- silently dropping a session's window is how a user
+decides the log is broken.
+
+A header costs one row of the body's height, once, however many panes there are.
+
+## pane_at
+
+The cell, not the row. With the panes side by side, one row of the window holds
+several of them, so a hit test that asked only "which pane covers row N" answered
+with the leftmost one for every click -- and the right-hand session's name could not
+be pressed at all. `covers` checks both coordinates, and a header is a cell like any
+other, so a click on a pane's title names that pane.
 
 ## draw_log
 
@@ -270,22 +282,3 @@ window hides the answer it is replying to.
 A three-row log is the floor the input may not take from.
 
 `layout_input` follows the cursor, so the last row is the one shown.
-
-## A `line` session is one row
-
-SPEC gives the line area to `[{session{render mode = line}, event}]`: the name and
-one event on the same row, so a window with several sessions shows a ticker of
-what each one is doing. It is therefore not a small pane: no header above it, no
-rows under it, and no scroll -- there is only ever one row to look at.
-
-The name is the row's own first column, painted like any other header. That is
-why `Log::headline` leaves the block's tag out: the tag exists to say which
-session a row belongs to when there is no header, and here the header *is* the
-first column. `[peer] peer` said it twice.
-
-The event is the newest block of that view, flattened: a line break becomes a
-space and text past the width is cut with `…`. A sentence's continuation is not
-the session's current state, so it must not be what the row shows.
-
-`full` and `line` share `lines_of`: one place turns a `LineKind` into a style, so
-the two views cannot drift apart in how a row of that kind looks.

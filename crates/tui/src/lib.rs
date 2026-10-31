@@ -179,13 +179,13 @@ impl Screen {
         Some((pane.name.clone(), pane.scroll))
     }
 
-    /// The pane covering terminal row `row`, which is where the wheel landed.
-    pub fn pane_at_row(&self, width: u16, height: u16, row: u16) -> Option<String> {
-        render::pane_at(&self.slots(width, height), row).map(str::to_string)
+    /// The pane covering this cell, which is where the wheel landed.
+    pub fn pane_at_row(&self, width: u16, height: u16, column: u16, row: u16) -> Option<String> {
+        render::pane_at(&self.slots(width, height), column, row).map(str::to_string)
     }
 
     /// The session a click on `row` names, from the list, a pane, or a group.
-    pub fn session_at_row(&self, width: u16, height: u16, row: u16) -> Option<Hit> {
+    pub fn session_at_row(&self, width: u16, height: u16, column: u16, row: u16) -> Option<Hit> {
         let area = Rect::new(0, 0, width, height);
         let input = render::input_rows(self.input.text(), width, height);
         let chunks = render::areas(
@@ -195,20 +195,25 @@ impl Screen {
             self.panes.of_kind(crate::panes::Kind::Line).count(),
         );
         let (list, _) = render::body(chunks[1], &self.panes);
-        if let Some(name) = render::list_at(list, &self.panes, self.sticky_session.as_deref(), row)
-        {
+        if let Some(name) = render::list_at(
+            list,
+            &self.panes,
+            self.sticky_session.as_deref(),
+            column,
+            row,
+        ) {
             return Some(Hit {
                 name,
                 part: Part::List,
             });
         }
-        if let Some(name) = render::pane_at(&self.slots(width, height), row) {
+        if let Some(name) = render::pane_at(&self.slots(width, height), column, row) {
             return Some(Hit {
                 name: name.to_string(),
                 part: Part::Pane,
             });
         }
-        render::line_at(chunks[2], &self.panes, row).map(|name| Hit {
+        render::line_at(chunks[2], &self.panes, column, row).map(|name| Hit {
             name,
             part: Part::Line,
         })
@@ -227,18 +232,20 @@ impl Screen {
     /// screen and nothing that was not.
     pub fn visible_rows(&mut self, width: u16, height: u16) -> Vec<String> {
         let slots = self.slots(width, height);
-        // One column short, as the renderer measures.
-        let log_width = width.saturating_sub(1).max(1) as usize;
-        let mut names: Vec<(String, usize)> = slots
+        // Each pane's own columns: the window's width would copy a wrap the
+        // frame never drew.
+        let mut shapes: Vec<(String, u16, u16)> = slots
             .iter()
-            .map(|slot| (slot.name.clone(), slot.body.height as usize))
+            .map(|slot| (slot.name.clone(), slot.body.width, slot.body.height))
             .collect();
         if let Some(pane) = self.panes.command() {
-            names.push((pane.name.clone(), render::COMMAND_ROWS as usize));
+            shapes.push((pane.name.clone(), width, render::COMMAND_ROWS));
         }
         let mut rows = Vec::new();
-        for (name, height) in names {
-            rows.extend(self.rows_of(&name, log_width, height.max(1)));
+        for (name, pane_width, pane_height) in shapes {
+            // One column short, as the renderer measures.
+            let log_width = pane_width.saturating_sub(1).max(1) as usize;
+            rows.extend(self.rows_of(&name, log_width, (pane_height as usize).max(1)));
         }
         rows
     }
@@ -715,9 +722,9 @@ impl Tui {
         let Ok(size) = self.terminal.size() else {
             return;
         };
-        let Some(hit) = self
-            .screen
-            .session_at_row(size.width, size.height, mouse.row)
+        let Some(hit) =
+            self.screen
+                .session_at_row(size.width, size.height, mouse.column, mouse.row)
         else {
             return;
         };
@@ -1057,7 +1064,7 @@ impl Completer for NoCompleter {
 fn glue_break(keys: &[KeyEvent], pasted_run: Option<usize>) -> bool {
     let lone_break = keys.len() == 1 && is_paste_newline(&keys[0]);
     // A modified Enter settles it alone: no hand sends with it, and the timing
-    // rule cannot see it -- ConPTY delivers pasted keys one at a time.
+    // rule cannot see a ConPTY paste.
     let modified = keys.len() == 1 && keys[0].modifiers.contains(KeyModifiers::CONTROL);
     lone_break && (modified || pasted_run.is_some_and(|chars| chars >= MACHINE_RUN))
 }
@@ -1919,23 +1926,23 @@ mod tests {
         let parts = crate::render::areas(area, 1, true, 1);
         let (list, _) = crate::render::body(parts[1], &panes);
         assert_eq!(
-            crate::render::list_at(list, &panes, None, list.y + 1),
+            crate::render::list_at(list, &panes, None, list.x, list.y + 1),
             Some("peer".to_string()),
             "a click on a name reads that name"
         );
         assert_eq!(
-            crate::render::list_at(list, &panes, None, list.y - 1),
+            crate::render::list_at(list, &panes, None, list.x, list.y - 1),
             None,
             "a row outside the list names nobody"
         );
         // A row below the last name names nobody.
         assert_eq!(
-            crate::render::list_at(list, &panes, None, list.bottom() - 1),
+            crate::render::list_at(list, &panes, None, list.x, list.bottom() - 1),
             None
         );
         // The line group is its own area, and a click there names its session.
         assert_eq!(
-            crate::render::line_at(parts[2], &panes, parts[2].y),
+            crate::render::line_at(parts[2], &panes, parts[2].x, parts[2].y),
             Some("peer".to_string())
         );
         // A press on a name becomes the command that sets it.
