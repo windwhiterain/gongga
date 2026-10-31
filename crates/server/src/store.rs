@@ -327,6 +327,13 @@ impl Store {
 
     /// Creates a session on `model`, which is `provider/model_name` whenever the
     /// roster can place the name.
+    ///
+    /// # Invariant
+    ///
+    /// Both model columns are written, and `model_name` is the same model without
+    /// its provider. A renamed column keeps its `NOT NULL`, so a row that named
+    /// only one of them could not be inserted at all -- and a bare name is right
+    /// for a row the roster cannot place.
     pub fn create_session(&self, name: &str, model: &str, cwd: &str) -> anyhow::Result<i64> {
         if name.trim().is_empty() {
             anyhow::bail!("session name must not be empty");
@@ -335,9 +342,9 @@ impl Store {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
         tx.execute(
-            "INSERT INTO sessions (name, status, model, cwd, created_at, updated_at)
-             VALUES (?1, 'idle', ?2, ?3, ?4, ?4)",
-            params![name, model, cwd, now],
+            "INSERT INTO sessions (name, status, model, model_name, cwd, created_at, updated_at)
+             VALUES (?1, 'idle', ?2, ?3, ?4, ?5, ?5)",
+            params![name, model, bare_model(model), cwd, now],
         )
         .map_err(|e| duplicate_session(name, e))?;
         let id = tx.last_insert_rowid();
@@ -1276,9 +1283,24 @@ fn parse_status(s: &str) -> SessionStatus {
     }
 }
 
+/// The model's own name: what follows the provider in `provider/model_name`.
+fn bare_model(model: &str) -> &str {
+    model.split_once('/').map(|(_, name)| name).unwrap_or(model)
+}
+
+/// What a failed insert means.
+///
+/// # Invariant
+///
+/// Only a `UNIQUE` violation is "already exists". Every other constraint is a bug
+/// in this module, and saying "already exists" for one would send a reader looking
+/// for a session that is not there.
 fn duplicate_session(name: &str, e: rusqlite::Error) -> anyhow::Error {
-    if matches!(e, rusqlite::Error::SqliteFailure(ref f, _) if f.code == rusqlite::ErrorCode::ConstraintViolation)
-    {
+    let text = e.to_string();
+    let unique = matches!(e, rusqlite::Error::SqliteFailure(ref f, _)
+        if f.code == rusqlite::ErrorCode::ConstraintViolation)
+        && text.contains("UNIQUE");
+    if unique {
         return anyhow::anyhow!("session {name:?} already exists");
     }
     anyhow::Error::from(e)
@@ -1541,6 +1563,42 @@ mod tests {
             row.model, "deepseek-official/deepseek-flash",
             "the pinned model is what the row kept"
         );
+    }
+
+    /// A session can still be created on a database that went through the rename.
+    ///
+    /// # Invariant
+    ///
+    /// The old `model` column was `NOT NULL`, and `RENAME COLUMN` keeps that, so a
+    /// row that wrote only `model` would be refused -- by a constraint the caller
+    /// reported as "already exists", which is why this is a test and not a comment.
+    #[test]
+    fn a_renamed_database_still_takes_a_new_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("g.db");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE sessions (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, \
+                 status TEXT NOT NULL, model TEXT NOT NULL, cwd TEXT NOT NULL, \
+                 created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, \
+                 provider TEXT);",
+            )
+            .unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        let id = store
+            .create_session("fresh", "deepseek-official/deepseek-flash", "/tmp")
+            .unwrap();
+        assert!(id > 0, "a new name is not a duplicate");
+        let row = store.get_session("fresh").unwrap().unwrap();
+        assert_eq!(row.model, "deepseek-official/deepseek-flash");
+        // The same name twice is the one case that really is a duplicate.
+        let err = store
+            .create_session("fresh", "m", "/tmp")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("already exists"), "{err}");
     }
 
     /// A database whose model column holds only a name, from before the provider
