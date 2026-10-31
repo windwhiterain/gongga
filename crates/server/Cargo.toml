@@ -48,6 +48,8 @@ tempfile = "3"
 # everything it started", which is what ending a persistent shell needs.
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    # Ctrl-C, Ctrl-Break and a closed console window ask to stop.
+    "Win32_System_Console",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
     # Walking the parent chain: a detached job that wraps this server is its

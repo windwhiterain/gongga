@@ -20,6 +20,7 @@ mod script;
 mod session;
 mod shell_command;
 mod ship;
+mod signal;
 mod store;
 mod tools;
 mod transcript;
@@ -350,6 +351,10 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             .ok(),
         "gongga server starting"
     );
+
+    // A signal is a stop request, not a kill: the same path as `cancel`.
+    let signalled = dispatch.clone();
+    signal::watch(move || async move { commands::stop(&signalled).await });
 
     let served = net::serve(Arc::new(cfg), dispatch, bus).await;
     // Every exit from `serve` lands here, so nothing it started outlives the

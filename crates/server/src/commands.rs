@@ -939,6 +939,12 @@ fn skill(args: &Args) -> Outcome {
     }
 }
 
+/// A stop asked from outside the protocol -- a signal -- says what `cancel` says.
+pub(crate) async fn stop(d: &Dispatch) {
+    let said = cancel(d).await;
+    tracing::info!(answer = %said.message, "stopped as a signal asks");
+}
+
 async fn cancel(d: &Dispatch) -> Outcome {
     // First: the listen loop keeps dispatching through the notice window; a turn
     // started there is not waited for.
