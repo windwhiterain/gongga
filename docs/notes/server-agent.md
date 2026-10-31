@@ -273,6 +273,34 @@ Nothing reads it through a command. `sqlite3 $GONGGA_HOME/gongga.db "select payl
 from events where kind='usage'"` is the whole interface, and a published command
 would put a provider's billing detail into the surface the agent is prompted on.
 
+The row also carries `ttft_ms` and `tps`, which are this server's clock rather
+than the provider's numbers: time from the request to the first delta of any
+kind, and output tokens over the time between that first delta and the end of
+the stream. SPEC puts the latest pair in a `full` pane's title, and they belong
+in the ledger for the same reason as the tokens -- "was it slow, or was it
+talking the whole time" is asked after the turn.
+
+## outside the usage guard
+
+A provider that reports no counts still took the time, so the wait for the first
+token and the rate are measured before the `usage` guard rather than inside it:
+the title can say how long a request took to start talking even when nothing
+about its billing is known.
+
+## a delta, not a whole list
+
+`Event::Usage` carries the three numbers the `usage` row was written from, per
+completed step rather than per turn: SPEC's title says "latest", so it has to be
+the last measurement. A delta rather than a whole `Event::Sessions`, because the
+client re-announces its layout on every event that changes what is drawn, and a
+layout per step would cost every view its scroll position -- SPEC says a view
+scrolled away from the bottom stays where it is.
+
+The provider's count is written beside the measured pair, in one statement, and
+a request that reports no `input_tokens` keeps the last one it reported: the
+number is never recomputed from text, and "unknown" is not an argument for
+throwing away a measurement that still describes the session's context.
+
 ## Attempt
 
 A bundle rather than three more parameters, because the three travel together
@@ -299,7 +327,9 @@ match against a log line that carries colour escapes.
 
 The `usage` row carries the step it belonged to and the wall time the stream
 took, retries inside it included: tokens and milliseconds are one experiment,
-and neither is derivable from the other.
+and neither is derivable from the other. The wait for the first token and the
+rate after it travel with it, because they are read from the same clock over the
+same stream.
 
 ## a_context_notice_is_a_row
 

@@ -1347,6 +1347,7 @@ mod tests {
                 listed: vec![Listed {
                     name: "main".to_string(),
                     status: "idle".to_string(),
+                    usage: String::new(),
                 }],
                 full: vec!["main".to_string()],
                 line: Vec::new(),
@@ -1962,10 +1963,12 @@ mod tests {
                 Listed {
                     name: "main".to_string(),
                     status: "idle".to_string(),
+                    usage: String::new(),
                 },
                 Listed {
                     name: "peer".to_string(),
                     status: "idle".to_string(),
+                    usage: String::new(),
                 },
             ],
             full: vec!["main".to_string()],

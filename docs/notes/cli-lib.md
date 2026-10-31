@@ -261,6 +261,17 @@ same rules in every implementation.
 JSON object each, and a filtered `cmd_result` would leave it waiting for an
 acknowledgement that was never printed.
 
+## Event::Usage
+
+A delta on the session the numbers belong to, then `refresh`: the title is part of
+the layout, so the layout is announced again. Nothing is filtered and nothing is
+written to a window -- SPEC gives these three numbers to a title, and a line in
+the log would be a second place saying the same thing.
+
+It is a delta rather than a republished `Sessions` for a reason the window would
+feel: every announcement re-lays the panes out, and one per model step would
+interrupt a reader who scrolled up while the answer was still being written.
+
 ## Client::run_event_ui
 
 `set_event_ui`'s three arguments are three settings, so the command is a loop over
@@ -277,6 +288,20 @@ them rather than three commands with one name. Two rules make that legible:
 `set_render_session` writes `RenderModes` and answers with the mode it wrote, or --
 with no `--mode` -- the mode that session has now. A mode is a view change: the
 blocks are untouched, so `full` after `none` brings the whole history back.
+
+## Listed::usage
+
+SPEC puts `context (tok)`, `tps (latest)` and `ttft (latest)` in the title of a
+`full` pane. The numbers arrive as numbers and leave as a sentence, spelled here
+rather than in the window for the same reason `status` is a word: a front-end
+that knows no protocol type can still draw it, and the two front-ends cannot
+disagree about how a rate is rounded.
+
+`usage_note` spells it: `tok 12345 · tps 41.6 · ttft 820ms`, one decimal for the
+rate, milliseconds under a second and seconds above it. A figure the last request
+did not produce is left out rather than shown as zero -- an empty context and a
+session that has never made a request are different facts, and `tok 0` cannot
+say which it is.
 
 ## Client::layout
 
@@ -730,3 +755,10 @@ prefix.
 The negative of the rule, and the one that bites silently: a server log already
 begins with `{name}: `, so tagging it would read as `[peer] peer: ...`. A
 command is this client's own input and belongs to no session.
+
+## a_usage_event_names_the_three_numbers_in_the_title
+
+The spelling is checked here rather than in the window's test, and the second
+half of the test is the point: the next request's measurement replaces the whole
+title, so a rate the latest request did not report cannot survive from the one
+before it.

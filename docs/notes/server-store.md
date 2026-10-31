@@ -207,10 +207,16 @@ that was seen.
 A fold needs the seqs to decide where the note may take over, not just the
 contents.
 
-## Store::set_context_tokens
+## Store::set_usage
 
-Called with the number from `usage`, never with a computed one: the provider is
-the only party that tokenises with the tokeniser it will actually bill against.
+Called with the token count from `usage`, never with a computed one: the provider
+is the only party that tokenises with the tokeniser it will actually bill against.
+The rate and the delay are this server's own clock, measured around the same
+request, and they are written in the same statement: the three are one
+measurement, and a row that held the context of one request beside the rate of
+another could not explain itself. `tps` and `ttft_ms` are the columns SPEC's
+`tps (latest)` and `ttft (latest)` are read from, and NULL is "not measured" --
+a provider that reports no token counts leaves them NULL rather than 0.
 
 ## Prompt, stamp, prompt, append_prompt
 
@@ -263,6 +269,20 @@ sessions are.
 
 `None` means the server-wide budget. The original line said "character budget";
 the config field is `compress_above_tokens`, so the wording may be stale.
+
+## SessionRow::usage
+
+One `protocol::Usage` rather than three loose fields, because the values are one
+measurement: `context_tokens` is the provider's billed input, `tps` is output
+tokens over the time the stream took, and `ttft_ms` is the wait for its first
+token. A session that has never completed a request has 0 context and no rate,
+and SPEC's title says nothing rather than zero.
+
+## SessionRow::info
+
+The row as a client is told about it. One function, because more than one place
+reports the same row -- the greeting and `publish_sessions` -- and two copies of
+six fields drift apart the first time one of them asks for a seventh.
 
 ## MessageRow
 
@@ -324,6 +344,10 @@ fail to open, or every existing session would be stranded.
 The context size is the provider's own number, so it has to survive a restart:
 the first request of the next run is compared against it before any new
 measurement exists.
+
+The rate and the delay are written with it, so the test reads all three back: a
+window that reattaches after a restart draws the same title, and SPEC's "latest"
+does not mean "since this process started".
 
 ## deleting_a_session_takes_its_events_with_it
 

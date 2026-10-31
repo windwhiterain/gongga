@@ -272,6 +272,8 @@ pub struct Listed {
     /// The status word, spelled: `idle`, `running`, `error`. A front-end that
     /// knows no protocol type can still draw it.
     pub status: String,
+    /// SPEC's context, tps and ttft, spelled for a `full` pane's title.
+    pub usage: String,
 }
 
 /// Everything the window needs to lay itself out, as SPEC's UI section has it.
@@ -502,6 +504,7 @@ impl Client {
                         SessionStatus::Error => "error",
                     }
                     .to_string(),
+                    usage: usage_note(&s.usage),
                 })
                 .collect(),
             // A session nobody set is `full`, so the lists read the sessions,
@@ -703,6 +706,14 @@ impl Client {
                         LineKind::System,
                         &format!("{prefix}{label}{suffix}"),
                     );
+                }
+                self.refresh(sink);
+            }
+            // SPEC's three numbers for a full pane's title: a delta, so a view
+            // that is scrolled up stays put as they change.
+            Event::Usage(e) => {
+                if let Some(s) = self.sessions.iter_mut().find(|s| s.name == e.session) {
+                    s.usage = e.usage;
                 }
                 self.refresh(sink);
             }
@@ -1201,6 +1212,30 @@ impl Client {
         self.sync_sticky();
         self.refresh(sink);
     }
+}
+
+/// The three numbers SPEC puts in a `full` pane's title, spelled for a terminal.
+///
+/// # Invariant
+///
+/// The label is the name SPEC gives the number, and a figure that was never
+/// measured is left out rather than shown as zero: `tok 0` reads as an empty
+/// context, which is not the same as a request that has not happened.
+fn usage_note(usage: &protocol::Usage) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if usage.context_tokens > 0 {
+        parts.push(format!("tok {}", usage.context_tokens));
+    }
+    if let Some(tps) = usage.tps {
+        parts.push(format!("tps {tps:.1}"));
+    }
+    if let Some(ms) = usage.ttft_ms {
+        parts.push(match ms {
+            0..1000 => format!("ttft {ms}ms"),
+            _ => format!("ttft {:.1}s", ms as f64 / 1000.0),
+        });
+    }
+    parts.join(" · ")
 }
 
 /// Which colour a stored row is drawn in; unknown kinds are context, not errors.
@@ -1974,6 +2009,7 @@ mod tests {
                 updated_at: 0,
                 messages: 0,
                 cwd: String::new(),
+                usage: protocol::Usage::default(),
             })
             .collect();
         c
@@ -2235,6 +2271,54 @@ mod tests {
             vec!["$ send_message"],
             "a log line is not a window line"
         );
+    }
+
+    /// SPEC's three numbers for a `full` pane's title, spelled the way a
+    /// terminal reads them.
+    ///
+    /// # Invariant
+    ///
+    /// One measurement replaces the whole title: a figure the latest request did
+    /// not produce is gone, never left over from the one before it.
+    #[test]
+    fn a_usage_event_names_the_three_numbers_in_the_title() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["peer"]);
+        let mut s = StreamSink::default();
+        c.handle_event(
+            Event::Usage(protocol::UsageEvent {
+                session: "peer".into(),
+                usage: protocol::Usage {
+                    context_tokens: 12_345,
+                    tps: Some(41.56),
+                    ttft_ms: Some(820),
+                },
+            }),
+            &mut s,
+        );
+        let announced = s.announced.clone().expect("a layout");
+        assert_eq!(
+            announced.listed[0].usage,
+            "tok 12345 · tps 41.6 · ttft 820ms"
+        );
+
+        // The next request reports no count of its own: the rate goes with it.
+        c.handle_event(
+            Event::Usage(protocol::UsageEvent {
+                session: "peer".into(),
+                usage: protocol::Usage {
+                    context_tokens: 900,
+                    tps: None,
+                    ttft_ms: Some(1_500),
+                },
+            }),
+            &mut s,
+        );
+        let announced = s.announced.clone().expect("a layout");
+        assert_eq!(announced.listed[0].usage, "tok 900 · ttft 1.5s");
+
+        // A session that has never made a request says nothing rather than zero.
+        assert_eq!(usage_note(&protocol::Usage::default()), "");
     }
 
     /// Captures the status line and footer, which the other sinks throw away.

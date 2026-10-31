@@ -43,6 +43,13 @@ One pane per announcement, in its order: the list, then the full panes, then the
 line groups, then the command line. An empty command name is no command line at all,
 which is what a frame of events alone asks for.
 
+A relayout carries each surviving pane's scroll over. The announcement is sent on
+every event that changes what is drawn -- a status, and now the measurement that
+puts numbers in a pane's title -- so a pane rebuilt from zero would jump to its
+newest row every step, which is exactly what SPEC says a view scrolled away from
+the bottom must not do. The scroll bound comes with it, because it belongs to the
+same view; the frame re-clamps both against the height it actually has.
+
 ## Panes::pin and Panes::scroll_by
 
 One pane's scroll, by name: SPEC's page keys act on the sticky session, not on

@@ -209,19 +209,13 @@ async fn handle_connection(
             },
             // The one list: built-ins, client commands, and a script's.
             commands: d.catalog().await,
+            // One picture of a row, shared with the list and the per-step update.
             sessions: d
                 .sessions
                 .list()
                 .unwrap_or_default()
                 .iter()
-                .map(|r| protocol::SessionInfo {
-                    name: r.name.clone(),
-                    status: r.status,
-                    created_at: r.created_at,
-                    updated_at: r.updated_at,
-                    messages: r.messages,
-                    cwd: r.cwd.clone(),
-                })
+                .map(|r| r.info())
                 .collect(),
         },
     )

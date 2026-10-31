@@ -88,6 +88,24 @@ and the side that owns it fills it in.
 are the protocol's own words (`RENDER_MODES`), not the client's state. Its
 `--session` completes through `Sessions` like every other session argument.
 
+## UsageEvent, Usage
+
+SPEC's `context (tok)`, `tps (latest)` and `ttft (latest)`, on the wire twice and
+for two different readers: `SessionInfo::usage` is the last measurement, so a
+window that dials now can draw a title before any turn happens, and `Event::Usage`
+is the same three numbers announced when a request completes.
+
+`Usage` is split out of `UsageEvent` so the numbers can be carried without a
+session name in the one place that does not need it -- the session is the field
+next to it -- and `#[serde(flatten)]` keeps the wire shape flat. Sent per step,
+not per turn, because the title says "latest": a step is a request, and a turn
+that calls three tools made three of them.
+
+The fields on `SessionInfo` are `#[serde(default)]`, so a client of a later build
+reads a greeting from a server that has never heard of them instead of failing to
+decode it: a window against an older server draws titles without numbers, which is
+what that server measured.
+
 ## REPLAY_TURN
 
 A transcript row read back is an event, not a field of a result, and it is one of the

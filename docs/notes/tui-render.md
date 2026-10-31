@@ -173,6 +173,18 @@ the share of rows its neighbours do not use. The header only appears for a windo
 with a name, so the unsplit area -- whose one window is named nothing -- looks exactly
 like it did before splitting existed.
 
+The header carries the numbers SPEC gives a `full` pane -- context, tps, ttft -- read
+from the announcement as the command layer spelled them, and then the note about a
+pane the division hid. One title, parts joined by `·`, because two strings written by
+two functions is how `main · 1 not shown · 1 not shown` happens.
+
+## usage_note
+
+The three numbers, and only on a `full` pane. SPEC's list row is a name, and a
+`line` group's row is one event: putting a rate in either would be a fourth thing
+that row says. A session that has measured nothing contributes no part at all, so
+the title falls back to the name it always had.
+
 ## draw_command
 
 One row, between the footer and the prompt, and only when the command layer
@@ -282,3 +294,14 @@ window hides the answer it is replying to.
 A three-row log is the floor the input may not take from.
 
 `layout_input` follows the cursor, so the last row is the one shown.
+
+## a_full_panes_title_carries_what_the_last_request_measured
+
+The three numbers appear on the `full` pane's header, a session that has measured
+nothing gets the bare name, and the `line` group's one row carries none of them --
+which is the whole of SPEC's rule about where they live.
+
+## a_relayout_leaves_every_pane_where_it_was_scrolled
+
+The announcement arrives on every step of a turn, so it is not a reason to move a
+view: a pane that kept its rows keeps its place in them.

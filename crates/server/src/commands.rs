@@ -1044,17 +1044,7 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
 pub fn publish_sessions(d: &Dispatch) {
     if let Ok(rows) = d.sessions.list() {
         d.bus.publish(Event::Sessions {
-            sessions: rows
-                .iter()
-                .map(|r| protocol::SessionInfo {
-                    name: r.name.clone(),
-                    status: r.status,
-                    created_at: r.created_at,
-                    updated_at: r.updated_at,
-                    messages: r.messages,
-                    cwd: r.cwd.clone(),
-                })
-                .collect(),
+            sessions: rows.iter().map(|r| r.info()).collect(),
         });
     }
 }

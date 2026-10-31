@@ -105,6 +105,17 @@ impl Panes {
         if !layout.command.is_empty() {
             panes.push(Pane::of(&layout.command, Kind::Command));
         }
+        // A relayout says what is drawn; where each view is scrolled it leaves.
+        for pane in &mut panes {
+            let kept = self
+                .panes
+                .iter()
+                .find(|old| old.name == pane.name && old.kind == pane.kind);
+            if let Some(old) = kept {
+                pane.scroll = old.scroll;
+                pane.max_scroll = old.max_scroll;
+            }
+        }
         for pane in &panes {
             // The command line is one row per block whatever the log-wide cap says.
             self.log

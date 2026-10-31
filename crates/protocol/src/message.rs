@@ -97,6 +97,32 @@ pub enum Event {
     },
     /// Diagnostic line for the TUI status bar.
     Log { level: LogLevel, message: String },
+    /// What a session's last completed request measured. See [`UsageEvent`].
+    Usage(UsageEvent),
+}
+
+/// One request, as the provider's own numbers and this server's clock measured it.
+///
+/// # Invariant
+///
+/// Sent per completed step, not per turn: a title that says "latest" has to be the
+/// last measurement, and a delta keeps the list from being republished every step.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UsageEvent {
+    pub session: String,
+    #[serde(flatten)]
+    pub usage: Usage,
+}
+
+/// What one request measured, without saying which session made it.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct Usage {
+    /// Input tokens the provider billed for the request; 0 is never measured.
+    pub context_tokens: u64,
+    /// Output tokens per second over the stream, when the request produced any.
+    pub tps: Option<f64>,
+    /// Time from the request to its first streamed token, in milliseconds.
+    pub ttft_ms: Option<u64>,
 }
 
 /// Which sub-stream of an assistant response a chunk belongs to.
@@ -164,6 +190,9 @@ pub struct SessionInfo {
     pub updated_at: i64,
     pub messages: u64,
     pub cwd: String,
+    /// The last measurement, so a window attached now draws it without a turn.
+    #[serde(default)]
+    pub usage: Usage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

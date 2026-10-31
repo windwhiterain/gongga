@@ -581,13 +581,36 @@ fn draw_panes(f: &mut Frame, s: &mut Screen, area: Rect) {
         // Only the borrow of one pane is live at a time.
         let last = index + 1 == slots.len();
         if let Some(header) = slot.header {
+            let mut pieces: Vec<String> = Vec::new();
+            // SPEC puts the measured numbers in the title of a `full` pane.
+            if let Some(usage) = usage_note(&s.panes, &slot.name) {
+                pieces.push(usage);
+            }
             // The last drawn pane says when the division hid one: a session whose
             // window is missing has to be explained somewhere.
-            let note = (last && hidden > 0).then(|| format!("· {hidden} not shown"));
+            if last && hidden > 0 {
+                pieces.push(format!("{hidden} not shown"));
+            }
+            let note = (!pieces.is_empty()).then(|| pieces.join(" · "));
             draw_group_header_note(f, &slot.name, header, sticky.as_deref(), note.as_deref());
         }
         draw_rows(f, s, &slot.name, slot.body);
     }
+}
+
+/// The numbers a `full` pane's title carries, as the command layer spelled them.
+///
+/// # Invariant
+///
+/// Here and nowhere else: SPEC gives context, tps and ttft to the title of a
+/// `full` pane, while a `line` session's row is one event and the list is names.
+fn usage_note(panes: &Panes, name: &str) -> Option<String> {
+    panes
+        .listed()
+        .iter()
+        .find(|listed| listed.name == name)
+        .map(|listed| listed.usage.clone())
+        .filter(|usage| !usage.is_empty())
 }
 
 /// Draws the single line `cmd` and its result share, when the area is split.
@@ -890,10 +913,12 @@ mod tests {
                 Listed {
                     name: "main".to_string(),
                     status: "idle".to_string(),
+                    usage: String::new(),
                 },
                 Listed {
                     name: "peer".to_string(),
                     status: "idle".to_string(),
+                    usage: String::new(),
                 },
             ],
             full: vec!["main".to_string()],
@@ -951,6 +976,7 @@ mod tests {
             .map(|name| Listed {
                 name: name.clone(),
                 status: "idle".to_string(),
+                usage: String::new(),
             })
             .collect();
         let mut screen = screen_with(&[]);
@@ -1183,14 +1209,17 @@ mod tests {
                 Listed {
                     name: "main".to_string(),
                     status: "idle".to_string(),
+                    usage: String::new(),
                 },
                 Listed {
                     name: "peer".to_string(),
                     status: "idle".to_string(),
+                    usage: String::new(),
                 },
                 Listed {
                     name: "third".to_string(),
                     status: "idle".to_string(),
+                    usage: String::new(),
                 },
             ],
             full: vec!["main".to_string(), "peer".to_string()],
@@ -1431,6 +1460,82 @@ mod tests {
         );
         // A column nobody draws is nobody's, and neither is the chrome above.
         assert_eq!(screen.pane_at_row(40, 12, 0, 0), None);
+    }
+
+    /// SPEC's `full` pane title: the context, the rate and the first-token delay.
+    ///
+    /// # Invariant
+    ///
+    /// The three go in the title of a `full` pane and nowhere else, and a session
+    /// that has measured nothing carries no trace of them.
+    #[test]
+    fn a_full_panes_title_carries_what_the_last_request_measured() {
+        let mut screen = split_screen();
+        let listed = |name: &str, usage: &str| Listed {
+            name: name.to_string(),
+            status: "idle".to_string(),
+            usage: usage.to_string(),
+        };
+        screen.panes.layout(&Layout {
+            listed: vec![
+                listed("main", "tok 12345 · tps 41.6 · ttft 820ms"),
+                listed("peer", ""),
+                listed("third", "tok 99 · tps 9.0"),
+            ],
+            full: vec!["main".to_string(), "peer".to_string()],
+            line: vec!["third".to_string()],
+            command: "cmd".to_string(),
+        });
+        let mut term = Terminal::new(TestBackend::new(100, 12)).unwrap();
+        term.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+        let body = parts(100, 12, 1, true, 1)[1];
+        let (_, panes) = crate::render::body(body, &screen.panes);
+        let (slots, _) = pane_slots(panes, &screen.panes, screen.sticky_session.as_deref());
+        let head = slots[0].header.expect("a header on the column");
+        assert_eq!(
+            read(&buf, head.x, head.width, head.y),
+            " main tok 12345 · tps 41.6 · ttft 820ms"
+        );
+        let head = slots[1].header.expect("a header on the column");
+        assert_eq!(read(&buf, head.x, head.width, head.y), " peer");
+
+        // SPEC gives them to a `full` pane: a `line` group's row is one event,
+        // so the numbers stop at the pane.
+        let groups = parts(100, 12, 1, true, 1)[2];
+        assert_eq!(
+            read(&buf, groups.x, groups.width, groups.y),
+            "third",
+            "one row per group: the name, and no measurement"
+        );
+    }
+
+    /// A layout says what is drawn; where each view is scrolled is not its business.
+    #[test]
+    fn a_relayout_leaves_every_pane_where_it_was_scrolled() {
+        let mut screen = split_screen();
+        let pane = screen.panes.get_mut("main").expect("main");
+        pane.max_scroll = 5;
+        screen.panes.scroll_by("main", 3);
+        // The next step's measurement arrives as a layout, as does a status change.
+        screen.panes.layout(&Layout {
+            listed: vec![Listed {
+                name: "main".to_string(),
+                status: "running".to_string(),
+                usage: "tok 900 · tps 12.0".to_string(),
+            }],
+            full: vec!["main".to_string(), "peer".to_string()],
+            line: vec!["third".to_string()],
+            command: "cmd".to_string(),
+        });
+        assert_eq!(
+            screen.panes.get("main").expect("main").scroll,
+            3,
+            "a title that changes every step must not read as \"go to the bottom\""
+        );
     }
 
     /// Layout, window and the rows the bottom of the log shows, without a terminal.

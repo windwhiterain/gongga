@@ -492,6 +492,8 @@ impl SessionManager {
                 created_at: 0,
                 updated_at: 0,
                 messages: 0,
+                // A session that just came into existence has measured nothing.
+                usage: protocol::Usage::default(),
             },
             &mut live,
         )

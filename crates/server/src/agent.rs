@@ -389,6 +389,9 @@ impl Agent {
         // One number for "how long the model took": the whole stream, retries
         // inside it included, because that is what the wall clock paid.
         let requested = std::time::Instant::now();
+        // SPEC's ttft and tps both count from the first token: the wait for it,
+        // then what came out over the time after.
+        let mut first_token: Option<std::time::Instant> = None;
         let mut rx = llm.stream(
             &prompt.instructions,
             prompt.handover.as_deref(),
@@ -406,6 +409,7 @@ impl Agent {
             match event {
                 LlmEvent::PartStart { .. } => {}
                 LlmEvent::Delta { part, text, .. } => {
+                    first_token.get_or_insert_with(std::time::Instant::now);
                     self.bus.publish(Event::Response(ResponseEvent {
                         session: name.to_string(),
                         turn,
@@ -494,7 +498,15 @@ impl Agent {
                 }
                 LlmEvent::Completed { usage } => {
                     saw_completion = true;
-                    if let Some(u) = usage {
+                    // Outside the guard: a provider with no counts still took the time.
+                    let ttft_ms =
+                        first_token.map(|t| t.duration_since(requested).as_millis() as u64);
+                    let streamed = first_token.map(|t| t.elapsed().as_secs_f64());
+                    let tps = match (usage.as_ref().and_then(|u| u.output_tokens), streamed) {
+                        (Some(out), Some(secs)) if secs > 0.0 => Some(out as f64 / secs),
+                        _ => None,
+                    };
+                    if let Some(u) = &usage {
                         let cached = u.cached_tokens();
                         tracing::info!(
                             session = %name,
@@ -517,13 +529,30 @@ impl Agent {
                                 "cached": cached,
                                 "output": u.output_tokens,
                                 "total": u.total_tokens,
+                                "ttft_ms": ttft_ms,
+                                "tps": tps,
                             }),
                         );
-                        // The provider's own count, never computed: no arithmetic matches it.
-                        if let Some(input) = u.input_tokens {
-                            let _ = self.store.set_context_tokens(id, input);
-                        }
                     }
+                    // The provider's own count, never computed: no arithmetic
+                    // matches it. A request that reported none keeps the last one.
+                    let context = usage
+                        .as_ref()
+                        .and_then(|u| u.input_tokens)
+                        .or_else(|| self.store.context_tokens(id).ok())
+                        .unwrap_or(0);
+                    let measured = protocol::Usage {
+                        context_tokens: context,
+                        tps,
+                        ttft_ms,
+                    };
+                    let _ = self.store.set_usage(id, context, tps, ttft_ms);
+                    // A delta, not a whole list: republishing that every step
+                    // would cost every view its scroll.
+                    self.bus.publish(Event::Usage(protocol::UsageEvent {
+                        session: name.to_string(),
+                        usage: measured,
+                    }));
                 }
                 // Fatal by the time it reaches here: `llm::stream` retries
                 // what another attempt could fix and reports the rest.

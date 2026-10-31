@@ -35,5 +35,6 @@ pub use message::{
     ArgSpec, Args, BLOCK_SIZES, ClientInfo, ClientMessage, CmdArg, CommandSpec, CommandTarget,
     CompletionSource, Event, LogLevel, PROTOCOL_VERSION, RENDER_MODES, REPLAY_TURN, ResponseEvent,
     ResponsePart, ServerInfo, ServerMessage, SessionInfo, SessionStatus, ToolAnswerEvent,
-    ToolStream, client_commands, decode_client, decode_server, encode_client, encode_server,
+    ToolStream, Usage, UsageEvent, client_commands, decode_client, decode_server, encode_client,
+    encode_server,
 };

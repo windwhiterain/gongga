@@ -75,7 +75,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- only honest answer to "how full is the context". Surviving a restart is
     -- the point -- the first request of the next run needs a size to compare
     -- against, and no amount of character counting would give a better one.
-    context_tokens INTEGER NOT NULL DEFAULT 0
+    context_tokens INTEGER NOT NULL DEFAULT 0,
+    -- Output tokens per second, and milliseconds to the first token, of the last
+    -- completed request: SPEC's `tps (latest)` and `ttft (latest)`, kept beside the
+    -- context so a window attached now has the numbers without replaying a turn.
+    tps REAL,
+    ttft_ms INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -189,6 +194,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             "thinking_effort",
             "ALTER TABLE sessions ADD COLUMN thinking_effort TEXT",
         ),
+        ("tps", "ALTER TABLE sessions ADD COLUMN tps REAL"),
+        ("ttft_ms", "ALTER TABLE sessions ADD COLUMN ttft_ms INTEGER"),
     ] {
         add_column_if_missing(conn, "sessions", column, ddl)?;
     }
@@ -360,7 +367,8 @@ impl Store {
     const SESSION_SELECT: &'static str = "SELECT s.id, s.name, s.status, s.model, s.cwd,
                     s.created_at, s.updated_at,
                     (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS messages,
-                    s.llm, s.context_limit, s.thinking_effort
+                    s.llm, s.context_limit, s.thinking_effort,
+                    s.context_tokens, s.tps, s.ttft_ms
              FROM sessions s";
 
     /// One session, in the same shape the list returns, by name rather than by scan.
@@ -384,6 +392,11 @@ impl Store {
             llm: r.get(8)?,
             context_limit: r.get::<_, Option<i64>>(9)?.map(|v| v as u8),
             thinking_effort: r.get(10)?,
+            usage: protocol::Usage {
+                context_tokens: r.get::<_, i64>(11)?.max(0) as u64,
+                tps: r.get(12)?,
+                ttft_ms: r.get::<_, Option<i64>>(13)?.map(|ms| ms.max(0) as u64),
+            },
         })
     }
 
@@ -545,11 +558,28 @@ impl Store {
         Ok(n.max(0) as u64)
     }
 
-    /// Records what the provider said the last request cost in input tokens.
-    pub fn set_context_tokens(&self, session_id: i64, tokens: u64) -> anyhow::Result<()> {
+    /// What one request measured: billed input tokens, throughput, first-token delay.
+    ///
+    /// # Invariant
+    ///
+    /// One statement: the three are one measurement, and a window that read the
+    /// context of one request beside the rate of another would be a lie the row
+    /// cannot explain.
+    pub fn set_usage(
+        &self,
+        session_id: i64,
+        context_tokens: u64,
+        tps: Option<f64>,
+        ttft_ms: Option<u64>,
+    ) -> anyhow::Result<()> {
         self.lock().execute(
-            "UPDATE sessions SET context_tokens = ?1 WHERE id = ?2",
-            params![tokens as i64, session_id],
+            "UPDATE sessions SET context_tokens = ?1, tps = ?2, ttft_ms = ?3 WHERE id = ?4",
+            params![
+                context_tokens as i64,
+                tps,
+                ttft_ms.map(|ms| ms as i64),
+                session_id
+            ],
         )?;
         Ok(())
     }
@@ -896,6 +926,24 @@ pub struct SessionRow {
     pub created_at: i64,
     pub updated_at: i64,
     pub messages: u64,
+    /// SPEC's `context (tok)`, `tps (latest)` and `ttft (latest)`: what the last
+    /// completed request measured.
+    pub usage: protocol::Usage,
+}
+
+impl SessionRow {
+    /// The row as a client is told about it, so no two reports can differ.
+    pub fn info(&self) -> protocol::SessionInfo {
+        protocol::SessionInfo {
+            name: self.name.clone(),
+            status: self.status,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            messages: self.messages,
+            cwd: self.cwd.clone(),
+            usage: self.usage,
+        }
+    }
 }
 
 /// A window of the transcript plus where it ends, as `get_messages` reports it.
@@ -1387,11 +1435,16 @@ mod tests {
             let id = store.create_session("main", "m", "C:/x").unwrap();
             // Never measured: zero, which the agent reads as "small enough".
             assert_eq!(store.context_tokens(id).unwrap(), 0);
-            store.set_context_tokens(id, 12_345).unwrap();
+            store.set_usage(id, 12_345, Some(41.5), Some(820)).unwrap();
             id
         };
         let reopened = Store::open(&path).unwrap();
         assert_eq!(reopened.context_tokens(id).unwrap(), 12_345);
+        // The rate and the delay are the same measurement, so they survive with it.
+        let row = reopened.get_session("main").unwrap().unwrap();
+        assert_eq!(row.usage.context_tokens, 12_345);
+        assert_eq!(row.usage.tps, Some(41.5));
+        assert_eq!(row.usage.ttft_ms, Some(820));
     }
 
     #[test]
