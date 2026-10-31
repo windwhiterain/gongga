@@ -26,7 +26,15 @@ fn run() -> Result<u8, String> {
         std::fs::File::open(&me).map_err(|e| format!("opening {}: {e}", me.display()))?;
     let start = payload::footer_of(&mut file)
         .map_err(|e| format!("reading {}: {e}", me.display()))?
-        .ok_or_else(|| format!("{} carries no programs", me.display()))?;
+        .ok_or_else(|| {
+            format!(
+                "{} carries no programs: this is the head alone, which \
+                 `cargo install --git ... gongga-bundle` cannot fill. Install the \
+                 programs instead (`cargo install --git ... gongga-cli gongga-server`), \
+                 or run scripts/bundle.sh to get a file with them inside",
+                me.display()
+            )
+        })?;
     let programs = payload::programs(&mut file, start)
         .map_err(|e| format!("reading the table of {}: {e}", me.display()))?;
     let wanted = program_name();
