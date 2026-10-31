@@ -73,6 +73,20 @@ layout part of what a database transaction means.
 worse than a leak: SQLite hands a freed id out again, and the dead session's
 events then pose as the new session's history.
 
+## Store::list_sessions
+
+The order is the order the sessions were made in, newest first, and it is the one
+thing about a session no later work can change: a window lays its panes out in
+this order, so a name that moves takes the pane the operator was reading with it.
+
+Ordering by `updated_at` looked like "recent activity first" and behaved like
+"whatever finished last", because `finish_turn` rewrites that column at the end of
+a turn. Two sessions made in the same millisecond had no order at all between them,
+and a restart that replayed owed work finished those turns in scheduling order, so
+the same home came back drawn differently. `created_at` is written by
+`create_session` and by nothing else, and `id` is unique, so the pair is a total
+order that survives both the tie and the restart.
+
 ## Store::get_session
 
 A `WHERE name = ?` rather than "list every session and look for it":
@@ -340,6 +354,18 @@ The test folds through `fold_from_outside`: a second connection issuing the same
 statement the skill issues. There is no setter to reach for, not even behind
 `#[cfg(test)]`, because a method the store owns would be exactly the capability
 this design takes away from the server.
+
+## the_session_list_orders_by_creation_and_not_by_activity
+
+Both halves of a restart are in the test because they broke the order for two
+different reasons. A finished turn was the sort key itself, so it moved its own
+session to the top; and reopening the file is what a restart looks like from the
+store's side, after which the turns it owed finish in whatever order they finish.
+
+The three sessions are created inside one millisecond on any machine fast enough
+to matter, which is the other half of the old bug: `updated_at` gave them no order
+between them, so the list fell back to insertion order and any later touch moved
+one of them.
 
 ## session_tuning_round_trips
 

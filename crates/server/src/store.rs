@@ -403,10 +403,19 @@ impl Store {
         Ok(ids)
     }
 
+    /// Every session, newest first, in an order no session's work can move.
+    ///
+    /// # Invariant
+    ///
+    /// `created_at` is written once and never rewritten, and `id` breaks the tie
+    /// between two sessions made in the same millisecond. `updated_at` is not part
+    /// of the order: a finished turn rewrites it, and a restart that replays owed
+    /// work finishes turns, so the list used to come back in another order. See
+    /// `docs/notes/server-store.md`.
     pub fn list_sessions(&self) -> anyhow::Result<Vec<SessionRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(&format!(
-            "{} ORDER BY s.updated_at DESC",
+            "{} ORDER BY s.created_at DESC, s.id DESC",
             Self::SESSION_SELECT
         ))?;
         let rows = stmt
@@ -1438,6 +1447,48 @@ mod tests {
         assert_eq!(list[0].name, "main");
         assert!(store.delete_session("main").unwrap());
         assert!(store.list_sessions().unwrap().is_empty());
+    }
+
+    /// A pane is read by where it sits, so a session's work must not move it.
+    ///
+    /// # Invariant
+    ///
+    /// The creation order survives both halves of a restart: a turn that finishes,
+    /// which is what `updated_at` used to be ordered by, and a second connection
+    /// to the same file, which is a restart as the store can see one.
+    #[test]
+    fn the_session_list_orders_by_creation_and_not_by_activity() {
+        let (dir, store) = temp_store();
+        let path = dir.path().join("g.db");
+        // Only the order they were made in says `main` first: not the name, not the clock.
+        for name in ["zeta", "alpha", "main"] {
+            store.create_session(name, "m", "C:/x").unwrap();
+        }
+        let names = |store: &Store| -> Vec<String> {
+            store
+                .list_sessions()
+                .unwrap()
+                .iter()
+                .map(|row| row.name.clone())
+                .collect()
+        };
+        let newest_first = ["main", "alpha", "zeta"];
+        assert_eq!(names(&store), newest_first);
+
+        // A turn ending touches `updated_at`; that is not a reorder.
+        let alpha = store.get_session("alpha").unwrap().unwrap().id;
+        store
+            .finish_turn(alpha, "alpha", &[], SessionStatus::Idle, true)
+            .unwrap();
+        assert_eq!(names(&store), newest_first);
+
+        // Nor is a restart: the turns it owes finish in whatever order they finish.
+        let reopened = Store::open(&path).unwrap();
+        let zeta = reopened.get_session("zeta").unwrap().unwrap().id;
+        reopened
+            .finish_turn(zeta, "zeta", &[], SessionStatus::Idle, true)
+            .unwrap();
+        assert_eq!(names(&reopened), newest_first);
     }
 
     #[test]
