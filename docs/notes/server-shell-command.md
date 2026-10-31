@@ -71,6 +71,14 @@ the home's `bin` -- the command layer still wins -- and before the inherited
 entries, so that `find`, `sort` and `tar` mean the POSIX tools and not the
 operating system's namesakes.
 
+Each name appears once, first spelling wins. A handover hands the previous
+shell's `PATH` on -- the successor is started by a shell, and inherits it -- so
+the entries this adds would come back as inherited ones next time and the list
+would grow by an entry per handover. It already had: two copies of the home's
+`bin` and two of Git's `usr/bin` in one measured shell. Two spellings of one
+directory are one name here, compared trimmed of a trailing separator and
+case-folded, because on Windows they are the same directory.
+
 Only for a shell. `native_path` is what a script's interpreter reads, and on Unix
 nothing is added at all: there the tools a shell runs *are* the ones it inherited,
 and an injected `/usr/bin` would put a distribution's copy ahead of whatever this

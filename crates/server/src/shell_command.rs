@@ -86,7 +86,9 @@ pub fn path(home: &Path) -> String {
     let mut parts = vec![shell_path(&inherited[0])];
     parts.extend(SHELL_TOOLS.iter().map(|tool| tool.to_string()));
     parts.extend(inherited.iter().skip(1).map(|entry| shell_path(entry)));
-    parts.join(":")
+    // A shell hands its own `PATH` to the next server, which would add these
+    // entries again on every handover: kept once, the first name still wins.
+    unique(parts).join(":")
 }
 
 /// The directories a shell keeps its own tools in, when `PATH` names none of them.
@@ -109,7 +111,41 @@ const SHELL_TOOLS: &[&str] = &[];
 /// Native shape, because an interpreter given `/c/...` entries loses its own
 /// lookups. Both shapes name the same directory, so `gongga` resolves to one file.
 pub fn native_path(home: &Path) -> OsString {
-    std::env::join_paths(entries(home)).unwrap_or_else(|_| home.join("bin").into_os_string())
+    let parts = unique(
+        entries(home)
+            .into_iter()
+            .map(|entry| entry.to_string_lossy().into_owned())
+            .collect(),
+    );
+    std::env::join_paths(parts).unwrap_or_else(|_| home.join("bin").into_os_string())
+}
+
+/// The entries in order, each named once, keeping the first spelling of a name.
+///
+/// # Invariant
+///
+/// Two spellings of one directory are one entry on Windows: compared trimmed of
+/// its trailing separator and case-folded, because a handover hands the previous
+/// shell's `PATH` on and an uncompared list grows by an entry per handover.
+fn unique(entries: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    entries
+        .into_iter()
+        .filter(|entry| seen.insert(canonical(entry)))
+        .collect()
+}
+
+/// What makes two spellings of one directory the same name.
+fn canonical(entry: &str) -> String {
+    let trimmed = match entry.trim_end_matches(['/', '\\']) {
+        "" => entry,
+        shorter => shorter,
+    };
+    if cfg!(windows) {
+        trimmed.to_lowercase()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 /// This home's `bin`, then whatever this process inherited, without empty entries.
@@ -164,14 +200,45 @@ mod tests {
         let parts: Vec<&str> = joined.split(':').collect();
         assert_eq!(parts[0], shell_path(&home.path().join("bin")), "{joined}");
         assert_eq!(parts[1..1 + SHELL_TOOLS.len()], *SHELL_TOOLS, "{joined}");
-        // And only once: an entry repeated is a lookup that answers twice as slow.
-        for tool in SHELL_TOOLS {
-            assert_eq!(
-                parts.iter().filter(|part| *part == tool).count(),
-                1,
-                "{joined}"
-            );
+    }
+
+    /// A handover hands the previous shell's `PATH` on, so an uncompared list
+    /// grows by an entry every time a server replaces itself.
+    #[test]
+    fn no_directory_is_named_twice() {
+        let home = tempfile::tempdir().unwrap();
+        for joined in [
+            path(home.path()),
+            native_path(home.path()).to_string_lossy().into_owned(),
+        ] {
+            let parts: Vec<String> = joined
+                .split(if cfg!(windows) { ';' } else { ':' })
+                .map(canonical)
+                .collect();
+            let mut seen = std::collections::HashSet::new();
+            for part in &parts {
+                assert!(seen.insert(part.clone()), "{part} twice in {joined}");
+            }
         }
+    }
+
+    /// Measured, not assumed: the regression this module exists for was a shell
+    /// whose `PATH` named no `usr/bin`, where `ls` was `command not found`.
+    #[test]
+    fn a_shell_given_this_path_can_run_ls() {
+        let Some(program) = crate::config::detect_git_bash() else {
+            return;
+        };
+        let home = tempfile::tempdir().unwrap();
+        let status = std::process::Command::new(&program)
+            .args(["--norc", "--noprofile", "-c", "ls /dev/null >/dev/null"])
+            .env("PATH", path(home.path()))
+            .status()
+            .expect("spawning a shell");
+        assert!(
+            status.success(),
+            "a shell given the server's PATH cannot run ls"
+        );
     }
 
     /// The same directory, in the shape a script's interpreter reads, so `gongga`
