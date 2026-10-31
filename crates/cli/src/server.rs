@@ -222,9 +222,15 @@ fn install_commands(home: &Path, server: &Path) {
 fn install_pair(home: &Path, cli: &Path, server: &Path) {
     for (name, program) in [(SERVER, server), (COMMAND, cli)] {
         if let Err(e) = place(home, name, program) {
+            // A copy that is there and in use is not a problem worth a red line
+            // on a window: something is running it, which is why it cannot be
+            // replaced. Missing is the case that needs saying.
+            if home.join("bin").join(program_name(name)).is_file() {
+                continue;
+            }
             eprintln!(
                 "warning: cannot install `{name}` in {}: {e}",
-                home.display()
+                home.join("bin").display()
             );
         }
     }
