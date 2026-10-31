@@ -91,23 +91,26 @@ pub struct Chrome {
 /// # Invariant
 ///
 /// This is the only layout a frame has: the copy, the page height and the mouse
-/// all ask here, so what an operator reads is what was on the screen. The body
-/// is one horizontal split, and what is left of it after the line groups is the
-/// panes' height.
+/// all ask here, so what an operator reads is what was on the screen. The help
+/// row is reserved before anything else, so it is the last row of any window.
 pub fn areas(area: Rect, input_rows: u16, chrome: Chrome) -> Vec<Rect> {
     // One row per group, never more than half the window: the panes keep some.
     let lines = (chrome.line_groups as u16).min(area.height / 2);
-    Layout::vertical([
+    // The help row first: on a short window the rest shrinks, so the keys stay.
+    let [rest, help] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(HELP_ROWS)]).areas(area);
+    let mut chunks: Vec<Rect> = Layout::vertical([
         Constraint::Length(1),                                  // header
         Constraint::Min(1),                                     // sessions | panes
         Constraint::Length(lines),                              // one line per event
         Constraint::Length(if chrome.quota { 1 } else { 0 }),   // active_quota
         Constraint::Length(if chrome.command { 1 } else { 0 }), // cmd and its result
         Constraint::Length(input_rows),                         // the prompt
-        Constraint::Length(HELP_ROWS),                          // the whole keyboard
     ])
-    .split(area)
-    .to_vec()
+    .split(rest)
+    .to_vec();
+    chunks.push(help);
+    chunks
 }
 
 /// The body split into the session list and the panes beside it.
@@ -1973,6 +1976,34 @@ mod tests {
             "Alt+Q quit",
         ] {
             assert!(HELP.contains(key), "{key:?} is a key nobody finds");
+        }
+    }
+
+    /// A window too short for its parts still ends on the help row.
+    ///
+    /// # Invariant
+    ///
+    /// The help row is the layout's last one, so a short terminal gives it the row
+    /// before it drops a pane's: the keys are what an operator looks for when the
+    /// window is unreadable, and a frame that panics on a height is worse than a
+    /// frame that shows less.
+    #[test]
+    fn a_short_window_still_ends_on_the_help_row() {
+        for height in 3..8u16 {
+            let mut screen = screen_with(&["L0", "L1", "L2"]);
+            let (width, height) = (60u16, height);
+            let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
+            term.draw(|f| {
+                draw(f, &mut screen);
+            })
+            .unwrap();
+            let buf = term.backend().buffer().clone();
+            let last = row_text(&buf, height - 1);
+            // A line cut off by the window starts it; a whole one is it.
+            assert!(
+                HELP.starts_with(&last) || last == HELP,
+                "at height {height} the last row reads {last:?}"
+            );
         }
     }
 

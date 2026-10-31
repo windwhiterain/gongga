@@ -33,6 +33,14 @@ The row the help line takes out of the window: one. `input_rows` counts it befor
 letting the prompt grow, so the three log rows, the chrome, the command line and
 the help line all come first.
 
+## areas
+
+Seven rects, and the help row is the last of them by construction: it is cut off
+the bottom of the window first, and the six above it are laid out in what is
+left. A window too short for its parts therefore loses a pane row, not the keys —
+the solver returns whatever it likes when the constraints cannot all hold, and
+"the help row is the last row" has to survive a three-row terminal.
+
 ## draw
 
 The log borrows the screen mutably: it is where the scroll offset gets clamped
