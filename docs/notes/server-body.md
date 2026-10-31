@@ -45,3 +45,17 @@ The source names a session and a pinned `upto_seq` rather than holding a body,
 because a body is consumed by the attempt that sends it. Retries are `LlmClient`'s
 own loop, so every attempt opens the same window again: the same rows, in the same
 order, for the same request.
+
+## thinking before every call
+
+DeepSeek's thinking mode refuses a request whose second `function_call` in a step
+has no `reasoning` item before it: `400 ... The reasoning_text in the thinking mode
+must be passed back to the API`. One assistant message can ask for two tools, and
+it then has one reasoning item and two calls -- so a step with more than one call
+repeats its reasoning before each call after the first, with the `id` dropped
+because an id names one item.
+
+The item is therefore buffered with the step rather than written where it arrived,
+even though nothing pairs it. A row written before the text was kept has only the
+summary the reader saw; the store heals it from that on open, since the summary is
+the provider's own text and the step would otherwise fail forever.

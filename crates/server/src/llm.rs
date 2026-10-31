@@ -461,10 +461,11 @@ pub enum LlmEvent {
         name: String,
         arguments: String,
     },
-    /// A reasoning item to persist, for replay on the next request.
+    /// A reasoning item to persist: `text` goes back verbatim, `summary` to the reader.
     Reasoning {
         item_id: String,
         summary: String,
+        text: String,
         encrypted: Option<String>,
     },
     /// Assistant text, emitted once at the end of the message item.
@@ -1120,6 +1121,23 @@ impl<'a> Outbox<'a> {
     }
 }
 
+/// A content array as one string: the parts a provider writes text into.
+fn parts_text(value: &Value) -> String {
+    if let Some(text) = value.as_str() {
+        return text.to_string();
+    }
+    value
+        .as_array()
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|p| p["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("")
+        })
+        .unwrap_or_default()
+}
+
 async fn handle(
     event: SseEvent,
     items: &mut HashMap<String, ItemMeta>,
@@ -1270,25 +1288,22 @@ async fn handle(
             };
             match kind {
                 ItemKind::Reasoning => {
-                    // The provider's summary wins when it sends one; the
-                    // accumulated deltas are the fallback when it does not.
-                    let mut summary = item["summary"]
-                        .as_array()
-                        .map(|parts| {
-                            parts
-                                .iter()
-                                .filter_map(|p| p["text"].as_str())
-                                .collect::<Vec<_>>()
-                                .join("")
-                        })
-                        .or_else(|| item["summary"].as_str().map(str::to_string))
-                        .unwrap_or_default();
+                    // `content` is the thinking itself; `summary` is the line the
+                    // provider wrote about it, and the deltas are the fallback.
+                    let text = parts_text(&item["content"]);
+                    let mut summary = parts_text(&item["summary"]);
                     if summary.is_empty() {
                         summary = meta.text.clone();
                     }
+                    let text = if text.is_empty() {
+                        summary.clone()
+                    } else {
+                        text
+                    };
                     out.send(LlmEvent::Reasoning {
                         item_id: id.clone(),
                         summary,
+                        text,
                         encrypted: item["encrypted_content"].as_str().map(str::to_string),
                     })
                     .await?;

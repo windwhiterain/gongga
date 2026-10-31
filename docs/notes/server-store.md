@@ -404,3 +404,10 @@ reader learns nothing happened.
 as zero: nothing is estimated, and a renamed column is a change here rather
 than in every tool that reads a home.
 
+## reasoning rows carry their text
+
+A `reasoning` row keeps three things: the encrypted blob, the summary a reader
+sees, and the text the provider sent. The text is not decoration -- a replayed
+thinking turn that lacks it is refused -- so it is stored beside the summary and
+rebuilt into the wire item's `content` array. `backfill_reasoning_text` gives rows
+written before that the summary as their text, once, on open.

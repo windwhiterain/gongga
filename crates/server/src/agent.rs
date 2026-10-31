@@ -478,9 +478,12 @@ impl Agent {
                 LlmEvent::Reasoning {
                     item_id,
                     summary,
+                    text,
                     encrypted,
                 } => {
-                    let mut payload = json!({"summary": summary});
+                    // The text is not for the reader: it is what the provider
+                    // demands back, verbatim, on the next request.
+                    let mut payload = json!({"summary": summary, "text": text});
                     if let Some(e) = encrypted {
                         payload["encrypted"] = json!(e);
                     }
