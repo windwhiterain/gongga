@@ -590,19 +590,23 @@ impl Agent {
                             }),
                         );
                     }
-                    // The provider's own count, never computed: no arithmetic
-                    // matches it. A request that reported none keeps the last one.
+                    // The provider's own counts, never computed: a request that
+                    // reported none keeps the last one it did.
                     let context = usage
                         .as_ref()
                         .and_then(|u| u.input_tokens)
                         .or_else(|| self.store.context_tokens(id).ok())
                         .unwrap_or(0);
+                    // A share of one request's context says nothing about the next
+                    // one's, so an unreported count is not carried over.
+                    let cached = usage.as_ref().and_then(|u| u.cached_tokens());
                     let measured = protocol::Usage {
                         context_tokens: context,
+                        cached_tokens: cached,
                         tps,
                         ttft_ms,
                     };
-                    let _ = self.store.set_usage(id, context, tps, ttft_ms);
+                    let _ = self.store.set_usage(id, measured);
                     // A delta, not a whole list: republishing that every step
                     // would cost every view its scroll.
                     self.bus.publish(Event::Usage(protocol::UsageEvent {

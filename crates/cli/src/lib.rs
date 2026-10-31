@@ -280,13 +280,17 @@ pub struct Listed {
 ///
 /// # Invariant
 ///
-/// The three lists are one decision read three ways: a session is in `full`, in
-/// `line`, or in neither -- never in both -- and `listed` holds every session the
-/// server knows whatever its mode, because the list is how a mode gets changed.
+/// One decision read four ways: a session is in `none`, in `full` or in `line`,
+/// never in two -- SPEC gives each render mode one area of the window, and a name
+/// drawn twice would be a second place saying the same thing. `listed` is the
+/// announcement itself, every session with its status and its numbers, so a
+/// front-end can read a name it draws anywhere.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Layout {
-    /// The session list, in the server's order.
+    /// Every session the server knows, in its order.
     pub listed: Vec<Listed>,
+    /// Sessions drawn as a row of the session list -- SPEC's `render mode = none`.
+    pub none: Vec<String>,
     /// Sessions drawn as a pane each, in the list's order.
     pub full: Vec<String>,
     /// Sessions drawn as one line per event, in the list's order.
@@ -506,6 +510,13 @@ impl Client {
                     .to_string(),
                     usage: usage_note(&s.usage),
                 })
+                .collect(),
+            // SPEC's list is the `none` mode, so it holds what no other area draws.
+            none: self
+                .sessions
+                .iter()
+                .filter(|s| self.render.mode_of(&s.name) == RenderMode::None)
+                .map(|s| s.name.clone())
                 .collect(),
             // A session nobody set is `full`, so the lists read the sessions,
             // not the file's entries.
@@ -1214,17 +1225,24 @@ impl Client {
     }
 }
 
-/// The three numbers SPEC puts in a `full` pane's title, spelled for a terminal.
+/// The numbers SPEC puts in a `full` pane's title, spelled for a terminal.
 ///
 /// # Invariant
 ///
-/// The label is the name SPEC gives the number, and a figure that was never
-/// measured is left out rather than shown as zero: `tok 0` reads as an empty
-/// context, which is not the same as a request that has not happened.
+/// Each figure carries the unit SPEC names for it, and one the last request did
+/// not measure is left out rather than shown as zero: `ctx 0` would read as an
+/// empty context, which is not a request that never happened.
 fn usage_note(usage: &protocol::Usage) -> String {
     let mut parts: Vec<String> = Vec::new();
     if usage.context_tokens > 0 {
-        parts.push(format!("tok {}", usage.context_tokens));
+        parts.push(format!("ctx {}", usage.context_tokens));
+        // SPEC says the share, so the client does the division, not the reader.
+        if let Some(cached) = usage.cached_tokens {
+            parts.push(format!(
+                "cached {}%",
+                cached.saturating_mul(100) / usage.context_tokens
+            ));
+        }
     }
     if let Some(tps) = usage.tps {
         parts.push(format!("tps {tps:.1}"));
@@ -2290,6 +2308,7 @@ mod tests {
                 session: "peer".into(),
                 usage: protocol::Usage {
                     context_tokens: 12_345,
+                    cached_tokens: Some(11_000),
                     tps: Some(41.56),
                     ttft_ms: Some(820),
                 },
@@ -2299,7 +2318,7 @@ mod tests {
         let announced = s.announced.clone().expect("a layout");
         assert_eq!(
             announced.listed[0].usage,
-            "tok 12345 · tps 41.6 · ttft 820ms"
+            "ctx 12345 · cached 89% · tps 41.6 · ttft 820ms"
         );
 
         // The next request reports no count of its own: the rate goes with it.
@@ -2308,6 +2327,7 @@ mod tests {
                 session: "peer".into(),
                 usage: protocol::Usage {
                     context_tokens: 900,
+                    cached_tokens: Some(0),
                     tps: None,
                     ttft_ms: Some(1_500),
                 },
@@ -2315,7 +2335,7 @@ mod tests {
             &mut s,
         );
         let announced = s.announced.clone().expect("a layout");
-        assert_eq!(announced.listed[0].usage, "tok 900 · ttft 1.5s");
+        assert_eq!(announced.listed[0].usage, "ctx 900 · cached 0% · ttft 1.5s");
 
         // A session that has never made a request says nothing rather than zero.
         assert_eq!(usage_note(&protocol::Usage::default()), "");
@@ -2485,13 +2505,55 @@ mod tests {
         assert_eq!(named.full, vec!["main"]);
         assert_eq!(named.line, vec!["peer"]);
 
-        // A session drawn as nothing is in neither list, and still in the list.
+        // A session drawn as nothing is in neither pane nor group, and it is what
+        // SPEC's session list draws.
         c.render.set("main", RenderMode::None).unwrap();
         c.refresh(&mut s);
         let none = s.announced.clone().expect("a layout was announced");
         assert!(none.full.is_empty());
         assert_eq!(none.line, vec!["peer"]);
-        assert_eq!(none.listed.len(), 2);
+        assert_eq!(none.none, vec!["main"], "the list is the mode `none`");
+        assert_eq!(none.listed.len(), 2, "and the announcement keeps both");
+    }
+
+    /// SPEC gives each render mode one area, so a session is in exactly one of the
+    /// three lists however the modes are set.
+    ///
+    /// # Invariant
+    ///
+    /// A name drawn in two areas would say the same thing twice, and a name in
+    /// none of them would be a session nobody can click.
+    #[test]
+    fn a_session_is_drawn_in_one_area_only() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(
+            Catalog::new(),
+            Sticky::load(d.path()),
+            vec!["main", "peer", "third"],
+        );
+        let mut s = StreamSink::default();
+        for (peer, third) in [
+            (RenderMode::Full, RenderMode::Full),
+            (RenderMode::Line, RenderMode::None),
+            (RenderMode::None, RenderMode::None),
+            (RenderMode::None, RenderMode::Full),
+            (RenderMode::Line, RenderMode::Line),
+        ] {
+            c.render.set("peer", peer).unwrap();
+            c.render.set("third", third).unwrap();
+            c.refresh(&mut s);
+            let layout = s.announced.clone().expect("a layout was announced");
+            let mut areas: Vec<&String> = layout
+                .none
+                .iter()
+                .chain(&layout.full)
+                .chain(&layout.line)
+                .collect();
+            // `main` is never set, so it is the default everywhere.
+            areas.sort();
+            assert_eq!(areas, vec!["main", "peer", "third"], "{layout:?}");
+            assert_eq!(layout.listed.len(), 3, "every session stays announced");
+        }
     }
 
     /// A session may be called `cmd`; that is not a reason to lose the command line.

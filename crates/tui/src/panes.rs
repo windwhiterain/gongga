@@ -69,6 +69,8 @@ pub struct Panes {
     /// The session list, which is drawn from the command layer's announcement
     /// rather than from the log.
     listed: Vec<crate::Listed>,
+    /// The names that announcement puts in the list: SPEC's `render mode = none`.
+    list_names: Vec<String>,
 }
 
 impl Panes {
@@ -77,6 +79,7 @@ impl Panes {
             log: Log::new(),
             panes: Vec::new(),
             listed: Vec::new(),
+            list_names: Vec::new(),
         }
     }
 
@@ -85,9 +88,14 @@ impl Panes {
         &self.listed
     }
 
-    /// The names on the list, in its order.
-    pub fn listed_names(&self) -> Vec<String> {
-        self.listed.iter().map(|l| l.name.clone()).collect()
+    /// The names the session list draws, in its order.
+    ///
+    /// # Invariant
+    ///
+    /// Only the sessions whose render mode is `none`: SPEC gives each mode one
+    /// area, and a name in two areas is the same name said twice.
+    pub fn list_names(&self) -> &[String] {
+        &self.list_names
     }
 
     /// Sets the views to show; the lines they hold never change.
@@ -98,6 +106,7 @@ impl Panes {
     /// always last of the panes: it is drawn under everything else.
     pub fn layout(&mut self, layout: &Layout) {
         self.listed = layout.listed.clone();
+        self.list_names = layout.none.clone();
         let mut panes = vec![Pane::of("", Kind::List)];
         panes.extend(layout.full.iter().map(|name| Pane::of(name, Kind::Full)));
         panes.extend(layout.line.iter().map(|name| Pane::of(name, Kind::Line)));

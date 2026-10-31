@@ -209,14 +209,18 @@ contents.
 
 ## Store::set_usage
 
-Called with the token count from `usage`, never with a computed one: the provider
+Called with the token counts from `usage`, never with a computed one: the provider
 is the only party that tokenises with the tokeniser it will actually bill against.
 The rate and the delay are this server's own clock, measured around the same
-request, and they are written in the same statement: the three are one
-measurement, and a row that held the context of one request beside the rate of
-another could not explain itself. `tps` and `ttft_ms` are the columns SPEC's
-`tps (latest)` and `ttft (latest)` are read from, and NULL is "not measured" --
-a provider that reports no token counts leaves them NULL rather than 0.
+request, and all four are written in the same statement: they are one measurement,
+and a row that held the context of one request beside the rate of another could not
+explain itself. `tps` and `ttft_ms` are the columns SPEC's `tps (latest)` and
+`ttft (latest)` are read from, and NULL is "not measured" -- a provider that reports
+no token counts leaves them NULL rather than 0.
+
+`cached_tokens` is stored as the count the provider reported beside the input, not
+as the share SPEC's title shows: the share is that count divided by this one, so
+keeping the pair keeps the division possible and reversible.
 
 ## Prompt, stamp, prompt, append_prompt
 
@@ -272,11 +276,12 @@ the config field is `compress_above_tokens`, so the wording may be stale.
 
 ## SessionRow::usage
 
-One `protocol::Usage` rather than three loose fields, because the values are one
-measurement: `context_tokens` is the provider's billed input, `tps` is output
-tokens over the time the stream took, and `ttft_ms` is the wait for its first
-token. A session that has never completed a request has 0 context and no rate,
-and SPEC's title says nothing rather than zero.
+One `protocol::Usage` rather than four loose fields, because the values are one
+measurement: `context_tokens` is the provider's billed input, `cached_tokens` what
+of it came from its prefix cache, `tps` is output tokens over the time the stream
+took, and `ttft_ms` is the wait for its first token. A session that has never
+completed a request has 0 context and no rate, and SPEC's title says nothing
+rather than zero.
 
 ## SessionRow::info
 

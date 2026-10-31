@@ -108,9 +108,9 @@ pub fn body(area: Rect, panes: &Panes) -> (Rect, Rect) {
 /// Columns the session list needs for its longest name, mark and air included.
 pub fn list_width(panes: &Panes) -> u16 {
     let longest = panes
-        .listed()
+        .list_names()
         .iter()
-        .map(|listed| UnicodeWidthStr::width(listed.name.as_str()))
+        .map(|name| UnicodeWidthStr::width(name.as_str()))
         .max()
         .unwrap_or(0);
     // The mark on the left, the name, and one column so a cursor can sit after it.
@@ -197,14 +197,10 @@ pub fn list_at(
     if !covers(&area, column, row) {
         return None;
     }
-    let names = panes.listed_names();
-    let (start, end) = list_window(names.len(), area.height as usize, sticky, &names);
+    let names = panes.list_names();
+    let (start, _end) = list_window(names.len(), area.height as usize, sticky, names);
     let index = start + (row - area.y) as usize;
-    panes
-        .listed()
-        .get(start..end)
-        .and_then(|shown| shown.get(index - start))
-        .map(|listed| listed.name.clone())
+    names.get(index).cloned()
 }
 
 /// The session whose line group covers `row`, for a click.
@@ -336,46 +332,52 @@ fn draw_header(f: &mut Frame, s: &Screen, area: Rect) {
     );
 }
 
-/// The session list: one row per session, the sticky one marked.
+/// The session list: SPEC's `render mode = none`, one row per session.
 ///
 /// # Invariant
 ///
-/// Every session the command layer announced is here, whatever its render mode:
-/// the list is how a mode gets changed, so hiding one from it would hide the way
-/// back. See `docs/notes/tui-render.md`.
-fn draw_list(f: &mut Frame, s: &mut Screen, area: Rect) {
+/// A name is drawn here or in the pane header or in a line group's row, never in
+/// two of them, and every row of the list is painted the same way whatever that
+/// session will be drawn as once it is clicked. See `docs/notes/tui-render.md`.
+fn draw_list(f: &mut Frame, s: &Screen, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
     let height = area.height as usize;
-    let names = s.panes.listed_names();
-    let sticky = s.sticky_session.clone().unwrap_or_default();
-    let (start, end) = list_window(names.len(), height, s.sticky_session.as_deref(), &names);
-    let rows: Vec<Line> = s
-        .panes
-        .listed()
+    let names = s.panes.list_names();
+    let sticky = s.sticky_session.as_deref();
+    let (start, end) = list_window(names.len(), height, sticky, names);
+    let rows: Vec<Line> = names
         .get(start..end)
         .unwrap_or_default()
         .iter()
-        .map(|listed| {
-            let here = listed.name == sticky;
+        .map(|name| {
             // The mark is one column, so the names line up down the list.
-            let mark = if here { "▸" } else { " " };
-            let mode = s.panes.get(&listed.name).map(|pane| pane.kind);
-            let style = match mode {
-                Some(crate::panes::Kind::Full) => Style::default().fg(Color::White),
-                Some(crate::panes::Kind::Line) => dim(),
-                _ => Style::default().fg(Color::DarkGray),
-            };
-            let style = if here {
-                Style::default().fg(Color::Black).bg(Color::Cyan)
-            } else {
-                style
-            };
-            Line::from(Span::styled(format!("{mark}{}", listed.name), style))
+            let here = Some(name.as_str()) == sticky;
+            let mark = if here { "\u{25b8}" } else { " " };
+            Line::from(Span::styled(
+                format!("{mark}{name}"),
+                name_style(here, dim()),
+            ))
         })
         .collect();
     f.render_widget(Paragraph::new(rows), area);
+}
+
+/// How a session's name is painted, wherever it is drawn.
+///
+/// # Invariant
+///
+/// The sticky session -- the one the keys scroll and a message goes to -- is
+/// marked the same way in the list, in a pane header and at the start of a line
+/// group; `base` is the area's own look for every other name. See
+/// `docs/notes/tui-render.md`.
+fn name_style(sticky: bool, base: Style) -> Style {
+    if sticky {
+        Style::default().fg(Color::Black).bg(Color::Cyan)
+    } else {
+        base
+    }
 }
 
 /// The rows of the list a frame shows: the ones around the sticky session.
@@ -471,11 +473,7 @@ fn draw_headline(f: &mut Frame, s: &mut Screen, name: &str, area: Rect, sticky: 
     if area.height == 0 || area.width == 0 {
         return;
     }
-    let style = if Some(name) == sticky {
-        Style::default().fg(Color::Black).bg(Color::Cyan)
-    } else {
-        Style::default().fg(Color::White)
-    };
+    let style = name_style(Some(name) == sticky, Style::default().fg(Color::White));
     let mut spans = vec![Span::styled(format!("{name} "), style)];
     // Cut to what is left beside the name, so a row is one line and the name never
     // leaves the screen.
@@ -536,16 +534,13 @@ pub fn group_slots(area: Rect, names: &[String], sticky: Option<&str>) -> (Vec<S
     (slots, hidden)
 }
 
-/// A header row, styled the one way every header is.
+/// A pane's header: the name, then whatever the title carries beside it.
 ///
 /// # Invariant
 ///
-/// One function for the panes and the line groups: a session drawn `full` and the
-/// same session drawn `line` must not be told apart by how their names are painted.
-fn draw_group_header(f: &mut Frame, name: &str, area: Rect, sticky: Option<&str>) {
-    draw_group_header_note(f, name, area, sticky, None);
-}
-
+/// One function for the panes and the line groups, and the name is painted by
+/// [`name_style`]: a session drawn `full` and the same session drawn `line` are
+/// not told apart by how they are named. See `docs/notes/tui-render.md`.
 fn draw_group_header_note(
     f: &mut Frame,
     name: &str,
@@ -557,11 +552,7 @@ fn draw_group_header_note(
     if let Some(note) = note {
         title.push_str(&format!("{note} "));
     }
-    let style = if Some(name) == sticky {
-        Style::default().fg(Color::Black).bg(Color::DarkGray)
-    } else {
-        dim()
-    };
+    let style = name_style(Some(name) == sticky, dim());
     f.render_widget(Paragraph::new(Line::from(Span::styled(title, style))), area);
 }
 
@@ -921,6 +912,7 @@ mod tests {
                     usage: String::new(),
                 },
             ],
+            none: Vec::new(),
             full: vec!["main".to_string()],
             line: vec!["peer".to_string()],
             command: "cmd".to_string(),
@@ -967,6 +959,97 @@ mod tests {
         assert!(slots.iter().all(|slot| slot.body.height > 0), "{slots:?}");
     }
 
+    /// SPEC's list is `render mode = none`: what no other area draws, one name
+    /// per row, every row painted the same way.
+    ///
+    /// # Invariant
+    ///
+    /// A session drawn `full` or `line` is not in the list, so no name appears
+    /// twice on screen, and the rows of the list do not encode a render mode.
+    #[test]
+    fn the_list_is_the_sessions_no_other_area_draws() {
+        let mut screen = screen_with(&[]);
+        let listed = |name: &str, usage: &str| Listed {
+            name: name.to_string(),
+            status: "idle".to_string(),
+            usage: usage.to_string(),
+        };
+        screen.panes.layout(&Layout {
+            listed: vec![
+                listed("main", "ctx 900 · tps 12.0"),
+                listed("peer", ""),
+                listed("third", ""),
+                listed("fourth", ""),
+            ],
+            none: vec!["third".to_string(), "fourth".to_string()],
+            full: vec!["main".to_string()],
+            line: vec!["peer".to_string()],
+            command: "cmd".to_string(),
+        });
+        let mut term = Terminal::new(TestBackend::new(60, 12)).unwrap();
+        term.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+        let body = parts(60, 12, 1, true, 1)[1];
+        let (list, panes) = crate::render::body(body, &screen.panes);
+        // Two names, in the announcement's order, and nothing else.
+        let rows: Vec<String> = (0..list.height)
+            .map(|offset| read(&buf, list.x, list.width, list.y + offset))
+            .collect();
+        assert_eq!(&rows[..2], [" third", " fourth"], "{rows:?}");
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row.contains("main") || row.contains("peer")),
+            "the names the pane and the line group carry stay out of the list: {rows:?}"
+        );
+        // Every name in the list has one look: no colour says how a session is drawn.
+        let paints: Vec<Style> = (0..2)
+            .map(|offset| buf[(list.x, list.y + offset)].style())
+            .collect();
+        assert_eq!(paints[0], paints[1], "one pattern down the list");
+        assert!(panes.width > 0);
+    }
+
+    /// The mark for the sticky session is one mark, wherever the name is drawn.
+    #[test]
+    fn the_sticky_session_is_marked_the_same_way_in_every_area() {
+        let mut screen = split_screen();
+        screen.panes.line("third", LineKind::Assistant, "an event");
+        screen.sticky_session = Some("third".to_string());
+        let mut term = Terminal::new(TestBackend::new(60, 14)).unwrap();
+        term.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+        // The line group's row: the name is the first span of its newest event.
+        let groups = parts(60, 14, 1, true, 1)[2];
+        let mark = buf[(groups.x, groups.y)].clone();
+        assert_eq!(mark.fg, Color::Black, "{mark:?}");
+        assert_eq!(mark.bg, Color::Cyan, "{mark:?}");
+
+        // A pane headed with the same name is marked with the same pair.
+        let mut screen = split_screen();
+        screen.sticky_session = Some("main".to_string());
+        let mut term = Terminal::new(TestBackend::new(60, 14)).unwrap();
+        term.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+        let body = parts(60, 14, 1, true, 1)[1];
+        let (_, panes) = crate::render::body(body, &screen.panes);
+        let (slots, _) = pane_slots(panes, &screen.panes, screen.sticky_session.as_deref());
+        let head = slots[0].header.expect("a header on the column");
+        // One column in: the header opens with the space before the name.
+        let cell = buf[(head.x + 1, head.y)].clone();
+        assert_eq!(cell.fg, mark.fg, "the same mark in a pane's header");
+        assert_eq!(cell.bg, mark.bg, "the same mark in a pane's header");
+    }
+
     /// The list shows the rows around the sticky session -- the only position.
     #[test]
     fn the_list_window_follows_the_sticky_session() {
@@ -982,7 +1065,8 @@ mod tests {
         let mut screen = screen_with(&[]);
         screen.panes.layout(&Layout {
             listed,
-            full: names.clone(),
+            none: names.clone(),
+            full: Vec::new(),
             line: Vec::new(),
             command: "cmd".to_string(),
         });
@@ -1181,6 +1265,7 @@ mod tests {
         let mut panes = Panes::new();
         panes.layout(&Layout {
             listed: Vec::new(),
+            none: Vec::new(),
             full: vec![String::new()],
             line: Vec::new(),
             command: String::new(),
@@ -1222,6 +1307,7 @@ mod tests {
                     usage: String::new(),
                 },
             ],
+            none: Vec::new(),
             full: vec!["main".to_string(), "peer".to_string()],
             line: vec!["third".to_string()],
             command: "cmd".to_string(),
@@ -1372,7 +1458,8 @@ mod tests {
         );
         screen.panes.line("cmd", LineKind::System, "$ get_messages");
 
-        let mut term = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        // 41 columns: an odd width, so the split leaves a column for the sticky pane.
+        let mut term = Terminal::new(TestBackend::new(41, 12)).unwrap();
         term.draw(|f| {
             draw(f, &mut screen);
         })
@@ -1380,7 +1467,7 @@ mod tests {
         let buf = term.backend().buffer().clone();
 
         // Each session is its own column: a header row, then its own rows under it.
-        let body = parts(40, 12, 1, true, 1)[1];
+        let body = parts(41, 12, 1, true, 1)[1];
         let (_, panes) = crate::render::body(body, &screen.panes);
         let (slots, hidden) = pane_slots(panes, &screen.panes, screen.sticky_session.as_deref());
         assert_eq!(hidden, 0);
@@ -1478,34 +1565,36 @@ mod tests {
         };
         screen.panes.layout(&Layout {
             listed: vec![
-                listed("main", "tok 12345 · tps 41.6 · ttft 820ms"),
+                listed("main", "ctx 12345 · cached 89% · tps 41.6 · ttft 820ms"),
                 listed("peer", ""),
-                listed("third", "tok 99 · tps 9.0"),
+                listed("third", "ctx 99 · tps 9.0"),
             ],
+            none: Vec::new(),
             full: vec!["main".to_string(), "peer".to_string()],
             line: vec!["third".to_string()],
             command: "cmd".to_string(),
         });
-        let mut term = Terminal::new(TestBackend::new(100, 12)).unwrap();
+        // Wide enough that a whole title fits its pane's column.
+        let mut term = Terminal::new(TestBackend::new(130, 12)).unwrap();
         term.draw(|f| {
             draw(f, &mut screen);
         })
         .unwrap();
         let buf = term.backend().buffer().clone();
-        let body = parts(100, 12, 1, true, 1)[1];
+        let body = parts(130, 12, 1, true, 1)[1];
         let (_, panes) = crate::render::body(body, &screen.panes);
         let (slots, _) = pane_slots(panes, &screen.panes, screen.sticky_session.as_deref());
         let head = slots[0].header.expect("a header on the column");
         assert_eq!(
             read(&buf, head.x, head.width, head.y),
-            " main tok 12345 · tps 41.6 · ttft 820ms"
+            " main ctx 12345 · cached 89% · tps 41.6 · ttft 820ms"
         );
         let head = slots[1].header.expect("a header on the column");
         assert_eq!(read(&buf, head.x, head.width, head.y), " peer");
 
         // SPEC gives them to a `full` pane: a `line` group's row is one event,
         // so the numbers stop at the pane.
-        let groups = parts(100, 12, 1, true, 1)[2];
+        let groups = parts(130, 12, 1, true, 1)[2];
         assert_eq!(
             read(&buf, groups.x, groups.width, groups.y),
             "third",
@@ -1525,8 +1614,9 @@ mod tests {
             listed: vec![Listed {
                 name: "main".to_string(),
                 status: "running".to_string(),
-                usage: "tok 900 · tps 12.0".to_string(),
+                usage: "ctx 900 · tps 12.0".to_string(),
             }],
+            none: Vec::new(),
             full: vec!["main".to_string(), "peer".to_string()],
             line: vec!["third".to_string()],
             command: "cmd".to_string(),

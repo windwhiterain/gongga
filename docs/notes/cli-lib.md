@@ -291,23 +291,34 @@ blocks are untouched, so `full` after `none` brings the whole history back.
 
 ## Listed::usage
 
-SPEC puts `context (tok)`, `tps (latest)` and `ttft (latest)` in the title of a
-`full` pane. The numbers arrive as numbers and leave as a sentence, spelled here
-rather than in the window for the same reason `status` is a word: a front-end
-that knows no protocol type can still draw it, and the two front-ends cannot
-disagree about how a rate is rounded.
+SPEC puts `context`, `cached (latest)`, `tps (latest)` and `ttft (latest)` in the
+title of a `full` pane. The numbers arrive as numbers and leave as a sentence,
+spelled here rather than in the window for the same reason `status` is a word: a
+front-end that knows no protocol type can still draw it, and the two front-ends
+cannot disagree about how a rate is rounded.
 
-`usage_note` spells it: `tok 12345 · tps 41.6 · ttft 820ms`, one decimal for the
-rate, milliseconds under a second and seconds above it. A figure the last request
-did not produce is left out rather than shown as zero -- an empty context and a
-session that has never made a request are different facts, and `tok 0` cannot
-say which it is.
+`usage_note` spells it: `ctx 12345 · cached 89% · tps 41.6 · ttft 820ms` -- the
+unit SPEC names for each figure, one decimal for the rate, milliseconds under a
+second and seconds above it. `cached` is a share, not a count: SPEC says `in n%`,
+and the client is where the division happens because the wire carries what the
+provider measured (two token counts) rather than a number derived from them. A
+figure the last request did not produce is left out rather than shown as zero --
+an empty context and a session that has never made a request are different facts,
+and `ctx 0` cannot say which it is.
 
 ## Client::layout
 
-SPEC's three lists, from one place: the session list (every session, whatever its
-mode -- the list is how a mode changes), the sessions drawn as panes, and the ones
-drawn as a line each. A session is in exactly one of the last two, or neither.
+SPEC's three lists, from one place: the sessions drawn as list rows (`none`), the
+ones drawn as panes (`full`), and the ones drawn as a line each (`line`). A session
+is in exactly one of the three, and `listed` carries every session beside them, with
+its status and its numbers, so a front-end can read a name it draws in any area.
+
+The earlier shape had only `full`/`line` and left the list reading `listed`, which
+meant a session drawn `full` was in the list *and* over its pane. That was the
+reading that "the list is how a mode gets changed" invited: a way back for every
+session. SPEC says otherwise -- each mode is one area of the window -- and the
+sticky-click cycle is what keeps every session reachable without a second name on
+screen.
 
 The mode is read off each session rather than off the file's entries, because a
 session nobody set is `full`: reading the map would leave a new session with no
@@ -762,3 +773,10 @@ The spelling is checked here rather than in the window's test, and the second
 half of the test is the point: the next request's measurement replaces the whole
 title, so a rate the latest request did not report cannot survive from the one
 before it.
+
+## a_session_is_drawn_in_one_area_only
+
+Five pairs of modes over three sessions, so the invariant is walked rather than
+sampled: the three lists between them always hold every session exactly once, and a
+layout body that named one twice -- or dropped one -- fails here rather than in a
+frame nobody re-read.

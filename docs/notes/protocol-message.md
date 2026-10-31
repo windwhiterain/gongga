@@ -90,10 +90,14 @@ are the protocol's own words (`RENDER_MODES`), not the client's state. Its
 
 ## UsageEvent, Usage
 
-SPEC's `context (tok)`, `tps (latest)` and `ttft (latest)`, on the wire twice and
-for two different readers: `SessionInfo::usage` is the last measurement, so a
-window that dials now can draw a title before any turn happens, and `Event::Usage`
-is the same three numbers announced when a request completes.
+SPEC's `context`, `cached`, `tps` and `ttft`, on the wire twice and for two
+different readers: `SessionInfo::usage` is the last measurement, so a window that
+dials now can draw a title before any turn happens, and `Event::Usage` is the same
+numbers announced when a request completes.
+
+`Usage` carries `cached_tokens`, not the percentage SPEC's title shows: the tokens
+are what the provider reported, and a percent is a division the reader's side can
+decide to spell.
 
 `Usage` is split out of `UsageEvent` so the numbers can be carried without a
 session name in the one place that does not need it -- the session is the field

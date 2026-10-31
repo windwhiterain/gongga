@@ -128,10 +128,32 @@ facts, red for an error, green for a result. One colour for all three would make
 
 ## draw_list
 
-SPEC's session list, on the left of the body: one row per session the command layer
-announced, whatever its render mode -- the list is how a mode gets changed, so
-hiding a session from it would hide the way back. The sticky session is marked with
-`▸` and a highlighted row, which is also the row the keyboard scrolls.
+SPEC's session list, on the left of the body: the sessions whose render mode is
+`none`, one row each.
+
+It used to be every announced session, and that was the second place every name was
+said: a session drawn `full` was in the list *and* over its pane, `line` in the list
+*and* on its row. SPEC gives each of the three modes one area, so the list is the
+one left over. A name still comes back to the list by walking the modes -- a pane's
+name to `line`, a line's to `none` -- so nothing is unreachable.
+
+Two things follow, and both were reported from a real window: no name is drawn twice,
+and every row of the list is painted the same way. The list used to colour a name by
+the mode that session would be drawn as elsewhere (white for `full`, dim for `line`,
+dark grey for the rest), which made one column look like three kinds of row.
+
+The sticky session is marked by `name_style`: the mark column `▸`, and the same
+highlighted patch its name gets in a pane header and at the start of a line group.
+It is one state -- what the page keys scroll and where a message goes -- and one
+look, wherever the name happens to be.
+
+## name_style
+
+The look of a session's name: the sticky one is black on cyan, every other name is
+the area's own base style. The base differs on purpose -- a pane header is chrome and
+stays dim, a line group's row is the newest event and stays the text colour -- but the
+*state* does not: a header used to mark the sticky session with a dark grey patch
+while the list and the line rows used cyan, so the same thing looked like two.
 
 ## draw_lines and group_slots
 
@@ -162,9 +184,14 @@ A session drawn as `none` has to be visible somewhere, or the log reads as broke
 
 ## body
 
-The body split into the session list and the panes beside it. The list keeps
-`LIST_WIDTH` unless the window is too narrow to leave the panes any columns -- then
-the panes keep their share, because a pane with no columns shows nothing.
+The body split into the session list and the panes beside it. The list is as wide as
+its own content -- the mark, the longest of *its* names, one column of air -- and
+never wider than half the window: the panes keep their share, because a pane with no
+columns shows nothing.
+
+It used to measure every announced session, which was right while the list held them
+all. Now that the list is the `none` sessions, a pane's longer name no longer widens
+the column it is not drawn in.
 
 ## draw_panes
 
@@ -305,3 +332,15 @@ which is the whole of SPEC's rule about where they live.
 
 The announcement arrives on every step of a turn, so it is not a reason to move a
 view: a pane that kept its rows keeps its place in them.
+
+## the_list_is_the_sessions_no_other_area_draws
+
+The rule, measured on a frame: a `full` and a `line` session stay out of the list,
+the two `none` names are its first two rows in the announcement's order, and their
+cells carry one style between them.
+
+## the_sticky_session_is_marked_the_same_way_in_every_area
+
+One name read at two places in one window -- the line group's row and a pane's
+header -- and the same black-on-cyan cell at both, which is what `name_style` is
+for.

@@ -290,6 +290,11 @@ Nothing reads it through a command. `sqlite3 $GONGGA_HOME/gongga.db "select payl
 from events where kind='usage'"` is the whole interface, and a published command
 would put a provider's billing detail into the surface the agent is prompted on.
 
+The session row keeps `context_tokens`, `cached_tokens`, `tps` and `ttft_ms`
+together, in one statement, because they are what one request measured: SPEC's title
+reads all four, and a title assembled from two different requests would be a sentence
+about nothing.
+
 The row also carries `ttft_ms` and `tps`, which are this server's clock rather
 than the provider's numbers: time from the request to the first delta of any
 kind, and output tokens over the time between that first delta and the end of

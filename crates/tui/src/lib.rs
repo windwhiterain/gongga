@@ -1349,6 +1349,7 @@ mod tests {
                     status: "idle".to_string(),
                     usage: String::new(),
                 }],
+                none: Vec::new(),
                 full: vec!["main".to_string()],
                 line: Vec::new(),
                 command: "cmd".to_string(),
@@ -1954,35 +1955,45 @@ mod tests {
         );
     }
 
+    /// One announcement entry: a name, idle, with nothing measured yet.
+    fn listed(name: &str) -> Listed {
+        Listed {
+            name: name.to_string(),
+            status: "idle".to_string(),
+            usage: String::new(),
+        }
+    }
+
     /// A click asks for the sticky session, as the command line that sets it.
     #[test]
     fn a_click_names_the_session_it_landed_on() {
         let mut panes = Panes::new();
         panes.layout(&Layout {
             listed: vec![
-                Listed {
-                    name: "main".to_string(),
-                    status: "idle".to_string(),
-                    usage: String::new(),
-                },
-                Listed {
-                    name: "peer".to_string(),
-                    status: "idle".to_string(),
-                    usage: String::new(),
-                },
+                listed("main"),
+                listed("peer"),
+                listed("third"),
+                listed("fourth"),
             ],
+            // SPEC's list is the `none` mode, so these are its rows and the
+            // sessions drawn elsewhere are not among them.
+            none: vec!["peer".to_string(), "third".to_string()],
             full: vec!["main".to_string()],
-            line: vec!["peer".to_string()],
+            line: vec!["fourth".to_string()],
             command: "cmd".to_string(),
         });
-        // The list is the body's left column; its second row is the second name.
+        // The list is the body's left column, one row per name from its top.
         let area = Rect::new(0, 0, 80, 24);
         let parts = crate::render::areas(area, 1, true, 1);
         let (list, _) = crate::render::body(parts[1], &panes);
         assert_eq!(
             crate::render::list_at(list, &panes, None, list.x, list.y + 1),
-            Some("peer".to_string()),
+            Some("third".to_string()),
             "a click on a name reads that name"
+        );
+        assert_eq!(
+            crate::render::list_at(list, &panes, None, list.x, list.y),
+            Some("peer".to_string())
         );
         assert_eq!(
             crate::render::list_at(list, &panes, None, list.x, list.y - 1),
@@ -1997,7 +2008,7 @@ mod tests {
         // The line group is its own area, and a click there names its session.
         assert_eq!(
             crate::render::line_at(parts[2], &panes, parts[2].x, parts[2].y),
-            Some("peer".to_string())
+            Some("fourth".to_string())
         );
         // A press on a name becomes the command that sets it.
         assert_eq!(

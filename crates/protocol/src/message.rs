@@ -115,10 +115,12 @@ pub struct UsageEvent {
 }
 
 /// What one request measured, without saying which session made it.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct Usage {
     /// Input tokens the provider billed for the request; 0 is never measured.
     pub context_tokens: u64,
+    /// What of those the provider served from its prefix cache; `None` is unreported.
+    pub cached_tokens: Option<u64>,
     /// Output tokens per second over the stream, when the request produced any.
     pub tps: Option<f64>,
     /// Time from the request to its first streamed token, in milliseconds.

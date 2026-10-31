@@ -76,6 +76,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- the point -- the first request of the next run needs a size to compare
     -- against, and no amount of character counting would give a better one.
     context_tokens INTEGER NOT NULL DEFAULT 0,
+    -- What of that the provider served from its prefix cache: SPEC's
+    -- `cached (in n%, latest)` is a share of the same number. NULL is a provider
+    -- that does not report it, which is not the same as nothing cached.
+    cached_tokens INTEGER,
     -- Output tokens per second, and milliseconds to the first token, of the last
     -- completed request: SPEC's `tps (latest)` and `ttft (latest)`, kept beside the
     -- context so a window attached now has the numbers without replaying a turn.
@@ -193,6 +197,10 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (
             "thinking_effort",
             "ALTER TABLE sessions ADD COLUMN thinking_effort TEXT",
+        ),
+        (
+            "cached_tokens",
+            "ALTER TABLE sessions ADD COLUMN cached_tokens INTEGER",
         ),
         ("tps", "ALTER TABLE sessions ADD COLUMN tps REAL"),
         ("ttft_ms", "ALTER TABLE sessions ADD COLUMN ttft_ms INTEGER"),
@@ -368,7 +376,7 @@ impl Store {
                     s.created_at, s.updated_at,
                     (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS messages,
                     s.llm, s.context_limit, s.thinking_effort,
-                    s.context_tokens, s.tps, s.ttft_ms
+                    s.context_tokens, s.cached_tokens, s.tps, s.ttft_ms
              FROM sessions s";
 
     /// One session, in the same shape the list returns, by name rather than by scan.
@@ -394,8 +402,9 @@ impl Store {
             thinking_effort: r.get(10)?,
             usage: protocol::Usage {
                 context_tokens: r.get::<_, i64>(11)?.max(0) as u64,
-                tps: r.get(12)?,
-                ttft_ms: r.get::<_, Option<i64>>(13)?.map(|ms| ms.max(0) as u64),
+                cached_tokens: r.get::<_, Option<i64>>(12)?.map(|n| n.max(0) as u64),
+                tps: r.get(13)?,
+                ttft_ms: r.get::<_, Option<i64>>(14)?.map(|ms| ms.max(0) as u64),
             },
         })
     }
@@ -558,26 +567,23 @@ impl Store {
         Ok(n.max(0) as u64)
     }
 
-    /// What one request measured: billed input tokens, throughput, first-token delay.
+    /// What one request measured: input tokens, what of them was cached, the
+    /// throughput and the first-token delay.
     ///
     /// # Invariant
     ///
-    /// One statement: the three are one measurement, and a window that read the
+    /// One statement: the four are one measurement, and a window that read the
     /// context of one request beside the rate of another would be a lie the row
     /// cannot explain.
-    pub fn set_usage(
-        &self,
-        session_id: i64,
-        context_tokens: u64,
-        tps: Option<f64>,
-        ttft_ms: Option<u64>,
-    ) -> anyhow::Result<()> {
+    pub fn set_usage(&self, session_id: i64, usage: protocol::Usage) -> anyhow::Result<()> {
         self.lock().execute(
-            "UPDATE sessions SET context_tokens = ?1, tps = ?2, ttft_ms = ?3 WHERE id = ?4",
+            "UPDATE sessions SET context_tokens = ?1, cached_tokens = ?2, tps = ?3, \
+             ttft_ms = ?4 WHERE id = ?5",
             params![
-                context_tokens as i64,
-                tps,
-                ttft_ms.map(|ms| ms as i64),
+                usage.context_tokens as i64,
+                usage.cached_tokens.map(|n| n as i64),
+                usage.tps,
+                usage.ttft_ms.map(|ms| ms as i64),
                 session_id
             ],
         )?;
@@ -1430,21 +1436,25 @@ mod tests {
     fn the_measured_context_size_survives_a_restart() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("g.db");
+        let usage = protocol::Usage {
+            context_tokens: 12_345,
+            cached_tokens: Some(11_000),
+            tps: Some(41.5),
+            ttft_ms: Some(820),
+        };
         let id = {
             let store = Store::open(&path).unwrap();
             let id = store.create_session("main", "m", "C:/x").unwrap();
             // Never measured: zero, which the agent reads as "small enough".
             assert_eq!(store.context_tokens(id).unwrap(), 0);
-            store.set_usage(id, 12_345, Some(41.5), Some(820)).unwrap();
+            store.set_usage(id, usage).unwrap();
             id
         };
         let reopened = Store::open(&path).unwrap();
         assert_eq!(reopened.context_tokens(id).unwrap(), 12_345);
-        // The rate and the delay are the same measurement, so they survive with it.
+        // Four figures, one measurement: they survive together or not at all.
         let row = reopened.get_session("main").unwrap().unwrap();
-        assert_eq!(row.usage.context_tokens, 12_345);
-        assert_eq!(row.usage.tps, Some(41.5));
-        assert_eq!(row.usage.ttft_ms, Some(820));
+        assert_eq!(row.usage, usage);
     }
 
     #[test]
