@@ -188,9 +188,7 @@ fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
 
 /// Adds columns a `CREATE TABLE IF NOT EXISTS` cannot add to an old database.
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-    // Renamed twice, each time the vocabulary settled under it: the model a
-    // session runs on is `provider/model_name`, and the model's own name is what
-    // it used to be called. An old row keeps its value either way.
+    // Renamed twice as the words settled: `llm` -> the model, `model` -> `model_name`.
     if has_column(conn, "sessions", "llm") && !has_column(conn, "sessions", "provider") {
         conn.execute("ALTER TABLE sessions RENAME COLUMN llm TO provider", [])?;
     }
@@ -393,10 +391,14 @@ impl Store {
         Ok(rows)
     }
 
-    /// The columns every session lookup returns, so the list and the single
-    /// lookup cannot drift apart.
-    /// `model_name` is the fallback for a row written before `model` carried the
-    /// provider with it; it is the same model, named less precisely.
+    /// The columns every session lookup returns, so the list and the single lookup
+    /// cannot drift apart.
+    ///
+    /// # Invariant
+    ///
+    /// `model` is the whole model, and a row written before it said that keeps the
+    /// bare name in `model_name`: this select reads both, so nothing that was pinned
+    /// stops being pinned.
     const SESSION_SELECT: &'static str = "SELECT s.id, s.name, s.status,
                     COALESCE(s.model, s.model_name), s.cwd,
                     s.created_at, s.updated_at,

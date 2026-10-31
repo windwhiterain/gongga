@@ -34,8 +34,13 @@ pub struct Agent {
     pub providers: providers::Handle,
     /// What a session's own entry inherits: timeouts and retries.
     pub model_config: ModelConfig,
-    /// Clients for sessions that named their own model, keyed by `provider/model_name`
-    /// and by the roster read that produced it.
+    /// Clients for sessions that named their own model, by `provider/model_name`.
+    ///
+    /// # Invariant
+    ///
+    /// Keyed by the roster read that produced each one: a cached client carries the
+    /// base URL, the key and the model it was built from, so one kept across a reload
+    /// sends the new model to the old endpoint.
     pub clients: std::sync::Mutex<std::collections::HashMap<String, (u64, Arc<LlmClient>)>>,
     /// [`Self::llm`]'s context window, for a percentage set without naming a model.
     pub default_context: Option<u64>,

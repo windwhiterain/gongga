@@ -277,14 +277,12 @@ impl Catalog {
         self.entry_with(model)
     }
 
-    /// A model however it was written: `provider/model_name` when the name carries
-    /// its provider, the provider's own search when it does not.
+    /// A model however it was written: with its provider, or as a bare name.
     pub fn place(&self, model: &str) -> Option<Entry> {
         self.entry(model).ok().or_else(|| self.entry_by_name(model))
     }
 
-    /// A bare model name, looked for in every provider in file order. Handy when
-    /// there is only one provider that could mean it.
+    /// A bare model name, looked for in every provider in file order.
     pub fn resolve_by_name(&self, model_name: &str) -> Option<Choice> {
         self.entry_by_name(model_name)
             .and_then(|e| self.resolve_with(&e.model, &lookup_env).ok())
@@ -367,8 +365,7 @@ impl Catalog {
         })
     }
 
-    /// Splits at the first `/`: provider ids never contain one, model names
-    /// sometimes do (`goat/deepseek/deepseek-v4.1-flash`).
+    /// Splits at the first `/`: a model name may itself contain one.
     fn entry_with(&self, model: &str) -> Result<Entry, String> {
         let (provider_id, model_name) = model
             .split_once('/')

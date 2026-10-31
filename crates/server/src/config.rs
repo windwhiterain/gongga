@@ -492,9 +492,7 @@ fn pick_model(
 }
 
 impl ModelConfig {
-    /// The model itself: `provider/model_name` when the provider is known, and
-    /// the bare name when the roster could not place it. See
-    /// `docs/notes/server-config.md`.
+    /// The whole model, `provider/model_name`, or the bare name when unplaced.
     pub fn model(&self) -> String {
         match &self.provider {
             Some(provider) => format!("{provider}/{}", self.model_name),

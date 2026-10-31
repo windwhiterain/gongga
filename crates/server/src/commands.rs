@@ -595,8 +595,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     )
 }
 
-/// Turns `--model` into a roster entry, trying `provider/model_name` then a bare
-/// model name: one model, spelled as precisely as the caller knows it.
+/// Turns `--model` into a roster entry, trying the pair and then a bare name.
 fn resolve_model(d: &Dispatch, model: &str) -> Result<crate::providers::Entry, String> {
     match d.providers.resolve(model) {
         Ok(choice) => Ok(choice.entry),
@@ -1045,8 +1044,7 @@ pub fn session_info(d: &Dispatch, row: &crate::store::SessionRow) -> protocol::S
         .model
         .as_deref()
         .and_then(|model| d.providers.place(model));
-    // The roster's own spelling when it can place the model, the name it was given
-    // when it cannot, and the server's own when the session named none.
+    // The roster's spelling, else the name given, else the server's own.
     let model = Some(
         entry
             .as_ref()
