@@ -19,6 +19,9 @@ const URLS: [&str; 2] = [
 /// How often a running server refreshes the clone.
 const REFRESH: Duration = Duration::from_secs(60 * 60);
 
+/// The directory community skills are read through, named the same under both roots.
+const SKILLS: &str = "skills";
+
 /// The two roots a roster is assembled from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Roots {
@@ -66,6 +69,93 @@ pub enum Sync {
     Current,
     /// The directory exists and is not a clone: left exactly as it is.
     Foreign,
+}
+
+/// Links every community skill into the machine's own `skills/`, and prunes the gone.
+///
+/// # Invariant
+///
+/// A name the reader already has is left untouched -- that directory is the
+/// override -- and a skill is only linked when it holds a `SKILL.md`. A link
+/// whose target went away is removed, so the index lists what exists.
+pub fn link_skills(roots: &Roots) -> usize {
+    let from = roots.community.join(SKILLS);
+    let into = roots.private.join(SKILLS);
+    let Ok(entries) = std::fs::read_dir(&from) else {
+        return 0;
+    };
+    if std::fs::create_dir_all(&into).is_err() {
+        return 0;
+    }
+    let mut linked = 0;
+    for entry in entries.flatten() {
+        let source = entry.path();
+        let Some(name) = source.file_name() else {
+            continue;
+        };
+        if !source.is_dir() || !source.join("SKILL.md").is_file() {
+            continue;
+        }
+        // A dangling entry is a skill that left the clone: drop it before linking.
+        let at = into.join(name);
+        if std::fs::symlink_metadata(&at).is_ok() && !at.exists() {
+            let _ = std::fs::remove_dir(&at);
+            let _ = std::fs::remove_file(&at);
+        }
+        if std::fs::symlink_metadata(&at).is_ok() {
+            continue;
+        }
+        match link_dir(&source, &at) {
+            Ok(()) => linked += 1,
+            // Worth a line: a machine that cannot link needs to hear it once.
+            Err(e) => tracing::warn!(
+                skill = %at.display(),
+                error = %e,
+                "cannot link a community skill"
+            ),
+        }
+    }
+    prune(&into);
+    linked
+}
+
+/// Removes the links whose skill is no longer in the clone.
+fn prune(into: &Path) {
+    let Ok(entries) = std::fs::read_dir(into) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let at = entry.path();
+        if std::fs::symlink_metadata(&at).is_ok() && !at.exists() {
+            let _ = std::fs::remove_dir(&at);
+            let _ = std::fs::remove_file(&at);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn link_dir(target: &Path, at: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, at)
+}
+
+/// A junction: a directory symlink wants a privilege the server does not hold.
+#[cfg(windows)]
+fn link_dir(target: &Path, at: &Path) -> std::io::Result<()> {
+    if std::os::windows::fs::symlink_dir(target, at).is_ok() {
+        return Ok(());
+    }
+    let out = Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(at)
+        .arg(target)
+        .output()?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(
+            String::from_utf8_lossy(&out.stdout).trim().to_string(),
+        ))
+    }
 }
 
 /// Makes the community root match its remote, cloning it when it is absent.
@@ -159,15 +249,21 @@ pub fn start() {
     tokio::spawn(async move {
         loop {
             let dir = roots.clone();
-            let synced = tokio::task::spawn_blocking(move || sync(&dir, &urls())).await;
+            let synced = tokio::task::spawn_blocking(move || {
+                let outcome = sync(&dir, &urls());
+                (outcome, link_skills(&dir))
+            })
+            .await;
             match synced {
-                Ok(Ok(sync)) => tracing::info!(
+                Ok((Ok(sync), linked)) => tracing::info!(
                     community = %roots.community.display(),
                     ?sync,
+                    linked,
                     "community content"
                 ),
-                Ok(Err(e)) => tracing::warn!(
+                Ok((Err(e), linked)) => tracing::warn!(
                     community = %roots.community.display(),
+                    linked,
                     error = %e,
                     "cannot refresh the community content"
                 ),
@@ -276,6 +372,54 @@ mod tests {
         let err = sync(&roots, &["file:///no/such/repo".into()]).unwrap_err();
         assert!(err.to_string().contains("/no/such/repo"), "{err}");
         assert!(!roots.community.exists(), "a failed clone leaves nothing");
+    }
+
+    /// Every community skill shows up in the machine's directory; a name the
+    /// reader already has stays theirs.
+    #[test]
+    fn community_skills_are_linked_and_a_reader_override_stays() {
+        let d = tempfile::tempdir().unwrap();
+        let community = d.path().join("community");
+        let private = d.path().join("private");
+        std::fs::create_dir_all(community.join("skills/remote")).unwrap();
+        std::fs::write(community.join("skills/remote/SKILL.md"), "theirs\n").unwrap();
+        std::fs::create_dir_all(community.join("skills/proxy")).unwrap();
+        std::fs::write(community.join("skills/proxy/SKILL.md"), "theirs\n").unwrap();
+        std::fs::create_dir_all(private.join("skills/proxy")).unwrap();
+        std::fs::write(private.join("skills/proxy/SKILL.md"), "mine\n").unwrap();
+
+        let roots = roots(&community, &private);
+        assert_eq!(link_skills(&roots), 1, "only the name nobody has is linked");
+        assert_eq!(
+            std::fs::read_to_string(private.join("skills/remote/SKILL.md")).unwrap(),
+            "theirs\n",
+            "readable through the link"
+        );
+        assert_eq!(
+            std::fs::read_to_string(private.join("skills/proxy/SKILL.md")).unwrap(),
+            "mine\n",
+            "an override is never replaced"
+        );
+        assert_eq!(link_skills(&roots), 0, "the second pass has nothing to do");
+    }
+
+    /// A skill that left the clone loses its link, and nothing else is touched.
+    #[test]
+    fn a_skill_that_left_the_clone_is_unlinked() {
+        let d = tempfile::tempdir().unwrap();
+        let community = d.path().join("community");
+        let private = d.path().join("private");
+        std::fs::create_dir_all(community.join("skills/gone")).unwrap();
+        std::fs::write(community.join("skills/gone/SKILL.md"), "x\n").unwrap();
+        let roots = roots(&community, &private);
+        assert_eq!(link_skills(&roots), 1);
+
+        std::fs::remove_dir_all(community.join("skills/gone")).unwrap();
+        assert_eq!(link_skills(&roots), 0);
+        assert!(
+            std::fs::symlink_metadata(private.join("skills/gone")).is_err(),
+            "the dangling link is gone"
+        );
     }
 
     #[test]

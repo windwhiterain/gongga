@@ -48,6 +48,23 @@ not a clone lives there, and writing into it would be deleting a reader's files
 to install files we can re-clone anywhere else. It stays as it is and the log
 says so.
 
+## link_skills
+
+A skill is only useful where `index_skill` looks, and that tool reads two roots:
+the home's `skills/` and the machine's. The community clone is not one of them,
+so its skills are linked into the machine's directory instead of being taught to
+the index as a third place -- one place to look is what makes "a name the reader
+has wins" true without the index knowing about precedence at all.
+
+A junction on Windows, a symlink elsewhere: a directory symlink there wants a
+privilege the server does not have, and `mklink /J` wants none. Both are links a
+reader can still see through, which is the point -- editing the skill in place
+edits the clone, and the next `pull` decides what happens to the edit.
+
+Never over an existing name: that directory is the reader's override, and a
+skill they wrote is not the community's to replace. A link whose target is gone
+is dropped, so a skill deleted upstream stops being listed.
+
 ## start
 
 Once per process (`STARTED`), then hourly, always off the caller's thread. The
