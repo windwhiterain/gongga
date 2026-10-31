@@ -23,7 +23,7 @@ _Post Modern Agent Harness_
 
 ```sh
 cargo install --git https://github.com/windwhiterain/gongga.git --locked \
-  --features payload gongga-bundle
+  gongga-bundle
 gongga serve --port 9700
 ```
 
@@ -36,8 +36,8 @@ lists what the server publishes, and a copy named `gongga-server` is the server.
 `gongga --version` answers the commit it was built from.
 
 Building it from a clone instead of installing: `cargo bundle` -- an alias in
-[`.cargo/config.toml`](.cargo/config.toml) for `cargo build -p gongga-bundle
---features payload` -- leaves the same file at `target/debug/gongga`.
+[`.cargo/config.toml`](.cargo/config.toml) for `cargo build -p gongga-bundle` --
+leaves the same file at `target/debug/gongga`.
 
 If the one file is not what you want, `cargo install --git ... --locked
 gongga-cli gongga-server` installs the programs separately; they find each other

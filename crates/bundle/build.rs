@@ -93,6 +93,8 @@ fn built() -> Vec<(&'static str, PathBuf)> {
         ])
         .current_dir(Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("../.."))
         .env("CARGO_TARGET_DIR", &target)
+        // The payload is built for the moment this file is compiled: inheriting
+        // the feature would make the nested build of the programs a bundle too.
         .env_remove("CARGO_FEATURE_PAYLOAD");
     let output = cmd
         .output()

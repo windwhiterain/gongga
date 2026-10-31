@@ -25,9 +25,9 @@ fn run() -> Result<u8, String> {
     let carried: Vec<&str> = payload::EMBEDDED.iter().map(|(name, _)| *name).collect();
     if carried.is_empty() {
         return Err(format!(
-            "this file carries no programs: it was built without `--features payload`, so \
-             there is nothing to place. Install it with one \
-             (`cargo install --git <repo> --features payload gongga-bundle`)"
+            "this file carries no programs: it was built with `--no-default-features`, \
+             so there is nothing to place. Install it without that flag \
+             (`cargo install --git <repo> gongga-bundle`)"
         ));
     }
     if !carried.contains(&wanted.as_str()) {

@@ -1,6 +1,10 @@
 [workspace]
 resolver = "3"
 members = ["crates/protocol", "crates/server", "crates/cli", "crates/tui", "crates/bridge", "crates/bundle"]
+# `crates/bundle` is the distribution, not a library anybody links: a plain
+# `cargo build`/`check`/`test` must not compile a second copy of the whole
+# dependency graph into its payload. Named here so `--workspace` still reaches it.
+default-members = ["crates/protocol", "crates/server", "crates/cli", "crates/tui", "crates/bridge"]
 
 [workspace.package]
 version = "0.1.0"

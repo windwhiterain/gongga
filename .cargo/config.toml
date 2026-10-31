@@ -12,9 +12,8 @@
 [target.'cfg(all(windows, target_env = "msvc"))']
 linker = "rust-lld"
 
-# `cargo bundle` is the distribution build. The `payload` feature stays opt-in
-# because a workspace build must not compile a second copy of every dependency
-# into a second target directory: 35 s cold, 1.8 GB, and `cargo check` would pay
-# it too. This alias is the one-word answer to "which flags again".
+# `cargo bundle` is the distribution build. `crates/bundle` is not a
+# default member, so the dev loop never pays for it; this alias is the short way
+# to ask for it by name.
 [alias]
-bundle = "build -p gongga-bundle --features payload"
+bundle = "build -p gongga-bundle"

@@ -13,8 +13,10 @@ description = "One file that carries the programs: the head of a release, nothin
 
 [features]
 # Builds the programs and embeds them, so the file `cargo install` gives you is
-# the whole distribution. Off by default: a normal workspace build must not build
-# three other crates it is not going to use.
+# the whole distribution. On by default, because installing one file is the
+# ordinary case and a flag there is a stumble for no one's benefit: the crate is
+# not in `default-members`, so the dev loop never builds it at all.
+default = ["payload"]
 payload = []
 
 # The command a person types. `cargo install --features payload gongga-bundle`
