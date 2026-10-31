@@ -176,6 +176,17 @@ part worth knowing: nobody told it to stop, somebody wanted to talk to it.
 Only this tool waits long enough for it to matter. A `read_image` call is a file
 read; nothing is gained by interrupting that.
 
+## background_notifier
+
+The other half of `leave_running`: a command that outlived its wait is noticed the
+same way a `background` job is. The row is an `inject`, which is the only shape
+that reaches both states a session can be in -- busy reads it at the next step
+boundary, idle is woken for it by `commands::nudge_inboxes`. Posting a tool result
+instead would only ever reach a turn that had already moved on.
+
+A deleted session is skipped rather than written to: nothing would ever read that
+row, and its name may be reused by a different session later.
+
 ## leave_running
 
 Both ways of losing a command's output -- its deadline passed, or somebody spoke
@@ -276,6 +287,12 @@ happened, which is the number that made this worth writing.
 The second call takes a fresh signal, the way a turn does. Reusing the old one
 would report the same message again and hand every later command straight to the
 background -- the failure mode this whole design exists to avoid.
+
+## tests::a_finished_background_job_leaves_an_inbox_row
+
+The tool-level proof of the wake-up: not that a callback fired, but that the
+session's inbox holds something. The store is given a real `main` row first,
+because a notice for a session that does not exist is deliberately not written.
 
 ## tests::detached_jobs_have_an_explicit_way_to_end
 

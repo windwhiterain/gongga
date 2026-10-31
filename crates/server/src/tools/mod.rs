@@ -337,6 +337,46 @@ fn json_type(value: &Value) -> &'static str {
 /// # Invariant
 ///
 /// Callable only once the future borrowing the shell has been dropped, because the
+/// Where a finished background job reports: an inbox row, not a result.
+///
+/// # Invariant
+///
+/// The row is an `inject`, so a busy session reads it at its next step boundary and
+/// an idle one is woken for it (`commands::nudge_inboxes`). See
+/// `docs/notes/server-tools-mod.md`.
+fn background_notifier(ctx: &ToolContext, shell: &str) -> bash::BackgroundNotifier {
+    let store = ctx.store.clone();
+    let session = ctx.session.clone();
+    let shell = shell.to_string();
+    Arc::new(move |end: bash::BackgroundEnd| {
+        let status = match end.code {
+            Some(0) => "finished successfully".to_string(),
+            Some(c) => format!("finished with exit status {c}"),
+            None => "finished, though its exit status could not be read".to_string(),
+        };
+        let job = end.job;
+        let message = format!(
+            "The background job {job} you started in shell `{shell}` has {status}. \
+             What it printed is in that shell's unread buffer: `check_bash` with \
+             name `{shell}` collects it."
+        );
+        // A deleted session owes nothing, and its rows would be stranded.
+        if matches!(store.get_session(&session), Ok(None)) {
+            return;
+        }
+        if let Err(e) = store.add_pending_task(
+            &session,
+            "inject",
+            &json!({"session": session, "message": message}),
+        ) {
+            tracing::warn!(
+                session = %session, shell = %shell, job,
+                error = %e, "could not notice a finished background job"
+            );
+        }
+    })
+}
+
 /// task it spawns takes that shell's lock to finish reading it.
 ///
 /// See `docs/notes/server-tools-mod.md`.
@@ -639,10 +679,12 @@ impl Tool for BashTool {
                     Err(e) => return ToolOutcome::err(format!("{e}")),
                 };
                 let mut shell = shell.lock().await;
-                return match shell.run_background(command).await {
+                let notify = background_notifier(ctx, name);
+                return match shell.run_background(command, Some(notify)).await {
                     Ok(job) => ToolOutcome::ok(format!(
                         "started background job {job} in shell {name}; \
-                         run `check_bash` to collect its output"
+                         run `check_bash` to collect its output, and this session is told \
+                         when it ends"
                     )),
                     Err(e) => ToolOutcome::err(format!("{e}")),
                 };
@@ -1162,6 +1204,58 @@ mod tests {
             "the session could not go on working: {}",
             after.output
         );
+    }
+
+    /// SPEC: "background bash ended will notice its session" -- as an inbox row,
+    /// not a tool result.
+    #[tokio::test]
+    async fn a_finished_background_job_leaves_an_inbox_row() {
+        let Some(program) = crate::config::detect_git_bash() else {
+            return;
+        };
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let ctx = context_for(
+            &program,
+            dir.path(),
+            InboxSignal::around(Arc::new(AtomicU64::new(0))),
+        );
+        ctx.store
+            .create_session("main", "test-model", &dir.path().to_string_lossy())
+            .expect("the session the notice is for");
+        let tool = BashTool {
+            timeout: Duration::from_secs(120),
+            max_output_chars: 0,
+        };
+        let outcome = tool
+            .run(
+                json!({"command": "exit 4", "background": true, "name": "bg"}),
+                &ctx,
+            )
+            .await;
+        assert!(outcome.ok, "{}", outcome.output);
+
+        // Nothing to read yet in the test's own hands: the row is the whole proof.
+        crate::tools::testbed::wait_until("the job's notice", Duration::from_secs(10), || {
+            ctx.store
+                .pending_tasks()
+                .map(|tasks| !tasks.is_empty())
+                .unwrap_or(false)
+        })
+        .await;
+        let tasks = ctx.store.pending_tasks().unwrap();
+        let notice = tasks
+            .iter()
+            .find(|t| t.kind == "inject")
+            .expect("an inbox row");
+        assert_eq!(notice.session, "main");
+        let message = notice
+            .payload
+            .get("message")
+            .and_then(|v| v.as_str())
+            .expect("a message");
+        assert!(message.contains("exit status 4"), "{message}");
+        assert!(message.contains("bg"), "the shell was not named: {message}");
+        assert!(message.contains("check_bash"), "{message}");
     }
 
     #[test]

@@ -41,6 +41,24 @@ pub struct BashOutcome {
     pub still_running: bool,
 }
 
+/// What a session hears when one of its background jobs ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BackgroundEnd {
+    /// The number [`BashShell::run_background`] returned.
+    pub job: u64,
+    /// The status the wrapper's sentinel carried; `None` when the job died without one.
+    pub code: Option<i32>,
+}
+
+/// Where a finished background job reports.
+///
+/// # Invariant
+///
+/// A closure, not a `Store`: the shell knows nothing about sessions, so the tools
+/// layer is what turns a notice into an inbox row. See
+/// `docs/notes/server-tools-bash.md`.
+pub type BackgroundNotifier = Arc<dyn Fn(BackgroundEnd) + Send + Sync>;
+
 /// One pipe's resumable state, kept in the shell: a cancelled wait loses neither
 /// output nor a seen sentinel.
 #[derive(Default)]
@@ -268,8 +286,13 @@ impl BashShell {
         Self::pump_both(self, None).await
     }
 
-    /// Starts a command without waiting; its output is tailed into the unread buffer.
-    pub async fn run_background(&mut self, command: &str) -> anyhow::Result<u64> {
+    /// Starts a command without waiting; its output is tailed into the unread buffer
+    /// and `notify` hears when the job ends.
+    pub async fn run_background(
+        &mut self,
+        command: &str,
+        notify: Option<BackgroundNotifier>,
+    ) -> anyhow::Result<u64> {
         self.next_job += 1;
         let job = self.next_job;
         let scratch = std::env::temp_dir().join(format!("gongga-bg-{}-{job}.out", self.marker));
@@ -303,8 +326,10 @@ impl BashShell {
             scratch,
             pid_file,
             done_marker,
+            job,
             self.pending.clone(),
             self.jobs.clone(),
+            notify,
         ));
         Ok(job)
     }
@@ -473,20 +498,32 @@ impl BashShell {
 
 /// Follows a background job's scratch file into the shell's unread buffer.
 ///
+/// # Invariant
+///
+/// The job is counted as ended before its notice is sent, so a session woken by it
+/// never sees `list_bash` report that job as still running.
+///
 /// See `docs/notes/server-tools-bash.md`.
 async fn tail_background(
     path: PathBuf,
     pid_file: PathBuf,
     done_marker: String,
+    job: u64,
     pending: Arc<StdMutex<String>>,
     jobs: Arc<AtomicUsize>,
+    notify: Option<BackgroundNotifier>,
 ) {
     let mut offset = 0usize;
     let mut missing = 0u32;
     let mut carry = Vec::new();
     let mut settled = false;
+    // A file that never appears is not a job that ended: silence is the honest answer.
+    let mut ended = false;
     loop {
         tokio::time::sleep(POLL).await;
+        // Asked first: a wrapper that just exited still gets this round's read,
+        // so its sentinel is never missed.
+        let gone = wrapper_gone(&pid_file).await;
         match tokio::fs::read(&path).await {
             Ok(bytes) => {
                 missing = 0;
@@ -494,36 +531,60 @@ async fn tail_background(
                     settled =
                         push_background_chunk(&mut carry, &bytes[offset..], &done_marker, &pending);
                     offset = bytes.len();
-                    if settled {
-                        break;
-                    }
                 }
             }
-            Err(_) => {
-                // The shell has not created the file yet, or the job is one that
-                // writes nothing at all.
-                missing += 1;
-                if missing > MISSING_FILE_POLLS {
-                    break;
-                }
-            }
+            Err(_) => missing += 1,
         }
-        // The wrapper's sentinel covers `exit`, `exec` and normal termination; this is
-        // the fallback for a killed wrapper.
-        if let Ok(pid) = tokio::fs::read_to_string(&pid_file).await {
-            if let Ok(pid) = pid.trim().parse::<u32>() {
-                if !pid_alive(pid) {
-                    break;
-                }
-            }
+        if settled {
+            ended = true;
+            break;
+        }
+        // Fallback for a killed wrapper: it will write nothing more.
+        if gone {
+            ended = true;
+            break;
+        }
+        // The shell has not created the file yet, or the job writes nothing at all.
+        if missing > MISSING_FILE_POLLS {
+            break;
         }
     }
     if !settled && !carry.is_empty() {
         collect(&pending, &String::from_utf8_lossy(&carry));
     }
+    // Counted as ended before anyone is told: the notice must not arrive while
+    // `list_bash` still reports the job as running.
     jobs.fetch_sub(1, Ordering::SeqCst);
+    if ended {
+        if let Some(notify) = notify {
+            let code = if settled { exit_code(&carry) } else { None };
+            notify(BackgroundEnd { job, code });
+        }
+    }
     let _ = tokio::fs::remove_file(&path).await;
     let _ = tokio::fs::remove_file(&pid_file).await;
+}
+
+/// Whether the wrapper process has exited, as the pid file it wrote says.
+async fn wrapper_gone(pid_file: &Path) -> bool {
+    match tokio::fs::read_to_string(pid_file).await {
+        Ok(text) => match text.trim().parse::<u32>() {
+            Ok(pid) => !pid_alive(pid),
+            // Written but unreadable: not evidence either way.
+            Err(_) => false,
+        },
+        Err(_) => false,
+    }
+}
+
+/// The digits the wrapper printed after the sentinel: it writes `\n<marker><code>\n`.
+fn exit_code(after_marker: &[u8]) -> Option<i32> {
+    let digits: String = String::from_utf8_lossy(after_marker)
+        .trim()
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '-')
+        .collect();
+    digits.parse().ok()
 }
 
 /// Adds new bytes, holding back a partial sentinel; true once the whole sentinel
@@ -541,7 +602,8 @@ fn push_background_chunk(
         .position(|window| window == marker)
     {
         collect(pending, &String::from_utf8_lossy(&carry[..pos]));
-        carry.clear();
+        // The code travels after the marker; keep it for `exit_code`.
+        carry.drain(..pos + marker.len());
         return true;
     }
     let keep = (1..=marker.len().min(carry.len()))
@@ -861,6 +923,21 @@ mod tests {
             &pending
         ));
         assert_eq!(pending.lock().unwrap().as_str(), "before\n");
+        // The exit status rides behind the sentinel, so settling must keep it.
+        assert_eq!(exit_code(&carry), Some(0));
+    }
+
+    #[test]
+    fn a_failed_background_job_reports_its_status() {
+        let pending = StdMutex::new(String::new());
+        let mut carry = Vec::new();
+        assert!(push_background_chunk(
+            &mut carry,
+            b"__GONGGA_BG_9__137\n",
+            "__GONGGA_BG_9__",
+            &pending
+        ));
+        assert_eq!(exit_code(&carry), Some(137));
     }
 
     /// Only a real run shows it: the scratch file must be writable and findable.
@@ -876,7 +953,7 @@ mod tests {
             Err(e) => panic!("spawning {}: {e}", program.display()),
         };
         shell
-            .run_background("sleep 0.2; echo from-background")
+            .run_background("sleep 0.2; echo from-background", None)
             .await
             .expect("starting a background job");
         let mut collected = String::new();
@@ -888,6 +965,50 @@ mod tests {
         assert!(collected.contains("from-background"), "got {collected:?}");
         // Reading it clears it, so the same chunk cannot be returned twice.
         assert!(shell.take_pending().is_empty());
+        shell.kill().await;
+    }
+
+    /// The wake-up: a job that ends says so, with the status it ended with.
+    #[tokio::test]
+    async fn a_finished_background_job_tells_its_session() {
+        let Some(program) = crate::config::detect_git_bash() else {
+            return;
+        };
+        let mut shell = BashShell::spawn(&program, &std::env::temp_dir(), &[]).unwrap();
+        let seen = Arc::new(StdMutex::new(Vec::<BackgroundEnd>::new()));
+        let told = seen.clone();
+        let notify: BackgroundNotifier = Arc::new(move |end| {
+            told.lock().unwrap().push(end);
+        });
+        shell
+            .run_background("printf 'ok\n'", Some(notify.clone()))
+            .await
+            .expect("starting a background job");
+        shell
+            .run_background("exit 3", Some(notify))
+            .await
+            .expect("starting a failing background job");
+        wait_until("both jobs to report", WAIT, || {
+            seen.lock().unwrap().len() == 2
+        })
+        .await;
+        // One tail task per job: order is scheduling, the pairing is the contract.
+        let mut seen = seen.lock().unwrap().clone();
+        seen.sort_by_key(|end| end.job);
+        assert_eq!(
+            seen,
+            vec![
+                BackgroundEnd {
+                    job: 1,
+                    code: Some(0)
+                },
+                BackgroundEnd {
+                    job: 2,
+                    code: Some(3)
+                },
+            ]
+        );
+        assert_eq!(shell.background_jobs(), 0);
         shell.kill().await;
     }
 
@@ -930,7 +1051,7 @@ mod tests {
             "exec printf 'exec-done\\n'",
             "printf 'kill-done\\n'; kill -9 \"$BASHPID\"",
         ] {
-            shell.run_background(command).await.unwrap();
+            shell.run_background(command, None).await.unwrap();
         }
         let mut collected = String::new();
         wait_until(
@@ -978,8 +1099,10 @@ mod tests {
                 output.clone(),
                 pid_file.clone(),
                 "__GONGGA_BG_TEST__".to_string(),
+                1,
                 pending.clone(),
                 jobs.clone(),
+                None,
             ),
         )
         .await

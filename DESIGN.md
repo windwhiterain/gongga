@@ -525,12 +525,15 @@ Shell **按 `session_name/bash_name` 建键**，所以一个会话持有的是�
 | 模式 | 是否等待 | 输出去哪 | 谁结束它 |
 |---|---|---|---|
 | 默认（前台） | 等，流式回传 | 直接作为工具结果 | turn 取消即中断 |
-| `background` | 不等 | tail 到 shell 的**未读缓冲区**，由 `check_bash` 取走 | `del_bash` 随 shell 一起消失 |
+| `background` | 不等 | tail 到 shell 的**未读缓冲区**，由 `check_bash` 取走；**结束时通知会话** | `del_bash` 随 shell 一起消失 |
 | `detached` | 不等 | 写进自己的日志文件，**不回收** | 只有 `del_bash`；`del_bash` / `cancel` / 服务端退出都不碰它 |
 
 - `background` 的实现：shell 把作业重定向到一个 scratch 文件（路径按 MSYS 写法转换，
   `C:\Temp\x` → `/c/Temp/x`），服务端任务每 150ms 读一次增量，追加进未读缓冲，
   看到结束哨兵就收尾删文件。`check_bash` 取走即清空，同一段输出不会返回两次。
+- 「通知会话」用的是和前台超时同一条路：往会话投一条 `inject` 待办（带作业号与退出码），
+  不在 turn 里就由 `nudge_inboxes` 起一个 turn，在 turn 里就在下一个 step 边界读到。
+  所以输出仍然只在 `check_bash` 里，通知只负责让人抬头。
 ### 一个参数名的代价：`cmd` → `command`
 
 先说结论：**`bash` 的第一个参数现在叫 `command`，不叫 `cmd`。**

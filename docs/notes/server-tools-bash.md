@@ -191,6 +191,50 @@ Polling a file is not elegant, but the job lives inside a persistent shell we
 cannot attach a pipe to without disturbing the foreground sentinel protocol, and
 150ms is well below the granularity at which a model asks for output.
 
+## tail_background (the notice)
+
+A job that ends tells its session, which is what SPEC's "background bash ended
+will notice its session" asks for. The count is decremented *before* the notice
+is sent, so a reader woken by it never sees the job still listed as running.
+
+`ended` is not "the tail stopped": a scratch file that never appears breaks the
+loop too, and that is a shell problem rather than a finished job. Silence is the
+honest answer there, because a status nobody measured is worse than no status.
+
+## tail_background (the pid fallback is asked first)
+
+A fast job exposed a race that predates the notice: the wrapper can exit between
+one round's file read and the pid check, so the fallback used to conclude "ended"
+while the sentinel and the last chunk of output were already sitting in a file
+nobody re-read. The status then came back unknown and the output was lost -- the
+quiet kind of loss, since a `background: true` call that prints one line looks
+fine either way.
+
+Hence the order: ask the pid first, read `offset..` second, and treat "the
+wrapper is gone" as "this read saw the whole file". A gone pid now means the loop
+had one last look rather than one look too few.
+
+## wrapper_gone
+
+A pid file that exists but does not parse is not evidence of anything: the shell
+writes it after the wrapper starts, and an unreadable one must not be mistaken for
+a finished job.
+
+## BackgroundEnd, BackgroundNotifier
+
+The shell knows about shells, not sessions: the notice is a closure the tools
+layer supplies, so `bash.rs` stays free of the store and of the agent loop, and
+`cargo test -p gongga-server tools::bash` can watch it fire without a server.
+
+The exit status comes from the sentinel the wrapper writes; a job that died
+without one (killed wrapper) reports `None` rather than a made-up zero.
+
+## push_background_chunk (the code after the sentinel)
+
+Settling keeps the bytes behind the marker instead of clearing the buffer: they
+are the exit status. Dropping them would leave every notice saying the status
+could not be read.
+
 ## cap_output
 
 Caps tool output: the head and the tail survive, the middle is dropped and the
@@ -237,6 +281,12 @@ and spaces.
 
 Every label ends up in a path, so the one thing this must never do is produce a
 name with a separator in it -- whatever the model typed.
+
+## tests::a_finished_background_job_tells_its_session
+
+Two jobs, one succeeding and one failing, because a notice that always says zero
+is the failure worth catching: the status has to come from the sentinel of the
+job it belongs to, not from whatever the shell printed last.
 
 ## tests::background_output_waits_for_check_bash
 
