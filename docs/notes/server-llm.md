@@ -82,7 +82,11 @@ I/O bottleneck it is meant to measure.
 
 The payload separates request-head construction and transcript opening from the
 network attempt. It carries `started_at`/`ended_at`, outcome and HTTP status,
-headers and first/last reasoning, output and tool-argument delta times. Raw
+headers and first/last reasoning, output and tool-argument delta times, and
+`effort` -- the reasoning level the request carried, so "the title showed one level
+and the request sent another" is a question the rows answer. A summary delivered
+whole in its done event counts as reasoning characters too, or a run with no deltas
+reads as a run that thought nothing. Raw
 chunks and bytes, SSE event kinds, tail events and parse errors make the actual
 wire shape inspectable without storing another copy of the response.
 
@@ -329,6 +333,21 @@ sees `data:` lines.
 Not every provider emits `output_item.added` before the deltas, so create the
 entry if it is missing: `output_item.done` sorts out the kind from `type`
 regardless of how we got here.
+
+## handle (reasoning summary done)
+
+`response.reasoning_summary_text.done` and `response.reasoning_text.done` carry the
+whole summary in one event, which is sometimes the only copy: Kimi's endpoint streams
+`reasoning_summary_text.done` with no deltas at all in most attempts, and its
+`output_item.done` carries an empty `summary` array. Ignoring the done event left every
+such step with no reasoning text: nothing to draw, and a stored entry whose summary was
+the empty string -- which read, from the front-end, as a model that had not thought.
+
+The done text is the full text by definition, so the item's accumulated text is its
+prefix and only the remainder is news: one rule covers a provider that sends both
+(nothing emitted) and one that sends only this (the whole text emitted as one delta).
+A provider whose done text contradicts its deltas keeps what it streamed rather than
+showing a second copy.
 
 ## handle (output_item.done)
 

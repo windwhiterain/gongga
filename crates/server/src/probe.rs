@@ -11,6 +11,8 @@ pub struct AttemptProbe {
     build_head_ms: u64,
     transcript_open_ms: u64,
     head_bytes: usize,
+    /// The reasoning level the request carried; absent is a model with none.
+    effort: Option<String>,
     started_at: i64,
     started: Instant,
     status: Option<u16>,
@@ -54,6 +56,7 @@ impl AttemptProbe {
             build_head_ms,
             transcript_open_ms,
             head_bytes,
+            effort: None,
             started_at: crate::store::now_millis(),
             started: Instant::now(),
             status: None,
@@ -94,6 +97,11 @@ impl AttemptProbe {
 
     fn ms(&self) -> u64 {
         self.started.elapsed().as_millis() as u64
+    }
+
+    /// The level this attempt sends, from the turn's own reading of the session.
+    pub fn effort(&mut self, effort: Option<&str>) {
+        self.effort = effort.map(str::to_string);
     }
 
     pub fn outcome(&mut self, outcome: &str) {
@@ -137,6 +145,16 @@ impl AttemptProbe {
                 self.reasoning_deltas += 1;
                 self.reasoning_chars += delta.chars().count() as u64;
             }
+            // Whole-summary delivery: the same text as deltas, and the only copy
+            // of it when the provider sends no delta.
+            "response.reasoning_summary_text.done" | "response.reasoning_text.done"
+                if self.reasoning_deltas == 0 =>
+            {
+                let text = data["text"].as_str().unwrap_or_default();
+                self.first_reasoning_ms.get_or_insert(at);
+                self.last_reasoning_ms = Some(at);
+                self.reasoning_chars = text.chars().count() as u64;
+            }
             "response.output_text.delta" => {
                 self.first_output_ms.get_or_insert(at);
                 self.last_output_ms = Some(at);
@@ -170,6 +188,7 @@ impl AttemptProbe {
             "build_head_ms": self.build_head_ms,
             "transcript_open_ms": self.transcript_open_ms,
             "head_bytes": self.head_bytes,
+            "effort": self.effort,
             "request_bytes": self.request_bytes,
             "started_at": self.started_at,
             "ended_at": crate::store::now_millis(),

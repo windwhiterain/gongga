@@ -177,7 +177,13 @@ impl Agent {
         };
         // Read once, like the route: every step sends the level this turn began with.
         let effort = session.tuning().thinking_effort;
-        tracing::info!(session = %name, model = %llm.model(), budget, "turn start");
+        tracing::info!(
+            session = %name,
+            model = %llm.model(),
+            effort = effort.as_deref().unwrap_or("-"),
+            budget,
+            "turn start"
+        );
 
         self.bus.publish(Event::Status {
             session: name.clone(),

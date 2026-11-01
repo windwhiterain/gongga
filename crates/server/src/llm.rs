@@ -228,6 +228,8 @@ impl LlmClient {
         let (tx, rx) = mpsc::channel(256);
         let build_started = Instant::now();
         let head = self.build_head(instructions, handover, tools, effort);
+        // Owned, because the attempt below records it after this body is gone.
+        let effort_sent = effort.map(str::to_string);
         let build_head_ms = build_started.elapsed().as_millis() as u64;
         let head_bytes = head.len();
         let source = source.clone();
@@ -249,6 +251,7 @@ impl LlmClient {
                 let transcript_open_ms = open_started.elapsed().as_millis() as u64;
                 let mut probe =
                     crate::probe::AttemptProbe::new(build_head_ms, transcript_open_ms, head_bytes);
+                probe.effort(effort_sent.as_deref());
                 let (body, bytes) = match opened {
                     Ok(pair) => pair,
                     Err(e) => {
@@ -1250,6 +1253,22 @@ async fn handle(
                 text: delta,
             })
             .await?;
+        }
+        // Whole summary at once: for some providers the only copy there is.
+        "response.reasoning_summary_text.done" | "response.reasoning_text.done" => {
+            let item_id = d["item_id"].as_str().unwrap_or_default().to_string();
+            let full = d["text"].as_str().unwrap_or_default();
+            let meta = items.entry(item_id.clone()).or_default();
+            let rest = full.strip_prefix(meta.text.as_str()).map(str::to_string);
+            if let Some(rest) = rest.filter(|rest| !rest.is_empty()) {
+                meta.text.push_str(&rest);
+                out.send(LlmEvent::Delta {
+                    part: ResponsePart::Reasoning,
+                    item_id,
+                    text: rest,
+                })
+                .await?;
+            }
         }
         "response.output_text.delta" => {
             out.send(LlmEvent::Delta {

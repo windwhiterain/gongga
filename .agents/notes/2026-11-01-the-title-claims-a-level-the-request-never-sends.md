@@ -139,3 +139,62 @@
 （`config [model]`），`cli.toml` 的 sticky `model` 是客户端上次点的东西，两者都不是答案。
 今天唯一能问到的读法是 `gongga-cli set_session --session <name>`（不带别的参数：不改任何设置，
 `data.model` / `data.thinking_effort` 就是答案）。要不要一个只读的、明说的命令，待用户定。
+
+## 追加：设了 max 还是不思考 —— 是 `.done` 被丢掉（2026-11-01 第二轮）
+
+用户第二次报告：「即便我在 TUI 设置了 thinking max，session 还是不思考」。
+
+查下来与档位无关，是 **reasoning 文本在流里换了形状**，而服务端只认其中一种。
+
+### 证据（全部来自本机已有的 `events` 记录，不花额度）
+
+按 `llm_attempt` 的 `event_kinds` 分桶：
+
+| 会话 | 形状 | 次数 |
+| --- | --- | --- |
+| tui_fix（kimi k3.1-pro） | `reasoning_summary_text.delta` + `..._done` | 54 |
+| tui_fix | **只有 `..._done`，没有 delta** | 128 |
+| polity_test（kimi kimi-for-coding） | delta + done | 6 |
+| polity_test | **只有 `..._done`** | 100 |
+| fix_model（deepseek-flash） | `reasoning_text.delta`（另一套事件名） | 125 |
+| polity-paste-image-premier（MiniMax-M3） | 一个都没有 | 162 |
+
+于是：kimi 大多数请求只发 `response.reasoning_summary_text.done`（整段文本一次给），
+`output_item.done` 的 `summary` 是空数组；服务端 `handle` 只处理 `*.delta` 与
+`output_item.done`，`*.done` 落到 `_ => {}`。结果 `summary` 空 → 前端没有东西可画，
+落盘的行是 `{"summary":""}` —— 看起来就是「没思考」。MiniMax-M3 那次是另一回事
+（它自己不发 reasoning，与 roster 里 `reasoning_default = "off"` 一致）。
+
+### 改了什么
+
+- `llm.rs` `handle`：新增 `response.reasoning_summary_text.done` /
+  `response.reasoning_text.done` 分支。`done` 按定义是全文，所以条目已累积的文本是它的**前缀**，
+  只有余下部分是新的：一条规则同时覆盖「只发 done」（整段当作一个 delta 发出去）和
+  「delta + done」（不重复），以及「done 与自己的 delta 不一致」（保留流过的，不显示第二份）。
+- `probe.rs`：`reasoning_chars` 也认 done 文本（仅在该次尝试还没有 delta 时），否则一次
+  「整段给」的运行会被记成 0 字符思考。`effort` 也进了探针 payload。
+- `agent.rs`：`turn start` 那行日志加 `effort=`，让「标题说的档位 vs 请求带的档位」以后一条
+  查询就能对账（这是上一轮记的记录缺口）。
+
+### 验证
+
+临时 home + 临时名单 + 一个只按 `REASONING_SHAPE` 发声的假端点（`done` / `deltas` / `both` /
+`none`），一次服务端生命周期跑完一个场景，读库里的 `display.summary` 与探针：
+
+| 形状 | 落盘 summary | 探针 |
+| --- | --- | --- |
+| `done` | `"first paragraph of thought\nsecond paragraph of thought"` | deltas 0, chars 54 |
+| `deltas` | 同上 | deltas 2, chars 54 |
+| `both` | 同上（**无重复**） | deltas 2, chars 54 |
+| `none` | （没有 reasoning 行） | deltas 0, chars 0 |
+| 变异检查：`done` 分支不读文本 | `""`（正是用户看到的症状） | deltas 0, chars 54 |
+
+重放侧也验了：`gongga-cli get_messages --session s --range -5:` 现在给客户端一行
+`{"t":"response","part":"reasoning","text":"first paragraph of thought\nsecond paragraph of thought","done":true}`
+—— 与实时 delta 落到前端的是同一个事件，只是 `done` 为真。
+
+### 教训（又一条）
+
+`tui_live.py` 起的服务端只把**服务端自己的** base_url 指向假端点；用 `/set_session` 带上一个
+真名单模型，那一轮就真的打到厂商。这次又踩了一次（一次 turn），所以「端到端假端点」必须
+配假名单（`GONGGA_AGENTS_DIR`），这是唯一安全的方式。
