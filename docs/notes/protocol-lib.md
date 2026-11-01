@@ -15,7 +15,7 @@ The commit, and the only identity there is: every program that links this crate
 carries it, so "are these one build" is a comparison rather than a guess, and a
 bug report carries the answer.
 
-`0.1.0` is deliberately *not* part of it. It is a release number that cannot tell
+`0.2.0` is deliberately *not* part of it. It is a release number that cannot tell
 two builds of that release apart, so printing it beside the commit would be a
 second thing to read and a weaker answer than the one next to it. Cargo still
 needs a version in the manifest; nothing prints it.

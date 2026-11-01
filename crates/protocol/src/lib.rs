@@ -14,7 +14,7 @@ pub const BUILD: &str = env!("GONGGA_BUILD");
 ///
 /// # Invariant
 ///
-/// `BUILD` alone. `0.1.0` is a release number that cannot tell two builds of one
+/// `BUILD` alone. `0.2.0` is a release number that cannot tell two builds of one
 /// release apart, so it is a second thing to read and a weaker answer than the
 /// commit it would sit next to. One identity, one line, every program.
 pub fn version_line() -> &'static str {

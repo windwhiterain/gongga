@@ -716,7 +716,7 @@ dependencies = [
 
 [[package]]
 name = "gongga-bridge"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -736,11 +736,11 @@ dependencies = [
 
 [[package]]
 name = "gongga-bundle"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "gongga-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -755,7 +755,7 @@ dependencies = [
 
 [[package]]
 name = "gongga-protocol"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "serde",
@@ -767,7 +767,7 @@ dependencies = [
 
 [[package]]
 name = "gongga-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -795,7 +795,7 @@ dependencies = [
 
 [[package]]
 name = "gongga-tui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "crossterm",
