@@ -1103,9 +1103,17 @@ impl Tui {
             self.dirty = true;
             return;
         }
+        // The image tool's own words, kept in case the text read has none.
+        let image_failure = image_failure_of(&image);
         match clipboard::paste() {
             clipboard::FromClipboard::Ok(text) => self.paste(&text),
-            clipboard::FromClipboard::Empty => {}
+            clipboard::FromClipboard::Empty => {
+                // An empty clipboard is silence, unless the image read refused:
+                // then the refusal is the only thing there is to say.
+                if let Some(why) = image_failure {
+                    self.screen.note(LineKind::Error, format!("paste: {why}"));
+                }
+            }
             clipboard::FromClipboard::NoTool => self.screen.note(
                 LineKind::Error,
                 "paste: no clipboard tool here; the terminal's own paste still works",
@@ -1435,6 +1443,19 @@ fn image_reference_of(image: &clipboard::ImageClipboard) -> Option<String> {
         clipboard::ImageClipboard::NoImage
         | clipboard::ImageClipboard::NoTool
         | clipboard::ImageClipboard::Failed(_) => None,
+    }
+}
+
+/// What a refused image read said, or `None` when it had nothing to report.
+///
+/// # Invariant
+///
+/// Only a tool that ran and refused has words; the other three answers are not
+/// failures and stay silent.
+fn image_failure_of(image: &clipboard::ImageClipboard) -> Option<String> {
+    match image {
+        clipboard::ImageClipboard::Failed(why) => Some(why.clone()),
+        _ => None,
     }
 }
 
@@ -2830,6 +2851,27 @@ mod tests {
                 "{name} must leave the text branch alone"
             );
         }
+    }
+
+    /// A tool that refused is not swallowed: its own words reach the status line.
+    ///
+    /// # Invariant
+    ///
+    /// The image read is tried before the text read, and the text read reports
+    /// for itself. But a refusal carries words only the image tool had, and when
+    /// the text read has nothing to say, those words are the only account of what
+    /// happened -- so they are shown.
+    #[test]
+    fn a_refused_image_read_is_reported() {
+        let refused = clipboard::ImageClipboard::Failed("the clipboard said no".to_string());
+        assert_eq!(image_failure_of(&refused).as_deref(), Some("the clipboard said no"));
+        // The other three answers have nothing to report.
+        assert!(image_failure_of(&clipboard::ImageClipboard::NoImage).is_none());
+        assert!(image_failure_of(&clipboard::ImageClipboard::NoTool).is_none());
+        assert!(
+            image_failure_of(&clipboard::ImageClipboard::Saved(PathBuf::from("/tmp/pic.png")))
+                .is_none()
+        );
     }
 
     #[test]

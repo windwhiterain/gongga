@@ -196,6 +196,14 @@ The alternative — the image branch reporting its own failure on top of the tex
 branch's — would put two complaints on one status line for one keystroke, and
 the second one would say less about what actually happened.
 
+There is one case where the text branch has nothing to say and the image
+branch's words are the only account of what happened: the image tool refused,
+and the clipboard held no text either. Then the refusal is shown, in the tool's
+own words. An empty clipboard is otherwise silence — nothing to paste has no
+words to say — but a refusal is a fact, and a fact the operator can act on.
+`image_failure_of` holds that rule, and `a_refused_image_read_is_reported`
+pins it.
+
 ## What the run holds back
 
 Whatever ended a run is returned as `Tui::stashed` and read at the top of the

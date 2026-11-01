@@ -104,10 +104,12 @@ The per-platform picture tools, and there are fewer of them than there are text
 tools, because reading a picture out of a clipboard is not something every
 platform ships a command line for:
 
-- **Windows**: `powershell -NoProfile -STA -Command <GetImage, then Save>`. It
-  has to be `-STA`, or `[Windows.Forms.Clipboard]::GetImage()` throws, and the
-  destination path travels in `GONGGA_CLIP_PATH` rather than as an argument,
-  because `-Command` does not hand trailing arguments over as `$args`.
+- **Windows**: `powershell -NoProfile -STA -File <script> <path>`. It has to be
+  `-STA`, or `[Windows.Forms.Clipboard]::GetImage()` throws. The one-liner is
+  written once to a `.ps1` file under the temp directory and run with `-File`,
+  because `-Command` does not hand trailing arguments over as `$args`, whereas
+  `-File` does: the destination path arrives as `$args[0]`. The script exits 0
+  and prints nothing when the clipboard holds no picture.
 - **macOS**: `osascript -e <AppleScript>`, which writes the clipboard's PNG to
   the destination file itself.
 - **Linux**: `wl-paste -t image/png` and then `xclip -selection clipboard -t

@@ -45,20 +45,11 @@ fn readers() -> &'static [(&'static str, &'static [&'static str])] {
 
 /// Programs that read an image from the clipboard, tried in order.
 ///
-/// Some tools take the destination path as their last argument and write the
-/// file themselves; others print the image bytes on stdout, which the caller
-/// redirects into the destination file.
+/// See `docs/notes/tui-clipboard.md`.
 fn image_candidates() -> Vec<ImageTool> {
     if cfg!(windows) {
-        // PowerShell must run with `-STA` so `[Windows.Forms.Clipboard]::GetImage()`
-        // does not throw. `-Command` does not pass trailing arguments as `$args`,
-        // so we write a small script file and invoke it with `-File`; the
-        // destination path is then `$args[0]`. The script exits 0 and prints
-        // nothing when the clipboard holds no image, so an empty destination
-        // file is treated as `NoImage`.
-        let script = powershell_image_script();
-        let args: Vec<&'static str> = vec!["-NoProfile", "-STA", "-File", script];
-        let args: &'static [&'static str] = Box::leak(args.into_boxed_slice());
+        // `-STA` or `GetImage()` throws; `-File` or no `$args[0]`.
+        let args = powershell_image_args();
         vec![ImageTool::writes_to_path("powershell", args)]
     } else if cfg!(target_os = "macos") {
         // The destination path is appended as the last argument and addressed as
@@ -71,8 +62,7 @@ fn image_candidates() -> Vec<ImageTool> {
             ],
         )]
     } else {
-        // Linux tools print the image on stdout. Wrap each in a shell that
-        // redirects stdout into the destination path, which is passed as `$1`.
+        // Linux tools print on stdout; the shell redirects it into `$1`.
         vec![
             ImageTool::writes_to_path(
                 "sh",
@@ -112,6 +102,23 @@ fn powershell_image_script() -> &'static str {
         path.to_string_lossy().into_owned()
     })
     .as_str()
+}
+
+/// The argument list for the PowerShell image reader, built once.
+///
+/// # Invariant
+///
+/// The list is built once and kept for the life of the process: the script path
+/// is stable, and building it per paste would leak the slice every time.
+#[cfg(windows)]
+fn powershell_image_args() -> &'static [&'static str] {
+    use std::sync::OnceLock;
+    static ARGS: OnceLock<&'static [&'static str]> = OnceLock::new();
+    ARGS.get_or_init(|| {
+        let script = powershell_image_script();
+        let args: Vec<&'static str> = vec!["-NoProfile", "-STA", "-File", script];
+        Box::leak(args.into_boxed_slice())
+    })
 }
 
 /// What a read of the clipboard produced.
@@ -335,10 +342,9 @@ pub fn paste_image() -> ImageClipboard {
     paste_image_with(&image_candidates(), &dest_dir())
 }
 
-/// [`paste_image`] against a named list of tools and a destination directory.
+/// [`paste_image`] against a named list of tools and a destination.
 ///
-/// The testable seam: a stub tool can touch nothing real and still exercise the
-/// spawn, the pipe, and the destination-file handling.
+/// The testable seam: a stub tool touches nothing real.
 pub fn paste_image_with(tools: &[ImageTool], dest_dir: &Path) -> ImageClipboard {
     let _ = fs::create_dir_all(dest_dir);
     let mut last: Option<String> = None;
@@ -362,10 +368,7 @@ pub fn paste_image_with(tools: &[ImageTool], dest_dir: &Path) -> ImageClipboard 
 
 /// Runs one image candidate.
 ///
-/// Returns `None` when the tool could not be spawned (not installed), so the
-/// caller can try the next candidate. Returns `Some(Ok(true))` when an image
-/// was written, `Some(Ok(false))` when the tool ran but produced no image, and
-/// `Some(Err(_))` when the tool ran and failed.
+/// `None` when it could not be spawned, so the next candidate gets a turn.
 fn run_image_tool(tool: &ImageTool, dest: &Path) -> Option<Result<bool, String>> {
     match tool.mode {
         ImageToolMode::WritesToPath => {
@@ -447,9 +450,8 @@ pub fn paste_text(raw: &str) -> String {
 mod tests {
     use super::*;
 
-    /// Writes a tiny PowerShell stub script that decodes a minimal PNG into its
-    /// first argument, returning a leaked path string so it can live in a
-    /// static `ImageTool` argument list.
+    /// Writes a PowerShell stub that decodes a minimal PNG, and leaks its
+    /// path so it can live in a static argument list.
     #[cfg(windows)]
     fn windows_png_stub(dir: &Path) -> &'static str {
         let script = dir.join("stub-ps.png.ps1");
@@ -601,8 +603,7 @@ mod tests {
         assert!(matches!(paste_image_with(silent, dir.path()), ImageClipboard::NoImage));
     }
 
-    /// A missing image tool is skipped, not fatal; if it is the only candidate
-    /// the result is `NoTool`, and a later candidate still gets its turn.
+    /// A missing image tool is skipped, not fatal; a later one still runs.
     #[test]
     fn an_absent_image_tool_is_skipped() {
         let dir = tempfile::tempdir().unwrap();
