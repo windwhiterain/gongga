@@ -36,6 +36,8 @@ struct Queued {
     id: u64,
     name: String,
     args: Args,
+    /// When the datagram was read: the wait a slow answer is told apart by.
+    arrived: std::time::Instant,
 }
 
 pub async fn serve(cfg: Arc<Config>, d: Arc<Dispatch>, bus: EventBus) -> anyhow::Result<()> {
@@ -252,7 +254,12 @@ async fn handle_connection(
                             break;
                         }
                         if commands
-                            .send(Queued { id, name, args })
+                            .send(Queued {
+                                id,
+                                name,
+                                args,
+                                arrived: std::time::Instant::now(),
+                            })
                             .is_err()
                         {
                             // Nobody left to run it, so nobody left to answer.
@@ -292,7 +299,17 @@ async fn run_commands(
     sink: protocol::ChannelSink,
 ) {
     while let Some(command) = queued.recv().await {
+        // Two numbers a slow command is bisected by: how long it waited behind
+        // earlier commands on this connection, and how long it then took.
+        let ran_at = std::time::Instant::now();
         let outcome = dispatch(&d, &command.name, &command.args).await;
+        tracing::info!(
+            command = %command.name,
+            session = command.args.get("session").map(String::as_str).unwrap_or("-"),
+            waited = ?ran_at.duration_since(command.arrived),
+            took = ?ran_at.elapsed(),
+            "command ran"
+        );
         // A command's own events first: they are the answer, and the result that
         // follows is the sentence about it.
         let mut broken = false;

@@ -847,21 +847,26 @@ impl Store {
     }
 
     /// Delivers current injected messages and removes their inbox rows in one transaction.
-    pub fn deliver_pending(&self, session_id: i64, session: &str) -> anyhow::Result<usize> {
+    pub fn deliver_pending(&self, session_id: i64, session: &str) -> anyhow::Result<(usize, i64)> {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
         let tasks = {
             let mut stmt = tx.prepare(
-                "SELECT id, payload FROM pending_tasks
+                "SELECT id, payload, created_at FROM pending_tasks
                  WHERE session = ?1 AND kind = 'inject' ORDER BY id",
             )?;
             let rows = stmt.query_map(params![session], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
             })?;
             rows.collect::<Result<Vec<_>, _>>()?
         };
+        let mut waited = 0;
         let mut delivered = 0;
-        for (id, payload) in tasks {
+        for (id, payload, written_at) in tasks {
             let payload: serde_json::Value = serde_json::from_str(&payload)?;
             if let Some(notice) = payload.get("context_notice") {
                 let limit = notice
@@ -892,10 +897,15 @@ impl Store {
                 .ok_or_else(|| anyhow::anyhow!("pending inject {id} has no message"))?;
             Self::append_message_conn(&tx, session_id, "text", &user_row(&expanded))?;
             tx.execute("DELETE FROM pending_tasks WHERE id = ?1", params![id])?;
+            // The oldest wait is the one the operator felt.
+            let age = now_millis() - written_at;
+            if delivered == 0 || age > waited {
+                waited = age;
+            }
             delivered += 1;
         }
         tx.commit()?;
-        Ok(delivered)
+        Ok((delivered, waited))
     }
 
     /// Commits the terminal status and the fate of this turn's durable obligations together.
@@ -1442,6 +1452,25 @@ mod tests {
         );
     }
 
+    /// The number an operator reads as "no answer yet" comes from here.
+    #[test]
+    fn a_delivered_message_reports_how_long_it_waited() {
+        let (_d, store) = temp_store();
+        let id = store.create_session("main", "m", "C:/x").unwrap();
+        assert_eq!(
+            store.deliver_pending(id, "main").unwrap(),
+            (0, 0),
+            "nothing was waiting, so nothing waited"
+        );
+        store
+            .add_pending_task("main", "inject", &json!({"message": "late"}))
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let (delivered, waited) = store.deliver_pending(id, "main").unwrap();
+        assert_eq!(delivered, 1);
+        assert!(waited >= 20, "a 30ms wait is reported, got {waited}ms");
+    }
+
     #[test]
     fn inbox_delivery_is_atomic_and_does_not_consume_turn_rows() {
         let (_d, store) = temp_store();
@@ -1456,8 +1485,8 @@ mod tests {
             .add_pending_task("main", "inject", &json!({"message": "third"}))
             .unwrap();
 
-        assert_eq!(store.deliver_pending(id, "main").unwrap(), 2);
-        assert_eq!(store.deliver_pending(id, "main").unwrap(), 0);
+        assert_eq!(store.deliver_pending(id, "main").unwrap().0, 2);
+        assert_eq!(store.deliver_pending(id, "main").unwrap().0, 0);
         let pending = store.pending_tasks().unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id, turn);

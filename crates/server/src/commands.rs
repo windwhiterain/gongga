@@ -537,6 +537,8 @@ async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcome {
                         gate,
                     },
                 );
+                // Which of the two a wait is: a turn started now, or an inbox row.
+                tracing::info!(session = %name, "message accepted: the turn starts now");
                 Outcome::ok(format!("message accepted by {name}"))
             }
             Err(e) => Outcome::err(format!("could not record the pending turn: {e}")),
@@ -549,6 +551,10 @@ async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcome {
         }) {
             Ok(_) => {
                 session.note_message();
+                tracing::info!(
+                    session = %name,
+                    "message queued: a running turn reads it at its next step boundary"
+                );
                 Outcome::ok(format!(
                     "message queued for {name}; the running command has been told to stop waiting"
                 ))

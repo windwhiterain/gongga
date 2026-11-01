@@ -267,9 +267,16 @@ impl Agent {
     /// Moves the session's inbox into the transcript in one durable transaction.
     fn deliver_inbox(&self, id: i64, name: &str) -> usize {
         match self.store.deliver_pending(id, name) {
-            Ok(delivered) => {
+            // `waited` is the number an operator reads as "no answer yet": a message
+            // written while this turn was mid-step lands only here.
+            Ok((delivered, waited_ms)) => {
                 if delivered > 0 {
-                    tracing::info!(session = %name, delivered, "delivered queued messages at a step boundary");
+                    tracing::info!(
+                        session = %name,
+                        delivered,
+                        waited = ?std::time::Duration::from_millis(waited_ms.max(0) as u64),
+                        "delivered queued messages at a step boundary"
+                    );
                     self.bus.publish(Event::Log {
                         level: LogLevel::Info,
                         message: format!("{name}: delivered {delivered} queued message(s)"),

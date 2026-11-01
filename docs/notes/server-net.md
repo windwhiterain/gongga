@@ -94,6 +94,13 @@ meaning, not of speed, so the fix stops at "must not block the other two".
 Results carry their own `id`, which is what the client matches on, so a slow
 command costs nobody else anything but time.
 
+Each command is logged as it runs, with two durations and a session: `waited` is
+how long the datagram sat behind earlier commands on the same connection, `took`
+is the dispatch itself. A one-line `send_message` is therefore either "accepted:
+the turn starts now" or "queued: a running turn reads it at its next step
+boundary", and the boundary delivery logs the age of the message it delivered.
+Those three lines are what tells a slow answer apart from a slow link.
+
 `CmdResult` is RPC traffic addressed to this connection: sending it directly,
 rather than publishing it on the shared bus, avoids both cross-client id
 collisions and loss through a lagged broadcast.
