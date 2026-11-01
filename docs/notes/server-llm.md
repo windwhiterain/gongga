@@ -363,10 +363,13 @@ front-end then had one row to draw where the model wrote several.
 
 ## history_item_to_input
 
-The stored `summary` is for humans: the UI replays it when a client reconnects.
-It is deliberately *not* sent back to the model, which already has its reasoning
-state in the encrypted blob -- echoing the summary too would put every thought
-into `input[]` a second time.
+A reasoning row replays as the thought it was, and what goes on the wire depends on
+what the row holds.
 
-Replaying reasoning requires the encrypted blob; without it the item is dropped
-rather than sent in a form the API would reject.
+With the encrypted blob, that is the whole item: the blob *is* the thought, so the
+`summary` beside it stays off the request. Echoing both would put every thought into
+`input[]` twice, which is a request the provider charges for and does not need.
+
+Without a blob -- a thought a cancel interrupted, kept by `keep_streamed` -- the text
+is all there is, so it is replayed as `summary`. Dropping it instead was the older
+rule, and it made a cancel lose the half of the turn the reader had already watched.

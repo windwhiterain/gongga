@@ -454,11 +454,11 @@ map as soon as its completion event stores it. What is left when the cancel arri
 is exactly what no row holds, and `keep_streamed` writes it, marked
 `interrupted: true` in the display payload.
 
-The two halves are kept differently on purpose. Assistant text is a real message:
-`wire_item` builds an item from it, so the next request replays what the model
-actually said. A reasoning fragment carries no `encrypted` payload, and `wire_item`
-answers `None` for such a row, so it is kept for the record and never replayed as a
-thought the model completed.
+Both halves are replayed. Assistant text is a real message and `wire_item` builds an
+item from it. A reasoning fragment carries no `encrypted` payload, so `wire_item`
+replays its text as a `summary` instead -- what it says is what the model thought,
+and dropping it was losing the half of the turn the reader had already watched.
+See `docs/notes/server-llm.md`.
 
 ## a cancelled call is still answered
 
