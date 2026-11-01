@@ -142,7 +142,9 @@ skill 都要改一次这个文件，而读的人手上已经有那张表。
 
 **需要源码的 skill 不属于 `ship`。** `evolve` 要往上找 `Cargo.toml`、要编服务端、要读
 `.dev/`，装进 `$GONGGA_HOME` 之后它找不到仓库根，所以它住在**这个仓库**的
-`.agents/skills/evolve/`，随 checkout 走，不随 pin 走。
+`.agents/skills/evolve/`，随 checkout 走，不随 pin 走。**不要往 `$GONGGA_HOME/skills/` 里放它的
+副本**：那份副本会随源码一起变旧，而且它自己 `cd` 到 home 之后往上找不到 `Cargo.toml`，一行
+都跑不通——但 `index_skill` 会把两个同名 `evolve` 都列出来，读的人先撞上坏的那个。
 
 其余（`heir` / `image` / `self-control` / `subagent` + 默认 config）在内容仓库里，是这个仓库的
 **submodule**（`ship/`），所以「改 skill / 改默认 config」和「重新 pin」是同一件事：在 `ship/` 里
