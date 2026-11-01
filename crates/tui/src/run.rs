@@ -59,8 +59,16 @@ impl Sink for TuiSink<'_> {
         self.0.set_layout(layout);
     }
 
+    fn rewrite(&mut self, window: &str, key: &str, text: &str) {
+        self.0.rewrite(window, key, text);
+    }
+
     fn relabel(&mut self, window: &str, key: &str, tag: &str, kind: LineKind) {
         self.0.relabel(window, key, tag, kind);
+    }
+
+    fn clear(&mut self, window: &str) {
+        self.0.clear(window);
     }
 
     fn forget(&mut self, window: &str) {

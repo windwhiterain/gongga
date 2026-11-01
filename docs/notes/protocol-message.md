@@ -151,30 +151,48 @@ instead of vanishing.
 `SessionInfo`: the row is about the *provider*, not a session, and a step that
 names a new provider is what makes it "active".
 
-## Head and HeadKind
+## Head, Field and HeadKind
 
-A block's introduction, in the one split that keeps restyling off the wire: the server
-names **what kind of thing** a row is and **spells its words**, and the front-end
-decides what that looks like.
+A block's introduction: what kind of thing it is, and the arguments it was given,
+each with a label and a `summary` flag.
 
-The server is the only one that can carry the second half. A duration is spelled from a
-number only it measured (`1.2s`), an argument list is spelled from JSON it already
-parsed, and a verdict is a fact about a call it ran. A front-end that formatted those
-would be re-deriving them from fields it would then have to be told about -- which is
-the protocol change this shape exists to avoid.
+The split is one the protocol can make and the server must not. **The schema is
+SPEC's**: `toolcall{tool_name, {name, task, background, detached, timeout} (bash)}`
+says which arguments summarise a bash call, so that list is the protocol's own
+vocabulary, not a rendering choice. What the server adds is the *verdict per field* --
+this call set `name`, and `command` is detail -- because only it knows what the model
+actually passed.
 
-What the server does *not* say is a glyph or a colour. `HeadKind` is a closed semantic
-set; the front-end maps it to its own look (`kind_of` in the command layer, `style_for`
-in the renderer). Adding a kind is a protocol change, but *restyling* one -- a
-different mark, a different ink, a different name in the window -- is a change to one
-crate and nothing travels.
+So the wire carries `Field { label, value, summary }` and never a table of names. A
+front-end composes two rows from one list: the folded `abstract` is the fields marked
+`summary`, the open item is all of them. Opening therefore costs no message -- both
+rows were sent, once.
 
-It is the browser split: the server sends the document and its semantics, the client
-brings the stylesheet. A server that sent `Ink { fg: "green" }` would be a server with
-opinions about another program's palette, and the day two front-ends wanted different
-colours the wire would grow a negotiation.
+What the server must *not* send is a style. `HeadKind` is a closed semantic set that a
+front-end maps to its own glyph and palette; a `color: "green"` on the wire would be one
+program with opinions about another's screen, and the day two front-ends disagree the
+wire grows a negotiation.
 
-## ToolCallEvent## REPLAY_TURN
+`value` is spelled where the server owns the unit -- a duration, a token count --
+because a number and its unit are one fact. It is never a whole row's prose:
+assembling the row is the front-end's, from the fields.
+
+## ToolCallEvent, and a call's stream
+
+A call is published as structure when its item is done: `call_id`, and a `Head` whose
+fields are the arguments the model passed.
+
+It also **streams**, as it always did: `ResponsePart::ToolCall` carries `bash(` then
+the argument deltas then `)`, and every one of those chunks carries `call_id` (new on
+`ResponseEvent`), so a front-end draws one block for the call from its first delta to
+its verdict. The structured event that follows *fills that block* --
+`Sink::rewrite`, then `Sink::relabel` -- instead of opening a second one.
+
+That id is the whole reason it is on the wire: a streamed part is keyed by turn and
+part, and a call is keyed by the id its result will carry. Without it the two halves of
+one call became two blocks, one of them a bare `bash(`.
+
+## REPLAY_TURN
 
 A transcript row read back is an event, not a field of a result, and it is one of the
 events the row was published as while it arrived: `response` for the parts an answer

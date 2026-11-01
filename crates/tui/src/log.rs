@@ -118,7 +118,9 @@ impl Entry {
             }
             // A call says what was asked; a result says how it went -- its
             // output is the click, so the label is the whole row.
-            _ => self.tag.trim_end().to_string(),
+            _ if !self.tag.is_empty() => self.tag.trim_end().to_string(),
+            // An item whose body is its own label: the folded row is its first row.
+            _ => self.row(0).to_string(),
         };
         cut(&text, width)
     }
@@ -188,37 +190,24 @@ impl Entry {
     fn view_row(&self, row: usize, labelled: bool) -> Cow<'_, str> {
         if self.folded() {
             let summary = self.folded_row(row);
-            // SPEC's `abstract (horizontal)`: the mark owns one column, so a
-            // second row starts where the first one's text does, not under it.
+            // SPEC's `abstract (horizontal)`: the mark owns one column, so the
+            // second row starts where the first one's text does.
             let label = match labelled {
-                true => mark(self.kind),
-                false => " ".repeat(mark(self.kind).width()),
+                true => self.kind.mark(),
+                false => " ".repeat(self.kind.mark().width()),
             };
             return Cow::Owned(format!("{label}{summary}"));
         }
         if !labelled {
             return Cow::Borrowed(self.row(row));
         }
-        Cow::Owned(format!("{}{}{}", mark(self.kind), self.tag, self.row(row)))
-    }
-}
-
-/// The columns one item's mark takes, and the blank after it.
-///
-/// # Invariant
-///
-/// Zero for a kind SPEC gives no mark -- the answer -- and two for every other, so
-/// a block's text is measured against the columns it is actually drawn in.
-fn mark(kind: LineKind) -> String {
-    match kind.symbol() {
-        "" => String::new(),
-        symbol => format!("{symbol} "),
+        Cow::Owned(format!("{}{}{}", self.kind.mark(), self.tag, self.row(row)))
     }
 }
 
 /// Columns the label of a `kind` block takes: its mark, then its tag.
 fn label_width(kind: LineKind, tag: &str) -> usize {
-    mark(kind).width() + tag.width()
+    kind.mark().width() + tag.width()
 }
 
 /// `text` cut to `width` columns, marked when it was cut.
@@ -577,6 +566,33 @@ impl Log {
         self.entries.iter().rposition(|entry| entry.key == key)
     }
 
+    /// Drops every block of one window, keeping the window itself.
+    ///
+    /// # Invariant
+    ///
+    /// Only the blocks: SPEC's command row shows the last `cmd` or `cmd_result`, so
+    /// the previous one is dropped rather than kept out of sight -- there is no way
+    /// to scroll back to it, and holding it would be holding what cannot be read.
+    pub fn clear(&mut self, window: &str) {
+        if !self.entries.iter().any(|entry| entry.window == window) {
+            return;
+        }
+        self.entries.retain(|entry| entry.window != window);
+        let kept: Vec<&Entry> = self.entries.iter().collect();
+        let _ = kept;
+        // The open map points at indexes that have moved: re-derive it from the
+        // blocks that are still streaming.
+        let open: Vec<(String, usize)> = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| !entry.sealed && !entry.key.is_empty())
+            .map(|(at, entry)| (entry.key.clone(), at))
+            .collect();
+        self.open = open.into_iter().collect();
+        self.rebuild();
+    }
+
     /// Replaces the whole text of the block `key` names and re-wraps it.
     ///
     /// # Invariant
@@ -727,8 +743,21 @@ impl Log {
                 }
                 return;
             }
+            // The end of a block already open: `done`, nothing in it, is how a
+            // part closes -- and sealing is what folds it.
+            Some(at) if text.is_empty() && done => {
+                self.seal(key, at);
+                return;
+            }
             None => {
                 let mut entry = Entry::with_tag(name, kind, tag, text.to_string(), width);
+                // A body-less item's body is its label: a call reads as its
+                // arguments, and opening it must show them.
+                if entry.text.trim().is_empty() && !entry.tag.is_empty() {
+                    entry.text = entry.tag.trim_end().to_string();
+                    entry.tag.clear();
+                    entry.reflow(width);
+                }
                 entry.key = key.to_string();
                 self.entries.push(entry);
                 let at = self.entries.len() - 1;
@@ -919,6 +948,32 @@ mod tests {
         assert_eq!(log.rows(View::All, 40), 1);
     }
 
+    /// A part that ends with an empty chunk still folds.
+    ///
+    /// # Invariant
+    ///
+    /// `done` with no text and no label is how a streamed part closes, and sealing
+    /// is what makes an item SPEC's `abstract`. Treating it as a blank sentinel --
+    /// which is what a *shell's* exit line looks like -- left the item open, so it
+    /// never folded.
+    #[test]
+    fn a_part_that_ends_with_an_empty_chunk_still_folds() {
+        let mut log = Log::new();
+        log.stream("w", "c1", LineKind::ToolCall, "", "bash(ls)", false);
+        assert_eq!(
+            log.rows(View::All, 40),
+            1,
+            "streaming: the rows it is writing"
+        );
+        log.relabel("c1", "name=build ", LineKind::ToolCall);
+        log.stream("w", "c1", LineKind::ToolCall, "", "", true);
+        assert_eq!(
+            shown(&mut log, 40, 4, 0),
+            vec!["\u{25b8} name=build"],
+            "sealed, the row is the summary and not the body"
+        );
+    }
+
     /// SPEC's `abstract`: an item that is not the answer folds when it stops.
     ///
     /// # Invariant
@@ -1056,7 +1111,7 @@ mod tests {
         log.stream("w", "k", LineKind::ToolOutput, "", "a\nb\nc", true);
         log.push("w", LineKind::System, "after");
         assert_eq!(log.rows(View::All, 40), 2, "one summary and one row");
-        assert_eq!(shown(&mut log, 40, 4, 0), vec!["\u{2713} ", "after"]);
+        assert_eq!(shown(&mut log, 40, 4, 0), vec!["\u{2713} a", "after"]);
         assert!(log.toggle("k"));
         assert_eq!(log.rows(View::All, 40), 4, "three rows and the row after");
         assert_eq!(

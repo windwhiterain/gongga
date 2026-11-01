@@ -457,6 +457,8 @@ pub enum LlmEvent {
     PartStart {
         part: ResponsePart,
         item_id: String,
+        /// The call this part streams into, when the part is a tool call.
+        call_id: Option<String>,
     },
     Delta {
         part: ResponsePart,
@@ -1183,6 +1185,7 @@ async fn handle(
                     out.send(LlmEvent::PartStart {
                         part: ResponsePart::Reasoning,
                         item_id: id,
+                        call_id: None,
                     })
                     .await?;
                 }
@@ -1190,16 +1193,32 @@ async fn handle(
                     out.send(LlmEvent::PartStart {
                         part: ResponsePart::Output,
                         item_id: id,
+                        call_id: None,
                     })
                     .await?;
                 }
-                // Nothing to start: the call is published whole, once, below.
-                ItemKind::FunctionCall => {}
+                ItemKind::FunctionCall => {
+                    // The call streams as it did: `bash(` then its arguments, and
+                    // the id its result will carry rides every chunk of it.
+                    out.send(LlmEvent::PartStart {
+                        part: ResponsePart::ToolCall,
+                        item_id: id.clone(),
+                        call_id: item["call_id"].as_str().map(str::to_string),
+                    })
+                    .await?;
+                    out.send(LlmEvent::Delta {
+                        part: ResponsePart::ToolCall,
+                        item_id: id,
+                        text: format!("{}(", item["name"].as_str().unwrap_or("?")),
+                    })
+                    .await?;
+                }
                 ItemKind::ProviderCall => {
                     let shown = activity_name(item["type"].as_str().unwrap_or("call"));
                     out.send(LlmEvent::PartStart {
                         part: ResponsePart::Activity,
                         item_id: id.clone(),
+                        call_id: None,
                     })
                     .await?;
                     out.send(LlmEvent::Delta {
@@ -1236,9 +1255,21 @@ async fn handle(
             })
             .await?;
         }
-        // Nothing to stream: a call is published whole when its item is done, so
-        // a front-end draws `bash(name=…)` rather than a JSON document being typed.
-        "response.function_call_arguments.delta" => {}
+        "response.function_call_arguments.delta" => {
+            let item_id = d["item_id"].as_str().unwrap_or_default().to_string();
+            let delta = d["delta"].as_str().unwrap_or_default().to_string();
+            items
+                .entry(item_id.clone())
+                .or_default()
+                .text
+                .push_str(&delta);
+            out.send(LlmEvent::Delta {
+                part: ResponsePart::ToolCall,
+                item_id,
+                text: delta,
+            })
+            .await?;
+        }
         "response.output_item.done" => {
             let item = &d["item"];
             let id = item["id"].as_str().unwrap_or_default().to_string();
@@ -1310,13 +1341,30 @@ async fn handle(
                     .await?;
                 }
                 ItemKind::FunctionCall => {
-                    // One event, whole: the name, the arguments and the id its
-                    // result will carry. Nothing streams, so nothing is closed.
+                    // The closing bracket, then the call as the structure it is.
+                    let streamed = !meta.text.is_empty();
+                    let close = if streamed {
+                        ")".to_string()
+                    } else {
+                        let args = item["arguments"].as_str().unwrap_or("{}");
+                        format!("{}({args})", meta.name)
+                    };
+                    out.send(LlmEvent::Delta {
+                        part: ResponsePart::ToolCall,
+                        item_id: id.clone(),
+                        text: close,
+                    })
+                    .await?;
                     out.send(LlmEvent::ToolCall {
-                        item_id: id,
+                        item_id: id.clone(),
                         call_id: meta.call_id,
                         name: meta.name,
                         arguments: item["arguments"].as_str().unwrap_or("{}").to_string(),
+                    })
+                    .await?;
+                    out.send(LlmEvent::PartDone {
+                        part: ResponsePart::ToolCall,
+                        item_id: id,
                     })
                     .await?;
                 }
@@ -1708,11 +1756,16 @@ mod tests {
         assert_eq!(summary.as_deref(), Some("from provider"));
     }
 
-    /// A tool call is published once, whole: its name, its arguments and the id
-    /// its result will carry -- and nothing is streamed as a part, so a front-end
-    /// never draws a JSON document being typed.
+    /// A call streams as it always did, and is published as structure once done.
+    ///
+    /// # Invariant
+    ///
+    /// Both halves are the point: a reader watches the arguments arrive, and the
+    /// event that follows says what the call *is*, so a front-end draws the folded
+    /// summary and the open detail without parsing JSON. The streamed chunks carry
+    /// the id the result will use, which is how the two land in one block.
     #[tokio::test]
-    async fn a_tool_call_is_one_event_and_no_streamed_part() {
+    async fn a_tool_call_streams_and_then_arrives_as_structure() {
         let (tx, mut rx) = mpsc::channel(32);
         let mut items = HashMap::new();
         let ev = |name: &str, data: Value| SseEvent {
@@ -1757,34 +1810,43 @@ mod tests {
         .await
         .unwrap();
 
-        let mut calls = Vec::new();
-        let mut streamed = Vec::new();
+        let mut streamed = String::new();
+        let mut call = None;
+        let mut started = false;
         while let Ok(e) = rx.try_recv() {
             match e {
+                LlmEvent::PartStart {
+                    part: ResponsePart::ToolCall,
+                    call_id,
+                    ..
+                } => {
+                    started = true;
+                    assert_eq!(call_id.as_deref(), Some("call_9"), "the id rides along");
+                }
+                LlmEvent::Delta {
+                    part: ResponsePart::ToolCall,
+                    text,
+                    ..
+                } => streamed.push_str(&text),
                 LlmEvent::ToolCall {
                     call_id,
                     name,
                     arguments,
                     ..
-                } => calls.push((call_id, name, arguments)),
-                LlmEvent::Delta { part, .. } | LlmEvent::PartDone { part, .. } => {
-                    streamed.push(part)
-                }
-                LlmEvent::PartStart { part, .. } => streamed.push(part),
+                } => call = Some((call_id, name, arguments)),
                 _ => {}
             }
         }
+        assert!(started, "the call opened a streamed part");
+        assert_eq!(streamed, r#"bash({"command":"ls"})"#, "the reader saw it");
         assert_eq!(
-            calls,
-            vec![(
+            call,
+            Some((
                 "call_9".to_string(),
                 "bash".to_string(),
                 r#"{"command":"ls"}"#.to_string()
-            )]
-        );
-        assert!(
-            streamed.is_empty(),
-            "a call is not a streamed part any more: {streamed:?}"
+            )),
+            "and the structure says what it is"
         );
     }
 
@@ -1882,6 +1944,7 @@ mod tests {
         };
         let activity = LlmEvent::PartStart {
             part: ResponsePart::Activity,
+            call_id: None,
             item_id: "ws_1".into(),
         };
         assert!(event_produced(&builtin));

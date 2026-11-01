@@ -206,6 +206,20 @@ pub fn home_of(args: &Args) -> std::path::PathBuf {
 
 // Where rendered output goes
 
+/// A head's folded row: SPEC's `abstract`, with the space the mark leaves room for.
+///
+/// # Invariant
+///
+/// One place spells this, so the block a call opens with and the label its outcome
+/// later replaces cannot differ by a space.
+fn head_label(head: &protocol::Head) -> String {
+    let text = head.summary();
+    match text.is_empty() {
+        true => String::new(),
+        false => format!("{text} "),
+    }
+}
+
 /// Which line kind a server-named [`protocol::HeadKind`] is drawn as.
 ///
 /// # Invariant
@@ -237,8 +251,8 @@ impl LineKind {
     /// *is*, and this crate says what that looks like.
     pub fn symbol(self) -> &'static str {
         match self {
-            // SPEC names no item for these: the harness's own remarks, prose the
-            // operator typed, and the answer itself carry no mark.
+            // SPEC names no item for these: the harness's remarks, the prose the
+            // operator typed, and the answer carry no mark.
             LineKind::System | LineKind::User | LineKind::Assistant => "",
             LineKind::Command => "$",
             LineKind::Reasoning => "\u{25c7}",
@@ -247,6 +261,19 @@ impl LineKind {
             LineKind::ToolError => "\u{2715}",
             LineKind::Result => "\u{2192}",
             LineKind::Error => "!",
+        }
+    }
+
+    /// The glyph and the space in front of the item's own words.
+    ///
+    /// # Invariant
+    ///
+    /// The one column SPEC colours: everything after it is the model's text, and the
+    /// window draws that in its own ink rather than in this kind's.
+    pub fn mark(self) -> String {
+        match self.symbol() {
+            "" => String::new(),
+            symbol => format!("{symbol} "),
         }
     }
 
@@ -354,6 +381,8 @@ pub trait Sink {
     fn block_size(&mut self, _lines: usize) {}
     /// How the window lays itself out. A front-end that ignores it shows one list.
     fn layout(&mut self, _layout: &Layout) {}
+    /// Replaces the whole text of a block: a call's structure, once known.
+    fn rewrite(&mut self, _window: &str, _key: &str, _text: &str) {}
     /// The label of a block that learned its outcome after opening, and that
     /// label's kind: SPEC's `tool_result{ok, time}`.
     ///
@@ -364,6 +393,9 @@ pub trait Sink {
     fn relabel(&mut self, _window: &str, _key: &str, _tag: &str, _kind: LineKind) {}
     /// Empties the window `window` names: the session that wrote it is deleted.
     fn forget(&mut self, _window: &str) {}
+    /// Drops what a window holds, keeping it: SPEC's command row shows the last
+    /// `cmd` or `cmd_result`, not their history.
+    fn clear(&mut self, _window: &str) {}
     /// The session the sticky `session` names: what the keys scroll and what a
     /// click sets. See `docs/notes/cli-lib.md`.
     fn sticky_session(&mut self, _name: Option<&str>) {}
@@ -430,6 +462,9 @@ pub struct Client {
     block_size: BlockSize,
     /// Which sessions are shown beside the list.
     shown: Shown,
+    /// Calls whose arguments streamed, by id: the structured event that follows
+    /// fills that block, not a second one.
+    calls: std::collections::HashSet<String>,
     /// Which window each accepted command's result belongs to, from its echo.
     results: HashMap<u64, String>,
     /// A `set_session` waiting for its acknowledgement, so a refused one writes
@@ -586,6 +621,7 @@ impl Client {
             shown,
             results: HashMap::new(),
             follows: Vec::new(),
+            calls: std::collections::HashSet::new(),
             sessions: Vec::new(),
             model: "-".to_string(),
             next_id: Self::seed_command_id(),
@@ -685,13 +721,19 @@ impl Client {
         let shown = self.drawn(&event);
         match event {
             Event::Cmd { id, name, args } => {
-                let window = self.command_line(args.get("session").map(String::as_str));
+                let session = args.get("session").map(String::as_str);
+                let window = self.command_line(session);
                 // The result carries only the id, so say now where its answer goes.
                 self.results.insert(id, window.clone());
                 if shown {
                     // No `$`: SPEC's `cmd` item carries a symbol, and the mark
                     // that says "this is a command" is the front-end's to draw.
                     let line = format!("{name}{}", render_args(&args));
+                    // SPEC's row is `last cmd | cmd_result`: a command of no
+                    // session replaces the one before.
+                    if session.is_none() {
+                        sink.clear(&window);
+                    }
                     sink.line(&window, LineKind::Command, &line);
                 }
             }
@@ -722,6 +764,11 @@ impl Client {
                         } else {
                             LineKind::Error
                         };
+                        // The answer replaces the `cmd` line above it: one row is
+                        // the last of the two, not both stacked.
+                        if window == self.command_window() {
+                            sink.clear(&window);
+                        }
                         sink.line(&window, kind, &message);
                     }
                 }
@@ -804,9 +851,16 @@ impl Client {
         }
     }
 
-    fn handle_response(&self, e: ResponseEvent, sink: &mut dyn Sink) {
-        // One part is one block: the window already keeps the sessions apart.
-        let key = format!("r:{}:{}:{:?}", e.session, e.turn, e.part);
+    fn handle_response(&mut self, e: ResponseEvent, sink: &mut dyn Sink) {
+        // One part is one block. A call streams under its result's id, so the
+        // structured event fills the block it opened.
+        let key = match (&e.call_id, e.part) {
+            (Some(call_id), ResponsePart::ToolCall) => format!("c:{call_id}"),
+            _ => format!("r:{}:{}:{:?}", e.session, e.turn, e.part),
+        };
+        if let (Some(call_id), ResponsePart::ToolCall) = (&e.call_id, e.part) {
+            self.calls.insert(call_id.clone());
+        }
         let (kind, label) = match e.part {
             // No label: the kind's colour (dim italic) already says this is the
             // model thinking, and the label was the word twice.
@@ -834,10 +888,19 @@ impl Client {
     /// its result together, and the id is the only thing they share.
     fn handle_tool_call(&self, e: protocol::ToolCallEvent, sink: &mut dyn Sink) {
         let key = format!("c:{}", e.call_id);
-        // The words are the server's; which kind of row this is, and how that
-        // kind looks, are this side's.
+        // Which kind of row this is, and how that kind looks, are this side's.
         let kind = kind_of(e.head.kind);
-        sink.stream(&e.session, &key, kind, &e.head.text, "", true);
+        // One list of fields gives both rows: the folded `abstract` is the marked
+        // ones, the body all of them -- opening asks nobody.
+        let summary = head_label(&e.head);
+        if self.calls.contains(&e.call_id) {
+            // The call streamed into this block: fill it in place. A second
+            // `stream` with a new label would open a second block.
+            sink.rewrite(&e.session, &key, &e.head.detail());
+            sink.relabel(&e.session, &key, &summary, kind);
+        } else {
+            sink.stream(&e.session, &key, kind, &summary, &e.head.detail(), true);
+        }
     }
 
     fn handle_tool_answer(&self, e: ToolAnswerEvent, sink: &mut dyn Sink) {
@@ -854,7 +917,7 @@ impl Client {
         // the server's; the look is `kind_of`'s.
         if let Some(head) = &e.head {
             let kind = kind_of(head.kind);
-            sink.relabel(&window, &key, &head.text, kind);
+            sink.relabel(&window, &key, &head_label(head), kind);
         }
     }
 
@@ -2401,10 +2464,9 @@ mod tests {
             &mut s,
         );
         assert_eq!(s.windows, vec!["peer", COMMAND_WINDOW]);
-        assert_eq!(
-            s.lines,
-            vec!["del_session --session peer", "deleted session peer"]
-        );
+        // The command was the session's line; the answer is the command row's, and
+        // that row holds one thing.
+        assert_eq!(s.lines, vec!["deleted session peer"]);
     }
 
     /// A catalog whose one command is `set_session`: the server's, not ours.
@@ -2544,6 +2606,14 @@ mod tests {
         forgotten: Vec<String>,
         /// Labels written after a block opened, as `key = tag`.
         labels: Vec<String>,
+        /// Windows emptied before a line was written into them.
+        cleared: Vec<String>,
+        /// The text each streamed block opened with.
+        bodies: Vec<String>,
+        /// The label each streamed block opened under.
+        tags: Vec<String>,
+        /// The text written over a block, as `text`.
+        rewritten: Vec<String>,
     }
 
     impl Sink for StreamSink {
@@ -2566,6 +2636,8 @@ mod tests {
             self.windows.push(window.to_string());
             self.keys.push(key.to_string());
             self.lines.push(format!("{prefix}{text}"));
+            self.bodies.push(text.to_string());
+            self.tags.push(prefix.to_string());
         }
         fn relabel(&mut self, _window: &str, key: &str, tag: &str, kind: LineKind) {
             self.labels.push(format!("{key} = {tag} ({kind:?})"));
@@ -2573,6 +2645,15 @@ mod tests {
         fn status(&mut self, _t: &str) {}
         fn layout(&mut self, layout: &Layout) {
             self.announced = Some(layout.clone());
+        }
+        fn rewrite(&mut self, _window: &str, _key: &str, text: &str) {
+            self.rewritten.push(text.to_string());
+        }
+        fn clear(&mut self, window: &str) {
+            self.cleared.push(window.to_string());
+            // What a window held is gone: a read of `lines` sees what came
+            // after, which is what SPEC's one command row shows.
+            self.lines.clear();
         }
         fn forget(&mut self, window: &str) {
             self.forgotten.push(window.to_string());
@@ -2587,6 +2668,7 @@ mod tests {
             part,
             text: text.into(),
             done: false,
+            call_id: None,
         }
     }
 
@@ -2617,6 +2699,78 @@ mod tests {
         assert_eq!(s.lines, vec!["hi there"]);
     }
 
+    /// SPEC's row is `last cmd | cmd_result`: a command replaces the one before,
+    /// an answer the command it answers.
+    ///
+    /// # Invariant
+    ///
+    /// Only for the row that belongs to no session. A command that named a session
+    /// is that session's own line, and its transcript keeps every one of them.
+    #[test]
+    fn the_command_row_holds_only_the_last_command_or_answer() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
+        let mut s = StreamSink::default();
+
+        c.handle_event(
+            Event::Cmd {
+                id: 1,
+                name: "set_render".into(),
+                args: protocol::Args::default(),
+            },
+            &mut s,
+        );
+        assert_eq!(s.lines, vec!["set_render"], "the command alone");
+
+        c.handle_event(
+            Event::CmdResult {
+                id: 1,
+                ok: true,
+                message: "render block_size = 3".into(),
+                data: None,
+            },
+            &mut s,
+        );
+        // One clear for the command (a no-op when empty) and one for the
+        // answer: the row ends up holding the last of the two.
+        assert_eq!(s.cleared, vec![COMMAND_WINDOW, COMMAND_WINDOW]);
+        assert_eq!(s.lines, vec!["render block_size = 3"]);
+
+        c.handle_event(
+            Event::Cmd {
+                id: 2,
+                name: "get_messages".into(),
+                args: protocol::Args::default(),
+            },
+            &mut s,
+        );
+        assert_eq!(
+            s.lines,
+            vec!["get_messages"],
+            "and the next command replaced that"
+        );
+    }
+
+    /// A session's own command stays in its window: the transcript is the history.
+    #[test]
+    fn a_session_command_is_not_replaced() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
+        let mut s = StreamSink::default();
+        for id in [1, 2] {
+            c.handle_event(
+                Event::Cmd {
+                    id,
+                    name: "send_message".into(),
+                    args: protocol::Args::from([("session".into(), "main".into())]),
+                },
+                &mut s,
+            );
+        }
+        assert!(s.cleared.is_empty(), "{:?}", s.cleared);
+        assert_eq!(s.lines.len(), 2, "both are the session's own lines");
+    }
+
     /// A tool call is one block, keyed by the call: two calls in a turn are two
     /// items, and a result names the same id.
     #[test]
@@ -2629,17 +2783,82 @@ mod tests {
                 Event::ToolCall(protocol::ToolCallEvent {
                     session: "peer".into(),
                     call_id: call.into(),
-                    // The words are the server's; only the kind travels with them.
-                    head: protocol::Head::new(protocol::HeadKind::Call, r#"bash{"command":"ls"} "#),
+                    // One list of fields: the server says which of them summarise.
+                    head: protocol::Head {
+                        kind: protocol::HeadKind::Call,
+                        fields: vec![
+                            protocol::Field {
+                                label: String::new(),
+                                value: "cargo test".into(),
+                                summary: false,
+                            },
+                            protocol::Field {
+                                label: "name".into(),
+                                value: "build".into(),
+                                summary: true,
+                            },
+                        ],
+                    },
                 }),
                 &mut s,
             );
         }
+        // A call that streamed nothing still opens one block: the label is the
+        // summary, the body every field.
         assert_eq!(s.keys, vec!["c:c1", "c:c2"]);
+        assert_eq!(s.tags, vec!["name=build ", "name=build "]);
+        assert!(s.rewritten.is_empty(), "{:?}", s.rewritten);
+    }
+
+    /// A call that streamed is filled in place: its structure must not open a
+    /// second block under the same id.
+    ///
+    /// # Invariant
+    ///
+    /// `handle_response` keys a tool call by its id, and `handle_tool_call` finds
+    /// that block and rewrites it. Opening another would draw the same call twice.
+    #[test]
+    fn a_streamed_call_is_filled_in_place_by_its_structure() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["peer"]);
+        let mut s = StreamSink::default();
+        let mut streamed = response("peer", ResponsePart::ToolCall, r#"bash({"command":"ls"}"#);
+        streamed.call_id = Some("c1".into());
+        c.handle_response(streamed, &mut s);
+        assert_eq!(s.keys, vec!["c:c1"], "the call streamed into its own block");
+
+        c.handle_event(
+            Event::ToolCall(protocol::ToolCallEvent {
+                session: "peer".into(),
+                call_id: "c1".into(),
+                head: protocol::Head {
+                    kind: protocol::HeadKind::Call,
+                    fields: vec![
+                        protocol::Field {
+                            label: String::new(),
+                            value: "ls".into(),
+                            summary: false,
+                        },
+                        protocol::Field {
+                            label: "name".into(),
+                            value: "build".into(),
+                            summary: true,
+                        },
+                    ],
+                },
+            }),
+            &mut s,
+        );
+        assert_eq!(s.keys, vec!["c:c1"], "and no second block was opened");
         assert_eq!(
-            s.lines,
-            vec![r#"bash{"command":"ls"} "#, r#"bash{"command":"ls"} "#],
-            "the label is what the model asked for"
+            s.rewritten,
+            vec!["ls, name=build"],
+            "what was streamed is replaced by the structure"
+        );
+        assert_eq!(
+            s.labels.last().map(String::as_str),
+            Some("c:c1 = name=build  (ToolCall)"),
+            "and the folded row is the summary"
         );
     }
 
@@ -2668,7 +2887,8 @@ mod tests {
             );
             assert_eq!(
                 s.labels.last().map(String::as_str),
-                Some(&format!("t:c1:Stdout = {said} ({want})")[..]),
+                // The verdict, then the space the mark leaves room for.
+                Some(&format!("t:c1:Stdout = {said}  ({want})")[..]),
                 "the server's words, this side's look"
             );
         }
@@ -2700,7 +2920,7 @@ mod tests {
     #[test]
     fn a_response_key_is_unchanged_by_the_tag() {
         let d = tempfile::tempdir().unwrap();
-        let c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["peer"]);
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["peer"]);
         let mut s = StreamSink::default();
         c.handle_response(response("peer", ResponsePart::Output, "x"), &mut s);
         assert_eq!(s.keys, vec!["r:peer:1:Output"]);
@@ -3247,7 +3467,7 @@ mod tests {
     #[test]
     fn unsplit_keeps_one_key_per_part() {
         let d = tempfile::tempdir().unwrap();
-        let c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main"]);
         let mut s = StreamSink::default();
         c.handle_response(response("main", ResponsePart::Reasoning, "a"), &mut s);
         c.handle_response(response("main", ResponsePart::ToolCall, "b"), &mut s);
@@ -3284,8 +3504,9 @@ mod tests {
             &mut s,
         );
         assert!(s.keys.is_empty(), "{:?}", s.keys);
-        assert_eq!(s.lines, vec!["get_messages", "3 rows"]);
-        // Both are on the command line, not inside a session's window.
+        // SPEC's row is `last cmd | cmd_result`, so the answer replaced the echo.
+        assert_eq!(s.lines, vec!["3 rows"]);
+        // Both were written to the command line, not into a session's window.
         assert_eq!(s.windows, vec!["cmd", "cmd"]);
     }
 

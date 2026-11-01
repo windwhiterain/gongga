@@ -610,6 +610,18 @@ impl Tui {
         self.dirty = true;
     }
 
+    /// Drops what one window holds: SPEC's command row shows only the last one.
+    pub fn clear(&mut self, name: &str) {
+        self.screen.panes.clear(name);
+        self.dirty = true;
+    }
+
+    /// Replaces what one block holds: a call's structure, once it is known.
+    pub fn rewrite(&mut self, _name: &str, key: &str, text: &str) {
+        self.screen.panes.rewrite(key, text);
+        self.dirty = true;
+    }
+
     /// The label of a block that learned its outcome after it opened.
     pub fn relabel(&mut self, _name: &str, key: &str, tag: &str, kind: LineKind) {
         self.screen.panes.relabel(key, tag, kind);
@@ -2027,8 +2039,8 @@ mod tests {
         // stderr: nothing at all but the sentinel's blank line.
         h.stream("t:c1:Stderr", LineKind::ToolError, "", "\n", false);
         h.stream("t:c1:Stderr", LineKind::ToolError, "", "", true);
-        // Sealed, both streams are `abstract`s: a mark and a label, no body.
-        assert_eq!(h.rows(), vec!["\u{2713} "]);
+        // Sealed, it is one `abstract` row, and that row says what it printed.
+        assert_eq!(h.rows(), vec!["\u{2713} hi"]);
     }
 
     /// Two streams open at once stay separate: a tool's output never joins a response.
@@ -2346,6 +2358,33 @@ mod tests {
         };
         // Structure is rows; the writer's markers are all still on screen.
         assert_eq!(drawn, "# title\n- **one**\n- `two`");
+    }
+
+    /// A press on a tool call opens it, so its arguments are not the whole of it.
+    ///
+    /// # Invariant
+    ///
+    /// The block is keyed by the call id and its body is empty until something
+    /// streams into it, so this is also the case that says a fold is not about
+    /// having text: a call opens to show what it was given.
+    #[test]
+    fn a_press_on_a_tool_call_opens_it() {
+        let mut h = Headless::new();
+        h.stream("c:c1", LineKind::ToolCall, "bash{ls}", "", true);
+        h.measure("main", 8);
+        let (width, height) = (40u16, 14u16);
+        let slot = h
+            .screen
+            .slots(width, height)
+            .into_iter()
+            .find(|slot| slot.name == "main")
+            .expect("the window");
+        let key = h
+            .screen
+            .item_at(width, height, slot.body.x, slot.body.y)
+            .expect("a press there names the item");
+        assert_eq!(key, "c:c1");
+        assert!(h.screen.panes.toggle(&key), "a tool call is an abstract");
     }
 
     /// A press in the events opens the item under it, and the row count follows.

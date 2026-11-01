@@ -201,6 +201,15 @@ pub struct ResponseEvent {
     pub text: String,
     /// True on the final chunk for this part of this turn.
     pub done: bool,
+    /// The call this part is streaming into, when it is a tool call.
+    ///
+    /// # Invariant
+    ///
+    /// A call streams under the id its result will carry, so a front-end draws one
+    /// block for it from the first delta to the verdict, and the structured
+    /// [`ToolCallEvent`] that follows fills the same block rather than a second one.
+    #[serde(default)]
+    pub call_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -222,9 +231,16 @@ pub enum ToolStream {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Head {
     pub kind: HeadKind,
-    /// The row's words, already spelled: a front-end never formats a duration.
+    /// The item's arguments, each with the label it is read under.
+    ///
+    /// # Invariant
+    ///
+    /// One list, sent once: which fields summarise the item and which only the
+    /// open item shows is `Field::summary`, decided by the schema below rather than
+    /// by whoever spells the words. A front-end composes the two rows from this, so
+    /// expanding never asks the server again.
     #[serde(default)]
-    pub text: String,
+    pub fields: Vec<Field>,
 }
 
 /// Which kind of row a [`Head`] introduces, in SPEC's vocabulary.
@@ -254,13 +270,52 @@ pub enum HeadKind {
     Error,
 }
 
+/// One argument of an item, as its row reads it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Field {
+    /// The argument's name, as SPEC spells it; empty for a value with no name.
+    #[serde(default)]
+    pub label: String,
+    /// The value, already spelled: the server owns units and digits.
+    pub value: String,
+    /// Whether SPEC puts it in the `abstract`, the folded row.
+    #[serde(default)]
+    pub summary: bool,
+}
+
 impl Head {
+    /// A head whose whole content is one value: a verdict, a duration.
     pub fn new(kind: HeadKind, text: impl Into<String>) -> Self {
         Self {
             kind,
-            text: text.into(),
+            fields: vec![Field {
+                label: String::new(),
+                value: text.into(),
+                summary: true,
+            }],
         }
     }
+
+    /// The folded row: SPEC's `abstract`, from the fields the schema marks.
+    pub fn summary(&self) -> String {
+        join(self.fields.iter().filter(|field| field.summary))
+    }
+
+    /// The open item: every field the call was given, `command` included.
+    pub fn detail(&self) -> String {
+        join(self.fields.iter())
+    }
+}
+
+/// `fields` as one line: `name=build, background=true`, or a bare value.
+fn join<'a>(fields: impl Iterator<Item = &'a Field>) -> String {
+    let parts: Vec<String> = fields
+        .map(|field| match field.label.is_empty() {
+            true => field.value.clone(),
+            false => format!("{}={}", field.label, field.value),
+        })
+        .collect();
+    parts.join(", ")
 }
 
 /// One tool the model asked for, as the row it is read on.
@@ -274,7 +329,7 @@ impl Head {
 pub struct ToolCallEvent {
     pub session: String,
     pub call_id: String,
-    /// The call as it is read: the tool, the arguments it was given.
+    /// The call's arguments, each marked with whether SPEC's `abstract` shows it.
     pub head: Head,
 }
 
@@ -611,14 +666,17 @@ mod tests {
         assert!(json.contains("\"t\":\"status\""), "{json}");
     }
 
-    /// A head carries a kind and words, and nothing about how they look.
+    /// A head says what an item is and what it was given, and nothing about how
+    /// that looks.
     ///
     /// # Invariant
     ///
-    /// The wire shape is what keeps restyling off it: a colour or a glyph here
-    /// would be one program with opinions about another's palette.
+    /// Which fields summarise the item travels *with each field*, so adding a tool
+    /// or changing what its folded row shows is a server change: a front-end reads
+    /// `summary` and never a table of names. No colour, glyph or style is on the
+    /// wire -- a palette is one program's opinion about another's screen.
     #[test]
-    fn a_head_is_a_kind_and_its_words_only() {
+    fn a_head_says_what_an_item_is_and_what_it_was_given() {
         let e = Event::ToolAnswer(ToolAnswerEvent {
             session: "main".into(),
             call_id: "c1".into(),
@@ -630,8 +688,9 @@ mod tests {
         });
         let json = serde_json::to_string(&e).unwrap();
         assert!(json.contains(r#""kind":"failed""#), "{json}");
-        assert!(json.contains(r#""text":"2.5s""#), "{json}");
-        for look in ["color", "colour", "fg", "symbol", "bold"] {
+        assert!(json.contains(r#""value":"2.5s""#), "{json}");
+        assert!(json.contains(r#""summary":true"#), "{json}");
+        for look in ["color", "colour", "fg", "symbol", "bold", "style"] {
             assert!(
                 !json.contains(look),
                 "{look} does not belong on the wire: {json}"
@@ -646,6 +705,29 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// A call's fields are sent once, each marked with whether the folded row
+    /// shows it: opening the item is local.
+    #[test]
+    fn a_call_sends_every_field_once_and_marks_the_ones_it_summarises() {
+        let head = Head {
+            kind: HeadKind::Call,
+            fields: vec![
+                Field {
+                    label: String::new(),
+                    value: "cargo test".into(),
+                    summary: false,
+                },
+                Field {
+                    label: "name".into(),
+                    value: "build".into(),
+                    summary: true,
+                },
+            ],
+        };
+        assert_eq!(head.summary(), "name=build");
+        assert_eq!(head.detail(), "cargo test, name=build");
     }
 
     /// A call names the tool it runs, its arguments, and the id its result carries.

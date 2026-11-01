@@ -230,6 +230,11 @@ impl Panes {
         &self.panes
     }
 
+    /// Drops what one window holds, keeping the window.
+    pub fn clear(&mut self, window: &str) {
+        self.log.clear(window);
+    }
+
     /// Replaces the whole text of one block: an answer re-rendered as markdown.
     pub fn rewrite(&mut self, key: &str, text: &str) {
         self.log.rewrite(key, text);

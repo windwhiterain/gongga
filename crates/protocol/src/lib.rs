@@ -34,7 +34,7 @@ pub use channel::{
 };
 pub use message::{
     ArgSpec, Args, BLOCK_SIZES, ClientInfo, ClientMessage, CmdArg, CommandSpec, CommandTarget,
-    CompletionSource, Event, Head, HeadKind, LogLevel, PROTOCOL_VERSION, Quota, REPLAY_TURN,
+    CompletionSource, Event, Field, Head, HeadKind, LogLevel, PROTOCOL_VERSION, Quota, REPLAY_TURN,
     ResponseEvent, ResponsePart, SHOW_VALUES, ServerInfo, ServerMessage, SessionInfo,
     SessionStatus, ToolAnswerEvent, ToolCallEvent, ToolStream, Usage, UsageEvent, client_commands,
     decode_client, decode_server, encode_client, encode_server,

@@ -62,6 +62,13 @@ the server says what a row *is* (`HeadKind`), and this side says what that looks
 It is drawn with the block's label on the top visible row and measured by `reflow` as
 part of it, so a marked row wraps as far as it is actually drawn.
 
+## A part that ends with an empty chunk
+
+`done` with no text and no label is how a streamed part closes, and sealing is what
+folds an item into SPEC's `abstract`. It used to be swallowed by the blank-chunk rule --
+which exists for a *shell's* exit sentinel, a different thing -- so a call that
+streamed stayed open and never folded.
+
 ## A reasoning item's two rows
 
 SPEC's `reasoning{beginning (line), ending (line)}`, taken from the block's own wrapped

@@ -475,30 +475,51 @@ impl Agent {
             cancel.clone(),
         );
 
+        // Which call each streamed item is, so its chunks are addressed by call id.
+        let mut calls: std::collections::HashMap<String, String> = Default::default();
         let mut ran_tools = false;
         let mut failure: Option<String> = None;
         let mut saw_completion = false;
 
         while let Some(event) = rx.recv().await {
             match event {
+                // A call's chunks name the id its result carries, so the block it
+                // streams into is the one the structured event fills.
+                LlmEvent::PartStart {
+                    part: ResponsePart::ToolCall,
+                    item_id,
+                    call_id,
+                } => {
+                    if let Some(call_id) = call_id {
+                        calls.insert(item_id, call_id);
+                    }
+                }
                 LlmEvent::PartStart { .. } => {}
-                LlmEvent::Delta { part, text, .. } => {
+                LlmEvent::Delta {
+                    part,
+                    item_id,
+                    text,
+                } => {
                     first_token.get_or_insert_with(std::time::Instant::now);
+                    let call_id = calls.get(&item_id).cloned();
                     self.bus.publish(Event::Response(ResponseEvent {
                         session: name.to_string(),
                         turn,
                         part,
                         text,
                         done: false,
+                        call_id,
                     }));
                 }
-                LlmEvent::PartDone { part, .. } => {
+                LlmEvent::PartDone { part, item_id } => {
+                    let call_id = calls.get(&item_id).cloned();
                     self.bus.publish(Event::Response(ResponseEvent {
                         session: name.to_string(),
                         turn,
                         part,
                         text: String::new(),
                         done: true,
+                        call_id,
                     }));
                 }
                 LlmEvent::Reasoning {
@@ -533,6 +554,7 @@ impl Agent {
                         part: ResponsePart::Activity,
                         text: text.clone(),
                         done: true,
+                        call_id: None,
                     }));
                     // Operator-only: the model keeps its text, not the annotation.
                     let _ = self
@@ -1139,7 +1161,141 @@ mod tests {
 /// is; how that looks belongs to the front-end, so restyling is a change to one
 /// crate and nothing on the wire moves. See `docs/notes/protocol-message.md`.
 pub(crate) fn call_head(tool: &str, arguments: &str) -> protocol::Head {
-    protocol::Head::new(protocol::HeadKind::Call, format!("{tool}{arguments} "))
+    protocol::Head {
+        kind: protocol::HeadKind::Call,
+        fields: call_fields(tool, arguments),
+    }
+}
+
+/// A call's arguments, each marked with whether SPEC's `abstract` shows it.
+///
+/// # Invariant
+///
+/// The per-tool list is this crate's: it owns the tools, so it knows a `bash`
+/// call is summarised by `{name, task, background, detached, timeout}` and that
+/// `command` is the detail's. The wire carries the verdict per field, so adding a
+/// tool touches nothing a front-end reads. Every argument is sent once: what the
+/// summary leaves out is here, so opening needs no request.
+fn call_fields(tool: &str, arguments: &str) -> Vec<protocol::Field> {
+    let value: serde_json::Value = serde_json::from_str(arguments).unwrap_or_default();
+    let summary = summary_keys(tool);
+    let mut fields = Vec::new();
+    // The detail first, so opening the item leads with what was run.
+    if let Some(command) = value.get("command").and_then(|v| v.as_str()) {
+        fields.push(protocol::Field {
+            label: String::new(),
+            value: command.to_string(),
+            summary: false,
+        });
+    }
+    if value.as_object().is_none() {
+        return fields;
+    }
+    // SPEC's order first, so the row reads the same whatever the model wrote;
+    // then anything else, in the order it came.
+    let mut ordered: Vec<String> = summary
+        .iter()
+        .map(|name| tool_key(name).to_string())
+        .filter(|key| value.get(key).is_some())
+        .collect();
+    if let Some(map) = value.as_object() {
+        for key in map.keys() {
+            if key != "command" && !ordered.contains(key) {
+                ordered.push(key.clone());
+            }
+        }
+    }
+    for key in ordered {
+        let label = spec_name(&key).to_string();
+        fields.push(protocol::Field {
+            value: match &value[&key] {
+                serde_json::Value::String(text) => text.clone(),
+                other => other.to_string(),
+            },
+            summary: summary.contains(&label.as_str()),
+            label,
+        });
+    }
+    fields
+}
+
+/// The arguments SPEC's `toolcall` summarises this tool by, in its order.
+fn summary_keys(tool: &str) -> &'static [&'static str] {
+    match tool {
+        // SPEC lists bash's own set; another tool is summarised by nothing yet,
+        // which still reads better than a wall of JSON.
+        "bash" => &["name", "task", "background", "detached", "timeout"],
+        _ => &[],
+    }
+}
+
+/// The name the tool's own schema uses, where SPEC spells it otherwise.
+fn tool_key(name: &str) -> &str {
+    match name {
+        "timeout" => "timeout_ms",
+        other => other,
+    }
+}
+
+/// The name SPEC gives an argument, where the tool's own schema spells it otherwise.
+fn spec_name(key: &str) -> &str {
+    match key {
+        "timeout_ms" => "timeout",
+        other => other,
+    }
+}
+
+#[cfg(test)]
+mod call_fields_tests {
+    use super::*;
+
+    /// SPEC's `toolcall{tool_name, {...}}`: the summary is those fields;
+    /// `command` is the open item's.
+    #[test]
+    fn a_bash_call_summarises_the_fields_spec_names_and_keeps_the_command() {
+        let head = call_head(
+            "bash",
+            r#"{"command":"cargo test","name":"build","task":"run the tests","background":true}"#,
+        );
+        assert_eq!(
+            head.summary(),
+            "name=build, task=run the tests, background=true"
+        );
+        assert!(
+            !head.summary().contains("cargo test"),
+            "SPEC leaves the command out of the abstract: {}",
+            head.summary()
+        );
+        assert!(
+            head.detail().starts_with("cargo test"),
+            "and it is the detail's first row: {}",
+            head.detail()
+        );
+    }
+
+    /// A field the call did not set is absent, not defaulted.
+    #[test]
+    fn only_what_the_model_set_is_sent() {
+        let head = call_head("bash", r#"{"command":"ls"}"#);
+        assert_eq!(head.summary(), "", "no shell named, no flags given");
+        assert_eq!(head.detail(), "ls");
+    }
+
+    /// The tool's schema spells `timeout_ms`; SPEC's row says `timeout`.
+    #[test]
+    fn the_timeout_is_labelled_the_way_spec_spells_it() {
+        let head = call_head("bash", r#"{"command":"ls","timeout_ms":30000}"#);
+        assert_eq!(head.summary(), "timeout=30000");
+    }
+
+    /// A tool SPEC does not name is summarised by nothing, and its arguments are
+    /// all in the detail rather than lost.
+    #[test]
+    fn a_tool_spec_does_not_name_keeps_its_arguments_in_the_detail() {
+        let head = call_head("index_skill", r#"{"name":"evolve"}"#);
+        assert_eq!(head.summary(), "");
+        assert!(head.detail().contains("evolve"), "{}", head.detail());
+    }
 }
 
 /// What a finished call says: whether it worked, and how long it took.

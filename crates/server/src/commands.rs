@@ -904,6 +904,8 @@ fn row_event(name: &str, row: &MessageRow) -> Option<Event> {
         part,
         text: row.text.clone(),
         done: true,
+        // A replayed call streams under the id its result named.
+        call_id: row.call_id.clone(),
     }))
 }
 

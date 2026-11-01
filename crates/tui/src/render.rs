@@ -719,6 +719,30 @@ fn draw_quota(f: &mut Frame, s: &Screen, area: Rect) {
     );
 }
 
+/// One row of an item: SPEC's coloured `symbol`, then text in the window's own ink.
+///
+/// # Invariant
+///
+/// The kind's colour stops at the mark. SPEC gives `output` a coloured markdown body
+/// and the other items a coloured `symbol` with plain `content`; here the two are
+/// one rule: the mark carries the colour and the text after it is drawn in the
+/// terminal's own foreground. A row with no mark carries no colour at all -- the
+/// answer, whose text is what a reader is reading.
+fn item_row(kind: LineKind, text: &str) -> Line<'static> {
+    let mark = kind.mark();
+    let rest = match mark.is_empty() {
+        true => None,
+        false => text.strip_prefix(mark.as_str()),
+    };
+    match rest {
+        Some(rest) => Line::from(vec![
+            Span::styled(mark, style_for(kind)),
+            Span::raw(rest.to_string()),
+        ]),
+        None => Line::from(Span::raw(text.to_string())),
+    }
+}
+
 /// Draws every pane: the header that names it, then the rows that fit in its share.
 fn draw_panes(f: &mut Frame, s: &mut Screen, area: Rect) {
     let sticky = s.sticky_session.clone();
@@ -773,7 +797,7 @@ fn draw_rows(f: &mut Frame, s: &mut Screen, name: &str, area: Rect) {
     let lines: Vec<Line> = window
         .rows
         .iter()
-        .map(|(kind, text)| Line::from(Span::styled(text.to_string(), style_for(*kind))))
+        .map(|(kind, text)| item_row(*kind, text.as_ref()))
         .collect();
     drop(window);
     if let Some(pane) = s.panes.get_mut(&name) {
@@ -981,7 +1005,7 @@ fn bright() -> Style {
     Style::default().fg(Color::White)
 }
 
-/// The look of each kind of line.
+/// The ink of each kind's mark: one glyph, and never the text beside it.
 ///
 /// # Invariant
 ///
@@ -1937,6 +1961,72 @@ mod tests {
             .map(|i| row_text(&buf, parts[3].y + i))
             .collect();
         assert_eq!(rows, vec!["! first", "second", "third"], "{rows:?}");
+    }
+
+    /// SPEC's `symbol (colored)`: the ink stops at the mark, and the text after it
+    /// is the window's own.
+    ///
+    /// # Invariant
+    ///
+    /// This is what leaves the colour free for `output (colored markdown)`: a body
+    /// painted in its item's colour would be a second thing claiming the same
+    /// channel. A row with no mark carries no colour at all.
+    #[test]
+    fn only_the_symbol_carries_the_kinds_colour() {
+        let mut screen = screen_with(&[]);
+        screen
+            .panes
+            .line("", LineKind::ToolCall, "bash{ls -l --color}");
+        let mut term = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        term.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+        let (_, body) = crate::render::body(parts(40, 12, 1, false)[1], &screen.panes);
+
+        // The row that starts with this kind's mark.
+        let mark = LineKind::ToolCall.mark();
+        let row = (body.y..body.bottom())
+            .find(|y| read(&buf, body.x, mark.width() as u16, *y) == mark.trim_end())
+            .unwrap_or_else(|| {
+                let rows: Vec<String> = (0..12).map(|y| row_text(&buf, y)).collect();
+                panic!("no row starts with {mark:?}; body={body:?} rows={rows:?}")
+            });
+        let head = buf[(body.x, row)].clone();
+        assert_eq!(
+            head.fg,
+            style_for(LineKind::ToolCall).fg.unwrap(),
+            "{head:?}"
+        );
+        let after = buf[(body.x + mark.width() as u16, row)].clone();
+        assert_eq!(after.symbol(), "b", "{after:?}");
+        assert_eq!(
+            after.fg,
+            Color::Reset,
+            "the call's own text keeps the window's ink: {after:?}"
+        );
+
+        // A kind SPEC gives no mark carries no colour: the answer.
+        assert!(
+            LineKind::Assistant.mark().is_empty(),
+            "no symbol for `output`"
+        );
+        let mut screen = screen_with(&[]);
+        screen.panes.line("", LineKind::Assistant, "the answer");
+        let mut term = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        term.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+        let (_, body) = crate::render::body(parts(40, 12, 1, false)[1], &screen.panes);
+        // The pane's own first text row, under the header it draws for its name.
+        let at = (body.y..body.bottom())
+            .find(|y| read(&buf, body.x, body.width, *y).starts_with('t'))
+            .expect("the answer is on screen");
+        let cell = buf[(body.x, at)].clone();
+        assert_eq!(cell.fg, Color::Reset, "nothing claims the colour: {cell:?}");
     }
 
     /// SPEC's `active_quota` row: under the command line, and absent until a
