@@ -213,7 +213,7 @@ pub struct Choice {
     pub api_key_env: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Catalog {
     /// The files this list was assembled from, lowest precedence first.
     paths: Vec<PathBuf>,
@@ -272,6 +272,19 @@ impl Catalog {
             problem: None,
             generation: 0,
         }
+    }
+
+    /// This list, with `problem` replaced by why the file no longer parses.
+    ///
+    /// # Invariant
+    ///
+    /// The generation is kept. Serving this list is serving the same providers a
+    /// client was already built against, so a failed read must not retire
+    /// anything: the cost of a broken edit is a stale roster, not a dead session.
+    fn blaming(&self, problem: String) -> Self {
+        let mut copy = self.clone();
+        copy.problem = Some(problem);
+        copy
     }
 
     /// The files this list came from, which is what a reader has to edit.
@@ -758,6 +771,9 @@ struct Live {
     read: bool,
     stamps: Vec<Option<Stamp>>,
     catalog: Arc<Catalog>,
+    /// The last read that parsed, kept so an edit that breaks the TOML leaves
+    /// running sessions on the roster they were already using.
+    last_good: Option<Arc<Catalog>>,
 }
 
 /// A live view of the roster: every question asks the file first.
@@ -871,6 +887,7 @@ pub fn roster() -> Arc<Catalog> {
             read: false,
             stamps: Vec::new(),
             catalog: Arc::new(Catalog::empty()),
+            last_good: None,
         })
     });
     // The keystore is watched as a file of its own: rotating a key is an edit to
@@ -883,17 +900,37 @@ pub fn roster() -> Arc<Catalog> {
             return guard.catalog.clone();
         }
     }
-    let catalog = Arc::new(read_fresh(&paths));
+    let fresh = Arc::new(read_fresh(&paths));
+    // A file that stops parsing is an edit in flight, not a machine that has no
+    // providers: the list a session was already running on is still the best
+    // answer there is, and the alternative is every turn failing until somebody
+    // notices the conflict markers.
+    let previous = live.read().ok().and_then(|guard| guard.last_good.clone());
+    let fallback = match (fresh.problem(), previous) {
+        (Some(problem), Some(good)) => Some(Arc::new(good.blaming(problem.to_string()))),
+        _ => None,
+    };
+    let (catalog, serving_cached) = match fallback {
+        Some(cached) => (cached, true),
+        None => (fresh, false),
+    };
     if let Ok(mut guard) = live.write() {
         guard.read = true;
         guard.stamps = stamps(&paths);
         guard.catalog = catalog.clone();
+        // Only a read that parsed may become the fallback. A copy that is
+        // already blaming the file must not replace the roster it was made
+        // from, or the next failure would serve a list no edit ever produced.
+        if catalog.problem().is_none() {
+            guard.last_good = Some(catalog.clone());
+        }
     }
     tracing::info!(
         rosters = ?catalog.paths(),
         providers = catalog.providers().len(),
         generation = catalog.generation(),
         problem = catalog.problem(),
+        serving_cached,
         "provider roster read"
     );
     catalog
