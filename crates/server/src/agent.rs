@@ -1066,6 +1066,8 @@ impl Agent {
         let attach_started = std::time::Instant::now();
         let scanned = self.attach_references(&ctx, &outcome.output, llm).await;
         let attach_ms = attach_started.elapsed().as_millis() as u64;
+        // The model is shown no head and no label, so the time ends the text it reads.
+        let output = with_time(outcome.output, run_ms);
         drop(ctx);
         // A shell on an endpoint starts in a directory only that endpoint knows.
         session.adopt_reported_cwd();
@@ -1099,12 +1101,10 @@ impl Agent {
         let _ = self.store.append_message(
             id,
             "tool_result",
-            &json!({"call_id": call_id, "output": outcome.output, "images": images,
+            &json!({"call_id": call_id, "output": output, "images": images,
                     "step": step, "ok": outcome.ok, "elapsed_ms": run_ms}),
         );
-        let _ = self
-            .store
-            .finish_tool_call(id, &call_id, &outcome.output, status);
+        let _ = self.store.finish_tool_call(id, &call_id, &output, status);
         self.log_event(
             Some(id),
             "tool_result",
@@ -1123,7 +1123,7 @@ impl Agent {
                 "run_ms": run_ms,
                 "attach_ms": attach_ms,
                 "arguments_chars": arguments_given.chars().count(),
-                "output_chars": outcome.output.chars().count(),
+                "output_chars": output.chars().count(),
                 "status": status,
             }),
         );
@@ -1389,9 +1389,28 @@ pub(crate) fn result_head(ok: bool, run_ms: u64) -> protocol::Head {
     } else {
         protocol::HeadKind::Failed
     };
-    let spent = match run_ms {
-        0..1000 => format!("{run_ms}ms"),
-        _ => format!("{:.1}s", run_ms as f64 / 1000.0),
-    };
-    protocol::Head::new(kind, spent)
+    protocol::Head::new(kind, spent(run_ms))
+}
+
+/// `820ms`, or `1.2s` past a second: one duration, one spelling, every reader.
+pub(crate) fn spent(millis: u64) -> String {
+    match millis {
+        0..1000 => format!("{millis}ms"),
+        _ => format!("{:.1}s", millis as f64 / 1000.0),
+    }
+}
+
+/// A call's output as the model receives it: what the tool said, then how long it took.
+///
+/// # Invariant
+///
+/// The same text is stored, so a read shows the line the run produced and the model's
+/// next request carries the number. See `docs/notes/server-agent.md`.
+fn with_time(output: String, run_ms: u64) -> String {
+    let note = format!("[elapsed {}]", spent(run_ms));
+    if output.is_empty() || output.ends_with('\n') {
+        format!("{output}{note}")
+    } else {
+        format!("{output}\n{note}")
+    }
 }

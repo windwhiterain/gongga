@@ -436,6 +436,23 @@ a request that reports no `input_tokens` keeps the last one it reported: the
 number is never recomputed from text, and "unknown" is not an argument for
 throwing away a measurement that still describes the session's context.
 
+## with_time
+
+A tool's result ends with `[elapsed 820ms]`, or `[elapsed 1.2s]` past a second:
+the time the call itself took, appended to the output the tool returned. The model
+is given no head and no label -- those are how a front-end draws SPEC's
+`tool_result{ok, time (spent)}` -- so the only place a model can learn that a call
+was slow is the text of the result it reads.
+
+One string for both readers: `output` is what `append_message` stores and what the
+next request sends, so a replayed transcript says exactly what the run said.
+
+Measured around `tools.run` alone, so the picture uploads that follow are not
+counted as the call's time; `tool_timing` still reports that split, `run_ms`
+against `attach_ms`.
+
+`spent` is the spelling, shared with `result_head`: one duration, written one way.
+
 ## Attempt
 
 A bundle rather than three more parameters, because the three travel together
