@@ -733,9 +733,9 @@ fn framed_row(kind: LineKind, text: &str, edges: crate::log::Edges, width: u16) 
     let inner = width.saturating_sub(2).max(1);
     let mut spans: Vec<Span<'static>> = Vec::new();
     if edges.top {
-        // Fit the label before adding either corner. Ratatui clipping an
-        // over-wide Line would otherwise take the right border with it.
-        let available = (inner as usize).saturating_sub(2);
+        // The corners and the left dash are three columns: the label fits the
+        // rest, and clipping cannot take the right border.
+        let available = (inner as usize).saturating_sub(1);
         let (title, _) = split_at_width(text, available);
         let body = item_row(kind, &title);
         let used = UnicodeWidthStr::width(title.as_str());
@@ -2677,6 +2677,43 @@ mod tests {
         assert_eq!(layout.cursor_col, 0);
     }
 
+    /// A box is one rectangle: its rules are as long as its sides.
+    ///
+    /// # Invariant
+    ///
+    /// The top rule carries the label, so it is the only row measured from its
+    /// label; a column miscounted there leaves the far corner short of the side
+    /// below it, and the box reads as a frame that does not close.
+    #[test]
+    fn every_row_of_a_box_is_the_same_width() {
+        let width_of = |line: &Line| -> usize {
+            line.spans
+                .iter()
+                .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+                .sum()
+        };
+        for width in [3u16, 4, 9, 20, 41, 80] {
+            let top = framed_row(
+                LineKind::ToolCall,
+                "\u{25b8} bash, task=state after the interrupt",
+                crate::log::Edges::TOP,
+                width,
+            );
+            // The log hands a row already wrapped, so the sides are measured bare.
+            let side = framed_row(LineKind::ToolCall, "", crate::log::Edges::INSIDE, width);
+            let bottom = framed_row(LineKind::ToolCall, "", crate::log::Edges::BOTTOM, width);
+            let want = width_of(&side);
+            assert_eq!(width_of(&top), want, "top rule at {width}: {top:?}");
+            assert_eq!(
+                width_of(&bottom),
+                want,
+                "bottom rule at {width}: {bottom:?}"
+            );
+            // And the box is the width it was given, not a column more.
+            assert_eq!(want, width as usize, "at {width}");
+        }
+    }
+
     /// Call arguments and result output have independent, aligned frames.
     #[test]
     fn an_opened_call_and_result_have_aligned_sections() {
@@ -2742,16 +2779,8 @@ mod tests {
             .filter(|row| !row.is_empty())
             .collect::<Vec<_>>();
         assert!(
-            rows.iter().any(|row| row.starts_with("│CALL bash")),
-            "{rows:?}"
-        );
-        assert!(
             rows.iter().any(|row| row.starts_with("│  command:")),
-            "{rows:?}"
-        );
-        assert!(
-            rows.iter().any(|row| row.starts_with("│  name: build")),
-            "{rows:?}"
+            "the argument the folded row leaves out: {rows:?}"
         );
         assert!(
             rows.iter().any(|row| row.starts_with("│    printf 'first")),
@@ -2762,10 +2791,17 @@ mod tests {
             "{rows:?}"
         );
         assert!(rows.iter().any(|row| row.contains("stderr")), "{rows:?}");
-        for row in &rows {
-            if row.starts_with('│') {
-                assert!(row.ends_with('│'), "{rows:?}");
-            }
+        // The name and summary are the box's label, so the body repeats neither.
+        assert!(
+            rows.iter().any(|row| row.contains("─▸ bash, name=build")),
+            "the label is still the summary: {rows:?}"
+        );
+        for row in rows.iter().filter(|row| row.starts_with('│')) {
+            assert!(
+                !row.contains("bash") && !row.contains("name: build"),
+                "the opened body repeats the summary: {rows:?}"
+            );
+            assert!(row.ends_with('│'), "{rows:?}");
         }
     }
 

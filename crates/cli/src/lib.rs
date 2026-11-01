@@ -13,7 +13,7 @@ pub use crate::complete::{Candidate, Completer, Completion, SharedCompleter, tok
 pub use crate::server::{ensure, spawn, starts_here, stop};
 pub use protocol;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
@@ -482,8 +482,8 @@ pub struct Client {
     block_size: BlockSize,
     /// Which sessions are shown beside the list.
     shown: Shown,
-    /// The summary each result names, paired by call id; streamed calls update it.
-    calls: HashMap<String, String>,
+    /// Calls that streamed their arguments, by id: their structure fills that block.
+    calls: HashSet<String>,
     /// Which window each accepted command's result belongs to, from its echo.
     results: HashMap<u64, String>,
     /// A `set_session` waiting for its acknowledgement, so a refused one writes
@@ -647,7 +647,7 @@ impl Client {
             shown,
             results: HashMap::new(),
             follows: Vec::new(),
-            calls: HashMap::new(),
+            calls: HashSet::new(),
             sessions: Vec::new(),
             model: "-".to_string(),
             next_id: Self::seed_command_id(),
@@ -929,8 +929,7 @@ impl Client {
     /// The call id pairs this block with its result; their bodies stay separate.
     fn handle_tool_call(&mut self, e: protocol::ToolCallEvent, sink: &mut dyn Sink) {
         let key = format!("c:{}", e.call_id);
-        let streamed = self.calls.contains_key(&e.call_id);
-        self.calls.insert(e.call_id.clone(), head_label(&e.head));
+        let streamed = !self.calls.insert(e.call_id.clone());
         sink.tool_call(&e.session, &key, &e.head, streamed);
     }
 
@@ -939,23 +938,20 @@ impl Client {
     /// # Invariant
     ///
     /// Call and result are separate blocks, paired by call id. Only the final
-    /// verdict supplies ✓/✕: an stderr chunk is output, not a failed call.
+    /// verdict supplies ✓/✕: an stderr chunk is output, not a failed call. The
+    /// label is the verdict alone, because the call's summary is the row above
+    /// and a result that repeated it would say the same tool twice.
     fn handle_tool_answer(&self, e: ToolAnswerEvent, sink: &mut dyn Sink) {
         let key = format!("t:{}", e.call_id);
-        let call = self
-            .calls
-            .get(&e.call_id)
-            .map(String::as_str)
-            .unwrap_or(&e.tool)
-            .trim_end();
         let (kind, done) = match &e.head {
             Some(head) => (kind_of(head.kind), true),
             // Output streams do not decide success or failure.
             None => (LineKind::ToolOutput, false),
         };
         let outcome = match &e.head {
-            Some(head) => format!("{} · {call} ", head_label(head).trim_end()),
-            None => format!("{call} "),
+            Some(head) => head_label(head),
+            // Nothing is known yet, so the block opens bare and output is its own.
+            None => String::new(),
         };
         // A verdict changes the existing result's label, never its identity.
         sink.stream(&e.session, &key, kind, &outcome, &e.text, done);
@@ -3088,7 +3084,7 @@ mod tests {
             assert_eq!(
                 s.labels.last().map(String::as_str),
                 // The verdict, then the space the mark leaves room for.
-                Some(&format!("t:c1 = {said} · bash  ({want})")[..]),
+                Some(&format!("t:c1 = {said}  ({want})")[..]),
                 "the server's words, this side's look"
             );
         }
@@ -3137,7 +3133,7 @@ mod tests {
         );
         assert_eq!(
             s.labels.last().map(String::as_str),
-            Some("t:c1 = 1.2s · bash  (ToolOutput)"),
+            Some("t:c1 = 1.2s  (ToolOutput)"),
             "one verdict, and it is the one the call had"
         );
     }
@@ -3174,9 +3170,14 @@ mod tests {
         assert_eq!(s.keys, vec!["r:peer:1:Output"]);
     }
 
-    /// stdout and stderr stay separate streams, and neither carries the name.
+    /// A result row is its own output: the name it belongs to is the call's row.
+    ///
+    /// # Invariant
+    ///
+    /// The tool's name is on the call above it, so a result that repeated it read
+    /// as two tools for one call -- and while the tool runs, nothing is known yet.
     #[test]
-    fn a_tool_answer_line_names_its_session_where_it_must() {
+    fn a_tool_answer_row_is_its_own_output() {
         let d = tempfile::tempdir().unwrap();
         let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["peer"]);
         c.shown.set("peer", false).unwrap();
@@ -3196,14 +3197,14 @@ mod tests {
                 &mut s,
             );
         }
-        assert_eq!(s.lines, vec!["bash out", "bash err"]);
+        assert_eq!(s.lines, vec!["out", "err"]);
         assert_eq!(
             s.keys,
             vec!["t:c1", "t:c1"],
             "one result, not one per stream"
         );
 
-        // In a pane of its own, the output needs no name over it.
+        // In a pane of its own, the output needs no name over it either.
         c.shown.set("peer", true).unwrap();
         s.lines.clear();
         c.handle_tool_answer(
@@ -3218,7 +3219,7 @@ mod tests {
             },
             &mut s,
         );
-        assert_eq!(s.lines, vec!["bash out"]);
+        assert_eq!(s.lines, vec!["out"]);
     }
 
     /// A log already names itself; a command belongs to the operator.

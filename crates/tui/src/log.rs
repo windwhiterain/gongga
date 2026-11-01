@@ -127,16 +127,40 @@ impl Entry {
         self.sealed && self.kind.folds() && !self.expanded
     }
 
+    /// The first and last lines the model wrote that have anything in them.
+    ///
+    /// # Invariant
+    ///
+    /// SPEC's two lines are lines of the *text*, never rows of its wrap: a row is
+    /// a column of a line, so ending on one showed half a sentence. Blank lines
+    /// are passed over at both ends: a row with nothing on it is not an end.
+    /// See `docs/notes/tui-log.md`.
+    fn ends(&self) -> Option<(&str, &str)> {
+        let first = self
+            .text
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())?;
+        let last = self
+            .text
+            .lines()
+            .rev()
+            .map(str::trim)
+            .find(|line| !line.is_empty())?;
+        Some((first, last))
+    }
+
     /// The rows a folded block shows: a reasoning item keeps its beginning and end.
     ///
     /// # Invariant
     ///
-    /// The two come from the block's own wrapped rows, not from the newlines the
-    /// model happened to type: a provider that sends one paragraph of reasoning is
-    /// still summarised by its first and last row, which is the whole of what a
-    /// fold is for. See `docs/notes/tui-log.md`.
+    /// Two rows only when there are two ends: prose written as one line is one row,
+    /// because the same line twice is a row that says nothing new.
     fn folded_rows(&self) -> usize {
-        if self.kind == LineKind::Reasoning && self.starts.len() > 1 {
+        if self.kind == LineKind::Reasoning
+            && let Some((first, last)) = self.ends()
+            && first != last
+        {
             return 2;
         }
         // An item with neither a label nor text is one blank row: the mark alone.
@@ -147,12 +171,16 @@ impl Entry {
     fn folded_row(&self, row: usize) -> String {
         let width = self.width.max(1);
         let text = match (self.kind, row) {
-            // SPEC's `reasoning{beginning (line), ending (line)}`: the first
-            // wrapped row, then the last, `…` between.
-            (LineKind::Reasoning, 0) => format!("{}{}", self.tag, self.row(0)),
-            (LineKind::Reasoning, _) => {
-                format!("\u{2026} {}", self.row(self.starts.len().saturating_sub(1)))
-            }
+            // SPEC's `reasoning{beginning (line), ending (line)}`: the first line
+            // the model wrote, then the last, `…` between.
+            (LineKind::Reasoning, 0) => match self.ends() {
+                Some((first, _)) => format!("{}{}", self.tag, first),
+                None => self.tag.clone(),
+            },
+            (LineKind::Reasoning, _) => match self.ends() {
+                Some((_, last)) => format!("\u{2026} {last}"),
+                None => String::new(),
+            },
             // A result says how it went, never what it printed: SPEC's
             // `tool_result{ok, time (spent)}` is the whole of its summary.
             (LineKind::ToolOutput | LineKind::ToolError, _) => self.summary(),
@@ -170,11 +198,17 @@ impl Entry {
         self.tag.trim_end().to_string()
     }
 
-    /// An opened call shows its structured name and fields, never result output.
+    /// An opened call shows the arguments its summary left out, and nothing else.
+    ///
+    /// # Invariant
+    ///
+    /// The name and the fields marked `summary` are the folded row, and an opened
+    /// block draws that row as its label on the box's top rule. The body repeats
+    /// neither, so no argument is read twice. See `docs/notes/tui-log.md`.
     fn section_text(&self, width: usize) -> Option<String> {
         let call = self.call.as_ref()?;
-        let mut text = format!("CALL {}", call.name);
-        for field in &call.fields {
+        let mut rows: Vec<String> = Vec::new();
+        for field in call.fields.iter().filter(|field| !field.summary) {
             let name = match field.label.is_empty() {
                 true if call.name == "bash" => "command",
                 true => "value",
@@ -183,15 +217,16 @@ impl Entry {
             let mut lines = field.value.split('\n');
             let first = lines.next().unwrap_or_default();
             if lines.clone().next().is_some() {
-                text.push_str(&format!("\n  {name}:\n    {first}"));
+                rows.push(format!("  {name}:"));
+                rows.push(format!("    {first}"));
                 for line in lines {
-                    text.push_str(&format!("\n    {line}"));
+                    rows.push(format!("    {line}"));
                 }
             } else {
-                text.push_str(&format!("\n  {name}: {first}"));
+                rows.push(format!("  {name}: {first}"));
             }
         }
-        Some(hanging_indent(&text, width))
+        Some(hanging_indent(&rows.join("\n"), width))
     }
 
     /// Expanded calls read their structured fields; other entries read their text.
@@ -1463,9 +1498,9 @@ mod tests {
     ///
     /// # Invariant
     ///
-    /// The two come from the wrapped rows, so a single-paragraph summary -- which
-    /// is what most providers send -- is summarised too. Reading the model's own
-    /// newlines instead showed one cut row and told a reader nothing about the end.
+    /// SPEC's two lines are lines of the text, so a wrapped row is never one of
+    /// them: the summary ends on the last thing the model wrote, complete, and not
+    /// on whatever column of it the width happened to break.
     #[test]
     fn a_folded_reasoning_keeps_its_beginning_and_its_end() {
         let mut log = Log::new();
@@ -1488,7 +1523,8 @@ mod tests {
         log.stream("w", "r2", LineKind::Reasoning, "", "only", true);
         assert_eq!(shown(&mut log, 40, 4, 0), vec!["\u{25c7} only"]);
 
-        // A paragraph with no newline in it still has two ends: it wrapped.
+        // One line with no newline in it is both ends at once: one whole row,
+        // not two columns of the same sentence.
         let mut log = Log::new();
         log.stream(
             "w",
@@ -1500,8 +1536,50 @@ mod tests {
         );
         assert_eq!(
             shown(&mut log, 20, 4, 0),
-            vec!["\u{25c7} one long paragrap…", "  \u{2026} dth"],
-            "the end is the last row it wrapped to"
+            vec!["\u{25c7} one long paragrap…"],
+            "one line of prose is one row"
+        );
+    }
+
+    /// The two ends are non-empty lines, whatever the wrap and the blank lines say.
+    ///
+    /// # Invariant
+    ///
+    /// A trailing newline leaves a row with nothing on it, and a line longer than
+    /// the window wraps into columns; neither is an end of what was written, so a
+    /// folded reasoning says nothing about the break and skips the blank line.
+    #[test]
+    fn the_two_ends_are_the_lines_the_model_wrote() {
+        let mut log = Log::new();
+        log.stream(
+            "w",
+            "r1",
+            LineKind::Reasoning,
+            "",
+            "a beginning far longer than this width, so it wraps\n\n   \n\na last line that is also far too long to fit",
+            true,
+        );
+        assert_eq!(
+            shown(&mut log, 24, 4, 0),
+            vec![
+                "\u{25c7} a beginning far longe…",
+                "  \u{2026} a last line that is…"
+            ],
+            "the end is the last line, not the column it wrapped to"
+        );
+        // Trailing blank lines are not an end either.
+        let mut log = Log::new();
+        log.stream(
+            "w",
+            "r2",
+            LineKind::Reasoning,
+            "",
+            "head\ntail\n\n  \n",
+            true,
+        );
+        assert_eq!(
+            shown(&mut log, 40, 4, 0),
+            vec!["\u{25c7} head", "  \u{2026} tail"]
         );
     }
 
@@ -2001,7 +2079,7 @@ mod tests {
             vec![
                 "\u{25c7} [main] thinking: thinking",
                 "\u{25b8} [main] tool:",
-                "\u{25c7} [main] thinking:  again"
+                "\u{25c7} [main] thinking: again"
             ]
         );
     }

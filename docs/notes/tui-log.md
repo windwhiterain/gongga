@@ -71,18 +71,25 @@ streamed stayed open and never folded.
 
 ## A reasoning item's two rows
 
-SPEC's `reasoning{beginning (line), ending (line)}`, taken from the block's own wrapped
-rows (`row(0)` and the last of `starts`), not from the newlines in the text.
+SPEC's `reasoning{beginning (line), ending (line)}` are lines of the text
+(`Entry::ends`), and the rows of the fold are those lines cut to the window -- never
+`row(0)` and the last of `starts`.
 
-That was the bug this fixed. The first version read `text.lines()`, which is right only
-if the model wrote several lines -- and most providers send one summary paragraph with
-no newline in it, so the folded view drew one cut row and no end at all. The start and
-the end of what was written are a property of the *block*, not of the author's line
-breaks: at any width the first row and the last row are exactly those two, and the `…`
-between them says the middle was left out rather than that the text ended there.
+Reading the wrap was the wrong turn, and it showed twice. A line longer than the
+window wrapped into columns, so the "ending" was whichever column the width happened
+to break on: half a sentence, with the `…` in front of it claiming that text had been
+left out somewhere other than where it had. And a summary that is one paragraph -- no
+newline in it at all -- drew the same sentence twice, once as its first column and
+once as its last.
 
-A provider that does send paragraphs gets the same answer, one paragraph boundary
-instead of a wrap.
+So the text is read instead, both ends skipping lines with nothing in them: a blank
+line, or the empty row a trailing newline leaves, is not one of the two ends of what
+the model wrote. One line of prose is one row, because the second row would repeat it;
+`ends` answering the same line twice is exactly that case.
+
+The cut still applies, and that is the only place the fold measures anything: a line
+wider than the window is cut with `…`, which says the row was cut rather than that the
+line ended there.
 
 ## Log::relabel
 
@@ -319,9 +326,12 @@ A call and its result are two entries, not one body with two sections. The call'
 complete. The result's `t:<call_id>` entry opens on the first output chunk,
 appends visible rows while the tool runs and folds only on the final verdict.
 Their shared id pairs them without sharing expansion, wrapping or lifecycle.
-An opened call shows `CALL` with named fields and indented multi-line values;
-an opened result has its own frame and raw output. Result titles put elapsed
-time immediately after the status symbol, then the paired call summary.
+An opened call shows named fields and indented multi-line values, and only the
+arguments the folded row left out: the tool's name and the fields marked
+`summary` are the box's label on its top rule, so repeating them in the body
+would draw one argument twice. An opened result has its own frame and raw
+output. Result titles are the verdict alone -- elapsed time immediately after the
+status symbol -- because the call's summary is the row above.
 
 ## Entry::boxed — one expanded shape
 
