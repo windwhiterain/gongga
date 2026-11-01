@@ -35,6 +35,32 @@ predates the card gets one exactly once.
 The rule for any future prose: a value that changes every turn goes last among the
 *stable* things and never after the transcript; a value that never changes goes first.
 
+## auto-recovering an invalid transcript
+
+SPEC asks for two things at once: everything in a message must be stored and sent, and
+a transcript that has been sent must not be changed. Between them sits every shape a
+crash or a cancel can leave in the rows, and the body's job is to send it in a form the
+provider accepts without editing what was already sent.
+
+Two repairs, both invented at request time and never written back:
+
+- **A call with no result** is answered in the step it belongs to, with a placeholder
+  saying the outcome is unknown. A provider refuses a `function_call` without output.
+- **A result whose call was already written** -- an interrupted step whose answer landed
+  after the next step began -- is emitted as it stands, after its call. It used to be
+  dropped, which lost the message the agent had been shown.
+
+And one shape that is not a repair but a fix: reasoning or text arriving while a step's
+calls are unanswered ends the step. Holding it in the buffer put an assistant message
+between a call and its output, which a live `config` session got back as
+`HTTP 400 No tool output found for tool call`. `a_step_ends_at_the_next_steps_output`
+is built from exactly those rows.
+
+A result whose call is nowhere in the request is the one thing that cannot be repaired:
+the provider would reject the item itself, so it is logged and not sent. One output per
+call is enforced the same way -- a call already answered, by a placeholder or by its real
+result, takes no second answer.
+
 ## Step — the one buffer
 
 A provider reads a `function_call` as answered by the input item directly after it,

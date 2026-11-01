@@ -100,6 +100,11 @@ struct Step {
     entries: Vec<Entry>,
     /// The calls written so far whose result has not arrived.
     open: Vec<String>,
+    /// Every call id this request has written, so a late result can still be sent.
+    sent: Vec<String>,
+    /// Every call id this request has already answered, invented answers included:
+    /// one output per call is what a provider accepts.
+    answered: Vec<String>,
     /// The model step being buffered, once a row of it has been seen.
     step: Option<u64>,
 }
@@ -126,35 +131,39 @@ impl Step {
                 self.entries.push(entry);
             }
             "tool_result" => {
-                // A call and its result are the same step's: a result whose call is
-                // not waiting here is an orphan.
-                let waiting = entry
-                    .call_id
-                    .as_ref()
-                    .is_some_and(|id| self.open.contains(id));
-                if !waiting {
-                    tracing::debug!(
-                        call_id = entry.call_id.as_deref().unwrap_or("?"),
-                        "a tool result lost its call: not sent"
-                    );
+                let id = entry.call_id.clone().unwrap_or_default();
+                // The waiting case: this step's own answer, written when the step is.
+                if self.open.contains(&id) {
+                    self.open.retain(|open| open != &id);
+                    self.answered.push(id);
+                    self.entries.push(entry);
                     return out;
                 }
-                let id = entry.call_id.clone().unwrap_or_default();
-                self.open.retain(|open| open != &id);
-                self.entries.push(entry);
-                // Not yet: a step's calls are written together, so `push` waits for
-                // a row of another step.
+                // The call is already written but steps back -- an interrupted step
+                // whose result landed after the next one began. SPEC wants every
+                // stored message sent, so it goes out now, after its call.
+                if self.sent.contains(&id) && !self.answered.contains(&id) {
+                    self.answered.push(id);
+                    out = self.flush(placeholder);
+                    out.push(entry.bytes);
+                    return out;
+                }
+                // No call in this request at all: sending it would be a 400, so it is
+                // the one thing this cannot repair.
+                tracing::debug!(
+                    call_id = entry.call_id.as_deref().unwrap_or("?"),
+                    "a tool result whose call is not in this request: not sent"
+                );
             }
-            // A new prompt ends a step nobody finished; a step's own reasoning stays.
-            _ if entry.kind == "text" && entry.role.as_deref() != Some("assistant") => {
+            // Anything else ends the buffered step, open calls and all. Reasoning and
+            // text are a step's *output*, so one arriving while calls are unanswered
+            // belongs to the next step: holding it here would put an assistant message
+            // between a call and its output, and the provider answers that with "no
+            // tool output found".
+            _ => {
                 out = self.flush(placeholder);
                 out.push(entry.bytes);
             }
-            _ if self.open.is_empty() => {
-                out = self.flush(placeholder);
-                out.push(entry.bytes);
-            }
-            _ => self.entries.push(entry),
         }
         out
     }
@@ -186,9 +195,19 @@ impl Step {
         let mut reasoned = Vec::new();
         for entry in self.entries.drain(..) {
             match entry.kind.as_str() {
-                "tool_result" => results.push(entry.bytes),
+                "tool_result" => {
+                    if let Some(id) = &entry.call_id {
+                        self.answered.push(id.clone());
+                    }
+                    results.push(entry.bytes);
+                }
                 "reasoning" => reasoned.push(entry.bytes),
-                _ => calls.push(entry.bytes),
+                _ => {
+                    if let Some(id) = &entry.call_id {
+                        self.sent.push(id.clone());
+                    }
+                    calls.push(entry.bytes);
+                }
             }
         }
         let mut out = Vec::with_capacity(reasoned.len() + calls.len() + results.len());
@@ -310,6 +329,95 @@ impl Stream for RequestBody {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An interrupted step's unanswered call, then the next step's own output.
+    ///
+    /// # Invariant
+    ///
+    /// No assistant message lands between a call and its output, and every call the
+    /// request carries has one. The rows here are the live ones that broke a
+    /// `config` session: call A, result A, call B, then reasoning and text of the
+    /// *next* step.
+    #[test]
+    fn a_step_ends_at_the_next_steps_output() {
+        let mut step = Step::default();
+        let mut out: Vec<String> = Vec::new();
+        let mut push = |step: &mut Step, kind: &str, id: Option<&str>, step_no: Option<u64>| {
+            let bytes = match kind {
+                "tool_call" => {
+                    json!({"type":"function_call","call_id":id,"name":"bash","arguments":"{}"})
+                }
+                "tool_result" => json!({"type":"function_call_output","call_id":id,"output":"o"}),
+                "reasoning" => json!({"type":"reasoning","summary":[],"encrypted_content":"e"}),
+                _ => json!({"role":"assistant","content":[{"type":"output_text","text":"t"}]}),
+            };
+            for chunk in step.push(
+                Entry {
+                    bytes: bytes.to_string().into_bytes(),
+                    kind: kind.to_string(),
+                    call_id: id.map(str::to_string),
+                    role: (kind == "text").then(|| "assistant".to_string()),
+                    step: step_no,
+                },
+                "PLACEHOLDER",
+            ) {
+                out.push(String::from_utf8(chunk).unwrap());
+            }
+        };
+        // 751..755 of the live session, in row order.
+        push(&mut step, "tool_call", Some("A"), Some(79));
+        push(&mut step, "tool_result", Some("A"), Some(79));
+        push(&mut step, "tool_call", Some("B"), Some(79));
+        push(&mut step, "reasoning", None, None);
+        push(&mut step, "text", None, None);
+        push(&mut step, "tool_call", Some("C"), Some(0));
+        for chunk in step.flush("PLACEHOLDER") {
+            out.push(String::from_utf8(chunk).unwrap());
+        }
+
+        let items: Vec<Value> = out
+            .iter()
+            .map(|text| serde_json::from_str(text).expect("one item"))
+            .collect();
+        let kinds: Vec<&str> = items
+            .iter()
+            .map(|i| {
+                i["type"]
+                    .as_str()
+                    .or_else(|| i["role"].as_str())
+                    .unwrap_or("?")
+            })
+            .collect();
+        // Every call is answered by the item right after it, or after its siblings.
+        let mut calls: Vec<&str> = Vec::new();
+        let mut answered: Vec<&str> = Vec::new();
+        let mut seen_text_before_answer = false;
+        for item in &items {
+            match item["type"].as_str() {
+                Some("function_call") => calls.push(item["call_id"].as_str().unwrap_or_default()),
+                Some("function_call_output") => {
+                    answered.push(item["call_id"].as_str().unwrap_or_default())
+                }
+                _ if item["role"] == "assistant"
+                    && !calls.is_empty()
+                    && answered.len() < calls.len() =>
+                {
+                    seen_text_before_answer = true
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            !seen_text_before_answer,
+            "an assistant message split a call from its output: {kinds:?}"
+        );
+        for call in &calls {
+            assert!(
+                answered.contains(call),
+                "call {call} has no output: {kinds:?}"
+            );
+        }
+    }
 
     fn entry(kind: &str, value: Value, step: Option<u64>) -> Entry {
         Entry {
