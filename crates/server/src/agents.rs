@@ -487,7 +487,7 @@ mod tests {
     /// An origin with one commit, so a clone has something to arrive at.
     fn origin(dir: &Path) {
         std::fs::create_dir_all(dir.join("llm")).unwrap();
-        std::fs::write(dir.join("providers.toml"), "[calendar]\n").unwrap();
+        std::fs::write(dir.join("providers.toml"), "schema = 1\n").unwrap();
         std::fs::write(dir.join("llm").join("probe.py"), "print(1)\n").unwrap();
         git_in(dir, &["init", "-q", "-b", "main"]);
         git_in(dir, &["add", "-A"]);
@@ -508,7 +508,7 @@ mod tests {
         assert_eq!(sync(&roots, &urls).unwrap(), Sync::Current);
 
         // A commit upstream arrives on the next refresh.
-        std::fs::write(up.join("providers.toml"), "[calendar]\nupdated = 1\n").unwrap();
+        std::fs::write(up.join("providers.toml"), "schema = 1\nupdated = 1\n").unwrap();
         git_in(&up, &["add", "-A"]);
         git_in(&up, &["commit", "-q", "-m", "second"]);
         assert_eq!(sync(&roots, &urls).unwrap(), Sync::Fetched);
@@ -575,11 +575,11 @@ mod tests {
         let dir = &roots.community;
 
         git_in(dir, &["checkout", "-q", "-b", "local"]);
-        std::fs::write(dir.join("providers.toml"), "[calendar]\nmine = 1\n").unwrap();
+        std::fs::write(dir.join("providers.toml"), "schema = 1\nmine = 1\n").unwrap();
         git_in(dir, &["add", "-A"]);
         git_in(dir, &["commit", "-q", "-m", "local: same line"]);
 
-        std::fs::write(up.join("providers.toml"), "[calendar]\ntheirs = 1\n").unwrap();
+        std::fs::write(up.join("providers.toml"), "schema = 1\ntheirs = 1\n").unwrap();
         git_in(&up, &["add", "-A"]);
         git_in(&up, &["commit", "-q", "-m", "upstream: same line"]);
 
@@ -607,7 +607,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let community = d.path().join("community");
         std::fs::create_dir_all(&community).unwrap();
-        std::fs::write(community.join("providers.toml"), "[calendar]\n").unwrap();
+        std::fs::write(community.join("providers.toml"), "schema = 1\n").unwrap();
         let roots = roots(&community, &d.path().join("private"));
         assert_eq!(
             sync(&roots, &["no-such-url".into()]).unwrap(),
