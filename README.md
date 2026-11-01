@@ -34,7 +34,7 @@ _Post Modern Agent Harness_
 ### Cargo (package manager)
 
 ```sh
-cargo install --git https://github.com/windwhiterain/gongga.git --locked gongga-bundle
+cargo install --git https://github.com/windwhiterain/gongga.git gongga-bundle
 gongga tui
 ```
 
