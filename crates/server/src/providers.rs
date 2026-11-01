@@ -929,6 +929,9 @@ key_env = "DEEPSEEK_API_KEY"
   name = "DeepSeek V4.1-Flash-1017"
   context = 1000000
   max_output = 384000
+  # A field this server ignores: which tier a model is in is `model_pool`'s
+  # judgement, written here so the judgement lives where a person edits it.
+  tier = "flash"
 
   [[provider.model]]
   id = "deepseek-v4-pro"
@@ -1030,6 +1033,17 @@ key = "x"
         assert_eq!(p.endpoints[0].base_url, "https://api.deepseek.com/v1/");
         assert_eq!(p.models[0].id, "deepseek-flash");
         assert_eq!(p.models[0].context, Some(1_000_000));
+    }
+
+    /// Fields this server does not read (`tier`) are tolerated: a stricter parser
+    /// would refuse a roster a person annotated.
+    #[test]
+    fn a_model_field_this_server_ignores_is_tolerated() {
+        let c = catalog();
+        let model = c
+            .entry("deepseek-official/deepseek-flash")
+            .expect("a model beside an ignored field still resolves");
+        assert_eq!(model.model_name, "deepseek-flash");
     }
 
     /// The quota a provider publishes, and the key it is read with: the same
