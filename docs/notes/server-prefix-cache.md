@@ -171,13 +171,21 @@ in the same minute is billed almost entirely at the cache rate (¥0.10/1M agains
 ¥1.00/1M on this roster) -- the whole index, the prose and the schemas are re-used
 rather than re-sent.
 
-The expensive one: **the clock in the system prompt is the single most costly thing this
-harness can put there.** `dynamic_tail` carries the minute, so every turn that crosses a
-minute boundary writes a new prompt row and the provider answers with a cold prefix --
-measured above, 98.7% to 1.2%. With real turn latencies (tens of seconds) that is most
-turns. The one-line remedy is the home's, not the code's: override the template without
-`{{now}}`, and the prompt row is written once per session instead of once per minute.
-A session that needs the time asks a shell for it.
+The expensive one, and the fix: **the clock in the system prompt cost the whole prefix.**
+`dynamic_tail` carries the minute, and while it was appended to `instructions` a turn that
+crossed a minute boundary answered with 1.2% cached instead of 98.7% -- measured above.
+
+That is what says a provider's cache is taken item by item rather than within one string:
+the first unit that differs takes everything after it. So the tail is now its own item,
+written after the transcript (`RequestBody::own_facts`), and the same turns measure:
+
+| | cold | next turn, minute changed |
+| --- | --- | --- |
+| tail appended to `instructions` | 1.8% | 1.2% |
+| tail as the last input item | 1.8% | 98.2%, then 99.3% |
+
+The rule this leaves behind: a value that changes every turn goes last. See
+`docs/notes/server-body.md`.
 
 ## the index is derived, not stored
 

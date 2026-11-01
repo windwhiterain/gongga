@@ -11,6 +11,29 @@ and it made a retry send a body that had already been read.
 serialized as JSON; every item after it is the bytes the database already holds,
 and the array is closed with a tail. Nothing parses the transcript.
 
+## `last`, and why the tail is an item
+
+`RequestBody::own_facts` is the one item the body writes that no row holds: the tail of
+the system prompt -- session, harness build, the minute, the cwd.
+
+It is an item rather than part of `instructions` because of what the measurement showed.
+The same prose, the same index and the same tool schemas, with only the minute changed,
+against `MiniMax-M3.1-Flash`:
+
+| where the tail lives | cold turn | next turn, minute changed |
+| --- | --- | --- |
+| appended to `instructions` | 1.8% cached | **1.2%** -- the whole prefix |
+| as the last input item | 1.8% cached | **98.2%** |
+
+So a provider's cache is not an intra-string prefix: it is taken item by item (here, one
+`instructions` value plus the `input` array), and the first unit that differs takes
+everything after it with it. A value inside `instructions` therefore costs the whole
+request when it changes, while the same value as the last item costs itself.
+
+The invariant that follows is the only rule to remember when adding prose: **a value that
+changes every turn goes last, and a value that never changes goes first.** Between them
+is the index, which changes only when a file does.
+
 ## Step — the one buffer
 
 A provider reads a `function_call` as answered by the input item directly after it,

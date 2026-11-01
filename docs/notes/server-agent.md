@@ -312,17 +312,19 @@ writes nothing. `scripts/replay_audit.py` asserts the other half: for every requ
 sent, each input item is a stored row or the stored note, and each distinct
 `instructions` the provider saw is a `system` row.
 
-## the prompt is prose, then an index, then this turn
+## the prompt is prose, an index, and a separate item for this turn
 
-`llm::build_head` composes one `instructions` value out of three parts, in this order:
-the prose (`prompts::SYSTEM`, read not rendered, identical for every session of a home),
-the index (`index_of`), and the tail (`dynamic_tail`: session, harness build, time, cwd).
+`llm::build_head` composes `instructions` from the prose (`prompts::SYSTEM`, read not
+rendered, identical for every session of a home) and the index (`index_of`). The turn's
+own facts (`dynamic_tail`: session, harness build, minute, cwd) are **not** in that
+value: they are one input item written after the transcript,
+`RequestBody::own_facts`.
 
-The order is the whole point. A provider's cache matches the front of the value, so every
-part put after a volatile one is paid for again: the tail is last because it changes,
-the index is before it because it is a document that changes when a file does, and the
-prose is first because it never changes. The test that pins this is
-`the_system_prompt_is_prose_then_index_then_this_turn` in `llm.rs`.
+Measured, that distinction is worth 98 points of cache: with the tail in `instructions`,
+a turn that crossed a minute boundary answered with 1.2% cached; as the last item it
+answers with 98.2%. A provider's cache is taken item by item, so the first unit that
+differs takes everything behind it -- which makes "changes every turn" and "has to be
+first" mutually exclusive rules. See `docs/notes/server-body.md`.
 
 ## stated
 

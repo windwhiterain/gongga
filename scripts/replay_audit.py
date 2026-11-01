@@ -138,6 +138,9 @@ def main():
           f"{len(prompts)} rows")
 
     notes = {p.get("handover") for p in prompts if p.get("handover")}
+    # The turn's own facts are a prompt row's `tail`, sent as its own last item, so
+    # they are stored -- just not as a transcript row.
+    notes |= {p.get("tail") for p in prompts if p.get("tail")}
 
     def flat(item):
         c = item.get("content")
