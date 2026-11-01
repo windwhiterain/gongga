@@ -419,15 +419,24 @@ impl Agent {
     ) -> anyhow::Result<crate::store::Prompt> {
         let stored = self.store.prompt(id)?;
         let prompts = crate::prompts::shared();
-        // Read, not rendered: the same bytes for every session, so the row this
-        // writes stays the prefix all of them share.
+        // Read, not rendered, and the one text every turn of every session shares.
         let instructions = prompts.system();
-        // Built once, at the first row, and carried verbatim after: the index sits
-        // in front of the transcript, so growing it would re-bill the prefix.
-        let (index, rooted) = match &stored {
-            Some(kept) => (kept.index.clone(), kept.rooted.clone()),
-            None => match self.index_of(id, name, cwd) {
-                Some((index, rooted)) => (Some(index), rooted),
+        // This turn's facts, and last: everything before it stays a shared prefix.
+        let tail = prompts.render(
+            "dynamic_tail",
+            &[
+                ("session", name),
+                ("build", protocol::BUILD),
+                ("now", &crate::clock::now()),
+                ("cwd", &cwd.display().to_string()),
+            ],
+        );
+        // Built from what the references say now: an edited body must reach the model.
+        // A build matching the stored row writes nothing, so only a real edit costs.
+        let (index, rooted) = match self.index_of(id, name, cwd) {
+            Some((index, rooted)) => (Some(index), rooted),
+            None => match &stored {
+                Some(kept) => (kept.index.clone(), kept.rooted.clone()),
                 None => (None, Vec::new()),
             },
         };
@@ -435,6 +444,7 @@ impl Agent {
         let prompt = crate::store::Prompt {
             instructions,
             index,
+            tail: Some(tail),
             rooted,
             handover,
             cwd: cwd.display().to_string(),
@@ -446,6 +456,7 @@ impl Agent {
         if let Some(kept) = stored.clone().filter(|kept| {
             kept.instructions == prompt.instructions
                 && kept.index == prompt.index
+                && kept.tail == prompt.tail
                 && kept.handover == prompt.handover
         }) {
             return Ok(kept);
@@ -459,8 +470,8 @@ impl Agent {
         Ok(prompt)
     }
 
-    /// The index for this session's first request: the text of every reference its
-    /// messages name, in the order the cache pays least for.
+    /// The index this request carries: the text every reference its messages name
+    /// says now, in the order the cache pays least for.
     ///
     /// # Invariant
     ///
@@ -490,7 +501,7 @@ impl Agent {
                 (root.spelling.as_str(), root.len(), digest)
             })
             .collect();
-        let order = crate::prefix_cache::plan(&self.store, &wanted);
+        let order = crate::prefix_cache::plan(&self.store, name, &wanted);
         let mut entries: Vec<&crate::meta::Root> = Vec::with_capacity(order.len());
         for spelling in &order {
             if let Some(root) = roots.iter().find(|root| &root.spelling == spelling) {
@@ -591,6 +602,7 @@ impl Agent {
         let mut rx = llm.stream(
             &prompt.instructions,
             prompt.index.as_deref(),
+            prompt.tail.as_deref(),
             prompt.handover.as_deref(),
             &source,
             &definitions,

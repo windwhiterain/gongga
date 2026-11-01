@@ -69,7 +69,7 @@ impl Tool for IndexSkillTool {
                         .to_string(),
                 );
             }
-            let rows = ordered(skills, &ctx.store);
+            let rows = ordered(skills, &ctx.store, &ctx.session);
             ToolOutcome::ok(
                 serde_json::to_string_pretty(&json!({"skills": rows}))
                     .unwrap_or_else(|_| "[]".to_string()),
@@ -140,7 +140,7 @@ fn in_dir(bucket: &'static str, root: &Path) -> Vec<Installed> {
 ///
 /// A permutation of `skills`: the layout reorders the table and never revives a row
 /// for a skill that is not installed now. See `docs/notes/server-prefix-cache.md`.
-fn ordered(skills: Vec<Installed>, store: &crate::store::Store) -> Vec<Value> {
+fn ordered(skills: Vec<Installed>, store: &crate::store::Store, session: &str) -> Vec<Value> {
     let rows: Vec<(String, Value)> = skills
         .into_iter()
         .map(|skill| {
@@ -164,7 +164,7 @@ fn ordered(skills: Vec<Installed>, store: &crate::store::Store) -> Vec<Value> {
             (key.as_str(), text.len(), digest)
         })
         .collect();
-    let order = crate::prefix_cache::plan(store, &wanted);
+    let order = crate::prefix_cache::plan(store, session, &wanted);
     let mut by_key: HashMap<String, Value> = rows.into_iter().collect();
     order
         .into_iter()
@@ -254,6 +254,7 @@ mod tests {
                 },
             ],
             &store(),
+            "probe",
         );
         assert_eq!(rows.len(), 2, "{rows:?}");
     }
@@ -273,10 +274,10 @@ mod tests {
             ]
         };
         let store = store();
-        let first = ordered(given(), &store);
+        let first = ordered(given(), &store, "probe");
         let mut reversed = given();
         reversed.reverse();
-        let second = ordered(reversed, &store);
+        let second = ordered(reversed, &store, "probe");
         assert_eq!(names(&first), vec!["heir", "latency"]);
         assert_eq!(names(&second), names(&first));
     }

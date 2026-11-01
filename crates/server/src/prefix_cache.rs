@@ -9,23 +9,37 @@ use serde::{Deserialize, Serialize};
 
 use crate::store::Store;
 
-/// One layout for the whole home: on disk, because a restart asks again.
-fn shared(store: &Store) -> MutexGuard<'static, Layout> {
-    static SHARED: OnceLock<Mutex<Layout>> = OnceLock::new();
+/// Every session's layout, read from `store` the first time that session asks.
+///
+/// # Invariant
+///
+/// One layout per session: a provider caches the prefix of a conversation, so what
+/// another session emitted is not warm for this one, and a chain only this session
+/// can use must not be chosen for it.
+fn shared(store: &Store, session: &str) -> MutexGuard<'static, HashMap<String, Layout>> {
+    static SHARED: OnceLock<Mutex<HashMap<String, Layout>>> = OnceLock::new();
+    let mut layouts = SHARED
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if !layouts.contains_key(session) {
+        let layout = match store.prefix_layout(session) {
+            Ok(Some(mut layout)) => {
+                layout.reindex();
+                layout
+            }
+            Ok(None) => Layout::new(),
+            Err(e) => {
+                tracing::warn!(error = %e, session = %session, "the stored prefix layout cannot be read; starting empty");
+                Layout::new()
+            }
+        };
+        layouts.insert(session.to_string(), layout);
+    }
+    drop(layouts);
     SHARED
-        .get_or_init(|| {
-            Mutex::new(match store.prefix_layout() {
-                Ok(Some(mut layout)) => {
-                    layout.reindex();
-                    layout
-                }
-                Ok(None) => Layout::new(),
-                Err(e) => {
-                    tracing::warn!(error = %e, "the stored prefix layout cannot be read; starting empty");
-                    Layout::new()
-                }
-            })
-        })
+        .get()
+        .expect("just installed")
         .lock()
         .unwrap_or_else(|e| e.into_inner())
 }
@@ -38,12 +52,15 @@ pub fn digest(text: &str) -> u64 {
     hasher.finish()
 }
 
-/// The cheapest order for `wanted`, learnt across callers and runs.
-pub fn plan(store: &Store, wanted: &[(&str, usize, u64)]) -> Vec<String> {
-    let mut layout = shared(store);
+/// The cheapest order for `wanted`, learnt across what this session has emitted.
+pub fn plan(store: &Store, session: &str, wanted: &[(&str, usize, u64)]) -> Vec<String> {
+    let mut layouts = shared(store, session);
+    let Some(layout) = layouts.get_mut(session) else {
+        return Vec::new();
+    };
     let order = layout.plan(wanted);
-    if let Err(e) = store.save_prefix_layout(&layout) {
-        tracing::warn!(error = %e, "the learnt prefix layout could not be written");
+    if let Err(e) = store.save_prefix_layout(session, layout) {
+        tracing::warn!(error = %e, session = %session, "the learnt prefix layout could not be written");
     }
     order
 }
@@ -480,9 +497,11 @@ mod tests {
         let reversed = [("skill:b", 20usize, d("b")), ("skill:a", 10, d("a"))];
         let mut layout = Layout::new();
         assert_eq!(layout.plan(&wanted), vec!["skill:a", "skill:b"]);
-        store.save_prefix_layout(&layout).expect("a writable store");
+        store
+            .save_prefix_layout("probe", &layout)
+            .expect("a writable store");
         let mut restored = store
-            .prefix_layout()
+            .prefix_layout("probe")
             .expect("a readable layout")
             .expect("the plan wrote one");
         restored.reindex();
@@ -522,6 +541,27 @@ mod tests {
         assert_eq!(layout.item_keys(), vec!["a".to_string(), "b".to_string()]);
         layout.plan(&[("a", 10, d("a"))]);
         assert_eq!(layout.item_keys(), vec!["a".to_string()]);
+    }
+
+    /// One session's chains are not another's offer.
+    ///
+    /// # Invariant
+    ///
+    /// A provider caches a conversation's prefix, so what this session emitted is
+    /// the only thing warm for it; a chain from elsewhere must not be chosen.
+    #[test]
+    fn a_layout_belongs_to_one_session() {
+        let store =
+            crate::store::Store::open(std::path::Path::new(":memory:")).expect("a throwaway store");
+        let wanted = [("a", 10usize, d("a")), ("b", 20, d("b"))];
+        let reversed = [("b", 20usize, d("b")), ("a", 10, d("a"))];
+        assert_eq!(plan(&store, "one", &wanted), vec!["a", "b"]);
+        assert_eq!(
+            plan(&store, "two", &reversed),
+            vec!["b", "a"],
+            "the other session kept the order it asked for"
+        );
+        assert_eq!(plan(&store, "one", &reversed), vec!["a", "b"]);
     }
 
     #[test]

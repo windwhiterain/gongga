@@ -142,3 +142,30 @@ liana 的 memory 是追加式，id 即内容；这里相反——skill 正文、
 
 E2E 覆盖：首轮 index 有旧正文 → 改 skill 正文 → 之后两个会话 index 是新正文且两者逐字节相同
 → 磁盘 layout 里 `@skill:helper` 只有一个 item（新正文大小）。12 项全 ok。
+
+## 第五轮：身份 = raw meta + 内容；每会话一个 cache；prompt 末尾放本回合事实
+
+User：「判断是否相等除了内容还有 path，因为 path 在充当 index，也进了前缀」→ 更正
+「充当 index 的是 raw meta，不一定是 path。总之就是 index 和内容都要相等」；以及
+「给每个 session 分别建立 cache」；「在 system prompt 的最后，插入有用的动态相关信息
+（session 名字，harness 名字+commit id，当前时间，cwd）」。
+
+- **身份 = (raw meta, 内容)**：`Item` 的 key 就是 index 里印出来的那个 raw 拼��
+  （`@skill:helper`），content 是正文的 digest。两者都相等才算同一个东西。path 不是
+  特权字段——调用方印什么当名字，那个就是 key（skill 表格用 `SKILL.md` 的 path，因为那
+  张表里 path 就是键）。
+- **每会话一个 layout**：`prefix_layout(session TEXT PRIMARY KEY, layout TEXT)`，进程内
+  `HashMap<String, Layout>`，`plan(store, session, wanted)`。`del_session` 经
+  `forget_prefix_layout` 一起删掉——同名新会话是新对话，不能被旧链预热。
+- **末尾动态尾巴**：`[prompts] dynamic_tail`，`{{session}} / {{build}} / {{now}} / {{cwd}}`，
+  `protocol::BUILD` 是 commit id。`llm::build_head` 按 **散文 → index → 尾巴** 拼成一个
+  `instructions` 值，顺序就是全部要点：越靠后越易变，前面才是共享前缀。新模块
+  `clock.rs` 自己算日期（Hinnant `civil_from_days`），**分钟精度**——每秒变一次就等于每步
+  重新计费整段 transcript。
+- **顺手修的真 bug**：index 原来只在首轮建，之后原样复制 → 改了 skill 正文，该会话永远读
+  旧文本。现在每回合重建，`prompt_in_force` 比对后再写行，所以只有真改才付那一次代价。
+- **E2E 13 项全 ok**：首轮 index 旧正文 → 改正文 → 同会话下一回合索引到新正文且旧正文不
+  再出现 → 磁盘上每个 raw meta 只剩一个 item → alpha/beta/gamma 三份独立 layout →
+  gamma 在另一个目录，尾巴里是它自己的 cwd → 尾巴在 prompt 最后 → 三个会话开头的散文相同。
+  单测 `a_layout_belongs_to_one_session`、`the_system_prompt_is_prose_then_index_then_this_turn`、
+  `clock` 的日期与分钟。

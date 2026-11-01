@@ -8,6 +8,7 @@ mod base64;
 mod blobs;
 mod body;
 mod bus;
+mod clock;
 mod commands;
 mod config;
 mod image;

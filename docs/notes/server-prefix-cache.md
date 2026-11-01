@@ -77,6 +77,22 @@ is already this pass's answer. liana's opposite choice -- keep `remove_memory`
 around and patch the sizes it touched -- answers a question this port does not ask:
 a row of a skill table is re-measured, never deleted.
 
+## one layout per session
+
+A provider caches the prefix of a *conversation*, so what session A emitted is not warm
+for session B -- and a chain only A can use must not be chosen for B. So the layout is
+keyed by session: `prefix_layout` is one row per session name, the process keeps one
+decoded `Layout` per session in a map, and `plan` takes the name it is planning for.
+
+That reversed an earlier decision in this file, and the reversal is the user's: it is
+also why the shared version was less useful than it looked. The system prompt now ends
+with a tail naming the session (`dynamic_tail`), so two sessions' prefixes differ before
+the transcript even starts. A shared layout would have been an index of chains that
+nothing could ever hit, growing a branch per session and paying a scan for each.
+
+`del_session` deletes that session's row: a new session of the same name is a new
+conversation, and must not be warmed by the old one.
+
 ## the identity is the content
 
 A key is a name; the same name can come to mean other bytes. A skill body is edited, a
@@ -88,6 +104,10 @@ This port has the opposite, so an item is `(key, content)` where `content` is a 
 of the bytes and `plan` takes it from the caller. Two consequences, both wanted:
 
 - edited text is a *new* item, so the chain that carried the old bytes cannot warm it.
+  Both halves are the identity, which is what `plan`'s tuple says: the key is the *raw
+  spelling* (`@skill:helper`, `@file:docs/plan.md`) -- the thing that is also printed in
+  the index and so is itself part of the prefix -- and the digest is the text behind it.
+  A path is not special; whatever the caller prints as the entry's name is its key.
   Without this the layout would claim a prefix the endpoint cannot serve, which shows up
   as a cache miss on every request that reuses the chain -- the exact cost this module
   exists to avoid, made invisible.

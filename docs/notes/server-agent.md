@@ -312,13 +312,32 @@ writes nothing. `scripts/replay_audit.py` asserts the other half: for every requ
 sent, each input item is a stored row or the stored note, and each distinct
 `instructions` the provider saw is a `system` row.
 
-## index_of
+## the prompt is prose, then an index, then this turn
+
+`llm::build_head` composes one `instructions` value out of three parts, in this order:
+the prose (`prompts::SYSTEM`, read not rendered, identical for every session of a home),
+the index (`index_of`), and the tail (`dynamic_tail`: session, harness build, time, cwd).
+
+The order is the whole point. A provider's cache matches the front of the value, so every
+part put after a volatile one is paid for again: the tail is last because it changes,
+the index is before it because it is a document that changes when a file does, and the
+prose is first because it never changes. The test that pins this is
+`the_system_prompt_is_prose_then_index_then_this_turn` in `llm.rs`.
+
+## index_of, rebuilt rather than remembered
 
 The first prompt row's second half: the text of every reference the session's messages
 name, walked recursively, ordered by `prefix_cache::plan`, appended to the instructions
 as one string. It is one string rather than a second input item on purpose -- a value
 `instructions` holds is cached with the prose, where an item would have to match on its
 own.
+
+It runs on **every** request, not once at the first row. An index frozen at the first
+turn would keep answering with the bytes a file had then, so an edited `SKILL.md` would
+never reach the session that indexed it -- stale text, silently, forever. Rebuilding
+costs a read of the files the index already names and nothing else: a build that matches
+the stored row writes no row, and `prompt_in_force` compares before appending, so only a
+real edit re-bills the prefix. That re-bill is the price of the edit being true.
 
 Two facts are decided here and used everywhere after: the order (the cache's, not the
 message's) and `rooted`, the spellings the index carries. `meta::expand` leaves exactly

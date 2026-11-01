@@ -33,6 +33,7 @@ pub const REQUIRED: &[&str] = &[
     "size_hint",
     "image_refusal",
     "reference_index",
+    "dynamic_tail",
     "output_cap",
     "output_omitted",
 ];

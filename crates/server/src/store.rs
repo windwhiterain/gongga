@@ -23,6 +23,9 @@ pub struct Prompt {
     /// The text of the references the first message named, in the order it is sent.
     #[serde(default)]
     pub index: Option<String>,
+    /// The facts of this turn -- session, build, time, cwd -- read after the index.
+    #[serde(default)]
+    pub tail: Option<String>,
     /// The spellings `index` carries, so a mention of one stays literal.
     #[serde(default)]
     pub rooted: Vec<String>,
@@ -174,8 +177,8 @@ CREATE INDEX IF NOT EXISTS detached_by_session ON detached_jobs(session);
 -- What the prefix cache has learnt about the order things are emitted in: one row,
 -- because it is one learning shared by every caller of `prefix_cache::plan`.
 CREATE TABLE IF NOT EXISTS prefix_layout (
-    id     INTEGER PRIMARY KEY CHECK (id = 1),
-    layout TEXT NOT NULL
+    session TEXT PRIMARY KEY,
+    layout  TEXT NOT NULL
 );
 "#;
 
@@ -779,13 +782,18 @@ impl Store {
         Ok(out)
     }
 
-    /// The orderings this home has already emitted, as `prefix_cache` records them.
-    pub fn prefix_layout(&self) -> anyhow::Result<Option<crate::prefix_cache::Layout>> {
+    /// The orderings `session` has already emitted, as `prefix_cache` records them.
+    pub fn prefix_layout(
+        &self,
+        session: &str,
+    ) -> anyhow::Result<Option<crate::prefix_cache::Layout>> {
         let row: Option<String> = {
             let conn = self.lock();
-            conn.query_row("SELECT layout FROM prefix_layout WHERE id = 1", [], |row| {
-                row.get(0)
-            })
+            conn.query_row(
+                "SELECT layout FROM prefix_layout WHERE session = ?1",
+                params![session],
+                |row| row.get(0),
+            )
             .optional()?
         };
         let Some(text) = row else { return Ok(None) };
@@ -799,12 +807,25 @@ impl Store {
     }
 
     /// Replaces what is stored, so the next start plans from what this one learnt.
-    pub fn save_prefix_layout(&self, layout: &crate::prefix_cache::Layout) -> anyhow::Result<()> {
+    pub fn save_prefix_layout(
+        &self,
+        session: &str,
+        layout: &crate::prefix_cache::Layout,
+    ) -> anyhow::Result<()> {
         let text = serde_json::to_string(layout)?;
         self.lock().execute(
-            "INSERT INTO prefix_layout (id, layout) VALUES (1, ?1)
-             ON CONFLICT(id) DO UPDATE SET layout = excluded.layout",
-            params![text],
+            "INSERT INTO prefix_layout (session, layout) VALUES (?1, ?2)
+             ON CONFLICT(session) DO UPDATE SET layout = excluded.layout",
+            params![session, text],
+        )?;
+        Ok(())
+    }
+
+    /// Everything a deleted session learnt, so `del_session` leaves nothing behind.
+    pub fn forget_prefix_layout(&self, session: &str) -> anyhow::Result<()> {
+        self.lock().execute(
+            "DELETE FROM prefix_layout WHERE session = ?1",
+            params![session],
         )?;
         Ok(())
     }

@@ -1114,6 +1114,11 @@ async fn finish_delete(d: &Dispatch, name: &str, was_busy: bool, dropped: usize)
     }
     match d.sessions.delete(name) {
         Ok(true) => {
+            // What it learnt about its own prefix goes with it: a new session of the
+            // same name is a new conversation, and must not be warmed by the old.
+            if let Err(e) = d.store.forget_prefix_layout(name) {
+                tracing::warn!(session = %name, error = %e, "could not forget the prefix layout");
+            }
             publish_sessions(d);
             let mut message = format!("deleted session {name}");
             if stopped.stopped > 0 {

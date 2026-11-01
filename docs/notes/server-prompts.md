@@ -85,6 +85,18 @@ it would re-bill the transcript behind it. `{{entries}}` is the whole body, so t
 the entries arrive in is `prefix_cache`'s rather than the template's: a reader who
 reorders that text is reordering a cache, not a document.
 
+## dynamic_tail
+
+The last line of the system prompt, and the only part of it that changes between turns:
+the session's name, the harness and the commit it is running, the minute, and the
+directory the shell stood in. `{{build}}` is `protocol::BUILD`, the same identity a bug
+report carries, so a model reading its own prompt can say which build it is.
+
+It is last for the same reason the index is before it -- see `docs/notes/server-agent.md`
+-- and it is minute-precision for the reason `docs/notes/server-clock.md` gives. What it
+buys: a session that is asked "what time is it" or "where are you" answers without a
+tool call, and a transcript replayed later says when it happened and which build said it.
+
 ## substitute
 
 For the notices only -- never for `SYSTEM`. `{{name}}` and nothing else: no

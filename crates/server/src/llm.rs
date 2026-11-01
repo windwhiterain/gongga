@@ -220,6 +220,7 @@ impl LlmClient {
         &self,
         instructions: &str,
         index: Option<&str>,
+        tail: Option<&str>,
         handover: Option<&str>,
         source: &RequestSource,
         tools: &[ToolDefinition],
@@ -228,7 +229,7 @@ impl LlmClient {
     ) -> mpsc::Receiver<LlmEvent> {
         let (tx, rx) = mpsc::channel(256);
         let build_started = Instant::now();
-        let head = self.build_head(instructions, index, handover, tools, effort);
+        let head = self.build_head(instructions, index, tail, handover, tools, effort);
         // Owned, because the attempt below records it after this body is gone.
         let effort_sent = effort.map(str::to_string);
         let build_head_ms = build_started.elapsed().as_millis() as u64;
@@ -366,6 +367,7 @@ impl LlmClient {
         &self,
         instructions: &str,
         index: Option<&str>,
+        tail: Option<&str>,
         note: Option<&str>,
         tools: &[ToolDefinition],
         effort: Option<&str>,
@@ -375,12 +377,20 @@ impl LlmClient {
             "stream": true,
             "store": self.store,
         });
-        // One value, so the index is cached with the prose it follows rather than
-        // being a second item the provider has to match on its own.
-        let instructions = match index.filter(|index| !index.is_empty()) {
-            Some(index) => format!("{instructions}\n\n{index}"),
-            None => instructions.to_string(),
-        };
+        // One value, so each part is cached with the prose it follows rather than
+        // being a second item the provider has to match on its own. The order is
+        // the point: the index is a document, the tail is this turn.
+        let mut instructions = instructions.to_string();
+        for part in [index, tail]
+            .into_iter()
+            .flatten()
+            .filter(|p| !p.is_empty())
+        {
+            if !instructions.is_empty() {
+                instructions.push_str("\n\n");
+            }
+            instructions.push_str(part);
+        }
         if !instructions.is_empty() {
             body["instructions"] = json!(instructions);
         }
@@ -1582,7 +1592,7 @@ mod tests {
         effort: Option<&str>,
     ) -> Value {
         let mut text =
-            String::from_utf8(client.build_head(instructions, None, note, tools, effort))
+            String::from_utf8(client.build_head(instructions, None, None, note, tools, effort))
                 .expect("a head is built from text");
         // Cut at the marker: a note is written after it.
         let at = text
@@ -1591,6 +1601,30 @@ mod tests {
         text.truncate(at);
         text.push('}');
         serde_json::from_str(&text).expect("the head is one JSON object")
+    }
+
+    /// The three parts are one value, in the order that keeps the prefix warm.
+    ///
+    /// # Invariant
+    ///
+    /// `instructions` holds the prose, then the index, then this turn's tail, so a
+    /// change to the tail costs only the tail.
+    #[test]
+    fn the_system_prompt_is_prose_then_index_then_this_turn() {
+        let client = client_with("m", &[], &[]);
+        let text = String::from_utf8(client.build_head(
+            "prose",
+            Some("index"),
+            Some("tail"),
+            None,
+            &[],
+            None,
+        ))
+        .expect("a head is built from text");
+        assert!(
+            text.contains("\"instructions\":\"prose\\n\\nindex\\n\\ntail\""),
+            "{text}"
+        );
     }
 
     /// The tool schema is out of band, so a fold cannot drop it -- and this

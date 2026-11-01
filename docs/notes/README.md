@@ -42,6 +42,7 @@ note is a bug.
 | [`server-agent.md`](server-agent.md) | `crates/server/src/agent.rs` |
 | [`server-agents.md`](server-agents.md) | `crates/server/src/agents.rs` |
 | [`server-blobs.md`](server-blobs.md) | `crates/server/src/blobs.rs` |
+| [`server-clock.md`](server-clock.md) | `crates/server/src/clock.rs` |
 | [`server-commands.md`](server-commands.md) | `crates/server/src/commands.rs` |
 | [`server-config.md`](server-config.md) | `crates/server/src/config.rs` |
 | [`server-instance.md`](server-instance.md) | `crates/server/src/instance.rs` |
