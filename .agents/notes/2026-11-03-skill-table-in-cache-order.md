@@ -169,3 +169,22 @@ User：「判断是否相等除了内容还有 path，因为 path 在充当 inde
   gamma 在另一个目录，尾巴里是它自己的 cwd → 尾巴在 prompt 最后 → 三个会话开头的散文相同。
   单测 `a_layout_belongs_to_one_session`、`the_system_prompt_is_prose_then_index_then_this_turn`、
   `clock` 的日期与分钟。
+
+## 第六轮：provider 按 item 切分缓存 → 动态内容单独成一条 message
+
+User：「这说明 provider 可能以消息为单位切分 prefix cache，那么把动态的放到一条单独的
+message 里注入」——判断正确，实测证实。
+
+- **旧**：`dynamic_tail` 拼进 `instructions`（散文 → index → 尾巴一个字符串）。分钟一变，
+  整段 10.3k 前缀作废：实测 98.7% → **1.2%**。
+- **新**：尾巴是**最后一条 input item**（`RequestBody::own_facts`），写在 transcript 之后。
+  同样场景：**98.2% → 99.3%**。
+- 结论：缓存不是「字符串内部前缀」，而是「按 unit（这里是一个 `instructions` + input 数组）」
+  逐项比对，**第一个不同的 unit 之后全部作废**。所以规则只有一条：**每回合都变的放最后，
+  永不改变的放最前**；中间的 index 只在文件变化时变。
+- `instructions` 现在只有散文 + index；尾巴仍记在 prompt 行的 `tail` 字段里（所以是有记录的），
+  `scripts/replay_audit.py` 按「等于某行 tail」接受这条 item，与 handover note 同一套待遇。
+- 单测：`body::the_last_item_is_written_after_the_transcript`（变异：把尾巴挪到 head 之后
+  → 变红）；`llm::this_turns_facts_are_one_item_after_the_transcript`。
+- 数据：`.dev/verify/ea40c7f-prefix-cache-tail-item.json`。��次测量里有一次第二请求只有
+  1.8%，另两次 98.2–99.2%，判为 provider 侧冷读；场景与 sha 一变就要重测。
