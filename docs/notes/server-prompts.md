@@ -87,13 +87,14 @@ reorders that text is reordering a cache, not a document.
 
 ## dynamic_tail
 
-The last line of the system prompt, and the only part of it that changes between turns:
-the session's name, the harness and the commit it is running, the minute, and the
-directory the shell stood in. `{{build}}` is `protocol::BUILD`, the same identity a bug
+The session's start card: name, the harness and the commit it runs, the minute of the
+**first** turn, and the directory that turn stood in. Stamped once into the first prompt
+row and replayed verbatim from the store after that -- it is sent as the last input item,
+and it never changes, because what a request has sent is never rewritten. `{{build}}` is `protocol::BUILD`, the same identity a bug
 report carries, so a model reading its own prompt can say which build it is.
 
-It is last for the same reason the index is before it -- see `docs/notes/server-agent.md`
--- and it is minute-precision for the reason `docs/notes/server-clock.md` gives. What it
+It is last for the reason `docs/notes/server-body.md` gives, and minute-precision is
+enough because it is read once, at the start. What it
 buys: a session that is asked "what time is it" or "where are you" answers without a
 tool call, and a transcript replayed later says when it happened and which build said it.
 

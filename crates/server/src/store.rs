@@ -23,7 +23,8 @@ pub struct Prompt {
     /// The text of the references the first message named, in the order it is sent.
     #[serde(default)]
     pub index: Option<String>,
-    /// The facts of this turn -- session, build, time, cwd -- read after the index.
+    /// The session's start card -- name, build, the first turn's time, the first
+    /// turn's cwd -- read as the last item. Stamped once, never re-rendered.
     #[serde(default)]
     pub tail: Option<String>,
     /// The spellings `index` carries, so a mention of one stays literal.

@@ -315,16 +315,21 @@ sent, each input item is a stored row or the stored note, and each distinct
 ## the prompt is prose, an index, and a separate item for this turn
 
 `llm::build_head` composes `instructions` from the prose (`prompts::SYSTEM`, read not
-rendered, identical for every session of a home) and the index (`index_of`). The turn's
-own facts (`dynamic_tail`: session, harness build, minute, cwd) are **not** in that
-value: they are one input item written after the transcript,
-`RequestBody::own_facts`.
+rendered, identical for every session of a home) and the index (`index_of`). The start
+card (`dynamic_tail`: session, harness build, the first turn's minute, its cwd) is
+**not** in that value: it is one input item written after the transcript,
+`RequestBody::own_facts`, and it is stamped once -- carried from the stored row, never
+re-rendered.
 
 Measured, that distinction is worth 98 points of cache: with the tail in `instructions`,
-a turn that crossed a minute boundary answered with 1.2% cached; as the last item it
-answers with 98.2%. A provider's cache is taken item by item, so the first unit that
-differs takes everything behind it -- which makes "changes every turn" and "has to be
-first" mutually exclusive rules. See `docs/notes/server-body.md`.
+a turn that crossed a minute boundary answered with 1.2% cached; as the last item 98.2%;
+stamped once so it never changes, **99.7%**. A provider's cache is taken item by item, so
+the first unit that differs takes everything behind it.
+
+The stronger rule sits above the cache one: **what a request has sent is never
+rewritten.** That is why the card is stamped rather than refreshed -- a prompt row is
+appended, never edited, and a value that would differ every turn is not re-derived at
+all. See `docs/notes/server-body.md`.
 
 ## stated
 

@@ -184,7 +184,10 @@ written after the transcript (`RequestBody::own_facts`), and the same turns meas
 | tail appended to `instructions` | 1.8% | 1.2% |
 | tail as the last input item | 1.8% | 98.2%, then 99.3% |
 
-The rule this leaves behind: a value that changes every turn goes last. See
+Then the sharper fix, and the one the transcript wanted anyway: the card is stamped once,
+with the session's first prompt row, and never re-rendered. What a request sent is never
+rewritten, so the minute in the prompt is the session's start time -- one prompt row for
+the life of the session, and the second turn now measures **99.7%**. See
 `docs/notes/server-body.md`.
 
 ## the index is derived, not stored

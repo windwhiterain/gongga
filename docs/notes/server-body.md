@@ -30,9 +30,21 @@ So a provider's cache is not an intra-string prefix: it is taken item by item (h
 everything after it with it. A value inside `instructions` therefore costs the whole
 request when it changes, while the same value as the last item costs itself.
 
-The invariant that follows is the only rule to remember when adding prose: **a value that
-changes every turn goes last, and a value that never changes goes first.** Between them
-is the index, which changes only when a file does.
+The second half of that is not "keep it out of `instructions`" but "do not change it at
+all". The card is stamped with the session's **first** prompt row -- name, build, that
+turn's minute, that turn's cwd -- and every later request replays those bytes from the
+store. So the minute in the prompt is the session's start time, not the current one, and
+it is the same text for the life of the session: one prompt row, one item, 99.7% cached
+on the second turn.
+
+That is the general rule, and it is about the transcript rather than the cache: **what a
+request has sent is never rewritten.** A row is appended when its content differs, and a
+value that would differ every turn is simply not re-derived. A session that wants the
+current time asks a shell for it -- `date` is a tool call, and a tool call is a new row
+rather than an edit to an old one.
+
+So when adding prose: **a value that changes every turn goes last, and a value that never
+changes goes first.** Between them is the index, which changes only when a file does.
 
 ## Step — the one buffer
 

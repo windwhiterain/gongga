@@ -406,10 +406,11 @@ impl Agent {
     ///
     /// # Invariant
     ///
-    /// A request carries the templates as they are. The rendered prose is compared
-    /// with the stored row and a row is written only when it differs, so an edited
-    /// template or a moved handover lands on the very next step, while a step that
-    /// changes nothing re-bills nothing. See `docs/notes/server-agent.md`.
+    /// What a request carries is immutable once sent: a row is appended, never
+    /// rewritten, and the row's own facts (the tail) are stamped with the first row
+    /// and replayed from the store after that. So the prose can follow an edited
+    /// template, and the timestamp cannot follow the clock.
+    /// See `docs/notes/server-agent.md`.
     fn prompt_in_force(
         &self,
         id: i64,
@@ -421,18 +422,21 @@ impl Agent {
         let prompts = crate::prompts::shared();
         // Read, not rendered, and the one text every turn of every session shares.
         let instructions = prompts.system();
-        // This turn's facts, and last: everything before it stays a shared prefix.
-        let tail = prompts.render(
-            "dynamic_tail",
-            &[
-                ("session", name),
-                ("build", protocol::BUILD),
-                ("now", &crate::clock::now()),
-                ("cwd", &Self::stated(cwd)),
-            ],
-        );
-        // Built from what the references say now: an edited body must reach the model.
-        // A build matching the stored row writes nothing, so only a real edit costs.
+        // Stamped once, with the first row, and replayed verbatim after: what a
+        // request has sent never changes, so this is the session's start card.
+        let tail = match &stored {
+            Some(kept) => kept.tail.clone(),
+            None => Some(prompts.render(
+                "dynamic_tail",
+                &[
+                    ("session", name),
+                    ("build", protocol::BUILD),
+                    ("now", &crate::clock::now()),
+                    ("cwd", &Self::stated(cwd)),
+                ],
+            )),
+        };
+        // Built from what the references say now, so an edited body reaches the model.
         let (index, rooted) = match self.index_of(id, name, cwd) {
             Some((index, rooted)) => (Some(index), rooted),
             None => match &stored {
@@ -444,15 +448,13 @@ impl Agent {
         let prompt = crate::store::Prompt {
             instructions,
             index,
-            tail: Some(tail),
+            tail,
             rooted,
             handover,
             cwd: cwd.display().to_string(),
             stamp: crate::store::stamp(note),
         };
-        // Only the texts that go on the wire are compared: the row's `cwd` is a
-        // record rather than prose -- a shell reports one directory under two
-        // spellings, and a spelling is not a reason to re-bill a prefix.
+        // Only the texts that go on the wire are compared; `cwd` is a record.
         if let Some(kept) = stored.clone().filter(|kept| {
             kept.instructions == prompt.instructions
                 && kept.index == prompt.index
@@ -1312,6 +1314,33 @@ mod tests {
             !Agent::stated(dir.path()).starts_with(r"\\?\"),
             "the canonical prefix is not prose"
         );
+    }
+
+    /// The prompt row's own facts are stamped once, so a later read cannot move them.
+    ///
+    /// # Invariant
+    ///
+    /// What a request has sent never changes: the row is appended, and the start card
+    /// is carried from the store rather than re-rendered from the clock.
+    #[test]
+    fn the_start_card_is_stamped_and_then_read_back() {
+        let store =
+            crate::store::Store::open(std::path::Path::new(":memory:")).expect("a throwaway store");
+        let id = store.create_session("s", "m", ".").expect("a session");
+        let first = crate::store::Prompt {
+            instructions: "prose".to_string(),
+            index: None,
+            tail: Some("Session `s`, 2026-11-01 14:00 UTC".to_string()),
+            rooted: Vec::new(),
+            handover: None,
+            cwd: ".".to_string(),
+            stamp: String::new(),
+        };
+        store.append_prompt(id, &first).expect("one row");
+        // A minute later: the stored card is what a request carries, not the clock.
+        let read = store.prompt(id).expect("a readable row").expect("one row");
+        assert_eq!(read.tail, first.tail);
+        assert_eq!(read.instructions, "prose", "and nothing rewrote the prose");
     }
 
     fn notice_prompts() -> crate::prompts::Prompts {
