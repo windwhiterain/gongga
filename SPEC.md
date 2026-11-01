@@ -116,13 +116,15 @@ restart server should still keep its lifetime, e.g. tui spawned server's lifetim
 agents play certain roles to keep context focus.
 
 roles: 
-- justice: talk to the user, understand user.
+- justice (pro/sota): talk to the user, understand user.
   - judge if plan is conform to the spec and approve to implment. 
   - judge if proposal is in spirit of the spec and send to user for approval.
-- premier: plan, orchestrate, spawn subagents, review.
+- premier (flash): orchestrate, spawn subagents, review.
+  - orchestrate subagents (flash, pro for hard) to implement the plan.
+- advisor (sota): plan, proposal
   - present plan for implementation to the justice.
   - present proposal of changes to the spec.
-- HR: monitor each sessions situation, fix errors (provider, transcript).
+- HR (flash): create justice/premier/advisor session, monitor their situation, fix harness errors (quota, ...).
 
 record:
 - proposal{example, expected, actual, actual_spec, expected_spec}
