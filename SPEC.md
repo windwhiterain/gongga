@@ -21,10 +21,10 @@ all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, l
 ## LLM API
 standard OpenAI Response API.
 - images: File API, gated by the roster's modalities.
+- auto recover invalid transcript (only add, no drop).
 
 ### Invarian
 - everything in message must store and send.
-- every message that has been sent must not be changed.
 
 ## Tool
 use `which("bash")` as bash.
@@ -38,6 +38,12 @@ use `which("bash")` as bash.
 
 ## State
 everything in database (sqlite) under a home directory, structured for agentic retrieval/mutation.
+
+## Prompt
+after the system prompt, before the first user message, inject one message with useful information about session name, harness version (commit id), cwd, time.
+
+### Invariant
+transcript that has been sent must not be change.
 
 ## Meta
 replace in messages.
