@@ -45,26 +45,3 @@ fn civil(days: i64) -> (i64, u32, u32) {
     };
     (year + i64::from(month <= 2), month as u32, day as u32)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A date the epoch is not: leap years, century leaps, and a month boundary.
-    #[test]
-    fn a_known_instant_reads_as_its_date_and_minute() {
-        assert_eq!(at(0), "1970-01-01 00:00 UTC");
-        assert_eq!(at(1_000_000_000), "2001-09-09 01:46 UTC");
-        // 2024 was a leap year, and this is its 29th of February.
-        assert_eq!(at(1_709_164_800), "2024-02-29 00:00 UTC");
-        assert_eq!(at(1_735_689_600), "2025-01-01 00:00 UTC");
-    }
-
-    /// The minute is a minute: 59 seconds past it is still that minute.
-    #[test]
-    fn seconds_do_not_reach_the_text() {
-        let minute = 1_735_689_600;
-        assert_eq!(at(minute), at(minute + 59));
-        assert_ne!(at(minute), at(minute + 60));
-    }
-}

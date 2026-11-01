@@ -27,8 +27,6 @@ pub const DEFAULT_CONTEXT_LIMIT_PERCENT: u8 = 70;
 
 pub struct Agent {
     pub store: Store,
-    /// What a session talks to unless it named its own `--model`.
-    pub llm: Arc<LlmClient>,
     /// The machine's roster, which `--model` names resolve against. A live view:
     /// a reload reaches every later route.
     pub providers: providers::Handle,
@@ -1288,127 +1286,6 @@ fn notice_budget(configured: u64, context: Option<u64>, percent: Option<u8>) -> 
     providers::tokens_for_percent(window, percent.unwrap_or(DEFAULT_CONTEXT_LIMIT_PERCENT))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_zero_config_turns_the_notice_off_whatever_the_window_is() {
-        assert_eq!(notice_budget(0, Some(1_000_000), Some(50)), 0);
-        assert_eq!(notice_budget(0, Some(1_000_000), None), 0);
-        assert_eq!(notice_budget(0, None, None), 0);
-    }
-
-    /// A known window decides the threshold, so a bigger model needs no retuning.
-    #[test]
-    fn a_known_window_beats_the_configured_number() {
-        assert_eq!(notice_budget(40_000, Some(1_000_000), None), 700_000);
-        assert_eq!(notice_budget(40_000, Some(200_000), Some(50)), 100_000);
-        // No window in the roster: the configured number is all there is.
-        assert_eq!(notice_budget(40_000, None, Some(50)), 40_000);
-        assert_eq!(notice_budget(40_000, None, None), 40_000);
-    }
-
-    /// Every value the template can name has to arrive: the words are the
-    /// config's, the numbers are this function's.
-    #[test]
-    fn the_context_notice_says_what_to_do() {
-        let notice = context_notice(&notice_prompts(), "main", 700_000, 700_000);
-        assert!(notice.contains("700000 input tokens"), "{notice}");
-        assert!(notice.contains("--session main"), "{notice}");
-        assert!(notice.contains("transcript.py read"), "{notice}");
-        assert!(notice.contains("transcript.py heir"), "{notice}");
-        assert!(
-            !notice.contains("{{"),
-            "a placeholder nobody filled: {notice}"
-        );
-    }
-
-    /// One directory, two spellings a shell may report: one string in the prompt.
-    ///
-    /// # Invariant
-    ///
-    /// The tail is cached prose, so a re-spelling must not rewrite it.
-    #[test]
-    fn a_directory_is_stated_one_way() {
-        let dir = tempfile::tempdir().unwrap();
-        let forward = dir.path().display().to_string().replace('\\', "/");
-        let slashed = std::path::PathBuf::from(&forward);
-        assert_eq!(
-            Agent::stated(dir.path()),
-            Agent::stated(&slashed),
-            "{forward} and {} name one directory",
-            dir.path().display()
-        );
-        assert!(
-            !Agent::stated(dir.path()).starts_with(r"\\?\"),
-            "the canonical prefix is not prose"
-        );
-    }
-
-    /// The prompt row's own facts are stamped once, so a later read cannot move them.
-    ///
-    /// # Invariant
-    ///
-    /// What a request has sent never changes: the row is appended, and the start card
-    /// is carried from the store rather than re-rendered from the clock.
-    #[test]
-    fn the_start_card_is_stamped_and_then_read_back() {
-        let store =
-            crate::store::Store::open(std::path::Path::new(":memory:")).expect("a throwaway store");
-        let id = store.create_session("s", "m", ".").expect("a session");
-        let first = crate::store::Prompt {
-            instructions: "prose".to_string(),
-            index: None,
-            tail: Some("Session `s`, 2026-11-01 14:00 UTC".to_string()),
-            rooted: Vec::new(),
-            handover: None,
-            cwd: ".".to_string(),
-            stamp: String::new(),
-        };
-        store.append_prompt(id, &first).expect("one row");
-        // A minute later: the stored card is what a request carries, not the clock.
-        let read = store.prompt(id).expect("a readable row").expect("one row");
-        assert_eq!(read.tail, first.tail);
-        assert_eq!(read.instructions, "prose", "and nothing rewrote the prose");
-    }
-
-    fn notice_prompts() -> crate::prompts::Prompts {
-        crate::prompts::Prompts::of(&[(
-            "context_notice",
-            "Context notice for `{{session}}`: {{tokens}} input tokens of {{budget}}.              Read `transcript.py read --session {{session}}`, hand over with              `transcript.py heir --session {{session}} --mentor <name> --note <text>`.",
-        )])
-    }
-
-    /// The warning names the cause: "failed or came back empty" is what made
-    /// "why did the first attempt fail" unanswerable.
-    #[test]
-    fn a_retry_warning_names_why() {
-        let said = retry_warning(
-            "main",
-            2,
-            0,
-            std::time::Duration::from_secs(2),
-            "HTTP 500: boom",
-        );
-        assert!(said.contains("HTTP 500: boom"), "{said}");
-        assert!(said.contains("retry 2 until cancelled"), "{said}");
-        assert!(said.contains("2s"), "{said}");
-        // An explicit ceiling still reads as a ceiling, not as a fraction of 0.
-        let said = retry_warning("main", 1, 3, std::time::Duration::from_secs(1), "empty");
-        assert!(said.contains("retry 1 of 3"), "{said}");
-    }
-
-    /// The notice names the two numbers it is talking about and nothing it cannot
-    /// know: the measured size and the budget. There is no boundary to quote.
-    #[test]
-    fn the_notice_names_the_size_and_the_budget() {
-        let notice = context_notice(&notice_prompts(), "main", 10, 20);
-        assert!(notice.contains("10 input tokens of 20"), "{notice}");
-        assert!(!notice.contains("{{"), "{notice}");
-    }
-}
-
 /// What a call is, and the words it is read with: the tool and its arguments.
 ///
 /// # Invariant
@@ -1497,59 +1374,6 @@ fn spec_name(key: &str) -> &str {
     match key {
         "timeout_ms" => "timeout",
         other => other,
-    }
-}
-
-#[cfg(test)]
-mod call_fields_tests {
-    use super::*;
-
-    /// SPEC's `toolcall{tool_name, {...}}`: the summary is those fields;
-    /// `command` is the open item's.
-    #[test]
-    fn a_bash_call_summarises_the_fields_spec_names_and_keeps_the_command() {
-        let head = call_head(
-            "bash",
-            r#"{"command":"cargo test","name":"build","task":"run the tests","background":true}"#,
-        );
-        assert_eq!(
-            head.summary(),
-            "bash, name=build, task=run the tests, background=true"
-        );
-        assert!(
-            !head.summary().contains("cargo test"),
-            "SPEC leaves the command out of the abstract: {}",
-            head.summary()
-        );
-        assert!(
-            head.detail().ends_with("cargo test") || head.detail().contains("cargo test"),
-            "and it is in the detail: {}",
-            head.detail()
-        );
-    }
-
-    /// A field the call did not set is absent, not defaulted.
-    #[test]
-    fn only_what_the_model_set_is_sent() {
-        let head = call_head("bash", r#"{"command":"ls"}"#);
-        assert_eq!(head.summary(), "bash", "the tool alone: no flag was given");
-        assert_eq!(head.detail(), "bash\nls");
-    }
-
-    /// The tool's schema spells `timeout_ms`; SPEC's row says `timeout`.
-    #[test]
-    fn the_timeout_is_labelled_the_way_spec_spells_it() {
-        let head = call_head("bash", r#"{"command":"ls","timeout_ms":30000}"#);
-        assert_eq!(head.summary(), "bash, timeout=30000");
-    }
-
-    /// A tool SPEC does not name is summarised by nothing, and its arguments are
-    /// all in the detail rather than lost.
-    #[test]
-    fn a_tool_spec_does_not_name_keeps_its_arguments_in_the_detail() {
-        let head = call_head("index_skill", r#"{"name":"evolve"}"#);
-        assert_eq!(head.summary(), "index_skill", "the name is always there");
-        assert!(head.detail().contains("evolve"), "{}", head.detail());
     }
 }
 

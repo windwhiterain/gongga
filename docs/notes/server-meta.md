@@ -114,18 +114,3 @@ bigger request and never the message.
 Delivering costs one provider round trip per picture. That is the price of "in
 advance" in the SPEC: it buys a transcript that replays without touching the
 file again.
-
-## tests::a_reference_is_its_prefix_and_one_word
-
-Both spellings resolve to the same value, and the three prefixes do not shadow
-each other.
-
-## tests::a_prefix_matches_anywhere_and_punctuation_is_the_sentence
-
-The bracket and the full stop around a reference belong to the sentence. An
-email address is not a reference, and neither is a prefix with nothing after it.
-
-## tests::a_file_reference_is_left_exactly_as_written
-
-`@file:` is the control case: expansion leaves it alone, which is what proves the
-other two are decisions rather than a blanket rewrite.

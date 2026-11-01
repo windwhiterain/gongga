@@ -119,9 +119,3 @@ was `--message=--version`, which nothing advertises.
 The cost is the other direction: a forgotten value swallows the next flag, which
 then fails on whatever follows it -- `--session --message hi` reads `--message`
 as the value of `--session`, and `hi` is what fails.
-
-## a_value_may_start_with_dashes
-
-`send_message` exists to carry arbitrary text, and `--version` is text: the
-parser therefore cannot use "starts with a dash" to decide whether a token is a
-value.

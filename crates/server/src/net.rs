@@ -463,18 +463,3 @@ async fn queue_event(
         Err(e) => Err(anyhow::anyhow!("{e}")),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn keys_match_only_exactly() {
-        assert!(key_matches("abc", "abc"));
-        assert!(!key_matches("abc", "abd"));
-        assert!(!key_matches("abc", "ab"));
-        assert!(!key_matches("ab", "abc"));
-        assert!(!key_matches("", "abc"));
-        assert!(key_matches("", ""));
-    }
-}

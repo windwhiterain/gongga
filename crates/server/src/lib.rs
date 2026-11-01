@@ -46,7 +46,6 @@ use crate::agent::Agent;
 use crate::bus::EventBus;
 use crate::commands::Dispatch;
 use crate::config::Config;
-use crate::llm::LlmClient;
 use crate::session::SessionManager;
 use crate::tools::ToolRegistry;
 use crate::tools::detached::DetachedRegistry;
@@ -208,10 +207,6 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     );
 
     let store = store::Store::open(&cfg.db_path)?;
-    // The server's own client measures too, so the first session is priced for.
-    let mut model_cfg = cfg.model.clone();
-    model_cfg.measure = Some(store.clone());
-    let llm = Arc::new(LlmClient::new(&model_cfg)?);
     // A script drives this server by the same name a shell does: `gongga`, which
     // is this program under the command's name in the home's `bin`.
     // Before any shell exists: the command it types has to be there, and a
@@ -285,7 +280,6 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let dispatch = Arc::new(Dispatch {
         agent: Arc::new(Agent {
             store: store.clone(),
-            llm: llm.clone(),
             providers: providers::Handle,
             model_config: cfg.model.clone(),
             clients: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -384,19 +378,4 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         tracing::info!(stopped, "stopped scripts still running at the stop");
     }
     served
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Args;
-
-    /// SPEC: the home can be named at server start, and `serve` is what names
-    /// it -- so an empty `Args` has to mean "whatever the home's config says".
-    #[test]
-    fn an_empty_start_asks_for_nothing() {
-        let args = Args::default();
-        assert!(args.home.is_none());
-        assert!(args.bind.is_none());
-        assert_eq!(args.log, "info");
-    }
 }

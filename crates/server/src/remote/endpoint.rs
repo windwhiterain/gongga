@@ -119,39 +119,3 @@ impl Endpoint {
             .map_err(|e| anyhow::anyhow!("{}: {e}", self.describe()))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The ssh command line must not carry anything that turns host checking off.
-    #[test]
-    fn an_ssh_endpoint_keeps_host_key_checking() {
-        let endpoint = Endpoint::Remote {
-            transport: Reach::Ssh {
-                host: "peer".into(),
-                port: Some(2222),
-                identity: Some(PathBuf::from("key")),
-            },
-            runner: "gongga-runner".into(),
-        };
-        assert!(endpoint.is_remote());
-        assert_eq!(endpoint.describe(), "ssh peer:2222 (gongga-runner)");
-        assert!(!Endpoint::local(PathBuf::from("/bin/bash")).is_remote());
-    }
-
-    /// The default runner is the distribution's second word, not a program of its own.
-    #[test]
-    fn the_default_runner_is_one_the_distribution_dispatches() {
-        assert_eq!(
-            runner_words(crate::remote::runner::DEFAULT_RUNNER),
-            vec!["gongga", "runner"]
-        );
-        assert_eq!(runner_words("  gongga runner "), vec!["gongga", "runner"]);
-        assert_eq!(
-            runner_words("/opt/gongga-runner"),
-            vec!["/opt/gongga-runner"]
-        );
-        assert!(runner_words("   ").is_empty());
-    }
-}

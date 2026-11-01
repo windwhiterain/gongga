@@ -315,30 +315,3 @@ does not change providers mid-sentence.
 
 One file, one read: the command catalog asks for it to build completions on
 every connect, and the agent asks for it on every turn that names a provider.
-
-## tests::a_percentage_becomes_a_token_budget
-
-Never zero for a real percentage: zero reads as "compression is off" in the
-agent, which is the opposite of what was asked.
-
-## tests::reasoning_levels_are_read_and_mapped
-
-The roster's reasoning fields are what `--thinking-effort` is checked against,
-and the mapping is what turns a level a caller knows (`medium`) into one the
-model actually takes (`high`).
-
-## tests::a_level_is_mapped_then_checked
-
-A level is mapped first, then checked: what the model is told is always one of
-the levels the roster says it takes, and a level it does not take is refused
-with the ones it does.
-
-A roster that says nothing about levels cannot refuse one: the provider is the
-only party that knows, so the level goes through.
-
-## tests::modalities_and_builtin_tools_reach_the_entry
-
-Both fields are read off the roster and carried on the entry, and a model that
-declares neither ends up with empty lists rather than with defaults: the server
-must not offer a tool, or refuse an image, on a model whose roster entry said
-nothing about either.

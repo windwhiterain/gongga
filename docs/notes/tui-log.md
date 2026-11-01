@@ -357,7 +357,6 @@ existed because the head-fixed row could only ever show the front of the text.
 A capped block keeps its whole text like any other block and simply counts fewer
 of its rows, so there is nothing to discard and no budget to set.
 
-
 ## Paired call and result streams
 
 A call and its result are two entries, not one body with two sections. The call's
@@ -468,91 +467,6 @@ and it is invisible in a screenshot because it only shows up on lines that wrap.
 
 A trailing newline is an empty row, not a dropped one: that is how a blank line
 between two paragraphs survives the round trip.
-
-## scrolling_moves_one_row_at_a_time
-
-A window can start in the middle of a line, which is the case a naive "count
-lines, not rows" renderer gets wrong.
-
-## scroll_clamps_at_both_ends
-
-A page up from the bottom must show the rows just above the window, and scrolling
-past the top must stop at the first row -- not wrap around.
-
-## a_frame_touches_only_a_screenful
-
-A frame must not depend on how long the log is: this is the assertion that
-catches a return to wrapping everything per frame.
-
-## a_width_change_reflows_every_line
-
-Back to the wide shape: the old offsets must not survive.
-
-## the_row_index_agrees_with_a_walk
-
-The row index's binary search has to agree with a plain walk, or scrolling lands
-on the wrong line while everything else looks fine.
-
-## two_open_blocks_grow_together
-
-Two blocks streaming at once each keep growing where they opened, so the second
-one never jumps above the first. This is the difference from a per-line model: a
-line model has nowhere to put a second stream's growth but after it.
-
-## a_growing_block_scrolls_the_window
-
-A block growing past the window pushes older rows *above* it, not out of the log:
-scrolling back finds them.
-
-## a_long_block_shows_its_tail
-
-A block taller than the window shows its newest rows and repeats its label on the
-first row the window holds. Stated as a test so the label rule stays a decision
-rather than a surprise.
-
-## a_capped_block_shows_its_newest_rows
-
-The cap is a height, not a rewrite: the block keeps growing in place, `Log::rows`
-counts only what it may show, and the rows past the cap are the *older* ones.
-
-## a_capped_block_follows_its_newest_text
-
-What "auto scroll" means in one row of a wrapped block: the row shown is the last
-one, not the first. The folded mode kept the head on purpose -- a row that moved as
-text arrived read as scrolling rather than writing -- and the SPEC asked for the
-moving. Both cannot be kept, so the row is the tail and the block stops shoving
-neighbours away.
-
-## the_rows_a_cap_took_are_not_scrollable
-
-Scrolling back finds the block above, never the capped block's own head. Cheap to
-state and the one operators ask about; the answer is that the full text is a
-`get_messages` away.
-
-## the_cap_leaves_the_answer_alone
-
-`LineKind::Assistant` keeps every row it grows, at any `block_size`.
-
-## a_new_label_opens_a_new_block
-
-Two parts of a turn, two labels, two blocks -- and the first block took nothing
-more after it was sealed, even though the key stayed the same.
-
-## a_capped_block_stays_capped_at_any_width
-
-A cap counts rows of the width being measured, so a resize cannot leave a block
-taller than its cap.
-
-## a_blank_chunk_opens_no_block
-## a_blank_chunk_opens_no_block
-
-The sentinel's empty line must not become a row. Without this, one blank row per
-command, in the error colour.
-
-## a_sealed_block_has_no_trailing_blank_row
-
-A block's trailing newline is trimmed when it seals, while a blank line *inside*
-the block survives.
 
 ## headline (gone)
 

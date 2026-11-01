@@ -199,12 +199,6 @@ where a test home's edits would silently never land. It is made absolute for the
 reason `home` is: a relative path means something different to whatever child reads it
 next.
 
-## tests::the_roster_answers_what_the_config_does_not_say
-
-The roster is what makes "no `[model]` section" work. These are the four ways a
-configuration can name something, and the one way it can be wrong: a typo must
-not stop the server from starting.
-
 ## persist_key, read_key_file
 
 One line, the key, nothing else: the file is read with a trim, so an editor's
@@ -231,14 +225,3 @@ the reader's" is enforced by the same rule that governs the skills. The historic
 qualifier -- a first start minted a key into config.toml, so the file that had to
 explain the fields always looked already-answered -- died with the key moving next
 door to `server.key`.
-
-## tests::a_key_left_in_the_config_still_works_and_buys_its_file_quietly
-
-The old place is not a migration project: a home that has the key in its config
-resolves it, is not rewritten, and is not handed a second key file it will never
-use. Two answers to "where is the key" are worse than the old one.
-
-## tests::a_key_left_in_the_config_still_works_and_buys_its_file_quietly
-
-One field is enough to count as edited. A configuration that was written by hand
-is not ours to replace with a commented example.

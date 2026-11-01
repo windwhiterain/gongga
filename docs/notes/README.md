@@ -24,7 +24,6 @@ note is a bug.
 | [`protocol-message.md`](protocol-message.md) | `crates/protocol/src/message.rs` |
 | [`protocol-reference.md`](protocol-reference.md) | `crates/protocol/src/reference.rs` |
 | [`protocol-channel.md`](protocol-channel.md) | `crates/protocol/src/channel.rs` |
-| [`protocol-loopback.md`](protocol-loopback.md) | `crates/protocol/src/loopback.rs` |
 
 ### build
 

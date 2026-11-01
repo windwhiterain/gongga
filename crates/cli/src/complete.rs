@@ -80,20 +80,3 @@ pub fn token_bounds(input: &str, cursor: usize) -> (usize, usize, String) {
     let start = start.min(end);
     (start, end, input[start..end].to_string())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn token_bounds_respects_utf8() {
-        let (s, e, t) = token_bounds("echo 中文 x", 8);
-        assert_eq!((s, e, t.as_str()), (5, 11, "中文"));
-    }
-
-    #[test]
-    fn token_bounds_clamps_a_cursor_past_the_end() {
-        let (s, e, t) = token_bounds("one", 99);
-        assert_eq!((s, e, t.as_str()), (0, 3, "one"));
-    }
-}

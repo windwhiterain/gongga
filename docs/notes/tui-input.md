@@ -48,19 +48,3 @@ history is `Shift+Up`'s, so a bare arrow that finds no line to move does nothing
 Vertical moves keep a byte column, and a column that lands inside a wide character
 has to round down rather than split it: slicing a `String` at a non-boundary
 panics.
-
-## a_newline_starts_a_line_the_cursor_can_leave
-
-A message can have paragraphs, so the text has to survive a newline and the
-vertical moves have to walk them -- otherwise the second paragraph is reachable
-only by arrowing through the first one character at a time.
-
-Home and End are line-scoped now, not text-scoped; the document end is still
-reachable, which is what a restored line and a recalled history entry need.
-
-## vertical_moves_round_down_to_a_char_boundary
-
-A column lands on a byte, and a byte can be inside a wide character.
-
-Column 2 on the second line; `中` is three bytes, so the same column on the first
-line is inside it and has to round back to its start.

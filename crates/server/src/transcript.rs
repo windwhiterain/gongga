@@ -18,8 +18,6 @@ pub struct Row {
     pub kind: String,
     /// The tool a call row asks for, or a result row answers.
     pub call_id: Option<String>,
-    /// Who spoke, for a text row: a prompt ends a step, an answer stays in it.
-    pub role: Option<String>,
     /// The pictures this row's payload recorded, for a tool result that handed some
     /// back. Empty for every other row.
     pub images: Vec<ImageRef>,
@@ -86,13 +84,6 @@ impl Iterator for Transcript {
             Err(e) => return Some(Err(e.into())),
         };
         self.after_seq = seq;
-        let role = if kind == "text" {
-            serde_json::from_str::<serde_json::Value>(&item)
-                .ok()
-                .and_then(|v| v.get("role").and_then(|r| r.as_str()).map(str::to_string))
-        } else {
-            None
-        };
         let value = serde_json::from_str(&display).unwrap_or(serde_json::Value::Null);
         // Pictures ride in a tool's result and in a message with `@image:`.
         let images = if kind == "tool_result" || kind == "text" {
@@ -107,7 +98,6 @@ impl Iterator for Transcript {
             item,
             kind,
             call_id,
-            role,
             images,
             step,
         }))

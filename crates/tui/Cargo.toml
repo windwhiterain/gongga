@@ -30,6 +30,3 @@ unicode-width = "0.2"
 # tokenised by whoever started the process.
 shell-words = "1"
 pulldown-cmark = { version = "0.13.6", default-features = false }
-
-[dev-dependencies]
-tempfile = "3"

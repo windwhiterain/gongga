@@ -92,24 +92,3 @@ the pid itself is locale-independent.
 
 Cannot tell: assume the holder is alive rather than let two servers into the same
 home on a hunch.
-
-## tests::a_pid_left_behind_by_a_dead_process_is_taken_over
-
-A server that was killed never gets to clean up; its pid must not lock the home
-forever.
-
-## tests::an_empty_lock_is_not_taken_over
-
-A lock that exists but has no pid in it is a claim being written, not litter.
-Taking it over is how two servers end up sharing one home.
-
-## tests::dropping_a_stale_claim_does_not_delete_the_new_owner
-
-Releasing a claim removes only that claim: a lock that now names a different
-process belongs to it, and dropping ours must not delete it.
-
-## tests::only_one_of_many_starting_together_wins
-
-The winners keep their claim until every thread is done: a claim that is released
-immediately would let the next thread have the home, and the test would prove
-nothing.

@@ -30,6 +30,3 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # rustls, not native-tls: the harness has no other reason to link a TLS stack,
 # and a vendored one builds the same way on every Windows box.
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
-
-[dev-dependencies]
-tempfile = "3"

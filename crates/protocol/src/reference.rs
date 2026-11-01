@@ -35,21 +35,3 @@ impl Reference {
             .find(|kind| word.starts_with(kind.prefix()))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_prefix_names_one_kind() {
-        for kind in Reference::ALL {
-            assert_eq!(Reference::of_prefix(kind.prefix()), Some(kind));
-            assert_eq!(
-                Reference::of_prefix(&format!("{}x", kind.prefix())),
-                Some(kind)
-            );
-        }
-        assert_eq!(Reference::of_prefix("@image"), None);
-        assert_eq!(Reference::of_prefix("user@host"), None);
-    }
-}

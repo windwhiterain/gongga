@@ -146,8 +146,3 @@ sending to me" would need a different frame, and no such peer exists here.
 Retransmit every in-flight packet whose own timer has expired, a handful per
 tick. Doing one at a time would turn a burst of losses into a multi-second stall
 on a link with any real latency.
-
-## the_advertised_window_shrinks_with_the_backlog_but_never_closes
-
-Zero would be a stall the peer may honour forever; the point is to slow a
-producer down while this side keeps acknowledging and retransmitting.

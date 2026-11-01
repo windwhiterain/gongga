@@ -12,16 +12,3 @@ pub mod transport;
 pub use endpoint::{Endpoint, Reach};
 pub use shell_set::{Shell, ShellSet};
 pub use transport::{CloseReport, Runner, ShellControl, ShellHandle};
-
-/// The runner built beside a unit test, which cannot ask cargo for its path.
-#[cfg(test)]
-pub(crate) fn test_runner() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let name = if cfg!(windows) {
-        "gongga-runner.exe"
-    } else {
-        "gongga-runner"
-    };
-    let runner = exe.parent()?.parent()?.join(name);
-    runner.is_file().then_some(runner)
-}

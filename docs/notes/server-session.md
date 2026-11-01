@@ -171,7 +171,7 @@ reach them, so they live here rather than inside a shell.
 
 See [`SessionHandle::close_shells`] for why the process cannot exit without this.
 
-## SessionManager::ensure
+## SessionManager::ensure_on
 
 A session is not "whatever the server's default is today": its reasoning items
 carry blobs only the producing provider can replay, so a later change of default
@@ -183,7 +183,7 @@ must not silently move it.
 flight, and materialising one in order to delete it would start shells for
 nothing.
 
-## SessionManager::materialise
+## SessionManager::materialise_locked
 
 The row's `model` is what the session is pinned to, `provider/model_name`. A row that
 predates that spelling knows the bare name, and the roster is what turns that name
@@ -206,31 +206,3 @@ recoverable, rather than rows whose files are gone, which is not.
 
 Used by `cancel`, which has to stop turns that are actually running rather than
 every row in the database.
-
-## cancelling_for_shutdown_preserves_one_turn
-
-`cancel` shuts the server down so the turn can come back, and it says so exactly
-once: the next turn is not preserved by accident.
-
-## the_second_claim_waits_for_the_first
-
-What queuing means: the second caller does not get in until the first one is
-done. Two turns on one session used to run at once and each compressed the same
-transcript.
-
-## deletion_is_visible_to_a_queued_turn
-
-A turn queued behind a `del_session` has to notice the session is gone when its
-turn comes, instead of writing into a deleted session.
-
-## tests::the_session_cwd_does_not_wait_for_a_running_command
-
-The regression this whole change exists for. Holding the shell's lock is exactly
-what a long command does, and a read that waits there is a `set_session` that does
-not come back. The clock is asserted rather than assumed: a slower read would
-still pass if it were merely bounded.
-
-## tests::a_cd_in_the_default_shell_reaches_the_session_cwd
-
-A mirror nobody writes to would answer with where the session started, which is
-quietly wrong for the lifetime of the session. Only a real shell proves it moves.

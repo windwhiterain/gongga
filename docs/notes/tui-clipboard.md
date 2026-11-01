@@ -61,21 +61,6 @@ Normalizes `\r\n` and lone `\r` to `\n`. A Windows clipboard hands back CRLF, an
 a bare `\r` inside the input box renders as a glyph rather than a break. Nothing
 else is touched: tabs and trailing spaces are the operator's text.
 
-## a_paste_keeps_its_lines
-
-The breaks survive. In the paste path a newline is text, not a keystroke — see
-`Tui::paste` in `tui-lib.md`.
-
-## a_failing_tool_is_reported
-
-The negative of the happy path, and the one that bites silently: a tool that
-exits non-zero must not read as a successful copy.
-
-## a_read_reports_what_the_tool_printed
-
-Three outcomes in one test: a tool that prints is text, a tool that prints nothing
-is `Empty` rather than a failure, and a tool that is not installed moves on.
-
 ## The image, and the tools that read it
 
 A clipboard can hold a picture as well as text, and the same Ctrl+V that reads

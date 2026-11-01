@@ -132,12 +132,6 @@ work nobody is waiting for any more. Its caller is told the server stopped --
 not shown a killed process's exit status, which would read as the script's own
 failure.
 
-## tests::the_database_path_is_a_startup_flag
-
-SPEC: "database path can be specified at server start." Checked by parsing rather
-than by reading the source, so that renaming the flag breaks a test instead of
-someone's runbook.
-
 ## the_log_is_json_when_a_tool_reads_it
 
 `--log-format json` writes one object per line, and the text format now

@@ -5,14 +5,6 @@ what this module closes, before the database is opened -- and before the shipped
 content is installed, which is the order that keeps a home's data from depending
 on a network: see `docs/notes/server-lib.md`.
 
-## the_version_file_is_the_state
-
-`<home>/version` holds the version a home was last migrated to, and a missing or
-unreadable file is version 0: the shape the home was created by. The file is
-written *after* a migrator exits zero and never before, so a start that dies
-mid-migration runs the same step again. Every migrator has to be safe to run
-twice for that reason, and the shipped ones are.
-
 ## nothing_is_copied_first
 
 There is no backup. A migrator rewrites in place, and a step that succeeds while

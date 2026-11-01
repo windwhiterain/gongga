@@ -442,21 +442,11 @@ A bundle rather than three more parameters, because the three travel together
 and nothing else in the turn needs them: `step` already takes the session, the
 turn, the cancellation token.
 
-## a_known_window_beats_the_configured_number
-
-A known window decides the threshold, so a model with a bigger window gets a
-bigger budget without anyone retuning the config.
-
 ## failed_warning_names_what_was_dropped
 
 Left silent about discarded text, the line is the one that made this bug
 invisible: the operator saw a partial answer on screen and a failure with no
 mention of it.
-
-## a_retry_warning_names_why
-
-The line names the cause it now carries, and a ceiling of zero reads as
-"until cancelled".
 
 ## a_turn_leaves_its_outcome_as_a_row
 

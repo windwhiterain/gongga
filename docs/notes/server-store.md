@@ -97,8 +97,8 @@ Ordering by `updated_at` looked like "recent activity first" and behaved like
 a turn. Two sessions made in the same millisecond had no order at all between them,
 and a restart that replayed owed work finished those turns in scheduling order, so
 the same home came back drawn differently. `created_at` is written by
-`create_session` and by nothing else, and `id` is unique, so the pair is a total
-order that survives both the tie and the restart.
+`create_session_on` and by nothing else, and `id` is unique, so the pair is a
+total order that survives both the tie and the restart.
 
 ## Store::get_session
 
@@ -354,85 +354,14 @@ while a request reads `content`. `text` carries whichever field is the
 human-meaningful one for the kind (message body, tool arguments, tool output,
 reasoning summary), so one column is enough to display any row.
 
-## the_database_path_brings_its_directory
-
-A path handed to `Store::open` has to bring its directory with it, and `:memory:`
-has to be taken literally: creating a directory called `:` would be the wrong
-answer to a caller that asked SQLite for a database that never touches disk. The
-server itself can no longer be pointed at a database outside its home, so this is
-the library's own contract rather than a command line's.
-
-## finishing_one_pending_task_leaves_the_others
-
-Two messages queued on one session used to share a fate: the first turn cleared
-the session's pending rows wholesale and took the second message's row with it,
-so a crash before the second turn ran lost the message from both places at once.
-
 ## a_folded_prefix_shrinks_the_request_without_touching_the_transcript
 
 The transcript is a record, not a cache, and deleting the rows would lose the
 only copy of what the session actually did.
 
-The test folds through `fold_from_outside`: a second connection issuing the same
-statement the skill issues. There is no setter to reach for, not even behind
-`#[cfg(test)]`, because a method the store owns would be exactly the capability
-this design takes away from the server.
-
-## the_session_list_orders_by_creation_and_not_by_activity
-
-Both halves of a restart are in the test because they broke the order for two
-different reasons. A finished turn was the sort key itself, so it moved its own
-session to the top; and reopening the file is what a restart looks like from the
-store's side, after which the turns it owed finish in whatever order they finish.
-
-The three sessions are created inside one millisecond on any machine fast enough
-to matter, which is the other half of the old bug: `updated_at` gave them no order
-between them, so the list fell back to insertion order and any later touch moved
-one of them.
-
-## session_tuning_round_trips
-
-`set_session --model` and `--context_limit` have to survive a restart like
-everything else. The model column is written by the same statement, because that is
-what list views read.
-
-The two halves of a fold have to add up to the transcript. Splitting by
-sequence does that by construction; counting rows did not, because a `notice` is
-skipped and an unanswered tool call gains a placeholder.
-
-Four rows, four items -- but not four rows' worth: the notice contributes nothing
-and the unanswered call contributes two. That is exactly why a row count is the
-wrong way to find the cut.
-
-Clearing the model goes back to the server's own: the caller passes what that is,
-because only it knows.
-
-## opening_an_old_database_adds_the_new_columns
-
-A database written before compression existed has to grow the columns rather than
-fail to open, or every existing session would be stranded.
-
-Two of them did not need adding, because they were renamed instead: a sessions
-table from before the vocabulary settled says `llm` for the model, and `model` for
-what is now `model_name`. `migrate` renames each in place, in that order, so a table
-that has both old names ends up with the new pair. Adding empty columns beside them
-would have dropped every session's pinned model, and the row is the only place it is
-kept.
-
-## the_measured_context_size_survives_a_restart
-
-The context size is the provider's own number, so it has to survive a restart:
-the first request of the next run is compared against it before any new
-measurement exists.
-
-The rate and the delay are written with it, so the test reads all three back: a
-window that reattaches after a restart draws the same title, and SPEC's "latest"
-does not mean "since this process started".
-
-## deleting_a_session_takes_its_events_with_it
-
-Otherwise a deleted session's rows stay behind and, once SQLite reuses the id,
-show up as the next session's history.
+A fold is a second connection issuing the same statement the skill issues. There is
+no setter to reach for, because a method the store owns would be exactly the
+capability this design takes away from the server.
 
 ## a_call_interrupted_before_its_result_is_closed_for_the_model
 
@@ -446,31 +375,6 @@ every later turn. The transcript closes the call on the way out instead.
 A notice explains a stopped turn to the operator. It belongs in the transcript
 they read and must not leak into the request the model sees, or the model ends up
 replying to the harness instead of the user.
-
-## tests::a_tool_result_keeps_its_pictures_by_path
-
-A picture survives the round trip as a path and a media type -- the row holds no
-bytes, and the test would see them if it did.
-
-## tests::a_tool_result_without_pictures_reads_back_empty
-
-Rows written before pictures existed still read back as plain results.
-
-## tests::a_provider_tool_item_survives_a_round_trip
-
-The provider's item comes back byte-for-byte: anything less is a request rejected
-for a transcript that mentions a call nobody made.
-
-## tests::a_provider_tool_row_reads_as_the_search_it_ran
-
-The line a reader sees for a web search and for a page fetch, from a row written
-the way the agent writes it.
-
-## tests::a_provider_tool_row_never_renders_blank
-
-Four damaged or minimal items, none of which may produce a blank row or leak a
-JSON shape into the transcript: the display side must never be the place where a
-reader learns nothing happened.
 
 ## the_report_reads_the_schema_so_a_tool_does_not
 

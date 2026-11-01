@@ -36,26 +36,3 @@ and a file with no extension is still a PNG if it starts with the PNG signature.
 
 Certainty is the requirement. A wrong media type makes the provider reject the
 request, and the model has no way to tell that from a broken tool.
-
-## tests::a_model_with_no_image_modality_is_refused_by_name
-
-The refusal names the call, the roster entry, and the modality list. That is the
-whole content of the message: without those three, the operator has to guess.
-
-## tests::a_picture_is_handed_over_by_path_with_its_media_type
-
-The outcome points at the file; nothing is read twice and nothing is inlined at
-this layer.
-
-## tests::a_missing_file_says_which_path
-
-A file that is not there is a tool result, not a panic and not a failed turn.
-
-## tests::a_text_file_is_not_offered_as_a_picture
-
-`notes.txt` is refused with the list of formats that would work, rather than
-sent and rejected downstream.
-
-## tests::the_extension_names_the_type_and_the_bytes_are_the_fallback
-
-Case-insensitive extensions, and the signature when there is no usable one.

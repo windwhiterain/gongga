@@ -140,17 +140,6 @@ never success -- the kernel accepts the signal and the process may trap or
 ignore it -- and an exited leader never implies an empty group, which is why the
 answer comes from polling the group and not from the leader's exit status.
 
-## pid_alive
-
-Used for jobs adopted across a restart, where there is no handle to ask and
-`try_wait` is not available.
-
-## pid_alive (CSV)
-
-CSV keeps this locale-independent: the fields are always image, pid, session,
-session number, memory -- in that order -- so the pid is always the second one
-and no header has to be parsed.
-
 ## is_self_or_ancestor
 
 `adopt` refuses a row naming our own pid, because `del_bash` kills the whole
@@ -196,19 +185,3 @@ finished work rather than adopted on a hunch.
 No `/FI`: the point is one call for the whole set. CSV keeps this
 locale-independent -- image, pid, session, session number, memory -- so the pid
 is always the second field of a row.
-
-## tests::liveness_is_answered_for_many_pids_at_once
-
-One call answers the whole set: our own pid is in it, a pid nobody can be
-holding is not, and asking about both costs one listing.
-
-## tests::jobs_from_a_previous_run_are_adopted (closing Stdio)
-
-Stdio is closed on purpose: a child holding the test's stdout pipe open keeps
-`cargo test` waiting for output long after the test ends.
-
-## tests::a_server_never_adopts_a_job_that_is_its_own_parent
-
-Our own pid is the `exec` case; the parent is the spawn-and-wait case, which is
-what a hand-written launcher produces. Adopting it would put `taskkill /T` one
-call away from the server's own process tree.

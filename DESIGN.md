@@ -124,10 +124,6 @@ pub enum UiEvent { Submit(String), Quit }
   它平时阻塞在 `recv_from` 上，对端不再发包就永远醒不过来 —— 每次重连都会留下一个 task 和
   一个 `Arc<UdpSocket>`。
 
-`src/loopback.rs`（`#[cfg(test)]`，留在编译单元里，不额外链接一个测试二进制）用真实 UDP socket 验证：200KB 消息分片往返、25% 丢包下恢复、
-多条消息保持顺序、消费端暂停时链路不停、连接 drop 后 reader task 释放 socket。
-丢包恢复从最初的 25s 优化到 <0.4s。
-
 ### 服务端多路复用
 
 单个 socket 服务所有客户端。`recv_from` 收到帧后按 peer 地址分发给对应连接的 inbox；
@@ -260,7 +256,7 @@ turn 看起来和服务端卡死没有区别。需要打断而不是排队时，
 顺带修掉一个排队暴露出来的 bug：`send_message` 的收尾原本按**会话**清 pending 行，第一个
 turn 结束时会把还在排队的第二条消息的 pending 一起删掉 —— 那条消息既不在 transcript 里
 （要等它自己那个 turn 才写入），也不在 pending 里，服务端一崩就彻底消失。现在 `add_pending_task`
-返回行 id，收尾只删自己那一行（`store::tests::finishing_one_pending_task_leaves_the_others`）。
+返回行 id，收尾只删自己那一行。
 
 ### 存储（SQLite）
 

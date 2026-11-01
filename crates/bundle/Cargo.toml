@@ -11,9 +11,6 @@ description = "One file that carries the programs: the head of a release, nothin
 # distribution and has to build on a machine that has nothing.
 [dependencies]
 
-[dev-dependencies]
-tempfile = "3"
-
 [features]
 # Builds the programs and embeds them, so the file `cargo install` gives you is
 # the whole distribution. On by default, because installing one file is the

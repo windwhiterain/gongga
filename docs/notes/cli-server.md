@@ -204,19 +204,3 @@ for the shipped content, `python` for a migration step, `bash` for every shell a
 session runs. `DETACHED_PROCESS` was tried first and the screen filled with
 flashing windows. `CREATE_NO_WINDOW` gives the server a console that exists and is
 never shown, and every child inherits that one instead.
-
-## tests
-
-`only_a_local_address_is_started_here` -- the policy above, both families.
-`the_command_is_this_program_under_the_shell_s_name` -- the name, the bytes, and
-that there is only one copy of them.
-`a_stale_command_is_replaced_by_the_one_running` -- the rebuild case.
-`a_current_command_is_left_in_place` -- and the home is not churn on every start.
-`a_link_that_fails_falls_back_to_a_copy` -- the other volume.
-`the_other_spelling_is_removed` -- one directory, one answer to the lookup.
-`a_home_gets_both_programs_from_one_install` -- the pair, in one step.
-`the_server_is_looked_for_in_three_named_places` -- named, sibling, home; and the
-error reports every place it looked.
-`a_home_with_no_key_is_not_answering` -- the key file is progress, not decoration.
-`the_key_a_home_carries_in_its_config_is_the_one_to_ask_with` -- the key a home
-keeps in `config.toml` is one `answers` can ask with.

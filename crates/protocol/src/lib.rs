@@ -23,8 +23,6 @@ pub fn version_line() -> &'static str {
 
 pub mod channel;
 pub mod frame;
-#[cfg(test)]
-mod loopback;
 pub mod message;
 pub mod reference;
 

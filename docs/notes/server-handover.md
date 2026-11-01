@@ -180,7 +180,7 @@ row is what tells them apart.
 
 Reading the note stays in Rust: `Store::handover` feeds the request, and
 `history_item_to_input` puts it in front of the transcript. Writing one has no method
-at all, not even behind `#[cfg(test)]`: the tests that need a handover use
-`fold_from_outside`, a second connection issuing the same statement the skill issues.
+at all: a fold is the skill issuing its own `DELETE FROM messages` over the same
+database.
 That is the invariant in code form: **this server never compacts.** Deleting rows is not in this file's vocabulary at all;
 the only `DELETE FROM messages` that touches a session's own rows is in the skill.

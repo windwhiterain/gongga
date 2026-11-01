@@ -395,63 +395,6 @@ session to be told to look somewhere empty. How many went is logged per session.
 The `"finished"` kind carries its output in the row itself, so it survives and
 waits for the session's next real turn.
 
-## a_panicking_turn_still_releases_its_slot
-
-Shutdown waits for this count with no deadline, so the only thing that can keep
-the process alive forever is a turn that never releases its slot. A panic used to
-do exactly that, because the decrement was the last statement of the task.
-
-## interrupt_session_names_one_session
-
-Interrupting is per session, and the session list is what completes it. The name
-is required: guessing which session to stop is exactly the hidden state the
-command surface exists to avoid.
-
-## every_command_takes_a_session_or_a_message
-
-Every command names its session the same way. Four spellings of the same
-argument is how a sticky `session` ends up filling only three of them.
-
-## completion_sources_survive_the_wire
-
-The catalog is a wire object read by the client's completer, so every source it
-declares has to survive the trip. A value list that lost its variant on the way
-out would make Tab silently offer nothing.
-
-## set_session_offers_the_roster_and_a_percentage
-
-`set_session` is where a session's model and notice point are chosen, so both
-flags have to be described well enough to complete. The model list is only the
-providers whose key resolves ([[Catalog::models]]), so Tab never offers a model whose
-every request would fail.
-
-`--model` is the catalog's one `sticky` argument (SPEC writes it `(sticky)`), which
-is how the client knows to fill it from the remembered value: a session's model is a
-mode a reader sets once, and every later `set_session` that names none inherits it.
-
-## a_seq_slice_is_parsed_like_a_python_slice
-
-The grammar, case by case, because a slice is the kind of thing that is right
-everywhere except the boundary a caller actually uses.
-
-## a_seq_slice_clamps_to_the_transcript
-
-Asking for more than exists is fewer rows. This is what keeps `-99:` usable in a
-script that does not know how long the transcript is, and it is also why a range
-past the end is a *successful* empty reply rather than an error: "there is
-nothing there" is an answer.
-
-## a_bad_seq_slice_is_refused
-
-Every one of these is a typo, and the message names what was wanted. The huge
-negative is the arithmetic guard: a bound is `last_seq + n + 1`, so an `i64`
-minimum would overflow in debug without saturating.
-
-## get_messages_names_rows_one_way
-
-One spelling, not two. A cursor and a range are rival answers to "which rows",
-and the one a caller learns first is the one it will keep using.
-
 ## get_messages_pages_by_seq
 
 Reading is scoped to a session and paged by sequence number: an IM bridge asks

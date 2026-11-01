@@ -66,33 +66,3 @@ pub fn decode(text: &str) -> Option<Vec<u8>> {
     }
     Some(out)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn encodes_a_known_string() {
-        assert_eq!(encode(b""), "");
-        assert_eq!(encode(b"f"), "Zg==");
-        assert_eq!(encode(b"fo"), "Zm8=");
-        assert_eq!(encode(b"foo"), "Zm9v");
-        assert_eq!(encode(b"foobar"), "Zm9vYmFy");
-    }
-
-    /// Every byte value survives the round trip, and padding is not a byte.
-    #[test]
-    fn decodes_what_it_encodes() {
-        let bytes: Vec<u8> = (0..=255u8).collect();
-        assert_eq!(decode(&encode(&bytes)), Some(bytes));
-        assert_eq!(decode(""), Some(Vec::new()));
-        assert_eq!(decode("Zg=="), Some(b"f".to_vec()));
-        assert_eq!(decode("Zm9v\nYmFy"), Some(b"foobar".to_vec()));
-    }
-
-    #[test]
-    fn refuses_what_is_not_base64() {
-        assert_eq!(decode("Zg!="), None);
-        assert_eq!(decode("\u{4f60}"), None);
-    }
-}

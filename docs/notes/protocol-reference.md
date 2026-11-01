@@ -9,8 +9,3 @@ like a completion that inserts nothing.
 
 What stays out of here is what each kind *means*: the parser resolves a picture,
 the popup says "attach a picture". Neither belongs in a wire type.
-
-## tests::every_prefix_names_one_kind
-
-The three prefixes do not shadow each other, and a prefix without its colon --
-`@image` -- is prose, not a typo to guess at.

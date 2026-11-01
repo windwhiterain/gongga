@@ -261,8 +261,6 @@ such case has been observed, so guessing at a stripper would be guessing.
 
 A paste delivered in one- or two-key runs with pauses between them is still
 indistinguishable from typing; nothing here can fix that, because the terminal
-sends no marker. Verified by unit tests on both halves (`only_text_joins_a_run` for what joins a
-run, `a_key_run_with_a_break_in_it_is_a_paste` for what a run means) and by the
-existing `a_paste_is_inserted_not_submitted` for the insertion path. A real paste
-into a real terminal is the open check: a ConPTY driver was attempted and hung
-the shell twice, so it was removed rather than left as a trap.
+sends no marker. A real paste into a real terminal is the open check: a ConPTY
+driver was attempted and hung the shell twice, so it was removed rather than left
+as a trap.

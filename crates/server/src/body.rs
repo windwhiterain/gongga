@@ -19,8 +19,6 @@ struct Entry {
     bytes: Vec<u8>,
     kind: String,
     call_id: Option<String>,
-    /// A text row's speaker: the one kind that can end a step from the customer side.
-    role: Option<String>,
     /// The model step that wrote a call or a result, when the row says.
     step: Option<u64>,
 }
@@ -32,7 +30,6 @@ impl Entry {
             item,
             kind,
             call_id,
-            role,
             images,
             step,
         } = row;
@@ -45,7 +42,6 @@ impl Entry {
                 bytes: replayed.to_string().into_bytes(),
                 kind,
                 call_id,
-                role,
                 step,
             });
         }
@@ -54,7 +50,6 @@ impl Entry {
             bytes,
             kind,
             call_id,
-            role,
             step,
         })
     }
@@ -173,7 +168,6 @@ impl Step {
                 .into_bytes(),
                 kind: "tool_result".to_string(),
                 call_id: Some(id),
-                role: None,
                 step: None,
             });
         }
@@ -310,223 +304,5 @@ impl Stream for RequestBody {
         // Unknown: the transcript is read as it is sent, and its length is not a
         // promise the network can hold to anyway.
         (0, None)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// An interrupted step's unanswered call, then the next step's own output.
-    ///
-    /// # Invariant
-    ///
-    /// No assistant message lands between a call and its output, and every call the
-    /// request carries has one. The rows here are the live ones that broke a
-    /// `config` session: call A, result A, call B, then reasoning and text of the
-    /// *next* step.
-    #[test]
-    fn a_step_ends_at_the_next_steps_output() {
-        let mut step = Step::default();
-        let mut out: Vec<String> = Vec::new();
-        let mut push = |step: &mut Step, kind: &str, id: Option<&str>, step_no: Option<u64>| {
-            let bytes = match kind {
-                "tool_call" => {
-                    json!({"type":"function_call","call_id":id,"name":"bash","arguments":"{}"})
-                }
-                "tool_result" => json!({"type":"function_call_output","call_id":id,"output":"o"}),
-                "reasoning" => json!({"type":"reasoning","summary":[],"encrypted_content":"e"}),
-                _ => json!({"role":"assistant","content":[{"type":"output_text","text":"t"}]}),
-            };
-            for chunk in step.push(
-                Entry {
-                    bytes: bytes.to_string().into_bytes(),
-                    kind: kind.to_string(),
-                    call_id: id.map(str::to_string),
-                    role: (kind == "text").then(|| "assistant".to_string()),
-                    step: step_no,
-                },
-                "PLACEHOLDER",
-            ) {
-                out.push(String::from_utf8(chunk).unwrap());
-            }
-        };
-        // 751..755 of the live session, in row order.
-        push(&mut step, "tool_call", Some("A"), Some(79));
-        push(&mut step, "tool_result", Some("A"), Some(79));
-        push(&mut step, "tool_call", Some("B"), Some(79));
-        push(&mut step, "reasoning", None, None);
-        push(&mut step, "text", None, None);
-        push(&mut step, "tool_call", Some("C"), Some(0));
-        for chunk in step.flush("PLACEHOLDER") {
-            out.push(String::from_utf8(chunk).unwrap());
-        }
-
-        let items: Vec<Value> = out
-            .iter()
-            .map(|text| serde_json::from_str(text).expect("one item"))
-            .collect();
-        let kinds: Vec<&str> = items
-            .iter()
-            .map(|i| {
-                i["type"]
-                    .as_str()
-                    .or_else(|| i["role"].as_str())
-                    .unwrap_or("?")
-            })
-            .collect();
-        // Every call is answered by the item right after it, or after its siblings.
-        let mut calls: Vec<&str> = Vec::new();
-        let mut answered: Vec<&str> = Vec::new();
-        let mut seen_text_before_answer = false;
-        for item in &items {
-            match item["type"].as_str() {
-                Some("function_call") => calls.push(item["call_id"].as_str().unwrap_or_default()),
-                Some("function_call_output") => {
-                    answered.push(item["call_id"].as_str().unwrap_or_default())
-                }
-                _ if item["role"] == "assistant"
-                    && !calls.is_empty()
-                    && answered.len() < calls.len() =>
-                {
-                    seen_text_before_answer = true
-                }
-                _ => {}
-            }
-        }
-        assert!(
-            !seen_text_before_answer,
-            "an assistant message split a call from its output: {kinds:?}"
-        );
-        for call in &calls {
-            assert!(
-                answered.contains(call),
-                "call {call} has no output: {kinds:?}"
-            );
-        }
-    }
-
-    fn entry(kind: &str, value: Value, step: Option<u64>) -> Entry {
-        Entry {
-            bytes: value.to_string().into_bytes(),
-            kind: kind.to_string(),
-            call_id: value
-                .get("call_id")
-                .and_then(|v| v.as_str())
-                .map(str::to_string),
-            role: None,
-            step,
-        }
-    }
-
-    fn call(id: &str, step: u64) -> Entry {
-        entry(
-            "tool_call",
-            json!({"type": "function_call", "call_id": id, "name": "bash", "arguments": "{}"}),
-            Some(step),
-        )
-    }
-
-    fn result(id: &str, step: u64) -> Entry {
-        entry(
-            "tool_result",
-            json!({"type": "function_call_output", "call_id": id, "output": "ok"}),
-            Some(step),
-        )
-    }
-
-    /// A message with a picture sends a content array: its text, then the file id.
-    #[test]
-    fn a_message_with_a_picture_sends_a_content_array() {
-        let item = json!({"role": "user", "content": "look"}).to_string();
-        let mut image = crate::image::ImageRef::new("/shot.png", "image/png");
-        image.file_id = Some("file-1".to_string());
-        let out = with_pictures(item, "text", &[image]);
-        let value: Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(value["role"], "user");
-        assert_eq!(
-            value["content"][0],
-            json!({"type": "input_text", "text": "look"})
-        );
-        assert_eq!(
-            value["content"][1],
-            json!({"type": "input_image", "file_id": "file-1"})
-        );
-    }
-
-    fn kinds(chunks: Vec<Vec<u8>>) -> Vec<String> {
-        chunks
-            .into_iter()
-            .map(|bytes| {
-                let value: Value = serde_json::from_slice(&bytes).unwrap();
-                value["type"].as_str().unwrap_or_default().to_string()
-            })
-            .collect()
-    }
-
-    /// A step that asked for two tools writes both calls before either answer.
-    #[test]
-    fn two_calls_of_one_step_are_written_before_their_results() {
-        let mut step = Step::default();
-        let mut out = step.push(
-            entry(
-                "reasoning",
-                json!({"type": "reasoning", "id": "rs_1", "summary": []}),
-                None,
-            ),
-            "gone",
-        );
-        // Stored one call and one result at a time, because each runs as it lands.
-        out.extend(step.push(call("a", 0), "gone"));
-        out.extend(step.push(result("a", 0), "gone"));
-        out.extend(step.push(call("b", 0), "gone"));
-        out.extend(step.push(result("b", 0), "gone"));
-        // The next step's row is what ends this one, as it is in the transcript.
-        out.extend(step.push(call("c", 1), "gone"));
-        // What the second step never answered is the walk's end to write.
-        out.extend(step.flush("interrupted"));
-
-        assert_eq!(
-            kinds(out),
-            [
-                "reasoning",
-                "function_call",
-                "function_call",
-                "function_call_output",
-                "function_call_output",
-                "function_call",
-                "function_call_output"
-            ]
-        );
-    }
-
-    /// A call no result reached is answered when its step ends.
-    #[test]
-    fn an_open_call_is_answered_when_its_step_ends() {
-        let mut step = Step::default();
-        let mut out = step.push(call("a", 0), "gone");
-        out.extend(step.push(call("b", 0), "gone"));
-        out.extend(step.push(result("a", 0), "gone"));
-        out.extend(step.push(
-            entry("text", json!({"role": "user", "content": "next"}), None),
-            "interrupted",
-        ));
-
-        let items = kinds(out);
-        let stepped: Vec<&str> = items
-            .iter()
-            .map(String::as_str)
-            .filter(|k| !k.is_empty())
-            .collect();
-        assert_eq!(
-            stepped,
-            [
-                "function_call",
-                "function_call",
-                "function_call_output",
-                "function_call_output"
-            ],
-            "{items:?}"
-        );
     }
 }

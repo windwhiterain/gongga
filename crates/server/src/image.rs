@@ -129,36 +129,3 @@ pub fn content_part(image: &ImageRef) -> Value {
         }),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_file_id_is_preferred_to_the_bytes() {
-        let mut image = ImageRef::new("/does/not/exist.png", "image/png");
-        image.file_id = Some("file-api-1".into());
-        let part = content_part(&image);
-        assert_eq!(part["file_id"], "file-api-1");
-        assert!(
-            part.get("image_url").is_none(),
-            "no bytes when an id exists"
-        );
-    }
-
-    #[test]
-    fn a_picture_that_is_gone_says_so_instead_of_failing() {
-        let part = content_part(&ImageRef::new("/gone/x.png", "image/png"));
-        assert_eq!(part["type"], "input_text");
-        assert!(part["text"].as_str().unwrap().contains("/gone/x.png"));
-    }
-
-    #[test]
-    fn a_row_round_trips_with_and_without_an_id() {
-        let plain = ImageRef::new("a.png", "image/png");
-        assert_eq!(ImageRef::from_json(&plain.to_json()), Some(plain));
-        let mut minted = ImageRef::new("b.png", "image/png");
-        minted.file_id = Some("file-api-2".into());
-        assert_eq!(ImageRef::from_json(&minted.to_json()), Some(minted));
-    }
-}

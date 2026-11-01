@@ -34,6 +34,3 @@ toml = "0.8"
 # Completion splits the line being typed (`catalog.rs`), which is the input
 # line's business -- a command that already arrived as argv is never re-split.
 shell-words = "1"
-
-[dev-dependencies]
-tempfile = "3"

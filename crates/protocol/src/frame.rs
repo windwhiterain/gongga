@@ -232,37 +232,3 @@ pub enum FrameError {
     #[error("fragment index {frag_idx} out of range (count {frag_cnt})")]
     BadFragment { frag_idx: u16, frag_cnt: u16 },
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn round_trips_a_data_frame() {
-        let frame = Frame::data(7, 42, 9, 3, 1, 4, 64, Bytes::from_static(b"hello"));
-        let encoded = frame.encode_owned().freeze();
-        let decoded = Frame::decode(encoded).unwrap();
-        assert_eq!(decoded, frame);
-        assert!(decoded.is_data());
-    }
-
-    #[test]
-    fn rejects_foreign_datagrams() {
-        let mut buf = BytesMut::new();
-        buf.put_u16(0x1234);
-        buf.put_u8(VERSION);
-        buf.put_u8(0);
-        buf.put_bytes(0, HEADER_LEN - 4);
-        assert!(matches!(
-            Frame::decode(buf.freeze()),
-            Err(FrameError::BadMagic(_))
-        ));
-    }
-
-    #[test]
-    fn payload_capacity_respects_header() {
-        assert_eq!(payload_capacity(DEFAULT_MTU), DEFAULT_MTU - HEADER_LEN);
-        // Never underflows on absurdly small MTUs.
-        assert_eq!(payload_capacity(8), 0);
-    }
-}

@@ -96,12 +96,6 @@ depends on the kind, and only on the kind -- `content` for a message, `output`
 for a result -- because those are the fields those two kinds keep their text in.
 Everything else goes out byte for byte as stored.
 
-## tests::a_message_with_a_picture_sends_a_content_array
-
-The text keeps its own part and the picture follows it, by file id: a message and
-a tool result reach the provider through the same array, differing only in the
-field it replaces.
-
 ## RequestSource — what a retry replays
 
 The source names a session and a pinned `upto_seq` rather than holding a body,

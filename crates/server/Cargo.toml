@@ -48,7 +48,6 @@ futures-util = "0.3"
 # names faster than anything can clean them up one at a time.
 regex = "1"
 tokio-util = "0.7"
-tempfile = "3"
 
 [target.'cfg(unix)'.dependencies]
 # Asking whether the process that started this server still exists.

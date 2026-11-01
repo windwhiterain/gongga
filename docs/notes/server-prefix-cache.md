@@ -251,11 +251,3 @@ tuple key, and the map is a lookup over `items` rather than a fact of its own. S
 store holds the list and the chains, and `reindex` rebuilds the map when the row is
 read. That is also why `forget_unwanted` rebuilds it after renumbering: one writer for
 one map, and no way for the two to disagree.
-
-## chain_count
-
-`#[cfg(test)]` only, and the one thing the tests cannot see from the outside: a
-plan that emits the same order can still have learnt a new chain, and being able
-to tell "reused" from "re-learnt" is what makes `a_repeated_set_is_emitted_unchanged`
-and `a_shrunk_item_is_cheaper_than_sending_it_cold` tests of the algorithm rather
-than of its output.

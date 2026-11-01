@@ -22,11 +22,6 @@ another argument's list when the value is a name that chooses one.
 The client's own directory, because that is the one the user was looking at when
 they typed.
 
-## Catalog::set_cwd
-
-Production never moves it: the user's shell is already in the directory they
-mean. Tests need to aim it at a tree they built.
-
 ## Ctx
 
 Snapshotted out of the catalog so the lock is not held while the filesystem is
@@ -131,19 +126,3 @@ A name can mean one thing in two commands (`set_session --session` targets a
 session; `show_session --session` names one to draw), and the hop prefers the
 argument that is *required*: that is the reading a free-form value should mirror.
 Catalog order does not decide it.
-
-## the_flag_being_typed_is_still_a_candidate
-
-The word being completed is not "already filled": typing `--sess` must still
-offer `--session`, or the flag could never be completed at all.
-
-## a_finished_command_does_not_reopen_the_command_list
-
-A space after the command name is the start of its flags, not another
-opportunity to pick a command: reopening the whole list there covers the line
-the operator has already decided.
-
-## a_sticky_value_completes_like_the_argument_it_fills
-
-The point of the sticky value: it fills `session`, so it should offer sessions
--- without the user having to remember the names.

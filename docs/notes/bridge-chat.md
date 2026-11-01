@@ -79,9 +79,3 @@ slicing on a byte index panics when it lands inside a character, and the panic
 took a whole turn down with it (DESIGN §4「模型请求的超时与重试」). Same trap here, so cut on
 `char_indices` -- and tell the user where the rest is, because a silently
 shortened answer reads like the agent stopped mid-sentence.
-
-## the_same_message_id_is_only_accepted_once
-
-A retried delivery is the normal case, not an error: QQ retries when it does not
-get an answer in time, and every retry would otherwise be a second turn on the
-same prompt.
