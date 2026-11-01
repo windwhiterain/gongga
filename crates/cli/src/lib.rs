@@ -973,12 +973,6 @@ impl Client {
     /// session, and nothing else takes one out. Its window is emptied here,
     /// because the server hands the name out again -- a new session must not open
     /// on the deleted one's lines. See `docs/notes/cli-lib.md`.
-    /// The sessions as the greeting described them: what a `wait` reads before it
-    /// starts listening, so a thing that already happened answers at once.
-    pub fn session_states(&self) -> Vec<(String, protocol::SessionStatus)> {
-        self.sessions.iter().map(|s| (s.name.clone(), s.status)).collect()
-    }
-
     fn set_sessions(&mut self, sessions: Vec<SessionInfo>, sink: &mut dyn Sink) {
         for old in &self.sessions {
             if !sessions.iter().any(|new| new.name == old.name) {
@@ -1678,7 +1672,7 @@ async fn run_once(client: &mut Client, link: &mut Link, command: &[String]) -> a
         Submission::Offline => anyhow::bail!("not connected to the server"),
         // Nothing to send: what it waits for is already arriving on this link.
         Submission::Wait(args) => {
-            return wait_on(link, &client.session_states(), &args).await;
+            return wait_on(link, &args).await;
         }
         Submission::Send(msg) => msg,
     };
@@ -1742,142 +1736,68 @@ async fn run_once(client: &mut Client, link: &mut Link, command: &[String]) -> a
     }
 }
 
-/// Reads the connection until what was asked for happens, then says so.
+/// Reads the connection until one log row matches, prints it, and leaves.
 ///
 /// # Invariant
 ///
-/// Nothing is polled. The connection already carries every session's events, so a
-/// wait is a read loop with a predicate -- and the work `wait` replaces (sleep,
-/// then look) is exactly what an interval has to guess wrong about.
+/// This is a primitive, not a policy. It answers one question -- "what is the next
+/// log row of this kind?" -- and every judgement about *when* to ask it belongs to
+/// the caller: whether a turn already finished, how long is too long, what a
+/// failed turn means. Those are decisions about work, and a decision about work
+/// belongs in the script that is doing the work, where it can be read and changed
+/// without a rebuild.
 ///
-/// It answers from what is already true before it starts waiting. A turn that
-/// finished 50 ms ago left a `Status` nobody on this connection heard, and a wait
-/// that only listened would hang until the timeout on a thing that already
-/// happened. `greeted` is the state as the server opened this connection, which
-/// is recent enough for the case that matters: the command before this one just
-/// returned.
+/// So there is no name validation (a wrong `--session` is a filter that never
+/// matches, exactly as `grep` would), no status interpretation (the row says what
+/// happened; the reader decides what it means), and no timeout (`timeout(1)` bounds
+/// any command and already leaves with 124).
 ///
-/// Two forms, one verb:
-///
-/// * `--session NAME` -- that session stopped running. Idle and error are both
-///   the end; the exit code says which.
-/// * `--kind K` -- one row of the event log with that kind. Rows this connection
-///   hears about are the ones written after it opened, so a wait is about what
-///   happens next rather than a re-read of history (`events --since` is that).
-async fn wait_on(
-    link: &mut Link,
-    greeted: &[(String, protocol::SessionStatus)],
-    args: &protocol::Args,
-) -> anyhow::Result<()> {
-    let session = args.get("session").cloned();
-    let kind = args.get("kind").cloned();
-    let timeout = match args.get("timeout").map(String::as_str) {
-        None => std::time::Duration::from_secs(900),
-        Some(raw) => {
-            let seconds: u64 = raw
-                .parse()
-                .with_context(|| format!("--timeout wants seconds, not {raw:?}"))?;
-            std::time::Duration::from_secs(seconds.max(1))
-        }
-    };
-    if session.is_none() && kind.is_none() {
-        anyhow::bail!("wait needs --session (a turn ending) or --kind (a log row)");
+/// Nothing is polled. Every connection already receives every event on the bus, so
+/// this is a read loop with a predicate.
+async fn wait_on(link: &mut Link, args: &protocol::Args) -> anyhow::Result<()> {
+    let kind = args.get("kind").cloned().unwrap_or_default();
+    if kind.is_empty() {
+        anyhow::bail!("wait needs --kind: the log row to wait for, e.g. turn_end");
     }
-
-    // Already true: say so now instead of listening for a thing that is over.
-    if let Some(name) = &session {
-        match greeted.iter().find(|(s, _)| s == name) {
-            Some((_, protocol::SessionStatus::Idle)) => {
-                println!("{name} idle");
-                return Ok(());
-            }
-            Some((_, protocol::SessionStatus::Error)) => {
-                println!("{name} stopped with an error");
-                std::process::exit(1);
-            }
-            // Running, or a session the server did not name: listen.
-            Some(_) => {}
-            None => {
-                // A wait on a session that does not exist would hang for the
-                // whole timeout on a typo, which reads as "it never finished".
-                anyhow::bail!("no session named {name:?}; check `--session`");
-            }
-        }
-    }
-
-    let deadline = tokio::time::Instant::now() + timeout;
+    // A filter, compared as text: no lookup, no opinion about whether it exists.
+    let session = args.get("session").cloned().filter(|s| !s.is_empty());
     loop {
-        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
-        let bytes = match tokio::time::timeout(left, link.recv()).await {
-            Ok(Some(bytes)) => bytes,
-            Ok(None) => anyhow::bail!("server disconnected while waiting"),
-            Err(_) => {
-                // The code `timeout(1)` uses, so a shell can tell "gave up" from
-                // "it failed" without reading a line of prose.
-                eprintln!("nothing happened within {}s; giving up", timeout.as_secs());
-                std::process::exit(124);
-            }
+        let Some(bytes) = link.recv().await else {
+            anyhow::bail!("server disconnected while waiting for {kind}");
         };
+        // A greeting or a refusal is not this wait's business.
         let event = match decode_server(&bytes)? {
             ServerMessage::Event(event) => event,
-            _ => continue, // a greeting or a refusal is not this wait's business
-        };
-        match &event {
-            Event::Status {
-                session: named,
-                status,
-                detail,
-            } => {
-                if session.as_deref() != Some(named.as_str()) {
-                    continue;
-                }
-                match status {
-                    protocol::SessionStatus::Running => continue,
-                    protocol::SessionStatus::Idle | protocol::SessionStatus::Error => {
-                        let failed = *status == protocol::SessionStatus::Error;
-                        let line = match detail {
-                            Some(detail) => format!("{named} {detail}"),
-                            None if failed => format!("{named} stopped with an error"),
-                            None => format!("{named} idle"),
-                        };
-                        println!("{line}");
-                        if failed {
-                            std::process::exit(1);
-                        }
-                        return Ok(());
-                    }
-                }
-            }
-            Event::Record {
-                kind: wrote,
-                session: about,
-                payload,
-                id,
-                ..
-            } => {
-                if kind.as_deref() != Some(wrote.as_str()) {
-                    continue;
-                }
-                // A session filter with a kind narrows both, so one flag does not
-                // silently stop meaning anything when the other is given.
-                if let Some(who) = &session
-                    && about.as_deref() != Some(who.as_str())
-                {
-                    continue;
-                }
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "kind": wrote,
-                        "session": about,
-                        "id": id,
-                        "payload": payload,
-                    })
-                );
-                return Ok(());
-            }
             _ => continue,
+        };
+        let Event::Record {
+            kind: wrote,
+            session: about,
+            payload,
+            id,
+            ..
+        } = event
+        else {
+            continue;
+        };
+        if wrote != kind {
+            continue;
         }
+        if let Some(who) = &session
+            && about.as_deref() != Some(who.as_str())
+        {
+            continue;
+        }
+        println!(
+            "{}",
+            serde_json::json!({
+                "kind": wrote,
+                "session": about,
+                "id": id,
+                "payload": payload,
+            })
+        );
+        return Ok(());
     }
 }
 

@@ -49,41 +49,39 @@ A caller that wants the machine-readable form asks for a command and reads its
 `cmd_result`; this output is for whoever is standing at a shell, and it is what the
 agent reads to learn what it may say next.
 
-## `wait` reads the stream the connection already carries
+## `wait` is a primitive, and deliberately a small one
 
 A one-shot command answers as soon as its acknowledgement arrives -- `send_message`
-returns in about 70 ms while the turn it started is still running. Before `wait`,
-the only thing a script could do about that was sleep and look, and every interval
-is a guess: too short wakes early, too long wastes the length of the turn.
-
-`wait` needs nothing from the server. Every connection already receives every
-event on the bus, so waiting is a read loop with a predicate:
+returns in about 70 ms while the turn it started is still running. `wait` is how a
+script says "and then":
 
 ```
-wait --session NAME [--timeout S]      # that session stopped running
-wait --kind K [--session NAME] [--timeout S]   # one log row of that kind
+wait --kind K [--session NAME]
 ```
 
-Three things are not incidental:
+It prints the next row of the event log with that kind, as JSON, and exits. That
+is the whole command.
 
-* **It answers from the state it was greeted with.** A turn that finished before
-  this process connected left a `Status` nobody here heard, so a purely listening
-  wait would hang out its timeout on something that already happened. The greeting
-  carries every session's status, and the idle/error cases are decided from it
-  before a single read. An unknown name is refused for the same reason: waiting
-  15 minutes on a typo reads as "it never finished".
-* **Idle and error are both the end.** A wait that only accepted idle would hang
-  exactly when a turn failed. The exit code separates them: 0 idle, 1 error.
-* **A timeout leaves with 124**, the code `timeout(1)` uses, so a shell can tell
-  "gave up" from "it failed" without reading prose.
+It needs nothing from the server. Every connection already receives every event on
+the bus, so waiting is a read loop with a predicate rather than a poll.
 
-`--kind` waits on `Event::Record`, which exists because the agent's log writes now
-publish. That is the server-side half: a row written without an announcement is a
-row only a poller can find.
+**What it deliberately does not do**, each because the decision belongs where the
+work is, not in a binary that needs a rebuild to change its mind:
 
-`wait` is a client command, and the window says so instead of running it: a window
-already draws every session's events as they happen, so there is nothing left for
-it to wait on.
+* **no name validation** -- `--session` is a text filter. A name that does not
+  exist is a filter that never matches, exactly as `grep` would treat it. Whether a
+  typo should be an error is a judgement about the caller's intent.
+* **no memory of what already happened** -- it hears what is published after it
+  connects. A turn that finished before this process started left an event nobody
+  here heard, and only the caller knows whether that matters or which turn it was.
+* **no status interpretation** -- the row says `done`, `cancelled` or `failed` in
+  its payload. What a failure means for the script is the script's business.
+* **no timeout** -- `timeout(1)` bounds any command and already leaves with 124.
+
+The skill that spawns subagents (`ship/skills/subagent`) wraps this into
+`wait_turn`, which is where those judgements live: read the session's status, answer
+at once if it is already idle, otherwise wait and re-read, with a bound on each wait
+so a turn ending in the gap is caught by the next read instead of waited out.
 
 ## Naming itself
 

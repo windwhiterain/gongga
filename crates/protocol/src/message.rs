@@ -554,35 +554,25 @@ pub fn client_commands() -> Vec<CommandSpec> {
         ),
         (
             "wait",
-            "Read the connection until something happens, then answer. One verb for \"and \
-             then\": a turn that finishes, a log row of a given kind, the next event at all. \
-             Answers at once when it has already happened -- it reads the state it was \
-             greeted with before it starts listening, so a finished turn is not a wait.",
+            "Print the next row of the event log with this kind, then exit. A primitive, \
+             not a policy: it does not know whether a turn has already finished, how long \
+             is too long, or what a failed turn means. Bound it with `timeout` and decide \
+             the rest in the caller.",
             vec![
                 spec_arg(
-                    "session",
-                    "Wait for this session to stop running (idle or error). Without --kind \
-                     this is what the wait means.",
-                    false,
-                    Some("name"),
-                    CompletionSource::Sessions,
-                ),
-                spec_arg(
                     "kind",
-                    "Wait for one row of the event log with this kind, e.g. `turn_end`, \
-                     `test_failed`. Rows before the wait began are skipped: a wait is about \
-                     what happens next.",
-                    false,
+                    "The log row kind to wait for, e.g. `turn_end`, `test_failed`.",
+                    true,
                     Some("kind"),
                     CompletionSource::None,
                 ),
                 spec_arg(
-                    "timeout",
-                    "Give up after this many seconds and leave with 124. The default is 900, \
-                     because a wait that never ends is a hung script.",
+                    "session",
+                    "Only a row about this session. A text filter: a name that does not \
+                     exist is a filter that never matches, not an error.",
                     false,
-                    Some("seconds"),
-                    CompletionSource::None,
+                    Some("name"),
+                    CompletionSource::Sessions,
                 ),
             ],
         ),

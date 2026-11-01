@@ -605,7 +605,6 @@ mod tests {
                 "port",
                 "session",
                 "show",
-                "timeout",
                 "value"
             ]
         );
