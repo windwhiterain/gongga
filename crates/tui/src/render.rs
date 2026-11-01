@@ -2778,4 +2778,101 @@ mod tests {
             "{rows:?}"
         );
     }
+
+    /// Every output chunk is visible before the verdict folds the item, whether
+    /// it is still unexpanded or already open for monitoring.
+    #[test]
+    fn a_running_tool_streams_its_output_before_and_after_opening() {
+        let mut screen = screen_with(&[]);
+        screen.panes.describe(
+            "",
+            "c:c1",
+            &cli::protocol::Head::call(
+                "bash",
+                vec![cli::protocol::Field {
+                    label: String::new(),
+                    value: "cargo build".into(),
+                    summary: false,
+                }],
+            ),
+        );
+        let (width, height) = (70u16, 18u16);
+        let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
+        let area = parts(width, height, 1, false)[1];
+        let shown = |screen: &mut Screen, term: &mut Terminal<TestBackend>| {
+            term.draw(|f| {
+                draw(f, screen);
+            })
+            .unwrap();
+            let buffer = term.backend().buffer().clone();
+            (area.y + 1..area.bottom())
+                .map(|row| read(&buffer, area.x, area.width, row))
+                .filter(|row| !row.is_empty())
+                .collect::<Vec<_>>()
+        };
+
+        screen.panes.resolve(
+            "",
+            "c:c1",
+            "",
+            LineKind::ToolCall,
+            "Compiling crate one\n",
+            false,
+        );
+        let first = shown(&mut screen, &mut term);
+        assert!(
+            first.iter().any(|row| row.contains("Compiling crate one")),
+            "{first:?}"
+        );
+        screen.panes.resolve(
+            "",
+            "c:c1",
+            "",
+            LineKind::ToolCall,
+            "Compiling crate two\n",
+            false,
+        );
+        let second = shown(&mut screen, &mut term);
+        assert!(
+            second.iter().any(|row| row.contains("Compiling crate one")),
+            "{second:?}"
+        );
+        assert!(
+            second.iter().any(|row| row.contains("Compiling crate two")),
+            "{second:?}"
+        );
+
+        assert!(screen.panes.toggle("c:c1"));
+        let opened = shown(&mut screen, &mut term);
+        assert!(
+            opened.iter().any(|row| row.contains("CALL bash")),
+            "{opened:?}"
+        );
+        assert!(
+            opened.iter().any(|row| row.contains("Compiling crate two")),
+            "{opened:?}"
+        );
+        screen.panes.resolve(
+            "",
+            "c:c1",
+            "",
+            LineKind::ToolCall,
+            "Linking the binary\n",
+            false,
+        );
+        let live = shown(&mut screen, &mut term);
+        assert!(
+            live.iter().any(|row| row.contains("Linking the binary")),
+            "{live:?}"
+        );
+        screen
+            .panes
+            .resolve("", "c:c1", "4.2s ", LineKind::ToolOutput, "", true);
+        assert!(screen.panes.toggle("c:c1"));
+        let finished = shown(&mut screen, &mut term);
+        assert!(
+            finished.iter().any(|row| row.contains("✓ 4.2s · bash")),
+            "{finished:?}"
+        );
+    }
 }

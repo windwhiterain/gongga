@@ -321,6 +321,12 @@ then `RESULT` and its raw output. Both folded and framed titles read
 `verdict and elapsed time · call summary`, keeping time next to the status mark
 regardless of how many arguments follow.
 
+Before the verdict, the unexpanded view reads the live result buffer directly:
+every output chunk appends visible rows, so a long compilation can be monitored
+without opening the item. Opening it switches to the structured sections, where
+later chunks continue to appear under `RESULT`. Only the final verdict seals and
+folds the item; receiving a structured call head during the run does neither.
+
 ## Entry::boxed — one expanded shape
 
 Every opened folding item has a frame, not only an item taller than its cap. The

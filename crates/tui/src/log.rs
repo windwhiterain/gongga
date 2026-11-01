@@ -218,6 +218,16 @@ impl Entry {
         Some(hanging_indent(&text, width))
     }
 
+    /// Expanded calls keep their sections; a running call's visible body is the
+    /// live result, not the argument text that preceded it.
+    fn body(&self) -> &str {
+        match self.expanded && self.call.is_some() {
+            true => self.sections.as_str(),
+            false if self.resolved() => self.result.as_str(),
+            false => self.text.as_str(),
+        }
+    }
+
     /// Recomputes every row offset at `width`, with the label's columns reserved on
     /// the row it is printed on.
     fn reflow(&mut self, width: usize) {
@@ -227,10 +237,7 @@ impl Entry {
             false => String::new(),
         };
         let structured = self.expanded && self.call.is_some();
-        let text = match structured {
-            true => self.sections.as_str(),
-            false => self.text.as_str(),
-        };
+        let resolved = self.resolved();
         self.width = width;
         self.starts.clear();
         self.starts.push(0);
@@ -243,28 +250,47 @@ impl Entry {
         }
         .min(width);
         let mut wrap = Wrap { width, col: label };
-        wrap.feed(text, 0, &mut self.starts);
+        if structured {
+            let text = self.sections.clone();
+            wrap.feed(&text, 0, &mut self.starts);
+        } else {
+            let Self {
+                text,
+                result,
+                starts,
+                ..
+            } = self;
+            let text = match resolved {
+                true => result.as_str(),
+                false => text.as_str(),
+            };
+            wrap.feed(text, 0, starts);
+        }
         self.col = wrap.col;
     }
 
-    /// Adds text to the end of this line, continuing the wrap from the last row.
+    /// Appends to the body the current view reads, continuing its wrap state.
+    /// A live result must grow visible rows on every chunk, not only on a reflow.
     fn append(&mut self, text: &str, width: usize) {
         let width = self.content_width(width);
-        let base = self.text.len();
-        let Self {
-            text: owned,
-            width: at,
-            starts,
-            col,
-            ..
-        } = self;
-        *at = width;
+        let live = !self.expanded && self.resolved();
+        let base = match live {
+            true => self.result.len(),
+            false => self.text.len(),
+        };
+        self.width = width;
         if width > 0 {
-            let mut wrap = Wrap { width, col: *col };
-            wrap.feed(text, base, starts);
-            *col = wrap.col;
+            let mut wrap = Wrap {
+                width,
+                col: self.col,
+            };
+            wrap.feed(text, base, &mut self.starts);
+            self.col = wrap.col;
         }
-        owned.push_str(text);
+        match live {
+            true => self.result.push_str(text),
+            false => self.text.push_str(text),
+        }
     }
 
     /// The text of row `row`, with the newline that ended it removed.
@@ -275,10 +301,7 @@ impl Entry {
     /// it, so a trailing newline yields a final empty row. See
     /// `docs/notes/tui-log.md`.
     fn row(&self, row: usize) -> &str {
-        let text = match self.expanded && self.call.is_some() {
-            true => self.sections.as_str(),
-            false => self.text.as_str(),
-        };
+        let text = self.body();
         let start = self.starts[row];
         let end = self.starts.get(row + 1).copied().unwrap_or(text.len());
         let text = &text[start..end];
@@ -953,7 +976,13 @@ impl Log {
         let before = self.contributions(at);
         let entry = &mut self.entries[at];
         entry.sealed = false;
-        entry.result.push_str(text);
+        if entry.resolved() && !(entry.expanded && entry.call.is_some()) {
+            entry.append(text, width);
+        } else {
+            // The first output changes the visible body from arguments to the
+            // live result. Later chunks can continue that body's wrap state.
+            entry.result.push_str(text);
+        }
         if done {
             entry.outcome = tag.trim_end().to_string();
             entry.kind = kind;
@@ -990,7 +1019,11 @@ impl Log {
         let before = self.contributions(at);
         let entry = &mut self.entries[at];
         entry.tag = format!("{} ", head.summary());
-        if entry.call.is_none() && matches!(entry.kind, LineKind::ToolOutput | LineKind::ToolError)
+        // A structured result fallback carries no argument text to replace.
+        // Migrate its output once, then leave every later chunk in `result`.
+        if entry.call.is_none()
+            && entry.result.is_empty()
+            && matches!(entry.kind, LineKind::ToolOutput | LineKind::ToolError)
         {
             entry.result.push_str(&entry.text);
         }
@@ -999,7 +1032,9 @@ impl Log {
             entry.kind = crate::LineKind::ToolCall;
         }
         entry.call = Some(head.clone());
-        entry.sealed = !entry.resolved() || !entry.outcome.is_empty();
+        // Streaming output is not a verdict: only `resolve(..., done = true)`
+        // may seal this item. Structure arriving during a run must not fold it.
+        entry.sealed = !entry.outcome.is_empty();
         entry.reflow(width);
         let after = self.contributions(at);
         self.shift(at, before, after);
@@ -1299,6 +1334,47 @@ mod tests {
         }
         log.rows(View::All, width);
         log
+    }
+
+    /// A head arriving after output must not copy that output or fold the run.
+    #[test]
+    fn a_late_call_head_keeps_one_live_result_stream() {
+        let mut log = Log::new();
+        log.resolve(
+            "w",
+            "c:c1",
+            "",
+            LineKind::ToolOutput,
+            "Compiling one\n",
+            false,
+        );
+        log.describe("w", "c:c1", &cli::protocol::Head::call("bash", Vec::new()));
+        let rows = shown(&mut log, 60, 10, 0);
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.contains("Compiling one"))
+                .count(),
+            1,
+            "{rows:?}"
+        );
+        assert!(log.toggle("c:c1"), "a late head has not ended the run");
+        log.resolve(
+            "w",
+            "c:c1",
+            "",
+            LineKind::ToolCall,
+            "Compiling two\n",
+            false,
+        );
+        let rows = shown(&mut log, 60, 10, 0);
+        assert!(
+            rows.iter().any(|row| row.contains("Compiling one")),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("Compiling two")),
+            "{rows:?}"
+        );
     }
 
     /// An item with no body still opens: a call reads as its own arguments, and
