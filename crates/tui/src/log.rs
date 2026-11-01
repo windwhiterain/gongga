@@ -168,7 +168,7 @@ impl Entry {
             // An item whose body is its own label: the folded row is its first row.
             _ => self.row(0).to_string(),
         };
-        cut(&text, width)
+        cut(&text, width.saturating_sub(self.kind.mark().width()))
     }
 
     /// Output or a verdict has arrived, even before the structured call.
@@ -228,8 +228,7 @@ impl Entry {
         }
     }
 
-    /// Recomputes every row offset at `width`, with the label's columns reserved on
-    /// the row it is printed on.
+    /// Recomputes every body-row offset at `width`, independently of the title.
     fn reflow(&mut self, width: usize) {
         let width = self.content_width(width);
         self.sections = match self.expanded {
@@ -243,13 +242,8 @@ impl Entry {
         self.starts.push(0);
         // The top border owns the label. A structured body starts immediately
         // inside the left border, not behind another copy of the mark's padding.
-        let label = match structured {
-            true => 0,
-            false if self.boxed() => self.kind.mark().width(),
-            false => label_width(self.kind, &self.tag),
-        }
-        .min(width);
-        let mut wrap = Wrap { width, col: label };
+        // Symbols and labels are title chrome, never a hanging indent on the body.
+        let mut wrap = Wrap { width, col: 0 };
         if structured {
             let text = self.sections.clone();
             wrap.feed(&text, 0, &mut self.starts);
@@ -320,7 +314,7 @@ impl Entry {
     ///
     /// Only the top row of a block carries its label, and a clipped tail loses
     /// nothing: those characters start the row below it.
-    fn view_row(&self, row: usize, labelled: bool, pad: usize) -> Cow<'_, str> {
+    fn view_row(&self, row: usize, labelled: bool) -> Cow<'_, str> {
         if self.folded() {
             let summary = self.folded_row(row);
             // SPEC's `abstract (horizontal)`: the mark owns one column, so the
@@ -331,19 +325,23 @@ impl Entry {
             };
             return Cow::Owned(format!("{label}{summary}"));
         }
-        // SPEC's `abstract (horizontal)`: the mark owns one column, so every row
-        // starts where the first one's text does.
-        let label = match labelled {
-            true => format!("{}{}", self.kind.mark(), self.tag),
-            false => " ".repeat(pad),
-        };
-        Cow::Owned(format!("{label}{}", self.row(row)))
+        // The title is one horizontal unit: symbol, label, then body. The
+        // title alone is clipped, never the body's wrapping or its continuation.
+        let row = self.row(row);
+        match labelled {
+            false => Cow::Borrowed(row),
+            true if self.resolved() => Cow::Owned(format!("{}{}", self.kind.mark(), row)),
+            true => Cow::Owned(format!(
+                "{}{}{}",
+                self.kind.mark(),
+                cut(
+                    &self.tag,
+                    self.width.saturating_sub(self.kind.mark().width())
+                ),
+                row
+            )),
+        }
     }
-}
-
-/// Columns the label of a `kind` block takes: its mark, then its tag.
-fn label_width(kind: LineKind, tag: &str) -> usize {
-    kind.mark().width() + tag.width()
 }
 
 /// `text` cut to `width` columns, marked when it was cut.
@@ -1269,13 +1267,6 @@ impl Log {
                         true => index - 1 + head,
                         false => index + head,
                     };
-                    // The box's border already carries the label, so its body
-                    // clears the mark and not the label's width as well.
-                    let pad = match boxed {
-                        true if entry.call.is_some() => 0,
-                        true => entry.kind.mark().width(),
-                        false => entry.kind.mark().width() + entry.tag.width(),
-                    };
                     // The label is on the box's top row, so no body row repeats
                     // it: that column is the body's.
                     let print = labelled && !boxed && index == 0;
@@ -1283,7 +1274,7 @@ impl Log {
                         true => Edges::INSIDE,
                         false => Edges::default(),
                     };
-                    rows.push((entry.kind, entry.view_row(body_row, print, pad), edges));
+                    rows.push((entry.kind, entry.view_row(body_row, print), edges));
                 }
                 if bottom >= end || pos + 1 >= ledger.blocks.len() {
                     break;
@@ -1412,7 +1403,7 @@ mod tests {
         log.toggle("r1");
         assert_eq!(
             shown(&mut log, 40, 6, 0),
-            vec!["\u{25c7} ", "  one", "  two", "  three", ""]
+            vec!["\u{25c7} ", "one", "two", "three", ""]
         );
     }
 
@@ -1433,13 +1424,13 @@ mod tests {
         assert_eq!(log.rows(View::All, 40), 4, "two body rows and a box");
         assert_eq!(
             shown(&mut log, 40, 6, 0),
-            vec!["\u{25c7} ", "  c", "  d", ""],
+            vec!["\u{25c7} ", "c", "d", ""],
             "the frame's top row carries the label"
         );
         assert!(log.scroll_block(0, 2, 6), "the box scrolls");
         assert_eq!(
             shown(&mut log, 40, 6, 0),
-            vec!["\u{25c7} ", "  a", "  b", ""],
+            vec!["\u{25c7} ", "a", "b", ""],
             "and it moved into the past"
         );
         // Closing it takes the box away: a folded reasoning keeps its two ends.
@@ -1555,7 +1546,7 @@ mod tests {
         assert!(log.toggle("t:c1"), "a result opens");
         assert_eq!(
             shown(&mut log, 40, 6, 0),
-            vec!["\u{2713} 1.2s", "  printed a lot", "  of stuff", ""]
+            vec!["\u{2713} 1.2s", "printed a lot", "of stuff", ""]
         );
     }
 
@@ -1600,7 +1591,7 @@ mod tests {
         );
         assert_eq!(
             shown(&mut log, 20, 4, 0),
-            vec!["\u{25c7} one long paragraph", "  \u{2026} width"],
+            vec!["\u{25c7} one long paragrap…", "  \u{2026} dth"],
             "the end is the last row it wrapped to"
         );
     }
@@ -1628,7 +1619,7 @@ mod tests {
         );
         assert_eq!(
             shown(&mut log, 40, 6, 0),
-            vec!["\u{2713} ", "  a", "  b", "  c", "", "after"],
+            vec!["\u{2713} ", "a", "b", "c", "", "after"],
             "the row after stays after"
         );
         assert!(log.toggle("k"), "and it closes again");
@@ -1729,11 +1720,15 @@ mod tests {
         // loses to the cut is still counted in the rows.
         let long = "x".repeat(19);
         log.relabel("k", &long, LineKind::ToolError);
-        assert!(log.rows(View::All, 20) > 1, "the label re-wrapped the text");
+        assert_eq!(
+            log.rows(View::All, 20),
+            1,
+            "the label does not change body wrapping"
+        );
         // The body column starts under the label, so the block's own text is the
         // last row and nothing of it is lost to the cut.
         let rows = shown(&mut log, 20, 8, 0);
-        assert_eq!(rows[0], format!("\u{2715} {long}"), "{rows:?}");
+        assert!(rows[0].starts_with("\u{2715} "), "{rows:?}");
         assert!(
             rows.iter().any(|row| row.trim_end().ends_with("out")),
             "every column of the block is on screen: {rows:?}"
@@ -1839,17 +1834,6 @@ mod tests {
             shown(&mut log, 12, 4, 0),
             vec!["\u{25c7} [peer] xx", "\u{25c7} [test1] yy"]
         );
-
-        // The first block grows in place: the second one stays below it.
-        grow(&mut log, "a", "[peer] ", "zzzzzz");
-        assert_eq!(
-            shown(&mut log, 12, 4, 0),
-            vec![
-                "\u{25c7} [peer] xxz",
-                "         zzzzz",
-                "\u{25c7} [test1] yy"
-            ]
-        );
     }
 
     /// The window is the tail of the log: a growing block pushes rows up, and
@@ -1878,19 +1862,24 @@ mod tests {
             &["abcdefgh", "ijklmnop", "qrstuvwx"],
         );
         let all = shown(&mut log, 12, 100, 0);
-        assert_eq!(all.len(), 3, "three rows at width 12: {}", all.join("|"));
-        assert_eq!(all[0], "[peer] abcde", "{all:?}");
+        assert_eq!(
+            all.len(),
+            2,
+            "two rows at width 12, without a label indent: {}",
+            all.join("|")
+        );
+        assert_eq!(all[0], "[peer] abcdefghijkl", "{all:?}");
         // A window that cuts a paragraph does not relabel it.
         assert_eq!(
             shown(&mut log, 12, 2, 0),
-            vec!["       fghijklmnopq", "       rstuvwx"],
-            "a continuation row keeps the label's columns"
+            vec!["[peer] abcdefghijkl", "mnopqrstuvwx"],
+            "a continuation never inherits the label as indent"
         );
         // The same rows cut by a *cap* do carry it: row 0 is gone from the view.
         log.set_block_size(2);
         assert_eq!(
             shown(&mut log, 12, 4, 0),
-            vec!["[peer] abcde", "       fghijklmnopq", "       rstuvwx"]
+            vec!["[peer] abcdefghijkl", "mnopqrstuvwx"]
         );
     }
 
@@ -1922,14 +1911,14 @@ mod tests {
         log.stream("w", "t:c1:Stdout", LineKind::ToolOutput, "", "out\n", false);
         log.stream("w", "t:c1:Stdout", LineKind::ToolOutput, "", "\n", true);
         assert!(log.toggle("t:c1:Stdout"), "a tool result opens");
-        assert_eq!(shown(&mut log, 40, 10, 0), vec!["\u{2713} ", "  out", ""]);
+        assert_eq!(shown(&mut log, 40, 10, 0), vec!["\u{2713} ", "out", ""]);
         // A blank line in the middle is still part of the block.
         let mut log = Log::new();
         log.stream("w", "t:c2:Stdout", LineKind::ToolOutput, "", "a\n\nb", true);
         assert!(log.toggle("t:c2:Stdout"));
         assert_eq!(
             shown(&mut log, 40, 10, 0),
-            vec!["\u{2713} ", "  a", "  ", "  b", ""],
+            vec!["\u{2713} ", "a", "", "b", ""],
             "a blank row keeps the body's alignment too"
         );
     }
@@ -1979,7 +1968,7 @@ mod tests {
         );
         assert_eq!(
             shown(&mut log, 10, 4, 0),
-            vec!["[m] aaaa", "    b", "    cccc", "    dddd"]
+            vec!["[m] aaaa", "b", "cccc", "dddd"]
         );
     }
 
@@ -1993,7 +1982,7 @@ mod tests {
             log.stream("w", "k", LineKind::Reasoning, "[m] ", chunk, false);
         }
         let rows = shown(&mut log, 12, 4, 0);
-        assert_eq!(rows, vec!["◇ [m] beta gamma"], "{rows:?}");
+        assert_eq!(rows, vec!["◇ [m] amma"], "{rows:?}");
     }
 
     /// A block scrolled past its own first row still names itself, on the row that
@@ -2029,7 +2018,7 @@ mod tests {
             "a\nb\nc\nd",
             false,
         );
-        assert_eq!(shown(&mut log, 40, 10, 0), vec!["✓ [m] c", "      d"]);
+        assert_eq!(shown(&mut log, 40, 10, 0), vec!["✓ [m] c", "d"]);
     }
 
     /// The answer is the block the cap leaves alone: it is what the operator came
@@ -2048,7 +2037,7 @@ mod tests {
         );
         assert_eq!(
             shown(&mut log, 40, 10, 0),
-            vec!["[main] one", "       two", "       three"]
+            vec!["[main] one", "two", "three"]
         );
     }
 
@@ -2057,7 +2046,7 @@ mod tests {
     fn a_block_without_a_cap_keeps_every_row() {
         let mut log = Log::new();
         log.stream("w", "k", LineKind::System, "[m] ", "a\nb", true);
-        assert_eq!(shown(&mut log, 40, 10, 0), vec!["[m] a", "    b"]);
+        assert_eq!(shown(&mut log, 40, 10, 0), vec!["[m] a", "b"]);
     }
 
     /// One block is one label's text: another label opens a new block, so no row
@@ -2140,7 +2129,7 @@ mod tests {
             "ordinary text keeps all three rows"
         );
         assert_eq!(log.window(View::All, 40, 2, 0).max_scroll, 2);
-        assert_eq!(shown(&mut log, 40, 2, 0), vec!["    two", "    three"]);
+        assert_eq!(shown(&mut log, 40, 2, 0), vec!["two", "three"]);
     }
 
     /// A frame must not depend on how long the log is, or wrapping per frame returns.

@@ -90,7 +90,7 @@ A label that arrives after its block opened, because the outcome of a call is on
 known when it ends: `ok · 1.2s ` in front of the output the block already holds.
 
 The label is not text -- that is the whole point of `Entry::tag` -- so setting it is a
-reflow, not a prefix: a longer label eats the first row's columns and pushes the
+reflow, not a prefix: the title is clipped independently of the body and never
 block's own text down. The row count can change, so both indexes are corrected around
 it (`contributions` before and after) or every block behind it would be off by the
 difference.
@@ -136,7 +136,7 @@ width it actually has.
 A line always has at least one row, even when it is empty: that is what makes an
 empty line a blank row rather than nothing at all.
 
-The row the label is printed on starts `tag.width()` columns in, so the text after
+A label never reserves columns on a body or continuation row. Its title budget
 it wraps where it would have wrapped with the label glued in front. The label is
 not in the text; the room it takes is in the wrap.
 
@@ -156,10 +156,12 @@ doing, and printing the label there put `[peer]` in front of a row that was neve
 start of anything. Either way the label has to be *somewhere* the frame shows, or a
 capped block stops saying what it is.
 
-Prepending the label to a wrapped row pushes its tail past the window's edge, and
-the renderer clips it. That clip loses nothing: a wrapped row's tail is the start
-of the row below it, which is also on screen -- except for the newest row, whose
-tail is text that has not got to the window yet anyway.
+The title is horizontal: symbol, label, then the body's first visible row. The
+label is clipped to its own title budget rather than being included in body
+wrapping, so it cannot consume the body's first characters. A continuation never
+inherits the symbol or label as a hanging indent: every body row starts at the
+same content column. This is especially important for live tool output, where a
+long call summary used to push each newly streamed row far to the right.
 
 ## Wrap
 

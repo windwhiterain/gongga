@@ -1803,7 +1803,7 @@ mod tests {
         let one = frame(1);
         assert!(one[0].contains("thinking:"), "{one:?}");
         assert!(
-            one[0].contains("pqrst"),
+            one[0].contains("jklmnop"),
             "{one:?} the tail is what a cap keeps"
         );
         // The answer is the block no cap touches: both of its rows are still there.
@@ -2020,8 +2020,8 @@ mod tests {
             .collect();
         assert_eq!(
             rows,
-            vec!["! first", "  second", "  third"],
-            "the body forms a column under the mark: {rows:?}"
+            vec!["! first", "second", "third"],
+            "the body starts at the content column: {rows:?}"
         );
     }
 
@@ -2873,6 +2873,72 @@ mod tests {
         assert!(
             finished.iter().any(|row| row.contains("✓ 4.2s · bash")),
             "{finished:?}"
+        );
+    }
+
+    /// A long tool title never turns into a hanging indent on live output.
+    #[test]
+    fn a_long_tool_title_does_not_indent_the_live_result() {
+        let mut screen = screen_with(&[]);
+        screen.panes.describe(
+            "",
+            "c:c1",
+            &cli::protocol::Head::call(
+                "bash",
+                vec![cli::protocol::Field {
+                    label: "task".into(),
+                    value: "a very long task name that used to reserve most of the row".into(),
+                    summary: true,
+                }],
+            ),
+        );
+        let (width, height) = (52u16, 16u16);
+        let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
+        let area = parts(width, height, 1, false)[1];
+        let shown = |screen: &mut Screen, term: &mut Terminal<TestBackend>| {
+            term.draw(|f| {
+                draw(f, screen);
+            })
+            .unwrap();
+            let buffer = term.backend().buffer().clone();
+            (area.y + 1..area.bottom())
+                .map(|row| read(&buffer, area.x, area.width, row))
+                .filter(|row| !row.is_empty())
+                .collect::<Vec<_>>()
+        };
+        screen.panes.resolve(
+            "",
+            "c:c1",
+            "",
+            LineKind::ToolCall,
+            "Compiling the first crate\n",
+            false,
+        );
+        let first = shown(&mut screen, &mut term);
+        assert!(
+            first
+                .iter()
+                .any(|row| row.trim_start().starts_with("▸ Compiling the first crate")),
+            "{first:?}"
+        );
+        screen.panes.resolve(
+            "",
+            "c:c1",
+            "",
+            LineKind::ToolCall,
+            "Compiling the second crate\n",
+            false,
+        );
+        let second = shown(&mut screen, &mut term);
+        assert!(
+            second
+                .iter()
+                .any(|row| row.trim_start().starts_with("Compiling the second crate")),
+            "{second:?}"
+        );
+        assert!(
+            second.iter().all(|row| !row.starts_with("             ")),
+            "{second:?}"
         );
     }
 }
