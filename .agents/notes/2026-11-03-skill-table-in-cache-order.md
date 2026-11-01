@@ -1,4 +1,4 @@
-# skill 表格按「前缀缓存最便宜的顺序」发出（WIP）
+# 前缀缓存顺序 + 静态系统提示（WIP）
 
 User 的指令：「把 github 上 windwhiterain/liana 项目的老分支拉下来，里面有一个专门的前缀缓存
 优化算法，把那个模块移植到这个项目，用于优化 skill 加载顺序的选择」。
@@ -47,3 +47,27 @@ User 的指令：「把 github 上 windwhiterain/liana 项目的老分支拉下�
 
 `MISS_SCALE` 的来源是 liana 的调参，不是实测：真比率属于 provider，没在这里测过。如果要，
 落成 `.dev/verify/<sha>-prefix-cache.json` 那种数据，而不是改一个更大的常数。
+
+## 第二轮（2026-11-01）：system prompt 不再渲染
+
+User：「还没有 load skill 呢，你就接线了。先把 system prompt 的字符串模板功能删掉，只留最简，
+其他说明放对应的 skill（大概率已经有了），否则 system prompt 都不稳定。」
+
+- **代码**：`prompts::SYSTEM`（`"instructions"`）改成只 `text()`、永不 `render()`，新访问器
+  `Prompts::system()`；`agent::prompt_in_force` 不再传 `{{session}}`。测试
+  `the_system_prompt_is_never_rendered`。通报类模板（context_notice / output_cap / size_hint /
+  image_refusal / interrupted_message）保持模板，它们的值本来就每次不同。
+- **内容**：`instructions` 从七段压到三句——身份（会话名走 `$GONGGA_SESSION`）、一句授权
+  （能跑命令、别问、别留垃圾）、一句"程序都在 skill 里，用 `index_skill`"。
+- **搬迁**：shell 持久化 + `gongga-cli` 输出形状 → `ship/skills/self-control` §0；三个 skill 桶、
+  `evolve` 为什么不在桶里 → 同文件 §12（原来写的"两个桶、项目目录不是来源"已经和代码不符，
+  一并改成 project → home → machine）；「读得聪明、从测试开始、早点写、绿了就停」→
+  `~/.agents/skills/whiting-dev` 新增 `## Working rhythm`（用户自己的常驻开发规矩 skill）。
+- **发布**：ship `09537ef`，`crates/server/ship.toml` 跟上；`scripts/ship.sh --check` 一致。
+- **安装验证**：临时 home 起一次服务端，日志 `pin=09537ef79b written=15`，装出来的
+  `config.toml` / `skills/self-control` 都是新文本，`overridden=[]`；真 home 的两处文件与旧 pin
+  逐字相同，所以下次启动是干净的三方合并。临时 home 已删。
+- **还没做**：`@skill:` 现在只展开成一行 metadata（`meta.rs::skill_metadata`），而 SPEC 第 41 行
+  写的是 "replaced as skill content with wrapper"——真正的 load skill 还没接。这才是顺序该被
+  缓存算法管的那条路（正文进 transcript 才是贵的部分），`index_skill` 的表格只是它之前的
+  廉价一步。
