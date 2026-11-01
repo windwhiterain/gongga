@@ -36,10 +36,14 @@ use `which("bash")` as bash.
 everything in database (sqlite) under a home directory, structured for agentic retrieval/mutation.
 
 ## Meta
-- `@image: <path>` in messages will be replaced as file id, referencing image will be upload via File API in advance.
-- `@skill: <name>` in message will be replaced as skill metadata{description, path}.
-- `@file: <file>` will be just as it is.
+replace in messages.
+- `@image: <path>` replaced as file id, referencing image will be upload via File API in advance.
+- `@skill: <name>` append path metadata to it `@skill: <name> (path)`.
+- `@file: <path>` no replace.
 in cmd_input, those three should be auto complete.
+
+### Meta Prefix Cache Optimize
+for the first user message to a empty session, find all meta references recursively with the prompt as the root, find the optimized meta trajectory, append the meta's content with its raw form (without replacement) as index to the system prompt, then the user message with no replacement.
 
 ## UI
 - main (vertical)
@@ -81,13 +85,13 @@ in cmd_input, those three should be auto complete.
   - PageUp/PageDown (Fn+Up/Down): scroll the sticky session.
   - Shift+Down: scroll the sticky session to bottom.
   - Shift+Delete: delete sticky session.
-  - Ctrl+V / Ctrl+Alt+V: paste.
+  - Ctrl+V / Ctrl+Alt+V: paste (text/image).
   - Shift+Up: last cmd input.
 
 
 ## Cmd
 - server:
-  - `set_session --session (sticky) <name> --model (sticky) <provider/model> [--thinking_effort <level>] [--context_limit <n%>](default: "70%") [--cwd <path>](default: ".")`:
+  - `set_session --session (sticky) <name> --model (sticky) <provider/model> [--thinking_effort <level>](initial: highest in supported or default if unkown) [--context_limit <n%>](initial: "70%") [--cwd <path>](initial: ".")`:
     - plus `set_sticky_cmd_argument --name session --value <session>`
   - `del_session --session <name>`: also delete all bash with the session name in key.
   - `send_message --session <name> --message <string>`: inject message instantly, turn waiting bash to backgound.
@@ -98,7 +102,7 @@ in cmd_input, those three should be auto complete.
 - client:
   - `set_sticky --name <name> --value <value>`:
   - `del_sticky --name <name>`
-  - `set_render [--block_size <line>]`:
+  - `set_render [--block_size <n>](initial: 6)`:
     - `block_size`: max line count of non-output block, auto scroll.
   - `set_render_session --session <name> [--show <bool>]`
   - `connect_server [--ip <ip>](default: localhost) --port <port>`
