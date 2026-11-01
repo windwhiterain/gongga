@@ -291,8 +291,9 @@ It is a threshold for *asking*, not for acting: zero turns the notice off.
 
 ## prompt_in_force
 
-The prose a session sends is rendered from the templates as they are *now*, compared
-with the stored row, and appended only when it differs. So the row always holds
+The prose a session sends is read from the config as it is *now* -- the instructions
+verbatim, the notes rendered -- compared with the stored row, and appended only when it
+differs. So the row always holds
 exactly what the last request carried, and an edit is in effect on the very next
 step: a template, a handover note, a directory.
 

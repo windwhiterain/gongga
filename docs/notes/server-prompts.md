@@ -9,12 +9,29 @@ each one reachable only by recompiling, and each edit invisible to whoever was
 actually reading what the agent said.
 
 Nothing here holds the prose. A home's `config.toml` is the file a reader edits, and
-the pinned ship content behind it is what answers when the home says nothing; both
-`instructions` is the one template rendered per **session**: `{{session}}` is the name
-that session answers to, so the prose can address it without the reader having to
-discover it first. Everything else is rendered per event.
-are read from disk. The one list this module does own is `REQUIRED`, because the code
-is the only party that knows which names it asks for.
+the pinned ship content behind it is what answers when the home says nothing; both are
+read from disk. The one list this module does own is `REQUIRED`, because the code is
+the only party that knows which names it asks for.
+
+## SYSTEM: read, never rendered
+
+`instructions` opens every request. A placeholder filled from the session would give
+each session its own first bytes, and a provider's prefix cache is keyed by bytes: the
+whole point of those bytes being first is that every session of a home shares them, so
+the cache still holds the prose and the tool schemas and the start of the transcript
+behind it. So this one name is `text()`, not `render()` -- `system()` is the accessor,
+and a `{{session}}` written into it reaches the model as written.
+
+The session name did not go away: every shell has `$GONGGA_SESSION`, which is where a
+session that needs to know what it answers to looks. The immediate reason for the split
+was that the prompt had grown into a page of procedures -- how to batch reads, how to
+drive `gongga-cli`, which bucket a skill lives in -- and a page of prose in front of
+every request is exactly what a skill is for. The identity, the standing authorisation
+to run commands, and "procedures are skills" are what is left, because none of them is
+a procedure and all of them are true in every turn.
+
+Everything else stays a template: the notices are rendered per event, where the numbers
+and the session and the spill path really are different every time.
 
 ## REQUIRED, TABLE
 
@@ -61,7 +78,8 @@ that is neither on `REQUIRED` nor in the pinned content.
 
 ## substitute
 
-`{{name}}` and nothing else: no conditionals, no loops, no filters. A prompt that needs
+For the notices only -- never for `SYSTEM`. `{{name}}` and nothing else: no
+conditionals, no loops, no filters. A prompt that needs
 a conditional is a prompt with two shapes, and two shapes are two templates named by the
 code -- which is what `context_notice` does on its own. A real
 template language would buy those two cases with a dependency and a second syntax to

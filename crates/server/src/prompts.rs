@@ -7,6 +7,16 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
+/// The system instructions: read, never rendered.
+///
+/// # Invariant
+///
+/// These bytes open every request, so they are the same bytes for every session of
+/// a home. A placeholder filled from the session would give each session its own
+/// prefix and the provider would hold none of it; the name is `$GONGGA_SESSION` in
+/// every shell instead. See `docs/notes/server-prompts.md`.
+pub const SYSTEM: &str = "instructions";
+
 /// Every template the code asks for by name.
 ///
 /// # Invariant
@@ -16,7 +26,7 @@ use std::time::SystemTime;
 /// nothing about prompts, and whose pinned content cannot be read, would send an
 /// empty system prompt and look healthy. Startup asks for this list instead.
 pub const REQUIRED: &[&str] = &[
-    "instructions",
+    SYSTEM,
     "handover_preamble",
     "context_notice",
     "interrupted_call",
@@ -111,6 +121,11 @@ impl Prompts {
             .get(name)
             .cloned()
             .or_else(|| self.pinned.get(name).cloned())
+    }
+
+    /// The system instructions as written: one text, no value is filled in.
+    pub fn system(&self) -> String {
+        self.text(SYSTEM).unwrap_or_default()
     }
 
     /// One template, with its placeholders filled.
@@ -280,6 +295,18 @@ mod tests {
                 .map(|(name, text)| (name.to_string(), text.to_string()))
                 .collect(),
         )
+    }
+
+    /// A placeholder in the system prompt reaches the model as written.
+    #[test]
+    fn the_system_prompt_is_never_rendered() {
+        let prompts = Prompts::of(&[(SYSTEM, "you are session `{{session}}`")]);
+        assert_eq!(prompts.system(), "you are session `{{session}}`");
+        assert_eq!(
+            prompts.system(),
+            prompts.system(),
+            "one text for every caller"
+        );
     }
 
     #[test]

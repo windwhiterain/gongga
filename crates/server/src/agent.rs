@@ -402,7 +402,7 @@ impl Agent {
         });
     }
 
-    /// The prose this session sends, rendered now and stored when it differs.
+    /// The prose this session sends, read now and stored when it differs.
     ///
     /// # Invariant
     ///
@@ -419,9 +419,9 @@ impl Agent {
     ) -> anyhow::Result<crate::store::Prompt> {
         let stored = self.store.prompt(id)?;
         let prompts = crate::prompts::shared();
-        // Rendered per session, not per turn: the name never changes for a
-        // session, so the row this writes stays valid across steps.
-        let instructions = prompts.render("instructions", &[("session", name)]);
+        // Read, not rendered: the same bytes for every session, so the row this
+        // writes stays the prefix all of them share.
+        let instructions = prompts.system();
         let handover = note.map(|s| prompts.render("handover_preamble", &[("handover", s)]));
         let prompt = crate::store::Prompt {
             instructions,
