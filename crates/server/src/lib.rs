@@ -16,6 +16,7 @@ mod llm;
 mod meta;
 mod migrate;
 mod net;
+mod prefix_cache;
 mod probe;
 mod prompts;
 mod providers;

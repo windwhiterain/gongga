@@ -940,6 +940,7 @@ impl Agent {
             cwd: session.cwd(),
             vision: llm.vision(crate::prompts::shared()),
             inbox: session.inbox_signal(),
+            layout: session.layout(),
             closing: session.closing_signal(),
         };
         let run_started = std::time::Instant::now();

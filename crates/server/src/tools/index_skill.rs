@@ -2,10 +2,13 @@
 //!
 //! See `docs/notes/server-tools-index-skill.md`.
 
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Mutex as StdMutex;
 
 use serde_json::{Value, json};
 
+use crate::prefix_cache::Layout;
 use crate::tools::{Tool, ToolContext, ToolOutcome};
 
 /// Which root a skill came from, in the words a reader already knows.
@@ -32,7 +35,8 @@ impl Tool for IndexSkillTool {
          the home, or `general` for the machine's own). Call it before deciding \
          a task has no skill, and read a body only when its line matches the \
          task -- reading every skill is the cost this table exists to avoid. \
-         Takes no arguments."
+         Rows come in whatever order keeps this session's request prefix warm; \
+         that order ranks nothing. Takes no arguments."
     }
 
     fn parameters(&self) -> Value {
@@ -59,14 +63,15 @@ impl Tool for IndexSkillTool {
                      of naming a skill you cannot open.",
                 );
             }
-            let rows = listed(&ctx.cwd);
-            if rows.is_empty() {
+            let skills = installed(&ctx.cwd);
+            if skills.is_empty() {
                 return ToolOutcome::ok(
                     "no skill is installed: nothing under the home's `skills/` or the \
                      machine's. Say so rather than inventing one."
                         .to_string(),
                 );
             }
+            let rows = ordered(skills, &ctx.layout);
             ToolOutcome::ok(
                 serde_json::to_string_pretty(&json!({"skills": rows}))
                     .unwrap_or_else(|_| "[]".to_string()),
@@ -131,18 +136,41 @@ fn in_dir(bucket: &'static str, root: &Path) -> Vec<Installed> {
         .collect()
 }
 
-/// The table's rows: the one walk, in the shape a reader's JSON wants.
-fn listed(cwd: &Path) -> Vec<Value> {
-    installed(cwd)
+/// The table's rows, in the order this session pays least to send again.
+///
+/// # Invariant
+///
+/// A permutation of `skills`: the layout reorders the table and never revives a row
+/// for a skill that is not installed now. See `docs/notes/server-prefix-cache.md`.
+fn ordered(skills: Vec<Installed>, layout: &StdMutex<Layout>) -> Vec<Value> {
+    let rows: Vec<(String, Value)> = skills
         .into_iter()
         .map(|skill| {
-            json!({
+            // The file, not the name: two directories may declare one name, and a
+            // table that kept only the first would be hiding a skill.
+            let key = skill.path.display().to_string();
+            let row = json!({
                 "name": skill.name,
                 "description": skill.description,
                 "path": skill.path.display().to_string(),
                 "bucket": skill.bucket,
-            })
+            });
+            (key, row)
         })
+        .collect();
+    // The bytes each row costs on the wire, which is what a warmed prefix holds.
+    let wanted: Vec<(&str, usize)> = rows
+        .iter()
+        .map(|(key, row)| (key.as_str(), row.to_string().len()))
+        .collect();
+    let order = layout
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .plan(&wanted);
+    let mut by_key: HashMap<String, Value> = rows.into_iter().collect();
+    order
+        .into_iter()
+        .filter_map(|key| by_key.remove(&key))
         .collect()
 }
 
@@ -183,6 +211,73 @@ mod tests {
         std::fs::create_dir_all(&skill).unwrap();
         std::fs::write(skill.join("SKILL.md"), front).unwrap();
         skill
+    }
+
+    fn row(name: &str, description: &str, bucket: &'static str) -> Installed {
+        Installed {
+            name: name.to_string(),
+            description: description.to_string(),
+            path: PathBuf::from(format!("/skills/{name}/SKILL.md")),
+            bucket,
+        }
+    }
+
+    fn names(rows: &[Value]) -> Vec<String> {
+        rows.iter()
+            .map(|r| r["name"].as_str().unwrap_or_default().to_string())
+            .collect()
+    }
+
+    /// Two skills that declare one name are two rows, not one.
+    ///
+    /// # Invariant
+    ///
+    /// Every installed skill is in the table exactly once, whatever its frontmatter
+    /// says its name is.
+    #[test]
+    fn a_shared_name_costs_neither_of_them_its_row() {
+        let layout = StdMutex::new(Layout::new());
+        let rows = ordered(
+            vec![
+                Installed {
+                    name: "heir".to_string(),
+                    description: "the home's".to_string(),
+                    path: PathBuf::from("/home/skills/heir/SKILL.md"),
+                    bucket: HARNESS,
+                },
+                Installed {
+                    name: "heir".to_string(),
+                    description: "the copy beside it".to_string(),
+                    path: PathBuf::from("/home/skills/heir-2/SKILL.md"),
+                    bucket: HARNESS,
+                },
+            ],
+            &layout,
+        );
+        assert_eq!(rows.len(), 2, "{rows:?}");
+    }
+
+    /// The table is emitted in the layout's order, so the second table is the first.
+    ///
+    /// # Invariant
+    ///
+    /// The rows are what is installed, in an order the provider's cache already
+    /// holds: a call that lists the same skills says the same bytes as last time.
+    #[test]
+    fn the_table_is_the_order_it_was_first_emitted_in() {
+        let layout = StdMutex::new(Layout::new());
+        let given = || {
+            vec![
+                row("heir", "fold a session's context", HARNESS),
+                row("latency", "measure a turn", GENERAL),
+            ]
+        };
+        let first = ordered(given(), &layout);
+        let mut reversed = given();
+        reversed.reverse();
+        let second = ordered(reversed, &layout);
+        assert_eq!(names(&first), vec!["heir", "latency"]);
+        assert_eq!(names(&second), names(&first));
     }
 
     #[test]

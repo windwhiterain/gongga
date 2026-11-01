@@ -37,6 +37,27 @@ Takes no arguments, so `additionalProperties: false` with an empty `properties` 
 correct schema rather than a placeholder for a filter that would invite a wrong guess
 about which bucket matters.
 
+## ordered
+
+The table is a permutation of `installed`, and the order is `prefix_cache`'s: a tool
+result sits in the transcript, the transcript is the request's prefix, so a table
+whose bytes match the last one is bytes the provider may still have cached, and a
+table re-sorted for a fresh reason is a divergence that costs every token after it.
+
+The layout lives on the session (`session::SessionHandle::layout`), not on the
+server: caching is per conversation, and two sessions listing the same skills are
+two different prefixes. It dies with the session, so nothing about a deleted
+session's orderings outlives it.
+
+The key is the row's `SKILL.md` path, not its name: a name can be in more than one
+root, and two directories can even declare the same `name:` in their frontmatter, so
+a table keyed by name would silently drop a skill. The path is unique by
+construction. The size is the row's serialized length, the text the request carries.
+
+`frontmatter` and `installed` are untouched by this: precedence is still the walk's
+order (project, then home, then machine), so `@skill: <name>` still opens the same
+file. Only the table's order is the layout's.
+
 ## frontmatter
 
 `---`, then `name:` and `description:` lines, then `---`: the same rule every skill
