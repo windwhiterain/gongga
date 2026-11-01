@@ -9,7 +9,23 @@ keys, model catalogue, context windows. Reading it is what lets a session say
 `--model deepseek-official/deepseek-flash` and be understood, instead of every
 caller restating a base URL and the name of an environment variable.
 
-The file carries a lot this server has no use for -- prices, quota endpoints,
+## Price
+
+The roster records what each model charges -- `[provider.model.price]`, in whatever
+currency and unit that provider quotes. This module reads exactly two of those numbers,
+`input` and `cache_read`, and exposes one derived fact: `miss_ratio()`, how many fresh
+tokens one cached token stands for.
+
+Only the ratio is used, and deliberately: converting a currency or normalising a unit
+would need a table of every provider's convention, and it would buy nothing. The plan
+that consumes it compares sums of its own, so `1.00/0.10 CNY` and `0.15/0.015 USD` are
+the same 10 and neither needs to know what a yuan is. `output` is read but unused --
+nothing here plans against what an answer costs.
+
+A model whose price the roster omits keeps `None`, and the cache's plan substitutes its
+own stand-in rather than the roster inventing a number it was not told.
+
+The file carries a lot this server has no use for -- quota endpoints,
 holiday calendars. Only what a request needs is parsed and the rest is ignored,
 so the roster can keep growing without breaking this.
 

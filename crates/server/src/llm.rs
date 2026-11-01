@@ -32,6 +32,10 @@ pub struct LlmClient {
     model: String,
     /// The name the API takes in its `model` field.
     model_name: String,
+    /// Where a token measurement is recorded, when the caller has one.
+    measure: Option<crate::store::Store>,
+    /// What this model charges, from the roster: the plan's arithmetic.
+    price: Option<crate::providers::Price>,
     /// The roster provider this client talks to: SPEC's `active_quota` row.
     provider: Option<String>,
     temperature: Option<f32>,
@@ -126,6 +130,8 @@ impl LlmClient {
             api_key: cfg.api_key.clone(),
             model: cfg.model(),
             model_name: cfg.model_name.clone(),
+            measure: cfg.measure.clone(),
+            price: cfg.price,
             provider: cfg.provider.clone(),
             temperature: cfg.temperature,
             max_output_tokens: cfg.max_output_tokens,
@@ -244,6 +250,9 @@ impl LlmClient {
         let url = format!("{}/responses", self.base_url);
         let api_key = self.api_key.clone();
         let http = self.http.clone();
+        // The measurement's own record: which model, and where to learn from.
+        let self_model = self.model_name.clone();
+        let self_measure = self.measure.clone();
         let headers_timeout = self.headers_timeout;
         let idle_timeout = self.idle_timeout;
         let max_retries = self.max_retries;
@@ -274,6 +283,8 @@ impl LlmClient {
                         return;
                     }
                 };
+                // The same counter the body writes into, kept here to measure against.
+                let sent = bytes.clone();
                 let mut once = stream_once(
                     &http,
                     &url,
@@ -296,7 +307,22 @@ impl LlmClient {
                 while let Some(event) = once.recv().await {
                     produced |= event_produced(&event);
                     match &event {
-                        LlmEvent::Completed { .. } => completed = true,
+                        LlmEvent::Completed { usage } => {
+                            completed = true;
+                            // What the provider measured against what was written: the
+                            // only honest source for "how many tokens is an item".
+                            if let (Some(tokens), Some(store)) = (
+                                usage.as_ref().and_then(|u| u.input_tokens),
+                                self_measure.as_ref(),
+                            ) {
+                                let written =
+                                    sent.load(std::sync::atomic::Ordering::Relaxed) as u64;
+                                if let Err(e) = store.note_token_ratio(&self_model, written, tokens)
+                                {
+                                    tracing::debug!(error = %e, "could not record the token ratio");
+                                }
+                            }
+                        }
                         LlmEvent::Cancelled => cancelled = true,
                         LlmEvent::Failed { message, retryable } => {
                             failure = Some((message.clone(), *retryable));
@@ -1493,6 +1519,8 @@ mod tests {
     /// A client with no roster behind it: what a test drives is the body it builds.
     fn client_with(model: &str, builtin_tools: &[&str], modalities: &[&str]) -> LlmClient {
         let cfg = crate::config::ModelConfig {
+            measure: None,
+            price: None,
             provider: None,
             model_name: model.to_string(),
             base_url: "http://127.0.0.1:1/v1".to_string(),

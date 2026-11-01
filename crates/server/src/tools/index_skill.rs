@@ -69,7 +69,14 @@ impl Tool for IndexSkillTool {
                         .to_string(),
                 );
             }
-            let rows = ordered(skills, &ctx.store, &ctx.session);
+            let rows = ordered(
+                skills,
+                &ctx.store,
+                &ctx.session,
+                &ctx.model,
+                ctx.price,
+                ctx.cache_invalid_rate,
+            );
             ToolOutcome::ok(
                 serde_json::to_string_pretty(&json!({"skills": rows}))
                     .unwrap_or_else(|_| "[]".to_string()),
@@ -140,7 +147,14 @@ fn in_dir(bucket: &'static str, root: &Path) -> Vec<Installed> {
 ///
 /// A permutation of `skills`: the layout reorders the table and never revives a row
 /// for a skill that is not installed now. See `docs/notes/server-prefix-cache.md`.
-fn ordered(skills: Vec<Installed>, store: &crate::store::Store, session: &str) -> Vec<Value> {
+fn ordered(
+    skills: Vec<Installed>,
+    store: &crate::store::Store,
+    session: &str,
+    model: &str,
+    price: Option<crate::providers::Price>,
+    invalid: f64,
+) -> Vec<Value> {
     let rows: Vec<(String, Value)> = skills
         .into_iter()
         .map(|skill| {
@@ -155,16 +169,19 @@ fn ordered(skills: Vec<Installed>, store: &crate::store::Store, session: &str) -
             (key, row)
         })
         .collect();
-    // The bytes and their digest: an edited row is a new item.
+    // The tokens and their digest: an edited row is a new item.
+    let ratio = store.token_ratio(model);
+    let rates = crate::prefix_cache::Rates { price, invalid };
     let wanted: Vec<(&str, usize, u64)> = rows
         .iter()
         .map(|(key, row)| {
             let text = row.to_string();
             let digest = crate::prefix_cache::digest(&text);
-            (key.as_str(), text.len(), digest)
+            let tokens = (text.len() as f64 * ratio).round().max(1.0) as usize;
+            (key.as_str(), tokens, digest)
         })
         .collect();
-    let order = crate::prefix_cache::plan(store, session, "skill table", &wanted);
+    let order = crate::prefix_cache::plan(store, session, "skill table", &wanted, rates);
     let mut by_key: HashMap<String, Value> = rows.into_iter().collect();
     order
         .into_iter()
@@ -254,7 +271,10 @@ mod tests {
                 },
             ],
             &store(),
-            "probe",
+            "skill-table",
+            "test/model",
+            None,
+            0.0,
         );
         assert_eq!(rows.len(), 2, "{rows:?}");
     }
@@ -274,10 +294,10 @@ mod tests {
             ]
         };
         let store = store();
-        let first = ordered(given(), &store, "probe");
+        let first = ordered(given(), &store, "skill-table/2", "test/model", None, 0.0);
         let mut reversed = given();
         reversed.reverse();
-        let second = ordered(reversed, &store, "probe");
+        let second = ordered(reversed, &store, "skill-table/2", "test/model", None, 0.0);
         assert_eq!(names(&first), vec!["heir", "latency"]);
         assert_eq!(names(&second), names(&first));
     }

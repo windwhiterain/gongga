@@ -37,6 +37,12 @@ pub const DEFAULT_MAX_OUTPUT_CHARS: usize = 8_000;
 /// Input-token ceiling that triggers the context notice; fallback with no roster window.
 pub const DEFAULT_COMPRESS_ABOVE_TOKENS: u64 = 40_000;
 
+/// How often a prefix the provider once held is assumed to be gone.
+///
+/// A hyperparameter, not a measurement: it turns the roster's rates into what a warm
+/// item is *expected* to be worth. See `docs/notes/server-prefix-cache.md`.
+pub const DEFAULT_CACHE_INVALID_RATE: f64 = 0.0;
+
 /// Everything the server needs to boot.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -74,6 +80,10 @@ pub struct ModelConfig {
     pub api_key: String,
     pub temperature: Option<f32>,
     pub max_output_tokens: Option<u32>,
+    /// Where a request's measured tokens are recorded, when a store exists.
+    pub measure: Option<crate::store::Store>,
+    /// What the roster says this model charges, for the prefix cache's plan.
+    pub price: Option<crate::providers::Price>,
     /// Ask the API not to retain server-side state; we replay the transcript.
     pub store: bool,
     /// How long the provider may take to answer with response headers, the
@@ -200,6 +210,8 @@ pub fn detect_python() -> Option<PathBuf> {
 pub struct AgentConfig {
     /// Input tokens above which the agent is told to fold its own context.
     pub compress_above_tokens: u64,
+    /// The chance a cached prefix is gone by the next request, `0.0..=1.0`.
+    pub cache_invalid_rate: f64,
 }
 
 /// The on-disk shape. Every field is optional so a config file can be tiny.
@@ -271,6 +283,7 @@ struct FileScripts {
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct FileAgent {
     compress_above_tokens: Option<u64>,
+    cache_invalid_rate: Option<f64>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -380,6 +393,8 @@ impl Config {
             context: entry.as_ref().and_then(|e| e.context),
             api_key_env,
             api_key,
+            measure: None,
+            price: None,
             temperature: model_file.temperature,
             max_output_tokens: model_file.max_output_tokens,
             store: model_file.store.unwrap_or(false),
@@ -494,6 +509,13 @@ impl Config {
                 .and_then(|a| a.compress_above_tokens)
                 .or_else(|| env_or("GONGGA_COMPRESS_ABOVE_TOKENS").and_then(|v| v.parse().ok()))
                 .unwrap_or(DEFAULT_COMPRESS_ABOVE_TOKENS),
+            cache_invalid_rate: file
+                .agent
+                .as_ref()
+                .and_then(|a| a.cache_invalid_rate)
+                .or_else(|| env_or("GONGGA_CACHE_INVALID_RATE").and_then(|v| v.parse().ok()))
+                .unwrap_or(DEFAULT_CACHE_INVALID_RATE)
+                .clamp(0.0, 1.0),
         };
 
         let transport = file.transport.unwrap_or_default();
@@ -594,6 +616,8 @@ impl ModelConfig {
         // Capabilities follow the model: another entry keeps its own tools and eyes.
         cfg.builtin_tools = entry.builtin_tools.clone();
         cfg.modalities = entry.modalities.clone();
+        // And so does what it charges: the plan is priced by the model in use.
+        cfg.price = entry.price;
         cfg
     }
 }

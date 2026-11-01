@@ -46,6 +46,10 @@ pub struct Agent {
     pub default_context: Option<u64>,
     pub tools: Arc<ToolRegistry>,
     pub bus: EventBus,
+    /// How often a cached prefix is assumed to be gone: the plan's hyperparameter.
+    pub cache_invalid_rate: f64,
+    /// What the session's model charges, from the roster.
+    pub price: Option<crate::providers::Price>,
     /// Compress once a request would carry more than this many input tokens.
     /// 0 disables it.
     pub compress_above_tokens: u64,
@@ -315,9 +319,11 @@ impl Agent {
             }
         }
         // Built outside the lock: a duplicate client is cheaper than serialising turns.
-        let client = Arc::new(LlmClient::new(
-            &self.model_config.for_entry(entry, api_key),
-        )?);
+        let mut cfg = self.model_config.for_entry(entry, api_key);
+        // Every client measures its own provider, into this home's store.
+        cfg.measure = Some(self.store.clone());
+        cfg.price = entry.price;
+        let client = Arc::new(LlmClient::new(&cfg)?);
         self.clients
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -415,6 +421,7 @@ impl Agent {
         &self,
         id: i64,
         name: &str,
+        model: &str,
         cwd: &std::path::Path,
         note: Option<&str>,
     ) -> anyhow::Result<crate::store::Prompt> {
@@ -437,7 +444,7 @@ impl Agent {
             )),
         };
         // Built from what the references say now, so an edited body reaches the model.
-        let (index, rooted) = match self.index_of(id, name, cwd) {
+        let (index, rooted) = match self.index_of(id, name, model, cwd) {
             Some((index, rooted)) => (Some(index), rooted),
             None => match &stored {
                 Some(kept) => (kept.index.clone(), kept.rooted.clone()),
@@ -487,6 +494,12 @@ impl Agent {
         }
     }
 
+    /// How many tokens `text` is worth on the roster model named `model`.
+    fn tokens_on(&self, model: &str, text: &str) -> usize {
+        let ratio = self.store.token_ratio(model);
+        (text.len() as f64 * ratio).round().max(1.0) as usize
+    }
+
     /// The index this request carries: the text every reference its messages name
     /// says now, in the order the cache pays least for.
     ///
@@ -500,6 +513,7 @@ impl Agent {
         &self,
         id: i64,
         name: &str,
+        model: &str,
         cwd: &std::path::Path,
     ) -> Option<(String, Vec<String>)> {
         // The queue as well as the transcript: a message delivered before this row
@@ -511,14 +525,22 @@ impl Agent {
         if roots.is_empty() {
             return None;
         }
+        let rates = crate::prefix_cache::Rates {
+            price: Some(self.price.clone().unwrap_or_default()),
+            invalid: self.cache_invalid_rate,
+        };
         let wanted: Vec<(&str, usize, u64)> = roots
             .iter()
             .map(|root| {
                 let digest = crate::prefix_cache::digest(&root.content);
-                (root.spelling.as_str(), root.len(), digest)
+                (
+                    root.spelling.as_str(),
+                    self.tokens_on(&model, &root.content),
+                    digest,
+                )
             })
             .collect();
-        let order = crate::prefix_cache::plan(&self.store, name, "prompt index", &wanted);
+        let order = crate::prefix_cache::plan(&self.store, name, "prompt index", &wanted, rates);
         let mut entries: Vec<&crate::meta::Root> = Vec::with_capacity(order.len());
         for spelling in &order {
             if let Some(root) = roots.iter().find(|root| &root.spelling == spelling) {
@@ -598,7 +620,7 @@ impl Agent {
         let generation = self.store.context_generation(id)?;
         let phase_started = std::time::Instant::now();
         let definitions = self.tools.definitions();
-        let prompt = self.prompt_in_force(id, &name, cwd, note.as_deref())?;
+        let prompt = self.prompt_in_force(id, &name, llm.model(), cwd, note.as_deref())?;
         phases.prompt_ms = phase_started.elapsed().as_millis() as u64;
         // Pinned here, so every retry of this request replays the window that was
         // current when it started.
@@ -1029,6 +1051,9 @@ impl Agent {
             cwd: session.cwd(),
             vision: llm.vision(crate::prompts::shared()),
             inbox: session.inbox_signal(),
+            model: llm.model().to_string(),
+            price: self.price,
+            cache_invalid_rate: self.cache_invalid_rate,
             closing: session.closing_signal(),
         };
         let run_started = std::time::Instant::now();

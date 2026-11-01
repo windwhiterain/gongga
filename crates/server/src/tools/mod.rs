@@ -49,6 +49,12 @@ pub struct ToolContext {
     pub vision: crate::llm::Vision,
     /// Whether a message arrived for this session that its turn cannot read yet.
     pub inbox: crate::session::InboxSignal,
+    /// The model this turn runs on, for the price and the token ratio.
+    pub model: String,
+    /// What that model charges, from the roster.
+    pub price: Option<crate::providers::Price>,
+    /// How often a cached prefix is assumed to be gone: the plan's hyperparameter.
+    pub cache_invalid_rate: f64,
     /// Set when the shells are being ended because the server is going: nothing
     /// that stops then "finished", so nothing about it is worth a row.
     pub closing: Arc<std::sync::atomic::AtomicBool>,
@@ -1206,6 +1212,9 @@ mod tests {
                 refusal: String::new(),
             },
             inbox,
+            model: "test/model".to_string(),
+            price: None,
+            cache_invalid_rate: 0.0,
             closing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
@@ -1235,6 +1244,9 @@ mod tests {
                 refusal: String::new(),
             },
             inbox: InboxSignal::around(Arc::new(AtomicU64::new(0))),
+            model: "test/model".to_string(),
+            price: None,
+            cache_invalid_rate: 0.0,
             closing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Everything `providers.toml` says about one provider.
 #[derive(Debug, Clone)]
@@ -58,7 +58,7 @@ pub struct Endpoint {
     pub base_url: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Model {
     pub id: String,
     pub name: String,
@@ -76,6 +76,42 @@ pub struct Model {
     pub modalities: Vec<String>,
     /// Tools the provider runs on its own side, in the provider's own spelling.
     pub builtin_tools: Vec<String>,
+    /// What this model charges, when the roster says. See [`Price`].
+    #[serde(default)]
+    pub price: Option<Price>,
+}
+
+/// A model's prices, in whatever currency and unit the roster records them.
+///
+/// # Invariant
+///
+/// Only the ratio is used: `input / cache_read` is what a cached token is worth, and
+/// it is the same number whether the table says 1.00/0.10 CNY per million or
+/// 0.15/0.015 USD. So no currency is ever converted and no unit is ever assumed.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq)]
+pub struct Price {
+    #[serde(default)]
+    pub input: Option<f64>,
+    /// The roster spells the cached rate `cache_read`; `cached` is the same thing.
+    #[serde(default, alias = "cached")]
+    pub cache_read: Option<f64>,
+    #[serde(default)]
+    pub output: Option<f64>,
+}
+
+impl Price {
+    /// How many fresh tokens one cached token stands for.
+    ///
+    /// # Invariant
+    ///
+    /// `1.0` when the roster states no usable pair, which the cache's plan reads as
+    /// "no rate here" and replaces with its own stand-in.
+    pub fn miss_ratio(&self) -> f64 {
+        match (self.input, self.cache_read) {
+            (Some(input), Some(cached)) if input > 0.0 && cached > 0.0 => input / cached,
+            _ => 1.0,
+        }
+    }
 }
 
 impl Model {
@@ -89,7 +125,7 @@ impl Model {
 /// One model as a caller picks it: which provider serves it, and where to ask.
 ///
 /// See `docs/notes/server-providers.md`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Entry {
     /// The provider's id, e.g. `deepseek-official`.
     pub provider: String,
@@ -115,6 +151,8 @@ pub struct Entry {
     pub modalities: Vec<String>,
     /// Tools the provider runs on its own side, in the provider's own spelling.
     pub builtin_tools: Vec<String>,
+    /// What the roster says this model charges, for the prefix cache's arithmetic.
+    pub price: Option<Price>,
 }
 
 impl Entry {
@@ -166,7 +204,7 @@ impl Entry {
 }
 
 /// An [`Entry`] plus the key that resolved for it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Choice {
     pub entry: Entry,
     pub api_key: String,
@@ -451,6 +489,7 @@ impl Catalog {
             reasoning_mapping: found.reasoning_mapping.clone(),
             modalities: found.modalities.clone(),
             builtin_tools: found.builtin_tools.clone(),
+            price: found.price,
         })
     }
 }
@@ -599,6 +638,9 @@ struct FileModel {
     /// Provider-side tools, spelled that provider's way, sent verbatim; absent none.
     #[serde(default)]
     builtin_tools: Vec<String>,
+    /// The price table the roster records for this model, in its own currency.
+    #[serde(default)]
+    price: Option<Price>,
 }
 
 /// The providers a merged roster describes, first claim on an id winning.
@@ -642,6 +684,7 @@ fn parse_value(value: toml::Value) -> Result<Vec<Provider>, toml::de::Error> {
                         reasoning_mapping: m.reasoning_mapping,
                         modalities: m.modalities,
                         builtin_tools: m.builtin_tools,
+                        price: m.price,
                     })
                     .collect(),
                 quota: p
@@ -1478,6 +1521,7 @@ key = "k"
     #[test]
     fn a_level_is_mapped_then_checked() {
         let entry = Entry {
+            price: None,
             provider: "p".into(),
             provider_name: "P".into(),
             model: "p/m".into(),

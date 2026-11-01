@@ -208,7 +208,10 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     );
 
     let store = store::Store::open(&cfg.db_path)?;
-    let llm = Arc::new(LlmClient::new(&cfg.model)?);
+    // The server's own client measures too, so the first session is priced for.
+    let mut model_cfg = cfg.model.clone();
+    model_cfg.measure = Some(store.clone());
+    let llm = Arc::new(LlmClient::new(&model_cfg)?);
     // A script drives this server by the same name a shell does: `gongga`, which
     // is this program under the command's name in the home's `bin`.
     // Before any shell exists: the command it types has to be there, and a
@@ -293,6 +296,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             )),
             bus: bus.clone(),
             compress_above_tokens: cfg.agent.compress_above_tokens,
+            cache_invalid_rate: cfg.agent.cache_invalid_rate,
+            price: cfg.model.price,
             output_dir: output_dir.clone(),
             detached: detached.clone(),
         }),

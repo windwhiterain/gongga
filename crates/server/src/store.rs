@@ -23,8 +23,7 @@ pub struct Prompt {
     /// The text of the references the first message named, in the order it is sent.
     #[serde(default)]
     pub index: Option<String>,
-    /// The session's start card -- name, build, the first turn's time, the first
-    /// turn's cwd -- read as the last item. Stamped once, never re-rendered.
+    /// The start card: name, build, the first turn's time and cwd. Stamped once.
     #[serde(default)]
     pub tail: Option<String>,
     /// The spellings `index` carries, so a mention of one stays literal.
@@ -177,11 +176,25 @@ CREATE INDEX IF NOT EXISTS detached_by_session ON detached_jobs(session);
 
 -- What the prefix cache has learnt about the order things are emitted in: one row,
 -- because it is one learning shared by every caller of `prefix_cache::plan`.
+-- What a request of a model was measured at: characters written against the tokens
+-- the provider counted. The ratio is the only honest way to cost an item.
+CREATE TABLE IF NOT EXISTS token_ratio (
+    model  TEXT PRIMARY KEY,
+    chars  INTEGER NOT NULL,
+    tokens INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS prefix_layout (
     session TEXT PRIMARY KEY,
     layout  TEXT NOT NULL
 );
 "#;
+
+/// What a character is assumed to cost before anything is measured.
+///
+/// Not a budget: the number a plan is made of when the provider has never counted a
+/// request for this model. See `docs/notes/server-store.md`.
+pub const CHARS_PER_TOKEN: f64 = 4.0;
 
 #[derive(Debug, Clone)]
 pub struct Store {
@@ -781,6 +794,40 @@ impl Store {
             }
         }
         Ok(out)
+    }
+
+    /// Adds one measurement: `chars` written, `tokens` the provider counted for it.
+    pub fn note_token_ratio(&self, model: &str, chars: u64, tokens: u64) -> anyhow::Result<()> {
+        self.lock().execute(
+            "INSERT INTO token_ratio (model, chars, tokens) VALUES (?1, ?2, ?3)
+             ON CONFLICT(model) DO UPDATE SET chars = chars + excluded.chars,
+                                              tokens = tokens + excluded.tokens",
+            params![model, chars as i64, tokens as i64],
+        )?;
+        Ok(())
+    }
+
+    /// How many tokens a character is worth on `model`, from what was measured.
+    ///
+    /// # Invariant
+    ///
+    /// A model nobody has measured falls back to [`CHARS_PER_TOKEN`], which claims
+    /// nothing about this provider: it only has to be close enough that a plan is not
+    /// made of zeros.
+    pub fn token_ratio(&self, model: &str) -> f64 {
+        let row: Option<(i64, i64)> = self
+            .lock()
+            .query_row(
+                "SELECT chars, tokens FROM token_ratio WHERE model = ?1",
+                params![model],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .unwrap_or(None);
+        match row {
+            Some((chars, tokens)) if chars > 0 && tokens > 0 => tokens as f64 / chars as f64,
+            _ => 1.0 / CHARS_PER_TOKEN,
+        }
     }
 
     /// The orderings `session` has already emitted, as `prefix_cache` records them.

@@ -93,6 +93,43 @@ nothing could ever hit, growing a branch per session and paying a scan for each.
 `del_session` deletes that session's row: a new session of the same name is a new
 conversation, and must not be warmed by the old one.
 
+## priced from the roster: Rates
+
+The cost model used to be a constant of this module (`MISS_SCALE = 64`). It is now
+the roster's own numbers: `[[provider.model]]` may carry `[provider.model.price]`,
+and `Price::miss_ratio()` turns `input / cache_read` into the factor one cached token
+is worth. Only that ratio is used -- a currency is never converted and a unit is never
+assumed, so `1.00/0.10 CNY per million` and `0.15/0.015 USD` are the same 10.
+
+`cache_invalid_rate` is the other input, from `[agent]` or
+`GONGGA_CACHE_INVALID_RATE`. It is the chance the provider no longer holds a prefix it
+once did, and it is folded in as an expectation: a cache correct `(1 - p)` of the time
+is worth `(1 - p)` of its discount, so
+
+    scale = ratio / ((1 - p) + p * ratio)
+
+At `p = 0` the scale is the roster's ratio; at `p = 1` it is `1.0`, which says planning
+for warmth buys nothing and the caller's own order stands. That is the whole knob: no
+other number in this module decides anything.
+
+When the roster states no usable pair, the scale falls back to
+[`DEFAULT_MISS_RATIO`] -- a stand-in, because the alternative is worse than a guess: a
+plan made at `1.0` never chooses a warm chain, so every call would append a node and
+the layout would grow a branch per request while warming nothing.
+
+## the size is real tokens, not bytes
+
+`Item::tokens` is what the provider counted, and it comes from the provider: every
+stream's `usage.input_tokens` is recorded against the bytes the body wrote, per model
+(`token_ratio`), and `Store::token_ratio` is a running measurement of tokens per
+character. So an item's cost is `len * ratio`, measured for this model rather than
+assumed to be four characters per token.
+
+That measurement is not a nicety. A plan compares sizes with each other, so a constant
+factor would cancel out; what it cannot cancel is a *ratio* -- and the ratio between
+`@skill:self-control` and one table row is exactly what decides which chain is cheaper,
+which is the decision this module exists to make.
+
 ## the identity is the content
 
 A key is a name; the same name can come to mean other bytes. A skill body is edited, a

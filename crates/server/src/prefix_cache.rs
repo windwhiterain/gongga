@@ -58,22 +58,49 @@ pub fn plan(
     session: &str,
     purpose: &str,
     wanted: &[(&str, usize, u64)],
+    rates: Rates,
 ) -> Vec<String> {
     let mut layouts = shared(store, session);
     let Some(layout) = layouts.get_mut(session) else {
         return Vec::new();
     };
-    let order = layout.plan(purpose, wanted);
+    let order = layout.plan(purpose, wanted, rates.scale());
     if let Err(e) = store.save_prefix_layout(session, layout) {
         tracing::warn!(error = %e, session = %session, "the learnt prefix layout could not be written");
     }
     order
 }
 
-/// What a byte sent again costs against a byte the cache already holds.
-///
-/// liana's `cache_miss_cost_scale`.
-const MISS_SCALE: usize = 64;
+/// What a plan is priced at: the roster's rates, and how long a cache lasts.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Rates {
+    /// What the roster says this model charges, when it says anything.
+    pub price: Option<crate::providers::Price>,
+    /// The chance a prefix the provider once held is gone by the next request.
+    pub invalid: f64,
+}
+
+/// What a cached token is worth when the roster states no rate: a stand-in.
+pub const DEFAULT_MISS_RATIO: f64 = 10.0;
+
+impl Rates {
+    /// How many fresh tokens one cached token saves, with the invalidation folded in.
+    ///
+    /// # Invariant
+    ///
+    /// A cache expected to be gone `invalid` of the time is worth `(1 - invalid)` of
+    /// its rate, so a hit is worth `ratio / ((1 - invalid) + invalid * ratio)`.
+    pub fn scale(&self) -> f64 {
+        let ratio = self
+            .price
+            .map(|p| p.miss_ratio())
+            .filter(|ratio| *ratio > 1.0)
+            .unwrap_or(DEFAULT_MISS_RATIO);
+        let invalid = self.invalid.clamp(0.0, 1.0);
+        let expected = (1.0 - invalid) + invalid * ratio;
+        (ratio / expected).max(1.0)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct NodeId(usize);
@@ -94,8 +121,8 @@ pub struct Item {
     pub content: u64,
     /// One node per order this item has ended.
     nodes: Vec<NodeId>,
-    /// The bytes sending it costs the provider.
-    size: usize,
+    /// What sending it costs: tokens the provider counted, not bytes estimated here.
+    tokens: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -133,15 +160,21 @@ impl Layout {
     }
 
     /// The cheapest chain, then whatever is new. See the note.
-    pub fn plan(&mut self, purpose: &str, wanted: &[(&str, usize, u64)]) -> Vec<String> {
+    pub fn plan(
+        &mut self,
+        purpose: &str,
+        wanted: &[(&str, usize, u64)],
+        scale: f64,
+    ) -> Vec<String> {
         let ids = self.ids(purpose, wanted);
         if ids.is_empty() {
             return Vec::new();
         }
         // What sending all of it with nothing cached costs: the floor to beat.
-        let mut best: usize = ids.iter().map(|&id| self.items[id].size).sum::<usize>() * MISS_SCALE;
+        let mut best: f64 =
+            ids.iter().map(|&id| self.items[id].tokens).sum::<usize>() as f64 * scale;
         let mut chosen: Option<NodeId> = None;
-        for (node, cost) in self.cold_chains(&ids).into_iter().enumerate() {
+        for (node, cost) in self.cold_chains(&ids, scale).into_iter().enumerate() {
             let Some(cost) = cost else { continue };
             if cost < best {
                 best = cost;
@@ -174,7 +207,7 @@ impl Layout {
     /// A chain carrying an item outside `wanted` is not a candidate, whatever it
     /// would cost: a row no longer installed must not come back because it was
     /// emitted once.
-    fn cold_chains(&self, ids: &[usize]) -> Vec<Option<usize>> {
+    fn cold_chains(&self, ids: &[usize], scale: f64) -> Vec<Option<f64>> {
         let mut allowed = vec![true; self.nodes.len()];
         for id in 0..self.items.len() {
             if ids.contains(&id) {
@@ -184,19 +217,19 @@ impl Layout {
                 allowed[node] = false;
             }
         }
-        let mut costs: Vec<Option<usize>> = self
+        let mut costs: Vec<Option<f64>> = self
             .nodes
             .iter()
             .enumerate()
-            .map(|(node, n)| allowed[node].then_some(n.size))
+            .map(|(node, n)| allowed[node].then_some(n.size as f64))
             .collect();
         for &id in ids {
             let carried = self.subtree_marks(id);
-            let size = self.items[id].size;
+            let tokens = self.items[id].tokens;
             for (node, cost) in costs.iter_mut().enumerate() {
                 if let Some(cost) = cost {
                     if !carried[node] {
-                        *cost += size * MISS_SCALE;
+                        *cost += tokens as f64 * scale;
                     }
                 }
             }
@@ -227,14 +260,14 @@ impl Layout {
     fn ids(&mut self, purpose: &str, wanted: &[(&str, usize, u64)]) -> Vec<usize> {
         let mut ids: Vec<usize> = Vec::with_capacity(wanted.len());
         let mut restated = false;
-        for &(key, size, content) in wanted {
+        for &(key, tokens, content) in wanted {
             let id = match self
                 .index
                 .get(&(purpose.to_string(), key.to_string(), content))
             {
                 Some(&id) => {
-                    if self.items[id].size != size {
-                        self.items[id].size = size;
+                    if self.items[id].tokens != tokens {
+                        self.items[id].tokens = tokens;
                         restated = true;
                     }
                     id
@@ -246,7 +279,7 @@ impl Layout {
                         key: key.to_string(),
                         content,
                         nodes: Vec::new(),
-                        size,
+                        tokens,
                     });
                     self.index
                         .insert((purpose.to_string(), key.to_string(), content), id);
@@ -348,7 +381,7 @@ impl Layout {
             let above = self.nodes[node]
                 .parent
                 .map_or(0, |parent| self.nodes[parent.0].size);
-            self.nodes[node].size = above + self.items[item].size;
+            self.nodes[node].size = above + self.items[item].tokens;
         }
     }
 
@@ -365,7 +398,7 @@ impl Layout {
             item,
             parent,
             children: Vec::new(),
-            size: carried + self.items[item].size,
+            size: carried + self.items[item].tokens,
         });
         self.items[item].nodes.push(id);
         id
@@ -389,7 +422,7 @@ impl Layout {
 
     /// What a fresh plan of `wanted` would choose, without teaching the layout.
     #[cfg(test)]
-    fn chain_order(&self, purpose: &str, wanted: &[(&str, usize, u64)]) -> Vec<String> {
+    fn chain_order(&self, purpose: &str, wanted: &[(&str, usize, u64)], scale: f64) -> Vec<String> {
         let ids: Vec<usize> = wanted
             .iter()
             .filter_map(|(key, _, content)| {
@@ -398,9 +431,9 @@ impl Layout {
                     .copied()
             })
             .collect();
-        let mut best = ids.iter().map(|&id| self.items[id].size).sum::<usize>() * MISS_SCALE;
+        let mut best = ids.iter().map(|&id| self.items[id].tokens).sum::<usize>() as f64 * scale;
         let mut chosen = None;
-        for (node, cost) in self.cold_chains(&ids).into_iter().enumerate() {
+        for (node, cost) in self.cold_chains(&ids, scale).into_iter().enumerate() {
             let Some(cost) = cost else { continue };
             if cost < best {
                 best = cost;
@@ -427,6 +460,9 @@ impl Layout {
 mod tests {
     use super::*;
 
+    /// The scale a plan runs at when the roster states no price: the stand-in.
+    const SCALE: f64 = DEFAULT_MISS_RATIO;
+
     /// The digest a caller would pass: the text, and nothing about its name.
     fn d(text: &str) -> u64 {
         digest(text)
@@ -439,6 +475,7 @@ mod tests {
         let planned = layout.plan(
             "t",
             &[("a", 10, d("a")), ("b", 20, d("b")), ("c", 30, d("c"))],
+            SCALE,
         );
         assert_eq!(planned, vec!["a", "b", "c"]);
     }
@@ -447,15 +484,10 @@ mod tests {
     #[test]
     fn a_repeated_set_is_emitted_unchanged() {
         let mut layout = Layout::new();
-        let once = layout.plan(
-            "t",
-            &[("a", 10, d("a")), ("b", 20, d("b")), ("c", 30, d("c"))],
-        );
+        let set = [("a", 10, d("a")), ("b", 20, d("b")), ("c", 30, d("c"))];
+        let once = layout.plan("t", &set, SCALE);
         let chains = layout.chain_count();
-        let again = layout.plan(
-            "t",
-            &[("a", 10, d("a")), ("b", 20, d("b")), ("c", 30, d("c"))],
-        );
+        let again = layout.plan("t", &set, SCALE);
         assert_eq!(once, again);
         assert_eq!(layout.chain_count(), chains, "nothing new was learnt");
     }
@@ -465,11 +497,11 @@ mod tests {
     fn a_warm_chain_beats_the_order_asked_for() {
         let mut layout = Layout::new();
         assert_eq!(
-            layout.plan("t", &[("a", 10, d("a")), ("b", 20, d("b"))]),
+            layout.plan("t", &[("a", 10, d("a")), ("b", 20, d("b"))], SCALE),
             vec!["a", "b"]
         );
         assert_eq!(
-            layout.plan("t", &[("b", 20, d("b")), ("a", 10, d("a"))]),
+            layout.plan("t", &[("b", 20, d("b")), ("a", 10, d("a"))], SCALE),
             vec!["a", "b"]
         );
     }
@@ -478,9 +510,9 @@ mod tests {
     #[test]
     fn what_is_new_goes_after_what_is_warm() {
         let mut layout = Layout::new();
-        layout.plan("t", &[("a", 10, d("a")), ("b", 20, d("b"))]);
+        layout.plan("t", &[("a", 10, d("a")), ("b", 20, d("b"))], SCALE);
         assert_eq!(
-            layout.plan("t", &[("a", 10, d("a")), ("z", 5, d("z"))]),
+            layout.plan("t", &[("a", 10, d("a")), ("z", 5, d("z"))], SCALE),
             vec!["a", "z"]
         );
     }
@@ -497,45 +529,82 @@ mod tests {
         layout.plan(
             "t",
             &[("a", 10, d("a")), ("b", 20, d("b")), ("c", 30, d("c"))],
+            SCALE,
         );
-        let planned = layout.plan("t", &[("c", 30, d("c"))]);
-        assert_eq!(planned, vec!["c"]);
+        assert_eq!(layout.plan("t", &[("c", 30, d("c"))], SCALE), vec!["c"]);
     }
 
     /// A changed size re-costs the chains through it instead of stranding them.
     #[test]
     fn a_shrunk_item_is_cheaper_than_sending_it_cold() {
         let mut layout = Layout::new();
-        assert_eq!(layout.plan("t", &[("a", 1000, d("a"))]), vec!["a"]);
+        assert_eq!(layout.plan("t", &[("a", 1000, d("a"))], SCALE), vec!["a"]);
         let chains = layout.chain_count();
-        assert_eq!(layout.plan("t", &[("a", 10, d("a"))]), vec!["a"]);
+        assert_eq!(layout.plan("t", &[("a", 10, d("a"))], SCALE), vec!["a"]);
         assert_eq!(layout.chain_count(), chains, "re-costed, not abandoned");
     }
 
-    /// What one run learnt is what the next run plans with.
+    /// The roster's ratio is what decides, not a constant of this module's.
     ///
     /// # Invariant
     ///
-    /// A layout written to the store and read back plans the same order: a restart
-    /// is a new process asking the same endpoint for the same bytes, so forgetting
-    /// the chains would give every run a cold first request.
+    /// A scale of one says a cache is worth nothing, and then the order asked for
+    /// wins; a scale above one says a warm prefix is worth a detour through it.
     #[test]
-    fn a_layout_survives_a_round_trip_through_the_store() {
-        let store =
-            crate::store::Store::open(std::path::Path::new(":memory:")).expect("a throwaway store");
-        let wanted = [("skill:a", 10usize, d("a")), ("skill:b", 20, d("b"))];
-        let reversed = [("skill:b", 20usize, d("b")), ("skill:a", 10, d("a"))];
-        let mut layout = Layout::new();
-        assert_eq!(layout.plan("t", &wanted), vec!["skill:a", "skill:b"]);
-        store
-            .save_prefix_layout("probe", &layout)
-            .expect("a writable store");
-        let mut restored = store
-            .prefix_layout("probe")
-            .expect("a readable layout")
-            .expect("the plan wrote one");
-        restored.reindex();
-        assert_eq!(restored.plan("t", &reversed), vec!["skill:a", "skill:b"]);
+    fn the_scale_decides_what_a_warm_prefix_is_worth() {
+        let mut cheap = Layout::new();
+        assert_eq!(
+            cheap.plan("t", &[("a", 10, d("a")), ("b", 20, d("b"))], 1.0),
+            vec!["a", "b"]
+        );
+        assert_eq!(
+            cheap.plan("t", &[("b", 20, d("b")), ("a", 10, d("a"))], 1.0),
+            vec!["b", "a"],
+            "nothing warm is worth anything, so the caller's order stands"
+        );
+        let mut dear = Layout::new();
+        dear.plan("t", &[("a", 10, d("a")), ("b", 20, d("b"))], 10.0);
+        assert_eq!(
+            dear.plan("t", &[("b", 20, d("b")), ("a", 10, d("a"))], 10.0),
+            vec!["a", "b"],
+            "a hit is worth ten misses, so the cached order is worth following"
+        );
+    }
+
+    /// The scale comes from the roster's two rates, and the invalidation lowers it.
+    #[test]
+    fn rates_turn_prices_and_invalidation_into_a_scale() {
+        // A ratio that is not the stand-in, so this cannot pass by coincidence.
+        let price = crate::providers::Price {
+            input: Some(3.0),
+            cache_read: Some(0.5),
+            output: None,
+        };
+        let dear = Rates {
+            price: Some(price),
+            invalid: 0.0,
+        };
+        assert!((dear.scale() - 6.0).abs() < 1e-9, "{}", dear.scale());
+        let half = Rates {
+            price: Some(price),
+            invalid: 0.5,
+        };
+        // Half the time the cache is gone, so a hit is worth half of six.
+        assert!((half.scale() - 6.0 / 3.5).abs() < 1e-9, "{}", half.scale());
+        let gone = Rates {
+            price: Some(price),
+            invalid: 1.0,
+        };
+        assert_eq!(
+            gone.scale(),
+            1.0,
+            "a cache that never holds is worth nothing"
+        );
+        assert_eq!(
+            Rates::default().scale(),
+            DEFAULT_MISS_RATIO,
+            "no price falls back to the stand-in"
+        );
     }
 
     /// Edited content is a new item, not the old one under the same name.
@@ -547,15 +616,18 @@ mod tests {
     #[test]
     fn changed_content_is_a_new_item() {
         let mut layout = Layout::new();
-        layout.plan("t", &[("skill", 10, d("old body"))]);
-        layout.plan("t", &[("skill", 10, d("new body"))]);
+        layout.plan("t", &[("skill", 10, d("old body"))], SCALE);
+        layout.plan("t", &[("skill", 10, d("new body"))], SCALE);
         assert_eq!(
-            layout.chain_order("t", &[("skill", 10, d("new body"))]),
+            layout.chain_order("t", &[("skill", 10, d("new body"))], SCALE),
             vec!["skill"],
             "the new text is planned on its own"
         );
-        let items = layout.item_keys();
-        assert_eq!(items, vec!["skill".to_string()], "one name, one live item");
+        assert_eq!(
+            layout.item_keys(),
+            vec!["skill".to_string()],
+            "one name, one live item"
+        );
     }
 
     /// The item nothing wants any more is dropped, and its chains with it.
@@ -567,9 +639,9 @@ mod tests {
     #[test]
     fn what_is_no_longer_wanted_is_forgotten() {
         let mut layout = Layout::new();
-        layout.plan("t", &[("a", 10, d("a")), ("b", 20, d("b"))]);
+        layout.plan("t", &[("a", 10, d("a")), ("b", 20, d("b"))], SCALE);
         assert_eq!(layout.item_keys(), vec!["a".to_string(), "b".to_string()]);
-        layout.plan("t", &[("a", 10, d("a"))]);
+        layout.plan("t", &[("a", 10, d("a"))], SCALE);
         assert_eq!(layout.item_keys(), vec!["a".to_string()]);
     }
 
@@ -583,15 +655,14 @@ mod tests {
     #[test]
     fn callers_do_not_prune_each_other() {
         let mut layout = Layout::new();
-        layout.plan("skill table", &[("tools/build", 10, d("row"))]);
-        layout.plan("prompt index", &[("@skill:x", 20, d("body"))]);
+        layout.plan("skill table", &[("tools/build", 10, d("row"))], SCALE);
+        layout.plan("prompt index", &[("@skill:x", 20, d("body"))], SCALE);
         assert_eq!(
             layout.item_keys(),
             vec!["tools/build".to_string(), "@skill:x".to_string()]
         );
-        // And the second plan of one still beats a cold send of its own set.
         assert_eq!(
-            layout.plan("prompt index", &[("@skill:x", 20, d("body"))]),
+            layout.plan("prompt index", &[("@skill:x", 20, d("body"))], SCALE),
             vec!["@skill:x"]
         );
     }
@@ -608,18 +679,75 @@ mod tests {
             crate::store::Store::open(std::path::Path::new(":memory:")).expect("a throwaway store");
         let wanted = [("a", 10usize, d("a")), ("b", 20, d("b"))];
         let reversed = [("b", 20usize, d("b")), ("a", 10, d("a"))];
-        assert_eq!(plan(&store, "one", "t", &wanted), vec!["a", "b"]);
         assert_eq!(
-            plan(&store, "two", "t", &reversed),
+            plan(&store, "sessions/a", "t", &wanted, Rates::default()),
+            vec!["a", "b"]
+        );
+        assert_eq!(
+            plan(&store, "sessions/b", "t", &reversed, Rates::default()),
             vec!["b", "a"],
             "the other session kept the order it asked for"
         );
-        assert_eq!(plan(&store, "one", "t", &reversed), vec!["a", "b"]);
+        assert_eq!(
+            plan(&store, "sessions/a", "t", &reversed, Rates::default()),
+            vec!["a", "b"]
+        );
+    }
+
+    /// What one run learnt is what the next run plans with.
+    ///
+    /// # Invariant
+    ///
+    /// A layout written to the store and read back plans the same order: a restart
+    /// is a new process asking the same endpoint for the same bytes, so forgetting
+    /// the chains would give every run a cold first request.
+    #[test]
+    fn a_layout_survives_a_round_trip_through_the_store() {
+        let store =
+            crate::store::Store::open(std::path::Path::new(":memory:")).expect("a throwaway store");
+        let wanted = [("skill:a", 10usize, d("a")), ("skill:b", 20, d("b"))];
+        let reversed = [("skill:b", 20usize, d("b")), ("skill:a", 10, d("a"))];
+        let mut layout = Layout::new();
+        assert_eq!(layout.plan("t", &wanted, SCALE), vec!["skill:a", "skill:b"]);
+        store
+            .save_prefix_layout("round-trip", &layout)
+            .expect("a writable store");
+        let mut restored = store
+            .prefix_layout("round-trip")
+            .expect("a readable layout")
+            .expect("the plan wrote one");
+        restored.reindex();
+        assert_eq!(
+            restored.plan("t", &reversed, SCALE),
+            vec!["skill:a", "skill:b"]
+        );
+    }
+
+    /// A measurement from the provider becomes the ratio a plan is measured in.
+    #[test]
+    fn a_measured_ratio_replaces_the_stand_in() {
+        let store =
+            crate::store::Store::open(std::path::Path::new(":memory:")).expect("a throwaway store");
+        assert!(
+            (store.token_ratio("ratio-model") - 1.0 / crate::store::CHARS_PER_TOKEN).abs() < 1e-9,
+            "unmeasured falls back"
+        );
+        store
+            .note_token_ratio("ratio-model", 4_000, 1_000)
+            .expect("a write");
+        assert!((store.token_ratio("ratio-model") - 0.25).abs() < 1e-9);
+        store
+            .note_token_ratio("ratio-model", 4_000, 1_000)
+            .expect("a second write");
+        assert!(
+            (store.token_ratio("ratio-model") - 0.25).abs() < 1e-9,
+            "ratios, not sums"
+        );
     }
 
     #[test]
     fn an_empty_set_plans_nothing() {
         let mut layout = Layout::new();
-        assert!(layout.plan("t", &[]).is_empty());
+        assert!(layout.plan("t", &[], SCALE).is_empty());
     }
 }
