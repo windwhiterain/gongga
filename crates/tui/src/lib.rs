@@ -823,7 +823,15 @@ impl Tui {
         }
     }
 
-    /// Whether this key asks for the clipboard: SPEC's Ctrl+V, case either way.
+    /// Whether this key asks for the clipboard: SPEC's Ctrl+V or Ctrl+Alt+V,
+    /// case either way.
+    ///
+    /// # Invariant
+    ///
+    /// Alt is not disqualifying. A terminal that keeps Ctrl+V for its own paste
+    /// -- VS Code does -- never forwards the bare key, so the Ctrl+Alt+V spelling
+    /// is the one an operator there can actually press. See
+    /// `docs/notes/tui-paste.md`.
     fn clipboard_paste(key: &KeyEvent) -> bool {
         key.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Char('v' | 'V'))
@@ -856,6 +864,13 @@ impl Tui {
             return None;
         }
 
+        // Above the Alt branch: a terminal that keeps Ctrl+V for itself leaves
+        // Ctrl+Alt+V as the only key reaching this window.
+        if Self::clipboard_paste(&key) {
+            self.paste_from_clipboard();
+            return None;
+        }
+
         // The other modifier bindings use Alt too: a terminal that eats Ctrl+K is common.
         if key.modifiers.contains(KeyModifiers::ALT) {
             match key.code {
@@ -879,12 +894,6 @@ impl Tui {
                 }
                 _ => {}
             }
-            return None;
-        }
-
-        // A terminal that pastes itself sends the text, not this key.
-        if Self::clipboard_paste(&key) {
-            self.paste_from_clipboard();
             return None;
         }
 
@@ -2217,12 +2226,14 @@ mod tests {
         }
     }
 
-    /// Ctrl+V is the clipboard; every other Ctrl+letter still does nothing.
+    /// Ctrl+V and Ctrl+Alt+V are the clipboard; every other Ctrl+letter still
+    /// does nothing.
     ///
     /// # Invariant
     ///
-    /// The key is read before the swallow below it, or a terminal that forwards
-    /// Ctrl+V (instead of pasting the text itself) would look like a dead key.
+    /// The key is read before the Alt branch and the swallow below it, or a
+    /// terminal that keeps Ctrl+V for its own paste -- VS Code does -- would
+    /// leave the operator with a dead key.
     #[test]
     fn ctrl_v_is_the_clipboard() {
         for code in [KeyCode::Char('v'), KeyCode::Char('V')] {
@@ -2230,12 +2241,18 @@ mod tests {
                 code,
                 KeyModifiers::CONTROL
             )));
+            assert!(Tui::clipboard_paste(&KeyEvent::new(
+                code,
+                KeyModifiers::CONTROL | KeyModifiers::ALT
+            )));
         }
         // Typing a `v` is typing a letter; the rest of the Ctrl row stays silent.
         for key in [
             KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
             KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
             KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+            // Alt without Ctrl is not a paste either: Alt+V types a v.
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT),
         ] {
             assert!(!Tui::clipboard_paste(&key), "{key:?} is not a paste");
         }

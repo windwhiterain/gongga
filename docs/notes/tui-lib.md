@@ -340,13 +340,21 @@ the command layer's, and clearing it is a `del_sticky` nobody pressed.
 
 ## clipboard_paste and paste_from_clipboard
 
-SPEC makes `Ctrl+V` the paste. Where the terminal pastes by itself the key never
-arrives; where it forwards `^V`, `paste_from_clipboard` reads the clipboard and
-hands the text to `Tui::paste`, so a paste from the key and a paste from the
-terminal take the same road.
+SPEC makes `Ctrl+V` and `Ctrl+Alt+V` the paste. Where the terminal pastes by
+itself the key never arrives; where it forwards `^V`, `paste_from_clipboard`
+reads the clipboard and hands the text to `Tui::paste`, so a paste from the key
+and a paste from the terminal take the same road.
 
-The key is read before the Ctrl swallow below it, or a terminal that forwards
-`^V` would look like a dead key. What the read says when it fails is the status
+Alt is not disqualifying, which is the whole reason for the second spelling: a
+terminal that binds `Ctrl+V` to its own paste -- VS Code does -- never forwards
+the bare key, and `Ctrl+Alt+V` is what reaches this window instead. It arrives as
+`KeyCode::Char('v')` with `CONTROL | ALT`.
+
+# Invariant
+
+The key is read above the Alt branch and above the Ctrl swallow, or either
+spelling would look like a dead key: the Alt branch returns `None` for every
+letter it does not know, and the swallow below it drops the rest. What the read says when it fails is the status
 line's business, never the prompt's — and an empty clipboard says nothing at all,
 because "nothing to paste" is not news.
 

@@ -111,16 +111,53 @@ differ: one for a paste replayed as fast keystrokes, one for a paste that says s
 
 ## Ctrl+V, for the terminals that forward it
 
-SPEC makes `Ctrl+V` the paste. Bracketed paste is the other half of the same
-feature: a terminal that pastes by itself (Windows Terminal, VS Code) never sends
-the key at all, it sends the text. A terminal that forwards `^V` gets the
-clipboard read here instead — `clipboard::paste()` — and the answer goes in
+SPEC makes `Ctrl+V` and `Ctrl+Alt+V` the paste. Bracketed paste is the other half
+of the same feature: a terminal that pastes by itself (Windows Terminal, VS Code)
+never sends the key at all, it sends the text. A terminal that forwards `^V` gets
+the clipboard read here instead — `clipboard::paste()` — and the answer goes in
 through `Tui::paste`, so both roads end in the same place and neither replays
 keystrokes.
 
 Nothing is said when the clipboard is empty. When there is no tool to read it, or
 the tool refuses, the status line says so and the prompt is untouched: a paste
 that quietly did nothing is the failure mode this note keeps coming back to.
+
+## Why there is a second spelling, and why it is Ctrl+Alt+V
+
+VS Code's terminal binds `Ctrl+V` to `workbench.action.terminal.paste`, and that
+command is in the default `commandsToSkipShell` list: the key is taken before the
+terminal sees it, so this window never gets a key event — not even the text, if
+the clipboard holds only a picture, because VS Code's own paste reads text. An
+operator inside VS Code then has no key at all that pastes a screenshot. That is
+the report this spelling answers.
+
+VS Code binds nothing to `Ctrl+Alt+V` in the terminal, so this half is the
+window's to take. The key arrives as an `ESC` followed by `0x16`, which is
+`KeyCode::Char('v')` carrying `CONTROL | ALT`.
+
+Which half was measured, and which was reasoned: the harness writes those two
+bytes into a real ConPTY, and `alt 0x16` inserts the reference about a second
+later (the PowerShell image read); a bare `0x16` still does, so nothing about
+`Ctrl+V` moved. The read of the VS Code bundle says what is bound there --
+`win:{primary:2100,secondary:[3124]}`, i.e. `Ctrl+V` and `Ctrl+Shift+V` -- and
+that `Ctrl+Alt+V` is not among them. What is *not* measured is the last hop, an
+actual `Ctrl+Alt+V` pressed in an actual VS Code window: xterm.js sends a
+modified key as `ESC` plus the control byte for the terminals this window
+matches, and no observation here contradicts it.
+
+A terminal that eats the modified key as well — AltGr handling can turn `Ctrl+Alt`
+plus a letter into the plain letter, which no window can tell from typing — is
+not something this side can fix. The recipe for that case is the terminal's: in
+VS Code, one line in `keybindings.json` sends the byte directly, and a bare `^V`
+is the first spelling again.
+
+    {"key": "ctrl+alt+v", "command": "workbench.action.terminal.sendSequence",
+     "args": {"text": "\u0016"}, "when": "terminalFocus"}
+
+`commandsToSkipShell: ["-workbench.action.terminal.paste"]` also works and keeps
+the plain `Ctrl+V`, but it applies to every terminal in the window: `^V` stops
+being readline's quoted-insert in ordinary shells too. The keybinding is scoped
+to the terminal and is the one this note recommends.
 
 ## Ctrl+V, and a picture
 

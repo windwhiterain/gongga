@@ -26,6 +26,12 @@ ones the reminder may name.
 on the row; `Ctrl+V` also arrives as a bracketed paste from a terminal that
 pastes by itself, and the entry is right either way.
 
+The paste entry names both spellings SPEC gives it -- `Ctrl+V/Ctrl+Alt+V paste`
+-- because they are not interchangeable from where the operator sits: a terminal
+that keeps `Ctrl+V` for its own paste never forwards it, and the spelled-out
+`Ctrl+Alt+V` is then the only one that reaches this window. One entry, one
+binding, two keys, as SPEC writes it.
+
 Nothing else goes on the row even though this window binds more: the operator
 reads a reminder as the whole keyboard, and SPEC is the source of truth for which
 keys exist. `Alt+Q` still quits, `Tab` still completes — they are in

@@ -81,7 +81,7 @@ in cmd_input, those three should be auto complete.
   - PageUp/PageDown (Fn+Up/Down): scroll the sticky session.
   - Shift+Down: scroll the sticky session to bottom.
   - Shift+Delete: delete sticky session.
-  - Ctr+V: paste.
+  - Ctrl+V / Ctrl+Alt+V: paste.
 
 
 ## Cmd

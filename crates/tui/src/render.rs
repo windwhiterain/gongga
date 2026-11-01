@@ -24,7 +24,7 @@ pub const HELP: &[&str] = &[
     "PageUp/PageDown scroll",
     "Shift+\u{2193} bottom",
     "Shift+Delete delete session",
-    "Ctrl+V paste",
+    "Ctrl+V/Ctrl+Alt+V paste",
 ];
 
 /// What separates two entries on one row of the reminder.
@@ -2167,7 +2167,7 @@ mod tests {
                 "PageUp/PageDown scroll",
                 "Shift+\u{2193} bottom",
                 "Shift+Delete delete session",
-                "Ctrl+V paste",
+                "Ctrl+V/Ctrl+Alt+V paste",
             ],
             "the row is SPEC's hot-keys, in its order"
         );
@@ -2233,9 +2233,9 @@ mod tests {
                 "at width {width} the packing crossed an entry: {rows:?}"
             );
         }
-        // The list is 106 columns, so the rows it takes fall as the window widens.
-        assert_eq!(help_rows(106).len(), 1, "the whole list fits on one row");
-        assert_eq!(help_rows(105).len(), 2, "one column less needs a second");
+        // The list is 117 columns, so the rows it takes fall as the window widens.
+        assert_eq!(help_rows(117).len(), 1, "the whole list fits on one row");
+        assert_eq!(help_rows(116).len(), 2, "one column less needs a second");
         // A window narrower than one entry: one row each, never split.
         let narrow = help_rows(10);
         assert_eq!(
