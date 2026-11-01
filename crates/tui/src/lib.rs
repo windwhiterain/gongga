@@ -15,6 +15,7 @@ mod render;
 pub mod run;
 
 use std::io::{self, Stdout, Write, stdout};
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -178,6 +179,18 @@ impl Screen {
     pub fn note(&mut self, kind: LineKind, text: impl Into<String>) {
         self.status_kind = kind;
         self.status = text.into();
+    }
+
+    /// Puts text into the input line, the way a paste does.
+    ///
+    /// # Invariant
+    ///
+    /// The popup is closed first: it was about the token before the paste, not
+    /// about what the pasted text means now. The text goes in whole, never key by
+    /// key, so a newline inside it cannot press Enter.
+    pub fn insert_paste(&mut self, text: &str) {
+        self.completion = None;
+        self.input.insert_str(text);
     }
 
     /// Positive scrolls into the past, negative towards the newest line, on the
@@ -1069,9 +1082,7 @@ impl Tui {
         if text.is_empty() {
             return;
         }
-        // The popup was about the token before the paste, not about what it means now.
-        self.screen.completion = None;
-        self.screen.input.insert_str(&text);
+        self.screen.insert_paste(&text);
         self.dirty = true;
     }
 
@@ -1079,13 +1090,30 @@ impl Tui {
     ///
     /// # Invariant
     ///
-    /// The text goes in through [`Tui::paste`], never key by key: a pasted
-    /// programme must not submit at its first line break. A clipboard this machine
-    /// cannot read says so on the status line; nothing else about the window moves.
+    /// The image is tried first and the text second: a screenshot copied from an
+    /// image tool can carry both formats, and the picture is what the operator
+    /// meant. A clipboard that holds only text reaches the text branch untouched,
+    /// and a clipboard this machine cannot read says so on the status line --
+    /// nothing else about the window moves.
     fn paste_from_clipboard(&mut self) {
+        let image = clipboard::paste_image();
+        // Only a saved picture is a reference; the rest falls through to text.
+        if let Some(reference) = image_reference_of(&image) {
+            self.screen.insert_paste(&reference);
+            self.dirty = true;
+            return;
+        }
+        // The image tool's own words, kept in case the text read has none.
+        let image_failure = image_failure_of(&image);
         match clipboard::paste() {
             clipboard::FromClipboard::Ok(text) => self.paste(&text),
-            clipboard::FromClipboard::Empty => {}
+            clipboard::FromClipboard::Empty => {
+                // An empty clipboard is silence, unless the image read refused:
+                // then the refusal is the only thing there is to say.
+                if let Some(why) = image_failure {
+                    self.screen.note(LineKind::Error, format!("paste: {why}"));
+                }
+            }
             clipboard::FromClipboard::NoTool => self.screen.note(
                 LineKind::Error,
                 "paste: no clipboard tool here; the terminal's own paste still works",
@@ -1388,6 +1416,49 @@ impl Completer for NoCompleter {
     }
 }
 
+/// The reference the prompt shows for a pasted picture: `@image: <path>`.
+///
+/// # Invariant
+///
+/// The path is inserted verbatim and the reference is exactly the spelling the
+/// server's Meta parser reads (`@image: <one word>`), so the server replaces it
+/// with a file id when the message is sent. The generated file name has no
+/// spaces, so the value is one word.
+fn image_reference(path: &Path) -> String {
+    format!("@image: {}", path.display())
+}
+
+/// The reference a clipboard's picture becomes, or `None` when the clipboard
+/// holds no picture the prompt should show.
+///
+/// # Invariant
+///
+/// Only a saved picture is a reference. `NoImage` means the clipboard holds no
+/// picture, `NoTool` means this machine has no way to read one, and `Failed`
+/// means a tool refused -- all three leave the text branch to run, which is
+/// where the reporting lives.
+fn image_reference_of(image: &clipboard::ImageClipboard) -> Option<String> {
+    match image {
+        clipboard::ImageClipboard::Saved(path) => Some(image_reference(path)),
+        clipboard::ImageClipboard::NoImage
+        | clipboard::ImageClipboard::NoTool
+        | clipboard::ImageClipboard::Failed(_) => None,
+    }
+}
+
+/// What a refused image read said, or `None` when it had nothing to report.
+///
+/// # Invariant
+///
+/// Only a tool that ran and refused has words; the other three answers are not
+/// failures and stay silent.
+fn image_failure_of(image: &clipboard::ImageClipboard) -> Option<String> {
+    match image {
+        clipboard::ImageClipboard::Failed(why) => Some(why.clone()),
+        _ => None,
+    }
+}
+
 /// Whether this run is one bare `Enter` that a recent paste delivered.
 fn glue_break(keys: &[KeyEvent], pasted_run: Option<usize>) -> bool {
     let lone_break = keys.len() == 1 && is_paste_newline(&keys[0]);
@@ -1583,6 +1654,7 @@ mod layering {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     /// The ink an IME puts on the console, which no frame of ours ever drew.
     ///
@@ -1697,6 +1769,16 @@ mod tests {
         /// The same normalization `Tui::paste` does, on this stand-in's input.
         fn paste(&mut self, raw: &str) {
             self.screen.input.insert_str(&clipboard::paste_text(raw));
+        }
+
+        /// The same insertion the window does for a picture: the reference goes
+        /// into the input line whole, and nothing is sent.
+        fn paste_image(&mut self, path: &Path) {
+            let image = clipboard::ImageClipboard::Saved(path.to_path_buf());
+            let Some(reference) = image_reference_of(&image) else {
+                panic!("a saved picture must be a reference");
+            };
+            self.screen.insert_paste(&reference);
         }
 
         /// The same call `Tui::stream` makes, so a test drives the real path.
@@ -2686,6 +2768,110 @@ mod tests {
                 "{line} was read as prose"
             );
         }
+    }
+
+    /// The reference is exactly the spelling the server's Meta parser reads.
+    ///
+    /// # Invariant
+    ///
+    /// `@image: <one word>` and nothing else: the server replaces it with a file
+    /// id when the message is sent, and it reads the path as one word. The path
+    /// is printed as given -- this helper does not rewrite a separator.
+    #[test]
+    fn an_image_reference_is_the_meta_spelling() {
+        assert_eq!(
+            image_reference(Path::new(r"C:\Users\me\pic.png")),
+            r"@image: C:\Users\me\pic.png"
+        );
+        assert_eq!(
+            image_reference(Path::new("/tmp/gongga/pic.png")),
+            "@image: /tmp/gongga/pic.png"
+        );
+    }
+
+    /// A pasted picture lands in the prompt as text and is not sent.
+    ///
+    /// # Invariant
+    ///
+    /// The reference is inserted whole, the way a paste is: the server turns it
+    /// into a file id when the message is sent, so nothing is submitted here.
+    #[test]
+    fn a_pasted_image_is_inserted_not_submitted() {
+        let mut h = Headless::new();
+        h.paste_image(Path::new("/tmp/gongga/pic.png"));
+        assert_eq!(h.screen.input.text(), "@image: /tmp/gongga/pic.png");
+        // The input line still holds it: nothing took it and sent it.
+        assert!(!h.screen.input.is_empty());
+    }
+
+    /// A pasted picture closes the completion popup, like a pasted text does.
+    ///
+    /// # Invariant
+    ///
+    /// The popup was about the token before the paste, not about what the
+    /// reference means now.
+    #[test]
+    fn a_pasted_image_closes_the_completion_popup() {
+        let mut h = Headless::new();
+        h.screen.completion = Some(Completion {
+            start: 0,
+            end: 4,
+            candidates: vec![Candidate::word("replacement", "")],
+            selected: 0,
+        });
+        h.paste_image(Path::new("/tmp/gongga/pic.png"));
+        assert!(h.screen.completion.is_none());
+    }
+
+    /// Only a saved picture is a reference; the other three outcomes leave the
+    /// text branch to run.
+    ///
+    /// # Invariant
+    ///
+    /// A clipboard that holds no picture, a machine with no tool to read one, and
+    /// a tool that refused all reach the text branch, which is where the
+    /// reporting lives.
+    #[test]
+    fn only_a_saved_picture_is_a_reference() {
+        let saved = clipboard::ImageClipboard::Saved(PathBuf::from("/tmp/pic.png"));
+        assert_eq!(
+            image_reference_of(&saved),
+            Some("@image: /tmp/pic.png".to_string())
+        );
+        for (name, image) in [
+            ("no image", clipboard::ImageClipboard::NoImage),
+            ("no tool", clipboard::ImageClipboard::NoTool),
+            (
+                "a tool that refused",
+                clipboard::ImageClipboard::Failed("no picture here".to_string()),
+            ),
+        ] {
+            assert!(
+                image_reference_of(&image).is_none(),
+                "{name} must leave the text branch alone"
+            );
+        }
+    }
+
+    /// A tool that refused is not swallowed: its own words reach the status line.
+    ///
+    /// # Invariant
+    ///
+    /// The image read is tried before the text read, and the text read reports
+    /// for itself. But a refusal carries words only the image tool had, and when
+    /// the text read has nothing to say, those words are the only account of what
+    /// happened -- so they are shown.
+    #[test]
+    fn a_refused_image_read_is_reported() {
+        let refused = clipboard::ImageClipboard::Failed("the clipboard said no".to_string());
+        assert_eq!(image_failure_of(&refused).as_deref(), Some("the clipboard said no"));
+        // The other three answers have nothing to report.
+        assert!(image_failure_of(&clipboard::ImageClipboard::NoImage).is_none());
+        assert!(image_failure_of(&clipboard::ImageClipboard::NoTool).is_none());
+        assert!(
+            image_failure_of(&clipboard::ImageClipboard::Saved(PathBuf::from("/tmp/pic.png")))
+                .is_none()
+        );
     }
 
     #[test]

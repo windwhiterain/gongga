@@ -122,6 +122,88 @@ Nothing is said when the clipboard is empty. When there is no tool to read it, o
 the tool refuses, the status line says so and the prompt is untouched: a paste
 that quietly did nothing is the failure mode this note keeps coming back to.
 
+## Ctrl+V, and a picture
+
+The same key pastes a picture, and the picture is tried first.
+
+`Tui::paste_from_clipboard` asks the clipboard for an image before it asks it
+for text. The order is the whole design: a screenshot copied out of an image
+tool usually carries *both* formats — the picture and, often, a file name or a
+URL as text — and the picture is what the operator meant to paste. Asking for the
+text first would put that file name in the prompt and lose the picture.
+
+A clipboard that holds only text still takes the image read, which answers "no
+picture here", and then the text read runs exactly as it did before this
+existed -- unchanged, including the empty clipboard that says nothing. A text
+paste is not a second-class paste.
+
+## The picture is a reference, not a picture
+
+What goes into the prompt is the text `@image: <path>`, and only that. The path
+is where the clipboard module wrote the image; it is absolute, and the server
+resolves an absolute path as it stands.
+
+This is SPEC's Meta mechanism, and it was already there: a message carrying
+`@image: <path>` has the reference replaced by a file id when the message is
+sent, the picture uploaded through the File API in advance of the request. The
+TUI's whole part in this is to write the spelling the server's parser reads.
+`image_reference` in `tui/lib.rs` is that spelling and nothing more: it prints
+the path it is given, so a Windows path stays a Windows path and a POSIX path
+stays a POSIX path.
+
+The value is one word, because the parser reads one word and the server's
+completion popup inserts one word. The generated file name has no spaces, so the
+absolute path has none either. A path that *did* have a space would be one word
+too many, and the server would read the first half of it — which is why the
+image is written to a generated name rather than to the operator's own.
+
+Nothing is uploaded by the TUI and nothing is resolved by it. The reference is
+text in the input line until the operator sends the message, and the server does
+the rest. The picture therefore never reaches the model as bytes in the prompt,
+and a message that only mentions a picture stays a mention until it is sent.
+
+## How a picture gets into the input line
+
+Through the same insertion a text paste uses, and not through `Tui::paste`.
+
+`Tui::paste` runs `clipboard::paste_text` over what it is given, which
+normalizes line endings — harmless for an `@image:` reference, but the semantics
+of "paste" are "text the terminal sent", and a reference is not that. So the
+shared part is factored out into `Screen::insert_paste`: it closes the
+completion popup (the popup was about the token before the paste, not about what
+the pasted text means now) and inserts the string whole. `Tui::paste` calls it
+after normalizing; the picture path calls it with the reference.
+
+Inserted whole, never key by key, and never submitted: the reference sits in the
+prompt until the operator presses Enter, which is when the server sees it.
+
+## A failure is reported once, by the text branch
+
+The image read has four answers, and three of them mean "there is no picture to
+paste": no picture on the clipboard, no tool on this machine that could read one,
+or a tool that ran and refused. None of them is reported by the image path.
+
+They fall through to the text read, and the text read is where the reporting
+lives — `paste: no clipboard tool here; the terminal's own paste still works` or
+`paste: <the tool's own words>`. So:
+
+- the image read failed and the text read worked: the operator gets their text,
+  and no second, competing error line;
+- both failed: the status line says what the *text* read said, in the words the
+  text read used.
+
+The alternative — the image branch reporting its own failure on top of the text
+branch's — would put two complaints on one status line for one keystroke, and
+the second one would say less about what actually happened.
+
+There is one case where the text branch has nothing to say and the image
+branch's words are the only account of what happened: the image tool refused,
+and the clipboard held no text either. Then the refusal is shown, in the tool's
+own words. An empty clipboard is otherwise silence — nothing to paste has no
+words to say — but a refusal is a fact, and a fact the operator can act on.
+`image_failure_of` holds that rule, and `a_refused_image_read_is_reported`
+pins it.
+
 ## What the run holds back
 
 Whatever ended a run is returned as `Tui::stashed` and read at the top of the

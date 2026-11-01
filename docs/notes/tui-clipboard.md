@@ -75,3 +75,68 @@ exits non-zero must not read as a successful copy.
 
 Three outcomes in one test: a tool that prints is text, a tool that prints nothing
 is `Empty` rather than a failure, and a tool that is not installed moves on.
+
+## The image, and the tools that read it
+
+A clipboard can hold a picture as well as text, and the same Ctrl+V that reads
+the text reads the picture. The picture is read first, because a screenshot
+copied out of an image tool usually carries both formats and the picture is what
+the operator meant; the text read is the fallback and is unchanged.
+
+`ImageClipboard` has four answers, matching `FromClipboard`:
+
+| answer | meaning |
+| --- | --- |
+| `Saved(path)` | the image was written to that file |
+| `NoImage` | the clipboard holds no picture — it may still hold text |
+| `NoTool` | no image-capable clipboard tool could be run at all |
+| `Failed(why)` | a tool ran and refused; the message is its own words |
+
+`NoImage` is not a failure: it is the ordinary answer for a clipboard holding
+text, and the caller falls back to the text read. `NoTool` and `Failed` are
+reported by the *text* branch, in the text branch's own words, so one keystroke
+never produces two competing complaints on the status line — see
+`docs/notes/tui-paste.md`.
+
+## image_candidates
+
+The per-platform picture tools, and there are fewer of them than there are text
+tools, because reading a picture out of a clipboard is not something every
+platform ships a command line for:
+
+- **Windows**: `powershell -NoProfile -STA -File <script> <path>`. It has to be
+  `-STA`, or `[Windows.Forms.Clipboard]::GetImage()` throws. The one-liner is
+  written once to a `.ps1` file under the temp directory and run with `-File`,
+  because `-Command` does not hand trailing arguments over as `$args`, whereas
+  `-File` does: the destination path arrives as `$args[0]`. The script exits 0
+  and prints nothing when the clipboard holds no picture.
+- **macOS**: `osascript -e <AppleScript>`, which writes the clipboard's PNG to
+  the destination file itself.
+- **Linux**: `wl-paste -t image/png` and then `xclip -selection clipboard -t
+  image/png -o`, Wayland first for the reason `candidates` gives.
+
+The first two write the file themselves; the Linux pair print the image bytes on
+stdout, which the caller redirects into the destination file. The distinction is
+`ImageTool`'s two modes, and it is the reason a picture is never read as text.
+
+## dest_dir
+
+Where a pasted picture is written: a `gongga-tui` directory under the system
+temp directory, created if it is missing. The file name is generated
+(`gongga-paste-<pid>-<n>.png`) rather than taken from the clipboard, which
+matters twice over: the name has no spaces, so the `@image:` reference the
+prompt shows is one word and the server's Meta parser reads it whole; and the
+picture outlives the paste, because the message references the file at the moment
+it is sent.
+
+## paste_image_with
+
+The same seam as `paste_with` and `copy_with`: `paste_image` is
+`paste_image_with(image_candidates(), &dest_dir())`, so a test can exercise the
+spawn, the file write and the exit status against a tool that touches nothing.
+
+## A tool that writes nothing means no image
+
+A clipboard tool that runs, exits zero and produces no file has told the truth:
+the clipboard holds no picture. That is `NoImage`, not a failure, and the
+destination file is removed rather than left behind as an empty picture.
