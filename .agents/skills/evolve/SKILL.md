@@ -287,12 +287,13 @@ evolve: taking the home as C:\Users\x\.gongga on 127.0.0.1:9700 for window 8736 
   端口和 home 锁，直到有人手动收。
 - **`--home` / `--bind` 也必须跟着走。** 它们只是**恰好**等于默认值时才看不出区别；换到
   第二个 home 或非默认端口时，丢了就等于把服务端挪了家。
+- **目录跟着走，而且不是 home。** 服务端继承启动者的目录，会话的默认 cwd 就是它；继任者
+  落在 home 里，之后每次不带 `--cwd` 的新会话都开在 `~/.gongga`。旧服务端在 claim home 时
+  记下了自己跑在哪（`<home>/server.cwd`），`stage` 读它、launcher 在 `exec` 前 `cd` 过去。
+  没有这条记录（早于它的服务端）时落在仓库根，并在 `stage` 的输出里说明。
 - **读不到旧服务端的命令行 = 拒绝 stage。** 猜一个 argv 正是产出无主服务端的那条路。
 - **窗口在继任者接管前就没了 = 拒绝接管。** 带一个已死的 `--parent` 起来，它会 resume 你
   的回合再立刻自杀；那时该做的是重开窗口。
-
-launcher 也因此从 `cd <repo>` 改成 `cd <home>`：家目录是新会话默认 cwd 的来源，和
-`cli::server::command` 起服务端时一致。
 
 ## 症状：TUI 关了，服务端还在
 

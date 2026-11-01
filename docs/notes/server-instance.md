@@ -92,3 +92,20 @@ the pid itself is locale-independent.
 
 Cannot tell: assume the holder is alive rather than let two servers into the same
 home on a hunch.
+
+## record_dir
+
+The claim answers "which process"; this answers "in which directory", written as
+`<home>/server.cwd` beside the lock, by the process that just won it.
+
+Nothing else can answer it afterwards. The directory is inherited from whoever
+started the server -- `cli::server::command` passes none, so a window's own launch
+directory becomes what a new session with no `--cwd` opens in -- and Windows has
+no way to read another process's directory: no `wmic` field, no `/proc`. The one
+reader is a handover (`evolve`), which starts a successor after the old process is
+gone and has to put it in the same directory.
+
+Not removed when the claim is dropped, and a failure to write it is a warning
+rather than a refusal: the file is read only while a live claim stands, so a
+leftover costs nothing, and a server that cannot write it still serves -- only the
+next handover loses the directory.

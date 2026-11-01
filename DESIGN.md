@@ -1395,6 +1395,7 @@ assistant text」没有歧义 —— 这也正是 `get_messages` 存在的理由
 | 启动时拾起 | `commands.rs::resume_pending` | 新服务端起 bind 后把该回合接着跑 |
 | `bash --detached` | `tools/detached.rs` | 继任者必须活在旧进程之外，否则一起死 |
 | `server.lock` | `instance.rs` | home 是**交接**不是抢占；旧 pid 还在就拒绝启动 |
+| `server.cwd` | `instance.rs::record_dir` | 继任者要落在旧服务端跑的那个目录里 |
 | `gongga-cli`（在 `PATH` 首位） | `cli::server::place` | agent 从 bash 里给自己发 `cancel` |
 
 顺序是有原因的，`.agents/skills/evolve/evolve.sh` 把它固化成两条命令：
@@ -1417,6 +1418,14 @@ home 就空着，没有进程去 resume 这个回合 —— 一次失败的进�
 **launcher 的两个条件缺一不可**：旧 pid 消失 **且** 端口空出来。少了后者，新进程会抢在
 旧 socket 释放前 bind 失败；少了前者，`server.lock` 会认出旧 pid 还活着而拒绝启动（这是
 `instance.rs` 的正确行为，不该为进化放宽）。
+
+**继任者的目录不是 home**：`--home` 说的是数据放哪，不是新会话从哪开始。服务端继承启动者
+的目录（`cli::server::command` 不传 `current_dir`），而一个新会话的默认 cwd 就是它 —— 换到
+`cd <home>` 之后，继任者起来后新建的会话全都落在 `~/.gongga`。Windows 没有任何办法读别的
+进程的目录（`wmic` 没这个字段，原生进程也不在 `/proc` 里），所以旧服务端 claim home 时把
+它写进 `<home>/server.cwd`，`stage` 读出来写进 launcher，launcher 在 `exec` 前 `cd` 过去。
+没有这条记录（早于它的服务端）时继任者落在仓库根：那是换手被发起的地方，也是唯一不撒谎的
+猜法，之后每次换手都继承记录下来的那一个。
 
 **只有最新的 stage 能接管 home**：`stage` 把 stamp 写进 `.dev/evolve-current`，launcher 每轮
 读它，发现自己不是当前的就在循环里退出；`swap` 也拒绝非当前的 stamp。这不是预算（等待仍然

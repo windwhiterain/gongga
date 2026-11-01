@@ -44,6 +44,9 @@ impl InstanceLock {
 
         for _ in 0..ATTEMPTS {
             if claim(&path, pid)? {
+                // Beside the pid: the directory this claim serves from, for
+                // whoever takes the home next.
+                record_dir(home);
                 return Ok(Self { path, pid });
             }
 
@@ -92,6 +95,30 @@ impl Drop for InstanceLock {
             // the liveness check above exists for.
             let _ = std::fs::remove_file(&self.path);
         }
+    }
+}
+
+/// The directory this server runs in, written beside its claim.
+///
+/// # Invariant
+///
+/// Inherited from the starter, never chosen here: `cli::server::command` passes
+/// no directory, so the one a window was launched from is what a new session
+/// with no `--cwd` opens in. A successor taking the home over cannot ask the
+/// process that is gone, and no other process can read it on Windows, so the
+/// answer is left in the home while the claim that gives it stands.
+fn record_dir(home: &Path) {
+    let path = home.join("server.cwd");
+    let written = std::env::current_dir()
+        .map(|dir| format!("{}\n", dir.display()))
+        .and_then(|text| std::fs::write(&path, text));
+    if let Err(e) = written {
+        tracing::warn!(
+            path = %path.display(),
+            error = %e,
+            "cannot record the directory this server runs in; a handover cannot start its \
+             successor from it"
+        );
     }
 }
 

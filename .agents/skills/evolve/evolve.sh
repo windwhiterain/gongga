@@ -129,7 +129,7 @@ fill() {
 
 write_launcher() {
   local stamp="$1" exe="$2" old_pid="$3" clean="${4:-0}"
-  local argsfile="${5:-}" bundle="${6:-0}"
+  local argsfile="${5:-}" bundle="${6:-0}" old_dir="${7:-}"
   local path="$RUN/evolve-$stamp-launch.sh"
   local pidfile="$RUN/evolve-$stamp-launch.pid"
   local beatfile="$RUN/evolve-$stamp-launch.beat"
@@ -138,6 +138,7 @@ write_launcher() {
     -e "s|@@EXE@@|$(fill "$exe")|g" \
     -e "s|@@OLD_PID@@|$(fill "$old_pid")|g" \
     -e "s|@@ARGSFILE@@|$(fill "$argsfile")|g" \
+    -e "s|@@OLD_CWD@@|$(fill "$old_dir")|g" \
     -e "s|@@HOME_DIR@@|$(fill "$HOME_DIR")|g" \
     -e "s|@@PIDFILE@@|$(fill "$pidfile")|g" \
     -e "s|@@BEATFILE@@|$(fill "$beatfile")|g" \
@@ -168,6 +169,7 @@ date +%s > '@@BEATFILE@@'
 NEW='@@EXE@@'
 OLD_PID='@@OLD_PID@@'
 ARGS_FILE='@@ARGSFILE@@'
+OLD_DIR='@@OLD_CWD@@'
 HOME_DIR='@@HOME_DIR@@'
 FALLBACK_BIND='@@BIND@@'
 
@@ -232,10 +234,14 @@ while :; do
       echo "evolve: cargo clean before taking the home"
       CARGO_TARGET_DIR= cargo clean || echo "evolve: cargo clean failed; carrying on"
     fi
-    # The home is also where a new session starts, so the successor runs from it
-    # exactly as the spawned server did (see cli::server::command).
-    cd "$NEW_HOME" || { echo "evolve: no home at $NEW_HOME; not taking it" >&2; exit 1; }
-    echo "evolve: taking the home as $NEW_HOME on $NEW_BIND${NEW_PARENT:+ for window $NEW_PARENT} (${#ARGS[@]} argument(s) carried over)"
+    # The successor runs in the directory the old server ran in, not in the home:
+    # that inherited directory is what a new session with no `--cwd` opens in
+    # (see cli::server::command), and the old process cannot be asked by now.
+    if ! cd "$OLD_DIR"; then
+      echo "evolve: the old server's directory $OLD_DIR is gone; taking the home from $NEW_HOME"
+      cd "$NEW_HOME" || { echo "evolve: no home at $NEW_HOME; not taking it" >&2; exit 1; }
+    fi
+    echo "evolve: taking the home as $NEW_HOME on $NEW_BIND${NEW_PARENT:+ for window $NEW_PARENT} (${#ARGS[@]} argument(s) carried over, from $PWD)"
     # The staged file is the bundle: one head that installs every program it
     # carries into this home and then runs the one its own word names. That is
     # what makes a handover replace the whole distribution -- payload for all
@@ -376,7 +382,7 @@ cmd_stage() {
   # while it can still be read, and handed to the new binary verbatim.
   local argsfile="$RUN/evolve-$stamp-args"
   : > "$argsfile"
-  local old_home="$HOME_DIR" old_bind="$BIND" old_parent=""
+  local old_home="$HOME_DIR" old_bind="$BIND" old_parent="" old_dir=""
   if [ -n "$old_pid" ]; then
     # Read now, while it can still answer: after the cancel there is nothing left
     # to ask. Unreadable is a refusal rather than a guess, because the guess is
@@ -391,7 +397,19 @@ unknown; refusing to stage a handover that would produce a server nobody owns"
     old_parent="$(flag_of "$old_pid" --parent)"
     echo "old server: home $old_home, bind $old_bind, owner ${old_parent:-none}"
   fi
-  launcher="$(write_launcher "$stamp" "$exe" "$old_pid" "$clean" "$argsfile" 1)"
+  # The directory the old server runs in -- which is what a session created with
+  # no `--cwd` opens in -- or the one the last server claimed this home from when
+  # none is running. A server records it beside its claim (`server.cwd`), because
+  # nothing can read another process's directory on Windows; one older than that
+  # record leaves the successor in this repo, where a handover is staged from.
+  old_dir="$(head -n 1 "$HOME_DIR/server.cwd" 2>/dev/null | tr -d '\r' || true)"
+  if [ -z "$old_dir" ]; then
+    old_dir="$ROOT"
+    echo "note: no $HOME_DIR/server.cwd (a server older than the record); the successor runs in $old_dir"
+  else
+    echo "old_dir=$old_dir"
+  fi
+  launcher="$(write_launcher "$stamp" "$exe" "$old_pid" "$clean" "$argsfile" 1 "$old_dir")"
   # The previous attempt is abandoned from here on: its launcher sees itself
   # superseded and leaves the waiting loop by itself (see the loop below).
   echo "$stamp" > "$CURRENT"
@@ -403,6 +421,7 @@ unknown; refusing to stage a handover that would produce a server nobody owns"
     echo "old_home=$old_home"
     echo "old_bind=$old_bind"
     echo "old_owner=${old_parent:-none}"
+    echo "old_dir=$old_dir"
     echo "old_args=$argsfile"
     echo "launcher=$launcher"
   } > "$RUN/evolve-$stamp.txt"

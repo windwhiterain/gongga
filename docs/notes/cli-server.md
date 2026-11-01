@@ -62,6 +62,10 @@ have -- the home arrives as `--home`, the shipped content under the home, and
 `git` is told `--git-dir`/`-C` -- so the inherited one costs nothing to hand to
 the children a session starts.
 
+It is also written into the home as `server.cwd` by the process that claims the
+home ([`server-instance.md`](server-instance.md)), so a restart that has to keep
+it does not depend on being able to read it back from a process that is gone.
+
 `the_server_starts_in_the_directory_its_starter_runs_in` is the pair of
 `Command`s: no directory of their own, for both `serve` and the spawn.
 
