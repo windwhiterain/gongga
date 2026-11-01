@@ -11,6 +11,12 @@ tool-call arguments to the UI as they arrive.
 
 ## LlmClient::new
 
+Every request to a provider says what is calling: the client sets
+`User-Agent: gongga-harness/<version>` once, at construction, so no call site
+adds it and no request can forget it. A provider log or a proxy on a shared key
+can then attribute the traffic to this harness instead of to an anonymous client.
+The version is the crate's, which is what a released binary reports anyway.
+
 The client carries no deadline of its own. A client-wide timeout covers the
 body as well as the answer, and a body that is still producing is exactly what
 a long answer is entitled to do -- so the bounds sit where each one knows what

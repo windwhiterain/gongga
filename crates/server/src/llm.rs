@@ -19,6 +19,10 @@ use crate::store::{activity_detail, activity_name};
 /// answer itself is bounded by `headers_timeout` and `idle_timeout`.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The name this harness gives a provider: every request's `User-Agent`. See
+/// `docs/notes/server-llm.md`.
+const HARNESS_AGENT: &str = concat!("gongga-harness/", env!("CARGO_PKG_VERSION"));
+
 #[derive(Debug, Clone)]
 pub struct LlmClient {
     http: reqwest::Client,
@@ -106,8 +110,12 @@ impl LlmClient {
         // of any length is entitled to do. What is left needs bounds that
         // know what they are bounding -- [`CONNECT_TIMEOUT`] for the socket,
         // `headers_timeout` for the answer, `idle_timeout` for the content.
+        //
+        // The identity is the client's, not one request's: every call to a
+        // provider goes through this client.
         let http = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
+            .user_agent(HARNESS_AGENT)
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Ok(Self {
@@ -1455,6 +1463,49 @@ mod tests {
             modalities: modalities.iter().map(|m| m.to_string()).collect(),
         };
         LlmClient::new(&cfg).unwrap()
+    }
+
+    /// The identity is the client's, so no call site has to add it.
+    #[tokio::test]
+    async fn every_request_carries_the_harness_identity() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a port of its own");
+        let addr = listener
+            .local_addr()
+            .expect("a bound socket has an address");
+        let answered = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.expect("the request arrives");
+            let mut head = Vec::new();
+            let mut chunk = [0u8; 1024];
+            while !head.windows(4).any(|end| end == b"\r\n\r\n") {
+                match sock.read(&mut chunk).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => head.extend_from_slice(&chunk[..n]),
+                }
+            }
+            let _ = sock
+                .write_all(b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\n\r\n")
+                .await;
+            String::from_utf8_lossy(&head).to_ascii_lowercase()
+        });
+
+        let client = client_with("m", &[], &[]);
+        client
+            .http
+            .post(format!("http://{addr}/v1/responses"))
+            .body("{}")
+            .send()
+            .await
+            .expect("the answer arrives");
+        let head = answered.await.expect("the head was read");
+        let wanted = format!("user-agent: {}", HARNESS_AGENT.to_ascii_lowercase());
+        assert!(
+            head.contains(&wanted),
+            "no harness identity in the request head: {head:?}"
+        );
     }
 
     /// Every separator ends a block and `\r` never reaches the parser; a split
