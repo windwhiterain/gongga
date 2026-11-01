@@ -32,6 +32,8 @@ struct Entry {
     width: usize,
     /// Whether the operator opened it: SPEC's click, and the only state a fold has.
     expanded: bool,
+    /// Rows scrolled up inside an opened item's box: SPEC's `scroll if block_size!=0`.
+    inner: usize,
     /// Byte offset of each wrapped row's first character; its length is the row count.
     starts: Vec<usize>,
     /// Display columns used by the last row: the whole wrap state an append resumes.
@@ -59,6 +61,7 @@ impl Entry {
             text,
             width,
             expanded: false,
+            inner: 0,
             starts: vec![0],
             col: 0,
             sealed: false,
@@ -77,6 +80,33 @@ impl Entry {
             return self.folded_rows();
         }
         self.starts.len()
+    }
+
+    /// Whether this block is drawn inside a box: SPEC's opened item, taller than
+    /// the `block_size` it is held to.
+    ///
+    /// # Invariant
+    ///
+    /// Only an item the operator opened and that its own cap cannot hold: the box
+    /// exists to say "there is more inside, scroll me", so a block that fits has
+    /// nothing to box.
+    fn boxed(&self, cap: usize) -> bool {
+        self.expanded && self.kind.folds() && self.starts.len() > cap
+    }
+
+    /// The rows this block occupies at `cap`, which is its body plus its box.
+    fn visible(&self, cap: usize) -> usize {
+        let body = self.rows().min(cap);
+        match self.boxed(cap) {
+            true => body + 2,
+            false => body,
+        }
+    }
+
+    /// Rows scrolled up inside the box, clamped to what it holds.
+    fn inside(self: &Self, cap: usize) -> usize {
+        let body = self.rows().min(cap);
+        self.inner.min(self.rows().saturating_sub(body))
     }
 
     /// Whether this block is drawn as SPEC's `abstract`: one summary line.
@@ -111,14 +141,17 @@ impl Entry {
         let width = self.width.max(1);
         let text = match (self.kind, row) {
             // SPEC's `reasoning{beginning (line), ending (line)}`: the first
-            // wrapped row, then the last, with `…` for what is between them.
+            // wrapped row, then the last, `…` between.
             (LineKind::Reasoning, 0) => format!("{}{}", self.tag, self.row(0)),
             (LineKind::Reasoning, _) => {
                 format!("\u{2026} {}", self.row(self.starts.len().saturating_sub(1)))
             }
-            // A call says what was asked; a result says how it went -- its
-            // output is the click, so the label is the whole row.
-            _ if !self.tag.is_empty() => self.tag.trim_end().to_string(),
+            // A result says how it went, never what it printed: SPEC's
+            // `tool_result{ok, time (spent)}` is the whole of its summary.
+            (LineKind::ToolOutput | LineKind::ToolError, _) => self.tag.trim_end().to_string(),
+            // A call's summary is its name and flags; with no label the body is
+            // the call itself, which is what its first row says.
+            (LineKind::ToolCall, _) if !self.tag.is_empty() => self.tag.trim_end().to_string(),
             // An item whose body is its own label: the folded row is its first row.
             _ => self.row(0).to_string(),
         };
@@ -180,6 +213,11 @@ impl Entry {
         text.strip_suffix('\n').unwrap_or(text)
     }
 
+    /// The item's own label: its mark and its tag, and none of its body.
+    fn label(&self) -> Cow<'_, str> {
+        Cow::Owned(format!("{}{}", self.kind.mark(), self.tag.trim_end()))
+    }
+
     /// One row as a frame shows it, with the block's label on the row the window
     /// starts with.
     ///
@@ -187,7 +225,7 @@ impl Entry {
     ///
     /// Only the top row of a block carries its label, and a clipped tail loses
     /// nothing: those characters start the row below it.
-    fn view_row(&self, row: usize, labelled: bool) -> Cow<'_, str> {
+    fn view_row(&self, row: usize, labelled: bool, pad: usize) -> Cow<'_, str> {
         if self.folded() {
             let summary = self.folded_row(row);
             // SPEC's `abstract (horizontal)`: the mark owns one column, so the
@@ -198,10 +236,13 @@ impl Entry {
             };
             return Cow::Owned(format!("{label}{summary}"));
         }
-        if !labelled {
-            return Cow::Borrowed(self.row(row));
-        }
-        Cow::Owned(format!("{}{}{}", self.kind.mark(), self.tag, self.row(row)))
+        // SPEC's `abstract (horizontal)`: the mark owns one column, so every row
+        // starts where the first one's text does.
+        let label = match labelled {
+            true => format!("{}{}", self.kind.mark(), self.tag),
+            false => " ".repeat(pad),
+        };
+        Cow::Owned(format!("{label}{}", self.row(row)))
     }
 }
 
@@ -328,9 +369,57 @@ impl RowIndex {
     }
 }
 
+/// One row of a frame: what it is, its text, and the box it is drawn inside.
+///
+/// # Invariant
+///
+/// `edges` is empty for a row that is not part of a frame; a block the operator
+/// opened is the only thing SPEC gives a scroll of its own, so it is the only one
+/// that has a box, and the box's sides are what the renderer draws around it.
+pub type Row<'a> = (LineKind, Cow<'a, str>, Edges);
+
+/// Which sides of a frame a row carries.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Edges {
+    /// The frame's top border.
+    pub top: bool,
+    /// The frame's bottom border.
+    pub bottom: bool,
+    /// The frame's left and right borders.
+    pub sides: bool,
+}
+
+impl Edges {
+    /// A row inside a frame, with its sides only.
+    pub const INSIDE: Self = Self {
+        top: false,
+        bottom: false,
+        sides: true,
+    };
+
+    /// The frame's own top rule, which also carries the item's first row.
+    pub const TOP: Self = Self {
+        top: true,
+        bottom: false,
+        sides: true,
+    };
+
+    /// The frame's bottom rule.
+    pub const BOTTOM: Self = Self {
+        top: false,
+        bottom: true,
+        sides: true,
+    };
+
+    /// Whether this row is drawn inside a box at all.
+    pub fn framed(self) -> bool {
+        self.sides || self.top || self.bottom
+    }
+}
+
 /// What one frame needs: the rows that fit, borrowed from the log, and the bound.
 pub struct Viewport<'a> {
-    pub rows: Vec<(LineKind, Cow<'a, str>)>,
+    pub rows: Vec<Row<'a>>,
     /// Rows hidden above the window; only the renderer can work this out.
     pub max_scroll: usize,
 }
@@ -486,16 +575,19 @@ impl Log {
     /// and its own window.
     fn contributions(&self, at: usize) -> (usize, usize) {
         let entry = &self.entries[at];
-        let rows = entry.rows();
-        let cap = self
-            .views
+        // The box is two rows the block occupies, so both indexes count them.
+        (
+            entry.visible(self.room(entry.kind, self.all.cap)),
+            entry.visible(self.room(entry.kind, self.view_cap(entry))),
+        )
+    }
+
+    /// The cap one window puts on its own blocks, or 0 for the log's.
+    fn view_cap(&self, entry: &Entry) -> usize {
+        self.views
             .get(&entry.window)
             .map(|ledger| ledger.cap)
-            .unwrap_or(0);
-        (
-            rows.min(self.room(entry.kind, self.all.cap)),
-            rows.min(self.room(entry.kind, cap)),
-        )
+            .unwrap_or(0)
     }
 
     /// Moves both views' sums by what a change to one block did to them.
@@ -623,6 +715,58 @@ impl Log {
         self.entries.iter().any(|entry| entry.key == key)
     }
 
+    /// Scrolls the box of an opened item `at`, positive into its past.
+    ///
+    /// # Invariant
+    ///
+    /// Only an opened item that is taller than its `block_size`: SPEC makes the
+    /// scroll exist exactly then, so a block that fits its box has nothing to move
+    /// and a closed one is a single row.
+    pub fn scroll_block(&mut self, at: usize, rows: i64) -> bool {
+        // The rows are the ones the last frame measured: a scroll replies to
+        // something on screen, so the width is known.
+        self.reflow(self.width);
+        let Some(entry) = self.entries.get(at) else {
+            return false;
+        };
+        let cap = self.room(entry.kind, 0);
+        if !entry.boxed(cap) {
+            return false;
+        }
+        let bound = entry.rows() - entry.rows().min(cap);
+        let next = (entry.inner as i64 + rows).clamp(0, bound as i64) as usize;
+        if next == entry.inner {
+            return false;
+        }
+        self.entries[at].inner = next;
+        true
+    }
+
+    /// The block `at` as a click names it: the box scrolls this instead of the pane.
+    pub fn expanded_at(&self, at: usize) -> bool {
+        self.entries
+            .get(at)
+            .is_some_and(|entry| entry.expanded && entry.kind.folds())
+    }
+
+    /// Opens or closes the `abstract` at one block, by the identity a click got.
+    ///
+    /// # Invariant
+    ///
+    /// The block, not the key: one key can name several blocks -- a turn's second
+    /// reasoning is `r:<session>:<turn>:Reasoning` again -- so a press has to say
+    /// which of them it landed on, or the wrong item opens.
+    pub fn toggle_at(&mut self, at: usize) -> bool {
+        if at >= self.entries.len() || !self.entries[at].kind.folds() {
+            return false;
+        }
+        let before = self.contributions(at);
+        self.entries[at].expanded = !self.entries[at].expanded;
+        let after = self.contributions(at);
+        self.shift(at, before, after);
+        true
+    }
+
     /// Opens or closes the `abstract` `key` names.
     ///
     /// # Invariant
@@ -657,7 +801,7 @@ impl Log {
         height: usize,
         scroll: usize,
         row: usize,
-    ) -> Option<String> {
+    ) -> Option<usize> {
         self.reflow(width);
         let ledger = self.ledger(view)?;
         let total = ledger.index.total();
@@ -673,7 +817,7 @@ impl Log {
             .line_at(want)
             .min(ledger.blocks.len().checked_sub(1)?);
         let at = *ledger.blocks.get(pos)?;
-        Some(self.entries[at].key.clone()).filter(|key| !key.is_empty())
+        Some(at)
     }
 
     /// Replaces the label of the block `key` names, once its outcome is known.
@@ -728,6 +872,12 @@ impl Log {
             }
         }
         let at = match self.open.get(key).copied() {
+            // A block already open, ending: `done` and nothing in it closes a
+            // part. Ahead of the arm whose `Some(at)` swallows this.
+            Some(at) if text.is_empty() && done => {
+                self.seal(key, at);
+                return;
+            }
             Some(at) => {
                 let before = self.contributions(at);
                 self.entries[at].append(text, width);
@@ -741,12 +891,6 @@ impl Log {
                 if done {
                     self.open.remove(key);
                 }
-                return;
-            }
-            // The end of a block already open: `done`, nothing in it, is how a
-            // part closes -- and sealing is what folds it.
-            Some(at) if text.is_empty() && done => {
-                self.seal(key, at);
                 return;
             }
             None => {
@@ -863,7 +1007,7 @@ impl Log {
         let end = total - scroll;
         let start = end.saturating_sub(height);
 
-        let mut rows: Vec<(LineKind, Cow<'_, str>)> = Vec::with_capacity(end - start);
+        let mut rows: Vec<Row<'_>> = Vec::with_capacity(end - start);
         if start < end {
             // Jump to the block holding the first visible row: O(log blocks).
             let mut pos = ledger.index.line_at(start).min(ledger.blocks.len() - 1);
@@ -871,10 +1015,16 @@ impl Log {
             loop {
                 let at = ledger.blocks[pos];
                 let entry = &self.entries[at];
-                let shown = entry.rows().min(self.room(entry.kind, ledger.cap));
-                // Rows above the block's cap are not in this view at all, so the
-                // view's rows of it are its last `shown` of them.
-                let head = entry.rows() - shown;
+                let cap = self.room(entry.kind, ledger.cap);
+                let body = entry.rows().min(cap);
+                let boxed = entry.boxed(cap);
+                // Rows above the cap are not in this view, so its rows are the
+                // last `body` of them -- pulled further back by the box's scroll.
+                let head = entry
+                    .rows()
+                    .saturating_sub(body)
+                    .saturating_sub(entry.inside(cap));
+                let shown = entry.visible(cap);
                 let next = first + shown;
                 let top = start.max(first);
                 let bottom = end.min(next);
@@ -882,8 +1032,34 @@ impl Log {
                 // its cap left it -- never mid-paragraph.
                 let labelled = head > 0 || top == first;
                 for row in top..bottom {
-                    let print = labelled && row == top;
-                    rows.push((entry.kind, entry.view_row(row - first + head, print)));
+                    let index = row - first;
+                    // SPEC's opened item: a box whose top row carries the label.
+                    if boxed && index == 0 {
+                        rows.push((entry.kind, entry.label(), Edges::TOP));
+                        continue;
+                    }
+                    if boxed && index + 1 == shown {
+                        rows.push((entry.kind, Cow::Borrowed(""), Edges::BOTTOM));
+                        continue;
+                    }
+                    let body_row = match boxed {
+                        true => index - 1 + head,
+                        false => index + head,
+                    };
+                    // The box's border already carries the label, so its body
+                    // clears the mark and not the label's width as well.
+                    let pad = match boxed {
+                        true => entry.kind.mark().width(),
+                        false => entry.kind.mark().width() + entry.tag.width(),
+                    };
+                    // The label is on the box's top row, so no body row repeats
+                    // it: that column is the body's.
+                    let print = labelled && !boxed && index == 0;
+                    let edges = match boxed {
+                        true => Edges::INSIDE,
+                        false => Edges::default(),
+                    };
+                    rows.push((entry.kind, entry.view_row(body_row, print, pad), edges));
                 }
                 if bottom >= end || pos + 1 >= ledger.blocks.len() {
                     break;
@@ -946,6 +1122,68 @@ mod tests {
         // The shell's own sentinel still opens nothing.
         log.stream("w", "c2", LineKind::ToolOutput, "", "\n", true);
         assert_eq!(log.rows(View::All, 40), 1);
+    }
+
+    /// A folded result is its verdict, never its output however long: the `…` a
+    /// reader saw was a cut-up body, not a summary.
+    #[test]
+    fn a_folded_result_never_shows_what_it_printed() {
+        let mut log = Log::new();
+        log.stream("w", "t1", LineKind::ToolOutput, "", &"x".repeat(200), true);
+        log.relabel("t1", "1.2s ", LineKind::ToolOutput);
+        assert_eq!(shown(&mut log, 20, 4, 0), vec!["\u{2713} 1.2s"]);
+        // A result whose verdict never arrived is the mark alone -- still nothing
+        // of the body.
+        let mut log = Log::new();
+        log.stream("w", "t2", LineKind::ToolError, "", "boom\nmore", true);
+        assert_eq!(shown(&mut log, 20, 4, 0), vec!["\u{2715} "]);
+    }
+
+    /// An item's body forms a column under its first row, not under its mark.
+    #[test]
+    fn a_body_row_starts_where_the_first_rows_text_does() {
+        let mut log = Log::new();
+        log.stream("w", "r1", LineKind::Reasoning, "", "one\ntwo\nthree", true);
+        log.toggle("r1");
+        assert_eq!(
+            shown(&mut log, 40, 6, 0),
+            vec!["\u{25c7} one", "  two", "  three"]
+        );
+    }
+
+    /// An opened item taller than its cap gets a box, and the box scrolls.
+    ///
+    /// # Invariant
+    ///
+    /// SPEC: `abstract (…, block_size, scroll if block_size!=0)`. The box is two
+    /// rows of its own, so the body still shows a whole `block_size` of rows, and
+    /// scrolling moves that window into the past rather than off the end.
+    #[test]
+    fn an_opened_item_gets_a_box_that_scrolls() {
+        let mut log = Log::new();
+        log.set_block_size(2);
+        log.stream("w", "r1", LineKind::Reasoning, "", "a\nb\nc\nd", true);
+        log.toggle("r1");
+        // Two body rows plus the box: the tail, as a cap shows.
+        assert_eq!(log.rows(View::All, 40), 4, "two body rows and a box");
+        assert_eq!(
+            shown(&mut log, 40, 6, 0),
+            vec!["\u{25c7} ", "  c", "  d", ""],
+            "the frame's top row carries the label"
+        );
+        assert!(log.scroll_block(0, 2), "the box scrolls");
+        assert_eq!(
+            shown(&mut log, 40, 6, 0),
+            vec!["\u{25c7} ", "  a", "  b", ""],
+            "and it moved into the past"
+        );
+        // Closing it takes the box away: a folded reasoning keeps its two ends.
+        assert!(log.toggle("r1"));
+        assert_eq!(
+            shown(&mut log, 40, 6, 0),
+            vec!["\u{25c7} a", "  \u{2026} d"],
+            "the box is gone and the item is the `abstract` again"
+        );
     }
 
     /// A part that ends with an empty chunk still folds.
@@ -1048,7 +1286,7 @@ mod tests {
         assert!(log.toggle("t:c1"), "a result opens");
         assert_eq!(
             shown(&mut log, 40, 4, 0),
-            vec!["\u{2713} 1.2s printed a lot", "of stuff"]
+            vec!["\u{2713} 1.2s printed a lot", "       of stuff"]
         );
     }
 
@@ -1073,7 +1311,7 @@ mod tests {
         assert_eq!(
             shown(&mut log, 40, 4, 0),
             // SPEC's `abstract (horizontal)`: the second row starts where the
-            // first one's text does; `…` says the middle was left out.
+            // first one's text does; `…` says the middle was cut.
             vec!["\u{25c7} first", "  \u{2026} last"]
         );
         // One row has no second: the summary is one row, not a blank one.
@@ -1111,12 +1349,13 @@ mod tests {
         log.stream("w", "k", LineKind::ToolOutput, "", "a\nb\nc", true);
         log.push("w", LineKind::System, "after");
         assert_eq!(log.rows(View::All, 40), 2, "one summary and one row");
-        assert_eq!(shown(&mut log, 40, 4, 0), vec!["\u{2713} a", "after"]);
+        // A result with no verdict yet: the mark alone, never its output.
+        assert_eq!(shown(&mut log, 40, 4, 0), vec!["\u{2713} ", "after"]);
         assert!(log.toggle("k"));
         assert_eq!(log.rows(View::All, 40), 4, "three rows and the row after");
         assert_eq!(
             shown(&mut log, 40, 4, 0),
-            vec!["\u{2713} a", "b", "c", "after"],
+            vec!["\u{2713} a", "  b", "  c", "after"],
             "the row after stays after"
         );
         assert!(log.toggle("k"), "and it closes again");
@@ -1130,11 +1369,31 @@ mod tests {
         log.stream("w", "k", LineKind::ToolOutput, "", "a\nb", true);
         log.push("w", LineKind::System, "after");
         let at = |log: &mut Log, row: usize| log.block_at(View::All, 40, 4, 0, row);
-        assert_eq!(at(&mut log, 0).as_deref(), Some("k"));
-        assert_eq!(at(&mut log, 1), None, "a whole row is not a keyed block");
-        log.toggle("k");
-        assert_eq!(at(&mut log, 1).as_deref(), Some("k"), "its second row too");
+        assert_eq!(at(&mut log, 0), Some(0), "the item");
+        assert_eq!(at(&mut log, 1), Some(1), "the row after it");
+        log.toggle_at(0);
+        assert_eq!(at(&mut log, 1), Some(0), "its second row is still its own");
         assert_eq!(at(&mut log, 3), None, "and nothing past the end");
+    }
+
+    /// Two blocks under one key are two items, and a press opens the one it hit.
+    ///
+    /// # Invariant
+    ///
+    /// A turn's second reasoning is `r:<session>:<turn>:Reasoning` again, so keying
+    /// a press by the string would open the wrong one -- which is what a reader
+    /// saw: clicking the later item expanded the earlier one.
+    #[test]
+    fn a_press_opens_the_block_it_landed_on_not_the_key() {
+        let mut log = Log::new();
+        log.stream("w", "r1", LineKind::Reasoning, "", "one\ntwo", true);
+        log.stream("w", "r1", LineKind::Reasoning, "", "three\nfour", true);
+        // Folded, each is two rows: one at 0-1, the other at 2-3.
+        let at = |log: &mut Log, row: usize| log.block_at(View::All, 40, 8, 0, row);
+        assert_eq!(at(&mut log, 2), Some(1), "the second item");
+        assert!(log.toggle_at(1), "opens that one");
+        assert!(!log.entries[0].expanded, "and not the first");
+        assert!(log.entries[1].expanded);
     }
 
     /// Only an `abstract` opens: an answer has nothing to fold.
@@ -1193,10 +1452,13 @@ mod tests {
         let long = "x".repeat(19);
         log.relabel("k", &long, LineKind::ToolError);
         assert!(log.rows(View::All, 20) > 1, "the label re-wrapped the text");
-        assert_eq!(
-            shown(&mut log, 20, 8, 0).concat(),
-            format!("\u{2715} {long}out"),
-            "every column of the block is somewhere on screen"
+        // The body column starts under the label, so the block's own text is the
+        // last row and nothing of it is lost to the cut.
+        let rows = shown(&mut log, 20, 8, 0);
+        assert_eq!(rows[0], format!("\u{2715} {long}"), "{rows:?}");
+        assert!(
+            rows.iter().any(|row| row.trim_end().ends_with("out")),
+            "every column of the block is on screen: {rows:?}"
         );
     }
 
@@ -1219,7 +1481,7 @@ mod tests {
         log.window(View::All, width, height, scroll)
             .rows
             .iter()
-            .map(|(_, text)| text.to_string())
+            .map(|(_, text, _)| text.to_string())
             .collect()
     }
 
@@ -1304,7 +1566,11 @@ mod tests {
         grow(&mut log, "a", "[peer] ", "zzzzzz");
         assert_eq!(
             shown(&mut log, 12, 4, 0),
-            vec!["\u{25c7} [peer] xxz", "zzzzz", "\u{25c7} [test1] yy"]
+            vec![
+                "\u{25c7} [peer] xxz",
+                "         zzzzz",
+                "\u{25c7} [test1] yy"
+            ]
         );
     }
 
@@ -1337,12 +1603,16 @@ mod tests {
         assert_eq!(all.len(), 3, "three rows at width 12: {}", all.join("|"));
         assert_eq!(all[0], "[peer] abcde", "{all:?}");
         // A window that cuts a paragraph does not relabel it.
-        assert_eq!(shown(&mut log, 12, 2, 0), vec!["fghijklmnopq", "rstuvwx"]);
+        assert_eq!(
+            shown(&mut log, 12, 2, 0),
+            vec!["       fghijklmnopq", "       rstuvwx"],
+            "a continuation row keeps the label's columns"
+        );
         // The same rows cut by a *cap* do carry it: row 0 is gone from the view.
         log.set_block_size(2);
         assert_eq!(
             shown(&mut log, 12, 4, 0),
-            vec!["[peer] fghijklmnopq", "rstuvwx"]
+            vec!["[peer] fghijklmnopq", "       rstuvwx"]
         );
     }
 
@@ -1379,7 +1649,11 @@ mod tests {
         let mut log = Log::new();
         log.stream("w", "t:c2:Stdout", LineKind::ToolOutput, "", "a\n\nb", true);
         assert!(log.toggle("t:c2:Stdout"));
-        assert_eq!(shown(&mut log, 40, 10, 0), vec!["\u{2713} a", "", "b"]);
+        assert_eq!(
+            shown(&mut log, 40, 10, 0),
+            vec!["\u{2713} a", "  ", "  b"],
+            "a blank row keeps the label's columns too"
+        );
     }
 
     /// A window can start mid-line, which a "count lines, not rows" renderer gets wrong.
@@ -1425,7 +1699,7 @@ mod tests {
             2,
             "a capped block contributes only its cap"
         );
-        assert_eq!(shown(&mut log, 10, 4, 0), vec!["[m] cccc", "dddd"]);
+        assert_eq!(shown(&mut log, 10, 4, 0), vec!["[m] cccc", "    dddd"]);
     }
 
     /// The tail follows: the newest text is what a capped row shows, and what came
@@ -1474,7 +1748,7 @@ mod tests {
             "a\nb\nc\nd",
             true,
         );
-        assert_eq!(shown(&mut log, 40, 10, 0), vec!["[m] c", "d"]);
+        assert_eq!(shown(&mut log, 40, 10, 0), vec!["[m] c", "    d"]);
     }
 
     /// The answer is the block the cap leaves alone: it is what the operator came
@@ -1493,7 +1767,7 @@ mod tests {
         );
         assert_eq!(
             shown(&mut log, 40, 10, 0),
-            vec!["[main] one", "two", "three"]
+            vec!["[main] one", "       two", "       three"]
         );
     }
 
@@ -1502,7 +1776,7 @@ mod tests {
     fn a_block_without_a_cap_keeps_every_row() {
         let mut log = Log::new();
         log.stream("w", "k", LineKind::System, "[m] ", "a\nb", true);
-        assert_eq!(shown(&mut log, 40, 10, 0), vec!["[m] a", "b"]);
+        assert_eq!(shown(&mut log, 40, 10, 0), vec!["[m] a", "    b"]);
     }
 
     /// One block is one label's text: another label opens a new block, so no row
@@ -1649,7 +1923,7 @@ mod tests {
             log.window(View::All, 40, 10, 0)
                 .rows
                 .iter()
-                .map(|(_, t)| t.to_string())
+                .map(|(_, t, _)| t.to_string())
                 .collect::<Vec<_>>(),
             vec!["[main] one", "[peer] two"]
         );
@@ -1657,7 +1931,7 @@ mod tests {
             log.window(View::Window("main"), 40, 10, 0)
                 .rows
                 .iter()
-                .map(|(_, t)| t.to_string())
+                .map(|(_, t, _)| t.to_string())
                 .collect::<Vec<_>>(),
             vec!["[main] one"]
         );

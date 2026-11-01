@@ -719,6 +719,62 @@ fn draw_quota(f: &mut Frame, s: &Screen, area: Rect) {
     );
 }
 
+/// One row of an item, inside the box SPEC gives an opened item.
+///
+/// # Invariant
+///
+/// A boxed row loses two columns to its borders and is one row shorter, which is
+/// what its own scroll accounts for: the box is drawn here, so the rows the log
+/// handed back are exactly the rows drawn.
+fn framed_row(kind: LineKind, text: &str, edges: crate::log::Edges, width: u16) -> Line<'static> {
+    if !edges.framed() {
+        return item_row(kind, text);
+    }
+    let inner = width.saturating_sub(2).max(1);
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    if edges.top {
+        // The top border carries the label rather than costing a row for a rule.
+        let body = item_row(kind, text);
+        let used: usize = body
+            .spans
+            .iter()
+            .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+            .sum();
+        let left = (inner as usize).saturating_sub(used + 2);
+        spans.push(Span::styled(
+            "\u{250c}\u{2500}",
+            Style::default().fg(Color::Cyan),
+        ));
+        spans.extend(body.spans);
+        spans.push(Span::styled(
+            format!("{}\u{2510}", "\u{2500}".repeat(left)),
+            Style::default().fg(Color::Cyan),
+        ));
+        return Line::from(spans);
+    }
+    if edges.bottom {
+        spans.push(Span::styled(
+            format!("\u{2514}{}\u{2518}", "\u{2500}".repeat(inner as usize)),
+            Style::default().fg(Color::Cyan),
+        ));
+        return Line::from(spans);
+    }
+    let body = item_row(kind, text);
+    let used: usize = body
+        .spans
+        .iter()
+        .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+        .sum();
+    let left = (inner as usize).saturating_sub(used);
+    spans.push(Span::styled("\u{2502}", Style::default().fg(Color::Cyan)));
+    spans.extend(body.spans);
+    if left > 0 {
+        spans.push(Span::raw(" ".repeat(left)));
+    }
+    spans.push(Span::styled("\u{2502}", Style::default().fg(Color::Cyan)));
+    Line::from(spans)
+}
+
 /// One row of an item: SPEC's coloured `symbol`, then text in the window's own ink.
 ///
 /// # Invariant
@@ -797,7 +853,7 @@ fn draw_rows(f: &mut Frame, s: &mut Screen, name: &str, area: Rect) {
     let lines: Vec<Line> = window
         .rows
         .iter()
-        .map(|(kind, text)| item_row(*kind, text.as_ref()))
+        .map(|(kind, text, edges)| framed_row(*kind, text.as_ref(), *edges, width as u16))
         .collect();
     drop(window);
     if let Some(pane) = s.panes.get_mut(&name) {
@@ -1756,7 +1812,10 @@ mod tests {
             one.iter().any(|row| row.ends_with("] a")),
             "{one:?} the answer keeps both rows"
         );
-        assert!(one.contains(&"b".to_string()), "{one:?}");
+        assert!(
+            one.iter().any(|row| row.trim_end().ends_with('b')),
+            "{one:?}"
+        );
         let shown = |frame: &Vec<String>| frame.iter().filter(|r| !r.is_empty()).count();
         assert!(
             shown(&one) < shown(&all),
@@ -1883,8 +1942,8 @@ mod tests {
         assert_eq!(screen.pane_at_row(40, 12, 0, 0), None);
     }
 
-    /// SPEC gives the `cmd` area no `(line)`, so a command and its answer take the
-    /// rows they need -- and never more than a share of the window.
+    /// SPEC gives the `cmd` area no `(line)`: a command and its answer take the
+    /// rows they need, up to a share of the window.
     ///
     /// # Invariant
     ///
@@ -1960,7 +2019,11 @@ mod tests {
         let rows: Vec<String> = (0..parts[3].height)
             .map(|i| row_text(&buf, parts[3].y + i))
             .collect();
-        assert_eq!(rows, vec!["! first", "second", "third"], "{rows:?}");
+        assert_eq!(
+            rows,
+            vec!["! first", "  second", "  third"],
+            "the body forms a column under the mark: {rows:?}"
+        );
     }
 
     /// SPEC's `symbol (colored)`: the ink stops at the mark, and the text after it

@@ -910,18 +910,25 @@ impl Client {
         }
     }
 
+    /// A call's output, as one item: SPEC's `tool_result{ok, time (spent)}`.
+    ///
+    /// # Invariant
+    ///
+    /// One block per call, not per stream: stdout and stderr are the *same*
+    /// result, and keyed by stream they became two items, one marked ✓ and one ✕.
+    /// The chunk carrying the verdict seals it -- a stream ending says nothing,
+    /// its twin may still be writing. See `docs/notes/cli-lib.md`.
     fn handle_tool_answer(&self, e: ToolAnswerEvent, sink: &mut dyn Sink) {
-        let key = format!("t:{}:{:?}", e.call_id, e.stream);
+        let key = format!("t:{}", e.call_id);
+        // Before the verdict, an output block; the verdict replaces the kind, and
+        // the mark with it.
         let kind = match e.stream {
             ToolStream::Stdout => LineKind::ToolOutput,
             ToolStream::Stderr => LineKind::ToolError,
         };
-        // A tool's output is its own block, in the window of the session that ran it.
-        let prefix = self.tag(&e.session, "");
         let window = e.session.clone();
-        sink.stream(&window, &key, kind, &prefix, &e.text, e.done);
-        // SPEC's `tool_result{ok, time}`: only the ending chunk knows. Words are
-        // the server's; the look is `kind_of`'s.
+        let ended = e.head.is_some();
+        sink.stream(&window, &key, kind, "", &e.text, ended);
         if let Some(head) = &e.head {
             let kind = kind_of(head.kind);
             sink.relabel(&window, &key, &head_label(head), kind);
@@ -2949,10 +2956,58 @@ mod tests {
             assert_eq!(
                 s.labels.last().map(String::as_str),
                 // The verdict, then the space the mark leaves room for.
-                Some(&format!("t:c1:Stdout = {said}  ({want})")[..]),
+                Some(&format!("t:c1 = {said}  ({want})")[..]),
                 "the server's words, this side's look"
             );
         }
+    }
+
+    /// One call is one result, however many streams it wrote to.
+    ///
+    /// # Invariant
+    ///
+    /// The report this pins: a command that printed to both stdout and stderr drew
+    /// two result items under one call, one marked ✓ and one ✕ -- and neither was
+    /// a verdict at all, they were the two streams. One key, one block, and the
+    /// verdict is what ends it.
+    #[test]
+    fn a_call_with_both_streams_is_one_result() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["peer"]);
+        let mut s = StreamSink::default();
+        let answer = |stream, text: &str, head: Option<protocol::Head>| ToolAnswerEvent {
+            session: "peer".into(),
+            call_id: "c1".into(),
+            tool: "bash".into(),
+            stream,
+            text: text.into(),
+            done: head.is_some(),
+            head,
+        };
+        c.handle_tool_answer(answer(ToolStream::Stdout, "out", None), &mut s);
+        c.handle_tool_answer(answer(ToolStream::Stderr, "err", None), &mut s);
+        // Every chunk lands in one block, and neither stream sealed it.
+        assert_eq!(s.keys, vec!["t:c1", "t:c1"]);
+        assert_eq!(s.bodies, vec!["out", "err"]);
+
+        c.handle_tool_answer(
+            answer(
+                ToolStream::Stdout,
+                "",
+                Some(protocol::Head::new(protocol::HeadKind::Ok, "1.2s")),
+            ),
+            &mut s,
+        );
+        assert_eq!(
+            s.keys.last().map(String::as_str),
+            Some("t:c1"),
+            "same block"
+        );
+        assert_eq!(
+            s.labels.last().map(String::as_str),
+            Some("t:c1 = 1.2s  (ToolOutput)"),
+            "one verdict, and it is the one the call had"
+        );
     }
 
     /// A chunk that is not the end of a call knows nothing about its outcome,
@@ -2994,6 +3049,7 @@ mod tests {
         let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["peer"]);
         c.shown.set("peer", false).unwrap();
         let mut s = StreamSink::default();
+        // Both streams: one result, so one key and one row per chunk.
         for (stream, text) in [(ToolStream::Stdout, "out"), (ToolStream::Stderr, "err")] {
             c.handle_tool_answer(
                 ToolAnswerEvent {
@@ -3009,7 +3065,11 @@ mod tests {
             );
         }
         assert_eq!(s.lines, vec!["out", "err"]);
-        assert_eq!(s.keys, vec!["t:c1:Stdout", "t:c1:Stderr"]);
+        assert_eq!(
+            s.keys,
+            vec!["t:c1", "t:c1"],
+            "one result, not one per stream"
+        );
 
         // In a pane of its own, the output needs no name over it.
         c.shown.set("peer", true).unwrap();

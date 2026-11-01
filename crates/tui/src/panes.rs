@@ -192,8 +192,7 @@ impl Panes {
             }
         }
         for pane in &panes {
-            // No view caps its blocks on its own: `block_size` is the one cap, and
-            // SPEC leaves the command area's height to its content.
+            // No view caps its blocks on its own: `block_size` is the only cap.
             self.log.set_cap(&pane.name, 0);
         }
         self.panes = panes;
@@ -250,6 +249,21 @@ impl Panes {
         self.log.toggle(key)
     }
 
+    /// Scrolls the box of an opened item, which SPEC makes scrollable.
+    pub fn scroll_block(&mut self, at: usize, rows: i64) -> bool {
+        self.log.scroll_block(at, rows)
+    }
+
+    /// Whether the block `at` is an opened item with a box of its own.
+    pub fn expanded_at(&self, at: usize) -> bool {
+        self.log.expanded_at(at)
+    }
+
+    /// Opens or closes the `abstract` at one block, which is what a press names.
+    pub fn toggle_at(&mut self, at: usize) -> bool {
+        self.log.toggle_at(at)
+    }
+
     /// The block under one row of a view, as the key a press carries.
     pub fn block_at(
         &mut self,
@@ -258,7 +272,7 @@ impl Panes {
         height: usize,
         scroll: usize,
         row: usize,
-    ) -> Option<String> {
+    ) -> Option<usize> {
         self.log.block_at(view, width, height, scroll, row)
     }
 

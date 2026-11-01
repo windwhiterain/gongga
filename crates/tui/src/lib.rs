@@ -273,7 +273,7 @@ impl Screen {
     /// It reads the rows the frame drew: the slot gives the cell's row inside the
     /// window, and the log answers which block that row belongs to -- counting the
     /// fold, so a press on a summary line toggles the item it summarises.
-    pub fn item_at(&mut self, width: u16, height: u16, column: u16, row: u16) -> Option<String> {
+    pub fn item_at(&mut self, width: u16, height: u16, column: u16, row: u16) -> Option<usize> {
         let slots = self.slots(width, height);
         let slot = slots
             .iter()
@@ -337,7 +337,11 @@ impl Screen {
         let window = self
             .panes
             .window(View::Window(&name), width, height, scroll);
-        window.rows.iter().map(|(_, row)| row.to_string()).collect()
+        window
+            .rows
+            .iter()
+            .map(|(_, row, _)| row.to_string())
+            .collect()
     }
 
     /// The rows the sticky session gets in a frame this size: what a page means.
@@ -944,7 +948,18 @@ impl Tui {
             return;
         };
         if let Some(rows) = rows {
-            // The wheel writes no state; a list has no scroll of its own.
+            // The wheel writes no state. Over an opened item it scrolls that
+            // item's box -- the one scroll SPEC gives a block.
+            if hit.part == Part::Pane
+                && let Some(at) =
+                    self.screen
+                        .item_at(size.width, size.height, mouse.column, mouse.row)
+                && self.screen.panes.expanded_at(at)
+                && self.screen.panes.scroll_block(at, rows)
+            {
+                self.dirty = true;
+                return;
+            }
             if hit.part != Part::List {
                 self.screen.scroll_pane(&hit.name, rows);
             }
@@ -971,11 +986,11 @@ impl Tui {
             }
             // A press in the events opens or closes SPEC's `abstract` there.
             Part::Pane => {
-                if let Some(key) =
+                if let Some(at) =
                     self.screen
                         .item_at(size.width, size.height, mouse.column, mouse.row)
                 {
-                    self.screen.panes.toggle(&key);
+                    self.screen.panes.toggle_at(at);
                 }
             }
             _ => {}
@@ -1664,7 +1679,7 @@ mod tests {
                 .window(View::All, 200, 100, 0)
                 .rows
                 .iter()
-                .map(|(_, text)| text.to_string())
+                .map(|(_, text, _)| text.to_string())
                 .collect()
         }
     }
@@ -2020,7 +2035,7 @@ mod tests {
         );
         // Two rows: the peer block is cut to its tail and repeats its tag.
         let rows = h.screen.panes.window(View::All, 40, 2, 0).rows;
-        let shown: Vec<String> = rows.iter().map(|(_, t)| t.to_string()).collect();
+        let shown: Vec<String> = rows.iter().map(|(_, t, _)| t.to_string()).collect();
         assert_eq!(shown, vec!["\u{25c7} [peer] aaaccc", "[test1] bbb"]);
     }
 
@@ -2039,8 +2054,8 @@ mod tests {
         // stderr: nothing at all but the sentinel's blank line.
         h.stream("t:c1:Stderr", LineKind::ToolError, "", "\n", false);
         h.stream("t:c1:Stderr", LineKind::ToolError, "", "", true);
-        // Sealed, it is one `abstract` row, and that row says what it printed.
-        assert_eq!(h.rows(), vec!["\u{2713} hi"]);
+        // A result folds to its verdict; with none yet, the mark alone.
+        assert_eq!(h.rows(), vec!["\u{2713} "]);
     }
 
     /// Two streams open at once stay separate: a tool's output never joins a response.
@@ -2383,8 +2398,7 @@ mod tests {
             .screen
             .item_at(width, height, slot.body.x, slot.body.y)
             .expect("a press there names the item");
-        assert_eq!(key, "c:c1");
-        assert!(h.screen.panes.toggle(&key), "a tool call is an abstract");
+        assert!(h.screen.panes.toggle_at(key), "a tool call is an abstract");
     }
 
     /// A press in the events opens the item under it, and the row count follows.
@@ -2409,12 +2423,11 @@ mod tests {
         let folded = h.screen.panes.rows(View::Window("main"), 39);
         assert_eq!(folded, 1, "a sealed result is one summary row");
 
-        let key = h
+        let at = h
             .screen
             .item_at(width, height, slot.body.x, slot.body.y)
             .expect("a press there names the item");
-        assert_eq!(key, "t:c1");
-        assert!(h.screen.panes.toggle(&key));
+        assert!(h.screen.panes.toggle_at(at));
         assert_eq!(
             h.screen.panes.rows(View::Window("main"), 39),
             3,
