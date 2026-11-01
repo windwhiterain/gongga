@@ -81,9 +81,23 @@ scripts/ship.sh -m "..." --push-main  # 再把本仓库的 pin 提交并 push
 
 - 有改动时 `-m` 必填：脚本不替你编一条发布说明。
 - 远端 main 上有 ship/ 没有的提交就拒绝 push，从不 force-push；`--check` 会把这种漂移说清楚。
+- `--check` 的退出码是契约：`0` 一致、`1` 不一致（真漂移）、`2` 用法、`3` **远端没应答**（只有
+  "这个 pin 能不能被取到"还没法判断）。第三种不是不一致，别把它当成不一致处理。
 - pin 是 `include_str!`，所以改完要 `cargo build -p gongga-server` 才生效，运行中的服务端还得 `evolve`。
 - 它自己有测试：`bash scripts/ship_selftest.sh` 拿一个临时 bare 仓库当远端，跑通提交、push、写 pin、
-  漂移拒绝全过程，不碰 GitHub。
+  漂移拒绝、以及远端不可达与真漂移的区分全过程，不碰 GitHub。
+
+**提交时挡住"pin 指向一个没人发布过的 commit"**：`scripts/hooks/pre-commit`。它只在这次提交
+动了 `ship` 或 `crates/server/ship.toml` 时才跑（其余提交不发网络请求），不一致就拒绝；远端不可达
+只警告、不挡（提交不能依赖网络）。每个 clone 装一次：
+
+```bash
+git config core.hooksPath scripts/hooks
+```
+
+为什么值得挡：`ship.toml` 里写一个只存在于本工作树的 sha，新机器取不到它——而
+`install_at` 曾经对着取不到的 commit 报 `written: 0, fetched: true`，于是 home 里没有
+`config.toml`，几百行之后才以 "no prompt templates" 报出来，指向 home 而不是 pin。
 
 ## 改过服务端代码之后
 
