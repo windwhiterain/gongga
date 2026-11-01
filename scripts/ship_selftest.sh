@@ -65,6 +65,22 @@ sed -i 's/^commit = "[0-9a-f]*"/commit = "00000000000000000000000000000000000000
 GONGGA_SHIP_REMOTE="$base/shipremote.git" bash wt/scripts/ship.sh --check >drift.txt 2>&1
 check "a drifted manifest is reported" "grep -q 'MISMATCH' drift.txt"
 
+say "== a remote that does not answer is 'cannot tell', not 'they disagree'"
+# The drift above left a manifest naming some other commit; put it back, or this
+# would test a known mismatch instead of an unknown one.
+git -C wt checkout -q -- crates/server/ship.toml
+GONGGA_SHIP_REMOTE="$base/no-such-remote.git" bash wt/scripts/ship.sh --check >offline.txt 2>&1
+code=$?
+check "an unreachable remote answers 3 (saw: $code)" "[[ $code == 3 ]]"
+check "and says so instead of claiming a mismatch" "grep -q 'UNVERIFIED' offline.txt"
+
+say "== but a wrong manifest is wrong with no network too"
+sed -i 's/^commit = "[0-9a-f]*"/commit = "1111111111111111111111111111111111111111"/' wt/crates/server/ship.toml
+GONGGA_SHIP_REMOTE="$base/no-such-remote.git" bash wt/scripts/ship.sh --check >offline2.txt 2>&1
+code=$?
+check "unreachable plus a real mismatch still answers 1 (saw: $code)" "[[ $code == 1 ]]"
+git -C wt checkout -q -- crates/server/ship.toml
+
 say "== and the same drift check catches a pin the remote does not have"
 git -C wt checkout -q -- crates/server/ship.toml
 git -C wt/ship commit -q --allow-empty -m "a commit nobody published"

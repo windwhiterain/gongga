@@ -15,6 +15,15 @@
 # manifest, and what the remote answers for refs/heads/main. The last one is the
 # point of a pin: a fresh machine has to be able to fetch that commit, so a sha that
 # only exists in this working tree is not a release.
+#
+# `--check` answers with four codes, because "they disagree" and "I could not tell"
+# are different facts and a caller has to be able to act on both:
+#
+#   0  in agreement
+#   1  they disagree -- a real drift, refuse it
+#   2  usage
+#   3  the remote could not be reached, so the one thing still in question is
+#      whether the pin is fetchable. Nothing else disagreed.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -64,6 +73,9 @@ report() {
 
 pinned=$(sed -n 's/^commit = "\([0-9a-f]*\)"/\1/p' "$manifest")
 agree=1
+# Whether the third name was actually asked for. A remote that does not answer
+# leaves the question open; it does not answer "no". See the exit codes above.
+reachable=1
 [[ "$local_sha" == "$pinned" ]] || { echo "  MISMATCH ship HEAD is not what ship.toml pins" >&2; agree=0; }
 if [[ -n "$remote_sha" ]]; then
   if [[ "$remote_sha" != "$local_sha" ]]; then
@@ -75,7 +87,8 @@ if [[ -n "$remote_sha" ]]; then
     agree=0
   fi
 else
-  echo "  MISMATCH $remote advertises no $branch: the pin is not fetchable" >&2; agree=0
+  echo "  UNVERIFIED $remote did not answer for $branch: cannot tell whether the pin is fetchable" >&2
+  reachable=0; agree=0
 fi
 
 if [[ $mode == check ]]; then
@@ -83,6 +96,11 @@ if [[ $mode == check ]]; then
   if [[ $agree == 1 ]]; then
     echo "  in agreement"
     exit 0
+  fi
+  # Unreachable only counts as "cannot tell" when nothing else disagreed: a
+  # manifest that names some other commit is wrong with or without a network.
+  if [[ $reachable == 0 && "$local_sha" == "$pinned" ]]; then
+    exit 3
   fi
   exit 1
 fi
