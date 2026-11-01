@@ -118,9 +118,12 @@ agents play certain roles to keep context focus.
 roles: 
 - justice (pro/sota): talk to the user, understand user.
   - judge if plan is conform to the spec and approve to implment. 
+  - judge if report is conform to the spec and approve.
   - judge if proposal is in spirit of the spec and send to user for approval.
-- premier (flash): orchestrate, spawn subagents, review.
+- premier (flash):
   - orchestrate subagents (flash, pro for hard) to implement the plan.
+  - review the implementation
+  - present implementation report to justice.
 - advisor (sota): plan, proposal
   - present plan for implementation to the justice.
   - present proposal of changes to the spec.
@@ -129,5 +132,6 @@ roles:
 record:
 - proposal{example, expected, actual, actual_spec, expected_spec}
 - plan
-- judgement over proposal/report{spec violation: none | premise | direct}
+- report
+- judgement over proposal/plan/report{spec violation: none | premise | direct}
 - spec amendment{ref proposal, ref judgement}
