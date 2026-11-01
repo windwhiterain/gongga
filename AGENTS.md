@@ -1,5 +1,6 @@
 
-**TEST IS NOT ALLOWED**
+**WRITING TEST IS NOT ALLOWED**
+**CODE THAT WILL PANIC IS NOT ALLOWED**
 
 - SPEC is the only source of truth (agents should not edit without user's permission).
 - when designing new feature, search any existing wheels. 
