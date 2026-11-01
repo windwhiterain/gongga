@@ -236,7 +236,7 @@ pub struct Usage {
 
 /// Which sub-stream of an assistant response a chunk belongs to.
 /// See `docs/notes/protocol-message.md`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResponsePart {
     Reasoning,

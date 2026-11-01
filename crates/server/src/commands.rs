@@ -1741,7 +1741,10 @@ mod tests {
             .iter()
             .find(|a| a.name == "session")
             .expect("events offers a session filter");
-        assert!(!session.required, "filtering the log by session is optional");
+        assert!(
+            !session.required,
+            "filtering the log by session is optional"
+        );
     }
 
     /// Every completion source must survive the wire, or Tab silently offers nothing.

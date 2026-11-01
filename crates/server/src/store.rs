@@ -593,6 +593,22 @@ impl Store {
         Ok(seq)
     }
 
+    /// Drops every row after `seq`, returning how many went.
+    ///
+    /// # Invariant
+    ///
+    /// Only a failed request attempt's own rows: its window was pinned to `seq`
+    /// before the request was sent, so a row beyond it is one that attempt wrote,
+    /// and the retry that follows has to send what the first attempt sent. See
+    /// `docs/notes/server-store.md`.
+    pub fn truncate_after(&self, session_id: i64, seq: i64) -> anyhow::Result<usize> {
+        let conn = self.lock();
+        Ok(conn.execute(
+            "DELETE FROM messages WHERE session_id = ?1 AND seq > ?2",
+            params![session_id, seq],
+        )?)
+    }
+
     /// Where the transcript now ends, `0` for an empty one.
     pub fn last_seq(&self, session_id: i64) -> anyhow::Result<i64> {
         let conn = self.lock();
@@ -799,7 +815,8 @@ impl Store {
         kind: &str,
         payload: &serde_json::Value,
     ) -> anyhow::Result<()> {
-        self.append_event_inner(session_id, kind, payload).map(|_| ())
+        self.append_event_inner(session_id, kind, payload)
+            .map(|_| ())
     }
 
     fn append_event_inner(
@@ -1549,6 +1566,26 @@ mod tests {
                 .iter()
                 .any(|t| t.session == "broken")
         );
+    }
+
+    /// A failed attempt's rows go, and the ones its window covered stay: the
+    /// retry that follows sends exactly what the first attempt sent.
+    #[test]
+    fn truncating_after_a_window_keeps_the_window() {
+        let (_d, store) = temp_store();
+        let id = store.create_session("main", "m", "C:/x").unwrap();
+        for text in ["first", "second", "third"] {
+            store
+                .append_message(id, "text", &json!({"role": "assistant", "text": text}))
+                .unwrap();
+        }
+        let window = store.last_seq(id).unwrap() - 2;
+        assert_eq!(store.truncate_after(id, window).unwrap(), 2);
+        let rows = store.messages_between(id, 0, i64::MAX).unwrap();
+        assert_eq!(rows.messages.len(), 1);
+        assert_eq!(rows.messages[0].seq, window);
+        // Nothing beyond the window is left, so a second pass drops nothing.
+        assert_eq!(store.truncate_after(id, window).unwrap(), 0);
     }
 
     /// The number an operator reads as "no answer yet" comes from here.

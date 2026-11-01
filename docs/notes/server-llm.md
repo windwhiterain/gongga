@@ -126,10 +126,16 @@ instead of "thinking".
 
 Whether another attempt is worth making.
 
-`produced` is the only thing that rules one out: once the model has said
-anything, asking again would stand a second, different answer behind the first.
-Everything else -- an error, a timeout, a completion with nothing in it -- is
-the provider's bad minute and deserves another try.
+How far the attempt got is *not* part of the question. It used to be: an attempt
+that had streamed anything was never resent, on the theory that asking again
+would stand a second answer behind the first. That theory cost a whole turn to a
+provider that died six characters into its answer, and the six characters were
+never an answer -- they were a fragment the transcript does not keep, because
+`Agent::step_inner` discards what the failed attempt wrote before the retry is
+sent (see `server-agent.md`). A provider that dies mid-sentence is the same bad
+minute as one that dies before its first byte, and the user's rule is explicit:
+retry always, unless the provider says the request itself is invalid -- which is
+`error_retryable` and `status_retryable`, not this function.
 
 `max_retries == 0` is *no ceiling*: a long-running turn is not allowed to die on
 a transient outage at hour three, so the default retries until the turn's cancel
@@ -440,14 +446,12 @@ must survive that too.
 
 Past the cap the wait stays the same rather than becoming a silence of its own.
 
-## tests::a_silent_response_is_retried_but_a_spoken_one_is_not
+## tests::a_failed_attempt_is_retried_however_far_it_got
 
-A request that said nothing is worth asking again; one that said something is
-not, because the retry would answer a second time.
-
-`0` is "no ceiling", not "no retries": a ten-day turn must not die on a
-transient outage, and the cancel token is what stops it. Even unlimited retries
-never ask twice after the model has spoken.
+The ceiling is the only thing in this function. `0` is "no ceiling", not "no
+retries": a ten-day turn must not die on a transient outage, and the cancel token
+is what stops it. What the attempt streamed before it failed used to rule a retry
+out; that rule is gone, so the test asserts the ceiling and nothing else.
 
 ## tests::a_refused_request_is_not_retried
 
