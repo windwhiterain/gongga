@@ -276,19 +276,6 @@ impl Panes {
         self.log.block_at(view, width, height, scroll, row)
     }
 
-    /// Joins a tool result to the call block with the same stable key.
-    pub fn resolve(
-        &mut self,
-        name: &str,
-        key: &str,
-        tag: &str,
-        kind: LineKind,
-        text: &str,
-        done: bool,
-    ) {
-        self.log.resolve(name, key, tag, kind, text, done);
-    }
-
     /// Replaces a call's provisional body with its structured head.
     pub fn describe(&mut self, name: &str, key: &str, head: &cli::protocol::Head) {
         self.log.describe(name, key, head);

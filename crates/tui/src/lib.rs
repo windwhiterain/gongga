@@ -670,20 +670,6 @@ impl Tui {
         self.dirty = true;
     }
 
-    /// Appends a tool's result to its call, preserving one expandable item.
-    pub fn resolve(
-        &mut self,
-        name: &str,
-        key: &str,
-        tag: &str,
-        kind: LineKind,
-        text: &str,
-        done: bool,
-    ) {
-        self.screen.panes.resolve(name, key, tag, kind, text, done);
-        self.dirty = true;
-    }
-
     /// The label of a block that learned its outcome after it opened.
     pub fn relabel(&mut self, _name: &str, key: &str, tag: &str, kind: LineKind) {
         self.screen.panes.relabel(key, tag, kind);
@@ -2562,21 +2548,20 @@ mod tests {
         }
         h.stream("c:c1", LineKind::ToolCall, "bash ", "bash", true);
         for row in 0..8 {
-            h.screen.panes.resolve(
-                "main",
-                "c:c1",
-                "",
+            h.stream(
+                "t:c1",
                 LineKind::ToolCall,
+                "",
                 &format!("line {row}\n"),
                 false,
             );
         }
         h.screen
             .panes
-            .resolve("main", "c:c1", "1.0s ", LineKind::ToolOutput, "", true);
+            .stream("main", "t:c1", LineKind::ToolOutput, "1.0s ", "", true);
         h.screen.panes.set_block_size(2);
         let (width, height) = (40u16, 14u16);
-        assert!(h.screen.panes.toggle("c:c1"));
+        assert!(h.screen.panes.toggle("t:c1"));
         let slot = h
             .screen
             .slots(width, height)
@@ -2593,6 +2578,24 @@ mod tests {
         for rows in [-100, 100] {
             h.screen.scroll_at(width, height, slot.body.x, row, rows);
             assert_eq!(h.pane_scroll("main"), 0, "small box owns its wheel");
+        }
+    }
+
+    /// Five and six never chain, while seven does at the inner boundary.
+    #[test]
+    fn block_size_five_does_not_chain_to_the_outer_pane() {
+        for size in [5, 6, 7] {
+            let mut h = Headless::new();
+            h.stream("c:c1", LineKind::ToolCall, "bash ", "bash", true);
+            h.screen.panes.set_block_size(size);
+            assert!(h.screen.panes.toggle("c:c1"));
+            // A call that fits its cap is already at the inner bottom. The
+            // boundary, not the outer pane's geometry, decides wheel ownership.
+            assert_eq!(
+                h.screen.panes.scroll_block(0, -1, 6),
+                size > 6,
+                "block size {size}"
+            );
         }
     }
 

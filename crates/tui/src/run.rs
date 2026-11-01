@@ -69,17 +69,6 @@ impl Sink for TuiSink<'_> {
     fn relabel(&mut self, window: &str, key: &str, tag: &str, kind: LineKind) {
         self.0.relabel(window, key, tag, kind);
     }
-    fn tool_result(
-        &mut self,
-        window: &str,
-        key: &str,
-        text: &str,
-        outcome: &str,
-        kind: LineKind,
-        done: bool,
-    ) {
-        self.0.resolve(window, key, outcome, kind, text, done);
-    }
 
     fn clear(&mut self, window: &str) {
         self.0.clear(window);

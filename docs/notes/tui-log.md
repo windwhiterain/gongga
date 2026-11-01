@@ -312,22 +312,16 @@ A capped block keeps its whole text like any other block and simply counts fewer
 of its rows, so there is nothing to discard and no budget to set.
 
 
-## Log::resolve — a call and its result are one item
+## Paired call and result streams
 
-`c:<call_id>` is the identity of both the call and its result. A result does not
-open `t:<call_id>` or a per-stream block: it reopens the call, appends its output
-and applies the final verdict to the same summary. stdout and stderr never decide
-that verdict. `Sink::tool_call` passes the structured head through to the TUI,
-so an opened call shows `CALL`, named fields with indented multi-line values,
-then `RESULT` and its raw output. Both folded and framed titles read
-`verdict and elapsed time · call summary`, keeping time next to the status mark
-regardless of how many arguments follow.
-
-Before the verdict, the unexpanded view reads the live result buffer directly:
-every output chunk appends visible rows, so a long compilation can be monitored
-without opening the item. Opening it switches to the structured sections, where
-later chunks continue to appear under `RESULT`. Only the final verdict seals and
-folds the item; receiving a structured call head during the run does neither.
+A call and its result are two entries, not one body with two sections. The call's
+`c:<call_id>` entry updates structured arguments and folds when its head is
+complete. The result's `t:<call_id>` entry opens on the first output chunk,
+appends visible rows while the tool runs and folds only on the final verdict.
+Their shared id pairs them without sharing expansion, wrapping or lifecycle.
+An opened call shows `CALL` with named fields and indented multi-line values;
+an opened result has its own frame and raw output. Result titles put elapsed
+time immediately after the status symbol, then the paired call summary.
 
 ## Entry::boxed — one expanded shape
 

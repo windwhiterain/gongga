@@ -400,21 +400,6 @@ pub trait Sink {
             );
         }
     }
-    /// Appends a result to the call whose stable key it carries.
-    ///
-    /// The key is the call's, never a second key made from its output stream.
-    /// Only the final verdict supplies a kind; stderr alone does not mean failure.
-    fn tool_result(
-        &mut self,
-        window: &str,
-        key: &str,
-        text: &str,
-        outcome: &str,
-        kind: LineKind,
-        done: bool,
-    ) {
-        self.stream(window, key, kind, outcome, text, done);
-    }
     /// The label of a block that learned its outcome after opening, and that
     /// label's kind: SPEC's `tool_result{ok, time}`.
     ///
@@ -497,9 +482,8 @@ pub struct Client {
     block_size: BlockSize,
     /// Which sessions are shown beside the list.
     shown: Shown,
-    /// Calls whose arguments streamed, by id: the structured event that follows
-    /// fills that block, not a second one.
-    calls: std::collections::HashSet<String>,
+    /// The summary each result names, paired by call id; streamed calls update it.
+    calls: HashMap<String, String>,
     /// Which window each accepted command's result belongs to, from its echo.
     results: HashMap<u64, String>,
     /// A `set_session` waiting for its acknowledgement, so a refused one writes
@@ -663,7 +647,7 @@ impl Client {
             shown,
             results: HashMap::new(),
             follows: Vec::new(),
-            calls: std::collections::HashSet::new(),
+            calls: HashMap::new(),
             sessions: Vec::new(),
             model: "-".to_string(),
             next_id: Self::seed_command_id(),
@@ -918,9 +902,6 @@ impl Client {
             (Some(call_id), ResponsePart::ToolCall) => format!("c:{call_id}"),
             _ => format!("r:{}:{}:{:?}", e.session, e.turn, e.part),
         };
-        if let (Some(call_id), ResponsePart::ToolCall) = (&e.call_id, e.part) {
-            self.calls.insert(call_id.clone());
-        }
         let (kind, label) = match e.part {
             // No label: the kind's colour (dim italic) already says this is the
             // model thinking, and the label was the word twice.
@@ -936,7 +917,8 @@ impl Client {
         // The tag says which part of the answer this is; the window says who speaks.
         let prefix = self.tag(&e.session, label);
         let window = e.session.clone();
-        sink.stream(&window, &key, kind, &prefix, &e.text, e.done);
+        let done = e.done && e.part != ResponsePart::ToolCall;
+        sink.stream(&window, &key, kind, &prefix, &e.text, done);
     }
 
     /// A tool the model asked for: one block per call, so two calls in one turn
@@ -944,27 +926,42 @@ impl Client {
     ///
     /// # Invariant
     ///
-    /// The key is the call id, never the turn: SPEC's `abstract` holds a call and
-    /// its result together, and the id is the only thing they share.
-    fn handle_tool_call(&self, e: protocol::ToolCallEvent, sink: &mut dyn Sink) {
+    /// The call id pairs this block with its result; their bodies stay separate.
+    fn handle_tool_call(&mut self, e: protocol::ToolCallEvent, sink: &mut dyn Sink) {
         let key = format!("c:{}", e.call_id);
-        sink.tool_call(&e.session, &key, &e.head, self.calls.contains(&e.call_id));
+        let streamed = self.calls.contains_key(&e.call_id);
+        self.calls.insert(e.call_id.clone(), head_label(&e.head));
+        sink.tool_call(&e.session, &key, &e.head, streamed);
     }
 
     /// A call's output, as one item: SPEC's `tool_result{ok, time (spent)}`.
     ///
     /// # Invariant
     ///
-    /// One block per call, and its result joins that call rather than opening a
-    /// sibling. Only the final verdict supplies ✓/✕: an stderr chunk is output,
-    /// not a failed call. See `docs/notes/cli-lib.md`.
+    /// Call and result are separate blocks, paired by call id. Only the final
+    /// verdict supplies ✓/✕: an stderr chunk is output, not a failed call.
     fn handle_tool_answer(&self, e: ToolAnswerEvent, sink: &mut dyn Sink) {
-        let key = format!("c:{}", e.call_id);
-        let (outcome, kind, done) = match &e.head {
-            Some(head) => (head_label(head), kind_of(head.kind), true),
-            None => (String::new(), LineKind::ToolCall, false),
+        let key = format!("t:{}", e.call_id);
+        let call = self
+            .calls
+            .get(&e.call_id)
+            .map(String::as_str)
+            .unwrap_or(&e.tool)
+            .trim_end();
+        let (kind, done) = match &e.head {
+            Some(head) => (kind_of(head.kind), true),
+            // Output streams do not decide success or failure.
+            None => (LineKind::ToolOutput, false),
         };
-        sink.tool_result(&e.session, &key, &e.text, &outcome, kind, done);
+        let outcome = match &e.head {
+            Some(head) => format!("{} · {call} ", head_label(head).trim_end()),
+            None => format!("{call} "),
+        };
+        // A verdict changes the existing result's label, never its identity.
+        sink.stream(&e.session, &key, kind, &outcome, &e.text, done);
+        if done {
+            sink.relabel(&e.session, &key, &outcome, kind);
+        }
     }
 
     fn session_names(&self) -> Vec<String> {
@@ -2766,22 +2763,6 @@ mod tests {
         fn rewrite(&mut self, _window: &str, _key: &str, text: &str) {
             self.rewritten.push(text.to_string());
         }
-        fn tool_result(
-            &mut self,
-            _window: &str,
-            key: &str,
-            text: &str,
-            outcome: &str,
-            kind: LineKind,
-            _done: bool,
-        ) {
-            self.keys.push(key.to_string());
-            self.bodies.push(text.to_string());
-            self.lines.push(format!("{outcome}{text}"));
-            if !outcome.is_empty() {
-                self.labels.push(format!("{key} = {outcome} ({kind:?})"));
-            }
-        }
         fn clear(&mut self, window: &str) {
             self.cleared.push(window.to_string());
             // What a window held is gone: a read of `lines` sees what came
@@ -3050,23 +3031,27 @@ mod tests {
             }),
             &mut s,
         );
-        assert_eq!(s.keys, vec!["c:c1"], "and no second block was opened");
         assert_eq!(
-            s.rewritten,
-            vec!["bash\nls\nname=build"],
-            "what was streamed is replaced by the structure"
+            s.keys,
+            vec!["c:c1", "c:c1"],
+            "the streamed call keeps its identity"
         );
         assert_eq!(
-            s.labels.last().map(String::as_str),
-            Some("c:c1 = bash, name=build  (ToolCall)"),
-            "and the folded row is the summary"
+            s.lines.last().map(String::as_str),
+            Some("bash, name=build bash\nls\nname=build"),
+            "the structured head replaces the provisional arguments"
+        );
+        assert_eq!(
+            s.tags.last().map(String::as_str),
+            Some("bash, name=build "),
+            "and the structured head carries the folded summary"
         );
     }
 
     /// SPEC's `tool_result{ok, time}`: the ending chunk labels the block with
     /// the verdict and how long the tool ran.
     #[test]
-    fn a_finished_tool_says_how_it_went_on_its_call_block() {
+    fn a_finished_tool_says_how_it_went_on_its_result_block() {
         let d = tempfile::tempdir().unwrap();
         let c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["peer"]);
         let mut s = StreamSink::default();
@@ -3089,7 +3074,7 @@ mod tests {
             assert_eq!(
                 s.labels.last().map(String::as_str),
                 // The verdict, then the space the mark leaves room for.
-                Some(&format!("c:c1 = {said}  ({want})")[..]),
+                Some(&format!("t:c1 = {said} · bash  ({want})")[..]),
                 "the server's words, this side's look"
             );
         }
@@ -3120,7 +3105,7 @@ mod tests {
         c.handle_tool_answer(answer(ToolStream::Stdout, "out", None), &mut s);
         c.handle_tool_answer(answer(ToolStream::Stderr, "err", None), &mut s);
         // Every chunk lands in one block, and neither stream sealed it.
-        assert_eq!(s.keys, vec!["c:c1", "c:c1"]);
+        assert_eq!(s.keys, vec!["t:c1", "t:c1"]);
         assert_eq!(s.bodies, vec!["out", "err"]);
 
         c.handle_tool_answer(
@@ -3133,12 +3118,12 @@ mod tests {
         );
         assert_eq!(
             s.keys.last().map(String::as_str),
-            Some("c:c1"),
+            Some("t:c1"),
             "same block"
         );
         assert_eq!(
             s.labels.last().map(String::as_str),
-            Some("c:c1 = 1.2s  (ToolOutput)"),
+            Some("t:c1 = 1.2s · bash  (ToolOutput)"),
             "one verdict, and it is the one the call had"
         );
     }
@@ -3162,7 +3147,7 @@ mod tests {
             },
             &mut s,
         );
-        assert!(s.labels.is_empty(), "{:?}", s.labels);
+        assert!(s.labels.is_empty(), "running output is not a verdict");
     }
 
     /// The key stays what it was: the session there is for routing, not display.
@@ -3197,10 +3182,10 @@ mod tests {
                 &mut s,
             );
         }
-        assert_eq!(s.lines, vec!["out", "err"]);
+        assert_eq!(s.lines, vec!["bash out", "bash err"]);
         assert_eq!(
             s.keys,
-            vec!["c:c1", "c:c1"],
+            vec!["t:c1", "t:c1"],
             "one result, not one per stream"
         );
 
@@ -3219,7 +3204,7 @@ mod tests {
             },
             &mut s,
         );
-        assert_eq!(s.lines, vec!["out"]);
+        assert_eq!(s.lines, vec!["bash out"]);
     }
 
     /// A log already names itself; a command belongs to the operator.

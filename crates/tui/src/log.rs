@@ -42,10 +42,6 @@ struct Entry {
     sealed: bool,
     /// Structured call fields, once the call's head arrives.
     call: Option<cli::protocol::Head>,
-    /// Raw result output, separate from the call's arguments.
-    result: String,
-    /// The verdict's text, before the call summary in every title.
-    outcome: String,
     /// The expanded sections, cached at their measured width.
     sections: String,
     /// Where this block sits among the blocks of its own window.
@@ -74,8 +70,6 @@ impl Entry {
             col: 0,
             sealed: false,
             call: None,
-            result: String::new(),
-            outcome: String::new(),
             sections: String::new(),
             at: 0,
             merged_at: None,
@@ -171,21 +165,12 @@ impl Entry {
         cut(&text, width.saturating_sub(self.kind.mark().width()))
     }
 
-    /// Output or a verdict has arrived, even before the structured call.
-    fn resolved(&self) -> bool {
-        !self.result.is_empty() || !self.outcome.is_empty()
-    }
-
     /// Outcome first: long arguments cannot hide the elapsed time.
     fn summary(&self) -> String {
-        match (self.outcome.trim(), self.tag.trim()) {
-            ("", tag) => tag.to_string(),
-            (outcome, "") => outcome.to_string(),
-            (outcome, tag) => format!("{outcome} · {tag}"),
-        }
+        self.tag.trim_end().to_string()
     }
 
-    /// A call and its result are two sections with structured fields.
+    /// An opened call shows its structured name and fields, never result output.
     fn section_text(&self, width: usize) -> Option<String> {
         let call = self.call.as_ref()?;
         let mut text = format!("CALL {}", call.name);
@@ -206,24 +191,13 @@ impl Entry {
                 text.push_str(&format!("\n  {name}: {first}"));
             }
         }
-        if self.resolved() {
-            text.push_str("\nRESULT");
-            if !self.outcome.is_empty() {
-                text.push_str(&format!(" {} {}", self.kind.symbol(), self.outcome.trim()));
-            }
-            for line in self.result.split('\n') {
-                text.push_str(&format!("\n  {line}"));
-            }
-        }
         Some(hanging_indent(&text, width))
     }
 
-    /// Expanded calls keep their sections; a running call's visible body is the
-    /// live result, not the argument text that preceded it.
+    /// Expanded calls read their structured fields; other entries read their text.
     fn body(&self) -> &str {
         match self.expanded && self.call.is_some() {
             true => self.sections.as_str(),
-            false if self.resolved() => self.result.as_str(),
             false => self.text.as_str(),
         }
     }
@@ -236,7 +210,6 @@ impl Entry {
             false => String::new(),
         };
         let structured = self.expanded && self.call.is_some();
-        let resolved = self.resolved();
         self.width = width;
         self.starts.clear();
         self.starts.push(0);
@@ -248,30 +221,17 @@ impl Entry {
             let text = self.sections.clone();
             wrap.feed(&text, 0, &mut self.starts);
         } else {
-            let Self {
-                text,
-                result,
-                starts,
-                ..
-            } = self;
-            let text = match resolved {
-                true => result.as_str(),
-                false => text.as_str(),
-            };
+            let Self { text, starts, .. } = self;
+            let text = text.as_str();
             wrap.feed(text, 0, starts);
         }
         self.col = wrap.col;
     }
 
     /// Appends to the body the current view reads, continuing its wrap state.
-    /// A live result must grow visible rows on every chunk, not only on a reflow.
     fn append(&mut self, text: &str, width: usize) {
         let width = self.content_width(width);
-        let live = !self.expanded && self.resolved();
-        let base = match live {
-            true => self.result.len(),
-            false => self.text.len(),
-        };
+        let base = self.text.len();
         self.width = width;
         if width > 0 {
             let mut wrap = Wrap {
@@ -281,10 +241,7 @@ impl Entry {
             wrap.feed(text, base, &mut self.starts);
             self.col = wrap.col;
         }
-        match live {
-            true => self.result.push_str(text),
-            false => self.text.push_str(text),
-        }
+        self.text.push_str(text);
     }
 
     /// The text of row `row`, with the newline that ended it removed.
@@ -330,7 +287,6 @@ impl Entry {
         let row = self.row(row);
         match labelled {
             false => Cow::Borrowed(row),
-            true if self.resolved() => Cow::Owned(format!("{}{}", self.kind.mark(), row)),
             true => Cow::Owned(format!(
                 "{}{}{}",
                 self.kind.mark(),
@@ -952,47 +908,6 @@ impl Log {
         Some(at)
     }
 
-    /// Appends a tool's output to the call with the same identity.
-    ///
-    /// The call may already be sealed: its arguments finished before it ran, but
-    /// its result has not. Resolving reopens that one block and seals it only on
-    /// the verdict, so a call never grows a separate result block.
-    pub fn resolve(
-        &mut self,
-        name: &str,
-        key: &str,
-        tag: &str,
-        kind: LineKind,
-        text: &str,
-        done: bool,
-    ) {
-        let Some(at) = self.entry_by_key(key) else {
-            self.stream(name, key, kind, tag, text, done);
-            return;
-        };
-        let width = self.width;
-        let before = self.contributions(at);
-        let entry = &mut self.entries[at];
-        entry.sealed = false;
-        if entry.resolved() && !(entry.expanded && entry.call.is_some()) {
-            entry.append(text, width);
-        } else {
-            // The first output changes the visible body from arguments to the
-            // live result. Later chunks can continue that body's wrap state.
-            entry.result.push_str(text);
-        }
-        if done {
-            entry.outcome = tag.trim_end().to_string();
-            entry.kind = kind;
-        }
-        entry.reflow(width);
-        let after = self.contributions(at);
-        self.shift(at, before, after);
-        if done {
-            self.seal(key, at);
-        }
-    }
-
     /// Replaces a call's provisional body with its structured name and fields.
     /// Output already received stays in the result section.
     pub fn describe(&mut self, name: &str, key: &str, head: &cli::protocol::Head) {
@@ -1017,22 +932,11 @@ impl Log {
         let before = self.contributions(at);
         let entry = &mut self.entries[at];
         entry.tag = format!("{} ", head.summary());
-        // A structured result fallback carries no argument text to replace.
-        // Migrate its output once, then leave every later chunk in `result`.
-        if entry.call.is_none()
-            && entry.result.is_empty()
-            && matches!(entry.kind, LineKind::ToolOutput | LineKind::ToolError)
-        {
-            entry.result.push_str(&entry.text);
-        }
         entry.text = head.detail();
-        if !entry.resolved() {
-            entry.kind = crate::LineKind::ToolCall;
-        }
+        entry.kind = crate::LineKind::ToolCall;
         entry.call = Some(head.clone());
-        // Streaming output is not a verdict: only `resolve(..., done = true)`
-        // may seal this item. Structure arriving during a run must not fold it.
-        entry.sealed = !entry.outcome.is_empty();
+        // A call's structure is complete independently of its result stream.
+        entry.sealed = true;
         entry.reflow(width);
         let after = self.contributions(at);
         self.shift(at, before, after);
@@ -1085,8 +989,12 @@ impl Log {
         done: bool,
     ) {
         let width = self.width;
-        if let Some(at) = self.open.get(key).copied() {
-            if self.entries[at].tag != tag {
+        if let Some(at) = self.open.get(key).copied()
+            && self.entries[at].tag != tag
+        {
+            if done && !tag.is_empty() {
+                self.relabel(key, tag, kind);
+            } else {
                 self.seal(key, at);
             }
         }
@@ -1094,6 +1002,11 @@ impl Log {
             // A block already open, ending: `done` and nothing in it closes a
             // part. Ahead of the arm whose `Some(at)` swallows this.
             Some(at) if text.is_empty() && done => {
+                // A structured call's empty tail carries no new summary; a
+                // result's tail carries the verdict on the same result block.
+                if !tag.is_empty() {
+                    self.relabel(key, tag, kind);
+                }
                 self.seal(key, at);
                 return;
             }
@@ -1116,11 +1029,6 @@ impl Log {
                 let mut entry = Entry::with_tag(name, kind, tag, text.to_string(), width);
                 // A body-less item's body is its label: a call reads as its
                 // arguments, and opening it must show them.
-                if entry.text.trim().is_empty() && !entry.tag.is_empty() {
-                    entry.text = entry.tag.trim_end().to_string();
-                    entry.tag.clear();
-                    entry.reflow(width);
-                }
                 entry.key = key.to_string();
                 self.entries.push(entry);
                 let at = self.entries.len() - 1;
@@ -1159,12 +1067,10 @@ impl Log {
         let before = self.contributions(at);
         let entry = &mut self.entries[at];
         let kept = entry.text.trim_end().len();
-        let result = entry.result.trim_end().len();
-        if kept == entry.text.len() && result == entry.result.len() {
+        if kept == entry.text.len() {
             return;
         }
         entry.text.truncate(kept);
-        entry.result.truncate(result);
         if width > 0 {
             entry.reflow(width);
         } else {
@@ -1327,37 +1233,30 @@ mod tests {
         log
     }
 
-    /// A head arriving after output must not copy that output or fold the run.
+    /// Call arguments and tool output stream independently, paired by their id.
     #[test]
-    fn a_late_call_head_keeps_one_live_result_stream() {
+    fn a_call_and_its_result_are_two_live_items() {
         let mut log = Log::new();
-        log.resolve(
+        log.stream("w", "c:c1", LineKind::ToolCall, "bash ", "cargo bu", false);
+        log.stream("w", "c:c1", LineKind::ToolCall, "bash ", "ild", true);
+        log.stream(
             "w",
-            "c:c1",
-            "",
+            "t:c1",
             LineKind::ToolOutput,
+            "",
             "Compiling one\n",
             false,
         );
-        log.describe("w", "c:c1", &cli::protocol::Head::call("bash", Vec::new()));
-        let rows = shown(&mut log, 60, 10, 0);
-        assert_eq!(
-            rows.iter()
-                .filter(|row| row.contains("Compiling one"))
-                .count(),
-            1,
-            "{rows:?}"
-        );
-        assert!(log.toggle("c:c1"), "a late head has not ended the run");
-        log.resolve(
+        log.stream(
             "w",
-            "c:c1",
+            "t:c1",
+            LineKind::ToolOutput,
             "",
-            LineKind::ToolCall,
             "Compiling two\n",
             false,
         );
-        let rows = shown(&mut log, 60, 10, 0);
+        let rows = shown(&mut log, 60, 12, 0);
+        assert!(rows.iter().any(|row| row.contains("bash")), "{rows:?}");
         assert!(
             rows.iter().any(|row| row.contains("Compiling one")),
             "{rows:?}"
@@ -1366,6 +1265,16 @@ mod tests {
             rows.iter().any(|row| row.contains("Compiling two")),
             "{rows:?}"
         );
+        log.stream("w", "t:c1", LineKind::ToolOutput, "1.2s ", "", true);
+        assert_eq!(
+            log.len(),
+            2,
+            "one call and one result, never one mixed body"
+        );
+        let rows = shown(&mut log, 60, 12, 0);
+        assert!(rows.iter().any(|row| row.contains("1.2s")), "{rows:?}");
+        assert!(log.toggle("c:c1"), "the call has its own expanded state");
+        assert!(log.toggle("t:c1"), "the result has its own expanded state");
     }
 
     /// An item with no body still opens: a call reads as its own arguments, and

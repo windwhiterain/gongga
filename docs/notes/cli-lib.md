@@ -228,21 +228,18 @@ not a stream. Its content is the tool's output, which arrives as `tool_answer`.
 
 ## Client::handle_tool_answer
 
-A call and its result have one identity (`c:<call_id>`), not one item for the
-call and another for each output pipe. `Sink::tool_result` carries that identity,
-the chunk and -- only on the final chunk -- the verdict. The TUI resolves it into
-the call block, retaining the call's arguments and appending output beneath them.
-Its folded summary puts the verdict and elapsed time immediately after the
-status mark, then the call name and flags. `Sink::tool_call` retains the
-structured head; opening shows separate `CALL` and `RESULT` sections, named
-arguments and indented output rather than an undifferentiated block of text.
+A call and its result are two separate, independently streaming blocks. The call
+uses `c:<call_id>` and the result uses `t:<call_id>`; the shared `call_id` is their
+pairing, not a reason to share a body or a fold. `Sink::tool_call` passes the
+structured head so the call can update its own arguments and summary in place.
+The result's title carries the paired call summary, so it remains identifiable
+without being nested in the call's expanded frame.
 
-Stdout and stderr are data, not verdicts. Neither opens a second result or paints
-a cross; only the final `Head` determines success or failure. A call's arguments
-can finish before its output starts, so resolving reopens that existing block and
-seals it only when the verdict arrives. Output chunks themselves remain byte-
-for-byte unchanged: section labels and indentation are presentation, not extra
-chunks inserted into the tool's output.
+Every stdout or stderr chunk appends to the one result block. Output streams do
+not decide success or failure and never split a result by pipe. Only the final
+`Head` supplies ✓/✕ and elapsed time, immediately after the result's status mark.
+The final verdict relabels and seals that same result block; an empty result has
+a summary and no fabricated output text.
 
 ## Event::Log — no tag
 

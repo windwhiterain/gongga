@@ -2677,7 +2677,7 @@ mod tests {
         assert_eq!(layout.cursor_col, 0);
     }
 
-    /// Structured sections start inside the frame, and the outcome precedes args.
+    /// Call arguments and result output have independent, aligned frames.
     #[test]
     fn an_opened_call_and_result_have_aligned_sections() {
         let mut screen = screen_with(&[]);
@@ -2701,20 +2701,14 @@ mod tests {
                 ],
             },
         );
-        screen.panes.resolve(
+        screen.panes.stream(
             "",
-            "c:c1",
-            "1.2s ",
+            "t:c1",
             LineKind::ToolOutput,
-            "标准输出和一段很长很长的输出，必须在框内折行而不是顶掉右边框",
-            false,
+            "1.2s ",
+            "标准输出和一段很长很长的输出，必须在框内折行而不是顶掉右边框\nstderr",
+            true,
         );
-        screen
-            .panes
-            .resolve("", "c:c1", "", LineKind::ToolCall, "\nstderr", false);
-        screen
-            .panes
-            .resolve("", "c:c1", "1.2s ", LineKind::ToolOutput, "", true);
         let (width, height) = (48u16, 24u16);
         let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
         term.draw(|f| {
@@ -2727,9 +2721,17 @@ mod tests {
             .map(|row| read(&buffer, area.x, area.width, row))
             .filter(|row| !row.is_empty())
             .collect::<Vec<_>>();
-        assert_eq!(folded, vec!["✓ 1.2s · bash, name=build"], "{folded:?}");
+        assert!(
+            folded.iter().any(|row| row.contains("▸ bash, name=build")),
+            "{folded:?}"
+        );
+        assert!(
+            folded.iter().any(|row| row.contains("✓ 1.2s")),
+            "{folded:?}"
+        );
 
         assert!(screen.panes.toggle("c:c1"));
+        assert!(screen.panes.toggle("t:c1"));
         term.draw(|f| {
             draw(f, &mut screen);
         })
@@ -2739,11 +2741,6 @@ mod tests {
             .map(|row| read(&buffer, area.x, area.width, row))
             .filter(|row| !row.is_empty())
             .collect::<Vec<_>>();
-        assert!(
-            rows[0].starts_with("┌─✓ 1.2s · bash, name=build"),
-            "{rows:?}"
-        );
-        assert!(rows[0].ends_with('┐'), "{rows:?}");
         assert!(
             rows.iter().any(|row| row.starts_with("│CALL bash")),
             "{rows:?}"
@@ -2764,19 +2761,12 @@ mod tests {
             rows.iter().any(|row| row.starts_with("│    second")),
             "{rows:?}"
         );
-        assert!(
-            rows.iter().any(|row| row.starts_with("│RESULT ✓ 1.2s")),
-            "{rows:?}"
-        );
-        for row in &rows[1..rows.len() - 1] {
-            assert!(row.starts_with('│'), "{rows:?}");
-            assert!(row.ends_with('│'), "{rows:?}");
+        assert!(rows.iter().any(|row| row.contains("stderr")), "{rows:?}");
+        for row in &rows {
+            if row.starts_with('│') {
+                assert!(row.ends_with('│'), "{rows:?}");
+            }
         }
-        assert!(
-            rows.last()
-                .is_some_and(|row| row.starts_with('└') && row.ends_with('┘')),
-            "{rows:?}"
-        );
     }
 
     /// Every output chunk is visible before the verdict folds the item, whether
@@ -2810,12 +2800,11 @@ mod tests {
                 .filter(|row| !row.is_empty())
                 .collect::<Vec<_>>()
         };
-
-        screen.panes.resolve(
+        screen.panes.stream(
             "",
-            "c:c1",
+            "t:c1",
+            LineKind::ToolOutput,
             "",
-            LineKind::ToolCall,
             "Compiling crate one\n",
             false,
         );
@@ -2824,11 +2813,11 @@ mod tests {
             first.iter().any(|row| row.contains("Compiling crate one")),
             "{first:?}"
         );
-        screen.panes.resolve(
+        screen.panes.stream(
             "",
-            "c:c1",
+            "t:c1",
+            LineKind::ToolOutput,
             "",
-            LineKind::ToolCall,
             "Compiling crate two\n",
             false,
         );
@@ -2841,22 +2830,17 @@ mod tests {
             second.iter().any(|row| row.contains("Compiling crate two")),
             "{second:?}"
         );
-
-        assert!(screen.panes.toggle("c:c1"));
+        assert!(screen.panes.toggle("t:c1"));
         let opened = shown(&mut screen, &mut term);
-        assert!(
-            opened.iter().any(|row| row.contains("CALL bash")),
-            "{opened:?}"
-        );
         assert!(
             opened.iter().any(|row| row.contains("Compiling crate two")),
             "{opened:?}"
         );
-        screen.panes.resolve(
+        screen.panes.stream(
             "",
-            "c:c1",
+            "t:c1",
+            LineKind::ToolOutput,
             "",
-            LineKind::ToolCall,
             "Linking the binary\n",
             false,
         );
@@ -2867,11 +2851,11 @@ mod tests {
         );
         screen
             .panes
-            .resolve("", "c:c1", "4.2s ", LineKind::ToolOutput, "", true);
-        assert!(screen.panes.toggle("c:c1"));
+            .stream("", "t:c1", LineKind::ToolOutput, "4.2s ", "", true);
+        assert!(screen.panes.toggle("t:c1"));
         let finished = shown(&mut screen, &mut term);
         assert!(
-            finished.iter().any(|row| row.contains("✓ 4.2s · bash")),
+            finished.iter().any(|row| row.contains("✓ 4.2s")),
             "{finished:?}"
         );
     }
@@ -2906,11 +2890,11 @@ mod tests {
                 .filter(|row| !row.is_empty())
                 .collect::<Vec<_>>()
         };
-        screen.panes.resolve(
+        screen.panes.stream(
             "",
-            "c:c1",
+            "t:c1",
+            LineKind::ToolOutput,
             "",
-            LineKind::ToolCall,
             "Compiling the first crate\n",
             false,
         );
@@ -2918,14 +2902,14 @@ mod tests {
         assert!(
             first
                 .iter()
-                .any(|row| row.trim_start().starts_with("▸ Compiling the first crate")),
+                .any(|row| row.trim_start().starts_with("✓ Compiling the first crate")),
             "{first:?}"
         );
-        screen.panes.resolve(
+        screen.panes.stream(
             "",
-            "c:c1",
+            "t:c1",
+            LineKind::ToolOutput,
             "",
-            LineKind::ToolCall,
             "Compiling the second crate\n",
             false,
         );
