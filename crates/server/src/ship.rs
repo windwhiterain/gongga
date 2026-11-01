@@ -177,18 +177,23 @@ pub fn install_at(roots: &Roots, ship: &Ship) -> anyhow::Result<Report> {
     let cached = have(&cache, &ship.commit);
     let fetched = if cached {
         false
-    } else if fetch(&cache, &ship.url).is_ok() {
-        true
-    } else if has_commit(&cache, &ship.commit) {
-        // It arrived by another route; being offline is not being broken.
-        false
     } else {
-        anyhow::bail!(
-            "the shipped content is not installed here and cannot be fetched; \
-             pin {} from {} -- there is no prompt to run a turn on without it",
-            ship.commit,
-            ship.url
-        );
+        // Ask the cache for the commit, not git for its exit status. `fetch`
+        // succeeds whenever the remote answers, and the remote answers with what
+        // it has *now*: a pin that was never pushed is simply not in it. Believing
+        // the exit status let `reconcile` run against a commit the cache does not
+        // hold -- it wrote nothing, reported success, and the home came up with no
+        // `config.toml` at all, to fail much later as "no prompt templates".
+        let _ = fetch(&cache, &ship.url);
+        if !has_commit(&cache, &ship.commit) {
+            anyhow::bail!(
+                "the shipped content is not installed here and cannot be fetched; \
+                 pin {} from {} -- there is no prompt to run a turn on without it",
+                ship.commit,
+                ship.url
+            );
+        }
+        true
     };
     let _ = ROOTS.set(roots.clone());
     let mut report = Report {
@@ -856,6 +861,30 @@ mod tests {
         assert!(report.conflicts.is_empty(), "{report:?}");
         assert!(report.fetched);
         assert_eq!(f.pin(f.home()), commit);
+    }
+
+    /// A pin the remote never received is an error, not an empty install.
+    ///
+    /// # Invariant
+    ///
+    /// An install either leaves the pinned content in the home or says why it
+    /// could not. It used to do neither: `fetch` succeeds whenever the remote
+    /// answers, and reconciling against a commit the cache does not hold writes no
+    /// file at all -- so the report said `written: 0, fetched: true`, the home had
+    /// no `config.toml`, and the failure surfaced much later as missing prompt
+    /// templates, pointing at the home instead of at the pin.
+    #[test]
+    fn a_pin_the_remote_never_received_is_an_error_not_an_empty_install() {
+        let d = tempfile::tempdir().unwrap();
+        let f = fixture(d.path());
+        content_repo(&f.content, "a = 1\n", "skill\n");
+
+        let err = f.install(&"0".repeat(40)).unwrap_err().to_string();
+        assert!(err.contains("cannot be fetched"), "{err}");
+        assert!(
+            !f.home().join("config.toml").exists(),
+            "and it installed nothing, rather than reporting success"
+        );
     }
 
     /// The machine root gets nothing from this repository.
