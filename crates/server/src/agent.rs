@@ -422,30 +422,78 @@ impl Agent {
         // Read, not rendered: the same bytes for every session, so the row this
         // writes stays the prefix all of them share.
         let instructions = prompts.system();
+        // Built once, at the first row, and carried verbatim after: the index sits
+        // in front of the transcript, so growing it would re-bill the prefix.
+        let (index, rooted) = match &stored {
+            Some(kept) => (kept.index.clone(), kept.rooted.clone()),
+            None => match self.index_of(id, cwd) {
+                Some((index, rooted)) => (Some(index), rooted),
+                None => (None, Vec::new()),
+            },
+        };
         let handover = note.map(|s| prompts.render("handover_preamble", &[("handover", s)]));
         let prompt = crate::store::Prompt {
             instructions,
+            index,
+            rooted,
             handover,
             cwd: cwd.display().to_string(),
             stamp: crate::store::stamp(note),
         };
-        // Only the two texts are compared: they are what goes on the wire, and the
-        // row's `cwd` is a record rather than prose -- a shell reports one directory
-        // under two spellings, and a spelling is not a reason to re-bill a prefix.
+        // Only the texts that go on the wire are compared: the row's `cwd` is a
+        // record rather than prose -- a shell reports one directory under two
+        // spellings, and a spelling is not a reason to re-bill a prefix.
         if let Some(kept) = stored.clone().filter(|kept| {
-            kept.instructions == prompt.instructions && kept.handover == prompt.handover
+            kept.instructions == prompt.instructions
+                && kept.index == prompt.index
+                && kept.handover == prompt.handover
         }) {
             return Ok(kept);
         }
         // Rewritten prose is a real event: the prefix the provider cached is gone
         // from here, and the ledger will show the miss.
-        if let Some(p) = &stored {
-            if p.instructions != prompt.instructions || p.handover != prompt.handover {
-                tracing::info!(session = %name, "the prompt in force changed: a new row is sent");
-            }
+        if stored.is_some() {
+            tracing::info!(session = %name, "the prompt in force changed: a new row is sent");
         }
         self.store.append_prompt(id, &prompt)?;
         Ok(prompt)
+    }
+
+    /// The index for this session's first request: the text of every reference its
+    /// messages name, in the order the cache pays least for.
+    ///
+    /// # Invariant
+    ///
+    /// The order is `prefix_cache`'s, which is a permutation of what it was given: no
+    /// entry is invented for a reference that could not be read, and the spellings
+    /// returned are exactly the ones the index carries, so `meta::expand` leaves
+    /// those mentions literal. See `docs/notes/server-agent.md`.
+    fn index_of(&self, id: i64, cwd: &std::path::Path) -> Option<(String, Vec<String>)> {
+        let texts = self.store.user_texts(id).ok()?;
+        let borrowed: Vec<&str> = texts.iter().map(String::as_str).collect();
+        let roots = crate::meta::roots(cwd, &borrowed);
+        if roots.is_empty() {
+            return None;
+        }
+        let wanted: Vec<(&str, usize)> = roots
+            .iter()
+            .map(|root| (root.spelling.as_str(), root.len()))
+            .collect();
+        let order = crate::prefix_cache::plan(&self.store, &wanted);
+        let mut entries: Vec<&crate::meta::Root> = Vec::with_capacity(order.len());
+        for spelling in &order {
+            if let Some(root) = roots.iter().find(|root| &root.spelling == spelling) {
+                entries.push(root);
+            }
+        }
+        let body = entries
+            .iter()
+            .map(|root| root.text())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let index = format!("{}\n\n{body}", crate::meta::INDEX_HEAD);
+        let rooted: Vec<String> = entries.iter().map(|r| r.spelling.clone()).collect();
+        Some((index, rooted))
     }
 
     /// Records the whole step around the narrower request and tool measurements.
@@ -531,6 +579,7 @@ impl Agent {
         phases.llm_started = Some(requested);
         let mut rx = llm.stream(
             &prompt.instructions,
+            prompt.index.as_deref(),
             prompt.handover.as_deref(),
             &source,
             &definitions,
@@ -940,7 +989,6 @@ impl Agent {
             cwd: session.cwd(),
             vision: llm.vision(crate::prompts::shared()),
             inbox: session.inbox_signal(),
-            layout: session.layout(),
             closing: session.closing_signal(),
         };
         let run_started = std::time::Instant::now();

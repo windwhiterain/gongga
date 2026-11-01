@@ -44,10 +44,12 @@ result sits in the transcript, the transcript is the request's prefix, so a tabl
 whose bytes match the last one is bytes the provider may still have cached, and a
 table re-sorted for a fresh reason is a divergence that costs every token after it.
 
-The layout lives on the session (`session::SessionHandle::layout`), not on the
-server: caching is per conversation, and two sessions listing the same skills are
-two different prefixes. It dies with the session, so nothing about a deleted
-session's orderings outlives it.
+The layout is the home's, in the database, one row (`prefix_cache::plan`): a provider
+caches a prefix per endpoint rather than per conversation, so the second session to
+list the same skills is the one that collects -- and so is the next run of the server,
+which is why it is not a field of anything that dies. It is shared with every other
+caller that has an order to choose, which is safe because a chain carrying a row
+outside the current set is not a candidate.
 
 The key is the row's `SKILL.md` path, not its name: a name can be in more than one
 root, and two directories can even declare the same `name:` in their frontmatter, so

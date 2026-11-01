@@ -14,7 +14,6 @@ use serde_json::{Value, json};
 use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use crate::prefix_cache::Layout;
 use crate::remote::shell_set::{Shell, ShellSet};
 use crate::session::DEFAULT_BASH;
 use crate::store::Store;
@@ -50,8 +49,6 @@ pub struct ToolContext {
     pub vision: crate::llm::Vision,
     /// Whether a message arrived for this session that its turn cannot read yet.
     pub inbox: crate::session::InboxSignal,
-    /// The orders this session's skill table has been emitted in, for `index_skill`.
-    pub layout: Arc<StdMutex<Layout>>,
     /// Set when the shells are being ended because the server is going: nothing
     /// that stops then "finished", so nothing about it is worth a row.
     pub closing: Arc<std::sync::atomic::AtomicBool>,
@@ -1209,7 +1206,6 @@ mod tests {
                 refusal: String::new(),
             },
             inbox,
-            layout: Arc::new(StdMutex::new(Layout::new())),
             closing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
@@ -1239,7 +1235,6 @@ mod tests {
                 refusal: String::new(),
             },
             inbox: InboxSignal::around(Arc::new(AtomicU64::new(0))),
-            layout: Arc::new(StdMutex::new(Layout::new())),
             closing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }

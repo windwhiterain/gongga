@@ -312,6 +312,21 @@ writes nothing. `scripts/replay_audit.py` asserts the other half: for every requ
 sent, each input item is a stored row or the stored note, and each distinct
 `instructions` the provider saw is a `system` row.
 
+## index_of
+
+The first prompt row's second half: the text of every reference the session's messages
+name, walked recursively, ordered by `prefix_cache::plan`, appended to the instructions
+as one string. It is one string rather than a second input item on purpose -- a value
+`instructions` holds is cached with the prose, where an item would have to match on its
+own.
+
+Two facts are decided here and used everywhere after: the order (the cache's, not the
+message's) and `rooted`, the spellings the index carries. `meta::expand` leaves exactly
+those literal, and `commands::expand_message` reads them off the stored row -- for a
+session with no row yet, it assumes the row about to be written will carry everything
+the message names, which is what makes the first turn's references both indexed and
+literal instead of expanded twice. See `docs/notes/server-meta.md`.
+
 ## Agent::step
 
 Recorded, never computed. `input_tokens` is the provider's own count of what

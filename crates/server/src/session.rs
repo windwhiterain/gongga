@@ -11,7 +11,6 @@ use tokio::sync::OwnedMutexGuard;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::BashConfig;
-use crate::prefix_cache::Layout;
 use crate::remote::endpoint::Endpoint;
 use crate::remote::shell_set::ShellSet;
 use crate::store::{SessionRow, Store};
@@ -65,8 +64,6 @@ struct SessionInner {
     /// Set before the shells are ended: a command that stops now was stopped, and
     /// a notice about it would be news about the server's own exit.
     closing: Arc<AtomicBool>,
-    /// The orders this session's skill table has been emitted in.
-    layout: Arc<Mutex<Layout>>,
 }
 
 impl SessionHandle {
@@ -228,11 +225,6 @@ impl SessionHandle {
     /// The flag a tool call reads to know its shell is being ended by an exit.
     pub fn closing_signal(&self) -> Arc<AtomicBool> {
         self.inner.closing.clone()
-    }
-
-    /// The table orders this session has emitted, so the next one can be warm.
-    pub fn layout(&self) -> Arc<Mutex<Layout>> {
-        self.inner.layout.clone()
     }
 
     /// Whether this session's shells are being ended because the server is going.
@@ -634,7 +626,6 @@ impl SessionManager {
                 deleted: AtomicBool::new(false),
                 resumable: AtomicBool::new(false),
                 closing: Arc::new(AtomicBool::new(false)),
-                layout: Arc::new(Mutex::new(Layout::new())),
             }),
         };
         live.insert(row.name, handle.clone());
@@ -696,7 +687,6 @@ mod tests {
                 deleted: AtomicBool::new(false),
                 resumable: AtomicBool::new(false),
                 closing: Arc::new(AtomicBool::new(false)),
-                layout: Arc::new(Mutex::new(Layout::new())),
             }),
         }
     }

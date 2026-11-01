@@ -13,6 +13,40 @@ The third is the point of having a spelling at all. Without it, `@file: x` would
 have to be guessed at, and a message about a picture would attach a picture the
 user only meant to talk about. The prefix decides, not the file's extension.
 
+## indexed on the first turn: the root set
+
+The table above is what a reference becomes when it is expanded *in place*. It is not
+what the first turn does. A session's first prompt row carries an index: every
+reference its messages name, and everything those name in turn, as `spelling` and the
+text it stands for, appended to the system instructions. Those mentions are then left
+literal in the message, because the literal spelling is the key into the index.
+
+The reason is the prefix cache. Whatever is in the system instructions is charged once
+and then reused by every later request of that conversation; whatever is inline in a
+message is re-sent as part of the transcript from that point on. A skill body is the
+one thing whose size makes that difference matter, and SPEC already asks for the body
+(`replaced as skill content with wrapper`) rather than a line of metadata.
+
+`roots` is the walk: breadth first, first seen, once each. A file that names itself, or
+two files that name each other, is two entries rather than a loop, because `seen` is
+consulted before every enqueue. A reference the walk cannot read -- a picture, which is
+not text, or a skill this machine does not have -- is left out entirely rather than
+invented: its mention stays literal in the message, so the reader sees a name with
+nothing behind it, which is the truth.
+
+`spelling` is one function because it must be one spelling. The index carries it and
+`expand` matches against it, so two spellings of one reference would leave the message
+expanded *and* its text in the index. `@skill: heir` and `@skill:heir` are one
+reference, and the canonical form is the one with no space.
+
+## why the index is built once
+
+`agent::index_of` runs only when there is no prompt row yet, and every later row copies
+what the first one decided. Growing the index later would be correct and expensive: it
+sits in front of the whole transcript, so adding a section re-bills everything behind
+it. A reference named in a later message is expanded inline as before -- the index is
+the first turn's, the row that follows is history.
+
 ## why the value is one word
 
 `@image: shot.png` is a prefix and the word after it, or `@image:shot.png`

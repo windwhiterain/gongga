@@ -77,6 +77,27 @@ is already this pass's answer. liana's opposite choice -- keep `remove_memory`
 around and patch the sizes it touched -- answers a question this port does not ask:
 a row of a skill table is re-measured, never deleted.
 
+## shared, plan: one layout per home, on disk
+
+A provider caches a prefix per endpoint, not per session and not per process. So the
+thing that remembers orderings is the home's database, not a field of anything that
+dies: one row in `prefix_layout`, read once into the process's mutex and written back
+after every plan. A restart is a new process asking the same endpoint for the same
+bytes, and it has to plan from what the last run learnt or its first request is cold.
+
+`plan(store, wanted)` is the whole interface, deliberately: a caller hands over keys
+with sizes and gets an order back, and knows nothing about chains. `index_skill` and
+the first prompt row are the two callers so far, and they are different kinds of
+thing -- a tool result and a system prompt -- which is the point of the algorithm
+being generic. Callers namespace their own keys, because a key identifies bytes: the
+skill table uses the `SKILL.md` path, the prompt index uses the canonical spelling
+(`@skill:heir`, `@file:docs/plan.md`).
+
+The one cost of sharing is a chain that is only partly useful to the next caller, and
+that is already handled: a chain carrying an item outside `wanted` is not a candidate.
+So two callers sharing one layout cannot corrupt each other's order, only fail to
+share it.
+
 ## chain_count
 
 `#[cfg(test)]` only, and the one thing the tests cannot see from the outside: a

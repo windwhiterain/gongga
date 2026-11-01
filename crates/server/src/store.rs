@@ -20,6 +20,12 @@ pub struct Prompt {
     /// The system instructions this session was sent under, verbatim.
     #[serde(default)]
     pub instructions: String,
+    /// The text of the references the first message named, in the order it is sent.
+    #[serde(default)]
+    pub index: Option<String>,
+    /// The spellings `index` carries, so a mention of one stays literal.
+    #[serde(default)]
+    pub rooted: Vec<String>,
     /// The handover note as the model reads it; nothing before the first fold.
     #[serde(default)]
     pub handover: Option<String>,
@@ -164,6 +170,13 @@ CREATE TABLE IF NOT EXISTS detached_jobs (
     started_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS detached_by_session ON detached_jobs(session);
+
+-- What the prefix cache has learnt about the order things are emitted in: one row,
+-- because it is one learning shared by every caller of `prefix_cache::plan`.
+CREATE TABLE IF NOT EXISTS prefix_layout (
+    id     INTEGER PRIMARY KEY CHECK (id = 1),
+    layout TEXT NOT NULL
+);
 "#;
 
 #[derive(Debug, Clone)]
@@ -747,6 +760,56 @@ impl Store {
     pub fn append_prompt(&self, session_id: i64, prompt: &Prompt) -> anyhow::Result<i64> {
         let payload = serde_json::to_value(prompt)?;
         self.append_message(session_id, "system", &payload)
+    }
+
+    /// The orderings this home has already emitted, as `prefix_cache` records them.
+    pub fn prefix_layout(&self) -> anyhow::Result<Option<crate::prefix_cache::Layout>> {
+        let row: Option<String> = {
+            let conn = self.lock();
+            conn.query_row("SELECT layout FROM prefix_layout WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .optional()?
+        };
+        let Some(text) = row else { return Ok(None) };
+        match serde_json::from_str(&text) {
+            Ok(layout) => Ok(Some(layout)),
+            Err(e) => {
+                tracing::warn!(error = %e, "the stored prefix layout is not readable");
+                Ok(None)
+            }
+        }
+    }
+
+    /// Replaces what is stored, so the next start plans from what this one learnt.
+    pub fn save_prefix_layout(&self, layout: &crate::prefix_cache::Layout) -> anyhow::Result<()> {
+        let text = serde_json::to_string(layout)?;
+        self.lock().execute(
+            "INSERT INTO prefix_layout (id, layout) VALUES (1, ?1)
+             ON CONFLICT(id) DO UPDATE SET layout = excluded.layout",
+            params![text],
+        )?;
+        Ok(())
+    }
+
+    /// Every operator message this session has stored, oldest first.
+    pub fn user_texts(&self, session_id: i64) -> anyhow::Result<Vec<String>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT display FROM messages WHERE session_id = ?1 AND kind = 'text' ORDER BY seq",
+        )?;
+        let rows = stmt.query_map(params![session_id], |row| row.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let value: serde_json::Value = serde_json::from_str(&row?).unwrap_or_default();
+            if value.get("role").and_then(|r| r.as_str()) != Some("user") {
+                continue;
+            }
+            if let Some(text) = value.get("text").and_then(|t| t.as_str()) {
+                out.push(text.to_string());
+            }
+        }
+        Ok(out)
     }
 
     /// The transcript a request reads, closed at the row that exists right now.

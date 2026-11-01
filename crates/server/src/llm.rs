@@ -219,6 +219,7 @@ impl LlmClient {
     pub fn stream(
         &self,
         instructions: &str,
+        index: Option<&str>,
         handover: Option<&str>,
         source: &RequestSource,
         tools: &[ToolDefinition],
@@ -227,7 +228,7 @@ impl LlmClient {
     ) -> mpsc::Receiver<LlmEvent> {
         let (tx, rx) = mpsc::channel(256);
         let build_started = Instant::now();
-        let head = self.build_head(instructions, handover, tools, effort);
+        let head = self.build_head(instructions, index, handover, tools, effort);
         // Owned, because the attempt below records it after this body is gone.
         let effort_sent = effort.map(str::to_string);
         let build_head_ms = build_started.elapsed().as_millis() as u64;
@@ -364,6 +365,7 @@ impl LlmClient {
     fn build_head(
         &self,
         instructions: &str,
+        index: Option<&str>,
         note: Option<&str>,
         tools: &[ToolDefinition],
         effort: Option<&str>,
@@ -373,6 +375,12 @@ impl LlmClient {
             "stream": true,
             "store": self.store,
         });
+        // One value, so the index is cached with the prose it follows rather than
+        // being a second item the provider has to match on its own.
+        let instructions = match index.filter(|index| !index.is_empty()) {
+            Some(index) => format!("{instructions}\n\n{index}"),
+            None => instructions.to_string(),
+        };
         if !instructions.is_empty() {
             body["instructions"] = json!(instructions);
         }
@@ -1573,8 +1581,9 @@ mod tests {
         tools: &[ToolDefinition],
         effort: Option<&str>,
     ) -> Value {
-        let mut text = String::from_utf8(client.build_head(instructions, note, tools, effort))
-            .expect("a head is built from text");
+        let mut text =
+            String::from_utf8(client.build_head(instructions, None, note, tools, effort))
+                .expect("a head is built from text");
         // Cut at the marker: a note is written after it.
         let at = text
             .find(",\"input\":[")

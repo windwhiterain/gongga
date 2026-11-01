@@ -3,17 +3,50 @@
 //! See `docs/notes/server-prefix-cache.md`.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::{Mutex, MutexGuard, OnceLock};
+
+use serde::{Deserialize, Serialize};
+
+use crate::store::Store;
+
+/// One layout for the whole home: on disk, because a restart asks again.
+fn shared(store: &Store) -> MutexGuard<'static, Layout> {
+    static SHARED: OnceLock<Mutex<Layout>> = OnceLock::new();
+    SHARED
+        .get_or_init(|| {
+            Mutex::new(match store.prefix_layout() {
+                Ok(Some(layout)) => layout,
+                Ok(None) => Layout::new(),
+                Err(e) => {
+                    tracing::warn!(error = %e, "the stored prefix layout cannot be read; starting empty");
+                    Layout::new()
+                }
+            })
+        })
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+/// The cheapest order for `wanted`, learnt across callers and runs.
+pub fn plan(store: &Store, wanted: &[(&str, usize)]) -> Vec<String> {
+    let mut layout = shared(store);
+    let order = layout.plan(wanted);
+    if let Err(e) = store.save_prefix_layout(&layout) {
+        tracing::warn!(error = %e, "the learnt prefix layout could not be written");
+    }
+    order
+}
 
 /// What a byte sent again costs against a byte the cache already holds.
 ///
 /// liana's `cache_miss_cost_scale`.
 const MISS_SCALE: usize = 64;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct NodeId(usize);
 
 /// One thing that can be emitted: a table row, a memory, a message.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Item {
     key: String,
     /// One node per order this item has ended.
@@ -22,7 +55,7 @@ struct Item {
     size: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Node {
     item: usize,
     parent: Option<NodeId>,
@@ -32,7 +65,7 @@ struct Node {
 }
 
 /// Every order emitted so far, as a forest of chains, with what each one costs.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Layout {
     items: Vec<Item>,
     index: HashMap<String, usize>,
@@ -278,6 +311,25 @@ mod tests {
         let chains = layout.chain_count();
         assert_eq!(layout.plan(&[("a", 10)]), vec!["a"]);
         assert_eq!(layout.chain_count(), chains, "re-costed, not abandoned");
+    }
+
+    /// What one run learnt is what the next run plans with.
+    ///
+    /// # Invariant
+    ///
+    /// A layout written to the store and read back plans the same order: a restart
+    /// is a new process asking the same endpoint for the same bytes, so forgetting
+    /// the chains would give every run a cold first request.
+    #[test]
+    fn a_layout_survives_a_round_trip_through_the_store() {
+        let store =
+            crate::store::Store::open(std::path::Path::new(":memory:")).expect("a throwaway store");
+        let wanted = [("skill:a", 10usize), ("skill:b", 20)];
+        let reversed = [("skill:b", 20usize), ("skill:a", 10)];
+        assert_eq!(plan(&store, &wanted), vec!["skill:a", "skill:b"]);
+        let stored = store.prefix_layout().expect("a readable layout");
+        let mut restored = stored.expect("the plan wrote one");
+        assert_eq!(restored.plan(&reversed), vec!["skill:a", "skill:b"]);
     }
 
     #[test]

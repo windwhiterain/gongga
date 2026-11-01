@@ -547,7 +547,18 @@ async fn expand_message(
     }
     let llm = d.agent.route(session.name(), &session.tuning()).ok();
     let llm = llm.as_ref().map(|(client, _)| client.as_ref());
-    Ok(crate::meta::expand(&session.cwd(), &message, llm).await)
+    // A session with no prompt row yet is about to have one written, and that row
+    // indexes every reference this message names: expanding them here instead would
+    // send the same text twice.
+    let indexed = match d.store.prompt(session.id()).ok().flatten() {
+        Some(prompt) => prompt.rooted,
+        None => crate::meta::mentions(&message)
+            .iter()
+            .map(crate::meta::spelling)
+            .collect(),
+    };
+    let borrowed: Vec<&str> = indexed.iter().map(String::as_str).collect();
+    Ok(crate::meta::expand(&session.cwd(), &message, llm, &borrowed).await)
 }
 
 /// Puts `message` into `name`'s hands: a turn when it is free, an inbox row when not.

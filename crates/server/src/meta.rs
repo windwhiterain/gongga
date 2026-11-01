@@ -86,6 +86,112 @@ fn tokens(text: &str) -> Vec<(usize, usize)> {
     out
 }
 
+/// One reference's text: the spelling that names it, and what it stands for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Root {
+    /// `@file:notes.txt`, the canonical spelling a mention is matched against.
+    pub spelling: String,
+    pub content: String,
+}
+
+impl Root {
+    /// The bytes this entry adds: its spelling line, a newline, its content.
+    pub fn len(&self) -> usize {
+        self.spelling.len() + self.content.len() + 2
+    }
+
+    /// The entry as the index carries it.
+    pub fn text(&self) -> String {
+        format!("{}\n{}", self.spelling, self.content)
+    }
+}
+
+/// Every reference `texts` name, and everything those name in turn.
+///
+/// # Invariant
+///
+/// The walk is breadth-first in first-seen order and depth-bounded by what it has
+/// already seen, so a file naming itself, or two skills naming each other, is one
+/// entry each rather than a loop. A reference whose text cannot be read is left
+/// out: the mention stays in the prompt, and nothing invents content for it.
+pub fn roots(cwd: &Path, texts: &[&str]) -> Vec<Root> {
+    let mut queue: Vec<String> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    let mut out: Vec<Root> = Vec::new();
+    for text in texts {
+        for mention in mentions(text) {
+            let spelling = spelling(&mention);
+            if !seen.contains(&spelling) {
+                seen.push(spelling.clone());
+                queue.push(spelling);
+            }
+        }
+    }
+    let mut index = 0;
+    while index < queue.len() {
+        let named = queue[index].clone();
+        index += 1;
+        let Some(content) = content(cwd, &named) else {
+            continue;
+        };
+        for mention in mentions(&content) {
+            let spelling = spelling(&mention);
+            if !seen.contains(&spelling) {
+                seen.push(spelling.clone());
+                queue.push(spelling);
+            }
+        }
+        out.push(Root {
+            spelling: named,
+            content,
+        });
+    }
+    out
+}
+
+/// The spelling a reference is indexed under: its prefix and its value, written
+/// together.
+///
+/// # Invariant
+///
+/// One spelling for one reference, whoever asks: the index carries these and
+/// `expand` matches mentions against them, so a second way of writing it would
+/// leave a message expanded and its text in the index twice.
+pub fn spelling(mention: &Mention) -> String {
+    format!("{}{}", mention.kind.prefix(), mention.value)
+}
+
+/// What one spelling stands for, or nothing when this build cannot read it.
+///
+/// # Invariant
+///
+/// A picture is not text and an unknown skill has no body: neither is invented, and
+/// both leave the mention literal in the prompt.
+fn content(cwd: &Path, spelling: &str) -> Option<String> {
+    let kind = Reference::of_prefix(spelling)?;
+    let value = spelling.strip_prefix(kind.prefix())?;
+    match kind {
+        Reference::Image => None,
+        Reference::File => {
+            let bytes = std::fs::read(crate::image::resolve(cwd, value)).ok()?;
+            String::from_utf8(bytes).ok()
+        }
+        Reference::Skill => skill_body(cwd, value),
+    }
+}
+
+/// A skill's `SKILL.md` as written, frontmatter included.
+fn skill_body(cwd: &Path, name: &str) -> Option<String> {
+    let found = crate::tools::index_skill::installed(cwd)
+        .into_iter()
+        .find(|skill| skill.name == name)?;
+    std::fs::read_to_string(found.path).ok()
+}
+
+/// What introduces the index in front of the entries it carries.
+pub const INDEX_HEAD: &str = "The text of every reference named here. A line that is only a \
+     reference is followed by the text it stands for.";
+
 /// A message with its references resolved, and the pictures they named.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Expanded {
@@ -125,14 +231,18 @@ impl Expanded {
 ///
 /// # Invariant
 ///
+/// A spelling in `indexed` -- text the prompt's index already carries -- stays
+/// literal and keys that index. See `docs/notes/server-meta.md`.
+///
+///
 /// An unresolvable reference stays in the text verbatim: an unreadable picture or
 /// an unknown skill must still be a message. `llm` is `None` when no client
 /// resolved, and then only skill references are expanded.
-pub async fn expand(cwd: &Path, text: &str, llm: Option<&LlmClient>) -> Expanded {
+pub async fn expand(cwd: &Path, text: &str, llm: Option<&LlmClient>, indexed: &[&str]) -> Expanded {
     let mut out = Expanded::default();
     let mut cursor = 0;
     for mention in mentions(text) {
-        if mention.start < cursor {
+        if mention.start < cursor || indexed.contains(&spelling(&mention).as_str()) {
             continue;
         }
         let (replacement, image) = match mention.kind {
@@ -269,16 +379,71 @@ mod tests {
         assert!(found("mail me at user@host.png").is_empty());
     }
 
+    /// The walk names what a reference's own text references, once each.
+    ///
+    /// # Invariant
+    ///
+    /// First-seen order, each spelling once: a file that names itself terminates,
+    /// and two references naming the same thing are one entry.
+    #[test]
+    fn roots_follow_references_into_the_text_they_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let skills = dir.path().join(".agents/skills");
+        std::fs::create_dir_all(skills.join("outer")).unwrap();
+        std::fs::write(
+            skills.join("outer/SKILL.md"),
+            "see @file: notes.txt, and again @file: notes.txt\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(skills.join("inner")).unwrap();
+        std::fs::write(skills.join("inner/SKILL.md"), "no references here\n").unwrap();
+        std::fs::write(
+            dir.path().join("notes.txt"),
+            "it names @skill: inner itself\n",
+        )
+        .unwrap();
+
+        let found = roots(dir.path(), &["read @skill: outer and @skill: outer"]);
+        let spellings: Vec<&str> = found.iter().map(|r| r.spelling.as_str()).collect();
+        assert_eq!(
+            spellings,
+            vec!["@skill:outer", "@file:notes.txt", "@skill:inner"],
+            "first seen, once each, breadth first"
+        );
+        assert!(found[0].content.starts_with("see @file: notes.txt"));
+    }
+
+    /// A reference the walk cannot read is not invented, and its mention stays.
+    #[test]
+    fn a_root_that_cannot_be_read_is_left_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let found = roots(dir.path(), &["see @skill: missing and @image: gone.png"]);
+        assert!(found.is_empty(), "{found:?}");
+    }
+
+    /// A spelling in the index is not replaced in the message: it keys the index.
+    #[test]
+    fn an_indexed_reference_stays_literal() {
+        let dir = tempfile::tempdir().unwrap();
+        let expanded = block_on(expand(
+            dir.path(),
+            "read @skill: heir now",
+            None,
+            &["@skill:heir"],
+        ));
+        assert_eq!(expanded.text, "read @skill: heir now");
+    }
+
     #[test]
     fn a_file_reference_is_left_exactly_as_written() {
-        let expanded = block_on(expand(Path::new("."), "@file: notes.txt", None));
+        let expanded = block_on(expand(Path::new("."), "@file: notes.txt", None, &[]));
         assert_eq!(expanded.text, "@file: notes.txt");
         assert!(expanded.images.is_empty());
     }
 
     #[test]
     fn an_unresolvable_reference_stays_text() {
-        let expanded = block_on(expand(Path::new("."), "see @image: gone.png", None));
+        let expanded = block_on(expand(Path::new("."), "see @image: gone.png", None, &[]));
         assert_eq!(expanded.text, "see @image: gone.png");
         assert!(expanded.images.is_empty());
     }

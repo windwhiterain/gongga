@@ -4,11 +4,9 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Mutex as StdMutex;
 
 use serde_json::{Value, json};
 
-use crate::prefix_cache::Layout;
 use crate::tools::{Tool, ToolContext, ToolOutcome};
 
 /// Which root a skill came from, in the words a reader already knows.
@@ -71,7 +69,7 @@ impl Tool for IndexSkillTool {
                         .to_string(),
                 );
             }
-            let rows = ordered(skills, &ctx.layout);
+            let rows = ordered(skills, &ctx.store);
             ToolOutcome::ok(
                 serde_json::to_string_pretty(&json!({"skills": rows}))
                     .unwrap_or_else(|_| "[]".to_string()),
@@ -142,12 +140,11 @@ fn in_dir(bucket: &'static str, root: &Path) -> Vec<Installed> {
 ///
 /// A permutation of `skills`: the layout reorders the table and never revives a row
 /// for a skill that is not installed now. See `docs/notes/server-prefix-cache.md`.
-fn ordered(skills: Vec<Installed>, layout: &StdMutex<Layout>) -> Vec<Value> {
+fn ordered(skills: Vec<Installed>, store: &crate::store::Store) -> Vec<Value> {
     let rows: Vec<(String, Value)> = skills
         .into_iter()
         .map(|skill| {
-            // The file, not the name: two directories may declare one name, and a
-            // table that kept only the first would be hiding a skill.
+            // The path: two directories may declare one name.
             let key = skill.path.display().to_string();
             let row = json!({
                 "name": skill.name,
@@ -163,10 +160,7 @@ fn ordered(skills: Vec<Installed>, layout: &StdMutex<Layout>) -> Vec<Value> {
         .iter()
         .map(|(key, row)| (key.as_str(), row.to_string().len()))
         .collect();
-    let order = layout
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .plan(&wanted);
+    let order = crate::prefix_cache::plan(store, &wanted);
     let mut by_key: HashMap<String, Value> = rows.into_iter().collect();
     order
         .into_iter()
@@ -222,6 +216,10 @@ mod tests {
         }
     }
 
+    fn store() -> crate::store::Store {
+        crate::store::Store::open(std::path::Path::new(":memory:")).expect("a throwaway store")
+    }
+
     fn names(rows: &[Value]) -> Vec<String> {
         rows.iter()
             .map(|r| r["name"].as_str().unwrap_or_default().to_string())
@@ -236,7 +234,6 @@ mod tests {
     /// says its name is.
     #[test]
     fn a_shared_name_costs_neither_of_them_its_row() {
-        let layout = StdMutex::new(Layout::new());
         let rows = ordered(
             vec![
                 Installed {
@@ -252,7 +249,7 @@ mod tests {
                     bucket: HARNESS,
                 },
             ],
-            &layout,
+            &store(),
         );
         assert_eq!(rows.len(), 2, "{rows:?}");
     }
@@ -265,17 +262,17 @@ mod tests {
     /// holds: a call that lists the same skills says the same bytes as last time.
     #[test]
     fn the_table_is_the_order_it_was_first_emitted_in() {
-        let layout = StdMutex::new(Layout::new());
         let given = || {
             vec![
                 row("heir", "fold a session's context", HARNESS),
                 row("latency", "measure a turn", GENERAL),
             ]
         };
-        let first = ordered(given(), &layout);
+        let store = store();
+        let first = ordered(given(), &store);
         let mut reversed = given();
         reversed.reverse();
-        let second = ordered(reversed, &layout);
+        let second = ordered(reversed, &store);
         assert_eq!(names(&first), vec!["heir", "latency"]);
         assert_eq!(names(&second), names(&first));
     }
