@@ -188,9 +188,8 @@ impl Entry {
     fn view_row(&self, row: usize, labelled: bool) -> Cow<'_, str> {
         if self.folded() {
             let summary = self.folded_row(row);
-            // SPEC's `abstract (horizontal)`: the mark owns the first column and
-            // the summary sits beside it, so a second row starts in the same
-            // column the first one's text does rather than under the mark.
+            // SPEC's `abstract (horizontal)`: the mark owns one column, so a
+            // second row starts where the first one's text does, not under it.
             let label = match labelled {
                 true => mark(self.kind),
                 false => " ".repeat(mark(self.kind).width()),
@@ -564,6 +563,20 @@ impl Log {
         self.entries[at].at = pos;
     }
 
+    /// Where the block `key` currently names is: the open one, else the newest.
+    ///
+    /// # Invariant
+    ///
+    /// A key can belong to more than one block -- a stream that ended and started
+    /// again leaves the sealed one behind -- so a key lookup is "the live block",
+    /// never "the first block that ever used this key". See `docs/notes/tui-log.md`.
+    fn entry_by_key(&self, key: &str) -> Option<usize> {
+        if let Some(at) = self.open.get(key).copied() {
+            return Some(at);
+        }
+        self.entries.iter().rposition(|entry| entry.key == key)
+    }
+
     /// Replaces the whole text of the block `key` names and re-wraps it.
     ///
     /// # Invariant
@@ -573,7 +586,7 @@ impl Log {
     /// append would be wrong and a rewrite is the only honest thing. Both indexes
     /// move by the difference in rows, as they do for a fold.
     pub fn rewrite(&mut self, key: &str, text: &str) {
-        let Some(at) = self.entries.iter().position(|entry| entry.key == key) else {
+        let Some(at) = self.entry_by_key(key) else {
             return;
         };
         if self.entries[at].text == text {
@@ -602,7 +615,7 @@ impl Log {
     /// indexes -- the arithmetic a seal does, for the same reason. A key that is not
     /// a folding block is nothing to toggle.
     pub fn toggle(&mut self, key: &str) -> bool {
-        let Some(at) = self.entries.iter().position(|entry| entry.key == key) else {
+        let Some(at) = self.entry_by_key(key) else {
             return false;
         };
         if !self.entries[at].kind.folds() {
@@ -656,9 +669,9 @@ impl Log {
     /// indexes are corrected, which is what keeps a retro-set label from silently
     /// shifting every block after it. A key nobody opened is nothing to label.
     pub fn relabel(&mut self, key: &str, tag: &str, kind: LineKind) {
-        // By key, not through `open`: a verdict arrives on the chunk that ends
-        // the call, which has already sealed the block.
-        let Some(at) = self.entries.iter().position(|entry| entry.key == key) else {
+        // By key, not only through `open`: a verdict arrives on the chunk that
+        // ends the call, and the block is sealed by then.
+        let Some(at) = self.entry_by_key(key) else {
             return;
         };
         if self.entries[at].tag == tag && self.entries[at].kind == kind {
@@ -1005,7 +1018,7 @@ mod tests {
         assert_eq!(
             shown(&mut log, 40, 4, 0),
             // SPEC's `abstract (horizontal)`: the second row starts where the
-            // first one's text does, and `…` says the middle was left out.
+            // first one's text does; `…` says the middle was left out.
             vec!["\u{25c7} first", "  \u{2026} last"]
         );
         // One row has no second: the summary is one row, not a blank one.
@@ -1076,6 +1089,28 @@ mod tests {
         log.stream("w", "a", LineKind::Assistant, "", "the answer", true);
         assert!(!log.toggle("a"));
         assert!(!log.toggle("nobody"));
+    }
+
+    /// A key names the *live* block, not the first one that ever used it.
+    ///
+    /// # Invariant
+    ///
+    /// Two blocks can share a key: a stream that ends and is started again (a
+    /// cancelled turn, a provider sending more text after `done`) leaves the sealed
+    /// one behind and opens a new one under the same key. A rewrite must reach the
+    /// new one, or the text lands in a block the frame has already drawn -- which
+    /// on screen is a block frozen at its first character.
+    #[test]
+    fn a_rewrite_reaches_the_live_block_not_the_sealed_one() {
+        let mut log = Log::new();
+        log.stream("w", "k", LineKind::Assistant, "", "first turn", true);
+        log.stream("w", "k", LineKind::Assistant, "", "second", false);
+        log.rewrite("k", "second turn, whole");
+        assert_eq!(
+            shown(&mut log, 40, 6, 0),
+            vec!["first turn", "second turn, whole"],
+            "the live block grew, and the sealed one was left alone"
+        );
     }
 
     /// A label that arrives after the block opened replaces the one it opened
