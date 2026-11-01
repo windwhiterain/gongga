@@ -349,6 +349,13 @@ One line, updated at every step's end, and the layout is announced again only wh
 the spelled row changed: a provider that reports the same balance on two steps does
 not make the window repaint.
 
+## Listed::status
+
+The status word SPEC gives a session -- `idle`, `running`, `error` -- spelled here as a
+word rather than a protocol enum, so a front-end that imports no protocol type can
+still draw it. A window puts it on the list row beside the name; which of the three
+earns a colour is the window's decision, not this one's.
+
 ## Listed::title
 
 SPEC's `full` pane title, spelled once: what the last request measured -- `ctx`,
