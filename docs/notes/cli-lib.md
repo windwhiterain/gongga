@@ -353,8 +353,8 @@ not make the window repaint.
 
 The status word SPEC gives a session -- `idle`, `running`, `error` -- spelled here as a
 word rather than a protocol enum, so a front-end that imports no protocol type can
-still draw it. A window puts it on the list row beside the name; which of the three
-earns a colour is the window's decision, not this one's.
+still draw it. A window turns it into one column of the list row (a mark, not a word);
+which of the three means what is the window's decision, not this one's.
 
 ## Listed::title
 

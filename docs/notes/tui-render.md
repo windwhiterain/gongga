@@ -194,31 +194,38 @@ was hidden rather than the list of what exists -- and a session drawn `full` had
 name in two places. SPEC now gives the list every name and puts the toggle in the
 click: a shown session is still a row, because that row is where it is hidden again.
 
-The name's brightness says one thing: **bright when that session has a window beside
-the list, dim when it does not**. That is the same fact the right-hand split states,
-said again where it is clicked.
+Two facts, one column each, and each look means one of them:
 
-The word after the name is what the announcement says the session is doing -- `idle`,
-`running`, `error` -- and it is painted by that word: `running` green, `error` red and
-bold, everything else chrome (`status_style`). It used to be announced and dropped, so
-"is it running?" could only be answered by reading that session's events. Two words
-earn a colour because they are the two that change what an operator would do next;
-`idle` is the state of a session that needs nothing, so drawing attention to it would
-be drawing attention to nothing.
+- **the status mark**: `●` running (green), `✕` error (red, bold), `○` anything else
+  (chrome) -- `status_mark`. It is what the announcement says the session is doing,
+  which used to be announced and dropped, so "is it running?" could only be answered
+  by reading that session's events.
+- **the name's brightness**: bright when the session has a window beside the list, dim
+  when it does not. The right-hand split states the same fact, said again where it is
+  clicked.
 
-The words are padded to the widest one the list draws (`Panes::status_width`), so they
-start on one column down the list and `list_width` charges the column for them. A list
-of two names and one status is not worth two different alignments.
+The mark is *one* column whatever the word is, and that is the whole reason it is a
+mark. A word costs the width of the widest one -- `running` is seven columns -- and the
+list is a column of names that is read at a glance. The shape carries the state as well
+as the colour does, so `running` and `error` are still distinct to a reader who cannot
+tell green from red; `idle` is the state of a session that needs nothing, so it gets
+the quietest look.
+
+Rotating the glyphs to buy the width back is not on the table: a terminal draws one
+upright glyph per cell, and `ratatui`'s cell is a symbol plus a style with no
+orientation to set (there is no rotation anywhere in `ratatui-core`). Writing a name
+vertically -- one character per row -- would trade width for height, and the list is
+already the part of the window with the least height to give.
 
 It does *not* say which session is sticky. The sticky one is necessarily shown, and its
 window is framed (`pane_slots`) -- so a second mark here would be the same thing twice,
 in the area that is about something else. The list used to carry the mark column `▸`
 and a fill to the right edge for it; both went when the frame became the sticky mark.
 
-A name is bracketed -- `[main] running` -- in the list, and `[main]` in the window's
-header: one spelling in both areas, so a name cannot be mistaken for the first word of
-the events beside it. `bracketed` is that spelling, and `list_width` counts the two
-columns it adds, the status and one of air.
+A name is bracketed -- `● [main]` -- in the list, and `[main]` in the window's header:
+one spelling in both areas, so a name cannot be mistaken for the first word of the
+events beside it. `bracketed` is that spelling, and `list_width` counts the mark, its
+space, the two brackets and one column of air.
 
 `list_window` still centres the list on the sticky session even though the row no
 longer says so: which rows are on screen is a scroll position, not a mark, and the
@@ -464,12 +471,14 @@ is the whole of SPEC's rule about where they live.
 The announcement arrives on every step of a turn, so it is not a reason to move a
 view: a pane that kept its rows keeps its place in them.
 
-## the_list_is_bright_for_the_sessions_it_draws_and_names_what_each_is_doing
+## the_list_marks_a_status_and_brightens_the_names_it_draws
 
 Both answers, read off one frame: every announced name is a row in the announcement's
-order, its colour says whether it has a window (white for shown, dark grey for hidden,
-even for the session that is sticky), and the word beside it says what it is doing --
-chrome for `idle`, green for `running`, red for `error`.
+order, the mark in front of it says what it is doing -- `○` chrome, `●` green, `✕` red
+-- and the name's colour says whether it has a window (white for shown, dark grey for
+hidden, even for the session that is sticky). The four rows are one of each, so a mark
+that came out as the wrong word, or a brightness that followed the status instead of
+the window, fails here.
 
 ## the_sticky_session_is_a_frame_and_the_list_says_only_what_is_shown
 

@@ -148,20 +148,6 @@ impl Panes {
             .unwrap_or("")
     }
 
-    /// The widest status word the list draws, so every row's word starts on one column.
-    ///
-    /// # Invariant
-    ///
-    /// Measured over the names the list draws, not over every session announced: a
-    /// row that is not on screen costs the column nothing.
-    pub fn status_width(&self) -> usize {
-        self.list_names
-            .iter()
-            .map(|name| crate::render::width_of(self.status_of(name)))
-            .max()
-            .unwrap_or(0)
-    }
-
     /// Sets the views to show; the lines they hold never change.
     ///
     /// # Invariant
