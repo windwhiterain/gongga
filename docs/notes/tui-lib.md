@@ -84,6 +84,13 @@ headers, then the events. The hint is drawn over the last row of the window it b
 to, so asking the window first is how a click on the button became a click on the
 session -- which asked the command layer for a `set_sticky` nobody pressed.
 
+## Screen::item_at
+
+The item under a cell of a window, as the key a press toggles. The slot gives the
+row inside the window, and the log answers which block that row belongs to -- the
+same rows the frame drew, fold included, so a press on a summary line opens the item
+it summarises.
+
 ## handle_mouse
 
 The wheel scrolls what it is over, and retargets nothing: over a window it scrolls

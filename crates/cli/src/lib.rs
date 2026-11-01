@@ -226,12 +226,46 @@ fn kind_of(kind: protocol::HeadKind) -> LineKind {
     }
 }
 
+impl LineKind {
+    /// The one column an item of this kind is marked with.
+    ///
+    /// # Invariant
+    ///
+    /// SPEC gives `abstract`, `cmd` and `error` a coloured symbol and gives `output`
+    /// none: a mark says "this is an item", so the one kind that is the answer
+    /// itself carries no mark. Chosen here, never sent: the server says what a row
+    /// *is*, and this crate says what that looks like.
+    pub fn symbol(self) -> &'static str {
+        match self {
+            // SPEC names no item for these: the harness's own remarks, prose the
+            // operator typed, and the answer itself carry no mark.
+            LineKind::System | LineKind::User | LineKind::Assistant => "",
+            LineKind::Command => "$",
+            LineKind::Reasoning => "\u{25c7}",
+            LineKind::ToolCall => "\u{25b8}",
+            LineKind::ToolOutput => "\u{2713}",
+            LineKind::ToolError => "\u{2715}",
+            LineKind::Result => "\u{2192}",
+            LineKind::Error => "!",
+        }
+    }
+
+    /// Whether an item of this kind is SPEC's `abstract`: a call, its result, or the
+    /// reasoning behind it.
+    pub fn folds(self) -> bool {
+        matches!(
+            self,
+            LineKind::Reasoning | LineKind::ToolCall | LineKind::ToolOutput | LineKind::ToolError
+        )
+    }
+}
+
 /// What a rendered line is; the front-end only colours it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineKind {
     /// The harness talking about itself: connected, offline, a status word.
     System,
-    /// A command line, echoed: `/cmd` as typed, or `$ cmd --args` as it ran.
+    /// A command line, echoed: `/cmd` as typed, or `cmd --args` as it ran.
     ///
     /// # Invariant
     ///
@@ -655,7 +689,9 @@ impl Client {
                 // The result carries only the id, so say now where its answer goes.
                 self.results.insert(id, window.clone());
                 if shown {
-                    let line = format!("$ {name}{}", render_args(&args));
+                    // No `$`: SPEC's `cmd` item carries a symbol, and the mark
+                    // that says "this is a command" is the front-end's to draw.
+                    let line = format!("{name}{}", render_args(&args));
                     sink.line(&window, LineKind::Command, &line);
                 }
             }
@@ -2362,7 +2398,7 @@ mod tests {
         assert_eq!(s.windows, vec!["peer", COMMAND_WINDOW]);
         assert_eq!(
             s.lines,
-            vec!["$ del_session --session peer", "deleted session peer"]
+            vec!["del_session --session peer", "deleted session peer"]
         );
     }
 
@@ -2728,11 +2764,7 @@ mod tests {
             },
             &mut s,
         );
-        assert_eq!(
-            s.0,
-            vec!["$ send_message"],
-            "a log line is not a window line"
-        );
+        assert_eq!(s.0, vec!["send_message"], "a log line is not a window line");
     }
 
     /// SPEC's `full` pane title carries what the session runs on, after what the
@@ -3247,7 +3279,7 @@ mod tests {
             &mut s,
         );
         assert!(s.keys.is_empty(), "{:?}", s.keys);
-        assert_eq!(s.lines, vec!["$ get_messages", "3 rows"]);
+        assert_eq!(s.lines, vec!["get_messages", "3 rows"]);
         // Both are on the command line, not inside a session's window.
         assert_eq!(s.windows, vec!["cmd", "cmd"]);
     }

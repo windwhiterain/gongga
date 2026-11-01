@@ -251,6 +251,38 @@ impl Screen {
         })
     }
 
+    /// The item under this cell of a window, as the key a press toggles.
+    ///
+    /// # Invariant
+    ///
+    /// It reads the rows the frame drew: the slot gives the cell's row inside the
+    /// window, and the log answers which block that row belongs to -- counting the
+    /// fold, so a press on a summary line toggles the item it summarises.
+    pub fn item_at(&mut self, width: u16, height: u16, column: u16, row: u16) -> Option<String> {
+        let slots = self.slots(width, height);
+        let slot = slots
+            .iter()
+            .find(|slot| render::covers(&slot.body, column, row))
+            .or_else(|| {
+                // A header row answers with the first item: a press there is the
+                // session's, which `session_at_row` already handles.
+                Option::<&render::Slot>::None
+            })?;
+        let name = slot.name.clone();
+        let body = slot.body;
+        let inside = (row - body.y) as usize;
+        // One column short, as the renderer measures.
+        let log_width = body.width.saturating_sub(1).max(1) as usize;
+        let scroll = self.panes.get(&name).map(|pane| pane.scroll).unwrap_or(0);
+        self.panes.block_at(
+            View::Window(&name),
+            log_width,
+            body.height.max(1) as usize,
+            scroll,
+            inside,
+        )
+    }
+
     /// Scrolls one pane: the wheel reads what the pointer is over, not the keys'.
     pub fn scroll_pane(&mut self, name: &str, rows: i64) {
         self.panes.scroll_by(name, rows);
@@ -829,6 +861,15 @@ impl Tui {
                     .get(&hit.name)
                     .is_some_and(|pane| pane.kind == crate::panes::Kind::Shown);
                 self.clicked = Some(toggle_line(&hit.name, shown));
+            }
+            // A press in the events opens or closes SPEC's `abstract` there.
+            Part::Pane => {
+                if let Some(key) =
+                    self.screen
+                        .item_at(size.width, size.height, mouse.column, mouse.row)
+                {
+                    self.screen.panes.toggle(&key);
+                }
             }
             _ => {}
         }
@@ -1628,7 +1669,8 @@ mod tests {
         h.stream(key, LineKind::Reasoning, "[peer] thinking: ", "he", false);
         h.stream(key, LineKind::Reasoning, "[peer] thinking: ", "llo", false);
         h.stream(key, LineKind::Reasoning, "[peer] thinking: ", "!", true);
-        assert_eq!(h.rows(), vec!["[peer] thinking: hello!"]);
+        // A reasoning item is SPEC's `abstract`: its mark, its label, its text.
+        assert_eq!(h.rows(), vec!["\u{25c7} [peer] thinking: hello!"]);
     }
 
     #[test]
@@ -1664,9 +1706,9 @@ mod tests {
         assert_eq!(
             h.rows(),
             vec![
-                "[peer] thinking: 我先看一下。",
-                "[test1] thinking: 确认完毕",
-                "[peer] ok",
+                "\u{25c7} [peer] thinking: 我先看一下。",
+                "\u{25c7} [test1] thinking: 确认完毕",
+                "\u{2713} [peer]",
                 "[test1] 这是我的",
             ]
         );
@@ -1872,7 +1914,7 @@ mod tests {
         // Two rows: the peer block is cut to its tail and repeats its tag.
         let rows = h.screen.panes.window(View::All, 40, 2, 0).rows;
         let shown: Vec<String> = rows.iter().map(|(_, t)| t.to_string()).collect();
-        assert_eq!(shown, vec!["[peer] aaaccc", "[test1] bbb"]);
+        assert_eq!(shown, vec!["\u{25c7} [peer] aaaccc", "[test1] bbb"]);
     }
 
     /// A realistic command leaves no blank row and no empty block.
@@ -1890,7 +1932,8 @@ mod tests {
         // stderr: nothing at all but the sentinel's blank line.
         h.stream("t:c1:Stderr", LineKind::ToolError, "", "\n", false);
         h.stream("t:c1:Stderr", LineKind::ToolError, "", "", true);
-        assert_eq!(h.rows(), vec!["hi"]);
+        // Sealed, both streams are `abstract`s: a mark and a label, no body.
+        assert_eq!(h.rows(), vec!["\u{2713} "]);
     }
 
     /// Two streams open at once stay separate: a tool's output never joins a response.
@@ -1900,7 +1943,7 @@ mod tests {
         h.stream("r:1", LineKind::Assistant, "", "answer", false);
         h.stream("t:1", LineKind::ToolOutput, "$ ", "stdout", false);
         h.stream("r:1", LineKind::Assistant, "", " more", false);
-        assert_eq!(h.rows(), vec!["answer more", "$ stdout"]);
+        assert_eq!(h.rows(), vec!["answer more", "\u{2713} $ stdout"]);
     }
 
     #[test]
@@ -2166,6 +2209,41 @@ mod tests {
             status: "idle".to_string(),
             title: String::new(),
         }
+    }
+
+    /// A press in the events opens the item under it, and the row count follows.
+    ///
+    /// # Invariant
+    ///
+    /// The window draws what the log holds: the press finds the block the frame
+    /// drew at that cell (`Screen::item_at`), and opening it grows the window by
+    /// exactly the rows the frame will now draw.
+    #[test]
+    fn a_press_in_the_events_opens_the_item_under_it() {
+        let mut h = Headless::new();
+        h.stream("t:c1", LineKind::ToolOutput, "", "a\nb\nc", true);
+        h.measure("main", 8);
+        let (width, height) = (40u16, 14u16);
+        let slot = h
+            .screen
+            .slots(width, height)
+            .into_iter()
+            .find(|slot| slot.name == "main")
+            .expect("the window");
+        let folded = h.screen.panes.rows(View::Window("main"), 39);
+        assert_eq!(folded, 1, "a sealed result is one summary row");
+
+        let key = h
+            .screen
+            .item_at(width, height, slot.body.x, slot.body.y)
+            .expect("a press there names the item");
+        assert_eq!(key, "t:c1");
+        assert!(h.screen.panes.toggle(&key));
+        assert_eq!(
+            h.screen.panes.rows(View::Window("main"), 39),
+            3,
+            "opened, the window holds the rows the item was hiding"
+        );
     }
 
     /// The cell a click lands on decides which of SPEC's gestures it is: a row

@@ -218,6 +218,23 @@ impl Panes {
         &self.panes
     }
 
+    /// Opens or closes the `abstract` `key` names.
+    pub fn toggle(&mut self, key: &str) -> bool {
+        self.log.toggle(key)
+    }
+
+    /// The block under one row of a view, as the key a press carries.
+    pub fn block_at(
+        &mut self,
+        view: View<'_>,
+        width: usize,
+        height: usize,
+        scroll: usize,
+        row: usize,
+    ) -> Option<String> {
+        self.log.block_at(view, width, height, scroll, row)
+    }
+
     /// Replaces the label of the block `key` names, and the kind it is drawn as.
     pub fn relabel(&mut self, key: &str, tag: &str, kind: LineKind) {
         self.log.relabel(key, tag, kind);

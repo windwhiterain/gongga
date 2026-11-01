@@ -23,9 +23,15 @@ struct Entry {
     kind: LineKind,
     /// The window this block belongs to, as the line said.
     window: String,
+    /// The caller's name for this block, so a click can find it again.
+    key: String,
     /// The label this block was opened with, printed on its top visible row.
     tag: String,
     text: String,
+    /// The columns this block was last wrapped at: the fold is cut to them.
+    width: usize,
+    /// Whether the operator opened it: SPEC's click, and the only state a fold has.
+    expanded: bool,
     /// Byte offset of each wrapped row's first character; its length is the row count.
     starts: Vec<usize>,
     /// Display columns used by the last row: the whole wrap state an append resumes.
@@ -48,8 +54,11 @@ impl Entry {
         let mut entry = Self {
             kind,
             window: window.to_string(),
+            key: String::new(),
             tag: tag.to_string(),
             text,
+            width,
+            expanded: false,
             starts: vec![0],
             col: 0,
             sealed: false,
@@ -64,23 +73,71 @@ impl Entry {
     }
 
     fn rows(&self) -> usize {
+        if self.folded() {
+            return self.folded_rows();
+        }
         self.starts.len()
+    }
+
+    /// Whether this block is drawn as SPEC's `abstract`: one summary line.
+    ///
+    /// # Invariant
+    ///
+    /// Only a sealed item of a folding kind, and only until the operator opens it:
+    /// a block still streaming is what "currently stream" means, and an answer,
+    /// a command or an error is not an `abstract` at all.
+    fn folded(&self) -> bool {
+        self.sealed && self.kind.folds() && !self.expanded
+    }
+
+    /// The rows a folded block shows: a reasoning item keeps its first and last line.
+    fn folded_rows(&self) -> usize {
+        if self.kind == LineKind::Reasoning && self.first_last().0 != self.first_last().1 {
+            return 2;
+        }
+        // An item with neither a label nor text is one blank row: the mark alone.
+        1
+    }
+
+    /// The first and last non-blank line of the block's text.
+    fn first_last(&self) -> (&str, &str) {
+        let mut lines = self.text.lines().filter(|l| !l.trim().is_empty());
+        let first = lines.next().unwrap_or("");
+        let last = lines.last().unwrap_or(first);
+        (first, last)
+    }
+
+    /// One row of the folded block, cut to the columns it will be drawn in.
+    fn folded_row(&self, row: usize) -> String {
+        let text = match (self.kind, row) {
+            // SPEC's `reasoning{beginning (line), ending (line)}`: its first
+            // and last line, under the label it opened with.
+            (LineKind::Reasoning, 0) => format!("{}{}", self.tag, self.first_last().0),
+            (LineKind::Reasoning, _) => format!("{}{}", self.tag, self.first_last().1),
+            // A call says what was asked; a result says how it went -- its
+            // output is the click, so the label is the whole row.
+            _ => self.tag.trim_end().to_string(),
+        };
+        cut(&text, self.width.max(1))
     }
 
     /// Recomputes every row offset at `width`, with the label's columns reserved on
     /// the row it is printed on.
     fn reflow(&mut self, width: usize) {
         let Self {
+            kind,
             tag,
             text,
+            width: at,
             starts,
             col,
             ..
         } = self;
+        *at = width;
         starts.clear();
         // A line always has at least one row, so an empty line is a blank row.
         starts.push(0);
-        let label = tag.width().min(width);
+        let label = label_width(*kind, tag).min(width);
         let mut wrap = Wrap { width, col: label };
         wrap.feed(text, 0, starts);
         *col = wrap.col;
@@ -91,10 +148,12 @@ impl Entry {
         let base = self.text.len();
         let Self {
             text: owned,
+            width: at,
             starts,
             col,
             ..
         } = self;
+        *at = width;
         if width > 0 {
             let mut wrap = Wrap { width, col: *col };
             wrap.feed(text, base, starts);
@@ -125,11 +184,52 @@ impl Entry {
     /// Only the top row of a block carries its label, and a clipped tail loses
     /// nothing: those characters start the row below it.
     fn view_row(&self, row: usize, labelled: bool) -> Cow<'_, str> {
-        if !labelled || self.tag.is_empty() {
+        if self.folded() {
+            let summary = self.folded_row(row);
+            if !labelled {
+                return Cow::Owned(summary);
+            }
+            return Cow::Owned(format!("{}{}", mark(self.kind), summary));
+        }
+        if !labelled {
             return Cow::Borrowed(self.row(row));
         }
-        Cow::Owned(format!("{}{}", self.tag, self.row(row)))
+        Cow::Owned(format!("{}{}{}", mark(self.kind), self.tag, self.row(row)))
     }
+}
+
+/// The columns one item's mark takes, and the blank after it.
+///
+/// # Invariant
+///
+/// Zero for a kind SPEC gives no mark -- the answer -- and two for every other, so
+/// a block's text is measured against the columns it is actually drawn in.
+fn mark(kind: LineKind) -> String {
+    match kind.symbol() {
+        "" => String::new(),
+        symbol => format!("{symbol} "),
+    }
+}
+
+/// Columns the label of a `kind` block takes: its mark, then its tag.
+fn label_width(kind: LineKind, tag: &str) -> usize {
+    mark(kind).width() + tag.width()
+}
+
+/// `text` cut to `width` columns, marked when it was cut.
+fn cut(text: &str, width: usize) -> String {
+    let mut out = String::new();
+    let mut used = 0usize;
+    for ch in text.chars() {
+        let advance = UnicodeWidthChar::width(ch).unwrap_or(0).max(1);
+        if used + advance > width.saturating_sub(1) {
+            out.push('\u{2026}');
+            return out;
+        }
+        out.push(ch);
+        used += advance;
+    }
+    out
 }
 
 /// The greedy wrap state machine, movable so an append can pick it up mid-line.
@@ -423,6 +523,8 @@ impl Log {
     /// Adds a finished line to the window `name` names. Costs what the line is worth.
     pub fn push(&mut self, name: &str, kind: LineKind, text: impl Into<String>) {
         let mut entry = Entry::new(name, kind, text.into(), self.width);
+        // A whole row arrives at once: nothing will stream into it, so a folding
+        // kind is an `abstract` from its first frame.
         entry.sealed = true;
         self.entries.push(entry);
         self.attach(self.entries.len() - 1);
@@ -456,6 +558,59 @@ impl Log {
         self.entries[at].at = pos;
     }
 
+    /// Opens or closes the `abstract` `key` names.
+    ///
+    /// # Invariant
+    ///
+    /// The row count changes, so this is a reflow of one block and a shift of both
+    /// indexes -- the arithmetic a seal does, for the same reason. A key that is not
+    /// a folding block is nothing to toggle.
+    pub fn toggle(&mut self, key: &str) -> bool {
+        let Some(at) = self.entries.iter().position(|entry| entry.key == key) else {
+            return false;
+        };
+        if !self.entries[at].kind.folds() {
+            return false;
+        }
+        let before = self.contributions(at);
+        self.entries[at].expanded = !self.entries[at].expanded;
+        let after = self.contributions(at);
+        self.shift(at, before, after);
+        true
+    }
+
+    /// The block under one row of a view, as the key a click carries.
+    ///
+    /// # Invariant
+    ///
+    /// It answers with the block *shown* at that row, counting the fold: a click on
+    /// a summary line is a click on the item it summarises.
+    pub fn block_at(
+        &mut self,
+        view: View<'_>,
+        width: usize,
+        height: usize,
+        scroll: usize,
+        row: usize,
+    ) -> Option<String> {
+        self.reflow(width);
+        let ledger = self.ledger(view)?;
+        let total = ledger.index.total();
+        let scroll = scroll.min(total.saturating_sub(height));
+        let end = total - scroll;
+        let start = end.saturating_sub(height);
+        let want = start + row;
+        if row >= end - start || want >= end {
+            return None;
+        }
+        let pos = ledger
+            .index
+            .line_at(want)
+            .min(ledger.blocks.len().checked_sub(1)?);
+        let at = *ledger.blocks.get(pos)?;
+        Some(self.entries[at].key.clone()).filter(|key| !key.is_empty())
+    }
+
     /// Replaces the label of the block `key` names, once its outcome is known.
     ///
     /// # Invariant
@@ -465,7 +620,9 @@ impl Log {
     /// indexes are corrected, which is what keeps a retro-set label from silently
     /// shifting every block after it. A key nobody opened is nothing to label.
     pub fn relabel(&mut self, key: &str, tag: &str, kind: LineKind) {
-        let Some(at) = self.open.get(key).copied() else {
+        // By key, not through `open`: a verdict arrives on the chunk that ends
+        // the call, which has already sealed the block.
+        let Some(at) = self.entries.iter().position(|entry| entry.key == key) else {
             return;
         };
         if self.entries[at].tag == tag && self.entries[at].kind == kind {
@@ -513,17 +670,18 @@ impl Log {
                 self.shift(at, before, after);
                 at
             }
-            // A blank chunk must not open a block: the shell writes one
-            // before every exit sentinel.
-            None if text.trim().is_empty() => {
+            // A blank chunk opens no block: one precedes every exit sentinel.
+            // A labelled one does -- an item can have no body.
+            None if text.trim().is_empty() && tag.is_empty() => {
                 if done {
                     self.open.remove(key);
                 }
                 return;
             }
             None => {
-                self.entries
-                    .push(Entry::with_tag(name, kind, tag, text.to_string(), width));
+                let mut entry = Entry::with_tag(name, kind, tag, text.to_string(), width);
+                entry.key = key.to_string();
+                self.entries.push(entry);
                 let at = self.entries.len() - 1;
                 self.attach(at);
                 self.open.insert(key.to_string(), at);
@@ -539,7 +697,12 @@ impl Log {
     fn seal(&mut self, key: &str, at: usize) {
         self.open.remove(key);
         self.trim_tail(at);
+        // Sealing can fold the block, and a fold is a row count: the indexes
+        // hear about it, or the blocks behind this one shift.
+        let before = self.contributions(at);
         self.entries[at].sealed = true;
+        let after = self.contributions(at);
+        self.shift(at, before, after);
     }
 
     /// Drops the blank tail a finished block ends on.
@@ -695,6 +858,169 @@ mod tests {
         log
     }
 
+    /// An item with no body still opens: a call reads as its own arguments, and
+    /// its bare label is not a blank sentinel line.
+    #[test]
+    fn a_labelled_blank_chunk_opens_the_item() {
+        let mut log = Log::new();
+        log.stream("w", "c1", LineKind::ToolCall, "bash{ls} ", "", true);
+        assert_eq!(shown(&mut log, 40, 4, 0), vec!["\u{25b8} bash{ls}"]);
+        // The shell's own sentinel still opens nothing.
+        log.stream("w", "c2", LineKind::ToolOutput, "", "\n", true);
+        assert_eq!(log.rows(View::All, 40), 1);
+    }
+
+    /// SPEC's `abstract`: an item that is not the answer folds when it stops.
+    ///
+    /// # Invariant
+    ///
+    /// Reasoning, a call and its result fold; the answer, a command and an error
+    /// do not -- SPEC gives those their own shape, not a summary.
+    #[test]
+    fn an_item_folds_when_it_stops_and_the_answer_never_does() {
+        let cases = [
+            (LineKind::Reasoning, true),
+            (LineKind::ToolCall, true),
+            (LineKind::ToolOutput, true),
+            (LineKind::ToolError, true),
+            (LineKind::Assistant, false),
+            (LineKind::Command, false),
+            (LineKind::Error, false),
+        ];
+        for (kind, folds) in cases {
+            let mut log = Log::new();
+            log.stream("w", "k", kind, "", "one\ntwo", true);
+            let rows = log.rows(View::All, 40);
+            // A reasoning summary keeps two lines, every other fold is one; what
+            // is not a fold keeps the rows it wrote.
+            let want = match (folds, kind) {
+                (false, _) => 2,
+                (true, LineKind::Reasoning) => 2,
+                (true, _) => 1,
+            };
+            assert_eq!(
+                rows,
+                want,
+                "{kind:?}: sealed, {}",
+                if folds {
+                    "an abstract"
+                } else {
+                    "not an abstract"
+                }
+            );
+            if folds {
+                // And the summary is not the text: nothing of `two` is one row.
+                assert!(log.toggle("k"), "{kind:?} opens");
+                assert_eq!(log.rows(View::All, 40), 2, "{kind:?} opened");
+            }
+        }
+    }
+
+    /// While it streams, an item is not folded: that is the text arriving.
+    #[test]
+    fn a_streaming_item_shows_what_it_is_writing() {
+        let mut log = Log::new();
+        log.stream("w", "k", LineKind::ToolOutput, "", "line one\n", false);
+        log.stream("w", "k", LineKind::ToolOutput, "", "line two", false);
+        assert_eq!(log.rows(View::All, 40), 2, "two rows so far");
+        log.stream("w", "k", LineKind::ToolOutput, "", "", true);
+        assert_eq!(log.rows(View::All, 40), 1, "sealed, it is one summary");
+    }
+
+    /// A folded result is the verdict, never its output: the output is the click.
+    #[test]
+    fn a_folded_result_says_how_it_went_and_not_what_it_printed() {
+        let mut log = Log::new();
+        log.stream(
+            "w",
+            "t:c1",
+            LineKind::ToolOutput,
+            "",
+            "printed a lot\nof stuff",
+            true,
+        );
+        log.relabel("t:c1", "1.2s ", LineKind::ToolOutput);
+        assert_eq!(shown(&mut log, 40, 4, 0), vec!["\u{2713} 1.2s"]);
+        assert!(log.toggle("t:c1"), "a result opens");
+        assert_eq!(
+            shown(&mut log, 40, 4, 0),
+            vec!["\u{2713} 1.2s printed a lot", "of stuff"]
+        );
+    }
+
+    /// A folded reasoning item keeps its first and last line: SPEC's
+    /// `reasoning{beginning (line), ending (line)} (vertical)`.
+    #[test]
+    fn a_folded_reasoning_keeps_its_first_and_last_line() {
+        let mut log = Log::new();
+        log.stream(
+            "w",
+            "r1",
+            LineKind::Reasoning,
+            "",
+            "first\nmiddle\nlast",
+            true,
+        );
+        assert_eq!(
+            shown(&mut log, 40, 4, 0),
+            // The mark is the item's, on its first row: the second is a
+            // continuation, like any wrapped block's.
+            vec!["\u{25c7} first", "last"]
+        );
+        // One line has no second: the summary is one row, not a blank one.
+        let mut log = Log::new();
+        log.stream("w", "r2", LineKind::Reasoning, "", "only", true);
+        assert_eq!(shown(&mut log, 40, 4, 0), vec!["\u{25c7} only"]);
+    }
+
+    /// Opening one item moves every block behind it by the rows it grew.
+    ///
+    /// # Invariant
+    ///
+    /// The indexes are the whole reason a frame does not walk the log, so a fold
+    /// that changed the row count without telling them would draw the next block's
+    /// text in the middle of this one.
+    #[test]
+    fn opening_an_item_grows_the_log_by_its_rows() {
+        let mut log = Log::new();
+        log.stream("w", "k", LineKind::ToolOutput, "", "a\nb\nc", true);
+        log.push("w", LineKind::System, "after");
+        assert_eq!(log.rows(View::All, 40), 2, "one summary and one row");
+        assert_eq!(shown(&mut log, 40, 4, 0), vec!["\u{2713} ", "after"]);
+        assert!(log.toggle("k"));
+        assert_eq!(log.rows(View::All, 40), 4, "three rows and the row after");
+        assert_eq!(
+            shown(&mut log, 40, 4, 0),
+            vec!["\u{2713} a", "b", "c", "after"],
+            "the row after stays after"
+        );
+        assert!(log.toggle("k"), "and it closes again");
+        assert_eq!(log.rows(View::All, 40), 2);
+    }
+
+    /// A click names the block it landed on, folded rows included.
+    #[test]
+    fn a_row_names_the_block_drawn_there() {
+        let mut log = Log::new();
+        log.stream("w", "k", LineKind::ToolOutput, "", "a\nb", true);
+        log.push("w", LineKind::System, "after");
+        let at = |log: &mut Log, row: usize| log.block_at(View::All, 40, 4, 0, row);
+        assert_eq!(at(&mut log, 0).as_deref(), Some("k"));
+        assert_eq!(at(&mut log, 1), None, "a whole row is not a keyed block");
+        log.toggle("k");
+        assert_eq!(at(&mut log, 1).as_deref(), Some("k"), "its second row too");
+        assert_eq!(at(&mut log, 3), None, "and nothing past the end");
+    }
+
+    /// Only an `abstract` opens: an answer has nothing to fold.
+    #[test]
+    fn only_an_abstract_opens() {
+        let mut log = Log::new();
+        log.stream("w", "a", LineKind::Assistant, "", "the answer", true);
+        assert!(!log.toggle("a"));
+        assert!(!log.toggle("nobody"));
+    }
+
     /// A label that arrives after the block opened replaces the one it opened
     /// with, and the next frame draws the new one.
     ///
@@ -707,11 +1033,11 @@ mod tests {
     fn a_label_set_after_the_block_opened_is_the_one_drawn() {
         let mut log = Log::new();
         log.stream("w", "k", LineKind::ToolOutput, "", "out", false);
-        assert_eq!(shown(&mut log, 20, 4, 0), vec!["out"]);
+        assert_eq!(shown(&mut log, 20, 4, 0), vec!["\u{2713} out"]);
         log.relabel("k", "1.2s ", LineKind::ToolOutput);
         assert_eq!(
             shown(&mut log, 20, 4, 0),
-            vec!["1.2s out"],
+            vec!["\u{2713} 1.2s out"],
             "the label leads the block's first row"
         );
 
@@ -722,7 +1048,7 @@ mod tests {
         assert!(log.rows(View::All, 20) > 1, "the label re-wrapped the text");
         assert_eq!(
             shown(&mut log, 20, 8, 0).concat(),
-            format!("{long}out"),
+            format!("\u{2715} {long}out"),
             "every column of the block is somewhere on screen"
         );
     }
@@ -737,7 +1063,9 @@ mod tests {
 
         log.stream("w", "k", LineKind::ToolOutput, "ok ", "out", true);
         log.relabel("k", "ok ", LineKind::ToolOutput);
-        assert_eq!(shown(&mut log, 20, 4, 0), vec!["ok out"]);
+        // Sealed, so SPEC's `abstract`: the label is the row, and the text is
+        // what the click opens.
+        assert_eq!(shown(&mut log, 20, 4, 0), vec!["\u{2713} ok"]);
     }
 
     fn shown(log: &mut Log, width: usize, height: usize, scroll: usize) -> Vec<String> {
@@ -749,12 +1077,18 @@ mod tests {
     }
 
     /// Opens a block and streams `chunks` into it, sealing it on the last one.
+    /// Streams `chunks` into one block and seals it.
+    ///
+    /// # Invariant
+    ///
+    /// A kind with no mark and no fold, so these cases measure the wrap and the
+    /// cap rather than SPEC's `abstract`. The fold has its own tests below.
     fn block(log: &mut Log, key: &str, tag: &str, chunks: &[&str]) {
         for (i, chunk) in chunks.iter().enumerate() {
             log.stream(
                 "w",
                 key,
-                LineKind::Reasoning,
+                LineKind::System,
                 tag,
                 chunk,
                 i + 1 == chunks.len(),
@@ -803,7 +1137,7 @@ mod tests {
         log.stream("peer", "live", LineKind::Reasoning, "", "fresh", false);
         assert_eq!(
             shown(&mut log, 40, 10, 0),
-            vec!["kept", "new", "fresh"],
+            vec!["kept", "new", "\u{25c7} fresh"],
             "the half-written token came back"
         );
     }
@@ -814,13 +1148,16 @@ mod tests {
         let mut log = Log::new();
         grow(&mut log, "a", "[peer] ", "xx");
         grow(&mut log, "b", "[test1] ", "yy");
-        assert_eq!(shown(&mut log, 12, 4, 0), vec!["[peer] xx", "[test1] yy"]);
+        assert_eq!(
+            shown(&mut log, 12, 4, 0),
+            vec!["\u{25c7} [peer] xx", "\u{25c7} [test1] yy"]
+        );
 
         // The first block grows in place: the second one stays below it.
         grow(&mut log, "a", "[peer] ", "zzzzzz");
         assert_eq!(
             shown(&mut log, 12, 4, 0),
-            vec!["[peer] xxzzz", "zzz", "[test1] yy"]
+            vec!["\u{25c7} [peer] xxz", "zzzzz", "\u{25c7} [test1] yy"]
         );
     }
 
@@ -879,16 +1216,23 @@ mod tests {
     }
 
     /// A sealed block does not end in a blank row, even when its output did.
+    ///
+    /// # Invariant
+    ///
+    /// Read with the item opened: a sealed tool result is SPEC's `abstract`, one
+    /// summary row, and what it holds is what the click is for.
     #[test]
     fn a_sealed_block_has_no_trailing_blank_row() {
         let mut log = Log::new();
         log.stream("w", "t:c1:Stdout", LineKind::ToolOutput, "", "out\n", false);
         log.stream("w", "t:c1:Stdout", LineKind::ToolOutput, "", "\n", true);
-        assert_eq!(shown(&mut log, 40, 10, 0), vec!["out"]);
+        assert!(log.toggle("t:c1:Stdout"), "a tool result opens");
+        assert_eq!(shown(&mut log, 40, 10, 0), vec!["\u{2713} out"]);
         // A blank line in the middle is still part of the block.
         let mut log = Log::new();
         log.stream("w", "t:c2:Stdout", LineKind::ToolOutput, "", "a\n\nb", true);
-        assert_eq!(shown(&mut log, 40, 10, 0), vec!["a", "", "b"]);
+        assert!(log.toggle("t:c2:Stdout"));
+        assert_eq!(shown(&mut log, 40, 10, 0), vec!["\u{2713} a", "", "b"]);
     }
 
     /// A window can start mid-line, which a "count lines, not rows" renderer gets wrong.
@@ -924,7 +1268,7 @@ mod tests {
         log.stream(
             "w",
             "k",
-            LineKind::Reasoning,
+            LineKind::System,
             "[m] ",
             "aaaa\nb\ncccc\ndddd",
             false,
@@ -944,7 +1288,7 @@ mod tests {
         let mut log = Log::new();
         log.set_block_size(1);
         for chunk in ["alpha ", "beta ", "gamma"] {
-            log.stream("w", "k", LineKind::Reasoning, "[m] ", chunk, false);
+            log.stream("w", "k", LineKind::System, "[m] ", chunk, false);
         }
         let rows = shown(&mut log, 12, 4, 0);
         assert_eq!(rows, vec!["[m] ta gamma"], "{rows:?}");
@@ -959,7 +1303,7 @@ mod tests {
         log.stream(
             "w",
             "k",
-            LineKind::Reasoning,
+            LineKind::System,
             "[peer] thinking: ",
             &"x".repeat(500),
             false,
@@ -978,7 +1322,7 @@ mod tests {
         log.stream(
             "w",
             "t:c1:Stdout",
-            LineKind::ToolOutput,
+            LineKind::System,
             "[m] ",
             "a\nb\nc\nd",
             true,
@@ -1010,7 +1354,7 @@ mod tests {
     #[test]
     fn a_block_without_a_cap_keeps_every_row() {
         let mut log = Log::new();
-        log.stream("w", "k", LineKind::Reasoning, "[m] ", "a\nb", true);
+        log.stream("w", "k", LineKind::System, "[m] ", "a\nb", true);
         assert_eq!(shown(&mut log, 40, 10, 0), vec!["[m] a", "b"]);
     }
 
@@ -1035,9 +1379,13 @@ mod tests {
             "bash{ls}",
             true,
         );
+        // Both are SPEC's `abstract`: a mark, the label, and -- folded -- no body.
         assert_eq!(
             shown(&mut log, 40, 10, 0),
-            vec!["[main] thinking: thinking", "[main] tool: bash{ls}"]
+            vec![
+                "\u{25c7} [main] thinking: thinking",
+                "\u{25b8} [main] tool:"
+            ]
         );
         // The sealed block took nothing more, even under the same key.
         log.stream(
@@ -1051,9 +1399,9 @@ mod tests {
         assert_eq!(
             shown(&mut log, 40, 10, 0),
             vec![
-                "[main] thinking: thinking",
-                "[main] tool: bash{ls}",
-                "[main] thinking:  again"
+                "\u{25c7} [main] thinking: thinking",
+                "\u{25b8} [main] tool:",
+                "\u{25c7} [main] thinking:  again"
             ]
         );
     }
@@ -1083,14 +1431,7 @@ mod tests {
     fn the_rows_a_cap_took_are_not_scrollable() {
         let mut log = log_of(&["older"], 40);
         log.set_block_size(1);
-        log.stream(
-            "w",
-            "k",
-            LineKind::Reasoning,
-            "[m] ",
-            "one\ntwo\nthree",
-            false,
-        );
+        log.stream("w", "k", LineKind::System, "[m] ", "one\ntwo\nthree", false);
         assert_eq!(log.rows(View::All, 40), 2, "two blocks of one row each");
         assert_eq!(log.window(View::All, 40, 2, 0).max_scroll, 0);
         assert_eq!(shown(&mut log, 40, 2, 0), vec!["older", "[m] three"]);
@@ -1235,7 +1576,7 @@ mod tests {
         let mut log = Log::new();
         log.set_block_size(4);
         log.stream("cmd", "k1", LineKind::System, "", "a\nb\nc\nd\ne", true);
-        log.stream("main", "k2", LineKind::Reasoning, "", "a\nb\nc\nd\ne", true);
+        log.stream("main", "k2", LineKind::System, "", "a\nb\nc\nd\ne", true);
         assert_eq!(log.rows(View::Window("main"), 40), 4, "the log's own cap");
         log.set_cap("cmd", 1);
         assert_eq!(log.rows(View::Window("cmd"), 40), 1, "the window's cap");

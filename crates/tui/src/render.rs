@@ -380,7 +380,7 @@ pub fn pane_at(slots: &[Slot], column: u16, row: u16) -> Option<&str> {
 /// Both coordinates: the panes are a horizontal split, so a row of the window holds
 /// several of them and the column is what says which. Testing the row alone found
 /// the leftmost pane for every click. See `docs/notes/tui-render.md`.
-fn covers(area: &Rect, column: u16, row: u16) -> bool {
+pub fn covers(area: &Rect, column: u16, row: u16) -> bool {
     area.height > 0
         && area.width > 0
         && area.y <= row
@@ -1625,7 +1625,7 @@ mod tests {
         let buf = term.backend().buffer().clone();
         // Under the header the column draws for its session.
         let top = parts(60, 10, 1, false)[1].y + 1;
-        assert_eq!(pane_text(&buf, &screen, top), "[peer] onethree");
+        assert_eq!(pane_text(&buf, &screen, top), "\u{25c7} [peer] onethree");
         assert_eq!(pane_text(&buf, &screen, top + 1), "[test1] two");
         // One column, one width: the two blocks share the rows they are drawn in.
     }
@@ -1644,7 +1644,7 @@ mod tests {
                 LineKind::Reasoning,
                 "[main] thinking: ",
                 thinking,
-                true,
+                false,
             );
             screen.panes.stream(
                 "",
@@ -1652,7 +1652,7 @@ mod tests {
                 LineKind::ToolCall,
                 "[main] tool: ",
                 "bash{ls}",
-                true,
+                false,
             );
             screen.panes.stream(
                 "",
@@ -1660,7 +1660,7 @@ mod tests {
                 LineKind::Assistant,
                 "[main] ",
                 "a\nb",
-                true,
+                false,
             );
             let mut term = Terminal::new(TestBackend::new(40, 12)).unwrap();
             term.draw(|f| {
@@ -1675,6 +1675,8 @@ mod tests {
                 .collect::<Vec<_>>()
         };
 
+        // Streaming, so nothing is folded yet: SPEC's block_size applies to what
+        // a block is writing, and the fold is what happens when it stops.
         // Uncapped: the thinking block wraps, and every row of it is on screen.
         let all = frame(0);
         assert!(all[0].contains("thinking: abc"), "{all:?}");
@@ -1726,7 +1728,7 @@ mod tests {
             "another answer",
             true,
         );
-        screen.panes.line("cmd", LineKind::System, "$ get_messages");
+        screen.panes.line("cmd", LineKind::System, "get_messages");
 
         // An odd body width, so the division leaves a column for the sticky one.
         let mut term = Terminal::new(TestBackend::new(47, 12)).unwrap();
@@ -1771,7 +1773,7 @@ mod tests {
 
         // The command line sits above the input, which is the last row.
         let parts = parts(47, 12, 1, true);
-        assert_eq!(row_text(&buf, parts[3].y), "$ get_messages");
+        assert_eq!(row_text(&buf, parts[3].y), "get_messages");
 
         // Scrolling the sticky session moves only that column: the other keeps its newest.
         screen.scroll_by(1);
@@ -1835,9 +1837,7 @@ mod tests {
     #[test]
     fn the_quota_row_sits_above_the_command_line() {
         let mut screen = screen_with(&[]);
-        screen
-            .panes
-            .line("cmd", LineKind::Command, "$ get_messages");
+        screen.panes.line("cmd", LineKind::Command, "get_messages");
         let (width, height) = (40u16, 12u16);
         // No reading: no row, so the prompt sits right under the command line.
         let without = parts(width, height, 1, true);
@@ -1870,7 +1870,11 @@ mod tests {
             row_text(&buf, with[2].y),
             "deepseek-official · money ¥215.52"
         );
-        assert_eq!(row_text(&buf, with[3].y), "$ get_messages");
+        assert_eq!(
+            row_text(&buf, with[3].y),
+            "$ get_messages",
+            "the mark is the $"
+        );
         assert!(
             row_text(&buf, with[4].y).starts_with('>'),
             "the prompt sits above the help row: {:?}",

@@ -39,6 +39,29 @@ the whole block again. A block is the unit the window allocates in: a streaming
 response or tool output is one block, and it keeps growing in place until it is
 sealed.
 
+## The mark, the fold, and Entry::sealed
+
+SPEC's `events` is a list of *items*, one block each, and the item that is not the
+answer folds: `abstract{symbol, reasoning|toolcall|tool_result}` is one summary row
+(two for a reasoning item, which keeps its first and last line) until it is clicked.
+`output`, `cmd` and `error` are their own shapes and never fold.
+
+So a sealed block of a folding kind is an `abstract`. While it streams it shows the
+rows it is writing -- SPEC's "streaming: currently stream, block_size" -- and sealing
+is what folds it. That is why `seal` recomputes the row count around the flip: the
+fold changes how many rows the block contributes, and a block that folded without
+telling the indexes would move everything behind it.
+
+`expanded` is the operator's answer to the fold, and it is the only state a fold has.
+`toggle` flips it for one key and shifts both indexes by the difference, which is the
+same arithmetic a seal does. A click finds its block through `block_at`, which reads
+the rows the frame drew -- so a press on a summary line is a press on the item.
+
+The mark in front of an item (`LineKind::symbol`) is the front-end's, not the wire's:
+the server says what a row *is* (`HeadKind`), and this side says what that looks like.
+It is drawn with the block's label on the top visible row and measured by `reflow` as
+part of it, so a marked row wraps as far as it is actually drawn.
+
 ## Log::relabel
 
 A label that arrives after its block opened, because the outcome of a call is only
