@@ -87,6 +87,24 @@ enum ConsoleAction {
     Mouse,
 }
 
+/// What a vertical arrow asks for: SPEC's three bindings on ↑/↓, told apart.
+///
+/// # Invariant
+///
+/// The recall is Shift's, never a bare key. A bare ↑ is the line above the
+/// caret and nothing else, so on a one-line prompt it is not a key at all --
+/// the last command line is one Shift+↑ away, and never a surprise. See
+/// `docs/notes/tui-lib.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Arrow {
+    /// Shift+↑: the last command line, then the one before it.
+    LastCmd,
+    /// Shift+↓: the sticky session's newest row.
+    Bottom,
+    /// A bare ↑/↓: the popup first, then the line above (true) or below.
+    Line(bool),
+}
+
 /// Something the operator did: only what a keyboard can do that a command
 /// cannot. See `docs/notes/tui-lib.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -850,6 +868,47 @@ impl Tui {
                 .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT)
     }
 
+    /// What a vertical arrow means, before any state is consulted.
+    ///
+    /// # Invariant
+    ///
+    /// Shift is the recall's, and a bare arrow is the prompt's, so the two can
+    /// never be the same keystroke. Alt+arrows never arrive here: they page,
+    /// above this point.
+    fn arrow_key(key: &KeyEvent) -> Option<Arrow> {
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        match key.code {
+            KeyCode::Up if shift => Some(Arrow::LastCmd),
+            KeyCode::Up => Some(Arrow::Line(true)),
+            KeyCode::Down if shift => Some(Arrow::Bottom),
+            KeyCode::Down => Some(Arrow::Line(false)),
+            _ => None,
+        }
+    }
+
+    /// Performs one vertical arrow on the window.
+    ///
+    /// # Invariant
+    ///
+    /// The popup answers before the text does: it is what the operator is
+    /// looking at, and moving the line behind it moves the text they are
+    /// choosing for. See `docs/notes/tui-lib.md`.
+    fn arrow(&mut self, action: Arrow) {
+        match action {
+            Arrow::LastCmd => self.history_prev(),
+            Arrow::Bottom => self.screen.scroll_to_bottom(),
+            Arrow::Line(up) => {
+                if let Some(c) = self.screen.completion.as_mut() {
+                    c.move_selection(if up { -1 } else { 1 });
+                } else if up {
+                    self.screen.input.up();
+                } else {
+                    self.screen.input.down();
+                }
+            }
+        }
+    }
+
     fn handle_key(&mut self, key: KeyEvent) -> Option<UiEvent> {
         if let Some(action) = Self::shortcut(&key) {
             return Some(action);
@@ -883,7 +942,7 @@ impl Tui {
                     self.screen.input.word_left();
                 }
                 // Alt+arrows page, because PgUp/PgDn hide behind Fn on laptops;
-                // plain ↑↓ stay with history.
+                // a bare ↑↓ stays with the prompt's own lines.
                 KeyCode::Up => {
                     let page = self.page_height() as i64;
                     self.screen.scroll_by(page);
@@ -927,24 +986,9 @@ impl Tui {
                 }
                 self.apply_completion();
             }
-            KeyCode::Up => {
-                // ↑↓ go popup, then text, then history; Shift moves the view instead.
-                if key.modifiers.contains(KeyModifiers::SHIFT) {
-                    self.screen.scroll_by(1);
-                } else if let Some(c) = self.screen.completion.as_mut() {
-                    c.move_selection(-1);
-                } else if !self.screen.input.up() {
-                    self.history_prev();
-                }
-            }
-            KeyCode::Down => {
-                if key.modifiers.contains(KeyModifiers::SHIFT) {
-                    // Shift+Down is SPEC's "back to the newest line".
-                    self.screen.scroll_to_bottom();
-                } else if let Some(c) = self.screen.completion.as_mut() {
-                    c.move_selection(1);
-                } else if !self.screen.input.down() {
-                    self.history_next();
+            KeyCode::Up | KeyCode::Down => {
+                if let Some(action) = Self::arrow_key(&key) {
+                    self.arrow(action);
                 }
             }
             KeyCode::Enter => {
@@ -1205,6 +1249,15 @@ impl Tui {
         );
     }
 
+    /// Shift+↑: the last command line back into the prompt, and the one before
+    /// it on the next press.
+    ///
+    /// # Invariant
+    ///
+    /// Never a bare ↑: the arrow belongs to the prompt's own lines, and a
+    /// one-line prompt has no line above, so that key does nothing there.
+    /// Recall walks one way and stops at the oldest line; nothing here goes
+    /// forward again. See `docs/notes/tui-lib.md`.
     fn history_prev(&mut self) {
         if self.history.is_empty() {
             return;
@@ -1217,20 +1270,6 @@ impl Tui {
         self.history_pos = Some(pos);
         self.screen.input.clear();
         self.screen.input.insert_str(&self.history[pos]);
-    }
-
-    fn history_next(&mut self) {
-        let Some(pos) = self.history_pos else {
-            return;
-        };
-        if pos + 1 >= self.history.len() {
-            self.history_pos = None;
-            self.screen.input.clear();
-        } else {
-            self.history_pos = Some(pos + 1);
-            self.screen.input.clear();
-            self.screen.input.insert_str(&self.history[pos + 1]);
-        }
     }
 
     /// Puts the terminal back. Idempotent, and also run on drop.
@@ -2299,6 +2338,46 @@ mod tests {
         )));
     }
 
+    /// The vertical arrows are SPEC's: Shift recalls, a bare one moves a line.
+    ///
+    /// # Invariant
+    ///
+    /// A bare ↑ is the line above the caret and never the history: on a
+    /// one-line prompt it does nothing, and the last command line is exactly
+    /// one Shift+↑ away. See `docs/notes/tui-lib.md`.
+    #[test]
+    fn the_vertical_arrows_are_specs_bindings() {
+        let key = |code, modifiers| KeyEvent::new(code, modifiers);
+        assert_eq!(
+            Tui::arrow_key(&key(KeyCode::Up, KeyModifiers::SHIFT)),
+            Some(Arrow::LastCmd),
+            "Shift+↑ is the last command line"
+        );
+        assert_eq!(
+            Tui::arrow_key(&key(KeyCode::Down, KeyModifiers::SHIFT)),
+            Some(Arrow::Bottom),
+            "Shift+↓ is the newest line of the sticky session"
+        );
+        // A bare arrow is the prompt's own line, up or down.
+        assert_eq!(
+            Tui::arrow_key(&key(KeyCode::Up, KeyModifiers::NONE)),
+            Some(Arrow::Line(true))
+        );
+        assert_eq!(
+            Tui::arrow_key(&key(KeyCode::Down, KeyModifiers::NONE)),
+            Some(Arrow::Line(false))
+        );
+        // No other key becomes a line move or a recall.
+        for code in [
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::Enter,
+            KeyCode::Char('j'),
+        ] {
+            assert_eq!(Tui::arrow_key(&key(code, KeyModifiers::SHIFT)), None);
+        }
+    }
+
     /// What one wheel notch means, pinned down: three rows, one with Shift.
     #[test]
     fn wheel_notches_become_rows() {
@@ -2368,7 +2447,9 @@ mod tests {
                 .line("main", LineKind::System, format!("L{i}"));
         }
         h.screen.sticky_session = Some("main".to_string());
-        let (width, height) = (40u16, 12u16);
+        // A 40-column window puts the reminder on five rows; one more row keeps the
+        // pane's header and a text row above the hint.
+        let (width, height) = (40u16, 13u16);
         // The bound the renderer works out for a pane of this size, then the scroll.
         h.measure("main", 6);
         h.screen.scroll_by(3);

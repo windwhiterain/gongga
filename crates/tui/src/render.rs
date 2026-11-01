@@ -25,6 +25,7 @@ pub const HELP: &[&str] = &[
     "Shift+\u{2193} bottom",
     "Shift+Delete delete session",
     "Ctrl+V/Ctrl+Alt+V paste",
+    "Shift+\u{2191} last cmd",
 ];
 
 /// What separates two entries on one row of the reminder.
@@ -1615,7 +1616,7 @@ mod tests {
             let mut screen = screen_with(&[]);
             screen.status = "idle".to_string();
             screen.server = server;
-            let mut term = Terminal::new(TestBackend::new(40, 6)).unwrap();
+            let mut term = Terminal::new(TestBackend::new(40, 7)).unwrap();
             term.draw(|f| {
                 draw(f, &mut screen);
             })
@@ -1773,14 +1774,14 @@ mod tests {
                 "a\nb",
                 false,
             );
-            let mut term = Terminal::new(TestBackend::new(40, 12)).unwrap();
+            let mut term = Terminal::new(TestBackend::new(40, 13)).unwrap();
             term.draw(|f| {
                 draw(f, &mut screen);
             })
             .unwrap();
             let buf = term.backend().buffer().clone();
             // Under the header the column draws for its session.
-            let body = parts(40, 12, 1, false)[1];
+            let body = parts(40, 13, 1, false)[1];
             (0..body.height - 1)
                 .map(|row| pane_text(&buf, &screen, body.y + 1 + row))
                 .collect::<Vec<_>>()
@@ -2168,6 +2169,7 @@ mod tests {
                 "Shift+\u{2193} bottom",
                 "Shift+Delete delete session",
                 "Ctrl+V/Ctrl+Alt+V paste",
+                "Shift+\u{2191} last cmd",
             ],
             "the row is SPEC's hot-keys, in its order"
         );
@@ -2233,9 +2235,9 @@ mod tests {
                 "at width {width} the packing crossed an entry: {rows:?}"
             );
         }
-        // The list is 117 columns, so the rows it takes fall as the window widens.
-        assert_eq!(help_rows(117).len(), 1, "the whole list fits on one row");
-        assert_eq!(help_rows(116).len(), 2, "one column less needs a second");
+        // The list is 136 columns, so the rows it takes fall as the window widens.
+        assert_eq!(help_rows(136).len(), 1, "the whole list fits on one row");
+        assert_eq!(help_rows(135).len(), 2, "one column less needs a second");
         // A window narrower than one entry: one row each, never split.
         let narrow = help_rows(10);
         assert_eq!(
@@ -2524,12 +2526,12 @@ mod tests {
 
         // A window one row taller than the pane needs: the last row is the reminder,
         // and it is wide enough to fit on one.
-        let mut term = Terminal::new(TestBackend::new(120, 9)).unwrap();
+        let mut term = Terminal::new(TestBackend::new(140, 9)).unwrap();
         term.draw(|f| {
             draw(f, &mut screen);
         })
         .unwrap();
-        let short = parts(120, 9, 1, false)[1];
+        let short = parts(140, 9, 1, false)[1];
         let bottom = shown(&term.backend().buffer().clone(), short);
         assert_eq!(bottom.last().map(String::as_str), Some("L39"));
 
@@ -2544,12 +2546,12 @@ mod tests {
         assert_eq!(top, "L30", "five rows up from the bottom of 40 rows");
 
         // The same window, taller: the top row stays, the new rows land under it.
-        let mut tall = Terminal::new(TestBackend::new(120, 13)).unwrap();
+        let mut tall = Terminal::new(TestBackend::new(140, 13)).unwrap();
         tall.draw(|f| {
             draw(f, &mut screen);
         })
         .unwrap();
-        let grown = parts(120, 13, 1, false)[1];
+        let grown = parts(140, 13, 1, false)[1];
         let after = shown(&tall.backend().buffer().clone(), grown);
         assert_eq!(after[0], top, "the row that was at the top is still there");
         assert_eq!(after.len(), bottom.len() + 4, "four more rows are drawn");
@@ -2581,13 +2583,13 @@ mod tests {
         let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
         let mut screen = screen_with(&refs);
         // One row of the window is the reminder, so the pane needs it outside.
-        let mut term = Terminal::new(TestBackend::new(120, 9)).unwrap();
+        let mut term = Terminal::new(TestBackend::new(140, 9)).unwrap();
         // One frame first: the scroll bound is what the renderer writes back.
         term.draw(|f| {
             draw(f, &mut screen);
         })
         .unwrap();
-        let area = parts(120, 9, 1, false)[1];
+        let area = parts(140, 9, 1, false)[1];
         // The pane's first row is its header, so its text starts one below.
         fn top(buf: &Buffer, screen: &Screen, area: Rect) -> String {
             pane_text(buf, screen, area.y + 1)

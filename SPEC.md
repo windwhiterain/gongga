@@ -82,6 +82,7 @@ in cmd_input, those three should be auto complete.
   - Shift+Down: scroll the sticky session to bottom.
   - Shift+Delete: delete sticky session.
   - Ctrl+V / Ctrl+Alt+V: paste.
+  - Shift+Up: last cmd input.
 
 
 ## Cmd

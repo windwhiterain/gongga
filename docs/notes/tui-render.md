@@ -19,12 +19,17 @@ to see is the answer they are replying to, so the box stops growing.
 
 ## HELP
 
-SPEC's `hot-key` list, one entry per binding, in SPEC's order: five of them, the
+SPEC's `hot-key` list, one entry per binding, in SPEC's order: six of them, the
 ones the reminder may name.
 
 `Shift+Delete` is the delete and `Ctrl+V` the paste. Both are SPEC's, so they are
 on the row; `Ctrl+V` also arrives as a bracketed paste from a terminal that
 pastes by itself, and the entry is right either way.
+
+`Shift+↑ last cmd` is the newest entry, and the shortest way to say it: one key,
+one thing it brings back. Its two neighbours on the row are about the view
+(`Shift+↓`, `PageUp/PageDown`) and it is not -- the row reads as a list of keys,
+not as a grouping, so the entries stand in SPEC's order rather than by topic.
 
 The paste entry names both spellings SPEC gives it -- `Ctrl+V/Ctrl+Alt+V paste`
 -- because they are not interchangeable from where the operator sits: a terminal

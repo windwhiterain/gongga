@@ -37,8 +37,9 @@ the text and lets the cursor land where the replacement leaves it.
 
 ## InputLine::up
 
-Moves to the line above, keeping the column. False when there is no line above,
-which is what lets the caller fall back to history.
+Moves to the line above, keeping the column. False when there is no line above:
+that is the top of a one-line prompt, and nothing else answers there now -- the
+history is `Shift+Up`'s, so a bare arrow that finds no line to move does nothing.
 
 ## boundary
 

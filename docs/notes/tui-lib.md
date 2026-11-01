@@ -304,18 +304,44 @@ press is worse than no binding.
 
 Paging lives on the arrows that already mean "history" and "cursor": Alt+arrows,
 because PgUp/PgDn on a laptop hide behind Fn, where some of them are not even
-wired to scroll. Plain up/down stay with history -- that is what a shell does
-with them, and it is the one thing operators try first.
+wired to scroll.
 
 Ctrl+<letter> would otherwise insert its letter: a terminal that does deliver
 Ctrl+K here (some do) must not type a `k`.
 
-Arrows belong to the completion popup, then to the text, and only then to
-history: inside a multi-line message the line above is what up means, exactly as
-in every other editor. Shift is what says "move the view, not the line".
+Nothing in this branch knows what an arrow means: SPEC's three bindings on ↑/↓
+are told apart in `arrow_key` and performed in `arrow`, which is what a test can
+reach without a terminal.
 
 A page is the log window, not a fixed ten rows: on a short terminal ten rows
 scrolls past what is visible and the jump looks arbitrary.
+
+## Arrow
+
+SPEC's bindings on the vertical arrows, told apart before any state is read:
+`Shift+Up` the last command line, `Shift+Down` the newest row of the sticky
+session, a bare `Up`/`Down` the line above or below the caret.
+
+# Invariant
+
+The recall is Shift's, and a bare arrow is the prompt's, so the two are never the
+same keystroke. Left to the shell convention the history sat on the bare `Up` --
+which is also the key every editor uses for the line above, and on a one-line
+prompt it is the one thing an operator presses by reflex. The result was that a
+message already sent came back into the prompt when nothing was being recalled.
+Splitting the two keys is what makes "the line above" mean the line above.
+
+## Tui::arrow_key
+
+The key table alone: which code with which modifiers asks for which of the three.
+Alt+arrows never reach it -- they page, above the Alt branch -- so `Line` is only
+ever a bare arrow.
+
+## Tui::arrow
+
+Performs one of them. The popup answers before the text does: it is what the
+operator is looking at, and moving the line behind it would move the text they
+are choosing for.
 
 ## Shift+Delete
 
@@ -437,6 +463,19 @@ before the list comes back.
 
 It costs nothing when the candidate ended the line: an empty answer simply leaves
 the popup shut.
+
+## Tui::history_prev
+
+`Shift+Up`, one line back per press, stopping at the oldest line: the prompt's
+whole history is one key and one direction. Nothing walks forward again --
+`Shift+Down` is SPEC's "back to the newest row" -- and Enter clears the position,
+so the next recall starts from the newest line.
+
+# Invariant
+
+Never a bare `Up`. The arrow belongs to the prompt's own lines, and a one-line
+prompt has no line above, so that key does nothing there rather than quietly
+replacing what was typed with something sent earlier.
 
 ## Tui::restore
 
