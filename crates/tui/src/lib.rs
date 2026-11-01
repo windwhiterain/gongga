@@ -2301,8 +2301,8 @@ mod tests {
         assert_eq!(answer.feed("**bol"), Drawn::Open("**bol".into()));
         assert_eq!(
             answer.feed("d** text"),
-            Drawn::Rewrite("bold text".into()),
-            "the whole answer again, with the emphasis gone"
+            Drawn::Rewrite("**bold** text".into()),
+            "the whole answer again, and the markers are still there"
         );
 
         // A sealed answer under the same key starts a new block, not a rewrite
@@ -2318,7 +2318,8 @@ mod tests {
         let Drawn::Open(drawn) = answer.feed("# title\n\n- **one**\n- `two`") else {
             panic!("an answer opens a block");
         };
-        assert_eq!(drawn, "# title\n\u{2022} one\n\u{2022} `two`");
+        // Structure is rows; the writer's markers are all still on screen.
+        assert_eq!(drawn, "# title\n- **one**\n- `two`");
     }
 
     /// A press in the events opens the item under it, and the row count follows.
