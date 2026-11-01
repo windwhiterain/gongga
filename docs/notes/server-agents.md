@@ -42,6 +42,27 @@ entries are a branch of the checkout (`local`), so an upstream change is a rebas
 and there is no overlay to merge on every read. See
 `docs/notes/server-providers.md`.
 
+## The refresh, branch by branch
+
+`git pull --ff-only` was the wrong verb: it needs the branch that is checked out to
+name an upstream, and the branch this machine reads has none on purpose -- its
+commits are not meant to be pushed. So the refresh does the three steps a person
+would:
+
+1. `fetch origin`;
+2. move `main` to `origin/main` **without touching the worktree** (`fetch .` into
+   the ref), because a background refresh must not switch what a window shows;
+3. put the machine's branch (`local`) back on top of `main`.
+
+A conflict is undone with `rebase --abort` and reported. Leaving it in progress
+would block the next refresh and make every `git status` in that checkout a
+mystery; resolving it is a person's decision, and the commits are still there to
+resolve against.
+
+The rebase also runs only when `local` is the branch checked out. If a person is on
+`main`, the refresh fast-forwards `main` and stops: moving the worktree out from
+under them is exactly what a background task must not do.
+
 ## sync
 
 Clone when absent, `git pull --ff-only` when present. Not `reset --hard` and not
