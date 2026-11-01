@@ -88,6 +88,7 @@ note is a bug.
 | [`tui-markdown.md`](tui-markdown.md) | `crates/tui/src/markdown.rs` |
 | [`tui-panes.md`](tui-panes.md) | `crates/tui/src/panes.rs` |
 | [`tui-render.md`](tui-render.md) | `crates/tui/src/render.rs` |
+| [`tui-table.md`](tui-table.md) | `crates/tui/src/table.rs` |
 | [`tui-run.md`](tui-run.md) | `crates/tui/src/run.rs` |
 | [`tui-frame_cost.md`](tui-frame_cost.md) | `crates/tui/examples/frame_cost.rs` |
 

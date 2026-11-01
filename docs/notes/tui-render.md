@@ -413,6 +413,25 @@ is how a scrolled view came to follow the log instead of holding its top row.
 Borrowed, not cloned: the text lives in the log and the spans can point at it.
 Cloning every visible row was part of what made a long log slow.
 
+## item_row
+
+Two inks, and which one a row gets is the question the row answers.
+
+A mark is the one thing that says what a row *is* -- `▸` a call, `✓` what it
+printed, `!` a failure -- so it keeps the kind's colour, and the table in `style_for` is
+the palette of marks. Everything printed beside it is the one quiet gray: a call's
+arguments, a result, the harness's remarks. Ten colours down the body of the log is a
+screen where nothing stands out, and a palette exists so that something does.
+
+`output` is the exception, and it is why the rest may go quiet: it is what the operator
+came to read, so its rows are drawn as the markdown they print -- `markdown::colored_row`,
+and `docs/notes/tui-markdown.md` for what a row can say. It carries no mark, so its colours
+are spent on structure and none on the question of what kind of row it is.
+
+The row's ink is the fourth thing a frame gets from the log, and it is passed through
+rather than guessed: a code block's body and a table's row are the two rows whose own
+text does not say what they are, and `markdown::colored_row` decides by ink first.
+
 ## draw_input
 
 The box stops at its cap rather than growing forever, so a long message scrolls

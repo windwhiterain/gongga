@@ -512,6 +512,14 @@ responses end up as two blocks rather than one.
 In place, and only the new bytes are wrapped: a delta must cost what the delta is
 worth, not what the block has grown to.
 
+An answer used to be the exception here, with its document kept in `Tui` as an
+`Answer` and a `Drawn` decision saying whether to open or rewrite the block. The width
+moved that decision into the log: a table's columns are the pane's, so a front end
+that lays out before it knows the width cannot draw one, and a resize would have no
+document left to lay out again. What is left here is one call for every kind, and the
+cost -- one layout per delta for the block that holds a document -- is the cost the
+accumulator paid anyway.
+
 ## layering::the_front_end_depends_on_the_command_layer
 
 The arrow this crate exists to point: the front-end depends on the command layer,

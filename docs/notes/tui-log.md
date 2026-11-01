@@ -138,10 +138,41 @@ how the window allocates rows, because it does not allocate by block at all.
 Width 0 means "not measured yet" -- the first draw reflows everything at the
 width it actually has.
 
+## Entry::source
+
+The markdown document an answer block was written as. Rows are *derived* from it at
+the width the block has, which is why a table's columns and a code block's ink are
+right: only the block knows both the document and the width.
+
+It is also what `Log::rewrite` and `trim_tail` edit -- an answer's `text` is the
+laid-out rows, so trimming the text and reflowing would have nothing to reflow from.
+
+## Entry::ink
+
+What each drawn row is, parallel to `starts`, and filled only by `Entry::lay_out`.
+A block that keeps no document has no entry here, and `row_ink` answers `Prose` for
+it -- one rule for "this row is its own text", not a per-kind table.
+
 ## Entry::reflow
 
 A line always has at least one row, even when it is empty: that is what makes an
 empty line a blank row rather than nothing at all.
+
+Width 0 is "not measured yet" and returns after one row: laying a table out at one
+column would produce a grid that is thrown away on the next frame anyway, and the
+first draw reflows at the width it actually has.
+
+An answer goes to `Entry::lay_out` instead of being wrapped: its rows are the pieces
+the document makes, and its ink comes with them.
+
+## Entry::lay_out
+
+The document, laid out at this width, then joined into `text` one piece per row with
+a newline between -- and the same text fed through `Wrap` so that a piece too wide
+for the block still lands on the rows the frame will show. Each `feed` carries the
+piece's ink, so the rows a wrap inserts inherit it; a `Piece` and its wrapped
+continuation are the same thing said twice, and colouring them differently would be a
+frame that lies about the row.
 
 A label never reserves columns on a body or continuation row. Its title budget
 it wraps where it would have wrapped with the label glued in front. The label is
@@ -237,6 +268,11 @@ the key.
 Appends to an entry by position, which `Log::stream` does once it has resolved a
 key. A missing line is ignored rather than panicked on: losing a chunk is a
 better failure than taking the window down.
+
+An answer appends to its *document* and re-lays-out, because markdown is not
+append-safe and a table needs the whole table before it has a width. The cost is one
+layout per delta for the block that streams; it is the same cost `Answer::feed` paid
+in the front end before the document moved here.
 
 ## View and Ledger
 
@@ -398,6 +434,12 @@ the error colour, so a busy session fills the screen with red blanks.
 A whitespace-only chunk is therefore dropped when it would *open* a block. Inside
 a block it is still appended, because a blank line between two paragraphs is real
 output.
+
+## Log::rewrite and a document
+
+`rewrite` replaces what a block holds. For an answer that is the document, compared
+against `Entry::source` rather than against the laid-out text -- otherwise every
+identical rewrite would re-lay-out a document that did not change.
 
 ## Log::stream — a sealed block has no blank tail
 

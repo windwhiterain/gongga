@@ -66,14 +66,15 @@ for the first user message to a empty session, find all meta references recursiv
 - events (vertical)
   - [
       |abstract{
-        symbol (colored), 
+        symbol (colored), content (gray),
         |reasoning{beginning (line), ending (line)} (vertical)
         |toolcall{tool_name, {name, task, backgound, detached, timeout} (bash) | ...} (line)
         |tool_result{ok, time (spent)} (line)
       } (horizontal, 点击展开, block_size, scroll if block_size!=0)
-      |output (colored markdown)
-      |(server cmd/cmd_result that related to this session){symbol (colored), content}
-      |error{symbol (colored), content}
+      |output (colored markdown): a table is laid out in the events width, its
+       columns shrinking to fit and its cells wrapping inside them
+      |(server cmd/cmd_result that related to this session){symbol (colored), content (gray)}
+      |error{symbol (colored), content (gray)}
     ] (vertical scroll)
   - streaming: currently stream, block_size, scorll if block_size!=0
 

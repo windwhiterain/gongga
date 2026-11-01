@@ -13,6 +13,7 @@ mod panes;
 pub mod program;
 mod render;
 pub mod run;
+mod table;
 
 use std::io::{self, Stdout, Write, stdout};
 use std::path::Path;
@@ -396,7 +397,7 @@ impl Screen {
         window
             .rows
             .iter()
-            .map(|(_, row, _)| row.to_string())
+            .map(|(_, row, _, _)| row.to_string())
             .collect()
     }
 
@@ -410,51 +411,6 @@ impl Screen {
             .find(|slot| slot.name == name)
             .map(|slot| slot.body.height as usize)
             .unwrap_or(1)
-    }
-}
-
-/// One answer being accumulated, and whether its block is open yet.
-///
-/// # Invariant
-///
-/// `opened` is what keeps two turns on one key apart: a sealed block is still in
-/// the log under that key, so "a block exists" cannot answer "have I opened mine".
-#[derive(Default)]
-struct Answer {
-    raw: String,
-    opened: bool,
-}
-
-/// What the log should do with the answer as it now stands.
-#[derive(Debug, PartialEq, Eq)]
-enum Drawn {
-    /// Nothing yet: a blank answer is not a row.
-    Nothing,
-    /// Open the block with this text.
-    Open(String),
-    /// Replace the text of the block already open.
-    Rewrite(String),
-}
-
-impl Answer {
-    /// Takes one delta and says what the block now looks like.
-    ///
-    /// # Invariant
-    ///
-    /// The text is re-rendered from the whole answer, because markdown is not
-    /// append-safe: one more `**` can change a row above the one arriving. Only
-    /// the first delta opens the block -- a later one would double the text.
-    fn feed(&mut self, text: &str) -> Drawn {
-        self.raw.push_str(text);
-        let drawn = markdown::render(&self.raw);
-        if self.opened {
-            return Drawn::Rewrite(drawn);
-        }
-        if drawn.is_empty() {
-            return Drawn::Nothing;
-        }
-        self.opened = true;
-        Drawn::Open(drawn)
     }
 }
 
@@ -476,9 +432,6 @@ pub struct Tui {
     settled: Option<(std::time::Instant, usize)>,
     /// An event read while deciding whether a keystroke began a paste.
     stashed: Option<std::io::Result<TermEvent>>,
-    /// The answer arriving under each key: markdown is rendered from its whole,
-    /// so deltas are kept until the block ends.
-    answers: std::collections::HashMap<String, Answer>,
     /// The input as the last frame saw it: typing may have put console ink on
     /// the row.
     input_seen: Option<(usize, usize)>,
@@ -528,7 +481,6 @@ impl Tui {
             completer,
             history: Vec::new(),
             history_pos: None,
-            answers: std::collections::HashMap::new(),
             input_seen: None,
             clicked: None,
             events: EventStream::new(),
@@ -636,6 +588,12 @@ impl Tui {
     }
 
     /// Appends to the block `key` names, in the window `name` names.
+    ///
+    /// # Invariant
+    ///
+    /// SPEC's `output (colored markdown)` is the block's own document: a delta joins
+    /// it, and the rows are what it says at the width the block has. No other kind
+    /// keeps a document, and none of them re-lays-out on a delta.
     pub fn stream(
         &mut self,
         name: &str,
@@ -645,25 +603,6 @@ impl Tui {
         text: &str,
         done: bool,
     ) {
-        // SPEC's `output (colored markdown)`: re-rendered, never appended.
-        // Everything else is drawn as it arrives.
-        if kind == LineKind::Assistant {
-            let drawn = self.answers.entry(key.to_string()).or_default().feed(text);
-            match drawn {
-                Drawn::Nothing => {}
-                Drawn::Open(drawn) => self
-                    .screen
-                    .panes
-                    .stream(name, key, kind, prefix, &drawn, false),
-                Drawn::Rewrite(drawn) => self.screen.panes.rewrite(key, &drawn),
-            }
-            if done {
-                self.answers.remove(key);
-                self.screen.panes.stream(name, key, kind, prefix, "", true);
-            }
-            self.dirty = true;
-            return;
-        }
         self.screen
             .panes
             .stream(name, key, kind, prefix, text, done);
@@ -1829,7 +1768,7 @@ mod tests {
                 .window(View::All, 200, 100, 0)
                 .rows
                 .iter()
-                .map(|(_, text, _)| text.to_string())
+                .map(|(_, text, _, _)| text.to_string())
                 .collect()
         }
     }
@@ -2185,7 +2124,7 @@ mod tests {
         );
         // Two rows: the peer block is cut to its tail and repeats its tag.
         let rows = h.screen.panes.window(View::All, 40, 2, 0).rows;
-        let shown: Vec<String> = rows.iter().map(|(_, t, _)| t.to_string()).collect();
+        let shown: Vec<String> = rows.iter().map(|(_, t, _, _)| t.to_string()).collect();
         assert_eq!(shown, vec!["\u{25c7} [peer] aaaccc", "[test1] bbb"]);
     }
 
@@ -2533,46 +2472,40 @@ mod tests {
         }
     }
 
-    /// Two turns under one key are two blocks: the markdown path opens its own.
+    /// Deltas are one document, and a sealed answer does not swallow the next one.
     ///
     /// # Invariant
     ///
-    /// `opened` answers this, not "is there a block with this key" -- the
-    /// previous turn's block is still in the log under it.
-    /// An answer is re-rendered whole on every delta, and opened only once.
-    ///
-    /// # Invariant
-    ///
-    /// Markdown is not append-safe -- a later `**` changes an earlier row -- so a
-    /// delta rewrites the block instead of appending. The first delta opens it;
-    /// opening twice would draw the text twice.
+    /// Markdown is not append-safe -- a later `**` changes an earlier row -- so each
+    /// delta lays the whole document out again. Two turns on one key are two blocks:
+    /// the first turn's block stays in the log under it, sealed.
     #[test]
-    fn an_answer_opens_once_and_is_rewritten_after() {
-        let mut answer = Answer::default();
-        assert_eq!(answer.feed(""), Drawn::Nothing, "a blank answer is no row");
-        // Unclosed emphasis is literal text: an unfinished marker is not a rule.
-        assert_eq!(answer.feed("**bol"), Drawn::Open("**bol".into()));
+    fn deltas_join_one_document_and_a_sealed_answer_starts_another() {
+        let mut h = Headless::new();
+        h.stream("a", LineKind::Assistant, "", "**bol", false);
+        h.stream("a", LineKind::Assistant, "", "d** text", true);
         assert_eq!(
-            answer.feed("d** text"),
-            Drawn::Rewrite("**bold** text".into()),
-            "the whole answer again, and the markers are still there"
+            h.rows(),
+            vec!["**bold** text"],
+            "the whole document, and the markers are still there"
         );
-
-        // A sealed answer under the same key starts a new block, not a rewrite
-        // of the one already in the log under that key.
-        let mut second = Answer::default();
-        assert_eq!(second.feed("next"), Drawn::Open("next".into()));
+        h.stream("a", LineKind::Assistant, "", "next", true);
+        assert_eq!(h.rows(), vec!["**bold** text", "next"]);
     }
 
     /// What the log draws for an answer is markdown's structure, not its markers.
     #[test]
     fn an_answer_is_drawn_as_the_structure_it_was_written_in() {
-        let mut answer = Answer::default();
-        let Drawn::Open(drawn) = answer.feed("# title\n\n- **one**\n- `two`") else {
-            panic!("an answer opens a block");
-        };
+        let mut h = Headless::new();
+        h.stream(
+            "a",
+            LineKind::Assistant,
+            "",
+            "# title\n\n- **one**\n- `two`",
+            true,
+        );
         // Structure is rows; the writer's markers are all still on screen.
-        assert_eq!(drawn, "# title\n- **one**\n- `two`");
+        assert_eq!(h.rows(), vec!["# title", "- **one**", "- `two`"]);
     }
 
     /// A press on a tool call opens it, so its arguments are not the whole of it.
