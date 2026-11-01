@@ -687,6 +687,18 @@ struct Ledger {
     cap: usize,
 }
 
+/// One cell of a view, as the walk that answers a press and a wheel finds it.
+struct Hit {
+    /// The block shown there.
+    block: usize,
+    /// Which of that block's shown rows the cell is, from the top.
+    index: usize,
+    /// How many rows the block occupies here, box included.
+    shown: usize,
+    /// Whether those rows are an opened item's box.
+    boxed: bool,
+}
+
 /// The scrollback: blocks in arrival order, sealed and still-growing, plus one
 /// ledger per view over them.
 ///
@@ -971,32 +983,27 @@ impl Log {
     ///
     /// # Invariant
     ///
-    /// Returns whether the inner box owns this wheel event. Above `chain_at`,
-    /// or with no cap, exhaustion in the wheel's direction falls through to the
-    /// outer pane. Smaller boxes consume the wheel at both ends.
-    pub fn scroll_block(&mut self, at: usize, rows: i64, chain_at: usize) -> bool {
+    /// Answers whether the box took the wheel: exactly when it moved. A box with
+    /// nothing left in the wheel's direction -- at either end, or under a
+    /// `block_size` of 0, which caps nothing and so leaves nothing inside to
+    /// scroll -- hands the event to the pane, which is all SPEC's
+    /// `scroll if block_size!=0` can mean. No other number is consulted, so one
+    /// cell behaves the same way whatever the cap is.
+    pub fn scroll_block(&mut self, at: usize, rows: i64) -> bool {
         // Use the row offsets of the frame the pointer actually landed on.
         // Reflowing a resized window before the next draw would move the hit.
         let Some(entry) = self.entries.get(at) else {
             return false;
         };
-        let cap = self.room(entry.kind, 0);
         if !entry.boxed() {
             return false;
         }
+        let cap = self.room(entry.kind, 0);
         let bound = entry.rows() - entry.rows().min(cap);
-        let next = (entry.inner as i64 + rows).clamp(0, bound as i64) as usize;
-        let chains = cap == NO_CAP || cap > chain_at;
-        let moved = next != entry.inner;
+        let current = entry.inner;
+        let next = (current as i64 + rows).clamp(0, bound as i64) as usize;
         self.entries[at].inner = next;
-        chains || moved
-    }
-
-    /// The block `at` as a click names it: the box scrolls this instead of the pane.
-    pub fn expanded_at(&self, at: usize) -> bool {
-        self.entries
-            .get(at)
-            .is_some_and(|entry| entry.expanded && entry.kind.folds())
+        next != current
     }
 
     /// Opens or closes the `abstract` at one block, by the identity a click got.
@@ -1058,6 +1065,49 @@ impl Log {
         scroll: usize,
         row: usize,
     ) -> Option<usize> {
+        self.hit(view, width, height, scroll, row)
+            .map(|hit| hit.block)
+    }
+
+    /// The block whose body holds this row: the one thing a wheel there scrolls.
+    ///
+    /// # Invariant
+    ///
+    /// One walk answers both questions a cell asks -- which block a press names, and
+    /// whether the wheel is a box's -- so a hit region cannot disagree with the
+    /// frame. A box's first and last rows are its rules, which are not content:
+    /// the wheel over them is the pane's. That is the edge an operator needs to be
+    /// able to reach through.
+    pub fn body_at(
+        &mut self,
+        view: View<'_>,
+        width: usize,
+        height: usize,
+        scroll: usize,
+        row: usize,
+    ) -> Option<usize> {
+        let hit = self.hit(view, width, height, scroll, row)?;
+        let rule = hit.index == 0 || hit.index + 1 == hit.shown;
+        match hit.boxed && rule {
+            true => None,
+            false => Some(hit.block),
+        }
+    }
+
+    /// The block under one row, with where that row sits inside it.
+    ///
+    /// # Invariant
+    ///
+    /// `shown` is the rows the block occupies in this view, box included, so the
+    /// rows that carry the box's rules are its first and its last.
+    fn hit(
+        &mut self,
+        view: View<'_>,
+        width: usize,
+        height: usize,
+        scroll: usize,
+        row: usize,
+    ) -> Option<Hit> {
         self.reflow(width);
         let ledger = self.ledger(view)?;
         let total = ledger.index.total();
@@ -1072,8 +1122,15 @@ impl Log {
             .index
             .line_at(want)
             .min(ledger.blocks.len().checked_sub(1)?);
-        let at = *ledger.blocks.get(pos)?;
-        Some(at)
+        let block = *ledger.blocks.get(pos)?;
+        let entry = self.entries.get(block)?;
+        let boxed = entry.boxed();
+        Some(Hit {
+            block,
+            index: want - ledger.index.prefix(pos),
+            shown: entry.visible(self.room(entry.kind, ledger.cap)),
+            boxed,
+        })
     }
 
     /// Replaces a call's provisional body with its structured name and fields.

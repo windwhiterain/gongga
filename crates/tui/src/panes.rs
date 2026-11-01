@@ -249,14 +249,31 @@ impl Panes {
         self.log.toggle(key)
     }
 
-    /// Scrolls the box of an opened item, which SPEC makes scrollable.
-    pub fn scroll_block(&mut self, at: usize, rows: i64, chain_at: usize) -> bool {
-        self.log.scroll_block(at, rows, chain_at)
+    /// The block whose body holds a cell: what a wheel there scrolls first.
+    ///
+    /// # Invariant
+    ///
+    /// A box's rules are not body, so a wheel on them is the pane's.
+    /// See [`Log::body_at`].
+    pub fn body_at(
+        &mut self,
+        view: View<'_>,
+        width: usize,
+        height: usize,
+        scroll: usize,
+        row: usize,
+    ) -> Option<usize> {
+        self.log.body_at(view, width, height, scroll, row)
     }
 
-    /// Whether the block `at` is an opened item with a box of its own.
-    pub fn expanded_at(&self, at: usize) -> bool {
-        self.log.expanded_at(at)
+    /// Scrolls the box of an opened item, which SPEC makes scrollable.
+    ///
+    /// # Invariant
+    ///
+    /// Answers whether the box took the wheel: `false` is the pane's turn.
+    /// See [`Log::scroll_block`].
+    pub fn scroll_block(&mut self, at: usize, rows: i64) -> bool {
+        self.log.scroll_block(at, rows)
     }
 
     /// Opens or closes the `abstract` at one block, which is what a press names.

@@ -91,6 +91,24 @@ row inside the window, and the log answers which block that row belongs to -- th
 same rows the frame drew, fold included, so a press on a summary line opens the item
 it summarises.
 
+## Screen::cell_at, Screen::body_at, Screen::scroll_at
+
+One cell of a window, in the terms the log answers in: the window's log width (one
+column short of the drawn one, as the renderer measures), the rows it shows, its
+scroll, and the row inside it. A press and a wheel therefore ask about the same
+arithmetic the frame was drawn with, and cannot land on a row it drew something else
+on.
+
+`item_at` answers the first question -- which block a press names, fold included.
+`body_at` answers the second: the same walk, minus the box's two rules. A rule is the
+box's edge, not content, so a wheel over it belongs to the pane. That is the border an
+operator uses to reach the window while a box is open over most of it.
+
+`scroll_at` gives one notch to one thing. The box of an opened item takes it while it
+can move in that direction; the pane takes it otherwise. Which of the two is decided
+nowhere else, so a box is never a cell where the wheel does nothing, and the same cell
+behaves the same way whatever `block_size` is. See `Log::scroll_block`.
+
 ## handle_mouse
 
 The wheel scrolls what it is over, and retargets nothing: over a window it scrolls
@@ -448,9 +466,11 @@ holds the mouse, the terminal never sees a drag and cannot select — which is w
 
 The mouse is the pointer the split needs: a notch is three rows, Shift slows it to
 one, and the view under it -- hit through the same rectangle the renderer filled --
-moves. Over the session list it scrolls the list, which has a scroll of its own
-(SPEC gives it one) because a list is not a session. Neither leaves state behind: the
-keys still act on the sticky session.
+moves. Over an opened item's body the notch is the box's while the box can still move
+that way, and the window's afterwards; over the box's rules, or anywhere else in the
+window, it is the window's. Over the session list it scrolls the list, which has a
+scroll of its own (SPEC gives it one) because a list is not a session. Neither leaves
+state behind: the keys still act on the sticky session.
 
 A press is different, and it is the only reason a click does anything at all: on a
 name it toggles the session's window, on a header it sets the sticky session, each as

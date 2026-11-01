@@ -77,9 +77,6 @@ const GLUE_GAP: Duration = Duration::from_millis(150);
 /// Text keys inside one [`PASTE_GAP`] that a keyboard cannot produce.
 const MACHINE_RUN: usize = 3;
 
-/// Above this block size, or with no cap, an exhausted inner wheel continues outside.
-const SCROLL_CHAIN_BLOCK_SIZE: usize = 6;
-
 /// What Alt+<key> does to the terminal itself, rather than to the conversation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConsoleAction {
@@ -136,6 +133,20 @@ pub enum Part {
 pub struct Hit {
     pub name: String,
     pub part: Part,
+}
+
+/// One cell of a window's rows, as the log counts them.
+struct PaneCell {
+    /// The session whose window holds the cell.
+    name: String,
+    /// The window's log width: one column short of the drawn one.
+    width: usize,
+    /// The rows the window shows.
+    height: usize,
+    /// How far the window is scrolled up from its newest row.
+    scroll: usize,
+    /// The cell's row inside the window.
+    row: usize,
 }
 
 /// Whose server the window is talking to, which the header says beside the status.
@@ -310,28 +321,58 @@ impl Screen {
     /// window, and the log answers which block that row belongs to -- counting the
     /// fold, so a press on a summary line toggles the item it summarises.
     pub fn item_at(&mut self, width: u16, height: u16, column: u16, row: u16) -> Option<usize> {
+        let cell = self.cell_at(width, height, column, row)?;
+        self.panes.block_at(
+            View::Window(&cell.name),
+            cell.width,
+            cell.height,
+            cell.scroll,
+            cell.row,
+        )
+    }
+
+    /// The block whose body holds this cell, which is what the wheel scrolls first.
+    ///
+    /// # Invariant
+    ///
+    /// The body, never the box's rules: over a rule the wheel belongs to the pane.
+    /// See [`Log::body_at`].
+    fn body_at(&mut self, width: u16, height: u16, column: u16, row: u16) -> Option<usize> {
+        let cell = self.cell_at(width, height, column, row)?;
+        self.panes.body_at(
+            View::Window(&cell.name),
+            cell.width,
+            cell.height,
+            cell.scroll,
+            cell.row,
+        )
+    }
+
+    /// One cell of a window, in the terms the log answers in: what a press and a
+    /// wheel ask about.
+    ///
+    /// # Invariant
+    ///
+    /// The width is one column short, as the renderer measures, and the row is
+    /// counted from the window's first: the same numbers the frame was drawn with,
+    /// so a hit cannot land on a row the frame drew something else on.
+    fn cell_at(&mut self, width: u16, height: u16, column: u16, row: u16) -> Option<PaneCell> {
         let slots = self.slots(width, height);
         let slot = slots
             .iter()
-            .find(|slot| render::covers(&slot.body, column, row))
-            .or_else(|| {
-                // A header row answers with the first item: a press there is the
-                // session's, which `session_at_row` already handles.
-                Option::<&render::Slot>::None
-            })?;
-        let name = slot.name.clone();
+            .find(|slot| render::covers(&slot.body, column, row))?;
         let body = slot.body;
-        let inside = (row - body.y) as usize;
-        // One column short, as the renderer measures.
-        let log_width = body.width.saturating_sub(1).max(1) as usize;
-        let scroll = self.panes.get(&name).map(|pane| pane.scroll).unwrap_or(0);
-        self.panes.block_at(
-            View::Window(&name),
-            log_width,
-            body.height.max(1) as usize,
-            scroll,
-            inside,
-        )
+        Some(PaneCell {
+            name: slot.name.clone(),
+            width: body.width.saturating_sub(1).max(1) as usize,
+            height: body.height.max(1) as usize,
+            scroll: self
+                .panes
+                .get(&slot.name)
+                .map(|pane| pane.scroll)
+                .unwrap_or(0),
+            row: (row - body.y) as usize,
+        })
     }
 
     /// Scrolls one pane: the wheel reads what the pointer is over, not the keys'.
@@ -340,18 +381,22 @@ impl Screen {
     }
 
     /// Scrolls the item under a pointer, or its pane when there is no open item.
-    /// Large or unbounded items can hand an exhausted wheel to the outer pane.
+    ///
+    /// # Invariant
+    ///
+    /// One notch, one move: the box of an opened item takes the wheel while it can
+    /// still move in that direction, and the pane takes it otherwise. Nothing else
+    /// decides, so a box is never a cell where the wheel does nothing.
+    /// See `docs/notes/tui-log.md`.
     pub fn scroll_at(&mut self, width: u16, height: u16, column: u16, row: u16, rows: i64) -> bool {
         let Some(hit) = self.session_at_row(width, height, column, row) else {
             return false;
         };
         if hit.part == Part::Pane
-            && let Some(at) = self.item_at(width, height, column, row)
-            && self.panes.expanded_at(at)
+            && let Some(at) = self.body_at(width, height, column, row)
         {
-            // Large and unbounded boxes hand an exhausted wheel to the pane.
-            // Small boxes keep it, so reading a short result never moves the log.
-            if self.panes.scroll_block(at, rows, SCROLL_CHAIN_BLOCK_SIZE) {
+            // The box first, and the pane once it has nothing left to move.
+            if self.panes.scroll_block(at, rows) {
                 return true;
             }
         }

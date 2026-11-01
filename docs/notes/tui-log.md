@@ -390,10 +390,35 @@ output rows retain their own indentation. The renderer and index describe the
 same rectangle, so a long row cannot push the right rule off the pane. Toggling an item
 updates those offsets immediately, so click hit-testing follows the frame too.
 
-With a `block_size` of 1 through 6, the pointer's wheel belongs to the opened
-item even at either end. Above 6, or with no cap, exhaustion in the wheel's
-direction lets the event continue to the outer pane. While the inner item can
-still move, it always keeps the wheel.
+## Log::scroll_block — the wheel changes hands
+
+An opened item's box scrolls its own rows, and the pointer's wheel is the box's for
+as long as it can move in the direction the wheel is turning. At either end it hands
+the event to the pane underneath, so no cell of a pane is a place the wheel does
+nothing.
+
+`block_size` is what decides whether there is anything inside to move. `0` caps
+nothing, so the box shows every row it has, its body is its whole text and every
+notch is the pane's -- SPEC's `scroll if block_size != 0` falls out of the geometry
+rather than being tested for. A number caps the body, so the box holds rows it is not
+showing, and those are what it scrolls first.
+
+The answer to "did the box take it" is therefore one comparison -- did `inner`
+change -- and nothing else is consulted.
+
+Which row the pointer is on comes from the same walk that answers a press
+(`Log::block_at`): `Log::hit` gives the block and the row's index inside it, so
+`body_at` can say that the box's first and last rows are its rules. A wheel on a rule
+is the pane's, whatever the box could still do -- the rules are the only part of a box
+that is chrome rather than content, and with a body filling the window they are what is
+left to reach the window through.
+
+An earlier rule compared the cap against a constant, and in the direction its own
+comment denied: a cap above that constant, or no cap at all, took the wheel and kept
+it even at its end. With SPEC's starting `block_size` of 8 the pane could not be
+scrolled while the pointer was over any opened item, and a cap of 6 or less behaved
+the other way, so changing the number flipped the whole gesture. That rule is gone,
+and no constant replaces it.
 
 ## Log::stream — one label, one block
 
