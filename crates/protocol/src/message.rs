@@ -120,6 +120,28 @@ pub enum Event {
     Quota(Quota),
 }
 
+impl Event {
+    /// The session this event is about, when it is about one.
+    ///
+    /// # Invariant
+    ///
+    /// Two kinds name no session -- a command and its answer, and the facts that
+    /// belong to the whole server (the session list, a log line, a quota reading).
+    /// Everything that belongs to a conversation says which, so a reader can tell
+    /// one conversation's lines from another's without knowing the event's shape.
+    pub fn session(&self) -> Option<&str> {
+        match self {
+            Event::Response(e) => Some(e.session.as_str()),
+            Event::ToolCall(e) => Some(e.session.as_str()),
+            Event::ToolAnswer(e) => Some(e.session.as_str()),
+            Event::Status { session, .. } => Some(session.as_str()),
+            Event::Usage(e) => Some(e.session.as_str()),
+            Event::Cmd { .. } | Event::CmdResult { .. } | Event::Sessions { .. } => None,
+            Event::Log { .. } | Event::Quota(_) => None,
+        }
+    }
+}
+
 /// SPEC's `active_quota` row: what the provider the last step ran on still allows.
 ///
 /// # Invariant
@@ -231,16 +253,84 @@ pub enum ToolStream {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Head {
     pub kind: HeadKind,
+    /// The item's own name -- a tool's, for a call -- or empty when it has none.
+    #[serde(default)]
+    pub name: String,
     /// The item's arguments, each with the label it is read under.
     ///
     /// # Invariant
     ///
-    /// One list, sent once: which fields summarise the item and which only the
-    /// open item shows is `Field::summary`, decided by the schema below rather than
-    /// by whoever spells the words. A front-end composes the two rows from this, so
+    /// One list, sent once: which fields summarise the item is `Field::summary`,
+    /// named by the schema in `docs/notes/protocol-message.md` and filled in by
+    /// whoever knows the tool. A front-end composes both rows from this, so
     /// expanding never asks the server again.
     #[serde(default)]
     pub fields: Vec<Field>,
+}
+
+/// One argument of an item, as its row reads it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Field {
+    /// The argument's name, as SPEC spells it; empty for a value with no name.
+    #[serde(default)]
+    pub label: String,
+    /// The value, already spelled: the server owns units and digits.
+    pub value: String,
+    /// Whether SPEC puts it in the `abstract`, the folded row.
+    #[serde(default)]
+    pub summary: bool,
+}
+
+impl Head {
+    /// A head whose whole content is one value: a verdict, a duration.
+    pub fn new(kind: HeadKind, text: impl Into<String>) -> Self {
+        Self {
+            kind,
+            name: String::new(),
+            fields: vec![Field {
+                label: String::new(),
+                value: text.into(),
+                summary: true,
+            }],
+        }
+    }
+
+    /// A tool call: its name, then the arguments the model gave it.
+    pub fn call(name: impl Into<String>, fields: Vec<Field>) -> Self {
+        Self {
+            kind: HeadKind::Call,
+            name: name.into(),
+            fields,
+        }
+    }
+
+    /// The folded row: SPEC's `abstract`, from the name and the marked fields.
+    pub fn summary(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if !self.name.is_empty() {
+            parts.push(self.name.clone());
+        }
+        parts.extend(self.fields.iter().filter(|f| f.summary).map(spelled));
+        parts.join(", ")
+    }
+
+    /// The open item: one row per argument, the unnamed value first.
+    pub fn detail(&self) -> String {
+        let mut rows: Vec<String> = Vec::new();
+        if !self.name.is_empty() {
+            rows.push(self.name.clone());
+        }
+        rows.extend(self.fields.iter().map(spelled));
+        rows.join("\n")
+    }
+}
+
+/// One field as a row says it: `name=build`, or a bare value.
+fn spelled(field: &Field) -> String {
+    match field.label.is_empty() {
+        true => field.value.clone(),
+        false => format!("{}={}", field.label, field.value),
+    }
 }
 
 /// Which kind of row a [`Head`] introduces, in SPEC's vocabulary.
@@ -268,54 +358,6 @@ pub enum HeadKind {
     Cmd,
     /// Something that went wrong.
     Error,
-}
-
-/// One argument of an item, as its row reads it.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct Field {
-    /// The argument's name, as SPEC spells it; empty for a value with no name.
-    #[serde(default)]
-    pub label: String,
-    /// The value, already spelled: the server owns units and digits.
-    pub value: String,
-    /// Whether SPEC puts it in the `abstract`, the folded row.
-    #[serde(default)]
-    pub summary: bool,
-}
-
-impl Head {
-    /// A head whose whole content is one value: a verdict, a duration.
-    pub fn new(kind: HeadKind, text: impl Into<String>) -> Self {
-        Self {
-            kind,
-            fields: vec![Field {
-                label: String::new(),
-                value: text.into(),
-                summary: true,
-            }],
-        }
-    }
-
-    /// The folded row: SPEC's `abstract`, from the fields the schema marks.
-    pub fn summary(&self) -> String {
-        join(self.fields.iter().filter(|field| field.summary))
-    }
-
-    /// The open item: every field the call was given, `command` included.
-    pub fn detail(&self) -> String {
-        join(self.fields.iter())
-    }
-}
-
-/// `fields` as one line: `name=build, background=true`, or a bare value.
-fn join<'a>(fields: impl Iterator<Item = &'a Field>) -> String {
-    let parts: Vec<String> = fields
-        .map(|field| match field.label.is_empty() {
-            true => field.value.clone(),
-            false => format!("{}={}", field.label, field.value),
-        })
-        .collect();
-    parts.join(", ")
 }
 
 /// One tool the model asked for, as the row it is read on.
@@ -713,6 +755,7 @@ mod tests {
     fn a_call_sends_every_field_once_and_marks_the_ones_it_summarises() {
         let head = Head {
             kind: HeadKind::Call,
+            name: "bash".into(),
             fields: vec![
                 Field {
                     label: String::new(),
@@ -726,8 +769,8 @@ mod tests {
                 },
             ],
         };
-        assert_eq!(head.summary(), "name=build");
-        assert_eq!(head.detail(), "cargo test, name=build");
+        assert_eq!(head.summary(), "bash, name=build");
+        assert_eq!(head.detail(), "bash\ncargo test\nname=build");
     }
 
     /// A call names the tool it runs, its arguments, and the id its result carries.

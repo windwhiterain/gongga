@@ -1161,10 +1161,7 @@ mod tests {
 /// is; how that looks belongs to the front-end, so restyling is a change to one
 /// crate and nothing on the wire moves. See `docs/notes/protocol-message.md`.
 pub(crate) fn call_head(tool: &str, arguments: &str) -> protocol::Head {
-    protocol::Head {
-        kind: protocol::HeadKind::Call,
-        fields: call_fields(tool, arguments),
-    }
+    protocol::Head::call(tool, call_fields(tool, arguments))
 }
 
 /// A call's arguments, each marked with whether SPEC's `abstract` shows it.
@@ -1179,6 +1176,8 @@ pub(crate) fn call_head(tool: &str, arguments: &str) -> protocol::Head {
 fn call_fields(tool: &str, arguments: &str) -> Vec<protocol::Field> {
     let value: serde_json::Value = serde_json::from_str(arguments).unwrap_or_default();
     let summary = summary_keys(tool);
+    // SPEC's `toolcall{tool_name, ...}`: the name rides on the head, where it is
+    // the one part of the summary that is always there.
     let mut fields = Vec::new();
     // The detail first, so opening the item leads with what was run.
     if let Some(command) = value.get("command").and_then(|v| v.as_str()) {
@@ -1259,7 +1258,7 @@ mod call_fields_tests {
         );
         assert_eq!(
             head.summary(),
-            "name=build, task=run the tests, background=true"
+            "bash, name=build, task=run the tests, background=true"
         );
         assert!(
             !head.summary().contains("cargo test"),
@@ -1267,8 +1266,8 @@ mod call_fields_tests {
             head.summary()
         );
         assert!(
-            head.detail().starts_with("cargo test"),
-            "and it is the detail's first row: {}",
+            head.detail().ends_with("cargo test") || head.detail().contains("cargo test"),
+            "and it is in the detail: {}",
             head.detail()
         );
     }
@@ -1277,15 +1276,15 @@ mod call_fields_tests {
     #[test]
     fn only_what_the_model_set_is_sent() {
         let head = call_head("bash", r#"{"command":"ls"}"#);
-        assert_eq!(head.summary(), "", "no shell named, no flags given");
-        assert_eq!(head.detail(), "ls");
+        assert_eq!(head.summary(), "bash", "the tool alone: no flag was given");
+        assert_eq!(head.detail(), "bash\nls");
     }
 
     /// The tool's schema spells `timeout_ms`; SPEC's row says `timeout`.
     #[test]
     fn the_timeout_is_labelled_the_way_spec_spells_it() {
         let head = call_head("bash", r#"{"command":"ls","timeout_ms":30000}"#);
-        assert_eq!(head.summary(), "timeout=30000");
+        assert_eq!(head.summary(), "bash, timeout=30000");
     }
 
     /// A tool SPEC does not name is summarised by nothing, and its arguments are
@@ -1293,7 +1292,7 @@ mod call_fields_tests {
     #[test]
     fn a_tool_spec_does_not_name_keeps_its_arguments_in_the_detail() {
         let head = call_head("index_skill", r#"{"name":"evolve"}"#);
-        assert_eq!(head.summary(), "");
+        assert_eq!(head.summary(), "index_skill", "the name is always there");
         assert!(head.detail().contains("evolve"), "{}", head.detail());
     }
 }

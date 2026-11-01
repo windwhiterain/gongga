@@ -521,14 +521,21 @@ impl Client {
     /// Whether an event's lines are drawn: by its own session's window, or -- for
     /// an event that names no session -- at all.
     fn drawn(&self, event: &Event) -> bool {
-        let session = match event {
-            Event::Response(e) => Some(e.session.as_str()),
-            Event::ToolCall(e) => Some(e.session.as_str()),
-            Event::ToolAnswer(e) => Some(e.session.as_str()),
-            Event::Status { session, .. } => Some(session.as_str()),
-            _ => None,
-        };
-        session.is_none_or(|name| self.shown.is_shown(name))
+        event.session().is_none_or(|name| self.shown.is_shown(name))
+    }
+
+    /// Writes the command row, replacing what it held.
+    ///
+    /// # Invariant
+    ///
+    /// SPEC's row is `last cmd | cmd_result`: it shows the last thing the operator
+    /// asked or was told, not a log. So every client-side answer replaces the one
+    /// before it -- a `set_render` twice is one row, not two. A line that belongs
+    /// to a session is written to that session's window and keeps its history.
+    fn row(&self, sink: &mut dyn Sink, kind: LineKind, text: &str) {
+        let window = self.command_window();
+        sink.clear(&window);
+        sink.line(&window, kind, text);
     }
 
     /// The window for a line that names no session, named so no session can take it.
@@ -1012,8 +1019,8 @@ impl Client {
         // Offline, the applied catalog is stale: say so, and leave client
         // commands alone.
         if !self.connected && !self.catalog.is_client_command(&head) {
-            sink.line(
-                &self.command_window(),
+            self.row(
+                sink,
                 LineKind::Error,
                 &format!("{head}: not connected to the server, nothing was sent"),
             );
@@ -1038,8 +1045,8 @@ impl Client {
                     rest.push_str(&tokens[1..].join(" "));
                 }
                 if self.catalog.command(name).is_some() {
-                    sink.line(
-                        &self.command_window(),
+                    self.row(
+                        sink,
                         LineKind::Error,
                         &format!(
                             "`{head}` is not a command name: it ends in `{name}`, and a `/` \
@@ -1070,8 +1077,8 @@ impl Client {
             } else {
                 format!("this server publishes: {}", known.join(", "))
             };
-            sink.line(
-                &self.command_window(),
+            self.row(
+                sink,
                 LineKind::Error,
                 &format!("unknown command {head:?}; {why}"),
             );
@@ -1082,7 +1089,7 @@ impl Client {
         let mut args = match parse_args(&tokens[1..]) {
             Ok(a) => a,
             Err(e) => {
-                sink.line(&self.command_window(), LineKind::Error, &e.to_string());
+                self.row(sink, LineKind::Error, &e.to_string());
                 return Submission::Rejected;
             }
         };
@@ -1095,8 +1102,8 @@ impl Client {
             .collect();
         if !unknown.is_empty() {
             let known: Vec<String> = spec.args.iter().map(|a| format!("--{}", a.name)).collect();
-            sink.line(
-                &self.command_window(),
+            self.row(
+                sink,
                 LineKind::Error,
                 &format!(
                     "{head} has no argument {}; it takes {}",
@@ -1120,8 +1127,8 @@ impl Client {
                 &tokens,
                 args.get("session").map(String::as_str),
             );
-            sink.line(
-                &self.command_window(),
+            self.row(
+                sink,
                 LineKind::Error,
                 &format!(
                     "{head} is missing required argument(s): {}",
@@ -1166,24 +1173,20 @@ impl Client {
         let addr = match server_address(ip, port) {
             Ok(addr) => addr,
             Err(e) => {
-                sink.line(&self.command_window(), LineKind::Error, &format!("{e}"));
+                self.row(sink, LineKind::Error, &format!("{e}"));
                 return;
             }
         };
         match commands::Remembered::save(self.sticky.home(), addr) {
             Ok(()) => {
-                sink.line(
-                    &self.command_window(),
+                self.row(
+                    sink,
                     LineKind::Result,
                     &format!("server is {addr}; reconnecting"),
                 );
                 self.server_changed = true;
             }
-            Err(e) => sink.line(
-                &self.command_window(),
-                LineKind::Error,
-                &format!("could not save: {e}"),
-            ),
+            Err(e) => self.row(sink, LineKind::Error, &format!("could not save: {e}")),
         }
     }
 
@@ -1207,11 +1210,7 @@ impl Client {
             .set("session", &session)
             .and_then(|()| model.map_or(Ok(()), |model| self.sticky.set("model", &model)));
         if let Err(e) = saved {
-            sink.line(
-                &self.command_window(),
-                LineKind::Error,
-                &format!("could not save: {e}"),
-            );
+            self.row(sink, LineKind::Error, &format!("could not save: {e}"));
         }
         self.after_sticky_change(sink);
     }
@@ -1223,8 +1222,8 @@ impl Client {
             "connect_server" => self.remember_server(args, sink),
             // The process is the server: a window cannot draw it, so say
             // where to type it.
-            "serve" => sink.line(
-                &self.command_window(),
+            "serve" => self.row(
+                sink,
                 LineKind::Error,
                 &format!(
                     "serve takes over the process; run it in a shell: `{} serve --port <port>`",
@@ -1235,52 +1234,40 @@ impl Client {
             "set_render_session" => self.run_render_session(args, sink),
             "set_sticky" => {
                 let Some(value) = args.get("value").cloned() else {
-                    sink.line(
-                        &self.command_window(),
-                        LineKind::Error,
-                        "set_sticky requires --value",
-                    );
+                    self.row(sink, LineKind::Error, "set_sticky requires --value");
                     return;
                 };
                 match self.sticky.set(&arg_name, &value) {
                     Ok(()) => {
-                        sink.line(
-                            &self.command_window(),
+                        self.row(
+                            sink,
                             LineKind::Result,
                             &format!("sticky {arg_name} = {value}"),
                         );
                         self.after_sticky_change(sink);
                     }
-                    Err(e) => sink.line(
-                        &self.command_window(),
-                        LineKind::Error,
-                        &format!("could not save: {e}"),
-                    ),
+                    Err(e) => self.row(sink, LineKind::Error, &format!("could not save: {e}")),
                 }
             }
             "del_sticky" => match self.sticky.del(&arg_name) {
                 Ok(true) => {
-                    sink.line(
-                        &self.command_window(),
+                    self.row(
+                        sink,
                         LineKind::Result,
                         &format!("sticky {arg_name} cleared"),
                     );
                     self.after_sticky_change(sink);
                 }
-                Ok(false) => sink.line(
-                    &self.command_window(),
+                Ok(false) => self.row(
+                    sink,
                     LineKind::Error,
                     &format!("no sticky argument named {arg_name:?}"),
                 ),
-                Err(e) => sink.line(
-                    &self.command_window(),
-                    LineKind::Error,
-                    &format!("could not save: {e}"),
-                ),
+                Err(e) => self.row(sink, LineKind::Error, &format!("could not save: {e}")),
             },
             // Published as a client command this build cannot run: say so.
-            other => sink.line(
-                &self.command_window(),
+            other => self.row(
+                sink,
                 LineKind::Error,
                 &format!(
                     "the server publishes {other:?} as a client command, but this client \
@@ -1301,31 +1288,27 @@ impl Client {
     fn run_render(&mut self, args: &protocol::Args, sink: &mut dyn Sink) {
         let Some(raw) = args.get("block_size") else {
             let report = format!("render block_size = {}", self.block_size.0);
-            sink.line(&self.command_window(), LineKind::Result, &report);
+            self.row(sink, LineKind::Result, &report);
             return;
         };
         let parsed = match BlockSize::parse(raw) {
             Ok(parsed) => parsed,
             Err(e) => {
-                sink.line(&self.command_window(), LineKind::Error, &e);
+                self.row(sink, LineKind::Error, &e);
                 return;
             }
         };
         match parsed.save(self.sticky.home()) {
             Ok(()) => {
                 self.block_size = parsed;
-                sink.line(
-                    &self.command_window(),
+                self.row(
+                    sink,
                     LineKind::Result,
                     &format!("render block_size = {}", parsed.0),
                 );
                 self.after_sticky_change(sink);
             }
-            Err(e) => sink.line(
-                &self.command_window(),
-                LineKind::Error,
-                &format!("could not save: {e}"),
-            ),
+            Err(e) => self.row(sink, LineKind::Error, &format!("could not save: {e}")),
         }
     }
 
@@ -1341,33 +1324,21 @@ impl Client {
         let name = args.get("session").cloned().unwrap_or_default();
         let Some(raw) = args.get("show") else {
             let show = self.shown.is_shown(&name);
-            sink.line(
-                &self.command_window(),
-                LineKind::Result,
-                &format!("render {name} = {show}"),
-            );
+            self.row(sink, LineKind::Result, &format!("render {name} = {show}"));
             return;
         };
         let show = match commands::parse_show(raw) {
             Ok(show) => show,
             Err(e) => {
-                sink.line(&self.command_window(), LineKind::Error, &e);
+                self.row(sink, LineKind::Error, &e);
                 return;
             }
         };
         if let Err(e) = self.shown.set(&name, show) {
-            sink.line(
-                &self.command_window(),
-                LineKind::Error,
-                &format!("could not save: {e}"),
-            );
+            self.row(sink, LineKind::Error, &format!("could not save: {e}"));
             return;
         }
-        sink.line(
-            &self.command_window(),
-            LineKind::Result,
-            &format!("render {name} = {show}"),
-        );
+        self.row(sink, LineKind::Result, &format!("render {name} = {show}"));
         self.follow_shown(&name, show, sink);
         self.after_sticky_change(sink);
     }
@@ -1387,11 +1358,7 @@ impl Client {
             Ok(())
         };
         if let Err(e) = saved {
-            sink.line(
-                &self.command_window(),
-                LineKind::Error,
-                &format!("could not save: {e}"),
-            );
+            self.row(sink, LineKind::Error, &format!("could not save: {e}"));
         }
     }
 
@@ -1669,6 +1636,15 @@ async fn run_once(client: &mut Client, link: &mut Link, command: &[String]) -> a
         ClientMessage::Command { id, .. } => *id,
         other => anyhow::bail!("{command:?} produced {other:?}, expected a command"),
     };
+    // The session this command speaks about, if it names one. Its events are this
+    // process's output and another session's stream is not: the connection hears
+    // every session on the server, so a `get_messages` piped into `jq` would
+    // otherwise carry lines the answer never mentioned -- and its own count would
+    // disagree with what was printed. See `docs/notes/cli-bin-gongga.md`.
+    let watched = match &msg {
+        ClientMessage::Command { args, .. } => args.get("session").cloned(),
+        _ => None,
+    };
     link.send(msg)
         .await
         .map_err(|e| anyhow!("send failed: {e}"))?;
@@ -1686,7 +1662,9 @@ async fn run_once(client: &mut Client, link: &mut Link, command: &[String]) -> a
         // `session` behind.
         client.handle_event(event.clone(), &mut printer);
         // The event *is* the output; JSON lines survive `jq` and a pipe.
-        println!("{}", serde_json::to_string(&event)?);
+        if prints(watched.as_deref(), &event) {
+            println!("{}", serde_json::to_string(&event)?);
+        }
         if let Event::CmdResult {
             id: rid,
             ok,
@@ -1703,6 +1681,21 @@ async fn run_once(client: &mut Client, link: &mut Link, command: &[String]) -> a
             }
         }
     }
+}
+
+/// Whether a one-shot command prints this event.
+///
+/// # Invariant
+///
+/// A command that named a session prints that session's events and the ones that
+/// name no session; another session's stream is not its answer. The connection
+/// hears every session on the server, so without this a `get_messages` piped into
+/// `jq` carries lines the answer never mentioned -- and the count in its result
+/// disagrees with what was printed. A command that named no session keeps
+/// printing everything: there is nothing to tell its answer apart from.
+/// See `docs/notes/cli-bin-gongga.md`.
+fn prints(watched: Option<&str>, event: &Event) -> bool {
+    watched.is_none_or(|name| event.session().is_none_or(|s| s == name))
 }
 
 /// Headless: the commands the server publishes, then exit.
@@ -2751,6 +2744,37 @@ mod tests {
         );
     }
 
+    /// A client-handled command replaces the row too: `set_render` twice is one
+    /// row, not two.
+    ///
+    /// # Invariant
+    ///
+    /// The bug this pins: client commands were written straight to the command
+    /// window and never cleared, so four of them left four rows on a row SPEC says
+    /// holds the last.
+    #[test]
+    fn four_client_commands_leave_one_row() {
+        let d = tempfile::tempdir().unwrap();
+        let cat = published_catalog();
+        cat.set_sticky_names(&[]);
+        let mut c = client_with(cat, Sticky::load(d.path()), vec!["main"]);
+        let mut s = StreamSink::default();
+        for line in [
+            "set_render --block_size 1",
+            "set_render --block_size 2",
+            "set_sticky --name session --value main",
+            "set_render --block_size 3",
+        ] {
+            c.command(argv(line), &mut s);
+        }
+        assert_eq!(
+            s.lines,
+            vec!["render block_size = 3"],
+            "the row holds the last answer only"
+        );
+        assert_eq!(s.cleared.len(), 4, "one clear per answer, no more");
+    }
+
     /// A session's own command stays in its window: the transcript is the history.
     #[test]
     fn a_session_command_is_not_replaced() {
@@ -2771,6 +2795,41 @@ mod tests {
         assert_eq!(s.lines.len(), 2, "both are the session's own lines");
     }
 
+    /// The output of a one-shot command is its own question's answer.
+    ///
+    /// # Invariant
+    ///
+    /// The connection hears every session on the server, so printing all of it put
+    /// another session's stream into a `get_messages` that never asked for it --
+    /// the rows and the count in the result disagreed, and a reader piping this
+    /// into `jq` had no way to tell the two apart.
+    #[test]
+    fn a_named_session_prints_only_that_sessions_events() {
+        let line = |session: &str| {
+            Event::Response(protocol::ResponseEvent {
+                session: session.to_string(),
+                turn: protocol::REPLAY_TURN,
+                part: protocol::ResponsePart::Output,
+                text: String::new(),
+                done: true,
+                call_id: None,
+            })
+        };
+        // Its own conversation, and the facts that belong to no conversation.
+        assert!(prints(Some("main"), &line("main")));
+        assert!(prints(
+            Some("main"),
+            &Event::Log {
+                level: protocol::LogLevel::Info,
+                message: "x".into()
+            }
+        ));
+        // Somebody else's.
+        assert!(!prints(Some("main"), &line("other")));
+        // No session named: nothing to tell the answer apart from, so all of it.
+        assert!(prints(None, &line("other")));
+    }
+
     /// A tool call is one block, keyed by the call: two calls in a turn are two
     /// items, and a result names the same id.
     #[test]
@@ -2786,6 +2845,7 @@ mod tests {
                     // One list of fields: the server says which of them summarise.
                     head: protocol::Head {
                         kind: protocol::HeadKind::Call,
+                        name: "bash".into(),
                         fields: vec![
                             protocol::Field {
                                 label: String::new(),
@@ -2806,7 +2866,7 @@ mod tests {
         // A call that streamed nothing still opens one block: the label is the
         // summary, the body every field.
         assert_eq!(s.keys, vec!["c:c1", "c:c2"]);
-        assert_eq!(s.tags, vec!["name=build ", "name=build "]);
+        assert_eq!(s.tags, vec!["bash, name=build ", "bash, name=build "]);
         assert!(s.rewritten.is_empty(), "{:?}", s.rewritten);
     }
 
@@ -2833,6 +2893,7 @@ mod tests {
                 call_id: "c1".into(),
                 head: protocol::Head {
                     kind: protocol::HeadKind::Call,
+                    name: "bash".into(),
                     fields: vec![
                         protocol::Field {
                             label: String::new(),
@@ -2852,12 +2913,12 @@ mod tests {
         assert_eq!(s.keys, vec!["c:c1"], "and no second block was opened");
         assert_eq!(
             s.rewritten,
-            vec!["ls, name=build"],
+            vec!["bash\nls\nname=build"],
             "what was streamed is replaced by the structure"
         );
         assert_eq!(
             s.labels.last().map(String::as_str),
-            Some("c:c1 = name=build  (ToolCall)"),
+            Some("c:c1 = bash, name=build  (ToolCall)"),
             "and the folded row is the summary"
         );
     }
