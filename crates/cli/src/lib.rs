@@ -11,6 +11,7 @@ pub use crate::catalog::Catalog;
 pub use crate::commands::{BlockSize, Shown, Sticky};
 pub use crate::complete::{Candidate, Completer, Completion, SharedCompleter, token_bounds};
 pub use crate::server::{ensure, spawn, starts_here, stop};
+pub use protocol;
 
 use std::collections::HashMap;
 
@@ -382,6 +383,23 @@ pub trait Sink {
     fn layout(&mut self, _layout: &Layout) {}
     /// Replaces the whole text of a block: a call's structure, once known.
     fn rewrite(&mut self, _window: &str, _key: &str, _text: &str) {}
+    /// Describes a call with structured fields for a front-end that can show them.
+    /// Other front-ends keep the compact detail text.
+    fn tool_call(&mut self, window: &str, key: &str, head: &protocol::Head, streamed: bool) {
+        if streamed {
+            self.rewrite(window, key, &head.detail());
+            self.relabel(window, key, &head_label(head), kind_of(head.kind));
+        } else {
+            self.stream(
+                window,
+                key,
+                kind_of(head.kind),
+                &head_label(head),
+                &head.detail(),
+                true,
+            );
+        }
+    }
     /// Appends a result to the call whose stable key it carries.
     ///
     /// The key is the call's, never a second key made from its output stream.
@@ -930,19 +948,7 @@ impl Client {
     /// its result together, and the id is the only thing they share.
     fn handle_tool_call(&self, e: protocol::ToolCallEvent, sink: &mut dyn Sink) {
         let key = format!("c:{}", e.call_id);
-        // Which kind of row this is, and how that kind looks, are this side's.
-        let kind = kind_of(e.head.kind);
-        // One list of fields gives both rows: the folded `abstract` is the marked
-        // ones, the body all of them -- opening asks nobody.
-        let summary = head_label(&e.head);
-        if self.calls.contains(&e.call_id) {
-            // The call streamed into this block: fill it in place. A second
-            // `stream` with a new label would open a second block.
-            sink.rewrite(&e.session, &key, &e.head.detail());
-            sink.relabel(&e.session, &key, &summary, kind);
-        } else {
-            sink.stream(&e.session, &key, kind, &summary, &e.head.detail(), true);
-        }
+        sink.tool_call(&e.session, &key, &e.head, self.calls.contains(&e.call_id));
     }
 
     /// A call's output, as one item: SPEC's `tool_result{ok, time (spent)}`.

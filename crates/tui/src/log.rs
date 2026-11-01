@@ -40,8 +40,14 @@ struct Entry {
     col: usize,
     /// No more text can arrive, so the block is scrollback.
     sealed: bool,
-    /// Tool output has begun, so its chunks join without another separator.
-    resolved: bool,
+    /// Structured call fields, once the call's head arrives.
+    call: Option<cli::protocol::Head>,
+    /// Raw result output, separate from the call's arguments.
+    result: String,
+    /// The verdict's text, before the call summary in every title.
+    outcome: String,
+    /// The expanded sections, cached at their measured width.
+    sections: String,
     /// Where this block sits among the blocks of its own window.
     at: usize,
     /// Where it sits in the merged view, or `None` when a hidden window holds it.
@@ -67,7 +73,10 @@ impl Entry {
             starts: vec![0],
             col: 0,
             sealed: false,
-            resolved: false,
+            call: None,
+            result: String::new(),
+            outcome: String::new(),
+            sections: String::new(),
             at: 0,
             merged_at: None,
         };
@@ -152,7 +161,7 @@ impl Entry {
             }
             // A result says how it went, never what it printed: SPEC's
             // `tool_result{ok, time (spent)}` is the whole of its summary.
-            (LineKind::ToolOutput | LineKind::ToolError, _) => self.tag.trim_end().to_string(),
+            (LineKind::ToolOutput | LineKind::ToolError, _) => self.summary(),
             // A call's summary is its name and flags; with no label the body is
             // the call itself, which is what its first row says.
             (LineKind::ToolCall, _) if !self.tag.is_empty() => self.tag.trim_end().to_string(),
@@ -162,35 +171,80 @@ impl Entry {
         cut(&text, width)
     }
 
+    /// Output or a verdict has arrived, even before the structured call.
+    fn resolved(&self) -> bool {
+        !self.result.is_empty() || !self.outcome.is_empty()
+    }
+
+    /// Outcome first: long arguments cannot hide the elapsed time.
+    fn summary(&self) -> String {
+        match (self.outcome.trim(), self.tag.trim()) {
+            ("", tag) => tag.to_string(),
+            (outcome, "") => outcome.to_string(),
+            (outcome, tag) => format!("{outcome} · {tag}"),
+        }
+    }
+
+    /// A call and its result are two sections with structured fields.
+    fn section_text(&self, width: usize) -> Option<String> {
+        let call = self.call.as_ref()?;
+        let mut text = format!("CALL {}", call.name);
+        for field in &call.fields {
+            let name = match field.label.is_empty() {
+                true if call.name == "bash" => "command",
+                true => "value",
+                false => field.label.as_str(),
+            };
+            let mut lines = field.value.split('\n');
+            let first = lines.next().unwrap_or_default();
+            if lines.clone().next().is_some() {
+                text.push_str(&format!("\n  {name}:\n    {first}"));
+                for line in lines {
+                    text.push_str(&format!("\n    {line}"));
+                }
+            } else {
+                text.push_str(&format!("\n  {name}: {first}"));
+            }
+        }
+        if self.resolved() {
+            text.push_str("\nRESULT");
+            if !self.outcome.is_empty() {
+                text.push_str(&format!(" {} {}", self.kind.symbol(), self.outcome.trim()));
+            }
+            for line in self.result.split('\n') {
+                text.push_str(&format!("\n  {line}"));
+            }
+        }
+        Some(hanging_indent(&text, width))
+    }
+
     /// Recomputes every row offset at `width`, with the label's columns reserved on
     /// the row it is printed on.
     fn reflow(&mut self, width: usize) {
         let width = self.content_width(width);
-        let Self {
-            kind,
-            tag,
-            text,
-            expanded,
-            width: at,
-            starts,
-            col,
-            ..
-        } = self;
-        *at = width;
-        starts.clear();
-        // A line always has at least one row, so an empty line is a blank row.
-        starts.push(0);
-        // An opened item puts its full tag on the top border; only the mark
-        // remains in front of its body.
-        let boxed = *expanded && kind.folds();
-        let label = match boxed {
-            true => kind.mark().width(),
-            false => label_width(*kind, tag),
+        self.sections = match self.expanded {
+            true => self.section_text(width).unwrap_or_default(),
+            false => String::new(),
+        };
+        let structured = self.expanded && self.call.is_some();
+        let text = match structured {
+            true => self.sections.as_str(),
+            false => self.text.as_str(),
+        };
+        self.width = width;
+        self.starts.clear();
+        self.starts.push(0);
+        // The top border owns the label. A structured body starts immediately
+        // inside the left border, not behind another copy of the mark's padding.
+        let label = match structured {
+            true => 0,
+            false if self.boxed() => self.kind.mark().width(),
+            false => label_width(self.kind, &self.tag),
         }
         .min(width);
         let mut wrap = Wrap { width, col: label };
-        wrap.feed(text, 0, starts);
-        *col = wrap.col;
+        wrap.feed(text, 0, &mut self.starts);
+        self.col = wrap.col;
     }
 
     /// Adds text to the end of this line, continuing the wrap from the last row.
@@ -221,15 +275,19 @@ impl Entry {
     /// it, so a trailing newline yields a final empty row. See
     /// `docs/notes/tui-log.md`.
     fn row(&self, row: usize) -> &str {
+        let text = match self.expanded && self.call.is_some() {
+            true => self.sections.as_str(),
+            false => self.text.as_str(),
+        };
         let start = self.starts[row];
-        let end = self.starts.get(row + 1).copied().unwrap_or(self.text.len());
-        let text = &self.text[start..end];
+        let end = self.starts.get(row + 1).copied().unwrap_or(text.len());
+        let text = &text[start..end];
         text.strip_suffix('\n').unwrap_or(text)
     }
 
     /// The item's own label: its mark and its tag, and none of its body.
     fn label(&self) -> Cow<'_, str> {
-        Cow::Owned(format!("{}{}", self.kind.mark(), self.tag.trim_end()))
+        Cow::Owned(format!("{}{}", self.kind.mark(), self.summary()))
     }
 
     /// One row as a frame shows it, with the block's label on the row the window
@@ -277,6 +335,40 @@ fn cut(text: &str, width: usize) -> String {
         }
         out.push(ch);
         used += advance;
+    }
+    out
+}
+
+/// Soft-wrap section rows without losing the indentation that names their level.
+/// The inserted columns are real text, so row slicing and the right border use
+/// exactly the same display width.
+fn hanging_indent(text: &str, width: usize) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut column = 0usize;
+    let mut indent = 0usize;
+    let mut leading = true;
+    for ch in text.chars() {
+        if ch == '\n' {
+            out.push(ch);
+            column = 0;
+            indent = 0;
+            leading = true;
+            continue;
+        }
+        if leading && ch == ' ' {
+            indent += 1;
+        } else {
+            leading = false;
+        }
+        let advance = ch.width().unwrap_or(0).max(1);
+        let continuation = indent.min(width.saturating_sub(1));
+        if column + advance > width && column > continuation {
+            out.push('\n');
+            out.push_str(&" ".repeat(continuation));
+            column = continuation;
+        }
+        out.push(ch);
+        column += advance;
     }
     out
 }
@@ -734,10 +826,10 @@ impl Log {
     ///
     /// # Invariant
     ///
-    /// Only an opened item that is taller than its `block_size`: SPEC makes the
-    /// scroll exist exactly then, so a block that fits its box has nothing to move
-    /// and a closed one is a single row.
-    pub fn scroll_block(&mut self, at: usize, rows: i64) -> bool {
+    /// Returns whether the inner box owns this wheel event. Above `chain_at`,
+    /// or with no cap, exhaustion in the wheel's direction falls through to the
+    /// outer pane. Smaller boxes consume the wheel at both ends.
+    pub fn scroll_block(&mut self, at: usize, rows: i64, chain_at: usize) -> bool {
         // Use the row offsets of the frame the pointer actually landed on.
         // Reflowing a resized window before the next draw would move the hit.
         let Some(entry) = self.entries.get(at) else {
@@ -749,11 +841,10 @@ impl Log {
         }
         let bound = entry.rows() - entry.rows().min(cap);
         let next = (entry.inner as i64 + rows).clamp(0, bound as i64) as usize;
-        if next == entry.inner {
-            return false;
-        }
+        let chains = cap == NO_CAP || cap > chain_at;
+        let moved = next != entry.inner;
         self.entries[at].inner = next;
-        true
+        chains || moved
     }
 
     /// The block `at` as a click names it: the box scrolls this instead of the pane.
@@ -862,20 +953,9 @@ impl Log {
         let before = self.contributions(at);
         let entry = &mut self.entries[at];
         entry.sealed = false;
-        if !text.is_empty() {
-            if !entry.resolved && !entry.text.is_empty() && !entry.text.ends_with('\n') {
-                entry.append("\n", width);
-            }
-            entry.resolved = true;
-            entry.append(text, width);
-        }
+        entry.result.push_str(text);
         if done {
-            if !tag.is_empty() {
-                entry.tag = match entry.tag.trim_end() {
-                    "" => tag.trim_end().to_string(),
-                    call => format!("{call} · {}", tag.trim_end()),
-                };
-            }
+            entry.outcome = tag.trim_end().to_string();
             entry.kind = kind;
         }
         entry.reflow(width);
@@ -884,6 +964,46 @@ impl Log {
         if done {
             self.seal(key, at);
         }
+    }
+
+    /// Replaces a call's provisional body with its structured name and fields.
+    /// Output already received stays in the result section.
+    pub fn describe(&mut self, name: &str, key: &str, head: &cli::protocol::Head) {
+        let at = match self.entry_by_key(key) {
+            Some(at) => at,
+            None => {
+                self.stream(
+                    name,
+                    key,
+                    crate::LineKind::ToolCall,
+                    &format!("{} ", head.summary()),
+                    &head.detail(),
+                    true,
+                );
+                let Some(at) = self.entry_by_key(key) else {
+                    return;
+                };
+                at
+            }
+        };
+        let width = self.width;
+        let before = self.contributions(at);
+        let entry = &mut self.entries[at];
+        entry.tag = format!("{} ", head.summary());
+        if entry.call.is_none() && matches!(entry.kind, LineKind::ToolOutput | LineKind::ToolError)
+        {
+            entry.result.push_str(&entry.text);
+        }
+        entry.text = head.detail();
+        if !entry.resolved() {
+            entry.kind = crate::LineKind::ToolCall;
+        }
+        entry.call = Some(head.clone());
+        entry.sealed = !entry.resolved() || !entry.outcome.is_empty();
+        entry.reflow(width);
+        let after = self.contributions(at);
+        self.shift(at, before, after);
+        self.open.remove(key);
     }
 
     /// Replaces the label of the block `key` names, once its outcome is known.
@@ -1006,10 +1126,12 @@ impl Log {
         let before = self.contributions(at);
         let entry = &mut self.entries[at];
         let kept = entry.text.trim_end().len();
-        if kept == entry.text.len() {
+        let result = entry.result.trim_end().len();
+        if kept == entry.text.len() && result == entry.result.len() {
             return;
         }
         entry.text.truncate(kept);
+        entry.result.truncate(result);
         if width > 0 {
             entry.reflow(width);
         } else {
@@ -1115,6 +1237,7 @@ impl Log {
                     // The box's border already carries the label, so its body
                     // clears the mark and not the label's width as well.
                     let pad = match boxed {
+                        true if entry.call.is_some() => 0,
                         true => entry.kind.mark().width(),
                         false => entry.kind.mark().width() + entry.tag.width(),
                     };
@@ -1237,7 +1360,7 @@ mod tests {
             vec!["\u{25c7} ", "  c", "  d", ""],
             "the frame's top row carries the label"
         );
-        assert!(log.scroll_block(0, 2), "the box scrolls");
+        assert!(log.scroll_block(0, 2, 6), "the box scrolls");
         assert_eq!(
             shown(&mut log, 40, 6, 0),
             vec!["\u{25c7} ", "  a", "  b", ""],

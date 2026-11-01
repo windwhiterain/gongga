@@ -315,21 +315,27 @@ of its rows, so there is nothing to discard and no budget to set.
 `c:<call_id>` is the identity of both the call and its result. A result does not
 open `t:<call_id>` or a per-stream block: it reopens the call, appends its output
 and applies the final verdict to the same summary. stdout and stderr never decide
-that verdict. An opened call therefore shows its arguments and all output in one
-frame, while the folded row reads `call summary · verdict`.
+that verdict. `Sink::tool_call` passes the structured head through to the TUI,
+so an opened call shows `CALL`, named fields with indented multi-line values,
+then `RESULT` and its raw output. Both folded and framed titles read
+`verdict and elapsed time · call summary`, keeping time next to the status mark
+regardless of how many arguments follow.
 
 ## Entry::boxed — one expanded shape
 
 Every opened folding item has a frame, not only an item taller than its cap. The
 cap limits body rows; the top and bottom rules always surround that body. Text is
 reflowed two columns narrower while expanded, before row offsets and scroll bounds
-are calculated. The renderer and the index therefore describe the same rectangle,
-and a long output row cannot push the right rule off the pane. Toggling an item
+are calculated. Structured section text starts immediately inside the left
+border, without reserving the folded row's symbol padding. Soft-wrapped field and
+output rows retain their own indentation. The renderer and index describe the
+same rectangle, so a long row cannot push the right rule off the pane. Toggling an item
 updates those offsets immediately, so click hit-testing follows the frame too.
 
-The pointer's wheel belongs to an opened item even when that item is already at
-its first or last row. Only the item's offset changes then; exhaustion must not
-fall through and move the pane behind it.
+With a `block_size` of 1 through 6, the pointer's wheel belongs to the opened
+item even at either end. Above 6, or with no cap, exhaustion in the wheel's
+direction lets the event continue to the outer pane. While the inner item can
+still move, it always keeps the wheel.
 
 ## Log::stream — one label, one block
 

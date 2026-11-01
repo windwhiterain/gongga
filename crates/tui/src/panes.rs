@@ -250,8 +250,8 @@ impl Panes {
     }
 
     /// Scrolls the box of an opened item, which SPEC makes scrollable.
-    pub fn scroll_block(&mut self, at: usize, rows: i64) -> bool {
-        self.log.scroll_block(at, rows)
+    pub fn scroll_block(&mut self, at: usize, rows: i64, chain_at: usize) -> bool {
+        self.log.scroll_block(at, rows, chain_at)
     }
 
     /// Whether the block `at` is an opened item with a box of its own.
@@ -287,6 +287,11 @@ impl Panes {
         done: bool,
     ) {
         self.log.resolve(name, key, tag, kind, text, done);
+    }
+
+    /// Replaces a call's provisional body with its structured head.
+    pub fn describe(&mut self, name: &str, key: &str, head: &cli::protocol::Head) {
+        self.log.describe(name, key, head);
     }
 
     /// Replaces the label of the block `key` names, and the kind it is drawn as.

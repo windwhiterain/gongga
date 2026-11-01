@@ -232,14 +232,17 @@ A call and its result have one identity (`c:<call_id>`), not one item for the
 call and another for each output pipe. `Sink::tool_result` carries that identity,
 the chunk and -- only on the final chunk -- the verdict. The TUI resolves it into
 the call block, retaining the call's arguments and appending output beneath them.
-Its folded summary keeps the call name and flags, followed by the verdict and
-elapsed time. Opening it shows both the arguments and the output in one frame.
+Its folded summary puts the verdict and elapsed time immediately after the
+status mark, then the call name and flags. `Sink::tool_call` retains the
+structured head; opening shows separate `CALL` and `RESULT` sections, named
+arguments and indented output rather than an undifferentiated block of text.
 
 Stdout and stderr are data, not verdicts. Neither opens a second result or paints
 a cross; only the final `Head` determines success or failure. A call's arguments
 can finish before its output starts, so resolving reopens that existing block and
 seals it only when the verdict arrives. Output chunks themselves remain byte-
-for-byte unchanged: the only inserted break separates arguments from output.
+for-byte unchanged: section labels and indentation are presentation, not extra
+chunks inserted into the tool's output.
 
 ## Event::Log — no tag
 

@@ -2677,18 +2677,29 @@ mod tests {
         assert_eq!(layout.cursor_col, 0);
     }
 
-    /// A call and its result share one block; its opened frame wraps every body
-    /// row inside the same two borders, including short and wide-character output.
+    /// Structured sections start inside the frame, and the outcome precedes args.
     #[test]
-    fn an_opened_call_and_result_keep_one_continuous_frame() {
+    fn an_opened_call_and_result_have_aligned_sections() {
         let mut screen = screen_with(&[]);
-        screen.panes.stream(
+        screen.panes.describe(
             "",
             "c:c1",
-            LineKind::ToolCall,
-            "bash, name=build ",
-            "bash\nname=build",
-            true,
+            &cli::protocol::Head {
+                kind: cli::protocol::HeadKind::Call,
+                name: "bash".into(),
+                fields: vec![
+                    cli::protocol::Field {
+                        label: String::new(),
+                        value: "printf 'first\nsecond\n'".into(),
+                        summary: false,
+                    },
+                    cli::protocol::Field {
+                        label: "name".into(),
+                        value: "build".into(),
+                        summary: true,
+                    },
+                ],
+            },
         );
         screen.panes.resolve(
             "",
@@ -2704,7 +2715,7 @@ mod tests {
         screen
             .panes
             .resolve("", "c:c1", "1.2s ", LineKind::ToolOutput, "", true);
-        let (width, height) = (36u16, 22u16);
+        let (width, height) = (48u16, 24u16);
         let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
         term.draw(|f| {
             draw(f, &mut screen);
@@ -2716,7 +2727,7 @@ mod tests {
             .map(|row| read(&buffer, area.x, area.width, row))
             .filter(|row| !row.is_empty())
             .collect::<Vec<_>>();
-        assert_eq!(folded, vec!["✓ bash, name=build · 1.2s"], "{folded:?}");
+        assert_eq!(folded, vec!["✓ 1.2s · bash, name=build"], "{folded:?}");
 
         assert!(screen.panes.toggle("c:c1"));
         term.draw(|f| {
@@ -2729,23 +2740,42 @@ mod tests {
             .filter(|row| !row.is_empty())
             .collect::<Vec<_>>();
         assert!(
-            rows[0].starts_with("┌─✓ bash, name=build · 1.2s") && rows[0].ends_with('┐'),
+            rows[0].starts_with("┌─✓ 1.2s · bash, name=build"),
+            "{rows:?}"
+        );
+        assert!(rows[0].ends_with('┐'), "{rows:?}");
+        assert!(
+            rows.iter().any(|row| row.starts_with("│CALL bash")),
             "{rows:?}"
         );
         assert!(
-            rows.last()
-                .is_some_and(|row| row.starts_with('└') && row.ends_with('┘')),
+            rows.iter().any(|row| row.starts_with("│  command:")),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.starts_with("│  name: build")),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.starts_with("│    printf 'first")),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.starts_with("│    second")),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.starts_with("│RESULT ✓ 1.2s")),
             "{rows:?}"
         );
         for row in &rows[1..rows.len() - 1] {
             assert!(row.starts_with('│'), "{rows:?}");
             assert!(row.ends_with('│'), "{rows:?}");
         }
-        assert!(rows.iter().any(|row| row.contains("bash")), "{rows:?}");
         assert!(
-            rows.iter().any(|row| row.contains("name=build")),
+            rows.last()
+                .is_some_and(|row| row.starts_with('└') && row.ends_with('┘')),
             "{rows:?}"
         );
-        assert!(rows.iter().any(|row| row.contains("stderr")), "{rows:?}");
     }
 }

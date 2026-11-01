@@ -74,6 +74,9 @@ const GLUE_GAP: Duration = Duration::from_millis(150);
 /// Text keys inside one [`PASTE_GAP`] that a keyboard cannot produce.
 const MACHINE_RUN: usize = 3;
 
+/// Above this block size, or with no cap, an exhausted inner wheel continues outside.
+const SCROLL_CHAIN_BLOCK_SIZE: usize = 6;
+
 /// What Alt+<key> does to the terminal itself, rather than to the conversation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConsoleAction {
@@ -304,7 +307,7 @@ impl Screen {
     }
 
     /// Scrolls the item under a pointer, or its pane when there is no open item.
-    /// An open item consumes the wheel even when its own scroll is at an end.
+    /// Large or unbounded items can hand an exhausted wheel to the outer pane.
     pub fn scroll_at(&mut self, width: u16, height: u16, column: u16, row: u16, rows: i64) -> bool {
         let Some(hit) = self.session_at_row(width, height, column, row) else {
             return false;
@@ -313,8 +316,11 @@ impl Screen {
             && let Some(at) = self.item_at(width, height, column, row)
             && self.panes.expanded_at(at)
         {
-            self.panes.scroll_block(at, rows);
-            return true;
+            // Large and unbounded boxes hand an exhausted wheel to the pane.
+            // Small boxes keep it, so reading a short result never moves the log.
+            if self.panes.scroll_block(at, rows, SCROLL_CHAIN_BLOCK_SIZE) {
+                return true;
+            }
         }
         if hit.part != Part::List {
             self.scroll_pane(&hit.name, rows);
@@ -642,6 +648,12 @@ impl Tui {
     /// Replaces what one block holds: a call's structure, once it is known.
     pub fn rewrite(&mut self, _name: &str, key: &str, text: &str) {
         self.screen.panes.rewrite(key, text);
+        self.dirty = true;
+    }
+
+    /// Shows a call's name and fields as a structured section.
+    pub fn describe(&mut self, name: &str, key: &str, head: &cli::protocol::Head) {
+        self.screen.panes.describe(name, key, head);
         self.dirty = true;
     }
 
@@ -2461,6 +2473,11 @@ mod tests {
     #[test]
     fn an_inner_box_at_its_end_does_not_scroll_the_outer_pane() {
         let mut h = Headless::new();
+        for row in 0..40 {
+            h.screen
+                .panes
+                .line("main", LineKind::System, format!("other {row}"));
+        }
         h.stream("c:c1", LineKind::ToolCall, "bash ", "bash", true);
         for row in 0..8 {
             h.screen.panes.resolve(
@@ -2476,11 +2493,6 @@ mod tests {
             .panes
             .resolve("main", "c:c1", "1.0s ", LineKind::ToolOutput, "", true);
         h.screen.panes.set_block_size(2);
-        for row in 0..40 {
-            h.screen
-                .panes
-                .line("main", LineKind::System, format!("other {row}"));
-        }
         let (width, height) = (40u16, 14u16);
         assert!(h.screen.panes.toggle("c:c1"));
         let slot = h
@@ -2489,24 +2501,39 @@ mod tests {
             .into_iter()
             .find(|slot| slot.name == "main")
             .expect("main's pane");
-        let content_width = slot.body.width.saturating_sub(1).max(1) as usize;
-        let outer = h
-            .screen
-            .panes
-            .rows(View::Window("main"), content_width)
-            .saturating_sub(slot.body.height as usize);
-        h.screen.panes.get_mut("main").expect("main's pane").scroll = outer;
-        assert!(outer > 0, "the outer pane has somewhere to move");
-        assert!(
-            h.screen
-                .scroll_at(width, height, slot.body.x, slot.body.y, -100)
-        );
-        assert_eq!(h.pane_scroll("main"), outer, "at the inner bottom");
-        assert!(
-            h.screen
-                .scroll_at(width, height, slot.body.x, slot.body.y, 100)
-        );
-        assert_eq!(h.pane_scroll("main"), outer, "at the inner top");
+        let row = (slot.body.y..slot.body.bottom())
+            .find(|row| {
+                h.screen
+                    .item_at(width, height, slot.body.x, *row)
+                    .is_some_and(|at| h.screen.panes.expanded_at(at))
+            })
+            .expect("the expanded item on screen");
+        for rows in [-100, 100] {
+            h.screen.scroll_at(width, height, slot.body.x, row, rows);
+            assert_eq!(h.pane_scroll("main"), 0, "small box owns its wheel");
+        }
+    }
+
+    /// Large and unbounded inner boxes pass an exhausted wheel to the outer pane.
+    #[test]
+    fn a_large_or_unbounded_inner_box_chains_scroll_at_its_end() {
+        for size in [7, 0] {
+            let mut h = Headless::new();
+            for row in 0..40 {
+                h.screen
+                    .panes
+                    .line("main", LineKind::System, format!("other {row}"));
+            }
+            h.stream("c:c1", LineKind::ToolCall, "bash ", "bash", true);
+            h.screen.panes.set_block_size(size);
+            assert!(h.screen.panes.toggle("c:c1"));
+            let outer = 10;
+            h.screen.panes.get_mut("main").expect("main's pane").scroll = outer;
+            // The pointer lands on this exact open item, so there is no outer
+            // fallback until its own scroll is exhausted in the wheel's direction.
+            assert!(!h.screen.panes.scroll_block(41, -1, 6), "block size {size}");
+            assert_eq!(h.pane_scroll("main"), outer, "block size {size}");
+        }
     }
 
     /// The cell a click lands on decides which of SPEC's gestures it is: a row

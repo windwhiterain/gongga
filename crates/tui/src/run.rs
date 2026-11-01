@@ -62,6 +62,9 @@ impl Sink for TuiSink<'_> {
     fn rewrite(&mut self, window: &str, key: &str, text: &str) {
         self.0.rewrite(window, key, text);
     }
+    fn tool_call(&mut self, window: &str, key: &str, head: &cli::protocol::Head, _streamed: bool) {
+        self.0.describe(window, key, head);
+    }
 
     fn relabel(&mut self, window: &str, key: &str, tag: &str, kind: LineKind) {
         self.0.relabel(window, key, tag, kind);
