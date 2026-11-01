@@ -865,6 +865,10 @@ impl Client {
                     self.refresh(sink);
                 }
             }
+            // A log row is data, not conversation: the window draws what was said,
+            // and `events` is how a reader asks for the rest. Drawing these live
+            // would put `step_timing` next to the model's answer.
+            Event::Record { .. } => {}
             Event::Log { level, message } => {
                 if shown {
                     let kind = match level {

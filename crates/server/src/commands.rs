@@ -325,6 +325,46 @@ pub fn server_catalog() -> Vec<CommandSpec> {
         },
         CommandSpec {
             target: CommandTarget::Server,
+            name: "events".into(),
+            description: "Read the server's event log: one row per thing that happened, oldest \
+                     first, as `{id, kind, payload}`. A cursor, not a transcript -- keep the \
+                     last id and ask again from there."
+                .into(),
+            args: vec![
+                arg(
+                    "since",
+                    "Return rows after this log id, exclusive. Omit for the whole log; pass the \
+                     `last_id` of the previous answer to continue where it stopped.",
+                    false,
+                    Some("id"),
+                    CompletionSource::None,
+                ),
+                arg(
+                    "kind",
+                    "Only this kind of row, e.g. `turn_end`, `tool_result`, `step_timing`.",
+                    false,
+                    Some("kind"),
+                    CompletionSource::None,
+                ),
+                arg(
+                    "session",
+                    "Only rows about this session. Rows that belong to no session (a start, a \
+                     migration) are left out when this is given.",
+                    false,
+                    Some("name"),
+                    CompletionSource::Sessions,
+                ),
+                arg(
+                    "limit",
+                    "At most this many rows, oldest first. The default is 200.",
+                    false,
+                    Some("n"),
+                    CompletionSource::None,
+                ),
+            ],
+        },
+        CommandSpec {
+            target: CommandTarget::Server,
             name: "get_messages".into(),
             description: "Read the transcript: a range of sequence numbers, oldest first. \
                      Each row arrives as the event it was published as, before the result."
@@ -404,6 +444,7 @@ pub async fn dispatch(d: &Dispatch, name: &str, args: &Args) -> Outcome {
         "interrupt_session" => interrupt_session(d, args).await,
         "cancel" => cancel(d).await,
         "get_messages" => get_messages(d, args).await,
+        "events" => events(d, args).await,
         // Published as a server command but unhandled: a catalog bug, named.
         other => Outcome::err(format!(
             "{other} is published as a server command but has no handler"
@@ -807,6 +848,83 @@ async fn get_messages(d: &Dispatch, args: &Args) -> Outcome {
         Err(e) => return Outcome::err(e.to_string()),
     };
     transcript_outcome(&name, t)
+}
+
+/// The log, after a cursor: what a subscriber reads, and what a watcher polls.
+///
+/// # Invariant
+///
+/// One row in, one event out, and the payload is passed through untouched. This
+/// handler knows no kinds -- it cannot, because the point of the log is that a
+/// new kind is a row, not a wire change. A payload that is not JSON is kept as a
+/// string rather than dropped: a row that exists is a fact, and a reader that
+/// cannot parse it is better off seeing that than seeing nothing.
+async fn events(d: &Dispatch, args: &Args) -> Outcome {
+    let after = match args.get("since").map(String::as_str) {
+        None => 0,
+        Some(raw) => match raw.trim().parse::<i64>() {
+            Ok(n) if n >= 0 => n,
+            _ => return Outcome::err(format!("since wants a log id, not {raw:?}")),
+        },
+    };
+    let kind = args
+        .get("kind")
+        .map(String::as_str)
+        .filter(|k| !k.is_empty());
+    let session = match args.get("session").map(String::as_str) {
+        None => None,
+        Some(name) => match d.sessions.get(name) {
+            Ok(s) => Some(s.id()),
+            Err(e) => return Outcome::err(e.to_string()),
+        },
+    };
+    let limit = match args.get("limit").map(String::as_str) {
+        None => 200,
+        Some(raw) => match raw.trim().parse::<u32>() {
+            Ok(n) if n > 0 => n.min(5000),
+            _ => return Outcome::err(format!("limit wants a count above zero, not {raw:?}")),
+        },
+    };
+    let rows = match d.store.events_after(after, kind, session, limit) {
+        Ok(rows) => rows,
+        Err(e) => return Outcome::err(e.to_string()),
+    };
+    // Names for the rows that have one: a reader should not have to hold the
+    // session table in its head to know whose `turn_end` it just read. Read once,
+    // as a map: a page is up to `limit` rows and one query per row would be silly.
+    let names: std::collections::HashMap<i64, String> = match d.sessions.list() {
+        Ok(list) => list.into_iter().map(|r| (r.id, r.name)).collect(),
+        Err(_) => std::collections::HashMap::new(),
+    };
+    let mut events = Vec::with_capacity(rows.len());
+    let mut last_id = after;
+    for row in &rows {
+        let payload = serde_json::from_str(&row.payload)
+            .unwrap_or_else(|_| serde_json::Value::String(row.payload.clone()));
+        last_id = row.id;
+        events.push(Event::Record {
+            id: row.id,
+            seq: row.seq,
+            session: row.session_id.and_then(|id| names.get(&id).cloned()),
+            kind: row.kind.clone(),
+            payload,
+            at: row.created_at,
+        });
+    }
+    let message = if rows.is_empty() {
+        format!("no rows after id {after}")
+    } else {
+        format!("{} row(s), id {after}..{last_id}", rows.len())
+    };
+    Outcome::ok_with(
+        message,
+        json!({
+            "count": rows.len(),
+            "last_id": last_id,
+            "since": after,
+        }),
+    )
+    .with_events(events)
 }
 
 /// The reply `get_messages` makes: the window and where the transcript ends.
@@ -1336,6 +1454,7 @@ mod tests {
             vec![
                 "cancel",
                 "del_session",
+                "events",
                 "get_messages",
                 "interrupt_session",
                 "send_message",
@@ -1524,8 +1643,10 @@ mod tests {
     #[test]
     fn every_command_takes_a_session_or_a_message() {
         for spec in server_catalog() {
-            // `cancel` names nothing: it is a whole-server stop.
-            if spec.name == "cancel" {
+            // Two commands name no session and need none: `cancel` is a
+            // whole-server stop, and `events` reads the log of everything --
+            // asking for one session is a filter it offers, not a requirement.
+            if spec.name == "cancel" || spec.name == "events" {
                 continue;
             }
             let required: Vec<&str> = spec
@@ -1545,6 +1666,18 @@ mod tests {
                 spec.name
             );
         }
+        // The two that name none still offer it as an optional filter, spelled
+        // the same way, so a sticky `session` applies to them too.
+        let events = server_catalog()
+            .into_iter()
+            .find(|c| c.name == "events")
+            .expect("the log is published");
+        let session = events
+            .args
+            .iter()
+            .find(|a| a.name == "session")
+            .expect("events offers a session filter");
+        assert!(!session.required, "filtering the log by session is optional");
     }
 
     /// Every completion source must survive the wire, or Tab silently offers nothing.

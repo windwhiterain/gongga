@@ -136,6 +136,28 @@ pub enum Event {
     Usage(UsageEvent),
     /// What is left at a provider, read at a step's end. See [`Quota`].
     Quota(Quota),
+    /// One row of the server's event log, as the log keeps it.
+    ///
+    /// # Invariant
+    ///
+    /// The shape is `kind` plus a free-form `payload`, never a variant per kind.
+    /// The log is append-only data -- `turn_end`, `step_timing`, `tool_result`,
+    /// `usage`, and whatever a script emits tomorrow -- so a closed enum here
+    /// would mean a wire change for every new kind, which is the cost this whole
+    /// mechanism exists to remove. A reader switches on `kind` and ignores what it
+    /// does not know.
+    Record {
+        /// The log's own id: a cursor, monotonic over the whole table.
+        id: i64,
+        /// Where this sits in the session's own sequence, when it has one.
+        seq: i64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session: Option<String>,
+        kind: String,
+        payload: serde_json::Value,
+        /// Milliseconds since the epoch, as the log wrote it.
+        at: i64,
+    },
 }
 
 impl Event {
@@ -154,6 +176,7 @@ impl Event {
             Event::ToolAnswer(e) => Some(e.session.as_str()),
             Event::Status { session, .. } => Some(session.as_str()),
             Event::Usage(e) => Some(e.session.as_str()),
+            Event::Record { session, .. } => session.as_deref(),
             Event::Cmd { .. } | Event::CmdResult { .. } | Event::Sessions { .. } => None,
             Event::Log { .. } | Event::Quota(_) => None,
         }

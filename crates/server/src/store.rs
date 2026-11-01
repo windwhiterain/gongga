@@ -795,6 +795,55 @@ impl Store {
         Ok(())
     }
 
+    /// Log rows after a cursor, oldest first, as the log keeps them.
+    ///
+    /// # Invariant
+    ///
+    /// `after` is exclusive and is the log's `id`, not the session's `seq`: one
+    /// cursor has to mean one place in one stream, and the id is monotonic over
+    /// the whole table while `seq` is only monotonic per session. A reader that
+    /// keeps the last id it saw resumes exactly where it stopped, with no
+    /// overlap and no gap.
+    ///
+    /// `kind` and `session` are filters on the way out, never on the way in:
+    /// what is stored is the whole log, and a reader that wants one kind says so.
+    pub fn events_after(
+        &self,
+        after: i64,
+        kind: Option<&str>,
+        session: Option<i64>,
+        limit: u32,
+    ) -> anyhow::Result<Vec<EventRow>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, seq, session_id, kind, payload, created_at FROM events
+             WHERE id > ?1
+               AND (?2 IS NULL OR kind = ?2)
+               AND (?3 IS NULL OR session_id = ?3)
+             ORDER BY id ASC
+             LIMIT ?4",
+        )?;
+        let rows = stmt
+            .query_map(params![after, kind, session, limit], |r| {
+                Ok(EventRow {
+                    id: r.get(0)?,
+                    seq: r.get(1)?,
+                    session_id: r.get(2)?,
+                    kind: r.get(3)?,
+                    payload: r.get(4)?,
+                    created_at: r.get(5)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// How far the log has got, so a first read can start at "now".
+    pub fn last_event_id(&self) -> anyhow::Result<i64> {
+        let conn = self.lock();
+        Ok(conn.query_row("SELECT COALESCE(MAX(id), 0) FROM events", [], |r| r.get(0))?)
+    }
+
     // -- pending tasks ------------------------------------------------------
 
     /// Records work that has started but not finished, before it runs.
@@ -1083,6 +1132,20 @@ pub struct SessionRow {
 
 /// A window of the transcript plus where it ends, as `get_messages` reports it.
 ///
+/// One row of the event log, still as stored: `payload` is the JSON text.
+///
+/// Parsing it is the caller's step, because what a payload means is `kind`'s
+/// business and this layer deliberately knows no kinds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventRow {
+    pub id: i64,
+    pub seq: i64,
+    pub session_id: Option<i64>,
+    pub kind: String,
+    pub payload: String,
+    pub created_at: i64,
+}
+
 /// # Invariant
 ///
 /// `status` and `last_seq` come from the same snapshot: a reader is not told
@@ -1781,6 +1844,58 @@ mod tests {
         assert_eq!(rows[0].log, "C:/tmp/main-1.log");
         store.delete_detached_job(id).unwrap();
         assert!(store.detached_jobs().unwrap().is_empty());
+    }
+
+    /// The log is read after a cursor, and only what the reader asked for.
+    ///
+    /// # Invariant
+    ///
+    /// `after` is exclusive and it is the log id, so a reader that keeps the last
+    /// id it saw resumes exactly where it stopped: no row twice, no row missed.
+    /// The filters narrow what comes out; they never change what was kept.
+    #[test]
+    fn the_event_log_is_read_after_a_cursor_and_filtered_on_the_way_out() {
+        let (_dir, store) = temp_store();
+        let alpha = store.create_session("alpha", "m", "C:/x").unwrap();
+        let beta = store.create_session("beta", "m", "C:/y").unwrap();
+        for (session, kind) in [
+            (Some(alpha), "turn_end"),
+            (Some(beta), "turn_end"),
+            (Some(alpha), "tool_result"),
+            (None, "startup"),
+            (Some(alpha), "turn_end"),
+        ] {
+            store
+                .append_event(session, kind, &serde_json::json!({"kind": kind}))
+                .unwrap();
+        }
+
+        // Everything, in the order it was written.
+        let all = store.events_after(0, None, None, 100).unwrap();
+        assert_eq!(all.len(), 5);
+        assert!(all.windows(2).all(|w| w[0].id < w[1].id), "oldest first");
+
+        // The cursor is exclusive: the row it names is already read.
+        let after_first = store.events_after(all[0].id, None, None, 100).unwrap();
+        assert_eq!(after_first.len(), 4);
+        assert_eq!(after_first[0].id, all[1].id);
+
+        // A kind, a session, and both.
+        let ends = store.events_after(0, Some("turn_end"), None, 100).unwrap();
+        assert_eq!(ends.len(), 3);
+        // alpha wrote three, beta one, and `startup` belongs to no session --
+        // which is exactly the row a session filter leaves out.
+        let about_alpha = store.events_after(0, None, Some(alpha), 100).unwrap();
+        assert_eq!(about_alpha.len(), 3);
+        let alpha_ends = store
+            .events_after(0, Some("turn_end"), Some(alpha), 100)
+            .unwrap();
+        assert_eq!(alpha_ends.len(), 2);
+
+        // A limit is a page, not a filter: the cursor still advances.
+        let page = store.events_after(0, None, None, 2).unwrap();
+        assert_eq!(page.len(), 2);
+        assert_eq!(store.last_event_id().unwrap(), all.last().unwrap().id);
     }
 
     /// The measured context size survives a restart, for the next run's first request.
