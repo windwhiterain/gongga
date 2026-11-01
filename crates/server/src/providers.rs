@@ -248,15 +248,30 @@ impl Catalog {
     /// A provider whose credential resolves takes part; one that names a key this
     /// machine does not have is left out, because offering it would offer a model
     /// on which every request fails. See `docs/notes/server-providers.md`.
+    ///
+    /// "Resolves" means the same thing here as in `resolve`: the keystore first,
+    /// then the variable. Reading only the environment -- which is what this did
+    /// -- offered the two providers a shell happened to export and hid every key
+    /// a machine keeps in `~/.agents/keys.toml`, which is where they live now.
     pub fn models(&self) -> Vec<String> {
-        self.models_with(&lookup_env)
+        self.models_with_kept(&lookup_env, &|id| self.keys.get(id).cloned())
     }
 
     /// The same list, with the credential looked up by `lookup`: what a test drives.
     pub fn models_with(&self, lookup: &dyn Fn(&str) -> Option<String>) -> Vec<String> {
+        self.models_with_kept(lookup, &|_| None)
+    }
+
+    /// Both halves of the credential, so a caller decides which sources it means.
+    fn models_with_kept(
+        &self,
+        lookup: &dyn Fn(&str) -> Option<String>,
+        kept: &dyn Fn(&str) -> Option<String>,
+    ) -> Vec<String> {
         let mut out = Vec::new();
         for provider in &self.providers {
-            if credential(provider, lookup, None).is_none() {
+            let in_keystore = kept(&provider.id);
+            if credential(provider, lookup, in_keystore.as_ref()).is_none() {
                 continue;
             }
             for model in &provider.models {
@@ -1024,6 +1039,28 @@ id = "anthropic-only"
             by_env.len(),
             c.providers[0].models.len(),
             "every model of a keyed provider is offered"
+        );
+    }
+
+    /// The other half of the rule above: a key this machine keeps in its
+    /// keystore is a credential, and a completion that cannot see it offers only
+    /// whatever a shell happened to export.
+    #[test]
+    fn a_provider_whose_key_is_in_the_keystore_is_offered() {
+        let c = catalog();
+        let offered = c.models(); // the real lookup: the environment in a test is empty
+        assert!(
+            offered.iter().any(|m| m.starts_with("deepseek-official/")),
+            "a kept key is a credential: {offered:?}"
+        );
+        assert_eq!(
+            offered.len(),
+            c.providers
+                .iter()
+                .filter(|p| c.keys.contains_key(&p.id))
+                .map(|p| p.models.len())
+                .sum::<usize>(),
+            "every provider with a key, and only those: {offered:?}"
         );
     }
 
