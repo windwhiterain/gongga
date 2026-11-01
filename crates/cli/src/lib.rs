@@ -720,6 +720,25 @@ impl Client {
                 sink.note(LineKind::Error, &format!("connection refused: {reason}"));
             }
             ServerMessage::Event(event) => self.handle_event(event, sink),
+            // A kind this build does not know. Saying so is the whole point: the
+            // alternative is a front-end that dies because the server learned a
+            // new word. The tag is what a reader needs to see -- the payload is
+            // the sending side's business.
+            ServerMessage::Unknown { event, .. } => {
+                let kind = event
+                    .get("t")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("?")
+                    .to_string();
+                let session = event.get("session").and_then(|s| s.as_str());
+                sink.note(
+                    LineKind::System,
+                    &format!(
+                        "[{kind}] an event this build does not know (session: {})",
+                        session.unwrap_or("-")
+                    ),
+                );
+            }
         }
     }
 
@@ -1662,8 +1681,17 @@ async fn run_once(client: &mut Client, link: &mut Link, command: &[String]) -> a
         let Some(bytes) = link.recv().await else {
             anyhow::bail!("server disconnected");
         };
-        let ServerMessage::Event(event) = decode_server(&bytes)? else {
-            continue;
+        let event = match decode_server(&bytes)? {
+            ServerMessage::Event(event) => event,
+            // A kind this build does not know: printed as it arrived and never
+            // attributed to a session, because this build cannot read which one
+            // it names. `--json` gets the bytes, so a script can decide.
+            ServerMessage::Unknown { event, .. } => {
+                println!("{}", serde_json::to_string(&event)?);
+                continue;
+            }
+            // The greeting and the refusal are the handshake's, not this answer's.
+            ServerMessage::Hello { .. } | ServerMessage::Denied { .. } => continue,
         };
         // Feed the client too: a one-shot `set_session` still leaves a sticky
         // `session` behind.

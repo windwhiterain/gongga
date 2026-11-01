@@ -7,6 +7,34 @@ is not the smallest encoding available, but this protocol carries human-scale
 events at human speed, and being able to read a datagram in a packet dump is
 worth more than the bytes.
 
+## ServerMessage::Unknown, and why events are not a closed set
+
+`Event` is an internally tagged enum, and serde refuses a `t` it does not know.
+That made adding a kind of event a *breaking* change: the server learned a new
+word, and a front-end built before it failed to parse the frame and lost the
+connection. Every addition was a lockstep upgrade of every client, which is why
+"publish one event" used to look expensive.
+
+`decode_server` now falls back. When the outer tag says `event` and the payload is
+an object carrying a `t` of its own, the bytes are kept as `Unknown { event, why }`
+and the client shows the kind instead of dying. Two shapes reach it:
+
+* a `t` this build does not know — a newer server's event;
+* a `t` this build knows, in a shape it cannot read — the server learned a
+  required field first.
+
+Both are the same situation from the reader's side, and neither is worth losing
+the connection over.
+
+The fallback stops where the frame stops being an event. A corrupt frame, an
+outer tag nobody publishes, or an `event` payload with no tag of its own is still
+an error: a tolerant decoder that accepts anything turns a bug into a silent gap.
+
+The one-shot CLI prints an unknown event's bytes to stdout and never attributes it
+to a session, because it cannot read which one it names. The window draws a
+system line naming the kind. `crates/bridge` ignores it, which is right: a bridge
+relays messages, and an event it cannot read is not one of them.
+
 ## ClientMessage::Hello
 
 The server answers with `ServerMessage::Hello`, or `ServerMessage::Denied` when

@@ -61,6 +61,24 @@ pub enum ServerMessage {
     Denied { reason: String },
     /// A single streamed observable.
     Event(Event),
+    /// An event whose `t` this build does not know, or whose shape it cannot read.
+    ///
+    /// # Invariant
+    ///
+    /// A new kind of event is not a breaking change. The wire is decoded by the
+    /// binary that happens to be running, and a client built before an event
+    /// existed would otherwise fail to parse the message and lose the whole
+    /// connection -- which made every addition a lockstep upgrade of every
+    /// front-end. Here the bytes are kept as they arrived: a reader that knows
+    /// the kind prints it, one that does not shows it as unknown instead of
+    /// dying. See `docs/notes/protocol-message.md`.
+    Unknown {
+        /// The event exactly as it arrived, so a front-end can pass it on.
+        event: serde_json::Value,
+        /// Why this build could not read it: what a reader needs to tell a newer
+        /// server from a corrupt frame.
+        why: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -689,13 +707,90 @@ pub fn encode_server(msg: &ServerMessage) -> Result<Vec<u8>, serde_json::Error> 
     serde_json::to_vec(msg)
 }
 
+/// Reads one message, keeping an event it does not recognise rather than failing.
+///
+/// # Invariant
+///
+/// Only a message that *is* an event falls back: the outer tag has to say
+/// `event` and the payload has to be an object with a `t` of its own. Anything
+/// else fails as it did before, because a corrupt frame is a real error and
+/// hiding it would turn a bug into a silent gap.
+///
+/// A recognised tag whose fields this build cannot read falls back as well --
+/// that is the same situation one step along: the server learned a required
+/// field before this client did.
 pub fn decode_server(bytes: &[u8]) -> Result<ServerMessage, serde_json::Error> {
-    serde_json::from_slice(bytes)
+    let error = match serde_json::from_slice::<ServerMessage>(bytes) {
+        Ok(message) => return Ok(message),
+        Err(error) => error,
+    };
+    match unrecognised_event(bytes) {
+        Some(unknown) => Ok(unknown),
+        None => Err(error),
+    }
+}
+
+/// The event a build cannot read, if that is what these bytes are.
+fn unrecognised_event(bytes: &[u8]) -> Option<ServerMessage> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    if value.get("t").and_then(|t| t.as_str()) != Some("event") {
+        return None;
+    }
+    let event = value.get("v")?.clone();
+    // An event is an object with a tag of its own; anything else is not one.
+    event.get("t").and_then(|t| t.as_str())?;
+    Some(ServerMessage::Unknown {
+        event,
+        why: "this build does not know that kind of event".to_string(),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A kind this build does not know must not cost the connection.
+    ///
+    /// # Invariant
+    ///
+    /// The wire is decoded by whichever binary is running, and a front-end built
+    /// before an event existed cannot be rebuilt retroactively. Failing here would
+    /// make every addition a lockstep upgrade -- which is the cost this test
+    /// exists to stop anybody paying again.
+    #[test]
+    fn an_event_from_a_newer_server_is_kept_not_refused() {
+        let wire = br#"{"t":"event","v":{"t":"quota_forecast","session":"main","left":3}}"#;
+        let message = decode_server(wire).expect("an unknown kind is not a broken frame");
+        match message {
+            ServerMessage::Unknown { event, .. } => {
+                assert_eq!(event["t"], "quota_forecast");
+                assert_eq!(event["left"], 3, "and it is kept, not summarised away");
+            }
+            other => panic!("expected an unknown event, got {other:?}"),
+        }
+    }
+
+    /// The fallback is for events only: a corrupt frame stays an error.
+    ///
+    /// # Invariant
+    ///
+    /// A tolerant decoder that accepts anything turns a bug into a silent gap. So
+    /// the two things that make a message an event -- the outer tag and a tag of
+    /// its own -- are both required before the bytes are kept.
+    #[test]
+    fn a_frame_that_is_not_an_event_still_fails() {
+        // An outer tag nobody publishes.
+        assert!(decode_server(br#"{"t":"nonsense","v":{}}"#).is_err());
+        // An event with no tag of its own: malformed, not merely newer.
+        assert!(decode_server(br#"{"t":"event","v":{"session":"main"}}"#).is_err());
+        // A kind this build knows but a shape it cannot read is kept too: the day
+        // a server adds a required field, an older client keeps the event instead
+        // of losing the connection. It is still named, so a reader can tell.
+        match decode_server(br#"{"t":"event","v":{"t":"status","session":7}}"#) {
+            Ok(ServerMessage::Unknown { event, .. }) => assert_eq!(event["t"], "status"),
+            other => panic!("a shape this build cannot read is kept, got {other:?}"),
+        }
+    }
 
     #[test]
     fn events_are_tagged_tightly() {
