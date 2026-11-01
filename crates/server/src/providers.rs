@@ -169,59 +169,40 @@ impl Catalog {
     /// Reads one roster, or reports why it could not: what a test drives.
     #[cfg(test)]
     pub fn load(path: &Path) -> Self {
-        Self::load_layers(std::slice::from_ref(&path.to_path_buf()))
+        Self::load_file(&path)
     }
 
-    /// Reads every roster that exists and merges them, later files over earlier.
+    /// Reads the one roster file this machine has.
     ///
     /// # Invariant
     ///
-    /// A missing layer is not a problem worth a line, and a broken one costs only
-    /// itself: the layers that did parse still answer `--model`. See
+    /// One file, not a stack of overlays: a machine's own entries are a branch of
+    /// the repository the file lives in (`local`), so an upstream change is a
+    /// rebase and there is nothing here to merge. See
     /// `docs/notes/server-providers.md`.
-    pub fn load_layers(paths: &[PathBuf]) -> Self {
+    ///
+    /// A missing file is not a problem worth a line; an unreadable one is, and it
+    /// is the only thing that keeps `--model` from answering.
+    pub fn load_file(path: &Path) -> Self {
         let mut catalog = Self {
-            paths: paths.to_vec(),
+            paths: vec![path.to_path_buf()],
             providers: Vec::new(),
             problem: None,
             generation: 0,
         };
-        let mut merged: Option<toml::Value> = None;
-        for path in paths {
-            let text = match std::fs::read_to_string(path) {
-                Ok(text) => text,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(e) => {
-                    catalog
-                        .problem
-                        .get_or_insert(format!("{}: {e}", path.display()));
-                    continue;
-                }
-            };
-            match toml::from_str::<toml::Value>(&text) {
+        match std::fs::read_to_string(path) {
+            Ok(text) => match toml::from_str::<toml::Value>(&text) {
                 Ok(mut value) => {
                     resolve_scripts(&mut value, path.parent());
-                    match &mut merged {
-                        Some(base) => merge_into(base, value),
-                        None => merged = Some(value),
+                    match parse_value(value) {
+                        Ok(providers) => catalog.providers = providers,
+                        Err(e) => catalog.problem = Some(format!("{}: {e}", path.display())),
                     }
                 }
-                Err(e) => {
-                    catalog
-                        .problem
-                        .get_or_insert(format!("{}: {e}", path.display()));
-                }
-            }
-        }
-        match merged.map(parse_value) {
-            Some(Ok(providers)) => catalog.providers = providers,
-            Some(Err(e)) => {
-                let layers: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
-                catalog
-                    .problem
-                    .get_or_insert(format!("{} (merged): {e}", layers.join(", ")));
-            }
-            None => {}
+                Err(e) => catalog.problem = Some(format!("{}: {e}", path.display())),
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => catalog.problem = Some(format!("{}: {e}", path.display())),
         }
         catalog
     }
@@ -666,49 +647,6 @@ fn resolve_scripts(value: &mut toml::Value, dir: Option<&Path>) {
     }
 }
 
-/// Lays `over` onto `base`: tables key by key, `[[tables]]` by their `id`.
-///
-/// # Invariant
-///
-/// A key only `over` has is added, and one both have is merged, never dropped:
-/// the private file may name one field of a provider and leave the rest to the
-/// community copy. Array order is the base's, so the preference order a roster
-/// spells with file order survives the merge.
-fn merge_into(base: &mut toml::Value, over: toml::Value) {
-    match (base, over) {
-        (toml::Value::Table(base), toml::Value::Table(over)) => {
-            for (key, value) in over {
-                match base.get_mut(&key) {
-                    Some(slot) => merge_into(slot, value),
-                    None => {
-                        base.insert(key, value);
-                    }
-                }
-            }
-        }
-        (toml::Value::Array(base), toml::Value::Array(over)) if by_id(base, &over) => {
-            for element in over {
-                let id = element.get("id").cloned();
-                match base
-                    .iter_mut()
-                    .find(|candidate| candidate.get("id").cloned() == id)
-                {
-                    Some(slot) => merge_into(slot, element),
-                    None => base.push(element),
-                }
-            }
-        }
-        (slot, over) => *slot = over,
-    }
-}
-
-/// Whether both arrays are tables a merge can pair up by `id` rather than replace.
-fn by_id(base: &[toml::Value], over: &[toml::Value]) -> bool {
-    base.iter()
-        .chain(over.iter())
-        .all(|v| v.get("id").map(|id| id.is_str()).unwrap_or(false))
-}
-
 /// The file state a roster was read from: enough to notice an edit without
 /// hashing the file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -776,7 +714,7 @@ static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::
 fn roster_paths() -> Vec<PathBuf> {
     match std::env::var("GONGGA_PROVIDERS_CATALOG") {
         Ok(over) if !over.is_empty() => vec![PathBuf::from(over)],
-        _ => crate::agents::Roots::of().rosters(),
+        _ => vec![crate::agents::Roots::of().roster()],
     }
 }
 
@@ -794,7 +732,7 @@ fn stamps(paths: &[PathBuf]) -> Vec<Option<Stamp>> {
 
 /// One read of every roster file, stamped with the generation it belongs to.
 fn read_fresh(paths: &[PathBuf]) -> Catalog {
-    let mut catalog = Catalog::load_layers(paths);
+    let mut catalog = Catalog::load_file(&paths[0]);
     catalog.generation = GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     catalog
 }
@@ -1087,11 +1025,10 @@ unit = "percent-left"
         assert!(catalog.quota_of("nobody").is_none());
     }
 
-    /// A `script` is a path inside the layer that wrote it: resolved before merging.
+    /// A `script` is a path inside the roster that wrote it.
     #[test]
-    fn a_quota_script_resolves_against_its_own_layer() {
-        let community = tempfile::tempdir().unwrap();
-        let private = tempfile::tempdir().unwrap();
+    fn a_quota_script_resolves_against_the_roster_that_wrote_it() {
+        let roster = tempfile::tempdir().unwrap();
         let text = r#"[[provider]]
 id = "p"
 [[provider.model]]
@@ -1100,17 +1037,16 @@ id = "m"
 id = "wallet"
 script = "providers/p.py"
 "#;
-        let base = community.path().join("providers.toml");
-        let over = private.path().join("providers.toml");
-        std::fs::write(&base, text).unwrap();
-        std::fs::write(&over, text).unwrap();
-        let catalog = Catalog::load_layers(&[base.clone(), over.clone()]);
+        let path = roster.path().join("providers.toml");
+        std::fs::write(&path, text).unwrap();
+        let catalog = Catalog::load_file(&path);
         let script = catalog.providers()[0].quota[0]
             .script
             .clone()
             .expect("a script");
-        // The later layer wins the merge, and its own directory comes with it.
-        assert_eq!(script, private.path().join("providers").join("p.py"));
+        // Relative to the file that named it, which is what makes the path mean
+        // anything next to a roster clone.
+        assert_eq!(script, roster.path().join("providers").join("p.py"));
         assert!(script.is_absolute());
     }
 
@@ -1247,105 +1183,42 @@ key = "k"
         assert!(c.default_entry().is_none());
     }
 
-    /// The community copy is the base; the private one overrides field by field.
+    /// A machine's key is a field of the same roster, not a file of its own.
     #[test]
-    fn a_private_field_overrides_the_community_one() {
+    fn a_machines_key_is_a_field_of_the_roster() {
         let d = tempfile::tempdir().unwrap();
-        let community = d.path().join("community.toml");
-        let private = d.path().join("private.toml");
+        let path = d.path().join("providers.toml");
         std::fs::write(
-            &community,
+            &path,
             r#"
 [[provider]]
 id = "shared"
 name = "Shared"
 key_env = "SHARED_API_KEY"
+key = "the-machines-key"
   [[provider.endpoint]]
   id = "openai"
   api = "openai-responses"
-  base_url = "https://community.example/v1"
+  base_url = "https://shared.example/v1"
   [[provider.model]]
   id = "m1"
   context = 1000
-  [[provider.model]]
-  id = "m2"
-  context = 2000
-[[provider]]
-id = "community-only"
-  [[provider.endpoint]]
-  api = "openai-responses"
-  base_url = "https://only.example/v1"
-  [[provider.model]]
-  id = "m"
 "#,
         )
         .unwrap();
-        // Only what this machine knows differently: one endpoint host, one key.
-        std::fs::write(
-            &private,
-            r#"
-[[provider]]
-id = "shared"
-key = "private-key"
-  [[provider.endpoint]]
-  id = "openai"
-  base_url = "https://private.example/v1"
-  [[provider.model]]
-  id = "m2"
-  context = 9000
-"#,
-        )
-        .unwrap();
-        let c = Catalog::load_layers(&[community, private]);
-        let ids: Vec<&str> = c.providers().iter().map(|p| p.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            ["shared", "community-only"],
-            "community order, then new"
-        );
-
-        // The endpoint stays the community one, with the private host on it.
-        let entry = c.entry("shared/m1").unwrap();
-        assert_eq!(
-            entry.provider_name, "Shared",
-            "an unset field keeps its base"
-        );
-        assert_eq!(entry.base_url, "https://private.example/v1");
-        assert_eq!(
-            entry.context,
-            Some(1000),
-            "an untouched model is the base's"
-        );
-        assert_eq!(c.entry("shared/m2").unwrap().context, Some(9000));
+        let c = Catalog::load_file(&path);
         assert_eq!(
             c.resolve_with("shared/m1", &no_env).unwrap().api_key,
-            "private-key"
+            "the-machines-key"
         );
-    }
-
-    /// One layer that does not parse costs only itself: the others still answer.
-    #[test]
-    fn a_broken_layer_is_reported_and_the_rest_still_loads() {
-        let d = tempfile::tempdir().unwrap();
-        let community = d.path().join("community.toml");
-        let private = d.path().join("private.toml");
-        std::fs::write(
-            &community,
-            r#"
-[[provider]]
-id = "p"
-  [[provider.endpoint]]
-  api = "openai-responses"
-  base_url = "https://p.example/v1"
-  [[provider.model]]
-  id = "m"
-"#,
-        )
-        .unwrap();
-        std::fs::write(&private, "[[provider]\nid = ").unwrap();
-        let c = Catalog::load_layers(&[community, private]);
-        assert_eq!(c.providers().len(), 1, "the good layer is still read");
-        assert!(c.problem().unwrap().contains("private.toml"));
+        // The variable still wins: a machine can rotate a key without editing.
+        assert_eq!(
+            c.resolve_with("shared/m1", &|name| (name == "SHARED_API_KEY")
+                .then(|| "exported".to_string()))
+                .unwrap()
+                .api_key,
+            "exported"
+        );
     }
 
     #[test]
@@ -1358,8 +1231,7 @@ id = "p"
         assert!(c.problem().unwrap().contains("providers.toml"));
     }
 
-    /// A duplicate id would make `--model` ambiguous; the first one wins so the
-    /// answer does not depend on map iteration order.
+    /// A duplicate id would make `--model` ambiguous: the first one wins.
     #[test]
     fn duplicate_provider_ids_keep_the_first() {
         let text = r#"

@@ -118,8 +118,8 @@ before a fresh mint, so no home is told its own clients are suddenly wrong.
 
 ## Config::load_with_home (roster)
 
-The roster (`~/.agents/providers.toml`) is the machine's own list of providers,
-endpoints and model context windows. Consulting it means the common case needs
+The roster (`~/.agents/gongga-agents/providers.toml`) is the machine's own list of
+providers, endpoints and model context windows. Consulting it means the common case needs
 no configuration at all, and it is the same list `--model` accepts, so there is one
 answer to "what models exist".
 
