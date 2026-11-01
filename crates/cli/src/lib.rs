@@ -451,6 +451,9 @@ pub enum Submission {
     Rejected,
     /// Nothing was sent because there is no link; the line itself is valid.
     Offline,
+    /// `wait`: nothing to send, because what it wants is read from the stream
+    /// this connection already receives. The one-shot loop reads it.
+    Wait(protocol::Args),
 }
 
 // Client state
@@ -970,6 +973,12 @@ impl Client {
     /// session, and nothing else takes one out. Its window is emptied here,
     /// because the server hands the name out again -- a new session must not open
     /// on the deleted one's lines. See `docs/notes/cli-lib.md`.
+    /// The sessions as the greeting described them: what a `wait` reads before it
+    /// starts listening, so a thing that already happened answers at once.
+    pub fn session_states(&self) -> Vec<(String, protocol::SessionStatus)> {
+        self.sessions.iter().map(|s| (s.name.clone(), s.status)).collect()
+    }
+
     fn set_sessions(&mut self, sessions: Vec<SessionInfo>, sink: &mut dyn Sink) {
         for old in &self.sessions {
             if !sessions.iter().any(|new| new.name == old.name) {
@@ -1170,6 +1179,13 @@ impl Client {
 
         // One echo per command: this one, where it answers. A server command is
         // drawn from its `cmd` event.
+        // `wait` is the one client command that reads the connection rather than
+        // changing this client's own state, so it answers out of band: the one
+        // shot loop is where a stream can be read, and nothing here can wait.
+        if head == "wait" {
+            return Submission::Wait(args.clone());
+        }
+
         if spec.target == protocol::CommandTarget::Client {
             self.show(sink, &echo, &tokens, None);
             self.run_client_command(&head, &args, sink);
@@ -1640,20 +1656,6 @@ pub async fn run(args: &Args, command: &[String]) -> anyhow::Result<()> {
 }
 
 async fn run_once(client: &mut Client, link: &mut Link, command: &[String]) -> anyhow::Result<()> {
-    // A flag the *client* keeps, taken out before the command is parsed: the
-    // server never sees it, and a command that does not declare it is not a typo.
-    // Which flags take a value comes from the catalog, so a value that looks like
-    // one of these is left where it was typed.
-    let head = command.first().cloned().unwrap_or_default();
-    let takes_value = |name: &str| {
-        client
-            .commands()
-            .iter()
-            .find(|c| c.name == head)
-            .is_some_and(|spec| spec.args.iter().any(|a| a.name == name))
-    };
-    let (command, wait) = split_wait(command, &takes_value)?;
-    let command = &command[..];
     let mut printer = NullSink::default();
     let msg = match client.command(command.to_vec(), &mut printer) {
         // Nothing to send, but a refusal it reported must still fail.
@@ -1674,6 +1676,10 @@ async fn run_once(client: &mut Client, link: &mut Link, command: &[String]) -> a
         // Cannot happen here, but a silent `todo!()` would be worse than
         // saying so.
         Submission::Offline => anyhow::bail!("not connected to the server"),
+        // Nothing to send: what it waits for is already arriving on this link.
+        Submission::Wait(args) => {
+            return wait_on(link, &client.session_states(), &args).await;
+        }
         Submission::Send(msg) => msg,
     };
     let id = match &msg {
@@ -1726,219 +1732,151 @@ async fn run_once(client: &mut Client, link: &mut Link, command: &[String]) -> a
         } = &event
         {
             if *rid == id {
-                // The answer stands; the wait is what follows it. A command that
-                // failed is not waited on: there is nothing to become idle.
-                if !*ok {
-                    anyhow::bail!("{message}");
-                }
-                let Some(wait) = wait.as_ref() else {
-                    return Ok(());
-                };
-                let session = watched.clone().ok_or_else(|| {
-                    anyhow!("--until needs the command to name a session (`--session`)")
-                })?;
-                return wait_for(link, &session, wait).await;
-            }
-        }
-    }
-}
-
-/// A wait the client performs, not the server: what a script means by "and then".
-///
-/// # Invariant
-///
-/// The turn is already running when this begins -- the command that started it
-/// answered first. So the wait watches `Status`, which is published whenever a
-/// session's run state changes, rather than polling a transcript: a poll has to
-/// pick an interval, and every interval is either too slow to be useful or a
-/// load on a server that is already working.
-struct Wait {
-    /// What to wait for, as spelled on the command line.
-    what: String,
-    /// Give up after this many seconds, so a hung turn cannot hang a script.
-    timeout: std::time::Duration,
-}
-
-#[cfg(test)]
-mod wait_tests {
-    use super::split_wait;
-
-    fn tokens(raw: &[&str]) -> Vec<String> {
-        raw.iter().map(|s| s.to_string()).collect()
-    }
-
-    /// What `send_message` declares: the two flags whose values the walk must not
-    /// mistake for client flags.
-    fn declared(name: &str) -> bool {
-        name == "session" || name == "message"
-    }
-
-    /// The wait is the client's flag: the command the server sees has no `--until`.
-    ///
-    /// # Invariant
-    ///
-    /// If these bytes reached the server, every command would refuse an argument
-    /// it never declared -- which is exactly the check `submit_tokens` makes.
-    #[test]
-    fn the_wait_is_taken_out_before_the_command_is_parsed() {
-        let (kept, wait) = split_wait(&tokens(&[
-            "send_message",
-            "--session",
-            "sub1",
-            "--message",
-            "go",
-            "--until",
-            "idle",
-        ]), &declared)
-        .unwrap();
-        assert_eq!(kept, tokens(&["send_message", "--session", "sub1", "--message", "go"]));
-        let wait = wait.expect("a wait was asked for");
-        assert_eq!(wait.what, "idle");
-        assert_eq!(wait.timeout.as_secs(), 900, "a hung turn gives up eventually");
-    }
-
-    #[test]
-    fn no_wait_means_the_command_answers_as_before() {
-        let (kept, wait) = split_wait(&tokens(&["get_messages", "--session", "main"]), &declared).unwrap();
-        assert_eq!(kept, tokens(&["get_messages", "--session", "main"]));
-        assert!(wait.is_none());
-    }
-
-    #[test]
-    fn a_timeout_is_read_and_a_nonsense_one_is_refused() {
-        let (_, wait) = split_wait(&tokens(&["send_message", "--until", "idle", "--timeout", "5"]), &declared)
-            .unwrap();
-        assert_eq!(wait.unwrap().timeout.as_secs(), 5);
-        assert!(split_wait(&tokens(&["send_message", "--until", "idle", "--timeout", "soon"]), &declared).is_err());
-        // A wait on something that never happens is a typo, not a preference.
-        assert!(split_wait(&tokens(&["send_message", "--until", "whenever"]), &declared).is_err());
-    }
-
-    /// A flag's value is a value, even when it looks like a flag.
-    #[test]
-    fn until_is_not_stolen_from_another_arguments_value() {
-        let (kept, wait) = split_wait(&tokens(&[
-            "send_message",
-            "--message",
-            "--until",
-            "--session",
-            "main",
-        ]), &declared)
-        .unwrap();
-        assert!(wait.is_none(), "the message is `--until`, not a wait");
-        assert_eq!(kept[2], "--until", "and it stays the message's value");
-    }
-}
-
-/// `--until idle|error` and `--timeout <seconds>`, taken out of the tokens.
-///
-/// # Invariant
-///
-/// Removed before parsing, and only from the front: a `--until` that appears as
-/// another flag's value is that value. See `docs/notes/cli-bin-gongga.md`.
-fn split_wait(
-    tokens: &[String],
-    declared: &dyn Fn(&str) -> bool,
-) -> anyhow::Result<(Vec<String>, Option<Wait>)> {
-    let mut kept: Vec<String> = Vec::with_capacity(tokens.len());
-    let mut what: Option<String> = None;
-    let mut timeout = std::time::Duration::from_secs(900);
-    let mut i = 0;
-    while i < tokens.len() {
-        let token = &tokens[i];
-        // A flag the command declares owns the token after it, whatever it looks
-        // like -- `--message "--until"` says the message *is* that word. So the
-        // walk has to step over declared values before it judges a token.
-        if i > 0 && declared(&token[2..]) && token.starts_with("--") {
-            kept.push(token.clone());
-            if let Some(value) = tokens.get(i + 1) {
-                kept.push(value.clone());
-            }
-            i += 2;
-            continue;
-        }
-        match token.as_str() {
-            "--until" | "--timeout" => {
-                let Some(value) = tokens.get(i + 1) else {
-                    anyhow::bail!("{token} needs a value");
-                };
-                if token == "--until" {
-                    what = Some(value.clone());
+                return if *ok {
+                    Ok(())
                 } else {
-                    let seconds: u64 = value
-                        .parse()
-                        .with_context(|| format!("--timeout wants seconds, not {value:?}"))?;
-                    timeout = std::time::Duration::from_secs(seconds.max(1));
-                }
-                i += 2;
-            }
-            _ => {
-                kept.push(token.clone());
-                i += 1;
+                    anyhow::bail!("{message}")
+                };
             }
         }
     }
-    let Some(what) = what else {
-        return Ok((kept, None));
-    };
-    if what != "idle" {
-        anyhow::bail!("--until wants `idle`, not {what:?}");
-    }
-    Ok((kept, Some(Wait { what, timeout })))
 }
 
-/// Reads the connection until the named session stops running.
+/// Reads the connection until what was asked for happens, then says so.
 ///
 /// # Invariant
 ///
-/// Idle and error both answer: a turn that failed is no longer running, and a wait
-/// that only accepted "idle" would hang exactly when something went wrong. Which
-/// of the two it was is the exit code and the last line, not silence.
-async fn wait_for(link: &mut Link, session: &str, wait: &Wait) -> anyhow::Result<()> {
-    let deadline = tokio::time::Instant::now() + wait.timeout;
+/// Nothing is polled. The connection already carries every session's events, so a
+/// wait is a read loop with a predicate -- and the work `wait` replaces (sleep,
+/// then look) is exactly what an interval has to guess wrong about.
+///
+/// It answers from what is already true before it starts waiting. A turn that
+/// finished 50 ms ago left a `Status` nobody on this connection heard, and a wait
+/// that only listened would hang until the timeout on a thing that already
+/// happened. `greeted` is the state as the server opened this connection, which
+/// is recent enough for the case that matters: the command before this one just
+/// returned.
+///
+/// Two forms, one verb:
+///
+/// * `--session NAME` -- that session stopped running. Idle and error are both
+///   the end; the exit code says which.
+/// * `--kind K` -- one row of the event log with that kind. Rows this connection
+///   hears about are the ones written after it opened, so a wait is about what
+///   happens next rather than a re-read of history (`events --since` is that).
+async fn wait_on(
+    link: &mut Link,
+    greeted: &[(String, protocol::SessionStatus)],
+    args: &protocol::Args,
+) -> anyhow::Result<()> {
+    let session = args.get("session").cloned();
+    let kind = args.get("kind").cloned();
+    let timeout = match args.get("timeout").map(String::as_str) {
+        None => std::time::Duration::from_secs(900),
+        Some(raw) => {
+            let seconds: u64 = raw
+                .parse()
+                .with_context(|| format!("--timeout wants seconds, not {raw:?}"))?;
+            std::time::Duration::from_secs(seconds.max(1))
+        }
+    };
+    if session.is_none() && kind.is_none() {
+        anyhow::bail!("wait needs --session (a turn ending) or --kind (a log row)");
+    }
+
+    // Already true: say so now instead of listening for a thing that is over.
+    if let Some(name) = &session {
+        match greeted.iter().find(|(s, _)| s == name) {
+            Some((_, protocol::SessionStatus::Idle)) => {
+                println!("{name} idle");
+                return Ok(());
+            }
+            Some((_, protocol::SessionStatus::Error)) => {
+                println!("{name} stopped with an error");
+                std::process::exit(1);
+            }
+            // Running, or a session the server did not name: listen.
+            Some(_) => {}
+            None => {
+                // A wait on a session that does not exist would hang for the
+                // whole timeout on a typo, which reads as "it never finished".
+                anyhow::bail!("no session named {name:?}; check `--session`");
+            }
+        }
+    }
+
+    let deadline = tokio::time::Instant::now() + timeout;
     loop {
         let left = deadline.saturating_duration_since(tokio::time::Instant::now());
         let bytes = match tokio::time::timeout(left, link.recv()).await {
             Ok(Some(bytes)) => bytes,
-            // The server went away: a wait is not a reason to hang a script.
-            Ok(None) => anyhow::bail!("server disconnected while waiting for {session}"),
+            Ok(None) => anyhow::bail!("server disconnected while waiting"),
             Err(_) => {
-                eprintln!(
-                    "still running after {}s; not waiting any longer",
-                    wait.timeout.as_secs()
-                );
+                // The code `timeout(1)` uses, so a shell can tell "gave up" from
+                // "it failed" without reading a line of prose.
+                eprintln!("nothing happened within {}s; giving up", timeout.as_secs());
                 std::process::exit(124);
             }
         };
         let event = match decode_server(&bytes)? {
             ServerMessage::Event(event) => event,
-            _ => continue,
+            _ => continue, // a greeting or a refusal is not this wait's business
         };
-        if let Event::Status {
-            session: named,
-            status,
-            detail,
-        } = &event
-        {
-            if named != session {
-                continue;
-            }
-            match status {
-                SessionStatus::Idle | SessionStatus::Error => {
-                    let failed = *status == SessionStatus::Error;
-                    let line = match (&detail, failed) {
-                        (Some(detail), _) => format!("{session} {}", detail),
-                        (None, true) => format!("{session} stopped with an error"),
-                        (None, false) => format!("{session} {}", wait.what),
-                    };
-                    println!("{line}");
-                    if failed {
-                        std::process::exit(1);
-                    }
-                    return Ok(());
+        match &event {
+            Event::Status {
+                session: named,
+                status,
+                detail,
+            } => {
+                if session.as_deref() != Some(named.as_str()) {
+                    continue;
                 }
-                SessionStatus::Running => continue,
+                match status {
+                    protocol::SessionStatus::Running => continue,
+                    protocol::SessionStatus::Idle | protocol::SessionStatus::Error => {
+                        let failed = *status == protocol::SessionStatus::Error;
+                        let line = match detail {
+                            Some(detail) => format!("{named} {detail}"),
+                            None if failed => format!("{named} stopped with an error"),
+                            None => format!("{named} idle"),
+                        };
+                        println!("{line}");
+                        if failed {
+                            std::process::exit(1);
+                        }
+                        return Ok(());
+                    }
+                }
             }
+            Event::Record {
+                kind: wrote,
+                session: about,
+                payload,
+                id,
+                ..
+            } => {
+                if kind.as_deref() != Some(wrote.as_str()) {
+                    continue;
+                }
+                // A session filter with a kind narrows both, so one flag does not
+                // silently stop meaning anything when the other is given.
+                if let Some(who) = &session
+                    && about.as_deref() != Some(who.as_str())
+                {
+                    continue;
+                }
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "kind": wrote,
+                        "session": about,
+                        "id": id,
+                        "payload": payload,
+                    })
+                );
+                return Ok(());
+            }
+            _ => continue,
         }
     }
 }

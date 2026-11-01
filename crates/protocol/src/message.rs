@@ -553,6 +553,40 @@ pub fn client_commands() -> Vec<CommandSpec> {
             ],
         ),
         (
+            "wait",
+            "Read the connection until something happens, then answer. One verb for \"and \
+             then\": a turn that finishes, a log row of a given kind, the next event at all. \
+             Answers at once when it has already happened -- it reads the state it was \
+             greeted with before it starts listening, so a finished turn is not a wait.",
+            vec![
+                spec_arg(
+                    "session",
+                    "Wait for this session to stop running (idle or error). Without --kind \
+                     this is what the wait means.",
+                    false,
+                    Some("name"),
+                    CompletionSource::Sessions,
+                ),
+                spec_arg(
+                    "kind",
+                    "Wait for one row of the event log with this kind, e.g. `turn_end`, \
+                     `test_failed`. Rows before the wait began are skipped: a wait is about \
+                     what happens next.",
+                    false,
+                    Some("kind"),
+                    CompletionSource::None,
+                ),
+                spec_arg(
+                    "timeout",
+                    "Give up after this many seconds and leave with 124. The default is 900, \
+                     because a wait that never ends is a hung script.",
+                    false,
+                    Some("seconds"),
+                    CompletionSource::None,
+                ),
+            ],
+        ),
+        (
             "del_sticky",
             "Remove a sticky argument.",
             vec![spec_arg(

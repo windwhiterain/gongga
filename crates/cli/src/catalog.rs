@@ -599,11 +599,13 @@ mod tests {
                 "block_size",
                 "cwd",
                 "ip",
+                "kind",
                 "message",
                 "name",
                 "port",
                 "session",
                 "show",
+                "timeout",
                 "value"
             ]
         );

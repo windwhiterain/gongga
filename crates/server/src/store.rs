@@ -471,6 +471,14 @@ impl Store {
              FROM sessions s";
 
     /// One session, in the same shape the list returns, by name rather than by scan.
+    /// A session's name, by its row id: what a log row carries so a reader does
+    /// not have to join.
+    pub fn name_of_session(&self, id: i64) -> anyhow::Result<Option<String>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare("SELECT name FROM sessions WHERE id = ?1")?;
+        Ok(stmt.query_row([id], |r| r.get(0)).optional()?)
+    }
+
     pub fn get_session(&self, name: &str) -> anyhow::Result<Option<SessionRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(&format!("{} WHERE s.name = ?1", Self::SESSION_SELECT))?;
@@ -769,30 +777,58 @@ impl Store {
 
     // -- event log ---------------------------------------------------------
 
+    /// The event as the log now holds it, or nothing when it could not be written.
+    ///
+    /// # Invariant
+    ///
+    /// A caller that wants to *announce* a row needs the row's own id and stamp,
+    /// not a guess: the id is what a subscriber resumes from, and a number
+    /// invented here would be a cursor into the wrong place.
+    pub fn append_event_row(
+        &self,
+        session_id: Option<i64>,
+        kind: &str,
+        payload: &serde_json::Value,
+    ) -> anyhow::Result<EventRow> {
+        self.append_event_inner(session_id, kind, payload)
+    }
+
     pub fn append_event(
         &self,
         session_id: Option<i64>,
         kind: &str,
         payload: &serde_json::Value,
     ) -> anyhow::Result<()> {
+        self.append_event_inner(session_id, kind, payload).map(|_| ())
+    }
+
+    fn append_event_inner(
+        &self,
+        session_id: Option<i64>,
+        kind: &str,
+        payload: &serde_json::Value,
+    ) -> anyhow::Result<EventRow> {
         let conn = self.lock();
         let seq: i64 = conn
             .query_row("SELECT COALESCE(MAX(seq), 0) + 1 FROM events", [], |r| {
                 r.get(0)
             })
             .unwrap_or(1);
+        let at = now_millis();
+        let payload = serde_json::to_string(payload)?;
         conn.execute(
             "INSERT INTO events (session_id, seq, kind, payload, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                session_id,
-                seq,
-                kind,
-                serde_json::to_string(payload)?,
-                now_millis()
-            ],
+            params![session_id, seq, kind, payload.clone(), at],
         )?;
-        Ok(())
+        Ok(EventRow {
+            id: conn.last_insert_rowid(),
+            seq,
+            session_id,
+            kind: kind.to_string(),
+            payload,
+            created_at: at,
+        })
     }
 
     /// Log rows after a cursor, oldest first, as the log keeps them.
@@ -1844,6 +1880,43 @@ mod tests {
         assert_eq!(rows[0].log, "C:/tmp/main-1.log");
         store.delete_detached_job(id).unwrap();
         assert!(store.detached_jobs().unwrap().is_empty());
+    }
+
+    /// An append answers with the row it wrote, so it can be announced with its
+    /// own id rather than a guessed one.
+    ///
+    /// # Invariant
+    ///
+    /// The id is what a subscriber resumes from. A number invented at the call
+    /// site would be a cursor into the wrong place, and nobody would find out
+    /// until a reader silently skipped rows.
+    #[test]
+    fn an_append_answers_with_the_row_it_wrote() {
+        let (_dir, store) = temp_store();
+        let id = store.create_session("main", "m", "C:/x").unwrap();
+        let row = store
+            .append_event_row(Some(id), "turn_end", &serde_json::json!({"steps": 2}))
+            .unwrap();
+
+        assert!(row.id > 0);
+        assert_eq!(row.kind, "turn_end");
+        assert_eq!(row.session_id, Some(id));
+        assert_eq!(row.seq, 1, "the session's first row");
+        assert!(row.created_at > 0);
+        assert_eq!(row.payload, r#"{"steps":2}"#);
+
+        // Readable by the id it just answered with: the row it named is the row
+        // that is there, which is the whole point of answering with one.
+        let back = store.events_after(row.id - 1, None, None, 10).unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].id, row.id);
+        assert_eq!(back[0].kind, "turn_end");
+
+        // The plain form is the same write, and it still advances the log.
+        store
+            .append_event(Some(id), "usage", &serde_json::json!({"input": 5}))
+            .unwrap();
+        assert_eq!(store.events_after(row.id, None, None, 10).unwrap().len(), 1);
     }
 
     /// The log is read after a cursor, and only what the reader asked for.

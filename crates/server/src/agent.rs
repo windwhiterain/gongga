@@ -56,6 +56,42 @@ pub struct Agent {
 }
 
 impl Agent {
+    /// Writes one row to the log and announces it, in that order.
+    ///
+    /// # Invariant
+    ///
+    /// The log is the source of truth and the bus is its notification: the row is
+    /// on disk before anybody is told it exists, so a subscriber that reacts to
+    /// `Record` can always read what it was told about, and a process that died
+    /// between the two loses a notification rather than a fact.
+    ///
+    /// Every row the agent writes goes through here. Before this, seven call
+    /// sites appended to the table and published nothing -- so a `wait --kind
+    /// turn_end` had no event to wait for, and the log was a place only a poller
+    /// could find out about. A row nobody can subscribe to is a row half-written.
+    ///
+    /// A failed write is a warning, not a panic: the turn is what matters, and a
+    /// log that refuses a row must not take the conversation with it.
+    pub fn log_event(&self, session: Option<i64>, kind: &str, payload: &serde_json::Value) {
+        let row = match self.store.append_event_row(session, kind, payload) {
+            Ok(row) => row,
+            Err(e) => {
+                tracing::warn!(kind, error = %e, "could not write an event row");
+                return;
+            }
+        };
+        self.bus.publish(Event::Record {
+            id: row.id,
+            seq: row.seq,
+            session: row
+                .session_id
+                .and_then(|id| self.store.name_of_session(id).ok().flatten()),
+            kind: row.kind,
+            payload: payload.clone(),
+            at: row.created_at,
+        });
+    }
+
     /// Runs one already-claimed turn whose user messages and obligations are durable.
     pub async fn run_turn(
         &self,
@@ -82,7 +118,7 @@ impl Agent {
         };
         // The turn's outcome as a row, not only as a line: a reader that has the
         // database should not have to match prose to learn why a run stopped.
-        let _ = self.store.append_event(
+        self.log_event(
             Some(session.id()),
             "turn_end",
             &serde_json::json!({
@@ -328,7 +364,7 @@ impl Agent {
             self.error(id, name, "queueing the context notice", e);
             return;
         }
-        let _ = self.store.append_event(
+        self.log_event(
             Some(id),
             "context_notice",
             &json!({"tokens": tokens, "limit": budget}),
@@ -414,7 +450,7 @@ impl Agent {
         let llm_ms = phases
             .llm_started
             .map(|started| started.elapsed().as_millis() as u64);
-        let _ = self.store.append_event(
+        self.log_event(
             Some(id),
             "step_timing",
             &json!({
@@ -606,7 +642,7 @@ impl Agent {
                     let mut payload = probe.to_json();
                     payload["step"] = json!(step);
                     payload["turn"] = json!(turn);
-                    let _ = self.store.append_event(Some(id), "llm_attempt", &payload);
+                    self.log_event(Some(id), "llm_attempt", &payload);
                 }
                 LlmEvent::Completed { usage } => {
                     saw_completion = true;
@@ -630,7 +666,7 @@ impl Agent {
                         );
                         // The row outlives the log line: "did the replay hold the
                         // cache?" is asked after the turn, per step.
-                        let _ = self.store.append_event(
+                        self.log_event(
                             Some(id),
                             "usage",
                             &json!({
@@ -886,12 +922,12 @@ impl Agent {
         let _ = self
             .store
             .finish_tool_call(id, &call_id, &outcome.output, status);
-        let _ = self.store.append_event(
+        self.log_event(
             Some(id),
             "tool_result",
             &json!({"tool": tool, "call_id": call_id, "status": status}),
         );
-        let _ = self.store.append_event(
+        self.log_event(
             Some(id),
             "tool_timing",
             &json!({

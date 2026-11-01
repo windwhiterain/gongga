@@ -49,6 +49,42 @@ A caller that wants the machine-readable form asks for a command and reads its
 `cmd_result`; this output is for whoever is standing at a shell, and it is what the
 agent reads to learn what it may say next.
 
+## `wait` reads the stream the connection already carries
+
+A one-shot command answers as soon as its acknowledgement arrives -- `send_message`
+returns in about 70 ms while the turn it started is still running. Before `wait`,
+the only thing a script could do about that was sleep and look, and every interval
+is a guess: too short wakes early, too long wastes the length of the turn.
+
+`wait` needs nothing from the server. Every connection already receives every
+event on the bus, so waiting is a read loop with a predicate:
+
+```
+wait --session NAME [--timeout S]      # that session stopped running
+wait --kind K [--session NAME] [--timeout S]   # one log row of that kind
+```
+
+Three things are not incidental:
+
+* **It answers from the state it was greeted with.** A turn that finished before
+  this process connected left a `Status` nobody here heard, so a purely listening
+  wait would hang out its timeout on something that already happened. The greeting
+  carries every session's status, and the idle/error cases are decided from it
+  before a single read. An unknown name is refused for the same reason: waiting
+  15 minutes on a typo reads as "it never finished".
+* **Idle and error are both the end.** A wait that only accepted idle would hang
+  exactly when a turn failed. The exit code separates them: 0 idle, 1 error.
+* **A timeout leaves with 124**, the code `timeout(1)` uses, so a shell can tell
+  "gave up" from "it failed" without reading prose.
+
+`--kind` waits on `Event::Record`, which exists because the agent's log writes now
+publish. That is the server-side half: a row written without an announcement is a
+row only a poller can find.
+
+`wait` is a client command, and the window says so instead of running it: a window
+already draws every session's events as they happen, so there is nothing left for
+it to wait on.
+
 ## Naming itself
 
 `cli::parse_argv(name, about)` takes the identity from the binary rather than the

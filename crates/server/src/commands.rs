@@ -1483,7 +1483,8 @@ mod tests {
                 "serve",
                 "set_render",
                 "set_render_session",
-                "set_sticky"
+                "set_sticky",
+                "wait"
             ]
         );
         assert!(
