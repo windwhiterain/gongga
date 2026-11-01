@@ -1722,7 +1722,7 @@ mod tests {
             "a session starts on the server's own model"
         );
         assert_eq!(row.context_limit, None);
-        assert_eq!(row.thinking_effort, None, "no level means the model's own");
+        assert_eq!(row.thinking_effort, None, "no level is nothing sent");
 
         store
             .set_session_tuning(

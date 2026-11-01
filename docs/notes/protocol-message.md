@@ -149,11 +149,12 @@ with it. Absent is the normal case: `None` is not `Some(0)`.
 ## SessionInfo — model, thinking_effort, context_limit
 
 SPEC's `full` pane title lists them beside the measurements, so they travel with the
-session rather than with a turn. They are what the session would send *now*: a session
-that never named a level runs on the model's own default, and one that never named a
-share is noticed at the server's -- resolved on the server, because only the server
-holds the roster. All three are `#[serde(default)]`, so an older server's greeting
-still decodes into a client that expects them.
+session rather than with a turn. They are what the session would send *now*: the model
+and the notice share are resolved on the server, because only the server holds the
+roster, while `thinking_effort` is the level the session was given -- the server stores
+a model's default as a level rather than adding one to the title, so the title never
+claims a level the request does not carry. All three are `#[serde(default)]`, so an
+older server's greeting still decodes into a client that expects them.
 
 `model` carries the whole model, `provider/model_name`, and not the provider alone: a
 provider is only half of what a turn spends, and a title that named it without the

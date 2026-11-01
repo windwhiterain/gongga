@@ -125,6 +125,28 @@ impl Entry {
     /// A returned level is always one the roster lists for this model, mapped
     /// through `reasoning_mapping`; otherwise the error names the levels that
     /// would work. See `docs/notes/server-providers.md`.
+    /// The level this model runs at when the session names none now.
+    ///
+    /// # Invariant
+    ///
+    /// The answer is only ever a level this model publishes, so every level stored
+    /// for a session is one its request can carry: `stored` when this model still
+    /// takes it, else the roster's default for this model, else nothing. A model
+    /// that publishes no level answers `None` -- its `reasoning_default` is then a
+    /// mode (`off`), not a level, and sending it would be this server inventing a
+    /// value the model never said it took. See `docs/notes/server-providers.md`.
+    pub fn level_in_force(&self, stored: Option<&str>) -> Option<String> {
+        let published = |level: &str| self.reasoning_levels.iter().any(|known| known == level);
+        match stored {
+            Some(level) if published(level) => Some(level.to_string()),
+            _ => self
+                .reasoning_default
+                .as_deref()
+                .filter(|level| published(level))
+                .map(str::to_string),
+        }
+    }
+
     pub fn reasoning_effort(&self, requested: &str) -> Result<String, String> {
         if self.reasoning_levels.is_empty() {
             return Ok(requested.to_string());

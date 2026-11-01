@@ -403,9 +403,10 @@ counts) rather than a number derived from them. `cwd` is the session's own direc
 and says where a turn's commands run. `model` is the model the session would spend,
 provider and all: whose balance a turn draws on is the provider half, and which
 brain answers is the pair.
-`thinking_effort` is the level in force, the model's default included, because a
-session that never named one still runs at some level. A figure the last request did
-not produce is left out rather than shown as zero --
+`thinking_effort` is the level the session was given, which is the level its request
+carries: the server resolves a model's roster default into a stored level when a
+session is created or its model changes, and does not add one at display time. A
+figure the last request did not produce is left out rather than shown as zero --
 an empty context and a session that has never made a request are different facts,
 and `ctx 0` cannot say which it is.
 

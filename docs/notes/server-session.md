@@ -31,8 +31,11 @@ logged. `0` is the only value that turns the notice off.
 
 ## Tuning::thinking_effort
 
-`None` means the model's own default -- which is not the same as "send nothing"
-for every provider, so it is stored as an absence rather than a value.
+A level in the roster's spelling, resolved by `set_session` through
+`Entry::level_in_force` and stored, so the pane's title and the request read the same
+word. `None` is not "the model's own default" any more: it is a model that publishes
+no level, which is the one case where nothing goes on the wire. See
+`docs/notes/server-commands.md`.
 
 ## SessionInner::cancels
 

@@ -64,13 +64,14 @@ fn image_candidates() -> Vec<ImageTool> {
     } else {
         // Linux tools print on stdout; the shell redirects it into `$1`.
         vec![
+            ImageTool::writes_to_path("sh", &["-c", "wl-paste -t image/png > \"$1\"", "_"]),
             ImageTool::writes_to_path(
                 "sh",
-                &["-c", "wl-paste -t image/png > \"$1\"", "_"],
-            ),
-            ImageTool::writes_to_path(
-                "sh",
-                &["-c", "xclip -selection clipboard -t image/png -o > \"$1\"", "_"],
+                &[
+                    "-c",
+                    "xclip -selection clipboard -t image/png -o > \"$1\"",
+                    "_",
+                ],
             ),
         ]
     }
@@ -403,12 +404,22 @@ fn run_image_tool(tool: &ImageTool, dest: &Path) -> Option<Result<bool, String>>
             let stdout = child.stdout.take()?;
             let mut file = match fs::File::create(dest) {
                 Ok(file) => file,
-                Err(e) => return Some(Err(format!("{}: could not create {dest:?}: {e}", tool.program))),
+                Err(e) => {
+                    return Some(Err(format!(
+                        "{}: could not create {dest:?}: {e}",
+                        tool.program
+                    )));
+                }
             };
             let mut reader = std::io::BufReader::new(stdout);
             let copied = match std::io::copy(&mut reader, &mut file) {
                 Ok(n) => n,
-                Err(e) => return Some(Err(format!("{}: failed to write {dest:?}: {e}", tool.program))),
+                Err(e) => {
+                    return Some(Err(format!(
+                        "{}: failed to write {dest:?}: {e}",
+                        tool.program
+                    )));
+                }
             };
             let status = match child.wait() {
                 Ok(status) => status,
@@ -470,7 +481,10 @@ mod tests {
             let args: &'static [&'static str] = Box::leak(args.into_boxed_slice());
             ImageTool::writes_to_path("powershell", args)
         } else {
-            ImageTool::writes_to_path("sh", &["-c", "printf '\\x89PNG\\r\\n\\x1a\\n' > \"$1\"", "stub"])
+            ImageTool::writes_to_path(
+                "sh",
+                &["-c", "printf '\\x89PNG\\r\\n\\x1a\\n' > \"$1\"", "stub"],
+            )
         }
     }
 
@@ -600,7 +614,10 @@ mod tests {
         } else {
             &[ImageTool::writes_to_path("true", &[])]
         };
-        assert!(matches!(paste_image_with(silent, dir.path()), ImageClipboard::NoImage));
+        assert!(matches!(
+            paste_image_with(silent, dir.path()),
+            ImageClipboard::NoImage
+        ));
     }
 
     /// A missing image tool is skipped, not fatal; a later one still runs.
@@ -611,14 +628,20 @@ mod tests {
             "a-program-that-does-not-exist-anywhere",
             &[],
         )];
-        assert!(matches!(paste_image_with(none, dir.path()), ImageClipboard::NoTool));
+        assert!(matches!(
+            paste_image_with(none, dir.path()),
+            ImageClipboard::NoTool
+        ));
 
         let dir = tempfile::tempdir().unwrap();
         let with_later: &[ImageTool] = &[
             ImageTool::writes_to_path("a-program-that-does-not-exist-anywhere", &[]),
             ImageTool::writes_to_path("touch", &[]),
         ];
-        assert!(matches!(paste_image_with(with_later, dir.path()), ImageClipboard::NoImage));
+        assert!(matches!(
+            paste_image_with(with_later, dir.path()),
+            ImageClipboard::NoImage
+        ));
     }
 
     /// A tool that runs and fails is reported with its own words, never as success.
@@ -626,14 +649,23 @@ mod tests {
     fn a_failing_image_tool_is_reported() {
         let dir = tempfile::tempdir().unwrap();
         let failing: &[ImageTool] = if cfg!(windows) {
-            &[ImageTool::writes_to_path("cmd", &["/c", "echo boom >&2 && exit 3"])]
+            &[ImageTool::writes_to_path(
+                "cmd",
+                &["/c", "echo boom >&2 && exit 3"],
+            )]
         } else {
-            &[ImageTool::writes_to_path("sh", &["-c", "echo boom >&2; exit 3", "stub"])]
+            &[ImageTool::writes_to_path(
+                "sh",
+                &["-c", "echo boom >&2; exit 3", "stub"],
+            )]
         };
         match paste_image_with(failing, dir.path()) {
             ImageClipboard::Failed(message) => {
                 assert!(!message.is_empty(), "a failure must say why");
-                assert!(message.contains("boom"), "message should carry the tool's words: {message}");
+                assert!(
+                    message.contains("boom"),
+                    "message should carry the tool's words: {message}"
+                );
             }
             other => panic!("a failing tool must not read as success: {other:?}"),
         }

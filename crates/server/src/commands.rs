@@ -672,12 +672,20 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
 
     let mut tuning = session.tuning();
     let mut changed = false;
-    if let Some(level) = args.get("thinking_effort") {
-        // Check the level against the model this session runs on, so typos fail now.
-        tuning.thinking_effort = Some(match entry.reasoning_effort(level) {
-            Ok(level) => level,
+    // Resolved here and stored, never inferred at display time: the pane's title and
+    // the request then read the same word. `None` on the command means the model in
+    // force says what this session runs at, which is how a session this command
+    // creates -- or one whose model just changed -- gets a level at all.
+    let level = match args.get("thinking_effort") {
+        // Checked against the model this session runs on, so typos fail now.
+        Some(raw) => match entry.reasoning_effort(raw) {
+            Ok(level) => Some(level),
             Err(message) => return Outcome::err(message),
-        });
+        },
+        None => entry.level_in_force(tuning.thinking_effort.as_deref()),
+    };
+    if tuning.thinking_effort != level {
+        tuning.thinking_effort = level;
         changed = true;
     }
     // Writing the session's own model is what keeps the config's out of its row.
@@ -1304,10 +1312,11 @@ fn stated_tuning(
 ///
 /// # Invariant
 ///
-/// The tuning fields are what the session *would send now*, not what its row was
-/// last given: a session that never named a level runs on the model's own, and one
-/// that never named a share is noticed at the default. One function, because the
-/// greeting and the list must not disagree about a session's model.
+/// The tuning fields are what the session *would send now*: its live handle when it
+/// has one, else its row. One function, because the greeting and the list must not
+/// disagree about a session's model. The level is the one `set_session` stored --
+/// that is where a model's default becomes a level -- so nothing is added here that
+/// the request would not carry. See `docs/notes/server-commands.md`.
 pub fn session_info(d: &Dispatch, row: &crate::store::SessionRow) -> protocol::SessionInfo {
     let tuning = stated_tuning(d.sessions.peek(&row.name).map(|s| s.tuning()), row);
     let entry = tuning
@@ -1320,10 +1329,7 @@ pub fn session_info(d: &Dispatch, row: &crate::store::SessionRow) -> protocol::S
         .as_ref()
         .map(|e| e.model.clone())
         .or_else(|| tuning.model.clone());
-    let thinking_effort = tuning
-        .thinking_effort
-        .clone()
-        .or_else(|| entry.as_ref().and_then(|e| e.reasoning_default.clone()));
+    let thinking_effort = tuning.thinking_effort.clone();
     protocol::SessionInfo {
         name: row.name.clone(),
         status: row.status,

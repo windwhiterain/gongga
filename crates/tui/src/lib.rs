@@ -2864,13 +2864,18 @@ mod tests {
     #[test]
     fn a_refused_image_read_is_reported() {
         let refused = clipboard::ImageClipboard::Failed("the clipboard said no".to_string());
-        assert_eq!(image_failure_of(&refused).as_deref(), Some("the clipboard said no"));
+        assert_eq!(
+            image_failure_of(&refused).as_deref(),
+            Some("the clipboard said no")
+        );
         // The other three answers have nothing to report.
         assert!(image_failure_of(&clipboard::ImageClipboard::NoImage).is_none());
         assert!(image_failure_of(&clipboard::ImageClipboard::NoTool).is_none());
         assert!(
-            image_failure_of(&clipboard::ImageClipboard::Saved(PathBuf::from("/tmp/pic.png")))
-                .is_none()
+            image_failure_of(&clipboard::ImageClipboard::Saved(PathBuf::from(
+                "/tmp/pic.png"
+            )))
+            .is_none()
         );
     }
 

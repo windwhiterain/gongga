@@ -28,7 +28,8 @@ pub struct Tuning {
     /// The context level a notice is sent at, as a percentage of the window;
     /// `None` means the default share.
     pub context_limit: Option<u8>,
-    /// How hard the model should think, in the roster's spelling; `None` is its default.
+    /// How hard the model should think, in the roster's spelling, resolved when
+    /// `set_session` wrote it; `None` is a model that publishes no level.
     pub thinking_effort: Option<String>,
 }
 

@@ -457,7 +457,8 @@ pub struct SessionInfo {
     /// server that does not know what it would send.
     #[serde(default)]
     pub model: Option<String>,
-    /// Reasoning level in force, in the roster's spelling; `None` is the model's own.
+    /// Reasoning level in force, in the roster's spelling; `None` is a model that
+    /// publishes no level.
     #[serde(default)]
     pub thinking_effort: Option<String>,
     /// The share of the window a context notice is sent at, when this session has one.

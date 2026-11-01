@@ -171,6 +171,18 @@ What the roster says the model's reasoning levels are, in the roster's own
 spelling. Copied onto the entry so a command can validate a level without going
 back to the model list.
 
+## Entry::level_in_force
+
+The level a session runs at when the command naming it does not say. Two answers, in
+this order: the level the session already had, when this model still publishes it, else
+this model's `reasoning_default`. Both are filtered through `reasoning_levels`, so the
+result is only ever a level a request can carry -- a model that publishes no level
+answers `None` even when it states a default, because `reasoning_default = "off"` (as
+MiniMax-M3 does) is a mode rather than a level.
+
+Called from `set_session`, which is what makes the stored level and the displayed one
+the same value. See `docs/notes/server-commands.md`.
+
 ## Entry::reasoning_effort
 
 Resolved at `set_session` time rather than per request: a level the model does

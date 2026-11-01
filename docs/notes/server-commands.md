@@ -57,15 +57,36 @@ A stored row as a client is told about it. One function, because more than one p
 reports the same row -- the greeting and `publish_sessions` -- and two copies of the
 fields drift apart the first time one of them asks for another.
 
-Three of those fields are not in the row at all: `model`, `thinking_effort` and
-`context_limit` are what the session *would send now*, resolved through the roster
-and filled in with the defaults a session that never named them runs on. `model` has
-no such default: a session that states none reports none, rather than the server's
-own -- the title would otherwise name a model the session cannot send on. A title that
-showed only what was written down would say nothing about the sessions that name
-nothing, which is most of them. `model` is the whole model and not the provider
-alone: the balance row already says whose account is being spent, and a title that
-repeated it without saying which model answered would be the narrower fact twice.
+Two of those fields are not in the row: `model` and `context_limit` are what the
+session *would send now*, resolved through the roster -- `model` into the roster's own
+spelling, `context_limit` into the default share. `model` has no further default: a
+session that states none reports none, rather than the server's own -- the title would
+otherwise name a model the session cannot send on. `model` is the whole model and not
+the provider alone: the balance row already says whose account is being spent, and a
+title that repeated it without saying which model answered would be the narrower fact
+twice.
+
+`thinking_effort` is the exception: it is reported as the row has it, because
+`set_session` is where a model's roster default becomes a stored level. Filling it in
+here as well made the title claim a level the request never carried -- the title said
+`thinking high` for every session nobody had given one, while `build_head` sent no
+`reasoning` object at all. See `LEVEL_IN_FORCE` below.
+
+## LEVEL_IN_FORCE
+
+The level a session runs at is resolved once, when `set_session` writes it, and stored:
+this command's `--thinking_effort` mapped through the roster, else whatever
+`Entry::level_in_force` answers -- the level the session already had when this model
+still publishes it, else this model's roster default, else nothing. So a session this
+command creates, and one whose model it changes, both come out with a level; a command
+that changes only `--context_limit` keeps the level the session had.
+
+Two consequences worth naming. A model that publishes no level (MiniMax-M3 states
+`reasoning_default = "off"` and no levels) stores nothing, because `off` there is a
+mode rather than a level the request could carry. And resolution at write time is what
+keeps the title and the request from disagreeing: `build_head` sends exactly what the
+row holds, so a session created before this rule -- one whose row still has no level --
+shows no `thinking` field until something sets it.
 
 ## set_session — what the answer says
 
