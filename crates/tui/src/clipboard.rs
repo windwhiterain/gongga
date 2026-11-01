@@ -2,7 +2,9 @@
 //!
 //! See `docs/notes/tui-clipboard.md`.
 
+use std::fs;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 /// Programs that read stdin and put it on the clipboard, tried in order.
@@ -39,6 +41,77 @@ fn readers() -> &'static [(&'static str, &'static [&'static str])] {
             ("xsel", &["--clipboard", "--output"]),
         ]
     }
+}
+
+/// Programs that read an image from the clipboard, tried in order.
+///
+/// Some tools take the destination path as their last argument and write the
+/// file themselves; others print the image bytes on stdout, which the caller
+/// redirects into the destination file.
+fn image_candidates() -> Vec<ImageTool> {
+    if cfg!(windows) {
+        // PowerShell must run with `-STA` so `[Windows.Forms.Clipboard]::GetImage()`
+        // does not throw. `-Command` does not pass trailing arguments as `$args`,
+        // so we write a small script file and invoke it with `-File`; the
+        // destination path is then `$args[0]`. The script exits 0 and prints
+        // nothing when the clipboard holds no image, so an empty destination
+        // file is treated as `NoImage`.
+        let script = powershell_image_script();
+        let args: Vec<&'static str> = vec!["-NoProfile", "-STA", "-File", script];
+        let args: &'static [&'static str] = Box::leak(args.into_boxed_slice());
+        vec![ImageTool::writes_to_path("powershell", args)]
+    } else if cfg!(target_os = "macos") {
+        // The destination path is appended as the last argument and addressed as
+        // `item 1 of my arguments` in AppleScript.
+        vec![ImageTool::writes_to_path(
+            "osascript",
+            &[
+                "-e",
+                "set f to open for access POSIX file (item 1 of my arguments) with write permission\nwrite (the clipboard as «class PNGf») to f\nclose access f",
+            ],
+        )]
+    } else {
+        // Linux tools print the image on stdout. Wrap each in a shell that
+        // redirects stdout into the destination path, which is passed as `$1`.
+        vec![
+            ImageTool::writes_to_path(
+                "sh",
+                &["-c", "wl-paste -t image/png > \"$1\"", "_"],
+            ),
+            ImageTool::writes_to_path(
+                "sh",
+                &["-c", "xclip -selection clipboard -t image/png -o > \"$1\"", "_"],
+            ),
+        ]
+    }
+}
+
+/// Returns the path to the cached PowerShell image-paste script, writing it
+/// first if it does not yet exist.
+///
+/// # Invariant
+///
+/// The script lives under the temp directory so it is recreated automatically
+/// when the temp directory is cleared, and it is written atomically so a
+/// concurrent paste never reads a half-written file.
+#[cfg(windows)]
+fn powershell_image_script() -> &'static str {
+    use std::sync::OnceLock;
+    static PATH: OnceLock<String> = OnceLock::new();
+    PATH.get_or_init(|| {
+        let dir = std::env::temp_dir().join("gongga-tui");
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("gongga-clip-image.ps1");
+        let script = "Add-Type -AssemblyName System.Windows.Forms;\n$img = [System.Windows.Forms.Clipboard]::GetImage();\nif ($img) {\n    $path = $args[0];\n    $img.Save($path, [System.Drawing.Imaging.ImageFormat]::Png);\n}\n";
+        let tmp = dir.join("gongga-clip-image.ps1.tmp");
+        if let Ok(mut f) = fs::File::create(&tmp) {
+            let _ = f.write_all(script.as_bytes());
+            let _ = f.sync_all();
+            let _ = fs::rename(&tmp, &path);
+        }
+        path.to_string_lossy().into_owned()
+    })
+    .as_str()
 }
 
 /// What a read of the clipboard produced.
@@ -142,28 +215,220 @@ pub fn copy_with(text: &str, tools: &[(&'static str, &'static [&'static str])]) 
                 continue;
             }
         }
-        match child.wait_with_output() {
-            Ok(out) if out.status.success() => {
-                let chars = text.chars().count();
-                return Copied::Ok {
-                    chars,
-                    tool: program,
-                };
+        let status = match child.wait() {
+            Ok(status) => status,
+            Err(e) => {
+                last = Some(format!("{program}: {e}"));
+                continue;
             }
-            Ok(out) => {
-                let said = String::from_utf8_lossy(&out.stderr).trim().to_string();
-                last = Some(if said.is_empty() {
-                    format!("{program}: exit {:?}", out.status.code())
-                } else {
-                    format!("{program}: {said}")
-                });
-            }
-            Err(e) => last = Some(format!("{program}: {e}")),
+        };
+        if status.success() {
+            return Copied::Ok {
+                chars: text.chars().count(),
+                tool: program,
+            };
         }
+        let said = match child.stderr {
+            Some(mut err) => {
+                let mut buf = String::new();
+                let _ = std::io::Read::read_to_string(&mut err, &mut buf);
+                buf.trim().to_string()
+            }
+            None => String::new(),
+        };
+        last = Some(if said.is_empty() {
+            format!("{program}: exit {:?}", status.code())
+        } else {
+            format!("{program}: {said}")
+        });
     }
     match last {
         Some(message) => Copied::Failed(message),
         None => Copied::NoTool,
+    }
+}
+
+/// What a read of the clipboard's image produced.
+///
+/// # Invariant
+///
+/// A saved file outlives the paste because the message references it at send
+/// time; a missing image is not a failure and no refusal is swallowed.
+#[derive(Debug)]
+pub enum ImageClipboard {
+    /// The image was written to a file; this is its path.
+    Saved(PathBuf),
+    /// The clipboard holds no image (it may hold text — the caller falls back).
+    NoImage,
+    /// No clipboard tool could be run at all.
+    NoTool,
+    /// A tool ran and refused; the message is its own words.
+    Failed(String),
+}
+
+/// A clipboard image tool: either it writes the file itself, or it prints the
+/// bytes on stdout for the caller to capture.
+#[derive(Clone, Copy, Debug)]
+pub struct ImageTool {
+    program: &'static str,
+    args: &'static [&'static str],
+    mode: ImageToolMode,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ImageToolMode {
+    /// The destination path is appended as the last argument; the tool writes
+    /// the image file itself.
+    WritesToPath,
+    /// The tool prints the image bytes on stdout; the caller redirects them to
+    /// the destination file.
+    PrintsToStdout,
+}
+
+impl ImageTool {
+    const fn writes_to_path(program: &'static str, args: &'static [&'static str]) -> Self {
+        Self {
+            program,
+            args,
+            mode: ImageToolMode::WritesToPath,
+        }
+    }
+
+    #[allow(dead_code)]
+    const fn prints_to_stdout(program: &'static str, args: &'static [&'static str]) -> Self {
+        Self {
+            program,
+            args,
+            mode: ImageToolMode::PrintsToStdout,
+        }
+    }
+}
+
+/// The directory where pasted images are saved.
+///
+/// # Invariant
+///
+/// The directory is created if it does not exist, so the tools that follow
+/// never fail because a temp path was missing.
+fn dest_dir() -> PathBuf {
+    let dir = std::env::temp_dir().join("gongga-tui");
+    let _ = fs::create_dir_all(&dir);
+    dir
+}
+
+/// A fresh file name for a pasted image.
+fn fresh_image_path(dest_dir: &Path) -> PathBuf {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    dest_dir.join(format!("gongga-paste-{pid}-{n}.png"))
+}
+
+/// The clipboard's image, if it holds one.
+///
+/// # Invariant
+///
+/// A failure is reported, never swallowed; an empty or text-only clipboard is
+/// `NoImage`, not a failure.
+pub fn paste_image() -> ImageClipboard {
+    paste_image_with(&image_candidates(), &dest_dir())
+}
+
+/// [`paste_image`] against a named list of tools and a destination directory.
+///
+/// The testable seam: a stub tool can touch nothing real and still exercise the
+/// spawn, the pipe, and the destination-file handling.
+pub fn paste_image_with(tools: &[ImageTool], dest_dir: &Path) -> ImageClipboard {
+    let _ = fs::create_dir_all(dest_dir);
+    let mut last: Option<String> = None;
+    for tool in tools {
+        let dest = fresh_image_path(dest_dir);
+        match run_image_tool(tool, &dest) {
+            Some(Ok(true)) => return ImageClipboard::Saved(dest),
+            Some(Ok(false)) => {
+                let _ = fs::remove_file(&dest);
+                return ImageClipboard::NoImage;
+            }
+            Some(Err(message)) => last = Some(message),
+            None => continue,
+        }
+    }
+    match last {
+        Some(message) => ImageClipboard::Failed(message),
+        None => ImageClipboard::NoTool,
+    }
+}
+
+/// Runs one image candidate.
+///
+/// Returns `None` when the tool could not be spawned (not installed), so the
+/// caller can try the next candidate. Returns `Some(Ok(true))` when an image
+/// was written, `Some(Ok(false))` when the tool ran but produced no image, and
+/// `Some(Err(_))` when the tool ran and failed.
+fn run_image_tool(tool: &ImageTool, dest: &Path) -> Option<Result<bool, String>> {
+    match tool.mode {
+        ImageToolMode::WritesToPath => {
+            let mut cmd = Command::new(tool.program);
+            cmd.args(tool.args).arg(dest);
+            match cmd.output() {
+                Ok(out) if out.status.success() => {
+                    Some(Ok(fs::metadata(dest).map(|m| m.len() > 0).unwrap_or(false)))
+                }
+                Ok(out) => {
+                    let said = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                    Some(Err(if said.is_empty() {
+                        format!("{}: exit {:?}", tool.program, out.status.code())
+                    } else {
+                        format!("{}: {}", tool.program, said)
+                    }))
+                }
+                // Not installed: let the caller try the next candidate.
+                Err(_) => None,
+            }
+        }
+        ImageToolMode::PrintsToStdout => {
+            let mut cmd = Command::new(tool.program);
+            cmd.args(tool.args)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let mut child = match cmd.spawn() {
+                Ok(child) => child,
+                // Not installed: let the caller try the next candidate.
+                Err(_) => return None,
+            };
+            let stdout = child.stdout.take()?;
+            let mut file = match fs::File::create(dest) {
+                Ok(file) => file,
+                Err(e) => return Some(Err(format!("{}: could not create {dest:?}: {e}", tool.program))),
+            };
+            let mut reader = std::io::BufReader::new(stdout);
+            let copied = match std::io::copy(&mut reader, &mut file) {
+                Ok(n) => n,
+                Err(e) => return Some(Err(format!("{}: failed to write {dest:?}: {e}", tool.program))),
+            };
+            let status = match child.wait() {
+                Ok(status) => status,
+                Err(e) => return Some(Err(format!("{}: {e}", tool.program))),
+            };
+            if status.success() {
+                Some(Ok(copied > 0))
+            } else {
+                let said = match child.stderr {
+                    Some(mut err) => {
+                        let mut buf = String::new();
+                        let _ = std::io::Read::read_to_string(&mut err, &mut buf);
+                        buf.trim().to_string()
+                    }
+                    None => String::new(),
+                };
+                Some(Err(if said.is_empty() {
+                    format!("{}: exit {:?}", tool.program, status.code())
+                } else {
+                    format!("{}: {}", tool.program, said)
+                }))
+            }
+        }
     }
 }
 
@@ -181,6 +446,31 @@ pub fn paste_text(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Writes a tiny PowerShell stub script that decodes a minimal PNG into its
+    /// first argument, returning a leaked path string so it can live in a
+    /// static `ImageTool` argument list.
+    #[cfg(windows)]
+    fn windows_png_stub(dir: &Path) -> &'static str {
+        let script = dir.join("stub-ps.png.ps1");
+        let body = "$p = $args[0]; [Convert]::FromBase64String('iVBORw0KGgo=') | Set-Content -Path $p -Encoding Byte";
+        fs::write(&script, body).unwrap();
+        let s = script.to_string_lossy().into_owned();
+        Box::leak(s.into_boxed_str())
+    }
+
+    /// Builds a writing image tool for the current platform that produces a
+    /// file starting with the PNG magic bytes.
+    fn png_writing_tool(dir: &Path) -> ImageTool {
+        if cfg!(windows) {
+            let script = windows_png_stub(dir);
+            let args: Vec<&'static str> = vec!["-NoProfile", "-File", script];
+            let args: &'static [&'static str] = Box::leak(args.into_boxed_slice());
+            ImageTool::writes_to_path("powershell", args)
+        } else {
+            ImageTool::writes_to_path("sh", &["-c", "printf '\\x89PNG\\r\\n\\x1a\\n' > \"$1\"", "stub"])
+        }
+    }
 
     /// A pasted block keeps its line structure; only the endings are normalized.
     #[test]
@@ -206,6 +496,8 @@ mod tests {
         assert!(candidates().iter().all(|(p, _)| !p.is_empty()));
         assert!(!readers().is_empty());
         assert!(readers().iter().all(|(p, _)| !p.is_empty()));
+        assert!(!image_candidates().is_empty());
+        assert!(image_candidates().iter().all(|t| !t.program.is_empty()));
     }
 
     /// A read hands back exactly what the tool printed, and an empty clip is a
@@ -276,6 +568,87 @@ mod tests {
             Copied::NoTool => eprintln!("skipping: no `{}` on this machine", ok[0].0),
             Copied::Failed(why) => panic!("a working tool reported failure: {why}"),
             Copied::Empty => panic!("text was not empty"),
+        }
+    }
+
+    /// A tool that writes the destination file is reported as saved, and the
+    /// file exists under the destination directory.
+    #[test]
+    fn an_image_tool_that_writes_the_file_reports_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let writing = [png_writing_tool(dir.path())];
+        match paste_image_with(&writing, dir.path()) {
+            ImageClipboard::Saved(path) => {
+                assert!(path.starts_with(dir.path()));
+                assert!(path.exists());
+                let bytes = fs::read(&path).unwrap();
+                assert!(bytes.starts_with(&[0x89, 0x50, 0x4e, 0x47]));
+            }
+            ImageClipboard::NoTool => eprintln!("skipping: stub tool unavailable on this machine"),
+            other => panic!("a writing tool must save a file: {other:?}"),
+        }
+    }
+
+    /// A tool that exits 0 but writes nothing means the clipboard held no image.
+    #[test]
+    fn an_image_tool_that_writes_nothing_reports_no_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let silent: &[ImageTool] = if cfg!(windows) {
+            &[ImageTool::writes_to_path("cmd", &["/c", "exit 0"])]
+        } else {
+            &[ImageTool::writes_to_path("true", &[])]
+        };
+        assert!(matches!(paste_image_with(silent, dir.path()), ImageClipboard::NoImage));
+    }
+
+    /// A missing image tool is skipped, not fatal; if it is the only candidate
+    /// the result is `NoTool`, and a later candidate still gets its turn.
+    #[test]
+    fn an_absent_image_tool_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let none: &[ImageTool] = &[ImageTool::writes_to_path(
+            "a-program-that-does-not-exist-anywhere",
+            &[],
+        )];
+        assert!(matches!(paste_image_with(none, dir.path()), ImageClipboard::NoTool));
+
+        let dir = tempfile::tempdir().unwrap();
+        let with_later: &[ImageTool] = &[
+            ImageTool::writes_to_path("a-program-that-does-not-exist-anywhere", &[]),
+            ImageTool::writes_to_path("touch", &[]),
+        ];
+        assert!(matches!(paste_image_with(with_later, dir.path()), ImageClipboard::NoImage));
+    }
+
+    /// A tool that runs and fails is reported with its own words, never as success.
+    #[test]
+    fn a_failing_image_tool_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let failing: &[ImageTool] = if cfg!(windows) {
+            &[ImageTool::writes_to_path("cmd", &["/c", "echo boom >&2 && exit 3"])]
+        } else {
+            &[ImageTool::writes_to_path("sh", &["-c", "echo boom >&2; exit 3", "stub"])]
+        };
+        match paste_image_with(failing, dir.path()) {
+            ImageClipboard::Failed(message) => {
+                assert!(!message.is_empty(), "a failure must say why");
+                assert!(message.contains("boom"), "message should carry the tool's words: {message}");
+            }
+            other => panic!("a failing tool must not read as success: {other:?}"),
+        }
+    }
+
+    /// The saved bytes land in the destination directory the caller names.
+    #[test]
+    fn an_image_is_saved_in_the_caller_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let writing = [png_writing_tool(dir.path())];
+        match paste_image_with(&writing, dir.path()) {
+            ImageClipboard::Saved(path) => {
+                assert_eq!(path.parent(), Some(dir.path()));
+            }
+            ImageClipboard::NoTool => eprintln!("skipping: stub tool unavailable on this machine"),
+            other => panic!("expected Saved, got {other:?}"),
         }
     }
 }
