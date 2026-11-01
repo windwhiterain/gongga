@@ -442,6 +442,37 @@ A bundle rather than three more parameters, because the three travel together
 and nothing else in the turn needs them: `step` already takes the session, the
 turn, the cancellation token.
 
+## keep_streamed
+
+What a cancel interrupts is kept. An item is stored by its *completion* event --
+`LlmEvent::Output` for assistant text, `LlmEvent::Reasoning` for a thought -- so a
+cancel landing mid-item used to leave the chunks existing only on the operator's
+screen: sent, then nowhere.
+
+`step` therefore accumulates every chunk by item id, and drops an item from that
+map as soon as its completion event stores it. What is left when the cancel arrives
+is exactly what no row holds, and `keep_streamed` writes it, marked
+`interrupted: true` in the display payload.
+
+The two halves are kept differently on purpose. Assistant text is a real message:
+`wire_item` builds an item from it, so the next request replays what the model
+actually said. A reasoning fragment carries no `encrypted` payload, and `wire_item`
+answers `None` for such a row, so it is kept for the record and never replayed as a
+thought the model completed.
+
+## a cancelled call is still answered
+
+`run_one_call` returns early when the cancel token is already set, and that used to
+mean a call whose row existed and whose result never would. A provider wants every
+`function_call` answered by the item after it, so the next request of that session
+was refused outright with "no tool output found for tool call ...", which is how a
+cancel turned into a session that could not talk at all.
+
+The early return now writes the `tool_result` row first, carrying the
+`interrupted_call` template, and finishes the `tool_calls` row as `cancelled`. That
+is the same answer `Step::flush` invents when it builds a request, except this one is
+in the store, so the transcript is complete rather than patched at send time.
+
 ## failed_warning_names_what_was_dropped
 
 Left silent about discarded text, the line is the one that made this bug
