@@ -117,9 +117,21 @@ impl Panes {
     }
 
     /// What a frame's chrome is made of, as [`crate::render::areas`] needs it.
-    pub fn chrome(&self) -> crate::render::Chrome {
+    ///
+    /// # Invariant
+    ///
+    /// `command_rows` is how many rows the command area's content needs at `width`,
+    /// asked of the log: SPEC gives that area no `(line)`, so its height is its
+    /// content's, and only the log knows what that is. The layout clamps it.
+    pub fn chrome(&mut self, width: usize) -> crate::render::Chrome {
+        let command = self.command().map(|pane| pane.name.clone());
+        let command_rows = match &command {
+            Some(name) => self.log.rows(View::Window(name), width).max(1) as u16,
+            None => 0,
+        };
         crate::render::Chrome {
-            command: self.command().is_some(),
+            command: command.is_some(),
+            command_rows,
             quota: self.quota.is_some(),
         }
     }
@@ -180,9 +192,9 @@ impl Panes {
             }
         }
         for pane in &panes {
-            // The command line is one row per block whatever the log-wide cap says.
-            self.log
-                .set_cap(&pane.name, if pane.kind == Kind::Command { 1 } else { 0 });
+            // No view caps its blocks on its own: `block_size` is the one cap, and
+            // SPEC leaves the command area's height to its content.
+            self.log.set_cap(&pane.name, 0);
         }
         self.panes = panes;
     }

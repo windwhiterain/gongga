@@ -90,35 +90,37 @@ impl Entry {
         self.sealed && self.kind.folds() && !self.expanded
     }
 
-    /// The rows a folded block shows: a reasoning item keeps its first and last line.
+    /// The rows a folded block shows: a reasoning item keeps its beginning and end.
+    ///
+    /// # Invariant
+    ///
+    /// The two come from the block's own wrapped rows, not from the newlines the
+    /// model happened to type: a provider that sends one paragraph of reasoning is
+    /// still summarised by its first and last row, which is the whole of what a
+    /// fold is for. See `docs/notes/tui-log.md`.
     fn folded_rows(&self) -> usize {
-        if self.kind == LineKind::Reasoning && self.first_last().0 != self.first_last().1 {
+        if self.kind == LineKind::Reasoning && self.starts.len() > 1 {
             return 2;
         }
         // An item with neither a label nor text is one blank row: the mark alone.
         1
     }
 
-    /// The first and last non-blank line of the block's text.
-    fn first_last(&self) -> (&str, &str) {
-        let mut lines = self.text.lines().filter(|l| !l.trim().is_empty());
-        let first = lines.next().unwrap_or("");
-        let last = lines.last().unwrap_or(first);
-        (first, last)
-    }
-
     /// One row of the folded block, cut to the columns it will be drawn in.
     fn folded_row(&self, row: usize) -> String {
+        let width = self.width.max(1);
         let text = match (self.kind, row) {
-            // SPEC's `reasoning{beginning (line), ending (line)}`: its first
-            // and last line, under the label it opened with.
-            (LineKind::Reasoning, 0) => format!("{}{}", self.tag, self.first_last().0),
-            (LineKind::Reasoning, _) => format!("{}{}", self.tag, self.first_last().1),
+            // SPEC's `reasoning{beginning (line), ending (line)}`: the first
+            // wrapped row, then the last, with `…` for what is between them.
+            (LineKind::Reasoning, 0) => format!("{}{}", self.tag, self.row(0)),
+            (LineKind::Reasoning, _) => {
+                format!("\u{2026} {}", self.row(self.starts.len().saturating_sub(1)))
+            }
             // A call says what was asked; a result says how it went -- its
             // output is the click, so the label is the whole row.
             _ => self.tag.trim_end().to_string(),
         };
-        cut(&text, self.width.max(1))
+        cut(&text, width)
     }
 
     /// Recomputes every row offset at `width`, with the label's columns reserved on
@@ -186,10 +188,14 @@ impl Entry {
     fn view_row(&self, row: usize, labelled: bool) -> Cow<'_, str> {
         if self.folded() {
             let summary = self.folded_row(row);
-            if !labelled {
-                return Cow::Owned(summary);
-            }
-            return Cow::Owned(format!("{}{}", mark(self.kind), summary));
+            // SPEC's `abstract (horizontal)`: the mark owns the first column and
+            // the summary sits beside it, so a second row starts in the same
+            // column the first one's text does rather than under the mark.
+            let label = match labelled {
+                true => mark(self.kind),
+                false => " ".repeat(mark(self.kind).width()),
+            };
+            return Cow::Owned(format!("{label}{summary}"));
         }
         if !labelled {
             return Cow::Borrowed(self.row(row));
@@ -978,10 +984,15 @@ mod tests {
         );
     }
 
-    /// A folded reasoning item keeps its first and last line: SPEC's
-    /// `reasoning{beginning (line), ending (line)} (vertical)`.
+    /// A folded reasoning item keeps its beginning and its end, with `…` between.
+    ///
+    /// # Invariant
+    ///
+    /// The two come from the wrapped rows, so a single-paragraph summary -- which
+    /// is what most providers send -- is summarised too. Reading the model's own
+    /// newlines instead showed one cut row and told a reader nothing about the end.
     #[test]
-    fn a_folded_reasoning_keeps_its_first_and_last_line() {
+    fn a_folded_reasoning_keeps_its_beginning_and_its_end() {
         let mut log = Log::new();
         log.stream(
             "w",
@@ -993,14 +1004,30 @@ mod tests {
         );
         assert_eq!(
             shown(&mut log, 40, 4, 0),
-            // The mark is the item's, on its first row: the second is a
-            // continuation, like any wrapped block's.
-            vec!["\u{25c7} first", "last"]
+            // SPEC's `abstract (horizontal)`: the second row starts where the
+            // first one's text does, and `…` says the middle was left out.
+            vec!["\u{25c7} first", "  \u{2026} last"]
         );
-        // One line has no second: the summary is one row, not a blank one.
+        // One row has no second: the summary is one row, not a blank one.
         let mut log = Log::new();
         log.stream("w", "r2", LineKind::Reasoning, "", "only", true);
         assert_eq!(shown(&mut log, 40, 4, 0), vec!["\u{25c7} only"]);
+
+        // A paragraph with no newline in it still has two ends: it wrapped.
+        let mut log = Log::new();
+        log.stream(
+            "w",
+            "r3",
+            LineKind::Reasoning,
+            "",
+            "one long paragraph that wraps across several rows of this width",
+            true,
+        );
+        assert_eq!(
+            shown(&mut log, 20, 4, 0),
+            vec!["\u{25c7} one long paragraph", "  \u{2026} width"],
+            "the end is the last row it wrapped to"
+        );
     }
 
     /// Opening one item moves every block behind it by the rows it grew.

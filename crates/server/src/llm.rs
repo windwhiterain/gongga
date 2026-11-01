@@ -1258,6 +1258,9 @@ async fn handle(
                 ItemKind::Reasoning => {
                     // The provider's summary wins when it sends one; the
                     // accumulated deltas are the fallback when it does not.
+                    // One summary part is one paragraph, so the parts are joined
+                    // with a newline: `join("")` glued them into a single line,
+                    // and a reader lost every break the model made.
                     let mut summary = item["summary"]
                         .as_array()
                         .map(|parts| {
@@ -1265,7 +1268,7 @@ async fn handle(
                                 .iter()
                                 .filter_map(|p| p["text"].as_str())
                                 .collect::<Vec<_>>()
-                                .join("")
+                                .join("\n")
                         })
                         .or_else(|| item["summary"].as_str().map(str::to_string))
                         .unwrap_or_default();
@@ -1550,6 +1553,40 @@ mod tests {
     fn ignores_keepalive_comments() {
         assert!(parse_sse_block(": ping").is_none());
         assert!(parse_sse_block("event: ping\ndata: {}").is_some());
+    }
+
+    /// One summary part is one paragraph: joining them with nothing glued a
+    /// multi-part summary into a single line, and a reader lost every break.
+    #[tokio::test]
+    async fn a_multi_part_summary_keeps_its_paragraphs() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut items = HashMap::new();
+        handle(
+            SseEvent {
+                name: "response.output_item.done".into(),
+                data: json!({"item": {
+                    "id": "rs_1",
+                    "type": "reasoning",
+                    "summary": [
+                        {"type": "summary_text", "text": "first para"},
+                        {"type": "summary_text", "text": "second para"},
+                    ],
+                    "encrypted_content": "blob",
+                }}),
+            },
+            &mut items,
+            &mut Outbox::new(&tx),
+        )
+        .await
+        .unwrap();
+
+        let mut summary = None;
+        while let Ok(e) = rx.try_recv() {
+            if let LlmEvent::Reasoning { summary: s, .. } = e {
+                summary = Some(s);
+            }
+        }
+        assert_eq!(summary.as_deref(), Some("first para\nsecond para"));
     }
 
     /// Some providers send an empty `summary` on `output_item.done`, so the

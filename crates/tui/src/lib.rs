@@ -195,10 +195,11 @@ impl Screen {
     }
 
     /// The panes as a terminal this size lays them out, in its row numbers.
-    fn slots(&self, width: u16, height: u16) -> Vec<render::Slot> {
+    fn slots(&mut self, width: u16, height: u16) -> Vec<render::Slot> {
         let area = Rect::new(0, 0, width, height);
         let input = render::input_rows(self.input.text(), width, height);
-        let chunks = render::areas(area, input, self.panes.chrome());
+        let chrome = self.panes.chrome(width.saturating_sub(1).max(1) as usize);
+        let chunks = render::areas(area, input, chrome);
         let (_, panes) = render::body(chunks[1], &self.panes);
         render::pane_slots(panes, &self.panes, self.sticky_session.as_deref()).0
     }
@@ -210,15 +211,28 @@ impl Screen {
     }
 
     /// The pane covering this cell, which is where the wheel landed.
-    pub fn pane_at_row(&self, width: u16, height: u16, column: u16, row: u16) -> Option<String> {
+    pub fn pane_at_row(
+        &mut self,
+        width: u16,
+        height: u16,
+        column: u16,
+        row: u16,
+    ) -> Option<String> {
         render::pane_at(&self.slots(width, height), column, row).map(str::to_string)
     }
 
     /// The session a click on `row` names, from the list, a pane, or a group.
-    pub fn session_at_row(&self, width: u16, height: u16, column: u16, row: u16) -> Option<Hit> {
+    pub fn session_at_row(
+        &mut self,
+        width: u16,
+        height: u16,
+        column: u16,
+        row: u16,
+    ) -> Option<Hit> {
         let area = Rect::new(0, 0, width, height);
         let input = render::input_rows(self.input.text(), width, height);
-        let chunks = render::areas(area, input, self.panes.chrome());
+        let chrome = self.panes.chrome(width.saturating_sub(1).max(1) as usize);
+        let chunks = render::areas(area, input, chrome);
         let (list, _) = render::body(chunks[1], &self.panes);
         if let Some(name) = render::list_at(
             list,
@@ -327,8 +341,8 @@ impl Screen {
     }
 
     /// The rows the sticky session gets in a frame this size: what a page means.
-    pub fn page_height(&self, width: u16, height: u16) -> usize {
-        let Some(name) = self.sticky_session.as_deref() else {
+    pub fn page_height(&mut self, width: u16, height: u16) -> usize {
+        let Some(name) = self.sticky_session.clone() else {
             return 1;
         };
         self.slots(width, height)
@@ -795,8 +809,14 @@ impl Tui {
                 }
                 // Alt+arrows page, because PgUp/PgDn hide behind Fn on laptops;
                 // plain ↑↓ stay with history.
-                KeyCode::Up => self.screen.scroll_by(self.page_height() as i64),
-                KeyCode::Down => self.screen.scroll_by(-(self.page_height() as i64)),
+                KeyCode::Up => {
+                    let page = self.page_height() as i64;
+                    self.screen.scroll_by(page);
+                }
+                KeyCode::Down => {
+                    let page = self.page_height() as i64;
+                    self.screen.scroll_by(-page);
+                }
                 _ => {}
             }
             return None;
@@ -881,8 +901,14 @@ impl Tui {
                 self.refresh_completion();
             }
             // A page is the log window, not a fixed ten rows, so short terminals work too.
-            KeyCode::PageUp => self.screen.scroll_by(self.page_height() as i64),
-            KeyCode::PageDown => self.screen.scroll_by(-(self.page_height() as i64)),
+            KeyCode::PageUp => {
+                let page = self.page_height() as i64;
+                self.screen.scroll_by(page);
+            }
+            KeyCode::PageDown => {
+                let page = self.page_height() as i64;
+                self.screen.scroll_by(-page);
+            }
             _ => {}
         }
         None
@@ -968,7 +994,7 @@ impl Tui {
     }
 
     /// What one page-up should move: the rows of the pane being scrolled.
-    fn page_height(&self) -> usize {
+    fn page_height(&mut self) -> usize {
         let Ok(size) = self.terminal.size() else {
             return 1;
         };
@@ -1524,7 +1550,7 @@ mod tests {
         present(&mut terminal, &mut screen, false).unwrap();
 
         let area = Rect::new(0, 0, 40, 12);
-        let row = render::input_area(area, &screen).y;
+        let row = render::input_area(area, &mut screen).y;
         // The composition a console-level IME would leave behind, past our text.
         let ink = Cell::from('拼');
         ratatui::backend::Backend::draw(
@@ -2380,6 +2406,7 @@ mod tests {
                 1,
                 crate::render::Chrome {
                     command: true,
+                    command_rows: 1,
                     quota: false,
                 },
             )[1],
@@ -2451,6 +2478,7 @@ mod tests {
             1,
             crate::render::Chrome {
                 command: true,
+                command_rows: 1,
                 quota: false,
             },
         );

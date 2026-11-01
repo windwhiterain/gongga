@@ -331,6 +331,11 @@ accumulated are all there is. MiniMax is in the second camp: its `summary` array
 on `output_item.done` is empty, so without this every stored reasoning entry
 would have a blank summary forever.
 
+A `summary` array is a list of *paragraphs* -- one `summary_text` per part -- so the
+parts are joined with a newline. Joining them with nothing glued a multi-part summary
+into a single line, which is how a reader lost every break the model made; the
+front-end then had one row to draw where the model wrote several.
+
 ## history_item_to_input
 
 The stored `summary` is for humans: the UI replays it when a client reconnects.

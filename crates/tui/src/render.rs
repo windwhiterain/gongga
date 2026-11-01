@@ -33,8 +33,22 @@ const HELP_SEP: &str = " \u{00b7} ";
 /// Rows spent above the body: the header. The input's height is asked separately.
 pub const CHROME_ROWS: u16 = 1;
 
-/// The one row `cmd` and its result share, outside the panes.
+/// The fewest rows `cmd` and its result are given when the client draws one.
+///
+/// # Invariant
+///
+/// A floor, not a height: SPEC dropped the `(line)` this row used to carry, so the
+/// area is as tall as what the operator asked for -- `Chrome::command_rows` -- and
+/// this is only what the prompt's own arithmetic keeps room for.
 pub const COMMAND_ROWS: u16 = 1;
+
+/// The most of the window the `cmd` area may take, so the panes keep a body.
+///
+/// # Invariant
+///
+/// A share rather than a count: `block_size = 0` caps nothing, and an area with no
+/// ceiling would push the events out of a window whose whole job is to show them.
+const COMMAND_SHARE: u16 = 3;
 
 /// The prompt on the first row; continuation rows pad behind it.
 const PREFIX: &str = "> ";
@@ -49,7 +63,7 @@ pub const LIST_MIN: u16 = 6;
 pub fn draw(f: &mut Frame, s: &mut Screen) -> Rect {
     let area = f.area();
     let input = input_rows(s.input.text(), area.width, area.height);
-    let chunks = areas(area, input, s.panes.chrome());
+    let chunks = areas(area, input, s.panes.chrome(command_width(area)));
 
     draw_header(f, s, chunks[0]);
     // The body is one split: the session list, then the windows beside it.
@@ -78,8 +92,10 @@ pub fn draw(f: &mut Frame, s: &mut Screen) -> Rect {
 /// See `docs/notes/tui-render.md`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Chrome {
-    /// SPEC's `[{cmd, cmd_result}]` row: the client's command window exists.
+    /// SPEC's `[cmd/cmd_result]` area: the client's command window exists.
     pub command: bool,
+    /// The rows that area wants, from the log; the layout decides what it gets.
+    pub command_rows: u16,
     /// SPEC's `active_quota` row: a reading has been announced.
     pub quota: bool,
 }
@@ -96,17 +112,31 @@ pub fn areas(area: Rect, input_rows: u16, chrome: Chrome) -> Vec<Rect> {
     let reminder = help_rows(area.width).len() as u16;
     let [rest, help] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(reminder)]).areas(area);
+    // SPEC gives this area no `(line)`: a command and its answer take the rows
+    // they need, up to a share of the window.
+    let command = match chrome.command {
+        false => 0,
+        true => chrome.command_rows.clamp(
+            COMMAND_ROWS,
+            (area.height / COMMAND_SHARE).max(COMMAND_ROWS),
+        ),
+    };
     let mut chunks: Vec<Rect> = Layout::vertical([
-        Constraint::Length(1),                                  // header
-        Constraint::Min(1),                                     // session list | windows
-        Constraint::Length(if chrome.quota { 1 } else { 0 }),   // active_quota
-        Constraint::Length(if chrome.command { 1 } else { 0 }), // cmd and its result
-        Constraint::Length(input_rows),                         // the prompt
+        Constraint::Length(1),                                // header
+        Constraint::Min(1),                                   // session list | windows
+        Constraint::Length(if chrome.quota { 1 } else { 0 }), // active_quota
+        Constraint::Length(command),                          // cmd and its result
+        Constraint::Length(input_rows),                       // the prompt
     ])
     .split(rest)
     .to_vec();
     chunks.push(help);
     chunks
+}
+
+/// The columns the command area wraps at: one short of the window, as it is drawn.
+fn command_width(area: Rect) -> usize {
+    area.width.saturating_sub(1).max(1) as usize
 }
 
 /// The body split into the session list and the windows beside it.
@@ -852,11 +882,11 @@ pub fn caret(s: &Screen, area: Rect) -> (u16, u16) {
 
 /// The input area as `draw` lays it out, for a test that asks.
 #[cfg(test)]
-pub fn input_area(area: Rect, s: &Screen) -> Rect {
+pub fn input_area(area: Rect, s: &mut Screen) -> Rect {
     areas(
         area,
         input_rows(s.input.text(), area.width, area.height),
-        s.panes.chrome(),
+        s.panes.chrome(area.width.saturating_sub(1).max(1) as usize),
     )[4]
 }
 
@@ -1377,7 +1407,7 @@ mod tests {
         let mut screen = screen_with(&["a"]);
         // Tall enough for the reminder's rows and still a box that can grow.
         let area = Rect::new(0, 0, 30, 14);
-        let input = input_area(area, &screen);
+        let input = input_area(area, &mut screen);
         assert_eq!(input.height, 1);
         assert_eq!(caret(&screen, input), (2, input.y), "an empty prompt");
 
@@ -1386,7 +1416,7 @@ mod tests {
 
         // A line longer than the box wraps, and the caret goes with it.
         screen.input.insert_str(&"x".repeat(3 * content_width(30)));
-        let input = input_area(area, &screen);
+        let input = input_area(area, &mut screen);
         assert!(input.height > 1, "the box grew: {input:?}");
         let (x, y) = caret(&screen, input);
         assert!(y >= input.y && y < input.bottom(), "caret off the box: {y}");
@@ -1400,7 +1430,7 @@ mod tests {
         let mut screen = screen_with(&[]);
         // Tall enough for the box to grow a row, so both rows are in the frame.
         let area = Rect::new(0, 0, 40, 30);
-        let input = input_area(area, &screen);
+        let input = input_area(area, &mut screen);
         assert_eq!(
             input_ends(&screen, input),
             vec![(input.y, 2)],
@@ -1413,7 +1443,7 @@ mod tests {
 
         // A message with a break has a row of its own, each ending where its text does.
         screen.input.insert_str("\nbye");
-        let input = input_area(area, &screen);
+        let input = input_area(area, &mut screen);
         assert_eq!(input.height, 2, "the box grew: {input:?}");
         let ends = input_ends(&screen, input);
         assert_eq!(ends.len(), 2, "{ends:?}");
@@ -1473,6 +1503,7 @@ mod tests {
             input,
             Chrome {
                 command,
+                command_rows: 1,
                 quota: false,
             },
         )
@@ -1486,6 +1517,7 @@ mod tests {
             input,
             Chrome {
                 command: true,
+                command_rows: 1,
                 quota: true,
             },
         )
@@ -1797,7 +1829,7 @@ mod tests {
     /// A cell names the pane drawn there; side by side, the column decides.
     #[test]
     fn a_row_names_the_pane_it_falls_in() {
-        let screen = split_screen();
+        let mut screen = split_screen();
         let body = parts(40, 12, 1, true)[1];
         let (_, panes) = crate::render::body(body, &screen.panes);
         let (slots, _) = pane_slots(panes, &screen.panes, screen.sticky_session.as_deref());
@@ -1825,6 +1857,86 @@ mod tests {
         );
         // A column nobody draws is nobody's, and neither is the chrome above.
         assert_eq!(screen.pane_at_row(40, 12, 0, 0), None);
+    }
+
+    /// SPEC gives the `cmd` area no `(line)`, so a command and its answer take the
+    /// rows they need -- and never more than a share of the window.
+    ///
+    /// # Invariant
+    ///
+    /// The height comes from the log (`Chrome::command_rows`), because only it knows
+    /// how many rows an answer wrapped to. The clamp is the layout's, because
+    /// `block_size = 0` caps nothing and an area with no ceiling would push the
+    /// events out of the window.
+    #[test]
+    fn the_command_area_is_as_tall_as_its_content_up_to_a_share() {
+        let mut screen = screen_with(&[]);
+        screen.panes.layout(&Layout {
+            listed: Vec::new(),
+            shown: vec![String::new()],
+            command: "cmd".to_string(),
+            quota: None,
+        });
+        // A refusal that needs four rows: one row would cut it to its tail.
+        screen.panes.line(
+            "cmd",
+            LineKind::Error,
+            "refused: --model is required\n\n  known: a, b\n  try: model_pool pick",
+        );
+        let (width, height) = (60u16, 24u16);
+        let chrome = screen.panes.chrome(width as usize - 1);
+        assert_eq!(chrome.command_rows, 4, "what the content needs");
+        let parts = areas(Rect::new(0, 0, width, height), 1, chrome);
+        assert_eq!(parts[3].height, 4, "and what the frame gives it");
+
+        // A window too short gives it a third, and the events keep the rest.
+        let short = Rect::new(0, 0, width, 12);
+        let parts = areas(short, 1, chrome);
+        assert_eq!(parts[3].height, 4, "a third of twelve rows");
+        assert!(
+            parts[1].height >= 1,
+            "the events keep a body: {:?}",
+            parts[1]
+        );
+
+        // Nothing in the window is no area at all.
+        let mut empty = screen_with(&[]);
+        empty.panes.layout(&Layout {
+            listed: Vec::new(),
+            shown: vec![String::new()],
+            command: String::new(),
+            quota: None,
+        });
+        assert_eq!(empty.panes.chrome(width as usize - 1).command_rows, 0);
+    }
+
+    /// A multi-line command answer is drawn entire, not cut to its newest row.
+    #[test]
+    fn a_multi_line_command_answer_is_drawn_entire() {
+        let mut screen = screen_with(&[]);
+        screen.panes.layout(&Layout {
+            listed: Vec::new(),
+            shown: vec![String::new()],
+            command: "cmd".to_string(),
+            quota: None,
+        });
+        screen
+            .panes
+            .line("cmd", LineKind::Error, "first\nsecond\nthird");
+        let mut term = Terminal::new(TestBackend::new(40, 20)).unwrap();
+        term.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+        // The real chrome: the area's height comes from what the log holds.
+        let chrome = screen.panes.chrome(39);
+        let parts = areas(Rect::new(0, 0, 40, 20), 1, chrome);
+        assert_eq!(parts[3].height, 3, "three rows of answer");
+        let rows: Vec<String> = (0..parts[3].height)
+            .map(|i| row_text(&buf, parts[3].y + i))
+            .collect();
+        assert_eq!(rows, vec!["! first", "second", "third"], "{rows:?}");
     }
 
     /// SPEC's `active_quota` row: under the command line, and absent until a

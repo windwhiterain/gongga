@@ -43,7 +43,7 @@ sealed.
 
 SPEC's `events` is a list of *items*, one block each, and the item that is not the
 answer folds: `abstract{symbol, reasoning|toolcall|tool_result}` is one summary row
-(two for a reasoning item, which keeps its first and last line) until it is clicked.
+(two for a reasoning item, which keeps its beginning and its end) until it is clicked.
 `output`, `cmd` and `error` are their own shapes and never fold.
 
 So a sealed block of a folding kind is an `abstract`. While it streams it shows the
@@ -61,6 +61,21 @@ The mark in front of an item (`LineKind::symbol`) is the front-end's, not the wi
 the server says what a row *is* (`HeadKind`), and this side says what that looks like.
 It is drawn with the block's label on the top visible row and measured by `reflow` as
 part of it, so a marked row wraps as far as it is actually drawn.
+
+## A reasoning item's two rows
+
+SPEC's `reasoning{beginning (line), ending (line)}`, taken from the block's own wrapped
+rows (`row(0)` and the last of `starts`), not from the newlines in the text.
+
+That was the bug this fixed. The first version read `text.lines()`, which is right only
+if the model wrote several lines -- and most providers send one summary paragraph with
+no newline in it, so the folded view drew one cut row and no end at all. The start and
+the end of what was written are a property of the *block*, not of the author's line
+breaks: at any width the first row and the last row are exactly those two, and the `…`
+between them says the middle was left out rather than that the text ended there.
+
+A provider that does send paragraphs gets the same answer, one paragraph boundary
+instead of a wrap.
 
 ## Log::relabel
 
