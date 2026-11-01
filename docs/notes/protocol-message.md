@@ -151,11 +151,35 @@ instead of vanishing.
 `SessionInfo`: the row is about the *provider*, not a session, and a step that
 names a new provider is what makes it "active".
 
-## REPLAY_TURN
+## Head and HeadKind
+
+A block's introduction, in the one split that keeps restyling off the wire: the server
+names **what kind of thing** a row is and **spells its words**, and the front-end
+decides what that looks like.
+
+The server is the only one that can carry the second half. A duration is spelled from a
+number only it measured (`1.2s`), an argument list is spelled from JSON it already
+parsed, and a verdict is a fact about a call it ran. A front-end that formatted those
+would be re-deriving them from fields it would then have to be told about -- which is
+the protocol change this shape exists to avoid.
+
+What the server does *not* say is a glyph or a colour. `HeadKind` is a closed semantic
+set; the front-end maps it to its own look (`kind_of` in the command layer, `style_for`
+in the renderer). Adding a kind is a protocol change, but *restyling* one -- a
+different mark, a different ink, a different name in the window -- is a change to one
+crate and nothing travels.
+
+It is the browser split: the server sends the document and its semantics, the client
+brings the stylesheet. A server that sent `Ink { fg: "green" }` would be a server with
+opinions about another program's palette, and the day two front-ends wanted different
+colours the wire would grow a negotiation.
+
+## ToolCallEvent## REPLAY_TURN
 
 A transcript row read back is an event, not a field of a result, and it is one of the
 events the row was published as while it arrived: `response` for the parts an answer
-has, `tool_answer` for a tool's output, `log` for what the harness told the reader.
+has, `tool_call` for a call the model asked for, `tool_answer` for a tool's output,
+`log` for what the harness told the reader.
 Two things follow, and both are the point: delivery is **addressed** -- it goes to the
 connection whose `get_messages` asked, the way `cmd` and `cmd_result` do, so a read
 stays a read -- and the shape is **ordinary**, so every front-end renders it through

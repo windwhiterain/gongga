@@ -99,6 +99,8 @@ pub enum Event {
     },
     /// Streamed model response belonging to a session.
     Response(ResponseEvent),
+    /// A tool the model asked for, as the call its answer will be addressed to.
+    ToolCall(ToolCallEvent),
     /// Streamed tool output (bash stdout/stderr).
     ToolAnswer(ToolAnswerEvent),
     /// The set of sessions changed.
@@ -208,6 +210,74 @@ pub enum ToolStream {
     Stderr,
 }
 
+/// What a block is, and the words it introduces itself with.
+///
+/// # Invariant
+///
+/// The server says *what kind* of thing a row is and spells its text -- units,
+/// verdicts and digits are knowledge only it has. It never says what that looks
+/// like: the glyph and the colours are the front-end's, so restyling the window
+/// is a change to one crate and nothing on the wire moves.
+/// See `docs/notes/protocol-message.md`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Head {
+    pub kind: HeadKind,
+    /// The row's words, already spelled: a front-end never formats a duration.
+    #[serde(default)]
+    pub text: String,
+}
+
+/// Which kind of row a [`Head`] introduces, in SPEC's vocabulary.
+///
+/// # Invariant
+///
+/// A closed set the server names and the front-end maps to one look: an unknown
+/// kind is not possible without a protocol change, which is what keeps "what
+/// exists" and "how it is drawn" from drifting apart in two crates.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HeadKind {
+    /// A tool the model asked for.
+    #[default]
+    Call,
+    /// A tool that finished and worked.
+    Ok,
+    /// A tool that finished and failed.
+    Failed,
+    /// The model's own reasoning, shown as its first and last line.
+    Reasoning,
+    /// The answer.
+    Output,
+    /// A command this session ran.
+    Cmd,
+    /// Something that went wrong.
+    Error,
+}
+
+impl Head {
+    pub fn new(kind: HeadKind, text: impl Into<String>) -> Self {
+        Self {
+            kind,
+            text: text.into(),
+        }
+    }
+}
+
+/// One tool the model asked for, as the row it is read on.
+///
+/// # Invariant
+///
+/// `call_id` is the id every one of its [`ToolAnswerEvent`]s carries, published
+/// before the tool runs: that id is how a front-end joins a call to its result.
+/// See `docs/notes/protocol-message.md`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolCallEvent {
+    pub session: String,
+    pub call_id: String,
+    /// The call as it is read: the tool, the arguments it was given.
+    pub head: Head,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolAnswerEvent {
     pub session: String,
@@ -216,6 +286,14 @@ pub struct ToolAnswerEvent {
     pub stream: ToolStream,
     pub text: String,
     pub done: bool,
+    /// How the call ended, on the chunk that ends it: `None` while it runs.
+    ///
+    /// # Invariant
+    ///
+    /// Only the final chunk carries it: a stream that ended is the only place a
+    /// result exists. The time is spelled here because the server measured it.
+    #[serde(default)]
+    pub head: Option<Head>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -531,6 +609,61 @@ mod tests {
         };
         let json = serde_json::to_string(&e).unwrap();
         assert!(json.contains("\"t\":\"status\""), "{json}");
+    }
+
+    /// A head carries a kind and words, and nothing about how they look.
+    ///
+    /// # Invariant
+    ///
+    /// The wire shape is what keeps restyling off it: a colour or a glyph here
+    /// would be one program with opinions about another's palette.
+    #[test]
+    fn a_head_is_a_kind_and_its_words_only() {
+        let e = Event::ToolAnswer(ToolAnswerEvent {
+            session: "main".into(),
+            call_id: "c1".into(),
+            tool: "bash".into(),
+            stream: ToolStream::Stdout,
+            text: String::new(),
+            done: true,
+            head: Some(Head::new(HeadKind::Failed, "2.5s")),
+        });
+        let json = serde_json::to_string(&e).unwrap();
+        assert!(json.contains(r#""kind":"failed""#), "{json}");
+        assert!(json.contains(r#""text":"2.5s""#), "{json}");
+        for look in ["color", "colour", "fg", "symbol", "bold"] {
+            assert!(
+                !json.contains(look),
+                "{look} does not belong on the wire: {json}"
+            );
+        }
+        // And it comes back whole: a front-end joins a result to a call by id.
+        let round: Event = serde_json::from_str(&json).unwrap();
+        match round {
+            Event::ToolAnswer(e) => {
+                assert_eq!(e.head, Some(Head::new(HeadKind::Failed, "2.5s")));
+                assert_eq!(e.call_id, "c1");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A call names the tool it runs, its arguments, and the id its result carries.
+    #[test]
+    fn a_tool_call_is_its_own_event() {
+        let e = Event::ToolCall(ToolCallEvent {
+            session: "main".into(),
+            call_id: "c1".into(),
+            head: Head::new(HeadKind::Call, r#"bash{"command":"ls"} "#),
+        });
+        let json = serde_json::to_string(&e).unwrap();
+        assert!(json.contains(r#""t":"tool_call""#), "{json}");
+        assert!(json.contains(r#""kind":"call""#), "{json}");
+        let round: Event = serde_json::from_str(&json).unwrap();
+        match round {
+            Event::ToolCall(c) => assert_eq!(c.call_id, "c1"),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

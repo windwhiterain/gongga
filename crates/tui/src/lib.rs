@@ -495,6 +495,12 @@ impl Tui {
         self.dirty = true;
     }
 
+    /// The label of a block that learned its outcome after it opened.
+    pub fn relabel(&mut self, _name: &str, key: &str, tag: &str, kind: LineKind) {
+        self.screen.panes.relabel(key, tag, kind);
+        self.dirty = true;
+    }
+
     pub fn draw(&mut self) -> anyhow::Result<()> {
         // Nothing changed, so nothing is written: a fast stream cannot hog the loop.
         if !self.dirty {

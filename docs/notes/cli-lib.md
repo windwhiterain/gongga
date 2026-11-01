@@ -209,12 +209,38 @@ keeps is the turn: `REPLAY_TURN` says a part is a row rather than a stream, and 
 the difference between a block of its own and text appended to the answer a running
 turn is still writing.
 
+## kind_of
+
+The one place a server-named `HeadKind` becomes one of this crate's `LineKind`s, and
+therefore the place where "how this is drawn" begins. It is a style decision, so it is
+here and not on the wire: the server says a call failed, and this crate decides that is
+a tool error rather than an error of the harness.
+
+## Client::handle_tool_call
+
+One block per call, keyed `c:<call_id>` and labelled with the words the server sent
+(`bash{"command":"ls"} `). The key is the call and not the turn: SPEC's `abstract`
+holds a call and its result together, and the id is the only thing they share -- two
+calls in one turn are two items, not one block that keeps growing.
+
+The block opens and closes in one call (`text: ""`, `done: true`): a call is a fact,
+not a stream. Its content is the tool's output, which arrives as `tool_answer`.
+
 ## Client::handle_tool_answer
 
 Same rule, same shape: `[<session>] ` opens the line, and the tool's stdout and
 stderr stay separate streams (`t:<call_id>:<stream>`) that each carry it. The
 tool name is not in the prefix today; the answer arrives after the `tool: <name>`
 line that the call itself rendered.
+
+The chunk that ends the call also carries a `Head`, and `Sink::relabel` writes its
+text onto that stream's label -- `1.2s ` -- together with the `LineKind` `kind_of` gives
+its kind, so the block is redrawn as the outcome it had and not as the call it was. It is a relabel rather than a line of its own
+because SPEC's `tool_result{ok, time}` is the *summary* of the block, and a summary
+that needed a row of its own would double the height of every call.
+
+Nothing is written for a chunk that is not the end: a tool still running has no
+outcome, and rewriting the label on every chunk would churn the log it is drawn from.
 
 ## Event::Log — no tag
 

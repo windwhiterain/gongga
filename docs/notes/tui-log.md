@@ -39,6 +39,20 @@ the whole block again. A block is the unit the window allocates in: a streaming
 response or tool output is one block, and it keeps growing in place until it is
 sealed.
 
+## Log::relabel
+
+A label that arrives after its block opened, because the outcome of a call is only
+known when it ends: `ok · 1.2s ` in front of the output the block already holds.
+
+The label is not text -- that is the whole point of `Entry::tag` -- so setting it is a
+reflow, not a prefix: a longer label eats the first row's columns and pushes the
+block's own text down. The row count can change, so both indexes are corrected around
+it (`contributions` before and after) or every block behind it would be off by the
+difference.
+
+A key nobody opened is nothing, and a label already in place is left alone: the caller
+says this once per stream, but a repeated write would rebuild the wrap for nothing.
+
 ## Entry::tag
 
 The label the block opened with, kept *out* of `text`. Two reasons, and both are

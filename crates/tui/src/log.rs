@@ -456,6 +456,30 @@ impl Log {
         self.entries[at].at = pos;
     }
 
+    /// Replaces the label of the block `key` names, once its outcome is known.
+    ///
+    /// # Invariant
+    ///
+    /// The row count can change: the label is not text, so a longer one eats the
+    /// first row's columns and wraps it further. The block is reflowed and both
+    /// indexes are corrected, which is what keeps a retro-set label from silently
+    /// shifting every block after it. A key nobody opened is nothing to label.
+    pub fn relabel(&mut self, key: &str, tag: &str, kind: LineKind) {
+        let Some(at) = self.open.get(key).copied() else {
+            return;
+        };
+        if self.entries[at].tag == tag && self.entries[at].kind == kind {
+            return;
+        }
+        let before = self.contributions(at);
+        self.entries[at].tag = tag.to_string();
+        self.entries[at].kind = kind;
+        let width = self.width;
+        self.entries[at].reflow(width);
+        let after = self.contributions(at);
+        self.shift(at, before, after);
+    }
+
     /// Adds to the block `key` names, opening it with `tag` in window `name` on
     /// first use.
     ///
@@ -669,6 +693,51 @@ mod tests {
         }
         log.rows(View::All, width);
         log
+    }
+
+    /// A label that arrives after the block opened replaces the one it opened
+    /// with, and the next frame draws the new one.
+    ///
+    /// # Invariant
+    ///
+    /// The rows a longer label pushes into are counted: a retro-set label that ate
+    /// the first row's columns without reflowing would leave the block's own text
+    /// wrapping as if the label were not there.
+    #[test]
+    fn a_label_set_after_the_block_opened_is_the_one_drawn() {
+        let mut log = Log::new();
+        log.stream("w", "k", LineKind::ToolOutput, "", "out", false);
+        assert_eq!(shown(&mut log, 20, 4, 0), vec!["out"]);
+        log.relabel("k", "1.2s ", LineKind::ToolOutput);
+        assert_eq!(
+            shown(&mut log, 20, 4, 0),
+            vec!["1.2s out"],
+            "the label leads the block's first row"
+        );
+
+        // A label that eats the row: the text is re-wrapped, and what the frame
+        // loses to the cut is still counted in the rows.
+        let long = "x".repeat(19);
+        log.relabel("k", &long, LineKind::ToolError);
+        assert!(log.rows(View::All, 20) > 1, "the label re-wrapped the text");
+        assert_eq!(
+            shown(&mut log, 20, 8, 0).concat(),
+            format!("{long}out"),
+            "every column of the block is somewhere on screen"
+        );
+    }
+
+    /// A key nobody opened has no block to label, and a label in place is left
+    /// alone: one set twice must not churn the log.
+    #[test]
+    fn relabelling_a_block_nobody_opened_is_nothing() {
+        let mut log = Log::new();
+        log.relabel("nobody", "ok ", LineKind::ToolOutput);
+        assert_eq!(log.rows(View::All, 20), 0);
+
+        log.stream("w", "k", LineKind::ToolOutput, "ok ", "out", true);
+        log.relabel("k", "ok ", LineKind::ToolOutput);
+        assert_eq!(shown(&mut log, 20, 4, 0), vec!["ok out"]);
     }
 
     fn shown(log: &mut Log, width: usize, height: usize, scroll: usize) -> Vec<String> {

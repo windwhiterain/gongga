@@ -860,11 +860,22 @@ fn row_event(name: &str, row: &MessageRow) -> Option<Event> {
             stream: ToolStream::Stdout,
             text: row.text.clone(),
             done: true,
+            // A row written before the verdict was kept says nothing about it.
+            head: row
+                .ok
+                .map(|ok| crate::agent::result_head(ok, row.elapsed_ms.unwrap_or(0))),
+        }));
+    }
+    // The call itself, as the item it was asked as: one event, never a stream.
+    if row.kind == "tool_call" {
+        return Some(Event::ToolCall(protocol::ToolCallEvent {
+            session: name.to_string(),
+            call_id: row.call_id.clone().unwrap_or_default(),
+            head: crate::agent::call_head(row.name.as_deref().unwrap_or_default(), &row.text),
         }));
     }
     let part = match row.kind.as_str() {
         "reasoning" => ResponsePart::Reasoning,
-        "tool_call" => ResponsePart::ToolCall,
         "builtin_call" => ResponsePart::Activity,
         "text" => ResponsePart::Output,
         // A notice and the prompt in force are the harness, not the model:

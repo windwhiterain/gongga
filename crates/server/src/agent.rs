@@ -549,6 +549,13 @@ impl Agent {
                     arguments,
                     ..
                 } => {
+                    // Before it runs: this id is what the result carries, which
+                    // is how a front-end holds a call and its output as one item.
+                    self.bus.publish(Event::ToolCall(protocol::ToolCallEvent {
+                        session: name.to_string(),
+                        call_id: call_id.clone(),
+                        head: call_head(&tool, &arguments),
+                    }));
                     let _ = self.store.append_message(
                         id,
                         "tool_call",
@@ -822,6 +829,7 @@ impl Agent {
             "tool end"
         );
 
+        // The one chunk that ends the call, and the only one that knows how it went.
         self.bus.publish(Event::ToolAnswer(ToolAnswerEvent {
             session: name.to_string(),
             call_id: call_id.clone(),
@@ -829,6 +837,7 @@ impl Agent {
             stream: ToolStream::Stdout,
             text: String::new(),
             done: true,
+            head: Some(result_head(outcome.ok, run_ms)),
         }));
 
         let status = if outcome.ok { "ok" } else { "error" };
@@ -842,7 +851,7 @@ impl Agent {
             id,
             "tool_result",
             &json!({"call_id": call_id, "output": outcome.output, "images": images,
-                    "step": step}),
+                    "step": step, "ok": outcome.ok, "elapsed_ms": run_ms}),
         );
         let _ = self
             .store
@@ -1113,4 +1122,34 @@ mod tests {
         assert!(notice.contains("10 input tokens of 20"), "{notice}");
         assert!(!notice.contains("{{"), "{notice}");
     }
+}
+
+/// What a call is, and the words it is read with: the tool and its arguments.
+///
+/// # Invariant
+///
+/// Kind and text only -- never a glyph or a colour. This crate knows what a tool
+/// is; how that looks belongs to the front-end, so restyling is a change to one
+/// crate and nothing on the wire moves. See `docs/notes/protocol-message.md`.
+pub(crate) fn call_head(tool: &str, arguments: &str) -> protocol::Head {
+    protocol::Head::new(protocol::HeadKind::Call, format!("{tool}{arguments} "))
+}
+
+/// What a finished call says: whether it worked, and how long it took.
+///
+/// # Invariant
+///
+/// The duration is spelled here because only this crate measured it; the mark
+/// and the colour that go beside it are the front-end's.
+pub(crate) fn result_head(ok: bool, run_ms: u64) -> protocol::Head {
+    let kind = if ok {
+        protocol::HeadKind::Ok
+    } else {
+        protocol::HeadKind::Failed
+    };
+    let spent = match run_ms {
+        0..1000 => format!("{run_ms}ms"),
+        _ => format!("{:.1}s", run_ms as f64 / 1000.0),
+    };
+    protocol::Head::new(kind, spent)
 }

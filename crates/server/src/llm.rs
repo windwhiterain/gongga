@@ -1193,22 +1193,8 @@ async fn handle(
                     })
                     .await?;
                 }
-                ItemKind::FunctionCall => {
-                    // Only the marker: the arguments arrive as deltas of their own
-                    // and are appended to this part, so the call is shown once --
-                    // `name(` now, the deltas as they come, `)` at `done`.
-                    out.send(LlmEvent::PartStart {
-                        part: ResponsePart::ToolCall,
-                        item_id: id.clone(),
-                    })
-                    .await?;
-                    out.send(LlmEvent::Delta {
-                        part: ResponsePart::ToolCall,
-                        item_id: id,
-                        text: format!("{}(", item["name"].as_str().unwrap_or("?")),
-                    })
-                    .await?;
-                }
+                // Nothing to start: the call is published whole, once, below.
+                ItemKind::FunctionCall => {}
                 ItemKind::ProviderCall => {
                     let shown = activity_name(item["type"].as_str().unwrap_or("call"));
                     out.send(LlmEvent::PartStart {
@@ -1250,22 +1236,9 @@ async fn handle(
             })
             .await?;
         }
-        "response.function_call_arguments.delta" => {
-            let item_id = d["item_id"].as_str().unwrap_or_default().to_string();
-            let delta = d["delta"].as_str().unwrap_or_default().to_string();
-            // Remembered so `done` knows whether the arguments were already shown.
-            items
-                .entry(item_id.clone())
-                .or_default()
-                .text
-                .push_str(&delta);
-            out.send(LlmEvent::Delta {
-                part: ResponsePart::ToolCall,
-                item_id,
-                text: delta,
-            })
-            .await?;
-        }
+        // Nothing to stream: a call is published whole when its item is done, so
+        // a front-end draws `bash(name=…)` rather than a JSON document being typed.
+        "response.function_call_arguments.delta" => {}
         "response.output_item.done" => {
             let item = &d["item"];
             let id = item["id"].as_str().unwrap_or_default().to_string();
@@ -1334,32 +1307,13 @@ async fn handle(
                     .await?;
                 }
                 ItemKind::FunctionCall => {
-                    // The call was streamed as `name(` + its argument deltas, so all
-                    // that is left to say is the closing bracket -- and one line
-                    // for a provider that streamed no deltas at all.
-                    let streamed = !meta.text.is_empty();
-                    let text = if streamed {
-                        ")".to_string()
-                    } else {
-                        let args = item["arguments"].as_str().unwrap_or("{}");
-                        format!("{}({args})", meta.name)
-                    };
-                    out.send(LlmEvent::Delta {
-                        part: ResponsePart::ToolCall,
-                        item_id: id.clone(),
-                        text,
-                    })
-                    .await?;
+                    // One event, whole: the name, the arguments and the id its
+                    // result will carry. Nothing streams, so nothing is closed.
                     out.send(LlmEvent::ToolCall {
-                        item_id: id.clone(),
+                        item_id: id,
                         call_id: meta.call_id,
                         name: meta.name,
                         arguments: item["arguments"].as_str().unwrap_or("{}").to_string(),
-                    })
-                    .await?;
-                    out.send(LlmEvent::PartDone {
-                        part: ResponsePart::ToolCall,
-                        item_id: id,
                     })
                     .await?;
                 }
@@ -1715,6 +1669,86 @@ mod tests {
             }
         }
         assert_eq!(summary.as_deref(), Some("from provider"));
+    }
+
+    /// A tool call is published once, whole: its name, its arguments and the id
+    /// its result will carry -- and nothing is streamed as a part, so a front-end
+    /// never draws a JSON document being typed.
+    #[tokio::test]
+    async fn a_tool_call_is_one_event_and_no_streamed_part() {
+        let (tx, mut rx) = mpsc::channel(32);
+        let mut items = HashMap::new();
+        let ev = |name: &str, data: Value| SseEvent {
+            name: name.to_string(),
+            data,
+        };
+        handle(
+            ev(
+                "response.output_item.added",
+                json!({"item": {
+                    "id": "fc_1", "type": "function_call",
+                    "call_id": "call_9", "name": "bash",
+                }}),
+            ),
+            &mut items,
+            &mut Outbox::new(&tx),
+        )
+        .await
+        .unwrap();
+        handle(
+            ev(
+                "response.function_call_arguments.delta",
+                json!({"item_id": "fc_1", "delta": r#"{"command":"ls"}"#}),
+            ),
+            &mut items,
+            &mut Outbox::new(&tx),
+        )
+        .await
+        .unwrap();
+        handle(
+            ev(
+                "response.output_item.done",
+                json!({"item": {
+                    "id": "fc_1", "type": "function_call",
+                    "call_id": "call_9", "name": "bash",
+                    "arguments": r#"{"command":"ls"}"#,
+                }}),
+            ),
+            &mut items,
+            &mut Outbox::new(&tx),
+        )
+        .await
+        .unwrap();
+
+        let mut calls = Vec::new();
+        let mut streamed = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            match e {
+                LlmEvent::ToolCall {
+                    call_id,
+                    name,
+                    arguments,
+                    ..
+                } => calls.push((call_id, name, arguments)),
+                LlmEvent::Delta { part, .. } | LlmEvent::PartDone { part, .. } => {
+                    streamed.push(part)
+                }
+                LlmEvent::PartStart { part, .. } => streamed.push(part),
+                _ => {}
+            }
+        }
+        assert_eq!(
+            calls,
+            vec![(
+                "call_9".to_string(),
+                "bash".to_string(),
+                r#"{"command":"ls"}"#.to_string()
+            )]
+        );
+        assert!(
+            streamed.is_empty(),
+            "a call is not a streamed part any more: {streamed:?}"
+        );
     }
 
     /// Some providers stream deltas without an `output_item.added` first. The

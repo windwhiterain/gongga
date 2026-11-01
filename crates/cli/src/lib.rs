@@ -206,6 +206,26 @@ pub fn home_of(args: &Args) -> std::path::PathBuf {
 
 // Where rendered output goes
 
+/// Which line kind a server-named [`protocol::HeadKind`] is drawn as.
+///
+/// # Invariant
+///
+/// The mapping is a *style* decision, so it lives here and not on the wire: the
+/// server says a call failed, and this crate decides that reads as a tool error
+/// rather than as an error of the harness. A new kind is one arm here and one
+/// look in the renderer, with no protocol change.
+fn kind_of(kind: protocol::HeadKind) -> LineKind {
+    match kind {
+        protocol::HeadKind::Call => LineKind::ToolCall,
+        protocol::HeadKind::Ok => LineKind::ToolOutput,
+        protocol::HeadKind::Failed => LineKind::ToolError,
+        protocol::HeadKind::Reasoning => LineKind::Reasoning,
+        protocol::HeadKind::Output => LineKind::Assistant,
+        protocol::HeadKind::Cmd => LineKind::Command,
+        protocol::HeadKind::Error => LineKind::Error,
+    }
+}
+
 /// What a rendered line is; the front-end only colours it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineKind {
@@ -300,6 +320,14 @@ pub trait Sink {
     fn block_size(&mut self, _lines: usize) {}
     /// How the window lays itself out. A front-end that ignores it shows one list.
     fn layout(&mut self, _layout: &Layout) {}
+    /// The label of a block that learned its outcome after opening, and that
+    /// label's kind: SPEC's `tool_result{ok, time}`.
+    ///
+    /// # Invariant
+    ///
+    /// The text is the server's and the kind is the server's; the look of that
+    /// kind is the front-end's, which is why the kind travels rather than a colour.
+    fn relabel(&mut self, _window: &str, _key: &str, _tag: &str, _kind: LineKind) {}
     /// Empties the window `window` names: the session that wrote it is deleted.
     fn forget(&mut self, _window: &str) {}
     /// The session the sticky `session` names: what the keys scroll and what a
@@ -426,6 +454,7 @@ impl Client {
     fn drawn(&self, event: &Event) -> bool {
         let session = match event {
             Event::Response(e) => Some(e.session.as_str()),
+            Event::ToolCall(e) => Some(e.session.as_str()),
             Event::ToolAnswer(e) => Some(e.session.as_str()),
             Event::Status { session, .. } => Some(session.as_str()),
             _ => None,
@@ -666,6 +695,16 @@ impl Client {
                     self.handle_response(e, sink);
                 }
             }
+            Event::ToolCall(e) => {
+                if shown {
+                    self.handle_tool_call(e, sink);
+                }
+            }
+            Event::ToolCall(e) => {
+                if shown {
+                    self.handle_tool_call(e, sink);
+                }
+            }
             Event::ToolAnswer(e) => {
                 if shown {
                     self.handle_tool_answer(e, sink);
@@ -736,7 +775,8 @@ impl Client {
             // No label: the kind's colour (dim italic) already says this is the
             // model thinking, and the label was the word twice.
             ResponsePart::Reasoning => (LineKind::Reasoning, ""),
-            // No label: the colour says a tool ran, and the text is the call.
+            // No label: the colour says a tool ran. Only a provider's own call
+            // streams now; our tools' calls arrive whole.
             ResponsePart::ToolCall => (LineKind::ToolCall, ""),
             // Kept: it shares the tool call's colour, so the word is the only
             // thing saying who ran it.
@@ -749,6 +789,21 @@ impl Client {
         sink.stream(&window, &key, kind, &prefix, &e.text, e.done);
     }
 
+    /// A tool the model asked for: one block per call, so two calls in one turn
+    /// stay two items.
+    ///
+    /// # Invariant
+    ///
+    /// The key is the call id, never the turn: SPEC's `abstract` holds a call and
+    /// its result together, and the id is the only thing they share.
+    fn handle_tool_call(&self, e: protocol::ToolCallEvent, sink: &mut dyn Sink) {
+        let key = format!("c:{}", e.call_id);
+        // The words are the server's; which kind of row this is, and how that
+        // kind looks, are this side's.
+        let kind = kind_of(e.head.kind);
+        sink.stream(&e.session, &key, kind, &e.head.text, "", true);
+    }
+
     fn handle_tool_answer(&self, e: ToolAnswerEvent, sink: &mut dyn Sink) {
         let key = format!("t:{}:{:?}", e.call_id, e.stream);
         let kind = match e.stream {
@@ -759,6 +814,12 @@ impl Client {
         let prefix = self.tag(&e.session, "");
         let window = e.session.clone();
         sink.stream(&window, &key, kind, &prefix, &e.text, e.done);
+        // SPEC's `tool_result{ok, time}`: only the ending chunk knows. Words are
+        // the server's; the look is `kind_of`'s.
+        if let Some(head) = &e.head {
+            let kind = kind_of(head.kind);
+            sink.relabel(&window, &key, &head.text, kind);
+        }
     }
 
     fn session_names(&self) -> Vec<String> {
@@ -2440,6 +2501,8 @@ mod tests {
         announced: Option<Layout>,
         /// Windows a session's deletion emptied.
         forgotten: Vec<String>,
+        /// Labels written after a block opened, as `key = tag`.
+        labels: Vec<String>,
     }
 
     impl Sink for StreamSink {
@@ -2462,6 +2525,9 @@ mod tests {
             self.windows.push(window.to_string());
             self.keys.push(key.to_string());
             self.lines.push(format!("{prefix}{text}"));
+        }
+        fn relabel(&mut self, _window: &str, key: &str, tag: &str, kind: LineKind) {
+            self.labels.push(format!("{key} = {tag} ({kind:?})"));
         }
         fn status(&mut self, _t: &str) {}
         fn layout(&mut self, layout: &Layout) {
@@ -2510,6 +2576,85 @@ mod tests {
         assert_eq!(s.lines, vec!["hi there"]);
     }
 
+    /// A tool call is one block, keyed by the call: two calls in a turn are two
+    /// items, and a result names the same id.
+    #[test]
+    fn a_tool_call_is_one_block_keyed_by_the_call() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["peer"]);
+        let mut s = StreamSink::default();
+        for call in ["c1", "c2"] {
+            c.handle_event(
+                Event::ToolCall(protocol::ToolCallEvent {
+                    session: "peer".into(),
+                    call_id: call.into(),
+                    // The words are the server's; only the kind travels with them.
+                    head: protocol::Head::new(protocol::HeadKind::Call, r#"bash{"command":"ls"} "#),
+                }),
+                &mut s,
+            );
+        }
+        assert_eq!(s.keys, vec!["c:c1", "c:c2"]);
+        assert_eq!(
+            s.lines,
+            vec![r#"bash{"command":"ls"} "#, r#"bash{"command":"ls"} "#],
+            "the label is what the model asked for"
+        );
+    }
+
+    /// SPEC's `tool_result{ok, time}`: the ending chunk labels the block with
+    /// the verdict and how long the tool ran.
+    #[test]
+    fn a_finished_tool_says_how_it_went_on_its_own_block() {
+        let d = tempfile::tempdir().unwrap();
+        let c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["peer"]);
+        let mut s = StreamSink::default();
+        for (kind, said, want) in [
+            (protocol::HeadKind::Ok, "1.2s", "ToolOutput"),
+            (protocol::HeadKind::Failed, "2.5s", "ToolError"),
+        ] {
+            c.handle_tool_answer(
+                ToolAnswerEvent {
+                    session: "peer".into(),
+                    call_id: "c1".into(),
+                    tool: "bash".into(),
+                    stream: ToolStream::Stdout,
+                    text: String::new(),
+                    done: true,
+                    head: Some(protocol::Head::new(kind, said)),
+                },
+                &mut s,
+            );
+            assert_eq!(
+                s.labels.last().map(String::as_str),
+                Some(&format!("t:c1:Stdout = {said} ({want})")[..]),
+                "the server's words, this side's look"
+            );
+        }
+    }
+
+    /// A chunk that is not the end of a call knows nothing about its outcome,
+    /// and a guess would rewrite the row all turn.
+    #[test]
+    fn a_running_tool_labels_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["peer"]);
+        let mut s = StreamSink::default();
+        c.handle_tool_answer(
+            ToolAnswerEvent {
+                session: "peer".into(),
+                call_id: "c1".into(),
+                tool: "bash".into(),
+                stream: ToolStream::Stdout,
+                text: "out".into(),
+                done: false,
+                head: None,
+            },
+            &mut s,
+        );
+        assert!(s.labels.is_empty(), "{:?}", s.labels);
+    }
+
     /// The key stays what it was: the session there is for routing, not display.
     #[test]
     fn a_response_key_is_unchanged_by_the_tag() {
@@ -2536,6 +2681,7 @@ mod tests {
                     stream,
                     text: text.into(),
                     done: false,
+                    head: None,
                 },
                 &mut s,
             );
@@ -2554,6 +2700,7 @@ mod tests {
                 stream: ToolStream::Stdout,
                 text: "out".into(),
                 done: false,
+                head: None,
             },
             &mut s,
         );

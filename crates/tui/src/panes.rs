@@ -218,6 +218,11 @@ impl Panes {
         &self.panes
     }
 
+    /// Replaces the label of the block `key` names, and the kind it is drawn as.
+    pub fn relabel(&mut self, key: &str, tag: &str, kind: LineKind) {
+        self.log.relabel(key, tag, kind);
+    }
+
     /// Caps every view's blocks, and the ones opened later too.
     pub fn set_block_size(&mut self, lines: usize) {
         self.log.set_block_size(lines);

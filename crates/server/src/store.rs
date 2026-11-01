@@ -1097,6 +1097,12 @@ pub struct MessageRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub text: String,
+    /// A `tool_result`'s verdict, as the turn it belongs to recorded it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ok: Option<bool>,
+    /// How long that tool ran, in milliseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
 }
 
 impl MessageRow {
@@ -1112,6 +1118,8 @@ impl MessageRow {
             call_id: None,
             name: None,
             text: String::new(),
+            ok: None,
+            elapsed_ms: None,
         };
         match kind {
             "text" => {
@@ -1127,6 +1135,10 @@ impl MessageRow {
             "tool_result" => {
                 row.call_id = str_of("call_id");
                 row.text = str_of("output").unwrap_or_default();
+                // Absent on a row written before the outcome was kept: a read
+                // of an old transcript then says nothing, not a guess.
+                row.ok = value.get("ok").and_then(|v| v.as_bool());
+                row.elapsed_ms = value.get("elapsed_ms").and_then(|v| v.as_u64());
             }
             // The harness talking to the reader: no role, no answer in the model's mouth.
             "notice" => row.text = str_of("text").unwrap_or_default(),

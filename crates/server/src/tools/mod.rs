@@ -67,6 +67,8 @@ impl ToolContext {
                     stream,
                     text,
                     done: false,
+                    // Only the chunk that ends the call knows how it went.
+                    head: None,
                 })
                 .await;
         }
