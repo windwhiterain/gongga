@@ -188,3 +188,20 @@ message 里注入」——判断正确，实测证实。
   → 变红）；`llm::this_turns_facts_are_one_item_after_the_transcript`。
 - 数据：`.dev/verify/ea40c7f-prefix-cache-tail-item.json`。��次测量里有一次第二请求只有
   1.8%，另两次 98.2–99.2%，判为 provider 侧冷读；场景与 sha 一变就要重测。
+
+## 第七轮：首轮时间落盘，发过的内容永不改写
+
+User：「时间是首轮 prompt 的时间，直接落盘不可以改的啊，所有发过请求的内容都是不可以改的」。
+
+- 之前 `dynamic_tail` 每回合重渲染（当前分钟 + 当前 cwd）→ 每分钟一行新的 prompt 行，
+  而且改写了「发出去过的东西」这条底线。
+- 现在：卡片只在**没有 prompt 行**时渲染一次，之后每次从库里读原样重放。prompt 里写的
+  是**会话开始的时间**，不是当前时间；cwd 同理是首轮所在目录。行数从 3 变成 1。
+- 实测（真 provider，两轮跨分钟）：1.8% → **99.7%** → **99.2%**；`prompt rows: 1`，
+  三次请求最后一条 item 文本完全相同。
+- 规则写进 `docs/notes/server-body.md`：**每回合都会变的值放最后；会变的值根本不要重算。**
+  需要当前时间就让会话敲 `date`——工具调用是新行，不是对旧行的修改。
+- 数据：`.dev/verify/21c6540-prefix-cache-start-card.json`。
+- 仍未做：`cwd` 现在固定在首轮，所以会话换目录后 prompt 里不会体现（行里的 `cwd` 字段
+  仍记录当前值，只是不发）。要「当前目录」就得每回合变一条 item，这与本条规则冲突，
+  留给 user 定。
