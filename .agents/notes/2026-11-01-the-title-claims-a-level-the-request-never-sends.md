@@ -198,3 +198,58 @@
 `tui_live.py` 起的服务端只把**服务端自己的** base_url 指向假端点；用 `/set_session` 带上一个
 真名单模型，那一轮就真的打到厂商。这次又踩了一次（一次 turn），所以「端到端假端点」必须
 配假名单（`GONGGA_AGENTS_DIR`），这是唯一安全的方式。
+
+## 第三轮：所有东西立刻生效，每次读都读最新的（用户 2026-11-01 的规则）
+
+用户裁决，覆盖上一轮记的「重读只重读新入库的，入库的不改」：
+
+> 所有东西都要立刻生效，每次读都必须读的是最新的，全面检查。
+
+### 审计：哪些东西读一次就记住，而且是替用户做决定
+
+| 东西 | 之前 | 之后 |
+| --- | --- | --- |
+| 模型 / 档位 / 预算 | 一轮开头各读一次（`turn_inner` 顶部），中途 `set_session` 要等下一轮 | 每个 step 边界重读（`Agent::settings`），`step start` 日志同时记 model 与 effort |
+| 提示词（进 `instructions` 的那段） | `prompt_in_force` 直接返回库里那行，除非 stamp/cwd 变了；模板在**旧实现里根本不会中途生效** | 每个 step 重新渲染，与库里的行比较，**只有两段真正上线的文字不同才写新行** |
+| 命令目录 / 硬编码参数名 | 已是由服务端发布、客户端不再硬编码 | 不变 |
+| `set_sticky --name thinking_effort` | 接受、存盘、**永不被读**（静默无效） | 没有命令声明会填这个名字就拒绝，并列出可用的名字 |
+| `set_session --cwd`（已存在的会话） | 接受、返回 `session is now X`、**实际什么都没做**（目录属于 shell） | 除非指的就是它已在的目录（含 `C:/` 与 `C:\` 两种拼法），否则报错并说清楚该 `cd` |
+| roster / keys / 提示词文件 | `providers::roster()` 与 `Prompts` 都按文件 stamp 重读（已是最新） | 不变 |
+| 配置 `config.toml` | 启动读一次（绑定端口、home 一类启动即定形） | 不变：那份文件的读取语义是"启动时的事实" |
+| 客户端铺盖（title） | 读服务端 `SessionInfo` | 不变：与请求同源，`set_session` 立即发 `Event::Sessions` |
+
+最后两项为什么不动：`config.toml` 里的 bind/home/db 是进程身份，改了只能重启；窗口里那段字
+不是快照，是服务端推的。**真正错的是「中途改了设置却要等下一轮才发」和「存的设置永远不生效」**
+——那才是这次修的东西。
+
+### 一个坑：`cwd` 的两种拼法
+
+`sessions.cwd` 和提示词行里的 `cwd` 会在 `C:\resource\gongga` 与 `C:/resource/gongga` 之间翻转
+（Git Bash 报 `/c/...`，转换后落到另一种分隔符）。所以「文本比较」如果用整行比，每一步都会
+判成"变了"而重新入库——**把缓存前缀整个作废**。比较只取真正上线的那两段
+（`instructions`、`handover`），`cwd` 是记录不是提示词。
+
+### 验证（每个都带变异检查）
+
+一座服务端生命周期、每 run 独立 home + 内核分配端口 + 临时名单：
+
+| 断言 | 正常实现 | 变异（改回旧行为） |
+| --- | --- | --- |
+| 轮中 `set_session --model beta --thinking_effort medium`：第二个请求 | `model=beta reasoning={'effort':'medium'}` | `model=beta reasoning={'effort':'high'}`（旧：一轮只读一次）→ 标题说 medium、请求发 high |
+| 轮中编辑模板：下一个请求 | `edited=True` | `edited=False`（旧：库里那行永远赢） |
+| 什么都不改的第二轮 | 只有 2 个 `system` 行，第二个请求复用 | —— （证明稳态不重新入库、缓存前缀不作废） |
+| `set_session --cwd /tmp` | 拒绝，说明该 `cd` | —— |
+| `set_session --cwd C:/resource/gongga`（同目录换拼法） | 接受 | —— |
+| `set_sticky --name thinking_effort` | 拒绝，列出 model/session/… | —— |
+
+### 换手
+
+`evolve.sh stage` → detached launcher → `swap`：新 payload `e1a2859215133f60`（20:49 构建）接管
+home，日志里 `resuming turns left pending by the last run resumed=2`，`turn start ... effort=...`
+与 `step start ... effort=...` 都来自新代码 —— 这是"跑着的服务端就是刚改的代码"的证据。
+
+### 仍然待定
+
+`fix_model` 这一行（以及本机其它老会话）`thinking_effort` 仍是 NULL，所以它的
+`turn start` 是 `effort="-"`：标题不印、请求不发，两者一致但没有信息。给老行一次性补齐
+= 改变它们实际发出去的东西和花费，等用户点头。
