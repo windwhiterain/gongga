@@ -8,6 +8,7 @@
 mod clipboard;
 mod input;
 mod log;
+mod markdown;
 mod panes;
 pub mod program;
 mod render;
@@ -338,6 +339,51 @@ impl Screen {
     }
 }
 
+/// One answer being accumulated, and whether its block is open yet.
+///
+/// # Invariant
+///
+/// `opened` is what keeps two turns on one key apart: a sealed block is still in
+/// the log under that key, so "a block exists" cannot answer "have I opened mine".
+#[derive(Default)]
+struct Answer {
+    raw: String,
+    opened: bool,
+}
+
+/// What the log should do with the answer as it now stands.
+#[derive(Debug, PartialEq, Eq)]
+enum Drawn {
+    /// Nothing yet: a blank answer is not a row.
+    Nothing,
+    /// Open the block with this text.
+    Open(String),
+    /// Replace the text of the block already open.
+    Rewrite(String),
+}
+
+impl Answer {
+    /// Takes one delta and says what the block now looks like.
+    ///
+    /// # Invariant
+    ///
+    /// The text is re-rendered from the whole answer, because markdown is not
+    /// append-safe: one more `**` can change a row above the one arriving. Only
+    /// the first delta opens the block -- a later one would double the text.
+    fn feed(&mut self, text: &str) -> Drawn {
+        self.raw.push_str(text);
+        let drawn = markdown::render(&self.raw);
+        if self.opened {
+            return Drawn::Rewrite(drawn);
+        }
+        if drawn.is_empty() {
+            return Drawn::Nothing;
+        }
+        self.opened = true;
+        Drawn::Open(drawn)
+    }
+}
+
 pub struct Tui {
     terminal: Terminal<CrosstermBackend<Stdout>>,
     screen: Screen,
@@ -356,6 +402,9 @@ pub struct Tui {
     settled: Option<(std::time::Instant, usize)>,
     /// An event read while deciding whether a keystroke began a paste.
     stashed: Option<std::io::Result<TermEvent>>,
+    /// The answer arriving under each key: markdown is rendered from its whole,
+    /// so deltas are kept until the block ends.
+    answers: std::collections::HashMap<String, Answer>,
     /// The input as the last frame saw it: typing may have put console ink on
     /// the row.
     input_seen: Option<(usize, usize)>,
@@ -405,6 +454,7 @@ impl Tui {
             completer,
             history: Vec::new(),
             history_pos: None,
+            answers: std::collections::HashMap::new(),
             input_seen: None,
             clicked: None,
             events: EventStream::new(),
@@ -521,6 +571,25 @@ impl Tui {
         text: &str,
         done: bool,
     ) {
+        // SPEC's `output (colored markdown)`: re-rendered, never appended.
+        // Everything else is drawn as it arrives.
+        if kind == LineKind::Assistant {
+            let drawn = self.answers.entry(key.to_string()).or_default().feed(text);
+            match drawn {
+                Drawn::Nothing => {}
+                Drawn::Open(drawn) => self
+                    .screen
+                    .panes
+                    .stream(name, key, kind, prefix, &drawn, false),
+                Drawn::Rewrite(drawn) => self.screen.panes.rewrite(key, &drawn),
+            }
+            if done {
+                self.answers.remove(key);
+                self.screen.panes.stream(name, key, kind, prefix, "", true);
+            }
+            self.dirty = true;
+            return;
+        }
         self.screen
             .panes
             .stream(name, key, kind, prefix, text, done);
@@ -2209,6 +2278,47 @@ mod tests {
             status: "idle".to_string(),
             title: String::new(),
         }
+    }
+
+    /// Two turns under one key are two blocks: the markdown path opens its own.
+    ///
+    /// # Invariant
+    ///
+    /// `opened` answers this, not "is there a block with this key" -- the
+    /// previous turn's block is still in the log under it.
+    /// An answer is re-rendered whole on every delta, and opened only once.
+    ///
+    /// # Invariant
+    ///
+    /// Markdown is not append-safe -- a later `**` changes an earlier row -- so a
+    /// delta rewrites the block instead of appending. The first delta opens it;
+    /// opening twice would draw the text twice.
+    #[test]
+    fn an_answer_opens_once_and_is_rewritten_after() {
+        let mut answer = Answer::default();
+        assert_eq!(answer.feed(""), Drawn::Nothing, "a blank answer is no row");
+        // Unclosed emphasis is literal text: an unfinished marker is not a rule.
+        assert_eq!(answer.feed("**bol"), Drawn::Open("**bol".into()));
+        assert_eq!(
+            answer.feed("d** text"),
+            Drawn::Rewrite("bold text".into()),
+            "the whole answer again, with the emphasis gone"
+        );
+
+        // A sealed answer under the same key starts a new block, not a rewrite
+        // of the one already in the log under that key.
+        let mut second = Answer::default();
+        assert_eq!(second.feed("next"), Drawn::Open("next".into()));
+    }
+
+    /// What the log draws for an answer is markdown's structure, not its markers.
+    #[test]
+    fn an_answer_is_drawn_as_the_structure_it_was_written_in() {
+        let mut answer = Answer::default();
+        let Drawn::Open(drawn) = answer.feed("# title\n\n- **one**\n- `two`") else {
+            panic!("an answer opens a block");
+        };
+        assert_eq!(drawn, "# title\n\u{2022} one\n\u{2022} `two`");
     }
 
     /// A press in the events opens the item under it, and the row count follows.

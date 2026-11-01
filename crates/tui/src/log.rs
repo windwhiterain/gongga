@@ -558,6 +558,36 @@ impl Log {
         self.entries[at].at = pos;
     }
 
+    /// Replaces the whole text of the block `key` names and re-wraps it.
+    ///
+    /// # Invariant
+    ///
+    /// For a block whose text is *derived* from what arrived -- an answer drawn as
+    /// markdown, where one more delta can change a row above the last one -- so an
+    /// append would be wrong and a rewrite is the only honest thing. Both indexes
+    /// move by the difference in rows, as they do for a fold.
+    pub fn rewrite(&mut self, key: &str, text: &str) {
+        let Some(at) = self.entries.iter().position(|entry| entry.key == key) else {
+            return;
+        };
+        if self.entries[at].text == text {
+            return;
+        }
+        let before = self.contributions(at);
+        let width = self.width;
+        let entry = &mut self.entries[at];
+        entry.text.clear();
+        entry.text.push_str(text);
+        entry.reflow(width);
+        let after = self.contributions(at);
+        self.shift(at, before, after);
+    }
+
+    /// Whether a block under this key exists already.
+    pub fn has_block(&self, key: &str) -> bool {
+        self.entries.iter().any(|entry| entry.key == key)
+    }
+
     /// Opens or closes the `abstract` `key` names.
     ///
     /// # Invariant

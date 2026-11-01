@@ -218,6 +218,16 @@ impl Panes {
         &self.panes
     }
 
+    /// Replaces the whole text of one block: an answer re-rendered as markdown.
+    pub fn rewrite(&mut self, key: &str, text: &str) {
+        self.log.rewrite(key, text);
+    }
+
+    /// Whether one block already exists under this key.
+    pub fn has_block(&self, key: &str) -> bool {
+        self.log.has_block(key)
+    }
+
     /// Opens or closes the `abstract` `key` names.
     pub fn toggle(&mut self, key: &str) -> bool {
         self.log.toggle(key)
