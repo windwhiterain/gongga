@@ -187,6 +187,15 @@ instead would only ever reach a turn that had already moved on.
 A deleted session is skipped rather than written to: nothing would ever read that
 row, and its name may be reused by a different session later.
 
+A session whose shells are being closed is skipped for the same reason, and a
+sharper one. `close_shells` ends every shell the session owns, retired ones
+included, so a shutdown makes each waiting command report "it has now finished"
+-- which is false: it was stopped, and the shell that would have held its output
+is gone. Writing those rows is what made a restart wake every idle session to
+read notices about commands nobody was waiting for any more. The flag is set
+before the first shell goes (`SessionHandle::closing_signal`), and the row is the
+one thing it suppresses.
+
 ## leave_running
 
 Both ways of losing a command's output -- its deadline passed, or somebody spoke

@@ -60,6 +60,9 @@ struct SessionInner {
     deleted: AtomicBool,
     /// Set by a shutdown's `cancel`: the turn stops but its pending row stays.
     resumable: AtomicBool,
+    /// Set before the shells are ended: a command that stops now was stopped, and
+    /// a notice about it would be news about the server's own exit.
+    closing: Arc<AtomicBool>,
 }
 
 impl SessionHandle {
@@ -83,6 +86,8 @@ impl SessionHandle {
     /// Called once, on the way out: a shell that never exits keeps its reaper
     /// thread and the process alive.
     pub async fn close_shells(&self) {
+        // Before the first shell goes: whatever ends from here was ended by us.
+        self.inner.closing.store(true, Ordering::SeqCst);
         let (drained, retired): (Vec<_>, Vec<_>) = {
             let mut set = self.inner.shells.lock().unwrap_or_else(|e| e.into_inner());
             (set.drain(), set.take_retired())
@@ -214,6 +219,16 @@ impl SessionHandle {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .cancel();
+    }
+
+    /// The flag a tool call reads to know its shell is being ended by an exit.
+    pub fn closing_signal(&self) -> Arc<AtomicBool> {
+        self.inner.closing.clone()
+    }
+
+    /// Whether this session's shells are being ended because the server is going.
+    pub fn is_closing(&self) -> bool {
+        self.inner.closing.load(Ordering::SeqCst)
     }
 
     /// Whether a turn that is waiting its turn should bother starting.
@@ -609,6 +624,7 @@ impl SessionManager {
                 }),
                 deleted: AtomicBool::new(false),
                 resumable: AtomicBool::new(false),
+                closing: Arc::new(AtomicBool::new(false)),
             }),
         };
         live.insert(row.name, handle.clone());
@@ -669,6 +685,7 @@ mod tests {
                 tuning: Mutex::new(Tuning::default()),
                 deleted: AtomicBool::new(false),
                 resumable: AtomicBool::new(false),
+                closing: Arc::new(AtomicBool::new(false)),
             }),
         }
     }

@@ -49,6 +49,9 @@ pub struct ToolContext {
     pub vision: crate::llm::Vision,
     /// Whether a message arrived for this session that its turn cannot read yet.
     pub inbox: crate::session::InboxSignal,
+    /// Set when the shells are being ended because the server is going: nothing
+    /// that stops then "finished", so nothing about it is worth a row.
+    pub closing: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ToolContext {
@@ -356,6 +359,7 @@ fn json_type(value: &Value) -> &'static str {
 fn background_notifier(ctx: &ToolContext, shell: &str) -> bash::BackgroundNotifier {
     let store = ctx.store.clone();
     let session = ctx.session.clone();
+    let closing = ctx.closing.clone();
     let shell = shell.to_string();
     Arc::new(move |end: bash::BackgroundEnd| {
         let status = match end.code {
@@ -371,6 +375,10 @@ fn background_notifier(ctx: &ToolContext, shell: &str) -> bash::BackgroundNotifi
         );
         // A deleted session owes nothing, and its rows would be stranded.
         if matches!(store.get_session(&session), Ok(None)) {
+            return;
+        }
+        // A shell ended by the server's own exit did not finish: it was stopped.
+        if closing.load(std::sync::atomic::Ordering::SeqCst) {
             return;
         }
         // Marked: this is the server talking, not a person, and it must not wake
@@ -412,6 +420,7 @@ async fn leave_running(
     let session = ctx.session.clone();
     let shells = ctx.shells.clone();
     let output_dir = ctx.output_dir.clone();
+    let closing = ctx.closing.clone();
     // Same naming rule, with `late` where the call id goes: that call has already returned.
     let label = spill_label(&session, name, task, "late");
     let owned = name.to_string();
@@ -452,6 +461,11 @@ async fn leave_running(
              {secs}s wait and was left running, has now {status}.\n\n{text}"
         );
         // Marked like any other notice: the server speaking, not the operator.
+        // The server's own exit stops this command; it did not finish. See
+        // `docs/notes/server-session.md`.
+        if closing.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
         if let Err(e) = store.add_pending_task(
             &session,
             "inject",
@@ -1192,6 +1206,7 @@ mod tests {
                 refusal: String::new(),
             },
             inbox,
+            closing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -1220,6 +1235,7 @@ mod tests {
                 refusal: String::new(),
             },
             inbox: InboxSignal::around(Arc::new(AtomicU64::new(0))),
+            closing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -1364,6 +1380,46 @@ mod tests {
             after.output.contains("back in business"),
             "the session could not go on working: {}",
             after.output
+        );
+    }
+
+    /// A shell ended by the server's own exit did not finish, so it owes no row:
+    /// that is what a restart used to turn into news for every idle session.
+    #[tokio::test]
+    async fn a_notice_is_not_written_while_the_shells_are_being_closed() {
+        let Some(program) = crate::config::detect_git_bash() else {
+            return;
+        };
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let ctx = context_for(
+            &program,
+            dir.path(),
+            InboxSignal::around(Arc::new(AtomicU64::new(0))),
+        );
+        ctx.store
+            .create_session("main", "test-model", &dir.path().to_string_lossy())
+            .expect("the session the notice is for");
+
+        let notify = background_notifier(&ctx, "bg");
+        notify(bash::BackgroundEnd {
+            job: 7,
+            code: Some(0),
+        });
+        assert_eq!(
+            ctx.store.pending_tasks().unwrap().len(),
+            1,
+            "a job that really ended is noticed"
+        );
+
+        ctx.closing.store(true, std::sync::atomic::Ordering::SeqCst);
+        ctx.store.clear_pending_tasks("main").unwrap();
+        notify(bash::BackgroundEnd {
+            job: 8,
+            code: Some(0),
+        });
+        assert!(
+            ctx.store.pending_tasks().unwrap().is_empty(),
+            "nothing may be queued for a session that is being torn down"
         );
     }
 
