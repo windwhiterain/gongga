@@ -153,6 +153,18 @@ takes over with installs itself and its command pair at startup
 (`server-shell-command.md`). That is why one handover replaces the whole
 distribution -- payload for all three programs, and the pair a shell types.
 
+## There is no read-only run
+
+`--version` is not a free question. The head places its payload and retires the
+build it replaces *before* it takes over with the program that answers, and
+`retire` stops a running server by asking it to `cancel`. Pointed at a live home,
+"which build is this file" therefore stops that home's server -- every turn on it,
+including the one that typed the command.
+
+So a check names its own home: `GONGGA_HOME=./scratch-home ./gongga --version`.
+`scripts/bundle.sh`'s smoke does exactly that, because a build must never place
+programs in the operator's own install.
+
 ## Why a feature rather than "always"
 
 `cargo bundle` is an alias for the one command (`.cargo/config.toml`):
