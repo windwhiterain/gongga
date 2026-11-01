@@ -158,6 +158,8 @@ pub struct Choice {
 pub struct Catalog {
     /// The files this list was assembled from, lowest precedence first.
     paths: Vec<PathBuf>,
+    /// The keys this machine keeps out of the roster, by provider id.
+    keys: std::collections::HashMap<String, String>,
     providers: Vec<Provider>,
     /// Why a file could not be read, kept so startup can report it once and go on.
     problem: Option<String>,
@@ -186,6 +188,7 @@ impl Catalog {
     pub fn load_file(path: &Path) -> Self {
         let mut catalog = Self {
             paths: vec![path.to_path_buf()],
+            keys: std::collections::HashMap::new(),
             providers: Vec::new(),
             problem: None,
             generation: 0,
@@ -211,6 +214,7 @@ impl Catalog {
     pub fn empty() -> Self {
         Self {
             paths: Vec::new(),
+            keys: std::collections::HashMap::new(),
             providers: Vec::new(),
             problem: None,
             generation: 0,
@@ -252,7 +256,7 @@ impl Catalog {
     pub fn models_with(&self, lookup: &dyn Fn(&str) -> Option<String>) -> Vec<String> {
         let mut out = Vec::new();
         for provider in &self.providers {
-            if credential(provider, lookup).is_none() {
+            if credential(provider, lookup, None).is_none() {
                 continue;
             }
             for model in &provider.models {
@@ -323,7 +327,8 @@ impl Catalog {
     /// A provider's allowance queries, and the key a request there would use.
     pub fn quota_of(&self, provider_id: &str) -> Option<QuotaAccess> {
         let provider = self.providers.iter().find(|p| p.id == provider_id)?;
-        let key = credential(provider, &lookup_env).map(|(key, _)| key);
+        let kept = self.keys.get(&provider.id);
+        let key = credential(provider, &lookup_env, kept).map(|(key, _)| key);
         Some(QuotaAccess {
             provider: provider.id.clone(),
             queries: provider.quota.clone(),
@@ -342,8 +347,8 @@ impl Catalog {
             .iter()
             .find(|p| p.id == entry.provider)
             .ok_or_else(|| format!("no provider {:?}", entry.provider))?;
-        let (api_key, api_key_env) =
-            credential(provider, lookup).ok_or_else(|| match &provider.key_env {
+        let (api_key, api_key_env) = credential(provider, lookup, self.keys.get(&provider.id))
+            .ok_or_else(|| match &provider.key_env {
                 Some(env) => format!(
                     "no key for provider {}: set {env} (the roster has no literal key either)",
                     provider.id
@@ -437,14 +442,27 @@ fn openai_endpoint(provider: &Provider) -> Option<&Endpoint> {
 /// An exported environment variable wins over a literal key in the file.
 ///
 /// See `docs/notes/server-providers.md`.
+/// A provider's key, and which of the three places answered.
+///
+/// # Invariant
+///
+/// The order is deliberate: the environment beats the keystore, which beats the
+/// roster field. An exported variable is a deliberate act for one process (a test,
+/// a one-off); the keystore is this machine's standing answer and is not in git;
+/// the roster's own field is the checkout's, and only a fork that knows what it is
+/// doing would put a secret there.
 fn credential(
     provider: &Provider,
     lookup: &dyn Fn(&str) -> Option<String>,
+    kept: Option<&String>,
 ) -> Option<(String, Option<String>)> {
     if let Some(name) = &provider.key_env {
         if let Some(value) = lookup(name).filter(|v| !v.is_empty()) {
             return Some((value, Some(name.clone())));
         }
+    }
+    if let Some(value) = kept.filter(|v| !v.is_empty()) {
+        return Some((value.clone(), provider.key_env.clone()));
     }
     if let Some(key) = provider.key.as_ref().filter(|k| !k.is_empty()) {
         return Some((key.clone(), provider.key_env.clone()));
@@ -710,6 +728,42 @@ impl Handle {
 /// Counts the reads, so a client built from a retired list is recognised as one.
 static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// A machine's keys, kept out of the roster because a roster is a git checkout.
+///
+/// # Invariant
+///
+/// `[keys]` maps a provider id to its key: `<id> = "sk-..."`. It is read on every
+/// roster generation, so editing it hot-updates the credential without a restart
+/// -- which is the whole reason it is not the environment: Windows copies a
+/// process's environment once, at creation, and `setx` can never reach a server
+/// that is already running.
+///
+/// It is never committed: `~/.agents/` is not a repository, and the file is
+/// created `0600` where the platform honours that.
+fn keys_path() -> PathBuf {
+    crate::agents::Roots::of().private.join("keys.toml")
+}
+
+fn read_keys() -> std::collections::HashMap<String, String> {
+    let Ok(text) = std::fs::read_to_string(keys_path()) else {
+        return std::collections::HashMap::new();
+    };
+    let Ok(value) = toml::from_str::<toml::Value>(&text) else {
+        tracing::warn!(file = %keys_path().display(), "the keystore is not TOML; ignoring it");
+        return std::collections::HashMap::new();
+    };
+    value
+        .get("keys")
+        .and_then(|keys| keys.as_table())
+        .map(|table| {
+            table
+                .iter()
+                .filter_map(|(id, key)| key.as_str().map(|key| (id.clone(), key.to_string())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Where the roster is: an override, then the community copy under this machine's.
 fn roster_paths() -> Vec<PathBuf> {
     match std::env::var("GONGGA_PROVIDERS_CATALOG") {
@@ -719,7 +773,8 @@ fn roster_paths() -> Vec<PathBuf> {
 }
 
 impl Live {
-    /// Whether the roster on hand still matches the files it came from.
+    /// Whether the roster on hand still matches the files it came from -- the
+    /// roster, and the keystore beside it, since a key is a file edit too.
     fn is_fresh(&self, paths: &[PathBuf]) -> bool {
         self.read && self.stamps == stamps(paths)
     }
@@ -733,6 +788,7 @@ fn stamps(paths: &[PathBuf]) -> Vec<Option<Stamp>> {
 /// One read of every roster file, stamped with the generation it belongs to.
 fn read_fresh(paths: &[PathBuf]) -> Catalog {
     let mut catalog = Catalog::load_file(&paths[0]);
+    catalog.keys = read_keys();
     catalog.generation = GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     catalog
 }
@@ -753,7 +809,11 @@ pub fn roster() -> Arc<Catalog> {
             catalog: Arc::new(Catalog::empty()),
         })
     });
-    let paths = roster_paths();
+    // The keystore is watched as a file of its own: rotating a key is an edit to
+    // it and nothing else, so leaving it out here would make the one operation
+    // this exists for the one operation that needs a restart.
+    let mut paths = roster_paths();
+    paths.push(keys_path());
     if let Ok(guard) = live.read() {
         if guard.is_fresh(&paths) {
             return guard.catalog.clone();
@@ -908,6 +968,7 @@ key = "x"
 
     fn catalog() -> Catalog {
         Catalog {
+            keys: std::collections::HashMap::new(),
             generation: 0,
             paths: Vec::new(),
             providers: parse(ROSTER).unwrap(),
@@ -1000,15 +1061,16 @@ script_env = "P_KEY"
 id = "second"
 unit = "percent-left"
 "#;
-        let catalog = Catalog {
+        let mut catalog = Catalog {
             generation: 0,
             paths: Vec::new(),
+            keys: std::collections::HashMap::from([("p".to_string(), "sk-kept".to_string())]),
             providers: parse(text).unwrap(),
             problem: None,
         };
         let env = |name: &str| (name == "P_KEY").then(|| "sk-env".to_string());
         let provider = &catalog.providers()[0];
-        let key = credential(provider, &env).map(|(k, _)| k);
+        let key = credential(provider, &env, None).map(|(k, _)| k);
         assert_eq!(key.as_deref(), Some("sk-env"));
         assert_eq!(
             provider.quota.len(),
@@ -1160,6 +1222,7 @@ key = "k"
         let c = Catalog {
             generation: 0,
             paths: Vec::new(),
+            keys: std::collections::HashMap::new(),
             providers: parse(text).unwrap(),
             problem: None,
         };
@@ -1181,6 +1244,42 @@ key = "k"
         assert!(c.providers().is_empty());
         assert!(c.problem().is_none());
         assert!(c.default_entry().is_none());
+    }
+
+    /// The keystore answers for a provider the roster gives no key, and the
+    /// environment still beats it.
+    #[test]
+    fn a_kept_key_answers_and_the_environment_beats_it() {
+        let roster = tempfile::tempdir().unwrap();
+        let path = roster.path().join("providers.toml");
+        std::fs::write(
+            &path,
+            r#"[[provider]]
+id = "p"
+key_env = "P_KEY"
+  [[provider.endpoint]]
+  api = "openai-responses"
+  base_url = "https://p.example/v1"
+[[provider.model]]
+id = "m"
+"#,
+        )
+        .unwrap();
+        let mut catalog = Catalog::load_file(&path);
+        catalog.keys = std::collections::HashMap::from([("p".to_string(), "kept".to_string())]);
+        assert_eq!(
+            catalog.resolve_with("p/m", &no_env).unwrap().api_key,
+            "kept",
+            "the keystore answers when nothing else does"
+        );
+        assert_eq!(
+            catalog
+                .resolve_with("p/m", &|name| (name == "P_KEY").then(|| "env".to_string()))
+                .unwrap()
+                .api_key,
+            "env",
+            "an exported variable still wins"
+        );
     }
 
     /// A machine's key is a field of the roster; the environment still wins.
