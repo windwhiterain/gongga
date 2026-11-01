@@ -373,10 +373,12 @@ fn background_notifier(ctx: &ToolContext, shell: &str) -> bash::BackgroundNotifi
         if matches!(store.get_session(&session), Ok(None)) {
             return;
         }
+        // Marked: this is the server talking, not a person, and it must not wake
+        // an idle session by itself. See `docs/notes/server-commands.md`.
         if let Err(e) = store.add_pending_task(
             &session,
             "inject",
-            &json!({"session": session, "message": message}),
+            &json!({"session": session, "message": message, "notice": "background"}),
         ) {
             tracing::warn!(
                 session = %session, shell = %shell, job,
@@ -449,7 +451,12 @@ async fn leave_running(
             "The command you started in shell `{owned}`, which outlived its \
              {secs}s wait and was left running, has now {status}.\n\n{text}"
         );
-        if let Err(e) = store.add_pending_task(&session, "inject", &json!({"message": message})) {
+        // Marked like any other notice: the server speaking, not the operator.
+        if let Err(e) = store.add_pending_task(
+            &session,
+            "inject",
+            &json!({"message": message, "notice": "finished"}),
+        ) {
             tracing::warn!(session = %session, "could not queue a finished command: {e}");
         }
         // Read to the end: no teardown has this shell's command left to stop.

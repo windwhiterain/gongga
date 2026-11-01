@@ -93,7 +93,12 @@ fn claim_recovery(
     d: &Dispatch,
     session: crate::session::SessionHandle,
     mut tasks: Vec<i64>,
+    owed: bool,
 ) -> Option<TurnWork> {
+    if !owed {
+        // Nothing a person is waiting for: the row waits for the next real turn.
+        return None;
+    }
     let epoch = session.cancel_epoch();
     let gate = session.try_claim()?;
     if session.is_deleted() {
@@ -1044,6 +1049,23 @@ fn recovery_groups(
     groups
 }
 
+/// Whether this row is the server speaking rather than a person waiting.
+///
+/// A notice about a background job is news for a session that is already working;
+/// on its own it must not cost an idle session a turn. See
+/// `docs/notes/server-commands.md`.
+fn is_notice(task: &PendingTask) -> bool {
+    task.payload.get("notice").is_some()
+}
+
+/// The rows a session owes a *turn* for: an operator message, or a turn already
+/// begun. A notice alone is delivered at the next step boundary instead.
+fn owes_a_turn(tasks: &[PendingTask]) -> bool {
+    tasks
+        .iter()
+        .any(|task| task.kind == "turn" || (task.kind == "inject" && !is_notice(task)))
+}
+
 /// Wakes each session with stranded work at most once.
 pub fn nudge_inboxes(d: &Dispatch) -> usize {
     if d.shutting_down.load(Ordering::SeqCst) || d.shutdown.is_cancelled() {
@@ -1062,7 +1084,8 @@ pub fn nudge_inboxes(d: &Dispatch) -> usize {
             .filter(|task| task.kind == "turn")
             .map(|task| task.id)
             .collect();
-        if let Some(work) = claim_recovery(d, session, owned) {
+        let owed = owes_a_turn(&tasks);
+        if let Some(work) = claim_recovery(d, session, owned, owed) {
             spawn_turn(d, work);
             started += 1;
         }
@@ -1094,12 +1117,31 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
             }
             continue;
         };
-        let owned = tasks
+        // A notice about a shell the last run took with it names a buffer nothing
+        // can read now: delivering it would be a turn spent on stale news.
+        let mut kept = Vec::with_capacity(tasks.len());
+        let mut dropped = 0;
+        for task in tasks {
+            if task.payload["notice"] == json!("background") {
+                let _ = d.store.delete_pending_task(task.id);
+                dropped += 1;
+                continue;
+            }
+            kept.push(task);
+        }
+        if dropped > 0 {
+            tracing::info!(
+                session = %name, dropped,
+                "dropped notices about shells the last run took with it"
+            );
+        }
+        let owed = owes_a_turn(&kept);
+        let owned = kept
             .iter()
             .filter(|task| task.kind == "turn")
             .map(|task| task.id)
             .collect();
-        if let Some(work) = claim_recovery(d, session, owned) {
+        if let Some(work) = claim_recovery(d, session, owned, owed) {
             tracing::info!(session = %name, "replaying work left pending");
             spawn_turn(d, work);
             resumed += 1;
@@ -1182,6 +1224,67 @@ mod tests {
         assert_eq!(groups.len(), 2);
         assert_eq!(groups["main"].len(), 3);
         assert_eq!(groups["other"].len(), 1);
+    }
+
+    /// What woke an idle session for stale news: a system notice counted as work
+    /// a person was waiting for.
+    #[test]
+    fn a_notice_alone_owes_no_turn() {
+        let task = |kind: &str, payload: serde_json::Value| PendingTask {
+            id: 1,
+            session: "main".into(),
+            kind: kind.into(),
+            payload,
+            created_at: 0,
+        };
+        assert!(!owes_a_turn(&[]), "nothing owed");
+        assert!(
+            !owes_a_turn(&[task(
+                "inject",
+                json!({"message": "job done", "notice": "background"})
+            )]),
+            "the server speaking is not a person waiting"
+        );
+        assert!(
+            !owes_a_turn(&[task(
+                "inject",
+                json!({"message": "job done", "notice": "finished"})
+            )]),
+            "nor is a report about a command that outlived its wait"
+        );
+        assert!(
+            owes_a_turn(&[task("inject", json!({"message": "hello"}))]),
+            "an operator's message is owed a turn"
+        );
+        assert!(
+            owes_a_turn(&[task("turn", json!({}))]),
+            "a turn already begun"
+        );
+        assert!(
+            owes_a_turn(&[
+                task(
+                    "inject",
+                    json!({"message": "quiet", "notice": "background"})
+                ),
+                task("inject", json!({"message": "hello"})),
+            ]),
+            "one real message among the notices is enough"
+        );
+        assert!(
+            claims_nothing_for_notices_only(),
+            "and a session holding only notices is not claimed"
+        );
+    }
+
+    /// The claim is where the wake actually happens, so the refusal lives there.
+    fn claims_nothing_for_notices_only() -> bool {
+        !owes_a_turn(&[PendingTask {
+            id: 1,
+            session: "main".into(),
+            kind: "inject".into(),
+            payload: json!({"message": "late", "notice": "background"}),
+            created_at: 0,
+        }])
     }
 
     #[test]

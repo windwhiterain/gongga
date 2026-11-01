@@ -340,6 +340,14 @@ while the session was idle -- where the row would otherwise sit until the next
 Starting a second turn for a "turn" row would ask the model to continue for no
 reason.
 
+A *notice* -- one of the server's own rows, `{"notice": "background"}` for a job
+that ended or `{"notice": "finished"}` for a command that outlived its wait -- is
+not a person waiting. Together with a real message it rides along in that turn;
+on its own it changes nothing here and waits for the next real turn, because
+waking an idle session to watch it read its own logbook is a turn spent for
+nothing. That is exactly what a restart used to do to every session that had ever
+left a background job running.
+
 `None` as the owning row: this turn was not started from a message, so the
 step-boundary drain may take every queued row it finds.
 
@@ -358,6 +366,13 @@ and a message that is not in the transcript would be replayed into nothing.
 
 Only this task is finished. Clearing the whole session would drop tasks a
 second, still-pending turn of the same session recorded.
+
+A `"background"` notice is dropped here rather than replayed. It says "what it
+printed is in that shell's unread buffer", and the shell died with the process
+that wrote the row: the buffer cannot be read by anyone, so delivering it wakes a
+session to be told to look somewhere empty. How many went is logged per session.
+The `"finished"` kind carries its output in the row itself, so it survives and
+waits for the session's next real turn.
 
 ## a_panicking_turn_still_releases_its_slot
 
