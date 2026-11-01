@@ -276,6 +276,19 @@ impl Panes {
         self.log.block_at(view, width, height, scroll, row)
     }
 
+    /// Joins a tool result to the call block with the same stable key.
+    pub fn resolve(
+        &mut self,
+        name: &str,
+        key: &str,
+        tag: &str,
+        kind: LineKind,
+        text: &str,
+        done: bool,
+    ) {
+        self.log.resolve(name, key, tag, kind, text, done);
+    }
+
     /// Replaces the label of the block `key` names, and the kind it is drawn as.
     pub fn relabel(&mut self, key: &str, tag: &str, kind: LineKind) {
         self.log.relabel(key, tag, kind);

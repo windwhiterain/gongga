@@ -40,6 +40,8 @@ struct Entry {
     col: usize,
     /// No more text can arrive, so the block is scrollback.
     sealed: bool,
+    /// Tool output has begun, so its chunks join without another separator.
+    resolved: bool,
     /// Where this block sits among the blocks of its own window.
     at: usize,
     /// Where it sits in the merged view, or `None` when a hidden window holds it.
@@ -65,6 +67,7 @@ impl Entry {
             starts: vec![0],
             col: 0,
             sealed: false,
+            resolved: false,
             at: 0,
             merged_at: None,
         };
@@ -82,29 +85,30 @@ impl Entry {
         self.starts.len()
     }
 
-    /// Whether this block is drawn inside a box: SPEC's opened item, taller than
-    /// the `block_size` it is held to.
-    ///
-    /// # Invariant
-    ///
-    /// Only an item the operator opened and that its own cap cannot hold: the box
-    /// exists to say "there is more inside, scroll me", so a block that fits has
-    /// nothing to box.
-    fn boxed(&self, cap: usize) -> bool {
-        self.expanded && self.kind.folds() && self.starts.len() > cap
+    /// Every opened item uses the same frame, whether or not its body is capped.
+    fn boxed(&self) -> bool {
+        self.expanded && self.kind.folds()
+    }
+
+    /// Columns left for text after this block's own frame is accounted for.
+    fn content_width(&self, width: usize) -> usize {
+        match self.boxed() {
+            true => width.saturating_sub(2).max(1),
+            false => width.max(1),
+        }
     }
 
     /// The rows this block occupies at `cap`, which is its body plus its box.
     fn visible(&self, cap: usize) -> usize {
         let body = self.rows().min(cap);
-        match self.boxed(cap) {
+        match self.boxed() {
             true => body + 2,
             false => body,
         }
     }
 
     /// Rows scrolled up inside the box, clamped to what it holds.
-    fn inside(self: &Self, cap: usize) -> usize {
+    fn inside(&self, cap: usize) -> usize {
         let body = self.rows().min(cap);
         self.inner.min(self.rows().saturating_sub(body))
     }
@@ -161,10 +165,12 @@ impl Entry {
     /// Recomputes every row offset at `width`, with the label's columns reserved on
     /// the row it is printed on.
     fn reflow(&mut self, width: usize) {
+        let width = self.content_width(width);
         let Self {
             kind,
             tag,
             text,
+            expanded,
             width: at,
             starts,
             col,
@@ -174,7 +180,14 @@ impl Entry {
         starts.clear();
         // A line always has at least one row, so an empty line is a blank row.
         starts.push(0);
-        let label = label_width(*kind, tag).min(width);
+        // An opened item puts its full tag on the top border; only the mark
+        // remains in front of its body.
+        let boxed = *expanded && kind.folds();
+        let label = match boxed {
+            true => kind.mark().width(),
+            false => label_width(*kind, tag),
+        }
+        .min(width);
         let mut wrap = Wrap { width, col: label };
         wrap.feed(text, 0, starts);
         *col = wrap.col;
@@ -182,6 +195,7 @@ impl Entry {
 
     /// Adds text to the end of this line, continuing the wrap from the last row.
     fn append(&mut self, text: &str, width: usize) {
+        let width = self.content_width(width);
         let base = self.text.len();
         let Self {
             text: owned,
@@ -558,7 +572,8 @@ impl Log {
 
     /// The rows one block of `kind` may fill under `cap`: the answer keeps its own.
     fn room(&self, kind: LineKind, cap: usize) -> usize {
-        if kind == LineKind::Assistant {
+        // SPEC caps streamed abstracts, not commands, results, messages or errors.
+        if !kind.folds() {
             return NO_CAP;
         }
         if cap > 0 {
@@ -723,14 +738,13 @@ impl Log {
     /// scroll exist exactly then, so a block that fits its box has nothing to move
     /// and a closed one is a single row.
     pub fn scroll_block(&mut self, at: usize, rows: i64) -> bool {
-        // The rows are the ones the last frame measured: a scroll replies to
-        // something on screen, so the width is known.
-        self.reflow(self.width);
+        // Use the row offsets of the frame the pointer actually landed on.
+        // Reflowing a resized window before the next draw would move the hit.
         let Some(entry) = self.entries.get(at) else {
             return false;
         };
         let cap = self.room(entry.kind, 0);
-        if !entry.boxed(cap) {
+        if !entry.boxed() {
             return false;
         }
         let bound = entry.rows() - entry.rows().min(cap);
@@ -761,7 +775,10 @@ impl Log {
             return false;
         }
         let before = self.contributions(at);
-        self.entries[at].expanded = !self.entries[at].expanded;
+        let width = self.width;
+        let entry = &mut self.entries[at];
+        entry.expanded = !entry.expanded;
+        entry.reflow(width);
         let after = self.contributions(at);
         self.shift(at, before, after);
         true
@@ -782,7 +799,10 @@ impl Log {
             return false;
         }
         let before = self.contributions(at);
-        self.entries[at].expanded = !self.entries[at].expanded;
+        let width = self.width;
+        let entry = &mut self.entries[at];
+        entry.expanded = !entry.expanded;
+        entry.reflow(width);
         let after = self.contributions(at);
         self.shift(at, before, after);
         true
@@ -818,6 +838,52 @@ impl Log {
             .min(ledger.blocks.len().checked_sub(1)?);
         let at = *ledger.blocks.get(pos)?;
         Some(at)
+    }
+
+    /// Appends a tool's output to the call with the same identity.
+    ///
+    /// The call may already be sealed: its arguments finished before it ran, but
+    /// its result has not. Resolving reopens that one block and seals it only on
+    /// the verdict, so a call never grows a separate result block.
+    pub fn resolve(
+        &mut self,
+        name: &str,
+        key: &str,
+        tag: &str,
+        kind: LineKind,
+        text: &str,
+        done: bool,
+    ) {
+        let Some(at) = self.entry_by_key(key) else {
+            self.stream(name, key, kind, tag, text, done);
+            return;
+        };
+        let width = self.width;
+        let before = self.contributions(at);
+        let entry = &mut self.entries[at];
+        entry.sealed = false;
+        if !text.is_empty() {
+            if !entry.resolved && !entry.text.is_empty() && !entry.text.ends_with('\n') {
+                entry.append("\n", width);
+            }
+            entry.resolved = true;
+            entry.append(text, width);
+        }
+        if done {
+            if !tag.is_empty() {
+                entry.tag = match entry.tag.trim_end() {
+                    "" => tag.trim_end().to_string(),
+                    call => format!("{call} · {}", tag.trim_end()),
+                };
+            }
+            entry.kind = kind;
+        }
+        entry.reflow(width);
+        let after = self.contributions(at);
+        self.shift(at, before, after);
+        if done {
+            self.seal(key, at);
+        }
     }
 
     /// Replaces the label of the block `key` names, once its outcome is known.
@@ -1017,7 +1083,7 @@ impl Log {
                 let entry = &self.entries[at];
                 let cap = self.room(entry.kind, ledger.cap);
                 let body = entry.rows().min(cap);
-                let boxed = entry.boxed(cap);
+                let boxed = entry.boxed();
                 // Rows above the cap are not in this view, so its rows are the
                 // last `body` of them -- pulled further back by the box's scroll.
                 let head = entry
@@ -1147,7 +1213,7 @@ mod tests {
         log.toggle("r1");
         assert_eq!(
             shown(&mut log, 40, 6, 0),
-            vec!["\u{25c7} one", "  two", "  three"]
+            vec!["\u{25c7} ", "  one", "  two", "  three", ""]
         );
     }
 
@@ -1253,7 +1319,11 @@ mod tests {
             if folds {
                 // And the summary is not the text: nothing of `two` is one row.
                 assert!(log.toggle("k"), "{kind:?} opens");
-                assert_eq!(log.rows(View::All, 40), 2, "{kind:?} opened");
+                assert_eq!(
+                    log.rows(View::All, 40),
+                    4,
+                    "{kind:?}: body plus two borders"
+                );
             }
         }
     }
@@ -1285,8 +1355,8 @@ mod tests {
         assert_eq!(shown(&mut log, 40, 4, 0), vec!["\u{2713} 1.2s"]);
         assert!(log.toggle("t:c1"), "a result opens");
         assert_eq!(
-            shown(&mut log, 40, 4, 0),
-            vec!["\u{2713} 1.2s printed a lot", "       of stuff"]
+            shown(&mut log, 40, 6, 0),
+            vec!["\u{2713} 1.2s", "  printed a lot", "  of stuff", ""]
         );
     }
 
@@ -1352,10 +1422,14 @@ mod tests {
         // A result with no verdict yet: the mark alone, never its output.
         assert_eq!(shown(&mut log, 40, 4, 0), vec!["\u{2713} ", "after"]);
         assert!(log.toggle("k"));
-        assert_eq!(log.rows(View::All, 40), 4, "three rows and the row after");
         assert_eq!(
-            shown(&mut log, 40, 4, 0),
-            vec!["\u{2713} a", "  b", "  c", "after"],
+            log.rows(View::All, 40),
+            6,
+            "three body rows, two borders, and the row after"
+        );
+        assert_eq!(
+            shown(&mut log, 40, 6, 0),
+            vec!["\u{2713} ", "  a", "  b", "  c", "", "after"],
             "the row after stays after"
         );
         assert!(log.toggle("k"), "and it closes again");
@@ -1368,12 +1442,17 @@ mod tests {
         let mut log = Log::new();
         log.stream("w", "k", LineKind::ToolOutput, "", "a\nb", true);
         log.push("w", LineKind::System, "after");
-        let at = |log: &mut Log, row: usize| log.block_at(View::All, 40, 4, 0, row);
+        let at = |log: &mut Log, row: usize| log.block_at(View::All, 40, 8, 0, row);
         assert_eq!(at(&mut log, 0), Some(0), "the item");
         assert_eq!(at(&mut log, 1), Some(1), "the row after it");
         log.toggle_at(0);
         assert_eq!(at(&mut log, 1), Some(0), "its second row is still its own");
-        assert_eq!(at(&mut log, 3), None, "and nothing past the end");
+        assert_eq!(
+            at(&mut log, 4),
+            Some(1),
+            "the block after the closing border"
+        );
+        assert_eq!(at(&mut log, 5), None, "and nothing past the end");
     }
 
     /// Two blocks under one key are two items, and a press opens the one it hit.
@@ -1612,7 +1691,7 @@ mod tests {
         log.set_block_size(2);
         assert_eq!(
             shown(&mut log, 12, 4, 0),
-            vec!["[peer] fghijklmnopq", "       rstuvwx"]
+            vec!["[peer] abcde", "       fghijklmnopq", "       rstuvwx"]
         );
     }
 
@@ -1644,15 +1723,15 @@ mod tests {
         log.stream("w", "t:c1:Stdout", LineKind::ToolOutput, "", "out\n", false);
         log.stream("w", "t:c1:Stdout", LineKind::ToolOutput, "", "\n", true);
         assert!(log.toggle("t:c1:Stdout"), "a tool result opens");
-        assert_eq!(shown(&mut log, 40, 10, 0), vec!["\u{2713} out"]);
+        assert_eq!(shown(&mut log, 40, 10, 0), vec!["\u{2713} ", "  out", ""]);
         // A blank line in the middle is still part of the block.
         let mut log = Log::new();
         log.stream("w", "t:c2:Stdout", LineKind::ToolOutput, "", "a\n\nb", true);
         assert!(log.toggle("t:c2:Stdout"));
         assert_eq!(
             shown(&mut log, 40, 10, 0),
-            vec!["\u{2713} a", "  ", "  b"],
-            "a blank row keeps the label's columns too"
+            vec!["\u{2713} ", "  a", "  ", "  b", ""],
+            "a blank row keeps the body's alignment too"
         );
     }
 
@@ -1696,10 +1775,13 @@ mod tests {
         );
         assert_eq!(
             log.rows(View::All, 10),
-            2,
-            "a capped block contributes only its cap"
+            4,
+            "an ordinary block is not capped"
         );
-        assert_eq!(shown(&mut log, 10, 4, 0), vec!["[m] cccc", "    dddd"]);
+        assert_eq!(
+            shown(&mut log, 10, 4, 0),
+            vec!["[m] aaaa", "    b", "    cccc", "    dddd"]
+        );
     }
 
     /// The tail follows: the newest text is what a capped row shows, and what came
@@ -1709,10 +1791,10 @@ mod tests {
         let mut log = Log::new();
         log.set_block_size(1);
         for chunk in ["alpha ", "beta ", "gamma"] {
-            log.stream("w", "k", LineKind::System, "[m] ", chunk, false);
+            log.stream("w", "k", LineKind::Reasoning, "[m] ", chunk, false);
         }
         let rows = shown(&mut log, 12, 4, 0);
-        assert_eq!(rows, vec!["[m] ta gamma"], "{rows:?}");
+        assert_eq!(rows, vec!["◇ [m] beta gamma"], "{rows:?}");
     }
 
     /// A block scrolled past its own first row still names itself, on the row that
@@ -1724,14 +1806,14 @@ mod tests {
         log.stream(
             "w",
             "k",
-            LineKind::System,
+            LineKind::Reasoning,
             "[peer] thinking: ",
             &"x".repeat(500),
             false,
         );
         let rows = shown(&mut log, 30, 5, 0);
         assert_eq!(rows.len(), 1, "{rows:?}");
-        assert!(rows[0].starts_with("[peer] thinking: "), "{rows:?}");
+        assert!(rows[0].starts_with("◇ [peer] thinking: "), "{rows:?}");
     }
 
     /// A tool's own output is progress: capped like any other block, and the rows
@@ -1743,12 +1825,12 @@ mod tests {
         log.stream(
             "w",
             "t:c1:Stdout",
-            LineKind::System,
+            LineKind::ToolOutput,
             "[m] ",
             "a\nb\nc\nd",
-            true,
+            false,
         );
-        assert_eq!(shown(&mut log, 40, 10, 0), vec!["[m] c", "    d"]);
+        assert_eq!(shown(&mut log, 40, 10, 0), vec!["✓ [m] c", "      d"]);
     }
 
     /// The answer is the block the cap leaves alone: it is what the operator came
@@ -1853,9 +1935,13 @@ mod tests {
         let mut log = log_of(&["older"], 40);
         log.set_block_size(1);
         log.stream("w", "k", LineKind::System, "[m] ", "one\ntwo\nthree", false);
-        assert_eq!(log.rows(View::All, 40), 2, "two blocks of one row each");
-        assert_eq!(log.window(View::All, 40, 2, 0).max_scroll, 0);
-        assert_eq!(shown(&mut log, 40, 2, 0), vec!["older", "[m] three"]);
+        assert_eq!(
+            log.rows(View::All, 40),
+            4,
+            "ordinary text keeps all three rows"
+        );
+        assert_eq!(log.window(View::All, 40, 2, 0).max_scroll, 2);
+        assert_eq!(shown(&mut log, 40, 2, 0), vec!["    two", "    three"]);
     }
 
     /// A frame must not depend on how long the log is, or wrapping per frame returns.
@@ -1996,8 +2082,22 @@ mod tests {
     fn a_window_can_cap_its_own_blocks() {
         let mut log = Log::new();
         log.set_block_size(4);
-        log.stream("cmd", "k1", LineKind::System, "", "a\nb\nc\nd\ne", true);
-        log.stream("main", "k2", LineKind::System, "", "a\nb\nc\nd\ne", true);
+        log.stream(
+            "cmd",
+            "k1",
+            LineKind::ToolOutput,
+            "",
+            "a\nb\nc\nd\ne",
+            false,
+        );
+        log.stream(
+            "main",
+            "k2",
+            LineKind::ToolOutput,
+            "",
+            "a\nb\nc\nd\ne",
+            false,
+        );
         assert_eq!(log.rows(View::Window("main"), 40), 4, "the log's own cap");
         log.set_cap("cmd", 1);
         assert_eq!(log.rows(View::Window("cmd"), 40), 1, "the window's cap");

@@ -733,14 +733,13 @@ fn framed_row(kind: LineKind, text: &str, edges: crate::log::Edges, width: u16) 
     let inner = width.saturating_sub(2).max(1);
     let mut spans: Vec<Span<'static>> = Vec::new();
     if edges.top {
-        // The top border carries the label rather than costing a row for a rule.
-        let body = item_row(kind, text);
-        let used: usize = body
-            .spans
-            .iter()
-            .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
-            .sum();
-        let left = (inner as usize).saturating_sub(used + 2);
+        // Fit the label before adding either corner. Ratatui clipping an
+        // over-wide Line would otherwise take the right border with it.
+        let available = (inner as usize).saturating_sub(2);
+        let (title, _) = split_at_width(text, available);
+        let body = item_row(kind, &title);
+        let used = UnicodeWidthStr::width(title.as_str());
+        let left = available.saturating_sub(used);
         spans.push(Span::styled(
             "\u{250c}\u{2500}",
             Style::default().fg(Color::Cyan),
@@ -1292,7 +1291,7 @@ mod tests {
             "a hidden session is marked `idle` and brightened by nothing: {rows:?}"
         );
         // The name's brightness is the window; the mark's colour is the status.
-        let name_at = |row: u16| list.x + 2;
+        let name_at = |_row: u16| list.x + 2;
         let looks: Vec<Color> = (0..4)
             .map(|o| buf[(name_at(list.y + o), list.y + o)].fg)
             .collect();
@@ -2676,5 +2675,77 @@ mod tests {
         let layout = layout_input(&many, many.len(), 38);
         assert_eq!(layout.cursor_row, layout.rows.len() - 1);
         assert_eq!(layout.cursor_col, 0);
+    }
+
+    /// A call and its result share one block; its opened frame wraps every body
+    /// row inside the same two borders, including short and wide-character output.
+    #[test]
+    fn an_opened_call_and_result_keep_one_continuous_frame() {
+        let mut screen = screen_with(&[]);
+        screen.panes.stream(
+            "",
+            "c:c1",
+            LineKind::ToolCall,
+            "bash, name=build ",
+            "bash\nname=build",
+            true,
+        );
+        screen.panes.resolve(
+            "",
+            "c:c1",
+            "1.2s ",
+            LineKind::ToolOutput,
+            "标准输出和一段很长很长的输出，必须在框内折行而不是顶掉右边框",
+            false,
+        );
+        screen
+            .panes
+            .resolve("", "c:c1", "", LineKind::ToolCall, "\nstderr", false);
+        screen
+            .panes
+            .resolve("", "c:c1", "1.2s ", LineKind::ToolOutput, "", true);
+        let (width, height) = (36u16, 22u16);
+        let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
+        term.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
+        let buffer = term.backend().buffer().clone();
+        let (_, area) = body(parts(width, height, 1, false)[1], &screen.panes);
+        let folded = (area.y + 1..area.bottom())
+            .map(|row| read(&buffer, area.x, area.width, row))
+            .filter(|row| !row.is_empty())
+            .collect::<Vec<_>>();
+        assert_eq!(folded, vec!["✓ bash, name=build · 1.2s"], "{folded:?}");
+
+        assert!(screen.panes.toggle("c:c1"));
+        term.draw(|f| {
+            draw(f, &mut screen);
+        })
+        .unwrap();
+        let buffer = term.backend().buffer().clone();
+        let rows = (area.y + 1..area.bottom())
+            .map(|row| read(&buffer, area.x, area.width, row))
+            .filter(|row| !row.is_empty())
+            .collect::<Vec<_>>();
+        assert!(
+            rows[0].starts_with("┌─✓ bash, name=build · 1.2s") && rows[0].ends_with('┐'),
+            "{rows:?}"
+        );
+        assert!(
+            rows.last()
+                .is_some_and(|row| row.starts_with('└') && row.ends_with('┘')),
+            "{rows:?}"
+        );
+        for row in &rows[1..rows.len() - 1] {
+            assert!(row.starts_with('│'), "{rows:?}");
+            assert!(row.ends_with('│'), "{rows:?}");
+        }
+        assert!(rows.iter().any(|row| row.contains("bash")), "{rows:?}");
+        assert!(
+            rows.iter().any(|row| row.contains("name=build")),
+            "{rows:?}"
+        );
+        assert!(rows.iter().any(|row| row.contains("stderr")), "{rows:?}");
     }
 }

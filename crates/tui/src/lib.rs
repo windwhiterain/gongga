@@ -303,6 +303,25 @@ impl Screen {
         self.panes.scroll_by(name, rows);
     }
 
+    /// Scrolls the item under a pointer, or its pane when there is no open item.
+    /// An open item consumes the wheel even when its own scroll is at an end.
+    pub fn scroll_at(&mut self, width: u16, height: u16, column: u16, row: u16, rows: i64) -> bool {
+        let Some(hit) = self.session_at_row(width, height, column, row) else {
+            return false;
+        };
+        if hit.part == Part::Pane
+            && let Some(at) = self.item_at(width, height, column, row)
+            && self.panes.expanded_at(at)
+        {
+            self.panes.scroll_block(at, rows);
+            return true;
+        }
+        if hit.part != Part::List {
+            self.scroll_pane(&hit.name, rows);
+        }
+        true
+    }
+
     /// Every row the panes show, top to bottom, in the order the frame draws them.
     ///
     /// # Invariant
@@ -623,6 +642,20 @@ impl Tui {
     /// Replaces what one block holds: a call's structure, once it is known.
     pub fn rewrite(&mut self, _name: &str, key: &str, text: &str) {
         self.screen.panes.rewrite(key, text);
+        self.dirty = true;
+    }
+
+    /// Appends a tool's result to its call, preserving one expandable item.
+    pub fn resolve(
+        &mut self,
+        name: &str,
+        key: &str,
+        tag: &str,
+        kind: LineKind,
+        text: &str,
+        done: bool,
+    ) {
+        self.screen.panes.resolve(name, key, tag, kind, text, done);
         self.dirty = true;
     }
 
@@ -950,19 +983,8 @@ impl Tui {
         if let Some(rows) = rows {
             // The wheel writes no state. Over an opened item it scrolls that
             // item's box -- the one scroll SPEC gives a block.
-            if hit.part == Part::Pane
-                && let Some(at) =
-                    self.screen
-                        .item_at(size.width, size.height, mouse.column, mouse.row)
-                && self.screen.panes.expanded_at(at)
-                && self.screen.panes.scroll_block(at, rows)
-            {
-                self.dirty = true;
-                return;
-            }
-            if hit.part != Part::List {
-                self.screen.scroll_pane(&hit.name, rows);
-            }
+            self.screen
+                .scroll_at(size.width, size.height, mouse.column, mouse.row, rows);
             self.dirty = true;
             return;
         }
@@ -2430,9 +2452,61 @@ mod tests {
         assert!(h.screen.panes.toggle_at(at));
         assert_eq!(
             h.screen.panes.rows(View::Window("main"), 39),
-            3,
-            "opened, the window holds the rows the item was hiding"
+            5,
+            "opened, three body rows plus the item's two borders"
         );
+    }
+
+    /// An open item owns its wheel even when it cannot move any further.
+    #[test]
+    fn an_inner_box_at_its_end_does_not_scroll_the_outer_pane() {
+        let mut h = Headless::new();
+        h.stream("c:c1", LineKind::ToolCall, "bash ", "bash", true);
+        for row in 0..8 {
+            h.screen.panes.resolve(
+                "main",
+                "c:c1",
+                "",
+                LineKind::ToolCall,
+                &format!("line {row}\n"),
+                false,
+            );
+        }
+        h.screen
+            .panes
+            .resolve("main", "c:c1", "1.0s ", LineKind::ToolOutput, "", true);
+        h.screen.panes.set_block_size(2);
+        for row in 0..40 {
+            h.screen
+                .panes
+                .line("main", LineKind::System, format!("other {row}"));
+        }
+        let (width, height) = (40u16, 14u16);
+        assert!(h.screen.panes.toggle("c:c1"));
+        let slot = h
+            .screen
+            .slots(width, height)
+            .into_iter()
+            .find(|slot| slot.name == "main")
+            .expect("main's pane");
+        let content_width = slot.body.width.saturating_sub(1).max(1) as usize;
+        let outer = h
+            .screen
+            .panes
+            .rows(View::Window("main"), content_width)
+            .saturating_sub(slot.body.height as usize);
+        h.screen.panes.get_mut("main").expect("main's pane").scroll = outer;
+        assert!(outer > 0, "the outer pane has somewhere to move");
+        assert!(
+            h.screen
+                .scroll_at(width, height, slot.body.x, slot.body.y, -100)
+        );
+        assert_eq!(h.pane_scroll("main"), outer, "at the inner bottom");
+        assert!(
+            h.screen
+                .scroll_at(width, height, slot.body.x, slot.body.y, 100)
+        );
+        assert_eq!(h.pane_scroll("main"), outer, "at the inner top");
     }
 
     /// The cell a click lands on decides which of SPEC's gestures it is: a row

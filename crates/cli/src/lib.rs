@@ -23,8 +23,7 @@ use anyhow::{Context, anyhow};
 use clap::{CommandFactory, FromArgMatches, Parser};
 use protocol::{
     ChannelConfig, ClientInfo, ClientMessage, Event, LogLevel, ResponseEvent, ResponsePart,
-    ServerMessage, SessionInfo, SessionStatus, ToolAnswerEvent, ToolStream, decode_server,
-    encode_client,
+    ServerMessage, SessionInfo, SessionStatus, ToolAnswerEvent, decode_server, encode_client,
 };
 use tokio::net::UdpSocket;
 
@@ -383,6 +382,21 @@ pub trait Sink {
     fn layout(&mut self, _layout: &Layout) {}
     /// Replaces the whole text of a block: a call's structure, once known.
     fn rewrite(&mut self, _window: &str, _key: &str, _text: &str) {}
+    /// Appends a result to the call whose stable key it carries.
+    ///
+    /// The key is the call's, never a second key made from its output stream.
+    /// Only the final verdict supplies a kind; stderr alone does not mean failure.
+    fn tool_result(
+        &mut self,
+        window: &str,
+        key: &str,
+        text: &str,
+        outcome: &str,
+        kind: LineKind,
+        done: bool,
+    ) {
+        self.stream(window, key, kind, outcome, text, done);
+    }
     /// The label of a block that learned its outcome after opening, and that
     /// label's kind: SPEC's `tool_result{ok, time}`.
     ///
@@ -812,11 +826,6 @@ impl Client {
                     self.handle_tool_call(e, sink);
                 }
             }
-            Event::ToolCall(e) => {
-                if shown {
-                    self.handle_tool_call(e, sink);
-                }
-            }
             Event::ToolAnswer(e) => {
                 if shown {
                     self.handle_tool_answer(e, sink);
@@ -940,25 +949,16 @@ impl Client {
     ///
     /// # Invariant
     ///
-    /// One block per call, not per stream: stdout and stderr are the *same*
-    /// result, and keyed by stream they became two items, one marked ✓ and one ✕.
-    /// The chunk carrying the verdict seals it -- a stream ending says nothing,
-    /// its twin may still be writing. See `docs/notes/cli-lib.md`.
+    /// One block per call, and its result joins that call rather than opening a
+    /// sibling. Only the final verdict supplies ✓/✕: an stderr chunk is output,
+    /// not a failed call. See `docs/notes/cli-lib.md`.
     fn handle_tool_answer(&self, e: ToolAnswerEvent, sink: &mut dyn Sink) {
-        let key = format!("t:{}", e.call_id);
-        // Before the verdict, an output block; the verdict replaces the kind, and
-        // the mark with it.
-        let kind = match e.stream {
-            ToolStream::Stdout => LineKind::ToolOutput,
-            ToolStream::Stderr => LineKind::ToolError,
+        let key = format!("c:{}", e.call_id);
+        let (outcome, kind, done) = match &e.head {
+            Some(head) => (head_label(head), kind_of(head.kind), true),
+            None => (String::new(), LineKind::ToolCall, false),
         };
-        let window = e.session.clone();
-        let ended = e.head.is_some();
-        sink.stream(&window, &key, kind, "", &e.text, ended);
-        if let Some(head) = &e.head {
-            let kind = kind_of(head.kind);
-            sink.relabel(&window, &key, &head_label(head), kind);
-        }
+        sink.tool_result(&e.session, &key, &e.text, &outcome, kind, done);
     }
 
     fn session_names(&self) -> Vec<String> {
@@ -2169,7 +2169,7 @@ fn config_in(home: &Path, pick: impl Fn(&FileConfig) -> Option<String>) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use protocol::encode_server;
+    use protocol::ToolStream;
 
     /// The window's pid travels in the greeting, and a one-shot command's does not.
     ///
@@ -2760,6 +2760,22 @@ mod tests {
         fn rewrite(&mut self, _window: &str, _key: &str, text: &str) {
             self.rewritten.push(text.to_string());
         }
+        fn tool_result(
+            &mut self,
+            _window: &str,
+            key: &str,
+            text: &str,
+            outcome: &str,
+            kind: LineKind,
+            _done: bool,
+        ) {
+            self.keys.push(key.to_string());
+            self.bodies.push(text.to_string());
+            self.lines.push(format!("{outcome}{text}"));
+            if !outcome.is_empty() {
+                self.labels.push(format!("{key} = {outcome} ({kind:?})"));
+            }
+        }
         fn clear(&mut self, window: &str) {
             self.cleared.push(window.to_string());
             // What a window held is gone: a read of `lines` sees what came
@@ -3044,7 +3060,7 @@ mod tests {
     /// SPEC's `tool_result{ok, time}`: the ending chunk labels the block with
     /// the verdict and how long the tool ran.
     #[test]
-    fn a_finished_tool_says_how_it_went_on_its_own_block() {
+    fn a_finished_tool_says_how_it_went_on_its_call_block() {
         let d = tempfile::tempdir().unwrap();
         let c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["peer"]);
         let mut s = StreamSink::default();
@@ -3067,7 +3083,7 @@ mod tests {
             assert_eq!(
                 s.labels.last().map(String::as_str),
                 // The verdict, then the space the mark leaves room for.
-                Some(&format!("t:c1 = {said}  ({want})")[..]),
+                Some(&format!("c:c1 = {said}  ({want})")[..]),
                 "the server's words, this side's look"
             );
         }
@@ -3084,7 +3100,7 @@ mod tests {
     #[test]
     fn a_call_with_both_streams_is_one_result() {
         let d = tempfile::tempdir().unwrap();
-        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["peer"]);
+        let c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["peer"]);
         let mut s = StreamSink::default();
         let answer = |stream, text: &str, head: Option<protocol::Head>| ToolAnswerEvent {
             session: "peer".into(),
@@ -3098,7 +3114,7 @@ mod tests {
         c.handle_tool_answer(answer(ToolStream::Stdout, "out", None), &mut s);
         c.handle_tool_answer(answer(ToolStream::Stderr, "err", None), &mut s);
         // Every chunk lands in one block, and neither stream sealed it.
-        assert_eq!(s.keys, vec!["t:c1", "t:c1"]);
+        assert_eq!(s.keys, vec!["c:c1", "c:c1"]);
         assert_eq!(s.bodies, vec!["out", "err"]);
 
         c.handle_tool_answer(
@@ -3111,12 +3127,12 @@ mod tests {
         );
         assert_eq!(
             s.keys.last().map(String::as_str),
-            Some("t:c1"),
+            Some("c:c1"),
             "same block"
         );
         assert_eq!(
             s.labels.last().map(String::as_str),
-            Some("t:c1 = 1.2s  (ToolOutput)"),
+            Some("c:c1 = 1.2s  (ToolOutput)"),
             "one verdict, and it is the one the call had"
         );
     }
@@ -3178,7 +3194,7 @@ mod tests {
         assert_eq!(s.lines, vec!["out", "err"]);
         assert_eq!(
             s.keys,
-            vec!["t:c1", "t:c1"],
+            vec!["c:c1", "c:c1"],
             "one result, not one per stream"
         );
 

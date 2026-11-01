@@ -228,19 +228,18 @@ not a stream. Its content is the tool's output, which arrives as `tool_answer`.
 
 ## Client::handle_tool_answer
 
-Same rule, same shape: `[<session>] ` opens the line, and the tool's stdout and
-stderr stay separate streams (`t:<call_id>:<stream>`) that each carry it. The
-tool name is not in the prefix today; the answer arrives after the `tool: <name>`
-line that the call itself rendered.
+A call and its result have one identity (`c:<call_id>`), not one item for the
+call and another for each output pipe. `Sink::tool_result` carries that identity,
+the chunk and -- only on the final chunk -- the verdict. The TUI resolves it into
+the call block, retaining the call's arguments and appending output beneath them.
+Its folded summary keeps the call name and flags, followed by the verdict and
+elapsed time. Opening it shows both the arguments and the output in one frame.
 
-The chunk that ends the call also carries a `Head`, and `Sink::relabel` writes its
-text onto that stream's label -- `1.2s ` -- together with the `LineKind` `kind_of` gives
-its kind, so the block is redrawn as the outcome it had and not as the call it was. It is a relabel rather than a line of its own
-because SPEC's `tool_result{ok, time}` is the *summary* of the block, and a summary
-that needed a row of its own would double the height of every call.
-
-Nothing is written for a chunk that is not the end: a tool still running has no
-outcome, and rewriting the label on every chunk would churn the log it is drawn from.
+Stdout and stderr are data, not verdicts. Neither opens a second result or paints
+a cross; only the final `Head` determines success or failure. A call's arguments
+can finish before its output starts, so resolving reopens that existing block and
+seals it only when the verdict arrives. Output chunks themselves remain byte-
+for-byte unchanged: the only inserted break separates arguments from output.
 
 ## Event::Log — no tag
 

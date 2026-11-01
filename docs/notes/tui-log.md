@@ -237,8 +237,8 @@ block indices plus a row index over them, so "which block holds row N" is answer
 per view in O(log blocks) and a frame never walks the log for anybody's benefit.
 
 The same block is counted twice, once per ledger that holds it, and the two counts can
-differ: a window may cap its blocks apart from the rest (the command line's are single
-rows), so `contributions` returns both and every mutation moves both sums.
+differ: a window may cap its folding blocks apart from the rest, so
+`contributions` returns both and every mutation moves both sums.
 
 ## Log::headlines (gone)
 
@@ -293,15 +293,13 @@ not, so an open block stays open across the change.
 
 ## Log::room — the exemption
 
-One kind is never capped: the assistant's answer. It is what the operator came to
-read, and a cap on it would hide the middle of a sentence with no way to get it
-back. Everything else -- reasoning, a tool call, a tool's own output, a command's
-echo -- is progress, and progress is worth keeping short.
+Only SPEC's folding kinds are capped: reasoning, tool calls and tool results.
+The assistant's answer, commands, command results, ordinary messages and errors
+keep every row. In particular a session-related `cmd_result` is not tool output,
+so `block_size` must not cut it off.
 
-That is the same rule the folded mode had, learned the hard way: the first version
-left `ToolOutput` alone, and in use that was the block that stayed three screens
-tall between two short ones. SPEC's "non-output message" means the assistant's
-output, not a tool's.
+The folding kinds describe progress, which is worth keeping short while it
+streams. Their complete text is still retained for an opened item.
 
 ## The byte budget that went with the fold
 
@@ -310,6 +308,28 @@ into the code, and this repository forbids limits an operator cannot lift. It
 existed because the head-fixed row could only ever show the front of the text.
 A capped block keeps its whole text like any other block and simply counts fewer
 of its rows, so there is nothing to discard and no budget to set.
+
+
+## Log::resolve — a call and its result are one item
+
+`c:<call_id>` is the identity of both the call and its result. A result does not
+open `t:<call_id>` or a per-stream block: it reopens the call, appends its output
+and applies the final verdict to the same summary. stdout and stderr never decide
+that verdict. An opened call therefore shows its arguments and all output in one
+frame, while the folded row reads `call summary · verdict`.
+
+## Entry::boxed — one expanded shape
+
+Every opened folding item has a frame, not only an item taller than its cap. The
+cap limits body rows; the top and bottom rules always surround that body. Text is
+reflowed two columns narrower while expanded, before row offsets and scroll bounds
+are calculated. The renderer and the index therefore describe the same rectangle,
+and a long output row cannot push the right rule off the pane. Toggling an item
+updates those offsets immediately, so click hit-testing follows the frame too.
+
+The pointer's wheel belongs to an opened item even when that item is already at
+its first or last row. Only the item's offset changes then; exhaustion must not
+fall through and move the pane behind it.
 
 ## Log::stream — one label, one block
 
