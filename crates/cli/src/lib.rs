@@ -1457,6 +1457,11 @@ impl Link {
         self.stream.recv().await
     }
 
+    /// One that has already arrived, without waiting.
+    pub fn try_recv(&mut self) -> Option<Vec<u8>> {
+        self.stream.try_recv()
+    }
+
     /// Best-effort goodbye, so the server can drop this connection now.
     pub async fn goodbye(&self) {
         let _ = self.send(ClientMessage::Bye).await;

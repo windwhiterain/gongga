@@ -307,6 +307,18 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                 if let Err(e) = client.handle_bytes(&bytes, &mut TuiSink(&mut ui)) {
                     TuiSink(&mut ui).say(LineKind::Error, &format!("bad message: {e}"));
                 }
+                // Everything already waiting goes in before the next frame is drawn:
+                // one paint per burst, not per delta. Painting per message is what
+                // let a stream outrun the loop, and a reader that stops reading
+                // collapses the link's window and stalls every command behind it.
+                if let Some(open) = link.as_mut() {
+                    while let Some(more) = open.try_recv() {
+                        if let Err(e) = client.handle_bytes(&more, &mut TuiSink(&mut ui)) {
+                            TuiSink(&mut ui).say(LineKind::Error, &format!("bad message: {e}"));
+                            break;
+                        }
+                    }
+                }
             }
             Step::Wire(None) => {
                 link = None;

@@ -81,6 +81,23 @@ error, since retrying is all this loop can do about it. The status line carries
 `attempt N` from then on, so the outage is not narrated twice.
 
 
+## the loop (a burst is one frame)
+
+A datagram is handled and then the loop awaits the next, and every turn of the
+loop paints. That is right for a quiet link and wrong for a busy one: an agent
+streaming deltas produces hundreds of messages a second, a frame costs tens of
+milliseconds once the answer is large, and a loop that paints per message stops
+reading the wire. The transport is one ordered channel with a window counted in
+fragments, so a reader that stops reading makes the sender retransmit with a
+doubling backoff -- and every command the operator types queues behind that. The
+symptom is not a slow agent: it is a `send_message` whose own echo takes a minute,
+only while the agent is busy.
+
+So the wire branch clears everything already delivered before returning to the
+loop, and one frame covers the burst (`Link::try_recv`). The accounting matters
+as much as the draining: each message taken is one fewer pending, which is what
+gives the peer the receive window back.
+
 The one thing done before the window opens is `cli::home_of`: the loop needs the
 home for the server it may start, and nothing else. The command an agent's shell
 types is not this front-end's to write -- a shell only exists inside a server, and

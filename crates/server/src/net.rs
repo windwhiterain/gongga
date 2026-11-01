@@ -22,6 +22,9 @@ use crate::commands::{Dispatch, dispatch};
 use crate::config::Config;
 
 const FRAME_QUEUE: usize = 512;
+
+/// A send that waits this long is a client that stopped reading, not a queued burst.
+const SLOW_SEND: Duration = Duration::from_millis(250);
 /// How long a new peer has to present its key before being dropped.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -280,7 +283,9 @@ async fn handle_connection(
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::debug!(%peer, skipped = n, "client fell behind");
+                        // Not a detail: this client lost events, and a reader that
+                        // cannot keep up is what stalls the commands behind it.
+                        tracing::warn!(%peer, conn_id, skipped = n, "client fell behind");
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
@@ -411,6 +416,27 @@ async fn send_server(sink: &protocol::ChannelSink, msg: &ServerMessage) -> anyho
 /// cannot answer, and the answer to that is a sentence, not a dropped link.
 async fn send_event(sink: &protocol::ChannelSink, event: Event) -> anyhow::Result<()> {
     let bytes = encode_server(&ServerMessage::Event(event.clone()))?;
+    let started = std::time::Instant::now();
+    let outcome = queue_event(sink, event, bytes).await;
+    // A send that waited is the one measurement of a client that is not reading.
+    let waited = started.elapsed();
+    if waited > SLOW_SEND {
+        let peer = sink.peer();
+        tracing::warn!(
+            %peer,
+            conn_id = sink.conn_id(),
+            waited = ?waited,
+            "client is not reading: its events are queued, and its next command is behind them"
+        );
+    }
+    outcome
+}
+
+async fn queue_event(
+    sink: &protocol::ChannelSink,
+    event: Event,
+    bytes: Vec<u8>,
+) -> anyhow::Result<()> {
     match sink.send(bytes).await {
         Ok(()) => Ok(()),
         Err(ChannelError::MessageTooLarge { len, limit }) => {

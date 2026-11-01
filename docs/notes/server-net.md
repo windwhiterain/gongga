@@ -83,6 +83,15 @@ Unbounded, because there is nowhere to put an excess command. The transport's ow
 window is what limits how many can be in flight from one peer, and dropping one
 would turn into a client waiting on a reply that will never come.
 
+## a client that is not reading
+
+Two lines name it, both at warning level because both mean events were lost or
+late: `client fell behind` when the client's own subscription skipped events, and
+`client is not reading` when queueing one event took longer than a quarter second.
+A client that stalls its reads collapses the link's window, and because the
+channel is ordered, everything behind it waits -- including the reply to a
+command the operator just typed. Silence there used to look like a slow agent.
+
 ## run_commands
 
 One at a time, in the order they were read. That is not leftover caution: two

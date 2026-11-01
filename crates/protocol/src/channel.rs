@@ -136,11 +136,22 @@ impl Inbound {
     /// Awaits the next message and accounts for it.
     async fn recv(&self, inbound: &mut mpsc::UnboundedReceiver<Vec<u8>>) -> Option<Vec<u8>> {
         let message = inbound.recv().await?;
-        // Saturating: a cancel between arrival and here must not wrap to `usize::MAX`.
+        self.took();
+        Some(message)
+    }
+
+    /// One already delivered, without waiting; the caller clears a burst with it.
+    fn try_recv(&self, inbound: &mut mpsc::UnboundedReceiver<Vec<u8>>) -> Option<Vec<u8>> {
+        let message = inbound.try_recv().ok()?;
+        self.took();
+        Some(message)
+    }
+
+    /// Saturating: a cancel between arrival and here must not wrap to `usize::MAX`.
+    fn took(&self) {
         let _ = self
             .pending
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1));
-        Some(message)
     }
 }
 
@@ -269,6 +280,14 @@ pub struct ChannelStream {
 impl ChannelStream {
     pub async fn recv(&mut self) -> Option<Vec<u8>> {
         self.shared.recv(&mut self.inbound).await
+    }
+
+    /// Whatever has already arrived, without waiting.
+    ///
+    /// A reader that handles one message per frame falls behind a stream and the
+    /// window collapses; clearing a burst first is what keeps it ahead.
+    pub fn try_recv(&mut self) -> Option<Vec<u8>> {
+        self.shared.try_recv(&mut self.inbound)
     }
 
     /// Whether the address refused a datagram, which is why this channel ended.
@@ -1068,6 +1087,24 @@ mod tests {
             .unwrap_err();
         assert!(matches!(caught, ChannelError::Closed), "{caught}");
         assert_eq!(core.state, ConnState::Closing);
+    }
+
+    /// A drained burst must give the window back, or clearing one costs the peer
+    /// the room it was trying to refill.
+    #[test]
+    fn a_drained_burst_counts_as_taken() {
+        let inbound = Inbound::new(None);
+        let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        tx.send(b"one".to_vec()).unwrap();
+        tx.send(b"two".to_vec()).unwrap();
+        let _ = tx;
+        inbound.pending.store(2, Ordering::Relaxed);
+        assert_eq!(inbound.try_recv(&mut rx).as_deref(), Some(&b"one"[..]));
+        assert_eq!(inbound.backlog(), 1);
+        assert_eq!(inbound.try_recv(&mut rx).as_deref(), Some(&b"two"[..]));
+        assert_eq!(inbound.backlog(), 0);
+        assert!(inbound.try_recv(&mut rx).is_none(), "nothing left");
+        assert_eq!(inbound.backlog(), 0, "an empty read owes nothing back");
     }
 
     #[test]
