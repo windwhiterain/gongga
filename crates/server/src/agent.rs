@@ -48,6 +48,8 @@ pub struct Agent {
     pub bus: EventBus,
     /// How often a cached prefix is assumed to be gone: the plan's hyperparameter.
     pub cache_invalid_rate: f64,
+    /// How long a cached prefix survives, in millis; `0` never expires.
+    pub cache_ttl_ms: u64,
     /// What the session's model charges, from the roster.
     pub price: Option<crate::providers::Price>,
     /// Compress once a request would carry more than this many input tokens.
@@ -458,16 +460,16 @@ impl Agent {
             tail,
             rooted,
             handover,
-            cwd: cwd.display().to_string(),
+            // Where the request said the shell stood, which is the stored row's
+            // answer once there is one: a later move is not a rewrite.
+            cwd: stored
+                .as_ref()
+                .map(|kept| kept.cwd.clone())
+                .unwrap_or_else(|| Self::stated(cwd)),
             stamp: crate::store::stamp(note),
         };
         // Only the texts that go on the wire are compared; `cwd` is a record.
-        if let Some(kept) = stored.clone().filter(|kept| {
-            kept.instructions == prompt.instructions
-                && kept.index == prompt.index
-                && kept.tail == prompt.tail
-                && kept.handover == prompt.handover
-        }) {
+        if let Some(kept) = stored.clone().filter(|kept| !kept.rewritten_by(&prompt)) {
             return Ok(kept);
         }
         // Rewritten prose is a real event: the prefix the provider cached is gone
@@ -526,8 +528,9 @@ impl Agent {
             return None;
         }
         let rates = crate::prefix_cache::Rates {
-            price: Some(self.price.clone().unwrap_or_default()),
+            price: self.price,
             invalid: self.cache_invalid_rate,
+            ttl_ms: self.cache_ttl_ms,
         };
         let wanted: Vec<(&str, usize, u64)> = roots
             .iter()
@@ -1054,6 +1057,7 @@ impl Agent {
             model: llm.model().to_string(),
             price: self.price,
             cache_invalid_rate: self.cache_invalid_rate,
+            cache_ttl_ms: self.cache_ttl_ms,
             closing: session.closing_signal(),
         };
         let run_started = std::time::Instant::now();

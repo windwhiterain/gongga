@@ -12,6 +12,19 @@ The connection is behind a mutex and used synchronously. Every statement here is
 a sub-millisecond local write, so the simplification costs nothing in practice;
 if that stops being true the fix is `spawn_blocking`, not a redesign.
 
+## Prompt::rewritten_by
+
+One rule decides whether a request needs a new prompt row, and it is the only place
+that decision is made: compare what a request *sends*. `instructions`, `index`, `tail`
+and `handover` go on the wire; `cwd` and `stamp` are records of where the turn happened
+and what the note was.
+
+The distinction is not cosmetic. A live home wrote nine prompt rows in ninety seconds
+with `cwd` the only difference -- the shell had moved, and a move is not prose. Every
+row costs a comparison and, worse, the log line that says the prefix was re-billed. So
+`cwd` is also recorded as what the request said, not where the shell is now: a later
+move cannot rewrite a row that has already been sent.
+
 ## interrupted_call
 
 Written as an observation rather than an error: the command may well have run to

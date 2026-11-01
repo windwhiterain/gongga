@@ -64,7 +64,7 @@ pub fn plan(
     let Some(layout) = layouts.get_mut(session) else {
         return Vec::new();
     };
-    let order = layout.plan(purpose, wanted, rates.scale());
+    let order = layout.plan(purpose, wanted, rates, crate::store::now_millis() as u64);
     if let Err(e) = store.save_prefix_layout(session, layout) {
         tracing::warn!(error = %e, session = %session, "the learnt prefix layout could not be written");
     }
@@ -78,6 +78,8 @@ pub struct Rates {
     pub price: Option<crate::providers::Price>,
     /// The chance a prefix the provider once held is gone by the next request.
     pub invalid: f64,
+    /// How long a prefix survives, in millis. `0` never expires.
+    pub ttl_ms: u64,
 }
 
 /// What a cached token is worth when the roster states no rate: a stand-in.
@@ -132,6 +134,13 @@ struct Node {
     children: Vec<NodeId>,
     /// Every ancestor's size and its own: what a chain ending here carries.
     size: usize,
+    /// When this chain was last sent, in millis since the epoch.
+    ///
+    /// # Invariant
+    ///
+    /// Using a chain refreshes its ancestors, so `touched` never decreases towards
+    /// the root: a node is stale exactly when its own prefix expired.
+    touched: u64,
 }
 
 /// Every order emitted so far, as a forest of chains, with what each one costs.
@@ -164,8 +173,12 @@ impl Layout {
         &mut self,
         purpose: &str,
         wanted: &[(&str, usize, u64)],
-        scale: f64,
+        rates: Rates,
+        now: u64,
     ) -> Vec<String> {
+        // First, because everything after reads node indices.
+        self.expire(now, rates.ttl_ms);
+        let scale = rates.scale();
         let ids = self.ids(purpose, wanted);
         if ids.is_empty() {
             return Vec::new();
@@ -185,12 +198,14 @@ impl Layout {
         let mut walk = chosen;
         while let Some(node) = walk {
             warm.insert(self.nodes[node.0].item);
+            // Sent again, so the provider holds it again: the chain is fresh now.
+            self.nodes[node.0].touched = now;
             walk = self.nodes[node.0].parent;
         }
         let mut tail = chosen;
         for &id in &ids {
             if !warm.contains(&id) {
-                tail = Some(self.add(id, tail));
+                tail = Some(self.add(id, tail, now));
             }
         }
         let order = self.order(tail);
@@ -319,6 +334,33 @@ impl Layout {
                 }
             }
         }
+        self.sweep(doomed);
+        let kept: Vec<usize> = (0..self.items.len())
+            .filter(|id| self.items[*id].purpose != purpose || ids.contains(id))
+            .collect();
+        let reindex: Vec<Option<usize>> = (0..self.items.len())
+            .map(|id| kept.iter().position(|kept| *kept == id))
+            .collect();
+        let items = std::mem::take(&mut self.items);
+        self.items = items
+            .into_iter()
+            .enumerate()
+            .filter(|(id, _)| reindex[*id].is_some())
+            .map(|(_, item)| item)
+            .collect();
+        for node in &mut self.nodes {
+            node.item = reindex[node.item].expect("a kept node's item was kept");
+        }
+        self.reindex();
+    }
+
+    /// Removes the nodes `doomed` marks and renumbers what is left.
+    ///
+    /// # Invariant
+    ///
+    /// One writer for node renumbering, so an item's own list and a node's own indices
+    /// cannot disagree; an item left with no nodes simply has no chain to be chosen.
+    fn sweep(&mut self, doomed: Vec<bool>) {
         let mut remap: Vec<Option<usize>> = vec![None; self.nodes.len()];
         let mut next = 0;
         for (node, kept) in remap.iter_mut().enumerate() {
@@ -341,30 +383,15 @@ impl Layout {
                     .filter_map(|child| remap[child.0].map(NodeId))
                     .collect(),
                 size: node.size,
+                touched: node.touched,
             })
             .collect();
-        let kept: Vec<usize> = (0..self.items.len())
-            .filter(|id| self.items[*id].purpose != purpose || ids.contains(id))
-            .collect();
-        let reindex: Vec<Option<usize>> = (0..self.items.len())
-            .map(|id| kept.iter().position(|kept| *kept == id))
-            .collect();
-        let items = std::mem::take(&mut self.items);
-        self.items = items
-            .into_iter()
-            .enumerate()
-            .filter(|(id, _)| reindex[*id].is_some())
-            .map(|(_, mut item)| {
-                item.nodes = item
-                    .nodes
-                    .into_iter()
-                    .filter_map(|node| remap[node.0].map(NodeId))
-                    .collect();
-                item
-            })
-            .collect();
-        for node in &mut self.nodes {
-            node.item = reindex[node.item].expect("a kept node's item was kept");
+        for item in &mut self.items {
+            item.nodes = item
+                .nodes
+                .iter()
+                .filter_map(|node| remap[node.0].map(NodeId))
+                .collect();
         }
         self.reindex();
     }
@@ -385,7 +412,7 @@ impl Layout {
         }
     }
 
-    fn add(&mut self, item: usize, parent: Option<NodeId>) -> NodeId {
+    fn add(&mut self, item: usize, parent: Option<NodeId>, now: u64) -> NodeId {
         let id = NodeId(self.nodes.len());
         let carried = match parent {
             Some(parent) => {
@@ -399,9 +426,35 @@ impl Layout {
             parent,
             children: Vec::new(),
             size: carried + self.items[item].tokens,
+            touched: now,
         });
         self.items[item].nodes.push(id);
         id
+    }
+
+    /// Drops every chain whose prefix is older than `ttl_ms`.
+    ///
+    /// # Invariant
+    ///
+    /// A stale node takes its whole subtree with it: a provider's cache is a prefix,
+    /// so if the front of a chain expired the rest of it cannot be served from cache
+    /// either. `0` never expires -- a lifetime nobody stated is not one to invent.
+    fn expire(&mut self, now: u64, ttl_ms: u64) {
+        if ttl_ms == 0 {
+            return;
+        }
+        let cutoff = now.saturating_sub(ttl_ms);
+        let mut doomed = vec![false; self.nodes.len()];
+        for node in 0..self.nodes.len() {
+            // Parents are always older in the array, so their verdict is already in.
+            let above = self.nodes[node]
+                .parent
+                .is_some_and(|parent| doomed[parent.0]);
+            doomed[node] = above || self.nodes[node].touched < cutoff;
+        }
+        if doomed.contains(&true) {
+            self.sweep(doomed);
+        }
     }
 
     fn order(&self, tail: Option<NodeId>) -> Vec<String> {
@@ -422,7 +475,13 @@ impl Layout {
 
     /// What a fresh plan of `wanted` would choose, without teaching the layout.
     #[cfg(test)]
-    fn chain_order(&self, purpose: &str, wanted: &[(&str, usize, u64)], scale: f64) -> Vec<String> {
+    fn chain_order(
+        &self,
+        purpose: &str,
+        wanted: &[(&str, usize, u64)],
+        rates: Rates,
+        now: u64,
+    ) -> Vec<String> {
         let ids: Vec<usize> = wanted
             .iter()
             .filter_map(|(key, _, content)| {
@@ -431,10 +490,28 @@ impl Layout {
                     .copied()
             })
             .collect();
+        // A chain that expired is not one this plan could choose.
+        let cutoff = if rates.ttl_ms == 0 {
+            0
+        } else {
+            now.saturating_sub(rates.ttl_ms)
+        };
+        let stale: Vec<bool> = (0..self.nodes.len())
+            .map(|node| {
+                self.nodes[node].touched < cutoff
+                    || self.nodes[node]
+                        .parent
+                        .is_some_and(|parent| self.nodes[parent.0].touched < cutoff)
+            })
+            .collect();
+        let scale = rates.scale();
         let mut best = ids.iter().map(|&id| self.items[id].tokens).sum::<usize>() as f64 * scale;
         let mut chosen = None;
         for (node, cost) in self.cold_chains(&ids, scale).into_iter().enumerate() {
             let Some(cost) = cost else { continue };
+            if stale[node] {
+                continue;
+            }
             if cost < best {
                 best = cost;
                 chosen = Some(NodeId(node));
@@ -460,6 +537,22 @@ impl Layout {
 mod tests {
     use super::*;
 
+    /// The clock a plan runs at, so a test's staleness is its own to state.
+    const NOW: u64 = 1_000_000;
+
+    /// A 10x provider, with `invalid` standing in for how sure the cache is.
+    fn sure(invalid: f64) -> Rates {
+        Rates {
+            price: Some(crate::providers::Price {
+                input: Some(1.0),
+                cache_read: Some(0.1),
+                output: None,
+            }),
+            invalid,
+            ttl_ms: 0,
+        }
+    }
+
     /// The scale a plan runs at when the roster states no price: the stand-in.
     const SCALE: f64 = DEFAULT_MISS_RATIO;
 
@@ -475,7 +568,8 @@ mod tests {
         let planned = layout.plan(
             "t",
             &[("a", 10, d("a")), ("b", 20, d("b")), ("c", 30, d("c"))],
-            SCALE,
+            Rates::default(),
+            NOW,
         );
         assert_eq!(planned, vec!["a", "b", "c"]);
     }
@@ -485,9 +579,9 @@ mod tests {
     fn a_repeated_set_is_emitted_unchanged() {
         let mut layout = Layout::new();
         let set = [("a", 10, d("a")), ("b", 20, d("b")), ("c", 30, d("c"))];
-        let once = layout.plan("t", &set, SCALE);
+        let once = layout.plan("t", &set, Rates::default(), NOW);
         let chains = layout.chain_count();
-        let again = layout.plan("t", &set, SCALE);
+        let again = layout.plan("t", &set, Rates::default(), NOW);
         assert_eq!(once, again);
         assert_eq!(layout.chain_count(), chains, "nothing new was learnt");
     }
@@ -497,11 +591,21 @@ mod tests {
     fn a_warm_chain_beats_the_order_asked_for() {
         let mut layout = Layout::new();
         assert_eq!(
-            layout.plan("t", &[("a", 10, d("a")), ("b", 20, d("b"))], SCALE),
+            layout.plan(
+                "t",
+                &[("a", 10, d("a")), ("b", 20, d("b"))],
+                Rates::default(),
+                NOW
+            ),
             vec!["a", "b"]
         );
         assert_eq!(
-            layout.plan("t", &[("b", 20, d("b")), ("a", 10, d("a"))], SCALE),
+            layout.plan(
+                "t",
+                &[("b", 20, d("b")), ("a", 10, d("a"))],
+                Rates::default(),
+                NOW
+            ),
             vec!["a", "b"]
         );
     }
@@ -510,9 +614,19 @@ mod tests {
     #[test]
     fn what_is_new_goes_after_what_is_warm() {
         let mut layout = Layout::new();
-        layout.plan("t", &[("a", 10, d("a")), ("b", 20, d("b"))], SCALE);
+        layout.plan(
+            "t",
+            &[("a", 10, d("a")), ("b", 20, d("b"))],
+            Rates::default(),
+            NOW,
+        );
         assert_eq!(
-            layout.plan("t", &[("a", 10, d("a")), ("z", 5, d("z"))], SCALE),
+            layout.plan(
+                "t",
+                &[("a", 10, d("a")), ("z", 5, d("z"))],
+                Rates::default(),
+                NOW
+            ),
             vec!["a", "z"]
         );
     }
@@ -529,18 +643,28 @@ mod tests {
         layout.plan(
             "t",
             &[("a", 10, d("a")), ("b", 20, d("b")), ("c", 30, d("c"))],
-            SCALE,
+            Rates::default(),
+            NOW,
         );
-        assert_eq!(layout.plan("t", &[("c", 30, d("c"))], SCALE), vec!["c"]);
+        assert_eq!(
+            layout.plan("t", &[("c", 30, d("c"))], Rates::default(), NOW),
+            vec!["c"]
+        );
     }
 
     /// A changed size re-costs the chains through it instead of stranding them.
     #[test]
     fn a_shrunk_item_is_cheaper_than_sending_it_cold() {
         let mut layout = Layout::new();
-        assert_eq!(layout.plan("t", &[("a", 1000, d("a"))], SCALE), vec!["a"]);
+        assert_eq!(
+            layout.plan("t", &[("a", 1000, d("a"))], Rates::default(), NOW),
+            vec!["a"]
+        );
         let chains = layout.chain_count();
-        assert_eq!(layout.plan("t", &[("a", 10, d("a"))], SCALE), vec!["a"]);
+        assert_eq!(
+            layout.plan("t", &[("a", 10, d("a"))], Rates::default(), NOW),
+            vec!["a"]
+        );
         assert_eq!(layout.chain_count(), chains, "re-costed, not abandoned");
     }
 
@@ -554,18 +678,18 @@ mod tests {
     fn the_scale_decides_what_a_warm_prefix_is_worth() {
         let mut cheap = Layout::new();
         assert_eq!(
-            cheap.plan("t", &[("a", 10, d("a")), ("b", 20, d("b"))], 1.0),
+            cheap.plan("t", &[("a", 10, d("a")), ("b", 20, d("b"))], sure(1.0), NOW),
             vec!["a", "b"]
         );
         assert_eq!(
-            cheap.plan("t", &[("b", 20, d("b")), ("a", 10, d("a"))], 1.0),
+            cheap.plan("t", &[("b", 20, d("b")), ("a", 10, d("a"))], sure(1.0), NOW),
             vec!["b", "a"],
             "nothing warm is worth anything, so the caller's order stands"
         );
         let mut dear = Layout::new();
-        dear.plan("t", &[("a", 10, d("a")), ("b", 20, d("b"))], 10.0);
+        dear.plan("t", &[("a", 10, d("a")), ("b", 20, d("b"))], sure(0.0), NOW);
         assert_eq!(
-            dear.plan("t", &[("b", 20, d("b")), ("a", 10, d("a"))], 10.0),
+            dear.plan("t", &[("b", 20, d("b")), ("a", 10, d("a"))], sure(0.0), NOW),
             vec!["a", "b"],
             "a hit is worth ten misses, so the cached order is worth following"
         );
@@ -583,17 +707,20 @@ mod tests {
         let dear = Rates {
             price: Some(price),
             invalid: 0.0,
+            ttl_ms: 0,
         };
         assert!((dear.scale() - 6.0).abs() < 1e-9, "{}", dear.scale());
         let half = Rates {
             price: Some(price),
             invalid: 0.5,
+            ttl_ms: 0,
         };
         // Half the time the cache is gone, so a hit is worth half of six.
         assert!((half.scale() - 6.0 / 3.5).abs() < 1e-9, "{}", half.scale());
         let gone = Rates {
             price: Some(price),
             invalid: 1.0,
+            ttl_ms: 0,
         };
         assert_eq!(
             gone.scale(),
@@ -616,10 +743,10 @@ mod tests {
     #[test]
     fn changed_content_is_a_new_item() {
         let mut layout = Layout::new();
-        layout.plan("t", &[("skill", 10, d("old body"))], SCALE);
-        layout.plan("t", &[("skill", 10, d("new body"))], SCALE);
+        layout.plan("t", &[("skill", 10, d("old body"))], Rates::default(), NOW);
+        layout.plan("t", &[("skill", 10, d("new body"))], Rates::default(), NOW);
         assert_eq!(
-            layout.chain_order("t", &[("skill", 10, d("new body"))], SCALE),
+            layout.chain_order("t", &[("skill", 10, d("new body"))], Rates::default(), NOW),
             vec!["skill"],
             "the new text is planned on its own"
         );
@@ -639,9 +766,14 @@ mod tests {
     #[test]
     fn what_is_no_longer_wanted_is_forgotten() {
         let mut layout = Layout::new();
-        layout.plan("t", &[("a", 10, d("a")), ("b", 20, d("b"))], SCALE);
+        layout.plan(
+            "t",
+            &[("a", 10, d("a")), ("b", 20, d("b"))],
+            Rates::default(),
+            NOW,
+        );
         assert_eq!(layout.item_keys(), vec!["a".to_string(), "b".to_string()]);
-        layout.plan("t", &[("a", 10, d("a"))], SCALE);
+        layout.plan("t", &[("a", 10, d("a"))], Rates::default(), NOW);
         assert_eq!(layout.item_keys(), vec!["a".to_string()]);
     }
 
@@ -655,14 +787,29 @@ mod tests {
     #[test]
     fn callers_do_not_prune_each_other() {
         let mut layout = Layout::new();
-        layout.plan("skill table", &[("tools/build", 10, d("row"))], SCALE);
-        layout.plan("prompt index", &[("@skill:x", 20, d("body"))], SCALE);
+        layout.plan(
+            "skill table",
+            &[("tools/build", 10, d("row"))],
+            Rates::default(),
+            NOW,
+        );
+        layout.plan(
+            "prompt index",
+            &[("@skill:x", 20, d("body"))],
+            Rates::default(),
+            NOW,
+        );
         assert_eq!(
             layout.item_keys(),
             vec!["tools/build".to_string(), "@skill:x".to_string()]
         );
         assert_eq!(
-            layout.plan("prompt index", &[("@skill:x", 20, d("body"))], SCALE),
+            layout.plan(
+                "prompt index",
+                &[("@skill:x", 20, d("body"))],
+                Rates::default(),
+                NOW
+            ),
             vec!["@skill:x"]
         );
     }
@@ -708,7 +855,10 @@ mod tests {
         let wanted = [("skill:a", 10usize, d("a")), ("skill:b", 20, d("b"))];
         let reversed = [("skill:b", 20usize, d("b")), ("skill:a", 10, d("a"))];
         let mut layout = Layout::new();
-        assert_eq!(layout.plan("t", &wanted, SCALE), vec!["skill:a", "skill:b"]);
+        assert_eq!(
+            layout.plan("t", &wanted, Rates::default(), NOW),
+            vec!["skill:a", "skill:b"]
+        );
         store
             .save_prefix_layout("round-trip", &layout)
             .expect("a writable store");
@@ -718,7 +868,7 @@ mod tests {
             .expect("the plan wrote one");
         restored.reindex();
         assert_eq!(
-            restored.plan("t", &reversed, SCALE),
+            restored.plan("t", &reversed, Rates::default(), NOW),
             vec!["skill:a", "skill:b"]
         );
     }
@@ -748,6 +898,6 @@ mod tests {
     #[test]
     fn an_empty_set_plans_nothing() {
         let mut layout = Layout::new();
-        assert!(layout.plan("t", &[], SCALE).is_empty());
+        assert!(layout.plan("t", &[], Rates::default(), NOW).is_empty());
     }
 }

@@ -93,6 +93,22 @@ nothing could ever hit, growing a branch per session and paying a scan for each.
 `del_session` deletes that session's row: a new session of the same name is a new
 conversation, and must not be warmed by the old one.
 
+## Node::touched, expire
+
+A price says what a hit is worth; a lifetime says whether there is one. Each node
+records `touched`, the moment its chain was last sent, and using a chain refreshes
+every node on it, so `touched` never decreases towards the root: a node is stale
+exactly when its own prefix expired.
+
+`expire` runs first, before anything reads a node index. A stale node takes its whole
+subtree with it, because a provider's cache is a prefix -- if the front of a chain is
+gone, the rest of it cannot be served from cache either, and keeping it would let a plan
+choose a chain whose first half is a miss.
+
+`ttl_ms == 0` never expires, and that is the default: a lifetime the provider does not
+state is not one to invent. Setting it is a claim about the provider, and it is the only
+place this module believes something it was told rather than measured.
+
 ## priced from the roster: Rates
 
 The cost model used to be a constant of this module (`MISS_SCALE = 64`). It is now
@@ -101,8 +117,9 @@ and `Price::miss_ratio()` turns `input / cache_read` into the factor one cached 
 is worth. Only that ratio is used -- a currency is never converted and a unit is never
 assumed, so `1.00/0.10 CNY per million` and `0.15/0.015 USD` are the same 10.
 
-`cache_invalid_rate` is the other input, from `[agent]` or
-`GONGGA_CACHE_INVALID_RATE`. It is the chance the provider no longer holds a prefix it
+`cache_invalid_rate` is another input, from `[agent]` or
+`GONGGA_CACHE_INVALID_RATE`, and `cache_ttl_secs` / `GONGGA_CACHE_TTL_SECS` is the
+last: a probability and a lifetime, both claims rather than measurements. It is the chance the provider no longer holds a prefix it
 once did, and it is folded in as an expectation: a cache correct `(1 - p)` of the time
 is worth `(1 - p)` of its discount, so
 

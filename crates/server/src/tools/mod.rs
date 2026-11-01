@@ -55,6 +55,8 @@ pub struct ToolContext {
     pub price: Option<crate::providers::Price>,
     /// How often a cached prefix is assumed to be gone: the plan's hyperparameter.
     pub cache_invalid_rate: f64,
+    /// How long a cached prefix survives, in millis; `0` never expires.
+    pub cache_ttl_ms: u64,
     /// Set when the shells are being ended because the server is going: nothing
     /// that stops then "finished", so nothing about it is worth a row.
     pub closing: Arc<std::sync::atomic::AtomicBool>,
@@ -1215,6 +1217,7 @@ mod tests {
             model: "test/model".to_string(),
             price: None,
             cache_invalid_rate: 0.0,
+            cache_ttl_ms: 0,
             closing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
@@ -1247,6 +1250,7 @@ mod tests {
             model: "test/model".to_string(),
             price: None,
             cache_invalid_rate: 0.0,
+            cache_ttl_ms: 0,
             closing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }

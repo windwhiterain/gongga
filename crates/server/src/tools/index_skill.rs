@@ -76,6 +76,7 @@ impl Tool for IndexSkillTool {
                 &ctx.model,
                 ctx.price,
                 ctx.cache_invalid_rate,
+                ctx.cache_ttl_ms,
             );
             ToolOutcome::ok(
                 serde_json::to_string_pretty(&json!({"skills": rows}))
@@ -154,6 +155,7 @@ fn ordered(
     model: &str,
     price: Option<crate::providers::Price>,
     invalid: f64,
+    ttl_ms: u64,
 ) -> Vec<Value> {
     let rows: Vec<(String, Value)> = skills
         .into_iter()
@@ -171,7 +173,11 @@ fn ordered(
         .collect();
     // The tokens and their digest: an edited row is a new item.
     let ratio = store.token_ratio(model);
-    let rates = crate::prefix_cache::Rates { price, invalid };
+    let rates = crate::prefix_cache::Rates {
+        price,
+        invalid,
+        ttl_ms,
+    };
     let wanted: Vec<(&str, usize, u64)> = rows
         .iter()
         .map(|(key, row)| {
@@ -275,6 +281,7 @@ mod tests {
             "test/model",
             None,
             0.0,
+            0,
         );
         assert_eq!(rows.len(), 2, "{rows:?}");
     }
@@ -294,10 +301,18 @@ mod tests {
             ]
         };
         let store = store();
-        let first = ordered(given(), &store, "skill-table/2", "test/model", None, 0.0);
+        let first = ordered(given(), &store, "skill-table/2", "test/model", None, 0.0, 0);
         let mut reversed = given();
         reversed.reverse();
-        let second = ordered(reversed, &store, "skill-table/2", "test/model", None, 0.0);
+        let second = ordered(
+            reversed,
+            &store,
+            "skill-table/2",
+            "test/model",
+            None,
+            0.0,
+            0,
+        );
         assert_eq!(names(&first), vec!["heir", "latency"]);
         assert_eq!(names(&second), names(&first));
     }

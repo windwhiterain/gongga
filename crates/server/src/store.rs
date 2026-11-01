@@ -39,6 +39,22 @@ pub struct Prompt {
     pub stamp: String,
 }
 
+impl Prompt {
+    /// Whether `later` says something different on the wire than `self` does.
+    ///
+    /// # Invariant
+    ///
+    /// Only the texts a request sends are compared. `cwd` and `stamp` are records: a
+    /// shell reports one directory under several spellings, and a spelling is not a
+    /// reason to write a row or to re-bill a prefix. See `docs/notes/server-store.md`.
+    pub fn rewritten_by(&self, later: &Prompt) -> bool {
+        self.instructions != later.instructions
+            || self.index != later.index
+            || self.tail != later.tail
+            || self.handover != later.handover
+    }
+}
+
 /// What the note is, so a fold shows up without rendering prose.
 pub fn stamp(note: Option<&str>) -> String {
     use std::hash::{Hash, Hasher};
@@ -1648,6 +1664,53 @@ mod tests {
     use serde_json::json;
 
     /// A message with no references: what most rows here hold.
+    /// A shell that moved writes no row; a changed text does.
+    ///
+    /// # Invariant
+    ///
+    /// `cwd` and `stamp` are records, so a session whose shell `cd`s around keeps the
+    /// one prompt row it started with. The live home once wrote nine rows in ninety
+    /// seconds with nothing but `cwd` differing, which is what this pins against.
+    #[test]
+    fn a_moved_shell_is_not_a_rewritten_prompt() {
+        let base = Prompt {
+            instructions: "prose".to_string(),
+            index: Some("@skill:x\nbody".to_string()),
+            tail: Some("Session `s`, 2026-11-01 15:00 UTC".to_string()),
+            rooted: vec!["@skill:x".to_string()],
+            handover: None,
+            cwd: "C:/project".to_string(),
+            stamp: String::new(),
+        };
+        let moved = Prompt {
+            cwd: "C:/Users/somebody".to_string(),
+            stamp: "other".to_string(),
+            ..base.clone()
+        };
+        assert!(!base.rewritten_by(&moved), "a record is not prose");
+        assert!(
+            base.rewritten_by(&Prompt {
+                instructions: "other prose".to_string(),
+                ..base.clone()
+            }),
+            "edited prose is"
+        );
+        assert!(
+            base.rewritten_by(&Prompt {
+                index: Some("changed".to_string()),
+                ..base.clone()
+            }),
+            "and so is an edited index"
+        );
+        assert!(
+            base.rewritten_by(&Prompt {
+                tail: Some("another minute".to_string()),
+                ..base.clone()
+            }),
+            "and a different start card"
+        );
+    }
+
     fn user_message(text: &str) -> crate::meta::Expanded {
         crate::meta::Expanded {
             text: text.to_string(),
