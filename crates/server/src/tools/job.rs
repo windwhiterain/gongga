@@ -5,8 +5,9 @@
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-    SetInformationJobObject, TerminateJobObject,
+    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
+    QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
 };
 use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
 
@@ -63,6 +64,28 @@ impl ProcessJob {
         unsafe {
             TerminateJobObject(self.handle, 1);
         }
+    }
+
+    /// How many members are alive, which is the only proof a shell left nothing.
+    ///
+    /// # Invariant
+    ///
+    /// A count of zero is what "the whole tree is gone" means here: a member that
+    /// left the job is not in it, so a survivor is always counted. See
+    /// `docs/notes/server-remote.md`.
+    pub fn active_processes(&self) -> Option<u32> {
+        let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { std::mem::zeroed() };
+        let mut returned = 0u32;
+        let asked = unsafe {
+            QueryInformationJobObject(
+                self.handle,
+                JobObjectBasicAccountingInformation,
+                &mut info as *mut _ as *mut core::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                &mut returned,
+            )
+        };
+        (asked != 0).then_some(info.ActiveProcesses)
     }
 }
 

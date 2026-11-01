@@ -792,7 +792,7 @@ async fn reap_child(child: &mut Child) -> bool {
 }
 
 #[cfg(unix)]
-async fn signal_group(pid: u32, signal: &str) -> anyhow::Result<()> {
+pub(crate) async fn signal_group(pid: u32, signal: &str) -> anyhow::Result<()> {
     let out = Command::new("kill")
         .args([format!("-{signal}"), format!("-{pid}")])
         .output()

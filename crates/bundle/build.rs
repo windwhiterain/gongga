@@ -106,7 +106,8 @@ fn built() -> Vec<(&'static str, PathBuf)> {
         String::from_utf8_lossy(&output.stderr)
     );
     let suffix = if cfg!(windows) { ".exe" } else { "" };
-    ["gongga-cli", "gongga-server", "gongga-tui"]
+    // The server package's other binary: a peer is unusable without it.
+    ["gongga-cli", "gongga-server", "gongga-tui", "gongga-runner"]
         .into_iter()
         .map(|name| {
             (

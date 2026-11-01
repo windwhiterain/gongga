@@ -32,11 +32,15 @@ the same thing in both:
 | `~/.agents` | the user | this machine's own files |
 
 The sameness is deliberate. `quota_query.script` in the roster is a path
-relative to the file that names it (`providers/deepseek.py`), so a community entry
-resolves into the clone and a private entry into `~/.agents/providers/`, with no table
-of "where scripts live" to keep in sync with two layers that are allowed to
-differ. A layout that buried the scripts one level deeper would have needed
-that table for exactly one level of nesting and bought nothing.
+relative to the file that names it (`providers/deepseek.py`), so it resolves
+inside the clone with no table of "where scripts live" to keep in sync. A layout
+that buried the scripts one level deeper would have needed that table for exactly
+one level of nesting and bought nothing.
+
+The roster is **one** file under that root, not one per root: a machine's own
+entries are a branch of the checkout (`local`), so an upstream change is a rebase
+and there is no overlay to merge on every read. See
+`docs/notes/server-providers.md`.
 
 ## sync
 

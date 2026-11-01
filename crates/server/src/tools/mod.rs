@@ -14,9 +14,10 @@ use serde_json::{Value, json};
 use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use crate::session::{DEFAULT_BASH, ShellSet};
+use crate::remote::shell_set::{Shell, ShellSet};
+use crate::session::DEFAULT_BASH;
 use crate::store::Store;
-use crate::tools::bash::{BashChunk, BashShell, BashStream};
+use crate::tools::bash::{BashChunk, BashStream};
 use crate::tools::detached::DetachedRegistry;
 
 pub mod bash;
@@ -72,7 +73,7 @@ impl ToolContext {
     }
 
     /// The handle for `name`, spawning the shell if this is its first use.
-    fn shell(&self, name: &str) -> anyhow::Result<Arc<Mutex<BashShell>>> {
+    fn shell(&self, name: &str) -> anyhow::Result<Arc<Mutex<Shell>>> {
         self.shells
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -81,7 +82,7 @@ impl ToolContext {
 
     /// The handle without spawning, for tools that must not create one
     /// (`check_bash`, `list_bash`).
-    fn peek(&self, name: &str) -> Option<Arc<Mutex<BashShell>>> {
+    fn peek(&self, name: &str) -> Option<Arc<Mutex<Shell>>> {
         self.shells
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -96,15 +97,15 @@ impl ToolContext {
             .names()
     }
 
-    fn forget(&self, name: &str) -> bool {
+    fn discard(&self, name: &str) -> Option<crate::remote::shell_set::Discarded> {
         self.shells
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(name)
+            .discard(name)
     }
 
     /// Retires `handle` and puts a fresh shell under `name`; false means another shell took it.
-    fn replace_shell(&self, name: &str, handle: &Arc<Mutex<BashShell>>) -> bool {
+    fn replace_shell(&self, name: &str, handle: &Arc<Mutex<Shell>>) -> bool {
         match self
             .shells
             .lock()
@@ -123,16 +124,22 @@ impl ToolContext {
         }
     }
 
-    /// Caps one command's output, spilling the rest to a file named after where it came from.
+    /// Whether this session's shells are on a peer.
+    pub(crate) fn on_endpoint(&self) -> bool {
+        self.shells
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .endpoint()
+            .is_remote()
+    }
+
+    /// Caps one command's output, spilling the rest to a file named after it.
     fn cap(&self, shell: &str, task: Option<&str>, text: String, max: usize) -> String {
         let label = spill_label(&self.session, shell, task, &self.call_id);
-        crate::tools::bash::cap_output(
-            crate::prompts::shared(),
-            &text,
-            max,
-            &self.output_dir,
-            &label,
-        )
+        // A cut on an endpoint session is not spilled here: a path on this machine
+        // is not a path the reader can open.
+        let dir = (!self.on_endpoint()).then_some(self.output_dir.as_path());
+        crate::tools::bash::cap_output(crate::prompts::shared(), &text, max, dir, &label)
     }
 }
 
@@ -383,7 +390,7 @@ fn background_notifier(ctx: &ToolContext, shell: &str) -> bash::BackgroundNotifi
 async fn leave_running(
     ctx: &ToolContext,
     name: &str,
-    handle: &Arc<Mutex<BashShell>>,
+    handle: &Arc<Mutex<Shell>>,
     task: Option<&str>,
     cap: usize,
     waited: Duration,
@@ -423,7 +430,7 @@ async fn leave_running(
             crate::prompts::shared(),
             &text,
             cap,
-            &output_dir,
+            Some(&output_dir),
             &label,
         );
         let text = if text.is_empty() {
@@ -630,6 +637,16 @@ impl Tool for BashTool {
             }
             // `detached` names the process itself; `background` is a job of a shell.
             if detached {
+                // The job would be started here, while the session's shell is elsewhere.
+                // See `docs/notes/server-remote.md`.
+                if ctx.on_endpoint() {
+                    return ToolOutcome::err(
+                        "this session's shells run on a remote endpoint, so `detached: true` \
+                         is not available: the job would be started on this machine and \
+                         outlive everything you asked for on that one. Start it in the \
+                         foreground, or with `&` and a log file on the endpoint.",
+                    );
+                }
                 // Defaulting to `default` would collide with the persistent shell.
                 let Some(name) = args
                     .get("name")
@@ -1079,18 +1096,36 @@ impl Tool for DelBashTool {
                 ));
             }
             let mut discarded = Vec::new();
+            let mut unconfirmed = Vec::new();
             for name in &names {
-                if ctx.forget(name) {
-                    discarded.push(name.clone());
+                let Some(shell) = ctx.discard(name) else {
+                    continue;
+                };
+                // Ended now: its command may be running, and only the endpoint can stop it.
+                let report = shell.end().await;
+                if !report.confirmed {
+                    unconfirmed.push(format!(
+                        "{name}: {}",
+                        report.unknown.unwrap_or_else(|| "unknown".to_string())
+                    ));
                 }
+                discarded.push(name.clone());
             }
             let list = discarded.join(", ");
+            let unconfirmed = if unconfirmed.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "; the endpoint did not confirm ending {}",
+                    unconfirmed.join("; ")
+                )
+            };
             let kept = if stopped.stopped > 0 {
                 format!("; also deleted {} detached bash(es)", stopped.stopped)
             } else {
                 String::new()
             };
-            ToolOutcome::ok(format!("discarded shell(s) {list}{kept}"))
+            ToolOutcome::ok(format!("discarded shell(s) {list}{kept}{unconfirmed}"))
         })
     }
 }
@@ -1127,7 +1162,11 @@ mod tests {
             root.join("detached"),
             Vec::new(),
         );
-        let mut set = ShellSet::new(program.to_path_buf(), root.to_path_buf(), Vec::new());
+        let mut set = ShellSet::new(
+            crate::remote::Endpoint::local(program.to_path_buf()),
+            Some(root.to_path_buf()),
+            Vec::new(),
+        );
         set.get(DEFAULT_BASH).expect("the default shell starts");
         ToolContext {
             session: "main".to_string(),
@@ -1145,6 +1184,119 @@ mod tests {
             },
             inbox,
         }
+    }
+
+    /// A context whose shells run on this machine's runner, standing in for a peer.
+    fn endpoint_context(dir: &Path, runner: std::path::PathBuf) -> ToolContext {
+        let store = Store::open(&dir.join("g.db")).expect("a throwaway store");
+        let detached = DetachedRegistry::new(store.clone(), None, dir.join("detached"), vec![]);
+        let mut set = ShellSet::new(
+            crate::remote::Endpoint::Direct { runner },
+            Some(dir.to_path_buf()),
+            Vec::new(),
+        );
+        set.get(DEFAULT_BASH).expect("an endpoint shell starts");
+        ToolContext {
+            session: "main".to_string(),
+            call_id: "call_1".to_string(),
+            output_dir: dir.join("outputs"),
+            shells: Arc::new(StdMutex::new(set)),
+            detached,
+            events: None,
+            cancel: CancellationToken::new(),
+            store,
+            cwd: dir.to_path_buf(),
+            vision: crate::llm::Vision {
+                accepts_image: false,
+                refusal: String::new(),
+            },
+            inbox: InboxSignal::around(Arc::new(AtomicU64::new(0))),
+        }
+    }
+
+    /// A detached job is refused where its shell is elsewhere: it would run here.
+    #[tokio::test]
+    async fn bash_detached_is_refused_on_an_endpoint() {
+        let Some(runner) = crate::remote::test_runner() else {
+            return;
+        };
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let ctx = endpoint_context(dir.path(), runner);
+        let out = BashTool {
+            timeout: Duration::from_secs(5),
+            max_output_chars: 0,
+        }
+        .run(
+            json!({"command": "epoch", "name": "bg", "detached": true}),
+            &ctx,
+        )
+        .await;
+        assert!(!out.ok, "{}", out.output);
+        assert!(out.output.contains("remote endpoint"), "{}", out.output);
+        assert!(
+            out.output.contains("foreground") || out.output.contains('&'),
+            "the refusal must say what to do instead: {}",
+            out.output
+        );
+        // Nothing was started under that name.
+        assert!(!ctx.detached.holds("main", "bg").await);
+    }
+
+    /// `del_bash` on a busy endpoint shell: ended by the endpoint, reported as it was.
+    ///
+    /// # Invariant
+    ///
+    /// The shell's own lock is held by the command it is running, so the end goes
+    /// through the endpoint's control; the peer's pid is never given to a helper
+    /// here. See `docs/notes/server-remote.md`.
+    #[tokio::test]
+    async fn del_bash_ends_a_busy_endpoint_shell_through_the_endpoint() {
+        let Some(runner) = crate::remote::test_runner() else {
+            return;
+        };
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let ctx = endpoint_context(dir.path(), runner);
+        let handle = ctx.shell(DEFAULT_BASH).expect("an endpoint shell");
+        // Held the way a running command holds it, for longer than this test waits.
+        let busy = handle.clone();
+        let command = tokio::spawn(async move {
+            let mut shell = busy.lock().await;
+            shell.run("sleep 30", Duration::from_secs(60), None).await
+        });
+        let shells = ctx.shells.clone();
+        let control = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let ready = shells
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .control(DEFAULT_BASH)
+                    .is_some();
+                if ready {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(control.is_ok(), "the endpoint never opened the shell");
+
+        let out = DelBashTool
+            .run(json!({"name_regex": "^default$"}), &ctx)
+            .await;
+        assert!(out.ok, "{}", out.output);
+        assert!(
+            out.output.contains("discarded shell(s) default"),
+            "{}",
+            out.output
+        );
+        assert!(
+            !out.output.contains("did not confirm"),
+            "the endpoint must confirm the end: {}",
+            out.output
+        );
+        // The reader woke: its command cannot outlive the shell it ran in.
+        let ended = tokio::time::timeout(Duration::from_secs(30), command).await;
+        assert!(ended.is_ok(), "the reader waited for a shell that is gone");
     }
 
     /// The symptom that started this: a command sitting between you and an answer.

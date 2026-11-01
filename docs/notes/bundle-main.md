@@ -1,12 +1,17 @@
 # bundle/main.rs
 
-## One file, three programs
+## One file, four programs
 
 `crates/bundle` is not a fourth thing to install: it is the head of a
 distribution. `scripts/bundle.sh` builds the programs, appends them to this stub,
 and the result is one file a person can copy, name `gongga`, and run.
 
-    gongga (27 MB) = head (320 KB, no dependencies) + gongga-cli + gongga-server
+    gongga = head (no dependencies) + gongga-cli + gongga-server + gongga-tui + gongga-runner
+
+`gongga-runner` rides along because a remote session's shells need it on the
+*other* machine, and this file is the thing that gets installed there: `ssh peer
+gongga runner` is how a peer runs it (`server-remote.md`). It is an internal stdio
+program, not a command a person is expected to type for their own work.
 
 The head is the only part that has to exist before anything is extracted, so it
 has no dependencies at all -- not even `anyhow`: it must build on a machine that
@@ -19,15 +24,21 @@ Two answers, in this order:
 1. **the file name**, byte for byte like `<home>/bin/gongga-cli` decides the
    command layer (`tui-program.md`): a copy named `gongga-server.exe` is the
    server. The name wins because a link cannot carry an argument;
-2. **a leading word**: `cli`, `tui` (or `window`), `server`. It is taken off
-   before the program sees it, so all three are reachable from one file:
+2. **a leading word**: `cli`, `tui` (or `window`), `server`, `runner`. It is taken
+   off before the program sees it, so each is reachable from one file:
 
 ```
 ./gongga              the catalog, from a running server
 ./gongga cli ...      the command layer, said out loud
 ./gongga tui          the window
 ./gongga server ...   the server program, with none of the layer around it
+./gongga runner       the peer-side program of a remote session, on stdin and stdout
 ```
+
+`runner` is the one word a person is not meant to type: it is what a peer's `ssh`
+runs. It is a word here rather than a second installed name because the
+distribution installs one file, and a target's `runner` can still name any other
+spelling the peer has (`.agents/notes/2026-11-01-remote-is-a-shell-endpoint.md`).
 
 Anything else is the command layer, which is what a bare `./gongga` is.
 

@@ -90,11 +90,13 @@ fn wanted_program() -> (String, usize) {
 }
 
 /// The words this file answers to. `serve` is absent: it is the layer's own.
-const WORDS: [(&str, &str); 4] = [
+/// `runner` is what a peer's `ssh` runs, so a peer needs only this same file.
+const WORDS: [(&str, &str); 5] = [
     ("cli", "gongga-cli"),
     ("tui", "gongga-tui"),
     ("window", "gongga-tui"),
     ("server", "gongga-server"),
+    ("runner", "gongga-runner"),
 ];
 
 /// The program this file is named after, when it is named after one of them.

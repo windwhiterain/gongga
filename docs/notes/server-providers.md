@@ -2,7 +2,7 @@
 
 ## providers
 
-The machine's LLM roster: the community `providers.toml`, with the user's own over it.
+The machine's LLM roster: one `providers.toml`, from the community checkout.
 
 One file already describes every provider a group of machines can reach: endpoints,
 keys, model catalogue, context windows. Reading it is what lets a session say
@@ -20,37 +20,35 @@ dependency than not having it.
 
 ## roster_paths
 
-Two files, one per layer: `~/.agents/gongga-agents/providers.toml` is what the
-community repository clones down (`agents::ROSTER` under each root), and
-`~/.agents/providers.toml` is the machine's own. `GONGGA_PROVIDERS_CATALOG` still names one
-file and means it: an override is a test rig or a fork, not a third layer.
+One file: `~/.agents/gongga-agents/providers.toml`, the community repository's
+checkout. `GONGGA_PROVIDERS_CATALOG` still names a file and means it — an
+override is a test rig or a fork.
 
-The split exists because the two kinds of statement have different owners. A
-model's context window, its modalities, its price bands and the shape of its
-endpoint are facts about the provider, the same on every machine, and they
-change when the provider does. A key, a private gateway's base URL, a
-self-hosted llama.cpp -- those are facts about *this* machine. Keeping them in
-one file meant every machine's copy drifted on its own, and a corrected price
-had to be found and applied 15 times.
+**This used to be two files, merged field by field**, and the reason it is not is
+the one the merge could never answer: a machine's own facts (its keys, its private
+gateway, its self-hosted llama.cpp) had no home of their own, so they lived in an
+overlay that had to be re-merged on every read, and the overlay and the checkout
+disagreed about what "the current price" was. The machine's facts are now a branch
+of the checkout: `local` on top of `main`, upstream changes arriving as a rebase.
+A rebase is a conflict a person resolves once; a merge on every read is a
+disagreement nobody looks at.
 
-It also decides what can be committed. The community file is public, so it
-never holds a secret: `key_env` names the variable, the secret lives in the
-environment or in the private file. That is why the private layer is read
-*last* -- it can correct anything the community says, and only it can say
-"this machine's key is sk-...".
+It also decides what can be committed. The repository is public, so it never
+holds a secret: `key_env` names the variable, and the value lives in the
+environment. A machine that keeps one on disk keeps it on its own branch, off the
+remote.
 
-## Catalog::load_layers
+## Catalog::load_file
 
-Merges the layers in order, so the last file read wins a disputed field and the
-first file read provides everything nobody disputed. A missing layer is the
-normal case (a fresh machine, a machine that never wrote a private roster) and
-is not worth a line; a layer that does not parse costs only itself, because the
-other one still answers `--model` and a roster half the size beats no roster.
+One file, read once. A missing roster is the normal case for a fresh machine and
+is not worth a line; a file that does not parse is reported once and costs the
+whole roster, because there is no second layer to fall back on — the roster the
+machine runs on is the only one there is.
 
-Merging stops at what a request needs. `[calendar]` and `[peak_off_peak]` are
-merged too, but nothing here reads them: they are merged because they are in the
-same file and a private layer that overrode one of them would otherwise be
-silently ignored by the tools that do read them.
+Nothing but what a request needs is parsed. `[calendar]`, `[peak_off_peak]` and
+the per-model fields this server ignores (`tier`, `params`) are carried through
+untouched: the roster is also read by tools that want them, and a parser that
+dropped what it did not understand would make the file un-annotatable.
 
 ## QuotaQuery, resolve_scripts
 
@@ -60,12 +58,11 @@ allows: `unit` says what the numbers mean (`percent-left`, `cny-left`, ...), and
 (`url`, `jsonpath`, `auth`, ...) describe the endpoint for a human; nothing in
 this crate speaks them.
 
-`script` is a path inside the layer that wrote it -- the AGENTS notes say a
-`providers/x.py` written in one layer means that layer's copy -- and the merge
-throws the layer away. So the path is resolved before `merge_into` sees the file:
-`resolve_scripts` turns each relative `script` into the absolute path it names,
-per file, while the file it came from is still known. Only a query that names a
-script is kept as something the server can read.
+`script` is a path inside the roster that wrote it, and it survives as the
+absolute path it names: `resolve_scripts` rewrites each relative `script` while
+the directory it came from is still known, because a path relative to a file is
+only meaningful next to that file. Only a query that names a script is kept as
+something the server can read.
 
 ## Catalog::quota_of
 
@@ -74,28 +71,16 @@ provider would use -- the scripts read the key from the environment variable
 their own entry names, and passing the resolved key in is what makes a literal
 key in the roster work as well as an exported one.
 
-## merge_into
+## One file, no merge
 
-Field-level, keyed by `id` for arrays of tables: `[[provider]]` and, under it,
-`[[provider.endpoint]]` and `[[provider.model]]`.
+There is no `merge_into` any more, and the paragraph that used to sit here
+described why not to replace a provider whole. Both were answers to a question
+that no longer exists: with one file there is nothing to merge, and a machine's
+disagreement is a commit on its own branch rather than an overlay.
 
-The alternative -- a private `[[provider]]` replacing the community one whole --
-was rejected because of what the private file is *for*. Its most common content
-is one field: `key = "sk-..."` for a provider the community already describes.
-Whole-provider replacement would make that a 40-line copy of the community
-entry, which then rots: the community fixes a price, the copy keeps the old one,
-and nothing says which is right.
-
-Arrays of tables pair up by `id` only when every element on both sides has one.
-That rule keeps `modalities = ["text"]` overriding as a value -- a list of
-strings is a value, and merging it element-wise would be inventing semantics the
-roster never had -- while `[[provider.model]]` merges per model.
-
-Order is the base's, with private-only entries appended. File order is the
-default preference order (`Catalog::default_entry`), so a private layer can add
-a provider at the end and cannot silently promote itself above the community's
-first choice; making it the default is what `[model] provider` in `config.toml`
-is for.
+File order still means what it meant — it is the default preference order
+(`Catalog::default_entry`) — and `[model] provider` in `config.toml` is still
+how a server's own choice is stated.
 
 ## Model::context
 

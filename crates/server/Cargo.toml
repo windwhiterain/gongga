@@ -16,6 +16,13 @@ path = "src/main.rs"
 # to run none.
 test = false
 
+# The program a peer runs: it owns that machine's shells and files and speaks the
+# line protocol from `src/remote/`. Launched by `ssh`, so it listens on nothing.
+[[bin]]
+name = "gongga-runner"
+path = "src/bin/gongga-runner.rs"
+test = false
+
 [dependencies]
 protocol = { workspace = true }
 

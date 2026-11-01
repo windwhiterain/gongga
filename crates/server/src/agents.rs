@@ -47,9 +47,15 @@ impl Roots {
         Self { community, private }
     }
 
-    /// The roster under each root, lowest precedence first.
-    pub fn rosters(&self) -> Vec<PathBuf> {
-        vec![self.community.join(ROSTER), self.private.join(ROSTER)]
+    /// The one roster this machine reads: the community checkout.
+    ///
+    /// # Invariant
+    ///
+    /// One file, not two. A machine's own entries live on its own branch of that
+    /// checkout (`local`), so an upstream change is a rebase rather than an overlay
+    /// this server would have to merge -- and a merge is the thing that drifts.
+    pub fn roster(&self) -> PathBuf {
+        self.community.join(ROSTER)
     }
 }
 
@@ -452,15 +458,10 @@ mod tests {
         );
     }
 
+    /// One roster, in the checkout: not one per root.
     #[test]
-    fn the_rosters_are_the_two_roots_in_precedence_order() {
+    fn there_is_one_roster_and_it_is_the_checkout_s() {
         let roots = roots(Path::new("/c"), Path::new("/p"));
-        assert_eq!(
-            roots.rosters(),
-            vec![
-                PathBuf::from("/c/providers.toml"),
-                PathBuf::from("/p/providers.toml")
-            ]
-        );
+        assert_eq!(roots.roster(), PathBuf::from("/c/providers.toml"));
     }
 }

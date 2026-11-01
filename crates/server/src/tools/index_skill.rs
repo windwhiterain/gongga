@@ -49,6 +49,16 @@ impl Tool for IndexSkillTool {
         ctx: &'a ToolContext,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
+            // These would be this machine's project skills, not the peer's.
+            if ctx.on_endpoint() {
+                return ToolOutcome::err(
+                    "this session's shells run on a remote endpoint, so its project \
+                     skills live on that machine and this build cannot list them. The \
+                     home's and the machine's own skills are here, but a name from \
+                     this table would not be the endpoint's: say what you need instead \
+                     of naming a skill you cannot open.",
+                );
+            }
             let rows = listed(&ctx.cwd);
             if rows.is_empty() {
                 return ToolOutcome::ok(

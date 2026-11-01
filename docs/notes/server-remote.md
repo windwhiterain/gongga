@@ -1,0 +1,254 @@
+# `crates/server/src/remote/`
+
+A session's shell may run on another machine. What crosses the wire is a **runner**:
+one stdio program on the peer that owns that machine's shells and answers requests
+by id. See `.agents/notes/2026-11-01-remote-is-a-shell-endpoint.md` for the decision.
+
+## `remote::protocol`
+
+One JSON object per line, in both directions, tagged so a frame says what it is:
+
+- a **request** has an `id` and an `op`;
+- a **reply** repeats the `id` and carries either `ok` or `err`;
+- an **event** has an `event` field and no id: the greeting, a shell's output, a
+  shell's end.
+
+`Op::Open / Write / Signal / Close` are the shell's; `Op::Stat / Read / List` are
+the file side. Files travel base64 because a line has no binary.
+
+`Event::Out` carries `seq` per shell and per stream, so a client can tell a gap
+from a quiet job; `Event::End` carries the exit status the peer itself observed.
+
+## `remote::runner` (`gongga-runner`)
+
+Launched by `ssh <peer> gongga runner`: it listens on no port, holds no session,
+and knows nothing about models. Its runtime is the peer's own.
+
+- every request runs on its own task, so a signal, a stat or a file read is
+  answered while a shell is inside a long command;
+- a shell is started in its own process group where the platform has one;
+- the supervisor task owns the shell's `Child` and is the only thing that ends it;
+
+`end_group` answers `confirmed` only when the group was *observed* empty — on
+POSIX after TERM, a grace, KILL, and a second look; on a Git Bash peer through the
+job object the shell was put in. Silence, a timeout, or an endpoint that could not
+look is `unknown`, which is not the same as stopped.
+
+### Why a Git Bash peer uses a job object, not a tree walk
+
+`taskkill /T` misses the children Git Bash re-parents: `bash -c 'sleep 30'` runs
+`sleep` in a process whose Windows parent has already gone, so the walk that ends
+the shell finds the bash tree and leaves `sleep` running. It was observed doing
+exactly that, and the local shell had already solved it the same way: the shell is
+put in a job object (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) right after `spawn`, and
+membership then follows every descendant including re-parented ones. `terminate`
+plus `ActiveProcesses == 0` is the proof; a member that left the job would not be
+counted, and nothing in this stack leaves it.
+
+### Invariant: the leader is not reaped before its group is signalled
+
+A reaped pid can be handed to another process, and a signal addressed to "the
+group with that id" would then reach a group that was never ours. The supervisor
+therefore signals first and reaps after, and it holds the `Child` for exactly that
+long. This is also why close confirmation is never a bare `kill -0`.
+
+### Invariant: no work is accepted for a shell that is closing
+
+`close` sets `closing` and then takes the stdin lock before signalling, and `write`
+takes the lock before it checks the flag. A write the endpoint accepted therefore
+finished before the signal; a write that arrives afterwards is refused rather than
+sent into a half-dead shell. The shell's entry stays in the map until its group is
+gone, so a late write or signal is answered "no such shell", never aimed elsewhere.
+
+When the client's channel closes, the runner ends every shell's group before its
+process exits; anything it could not confirm is logged, since the client that would
+be told has gone.
+
+### Invariant: `End` follows every byte
+
+Each pipe's reader signals completion only after its last frame has been written,
+and the supervisor waits for both signals before it emits `End` — for a natural
+exit and for a close alike. A client stops reading at `End`, so a byte emitted
+after it is a byte lost. A daemonized escapee can hold a pipe open forever, so the
+wait is bounded; the shell is then reported as having lost its tail, never as
+having printed nothing more.
+
+### Flow control: pausing the pump, not dropping the frame
+
+The client's reader must never block on one shell: an answer, a signal and another
+shell's output all travel the same connection. So each shell on the client has a
+small window (`WINDOW` frames). Filling it sends `Op::Pause` for that shell and the
+peer's pump waits instead of reading on; draining it sends `Op::Resume`. Nothing is
+dropped, nothing grows without bound, and every other request keeps its answer.
+
+A resume is a one-permit wake, not a broadcast, because a resume can arrive before
+its pipe's pump starts waiting; a missed permit would stall that pipe for good —
+which the tail test catches as lost bytes. When a shell ends, its pumps are woken
+and unpaused, since the last bytes are exactly what `End` is waiting for.
+
+On the peer, a write that fails cancels the whole run: shells are stopped rather
+than left running where their output has nowhere to go, and requests that arrive
+are answered with the reason.
+
+Observed platform difference, recorded rather than claimed away: writing to a pipe
+whose read end is closed fails at once on unix, and was observed to *block* under
+Windows. The closed-reader test is therefore unix-only; the Windows case is bounded
+backpressure, not a lost frame.
+
+## Getting the runner onto a peer
+
+The runner ships inside the distribution, so there is nothing extra to build or
+install: **`runner` is the second word of the one file**, and the default target
+runs exactly that.
+
+1. On the peer, put the distribution on `PATH` under the name `gongga`:
+
+       scp gongga peer:/usr/local/bin/gongga && ssh peer chmod +x /usr/local/bin/gongga
+
+   Nothing else is needed. The file carries `gongga-cli`, `gongga-server`,
+   `gongga-tui` and `gongga-runner`, and it dispatches on its first word, so the
+   whole remote side is the one file `ssh` already has to be able to execute.
+
+2. A target in the server's config, and nothing else:
+
+       [targets.build]
+       host = "peer"
+
+   That means `ssh peer -- gongga runner`. `port`, `identity` and `runner` are the
+   only other keys; `identity` is an `ssh -i` path on *this* machine, and `runner`
+   is the peer's command, spelled in as many words as it takes:
+
+       [targets.build]
+       host = "peer"
+       port = 2222
+       identity = "C:/keys/build"
+       runner = "gongga runner"          # the default, written out
+       # runner = "gongga-runner"       # a copy of gongga-runner on the peer's PATH
+       # runner = "/opt/gongga/build"   # any other program that speaks the protocol
+
+3. A session on it:
+
+       gongga-cli set_session --session build --target build --model <provider>/<model>
+
+   `--cwd` is optional and, when given, is a path **on the peer**: the endpoint
+   canonicalises it and refuses one it does not have.
+
+### The same architecture, not just the same kernel
+
+`ssh` starts the peer's own program, so the runner must be a binary the peer can
+execute. Nothing here cross-compiles for you: a macOS server talking to a Linux
+peer needs the Linux distribution on the peer, which means building the bundle on
+(or for) Linux. `runner` is configurable precisely so a peer that already has a
+copy somewhere else can be named instead of re-installed -- and a mismatched pair
+is refused at the greeting rather than half-working, because the protocol version
+is checked before any shell is opened.
+
+What is *not* needed for a Windows server and a Windows peer to agree: the
+session's shells are the peer's own `bash` (Git Bash there), its own paths, its
+own pid space. The server never signals one of those pids.
+
+## `remote::transport`
+
+The client half: one child process (a local runner now, `ssh` later), a writer
+task, a reader task, a stderr task, and a reaper.
+
+- `Runner::spawn` waits for the greeting and refuses a peer whose protocol version
+  differs, so an incompatibility is not discovered mid-command;
+- `Runner::request` pairs a request with its answer by id, through a `oneshot`;
+- `Runner::open` gives every shell its own channel, so one shell's output cannot
+  be read by another and nothing is dropped for being unread;
+- a closed reader wakes every waiter with the reason, so a dead transport is an
+  error and not a hang;
+- `ShellHandle::close` answers from the endpoint's report only.
+
+`DISCONNECT_GRACE` is the one place this file waits on purpose: when the last
+owner drops, the child is *not* killed at once. The runner learns of the end from
+EOF on its own stdin and ends its shells itself; killing it first would abandon
+them, which is the silence a disconnect must not produce.
+
+## `remote::endpoint`
+
+Three kinds of endpoint, and only one of them can come from a config file:
+
+- `Local { program }` — a shell here, exactly as before;
+- `Remote { transport, runner }` — `ssh -o BatchMode=yes [-p port] [-i key] host --
+  runner`. Nothing weakens host key checking: `BatchMode` only stops a password
+  prompt from hanging a turn, and a host that is not in `known_hosts` is refused by
+  `ssh` itself, which is the answer a caller wants.
+- `Direct { runner }` — a runner process on this machine, which is how a peer is
+  exercised without ssh. **Test-only**: `[targets.<name>]` has `host`, `port`,
+  `identity` and `runner`, and parsing can only produce `Endpoint::Remote`, so no
+  TOML file reaches `Direct`; `local` and hostless entries are refused at load.
+
+A remote directory is the endpoint's to accept: `open` canonicalises it on the peer
+and an unknown one is a hard error, never a substitution of this machine's.
+
+## `remote::shell` and `remote::shell_set`
+
+`ShellSet` is the session's shells, wherever they run; `Shell` is either the local
+`BashShell` or a `RemoteShell` speaking the same sentinel protocol, so every tool is
+written once. A `RemoteShell` is built **unconnected**: it is created while the
+session manager's live lock is held, and no connection may be made there.
+
+Two rules a reader should not have to re-derive:
+
+- **a session's target is fixed at creation.** The check compares the stored row
+  rather than the live shells, and that is deliberate: a lazily created remote shell
+  has never connected and so has no pid to compare, retired shells outlive the names
+  they were filed under, and a shell created on the peer cannot be moved off it. The
+  row is written once, by the only call that can create a session, so it *is* the
+  endpoint of every shell that session has or will have.
+- **a remote session's directory is the endpoint's.** `--cwd` is passed to the
+  runner and canonicalised there; a path that does not exist on the peer is an
+  error. With no `--cwd` the row keeps no directory at all and the endpoint chooses
+  its own, after which the reported path is adopted as the shell's directory and
+  written into `sessions.cwd`, so the next start begins where the endpoint is. A
+  local session is unchanged: this machine's `current_dir` and the existing fallback.
+
+### Endpoint shells are ended without their lock
+
+A shell's own `Arc<Mutex<..>>` is held for as long as its command runs, so a
+teardown that needed it could wait forever — and did, before this. Each endpoint
+shell also has a **door**: one shared state saying whether the shell is unopened,
+opening, connected (with a clonable `ShellControl` = runner + shell id), retired, or
+closed with the outcome.
+
+- `del_bash` and session teardown ask the door, never the lock, so a shell busy with
+  a `sleep 30` is ended while the reader still holds it;
+- the close is **single-flight**: the first caller to find `Connected` closes, and
+  every later caller — a second `del_bash`, the command owner noticing
+  `out_of_sync`, teardown — waits for and receives the *same* report. None of them
+  ever invents `confirmed`;
+- retirement and publication are one state, so a connection that completes after its
+  shell was retired is handed back to its opener and closed there, and a command
+  arriving for an already retired shell is refused instead of opening one on the
+  peer that nothing would end;
+- a shell that was never opened reports `confirmed` with nothing to end, and a shell
+  that is still opening when it is retired reports what its opener found — an
+  unobserved connection is never called stopped;
+- a `Discarded` value that is dropped without being ended still ends its shell in a
+  spawned task, which is the net under an owner that forgot. It can only log: the
+  caller that asked already has its answer.
+- the peer's pid is **not** kept as a local pid. Only a local shell's pid is
+  recorded, and only a local shell is ever given to `kill_tree`; a peer's pid names
+  an unrelated process here.
+
+## What a remote session may not do yet
+
+Stated here so a reader is not surprised by a refusal, and so this section shrinks
+as the milestone lands. Each of these is a refusal with a message, never a local
+fallback:
+
+- `bash` with `background: true` — the job's scratch file and completion watcher
+  are this machine's; a foreground command, or `&` with a log on the peer, is the
+  way today.
+- `bash` with `detached: true` — the process would be started *here* and outlive
+  the peer everything else was asked of, so it is refused with the same advice.
+- `index_skill` — the table would list this machine's project skills for a session
+  whose checkout is elsewhere, so it is refused rather than answered wrongly.
+- `@skill:` and `@image:` in a message — they are resolved on this machine before
+  the session is reached, so a remote session's message is refused when it names
+  one. `@file:` stays literal on purpose: it is a path for the endpoint to read.
+- pictures a tool output refers to are left as text, for the same reason.
+- a capped output is not spilled to a file, so no path is named: the file would be
+  on this machine and the reader is on the other one.

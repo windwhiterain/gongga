@@ -619,7 +619,7 @@ fn push_background_chunk(
 }
 
 #[cfg(unix)]
-fn pid_alive(pid: u32) -> bool {
+pub(crate) fn pid_alive(pid: u32) -> bool {
     unsafe extern "C" {
         fn kill(pid: i32, signal: i32) -> i32;
     }
@@ -627,7 +627,7 @@ fn pid_alive(pid: u32) -> bool {
 }
 
 #[cfg(windows)]
-fn pid_alive(pid: u32) -> bool {
+pub(crate) fn pid_alive(pid: u32) -> bool {
     use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
     use windows_sys::Win32::System::Threading::{
         GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -648,18 +648,21 @@ fn pid_alive(pid: u32) -> bool {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn pid_alive(_pid: u32) -> bool {
+pub(crate) fn pid_alive(_pid: u32) -> bool {
     false
 }
 
 /// Caps tool output: the head and the tail survive, the rest is spilled to disk.
 ///
-/// See `docs/notes/server-tools-bash.md`.
+/// # Invariant
+///
+/// `None` as the directory names no path: a session on a peer cannot promise a file
+/// on a machine its reader is not sitting at. See `docs/notes/server-remote.md`.
 pub fn cap_output(
     prompts: &crate::prompts::Prompts,
     text: &str,
     max: usize,
-    dir: &Path,
+    dir: Option<&Path>,
     label: &str,
 ) -> String {
     if max == 0 || text.len() <= max {
@@ -669,7 +672,7 @@ pub fn cap_output(
     let head = floor_boundary(text, max * 3 / 5);
     let tail = ceil_boundary(text, text.len() - (max - head));
     let omitted = tail.saturating_sub(head);
-    let spilled = spill(dir, label, text);
+    let spilled = dir.and_then(|dir| spill(dir, label, text));
     let omitted = omitted.to_string();
     let total = text.len().to_string();
     let notice = match &spilled {
@@ -787,7 +790,7 @@ mod tests {
     #[test]
     fn short_output_is_returned_untouched() {
         let dir = tempfile::tempdir().unwrap();
-        let out = cap_output(&cap_prompts(), "hello", 8_000, dir.path(), "s-call");
+        let out = cap_output(&cap_prompts(), "hello", 8_000, Some(dir.path()), "s-call");
         assert_eq!(out, "hello");
     }
 
@@ -839,7 +842,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let text = "x".repeat(50);
         assert_eq!(
-            cap_output(&cap_prompts(), &text, 0, dir.path(), "s-call"),
+            cap_output(&cap_prompts(), &text, 0, Some(dir.path()), "s-call"),
             text
         );
     }
@@ -850,7 +853,7 @@ mod tests {
         let text: String = (0..2000)
             .map(|i| char::from(b'a' + (i % 26) as u8))
             .collect();
-        let out = cap_output(&cap_prompts(), &text, 500, dir.path(), "sess-call1");
+        let out = cap_output(&cap_prompts(), &text, 500, Some(dir.path()), "sess-call1");
 
         assert!(out.len() < text.len(), "expected the output to be capped");
         assert!(out.starts_with(&text[..300]), "head must be kept");
@@ -879,7 +882,7 @@ mod tests {
     fn capping_respects_utf8_boundaries() {
         let dir = tempfile::tempdir().unwrap();
         let text: String = "é".repeat(5000);
-        let out = cap_output(&cap_prompts(), &text, 400, dir.path(), "s-call");
+        let out = cap_output(&cap_prompts(), &text, 400, Some(dir.path()), "s-call");
         assert!(out.len() < text.len());
         assert!(out.contains("characters omitted"));
     }

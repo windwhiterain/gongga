@@ -157,6 +157,13 @@ Both, or the pair drifts: an operator who updated `gongga-cli` by hand would lea
 old server behind it, and the shells of that home would drive a build the server is
 not.
 
+A third program follows when the build has one: `gongga-runner`, the peer-side
+program of a remote session (`server-remote.md`). It is installed only when it
+sits beside the command layer, which is what a bundle install does; a build of the
+command layer alone has none, and a target whose `runner` names a path on the peer
+never reads this copy. Nothing starts it here -- it exists so the same file a
+person installed can be carried to a peer.
+
 ## place
 
 `<home>/bin/<name>.exe` on Windows, `<home>/bin/<name>` elsewhere, for each of the

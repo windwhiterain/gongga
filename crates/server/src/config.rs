@@ -50,6 +50,8 @@ pub struct Config {
     /// The model the server runs on when a session names none.
     pub model: ModelConfig,
     pub bash: BashConfig,
+    /// The machines a session may name as its `--target`, by the name it uses.
+    pub targets: Vec<TargetConfig>,
     pub scripts: ScriptConfig,
     pub agent: AgentConfig,
     pub transport: TransportConfig,
@@ -139,6 +141,19 @@ pub struct BashConfig {
 }
 
 /// Where commands registered by Python scripts live.
+/// A named place a session's shells may run, from the config.
+///
+/// # Invariant
+///
+/// Parsing a config file can only produce `Endpoint::Remote`: a target names a peer,
+/// and `local` is the absence of one. See `docs/notes/server-remote.md`.
+#[derive(Debug, Clone)]
+pub struct TargetConfig {
+    /// What `set_session --target` names.
+    pub name: String,
+    pub endpoint: crate::remote::Endpoint,
+}
+
 #[derive(Debug, Clone)]
 pub struct ScriptConfig {
     /// The directory scanned for `*.py`; defaults to `<home>/scripts`.
@@ -195,6 +210,7 @@ struct FileConfig {
     #[serde(alias = "provider")]
     model: Option<FileModel>,
     tools: Option<FileTools>,
+    targets: Option<std::collections::BTreeMap<String, FileTarget>>,
     scripts: Option<FileScripts>,
     agent: Option<FileAgent>,
     transport: Option<FileTransport>,
@@ -228,6 +244,15 @@ struct FileModel {
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct FileTools {
     bash: Option<FileBash>,
+}
+
+/// One `[targets.<name>]` table.
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct FileTarget {
+    host: Option<String>,
+    port: Option<u16>,
+    identity: Option<PathBuf>,
+    runner: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -415,6 +440,44 @@ impl Config {
                 .unwrap_or(DEFAULT_MAX_OUTPUT_CHARS),
         };
 
+        let targets = file
+            .targets
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(name, one)| {
+                let name = name.trim().to_string();
+                if name.is_empty() || name == "local" {
+                    tracing::warn!(%name, "a target cannot be called `local`: that is this machine");
+                    return None;
+                }
+                let host = one.host.unwrap_or_default();
+                if host.trim().is_empty() {
+                    tracing::warn!(%name, "a target needs a `host`");
+                    return None;
+                }
+                // Words, not a path: the default is the distribution's own
+                // `gongga runner`. See `docs/notes/server-remote.md`.
+                let runner = one
+                    .runner
+                    .unwrap_or_else(|| crate::remote::runner::DEFAULT_RUNNER.to_string());
+                if runner.trim().is_empty() {
+                    tracing::warn!(%name, "a target's `runner` must not be empty");
+                    return None;
+                }
+                Some(TargetConfig {
+                    name,
+                    endpoint: crate::remote::Endpoint::Remote {
+                        transport: crate::remote::Reach::Ssh {
+                            host,
+                            port: one.port,
+                            identity: one.identity,
+                        },
+                        runner,
+                    },
+                })
+            })
+            .collect();
+
         let scripts_file = file.scripts.unwrap_or_default();
         let scripts = ScriptConfig {
             dir: scripts_file
@@ -455,6 +518,7 @@ impl Config {
             key,
             model,
             bash,
+            targets,
             scripts,
             agent,
             transport,

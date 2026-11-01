@@ -11,8 +11,9 @@ use tokio::sync::OwnedMutexGuard;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::BashConfig;
+use crate::remote::endpoint::Endpoint;
+use crate::remote::shell_set::ShellSet;
 use crate::store::{SessionRow, Store};
-use crate::tools::bash::BashShell;
 use crate::tools::detached::DetachedRegistry;
 
 /// The name of the shell every session starts with.
@@ -40,6 +41,8 @@ pub struct SessionHandle {
 struct SessionInner {
     id: i64,
     name: String,
+    /// The rows, for the directory an endpoint shell reports.
+    store: Store,
     shells: Arc<Mutex<ShellSet>>,
     cancel: Mutex<CancellationToken>,
     /// How many times the operator has cancelled; a queued turn compares it across the wait.
@@ -89,20 +92,16 @@ impl SessionHandle {
             retired = retired.len(),
             "closing shells"
         );
-        for handle in drained {
-            // Turns are all finished by the time this runs, so this waits for a
-            // lock nobody holds rather than for work.
-            let mut shell = handle.lock().await;
-            shell.kill().await;
-        }
-        for (pid, handle) in retired {
-            // A retired shell is held by the task reading it: the pid ends the
-            // command and that reader stops.
-            match handle.try_lock() {
-                Ok(mut shell) => shell.kill().await,
-                Err(_) => {
-                    crate::tools::detached::kill_tree(pid).await;
-                }
+        for discarded in drained.into_iter().chain(retired) {
+            // A retired shell is held by the task reading it, so its end goes
+            // through its own control rather than through its lock.
+            let report = discarded.end().await;
+            if !report.confirmed {
+                tracing::warn!(
+                    session = %self.inner.name,
+                    unknown = ?report.unknown,
+                    "a shell's end could not be confirmed"
+                );
             }
         }
     }
@@ -254,6 +253,34 @@ impl SessionHandle {
             .unwrap_or_else(|e| e.into_inner())
             .reported_cwd()
     }
+
+    /// Keeps the row's directory equal to where an endpoint put this session's shell.
+    ///
+    /// # Invariant
+    ///
+    /// Only a session whose shells are not this machine's writes it, and only once a
+    /// shell has connected: the row is what the next start hands back to the endpoint.
+    /// A local row stays the directory the session was made in. See
+    /// `docs/notes/server-remote.md`.
+    pub fn adopt_reported_cwd(&self) {
+        let (endpoint_is_remote, cwd) = {
+            let shells = self.inner.shells.lock().unwrap_or_else(|e| e.into_inner());
+            (shells.endpoint().is_remote(), shells.reported_cwd())
+        };
+        if !endpoint_is_remote || cwd.as_os_str().is_empty() {
+            return;
+        }
+        if let Err(e) = self
+            .inner
+            .store
+            .set_session_cwd(&self.inner.name, &cwd.to_string_lossy())
+        {
+            tracing::warn!(
+                session = %self.inner.name,
+                "could not record where the endpoint put this session: {e}"
+            );
+        }
+    }
 }
 
 /// Whether a message landed for this session since this signal was taken.
@@ -278,133 +305,6 @@ impl InboxSignal {
     }
 }
 
-/// The persistent shells of one session, locked synchronously: spawn and remove.
-pub struct ShellSet {
-    program: PathBuf,
-    cwd: PathBuf,
-    /// Where the default shell last said it was, mirrored out cell by cell;
-    /// see `docs/notes/server-session.md`.
-    reported: Arc<Mutex<PathBuf>>,
-    /// Variables every shell of this session starts with. See `BashShell::spawn`.
-    env: Vec<(String, String)>,
-    shells: HashMap<String, Arc<AsyncMutex<BashShell>>>,
-    /// Each live shell's pid, kept so a retired one can be ended without its lock.
-    pids: HashMap<String, u32>,
-    /// Commands handed to the background: out of `shells`, still this session's processes.
-    retired: Vec<(u32, Arc<AsyncMutex<BashShell>>)>,
-}
-
-impl ShellSet {
-    pub(crate) fn new(program: PathBuf, cwd: PathBuf, env: Vec<(String, String)>) -> Self {
-        Self {
-            program,
-            cwd: cwd.clone(),
-            reported: Arc::new(Mutex::new(cwd)),
-            env,
-            shells: HashMap::new(),
-            pids: HashMap::new(),
-            retired: Vec::new(),
-        }
-    }
-
-    /// Where the session's own shell last said it is; read without its lock.
-    ///
-    /// See `docs/notes/server-session.md`.
-    pub fn reported_cwd(&self) -> PathBuf {
-        self.reported
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default()
-    }
-
-    /// The shared handle for `name`, spawning it fresh on first use after a removal.
-    pub fn get(&mut self, name: &str) -> anyhow::Result<Arc<AsyncMutex<BashShell>>> {
-        if let Some(shell) = self.shells.get(name) {
-            return Ok(shell.clone());
-        }
-        let shell = BashShell::spawn(&self.program, &self.cwd, &self.env)?;
-        tracing::debug!(bash = %name, cwd = %self.cwd.display(), "shell started");
-        // Only `default` is mirrored: a replacement brings a cell of its own.
-        if name == DEFAULT_BASH {
-            self.reported = shell.cwd_cell();
-        }
-        let pid = shell.pid();
-        let handle = Arc::new(AsyncMutex::new(shell));
-        self.shells.insert(name.to_string(), handle.clone());
-        self.pids.insert(name.to_string(), pid);
-        Ok(handle)
-    }
-
-    /// The handle without spawning, for callers that must not create one.
-    pub fn peek(&self, name: &str) -> Option<Arc<AsyncMutex<BashShell>>> {
-        self.shells.get(name).cloned()
-    }
-
-    /// The shells that exist right now, in a stable order; naming one is what creates it.
-    pub fn names(&self) -> Vec<String> {
-        let mut names: Vec<String> = self.shells.keys().cloned().collect();
-        names.sort();
-        names
-    }
-
-    pub fn remove(&mut self, name: &str) -> bool {
-        self.pids.remove(name);
-        self.shells.remove(name).is_some()
-    }
-
-    /// Takes `handle` out of the set if it is still the one filed under `name`.
-    ///
-    /// # Invariant
-    ///
-    /// Compare by pointer: a replaced entry is not ours to remove. The retired
-    /// shell keeps running its outstanding command, so its pid is kept too: it is
-    /// still a process this session spawned, and teardown ends it.
-    pub fn retire(&mut self, name: &str, handle: &Arc<AsyncMutex<BashShell>>) -> bool {
-        let mine = self
-            .shells
-            .get(name)
-            .map(|h| Arc::ptr_eq(h, handle))
-            .unwrap_or(false);
-        if mine {
-            self.shells.remove(name);
-            if let Some(pid) = self.pids.remove(name) {
-                self.retired.push((pid, handle.clone()));
-            }
-        }
-        mine
-    }
-
-    /// Retires `handle` and spawns a fresh shell in its place, keeping the name usable.
-    pub fn replace(
-        &mut self,
-        name: &str,
-        handle: &Arc<AsyncMutex<BashShell>>,
-    ) -> anyhow::Result<bool> {
-        if !self.retire(name, handle) {
-            return Ok(false);
-        }
-        self.get(name)?;
-        Ok(true)
-    }
-
-    /// Takes every shell, leaving the set empty.
-    pub fn drain(&mut self) -> Vec<Arc<AsyncMutex<BashShell>>> {
-        self.pids.clear();
-        self.shells.drain().map(|(_, handle)| handle).collect()
-    }
-
-    /// Takes the retired shells, leaving none: each still has a process to end.
-    pub fn take_retired(&mut self) -> Vec<(u32, Arc<AsyncMutex<BashShell>>)> {
-        std::mem::take(&mut self.retired)
-    }
-
-    /// Drops `handle` once its reader has finished, so the list holds only live ones.
-    pub fn forget_retired(&mut self, handle: &Arc<AsyncMutex<BashShell>>) {
-        self.retired
-            .retain(|(_, retired)| !Arc::ptr_eq(retired, handle));
-    }
-}
-
 #[derive(Clone)]
 pub struct SessionManager {
     store: Store,
@@ -417,6 +317,8 @@ pub struct SessionManager {
     detached: DetachedRegistry,
     /// Variables for every session shell, so the model can reach this server via the CLI.
     shell_env: Vec<(String, String)>,
+    /// The named peers a session may run on. See `docs/notes/server-remote.md`.
+    targets: Vec<crate::config::TargetConfig>,
     live: Arc<Mutex<HashMap<String, SessionHandle>>>,
 }
 
@@ -427,6 +329,7 @@ impl SessionManager {
         model: String,
         detached: DetachedRegistry,
         shell_env: Vec<(String, String)>,
+        targets: Vec<crate::config::TargetConfig>,
     ) -> Self {
         Self {
             store,
@@ -434,6 +337,7 @@ impl SessionManager {
             model,
             detached,
             shell_env,
+            targets,
             live: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -484,23 +388,59 @@ impl SessionManager {
         cwd: Option<&str>,
         model: Option<&str>,
     ) -> anyhow::Result<SessionHandle> {
+        self.ensure_on(name, cwd, model, None)
+    }
+
+    /// Creates a session or returns the existing one, refusing a target it does not have.
+    ///
+    /// # Invariant
+    ///
+    /// A session's target is written once, when it is created, and never changed:
+    /// its shells may already exist on that peer, a lazily started remote shell has
+    /// no pid to compare, and retired shells outlive their names -- so "has it
+    /// started" cannot be answered reliably enough to permit a move. See
+    /// `docs/notes/server-remote.md`.
+    pub fn ensure_on(
+        &self,
+        name: &str,
+        cwd: Option<&str>,
+        model: Option<&str>,
+        target: Option<&str>,
+    ) -> anyhow::Result<SessionHandle> {
+        // Resolved before anything is created: an unknown name must not make a session.
+        let endpoint = self.endpoint_for(target)?;
+        let recorded = target
+            .map(str::trim)
+            .filter(|t| !t.is_empty() && *t != "local");
         // Hold the live lock through the build: competing callers must not each
         // materialise and then overwrite one name.
         let mut live = self.live();
         if let Some(h) = live.get(name) {
+            self.check_same_target(name, recorded)?;
             return Ok(h.clone());
         }
         if let Some(row) = self.store.get_session(name)? {
+            self.check_same_target(name, recorded)?;
+            let _ = endpoint;
             return self.materialise_locked(row, &mut live);
         }
+        if matches!(endpoint, Endpoint::Local { .. }) && recorded.is_some() {
+            anyhow::bail!("`local` is this machine, which is what naming no target means");
+        }
+        // A remote session with no directory starts where its endpoint is, not here.
         let cwd = match cwd {
-            Some(p) => PathBuf::from(p),
-            None => std::env::current_dir()?,
+            Some(path) => Some(PathBuf::from(path)),
+            None if endpoint.is_remote() => None,
+            None => Some(std::env::current_dir()?),
         };
+        let stored = cwd
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let source = model.unwrap_or(&self.model);
         let id = self
             .store
-            .create_session(name, source, &cwd.to_string_lossy())?;
+            .create_session_on(name, source, &stored, recorded)?;
         // Pin the model itself: reasoning blobs replay only where they were produced.
         let pinned = crate::providers::roster().place(source).map(|e| e.model);
         if let Some(pinned) = &pinned {
@@ -516,12 +456,13 @@ impl SessionManager {
                 model: pinned.unwrap_or_else(|| source.to_string()),
                 context_limit: None,
                 thinking_effort: None,
-                cwd: cwd.to_string_lossy().to_string(),
+                cwd: stored,
                 created_at: 0,
                 updated_at: 0,
                 messages: 0,
                 // A session that just came into existence has measured nothing.
                 usage: protocol::Usage::default(),
+                target: recorded.map(str::to_string),
             },
             &mut live,
         )
@@ -545,6 +486,74 @@ impl SessionManager {
         self.materialise_locked(row, &mut live)
     }
 
+    /// The endpoint a session's `target` names; `None` is this machine.
+    ///
+    /// # Invariant
+    ///
+    /// An unknown name is refused here: a session that asked for a peer must never
+    /// quietly get a local shell instead. See `docs/notes/server-remote.md`.
+    pub fn endpoint_for(&self, target: Option<&str>) -> anyhow::Result<Endpoint> {
+        let Some(name) = target.map(str::trim).filter(|n| !n.is_empty()) else {
+            return Ok(self.local_endpoint()?);
+        };
+        if name == "local" {
+            return Ok(self.local_endpoint()?);
+        }
+        match self.targets.iter().find(|t| t.name == name) {
+            Some(target) => Ok(target.endpoint.clone()),
+            None => anyhow::bail!(
+                "no target named {name:?}; this server knows {}",
+                if self.targets.is_empty() {
+                    "no targets at all".to_string()
+                } else {
+                    self.targets
+                        .iter()
+                        .map(|t| format!("{:?}", t.name))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                }
+            ),
+        }
+    }
+
+    fn local_endpoint(&self) -> anyhow::Result<Endpoint> {
+        let program = self
+            .bash
+            .program
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("no bash available; set [tools.bash] program"))?;
+        Ok(Endpoint::local(program))
+    }
+
+    /// Refuses a target that differs from the one a session was created with.
+    fn check_same_target(&self, name: &str, asked: Option<&str>) -> anyhow::Result<()> {
+        let Some(asked) = asked else {
+            return Ok(());
+        };
+        let recorded = self
+            .store
+            .get_session(name)?
+            .and_then(|row| row.target)
+            .unwrap_or_else(|| "local".to_string());
+        if recorded != asked {
+            anyhow::bail!(
+                "session {name:?} runs on target {recorded:?}, and a target is fixed when the \
+                 session is created: its shells are already on that machine. Create another \
+                 session to run on {asked:?}."
+            );
+        }
+        Ok(())
+    }
+
+    /// What a session's shells run on, as its row records it.
+    pub fn recorded_target(&self, name: &str) -> Option<String> {
+        self.store
+            .get_session(name)
+            .ok()
+            .flatten()
+            .and_then(|row| row.target)
+    }
+
     fn materialise(&self, row: SessionRow) -> anyhow::Result<SessionHandle> {
         let mut live = self.live();
         self.materialise_locked(row, &mut live)
@@ -558,29 +567,27 @@ impl SessionManager {
         if let Some(h) = live.get(&row.name) {
             return Ok(h.clone());
         }
-        let program = self
-            .bash
-            .program
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("no bash available; set [tools.bash] program"))?;
-        let cwd = PathBuf::from(&row.cwd);
-        let cwd = if cwd.exists() {
-            cwd
-        } else {
-            std::env::current_dir()?
+        let endpoint = self.endpoint_for(row.target.as_deref())?;
+        let cwd = (!row.cwd.trim().is_empty()).then(|| PathBuf::from(&row.cwd));
+        // The endpoint judges its own directory: this filesystem would answer wrongly.
+        let cwd = match (&endpoint, cwd) {
+            (Endpoint::Local { .. }, Some(cwd)) if cwd.exists() => Some(cwd),
+            (Endpoint::Local { .. }, _) => Some(std::env::current_dir()?),
+            (_, cwd) => cwd,
         };
         let mut env = self.shell_env.clone();
         // A shell cannot learn its own session's name from the outside.
         env.push(("GONGGA_SESSION".to_string(), row.name.clone()));
-        let mut shells = ShellSet::new(program, cwd.clone(), env);
+        let mut shells = ShellSet::new(endpoint, cwd.clone(), env);
         // The default shell is part of the session's identity, so it exists
         // before anything asks for it.
         shells.get(DEFAULT_BASH)?;
-        tracing::debug!(session = %row.name, model = %row.model, cwd = %cwd.display(), "session shells ready");
+        tracing::debug!(session = %row.name, model = %row.model, cwd = ?cwd, "session shells ready");
         let handle = SessionHandle {
             inner: Arc::new(SessionInner {
                 id: row.id,
                 name: row.name.clone(),
+                store: self.store.clone(),
                 shells: Arc::new(Mutex::new(shells)),
                 cancel: Mutex::new(CancellationToken::new()),
                 cancels: AtomicU64::new(0),
@@ -639,12 +646,19 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::time::Duration;
 
+    /// A store no test reads: the shells under test never reach an endpoint.
+    fn throwaway() -> Store {
+        Store::open(std::path::Path::new(":memory:")).expect("a throwaway store")
+    }
+
     /// Everything a test here does not vary, wrapped around the shells it might.
     fn session(name: &str, shells: ShellSet) -> SessionHandle {
+        let store = throwaway();
         SessionHandle {
             inner: Arc::new(SessionInner {
                 id: 1,
                 name: name.to_string(),
+                store,
                 shells: Arc::new(Mutex::new(shells)),
                 cancel: Mutex::new(CancellationToken::new()),
                 cancels: AtomicU64::new(0),
@@ -663,7 +677,11 @@ mod tests {
     fn handle() -> SessionHandle {
         session(
             "s",
-            ShellSet::new(PathBuf::from("bash"), std::env::temp_dir(), vec![]),
+            ShellSet::new(
+                Endpoint::local(PathBuf::from("bash")),
+                Some(std::env::temp_dir()),
+                vec![],
+            ),
         )
     }
 
@@ -734,7 +752,11 @@ mod tests {
     /// empties the session, and a context that was cut back below the last size.
     #[test]
     fn a_context_notice_is_sent_once_per_crossing() {
-        let shells = ShellSet::new(PathBuf::from("bash"), std::env::temp_dir(), vec![]);
+        let shells = ShellSet::new(
+            Endpoint::local(PathBuf::from("bash")),
+            Some(std::env::temp_dir()),
+            vec![],
+        );
         let handle = session("s", shells);
         let budget = 200;
         assert!(
@@ -801,6 +823,7 @@ mod tests {
             "m".into(),
             detached,
             vec![],
+            vec![],
         );
 
         const CALLERS: usize = 9;
@@ -862,6 +885,87 @@ mod tests {
         assert_ne!(h.cancel_epoch(), epoch);
     }
 
+    /// A session asked for an endpoint with no directory starts where the endpoint is.
+    ///
+    /// # Invariant
+    ///
+    /// This machine's `current_dir` names nothing on a peer, so it is neither asked
+    /// for nor stored: the endpoint chooses, and the row follows what it says. See
+    /// `docs/notes/server-remote.md`.
+    #[tokio::test]
+    async fn an_endpoint_session_adopts_the_directory_its_endpoint_reports() {
+        let Some(runner) = crate::remote::test_runner() else {
+            return;
+        };
+        let dir = tempfile::tempdir().expect("a directory for a test home");
+        let store = Store::open(&dir.path().join("g.db")).expect("a store");
+        let detached =
+            DetachedRegistry::new(store.clone(), None, dir.path().join("detached"), vec![]);
+        let manager = SessionManager::new(
+            store.clone(),
+            BashConfig {
+                program: crate::config::detect_git_bash(),
+                timeout: Duration::from_secs(20),
+                max_output_chars: 0,
+            },
+            "m".into(),
+            detached,
+            vec![],
+            vec![crate::config::TargetConfig {
+                name: "peer".into(),
+                endpoint: Endpoint::Direct { runner },
+            }],
+        );
+        let session = manager
+            .ensure_on("s", None, Some("m"), Some("peer"))
+            .expect("a session on the endpoint");
+        // Nothing has spoken to the endpoint yet, and no directory was invented.
+        let row = store
+            .get_session("s")
+            .expect("reading the row")
+            .expect("the row exists");
+        assert_eq!(row.cwd, "", "a remote row starts with no directory of ours");
+        assert_eq!(row.target.as_deref(), Some("peer"));
+        assert_eq!(session.cwd(), PathBuf::new());
+
+        // The first command connects, and the shell is where the endpoint put it.
+        let shells = session.shells();
+        let handle = {
+            let mut set = shells.lock().unwrap_or_else(|e| e.into_inner());
+            set.get(DEFAULT_BASH).expect("the default shell")
+        };
+        let outcome = {
+            let mut shell = handle.lock().await;
+            shell
+                .run(
+                    "cd / && export GONGGA_PROBE=kept",
+                    Duration::from_secs(20),
+                    None,
+                )
+                .await
+                .expect("a command")
+        };
+        assert_eq!(outcome.exit_code, Some(0), "{:?}", outcome.stderr);
+        session.adopt_reported_cwd();
+        let reported = session.cwd();
+        assert_eq!(
+            reported,
+            PathBuf::from("/"),
+            "the endpoint said where it is"
+        );
+        let row = store
+            .get_session("s")
+            .expect("reading the row again")
+            .expect("the row exists");
+        assert_eq!(
+            PathBuf::from(&row.cwd),
+            reported,
+            "the row keeps the endpoint's directory"
+        );
+        session.close_shells().await;
+        manager.close_shells().await;
+    }
+
     /// A shell held by a command must not hold up reading where a session is.
     ///
     /// See `docs/notes/server-session.md`.
@@ -871,7 +975,7 @@ mod tests {
             return;
         };
         let root = std::env::temp_dir();
-        let mut shells = ShellSet::new(program, root.clone(), vec![]);
+        let mut shells = ShellSet::new(Endpoint::local(program), Some(root.clone()), vec![]);
         let shell = shells
             .get(DEFAULT_BASH)
             .expect("spawning the default shell");
@@ -898,7 +1002,7 @@ mod tests {
             return;
         };
         let root = std::env::temp_dir();
-        let mut shells = ShellSet::new(program, root.clone(), vec![]);
+        let mut shells = ShellSet::new(Endpoint::local(program), Some(root.clone()), vec![]);
         let shell = shells
             .get(DEFAULT_BASH)
             .expect("spawning the default shell");
@@ -920,7 +1024,7 @@ mod tests {
             return;
         };
         let root = std::env::temp_dir();
-        let mut shells = ShellSet::new(program, root.clone(), vec![]);
+        let mut shells = ShellSet::new(Endpoint::local(program), Some(root.clone()), vec![]);
         let shell = shells
             .get(DEFAULT_BASH)
             .expect("spawning the default shell");

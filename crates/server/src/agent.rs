@@ -696,11 +696,25 @@ impl Agent {
         llm: &LlmClient,
     ) -> Vec<crate::image::ImageRef> {
         let mut out = Vec::new();
+        // The bytes are here; the picture is on the peer, so a name is not a file.
+        let on_endpoint = ctx.on_endpoint();
         let named = crate::meta::mentions(output)
             .into_iter()
             .filter(|m| m.kind == protocol::Reference::Image)
             .map(|m| m.value);
         for given in named {
+            if on_endpoint {
+                self.bus.publish(Event::Log {
+                    level: LogLevel::Warn,
+                    message: format!(
+                        "{}: {given} stays a reference in the text -- this session's pictures \
+                         are on its remote endpoint, and reading them into this machine is \
+                         not available in this build",
+                        ctx.session
+                    ),
+                });
+                continue;
+            }
             let path = crate::image::resolve(&ctx.cwd, &given);
             let bytes = match std::fs::read(&path) {
                 Ok(b) => b,
@@ -797,6 +811,8 @@ impl Agent {
         let scanned = self.attach_references(&ctx, &outcome.output, llm).await;
         let attach_ms = attach_started.elapsed().as_millis() as u64;
         drop(ctx);
+        // A shell on an endpoint starts in a directory only that endpoint knows.
+        session.adopt_reported_cwd();
         let _ = forwarder.await;
         tracing::info!(
             session = %name,

@@ -15,8 +15,8 @@ pub struct Provider {
     pub name: String,
     pub endpoints: Vec<Endpoint>,
     pub models: Vec<Model>,
-    /// The key as written in the file, if it was written there.
-    key: Option<String>,
+    // No `key` here on purpose: a roster is a git checkout, and a key in one is a
+    // key in git. Keys come from `~/.agents/keys.toml` (see `credential`).
     /// The variable that should hold the key instead, if one is named.
     key_env: Option<String>,
     /// How to read what is left, in the roster's own order of preference.
@@ -158,6 +158,8 @@ pub struct Choice {
 pub struct Catalog {
     /// The files this list was assembled from, lowest precedence first.
     paths: Vec<PathBuf>,
+    /// The keys this machine keeps out of the roster, by provider id.
+    keys: std::collections::HashMap<String, String>,
     providers: Vec<Provider>,
     /// Why a file could not be read, kept so startup can report it once and go on.
     problem: Option<String>,
@@ -169,59 +171,41 @@ impl Catalog {
     /// Reads one roster, or reports why it could not: what a test drives.
     #[cfg(test)]
     pub fn load(path: &Path) -> Self {
-        Self::load_layers(std::slice::from_ref(&path.to_path_buf()))
+        Self::load_file(&path)
     }
 
-    /// Reads every roster that exists and merges them, later files over earlier.
+    /// Reads the one roster file this machine has.
     ///
     /// # Invariant
     ///
-    /// A missing layer is not a problem worth a line, and a broken one costs only
-    /// itself: the layers that did parse still answer `--model`. See
+    /// One file, not a stack of overlays: a machine's own entries are a branch of
+    /// the repository the file lives in (`local`), so an upstream change is a
+    /// rebase and there is nothing here to merge. See
     /// `docs/notes/server-providers.md`.
-    pub fn load_layers(paths: &[PathBuf]) -> Self {
+    ///
+    /// A missing file is not a problem worth a line; an unreadable one is, and it
+    /// is the only thing that keeps `--model` from answering.
+    pub fn load_file(path: &Path) -> Self {
         let mut catalog = Self {
-            paths: paths.to_vec(),
+            paths: vec![path.to_path_buf()],
+            keys: std::collections::HashMap::new(),
             providers: Vec::new(),
             problem: None,
             generation: 0,
         };
-        let mut merged: Option<toml::Value> = None;
-        for path in paths {
-            let text = match std::fs::read_to_string(path) {
-                Ok(text) => text,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(e) => {
-                    catalog
-                        .problem
-                        .get_or_insert(format!("{}: {e}", path.display()));
-                    continue;
-                }
-            };
-            match toml::from_str::<toml::Value>(&text) {
+        match std::fs::read_to_string(path) {
+            Ok(text) => match toml::from_str::<toml::Value>(&text) {
                 Ok(mut value) => {
                     resolve_scripts(&mut value, path.parent());
-                    match &mut merged {
-                        Some(base) => merge_into(base, value),
-                        None => merged = Some(value),
+                    match parse_value(value) {
+                        Ok(providers) => catalog.providers = providers,
+                        Err(e) => catalog.problem = Some(format!("{}: {e}", path.display())),
                     }
                 }
-                Err(e) => {
-                    catalog
-                        .problem
-                        .get_or_insert(format!("{}: {e}", path.display()));
-                }
-            }
-        }
-        match merged.map(parse_value) {
-            Some(Ok(providers)) => catalog.providers = providers,
-            Some(Err(e)) => {
-                let layers: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
-                catalog
-                    .problem
-                    .get_or_insert(format!("{} (merged): {e}", layers.join(", ")));
-            }
-            None => {}
+                Err(e) => catalog.problem = Some(format!("{}: {e}", path.display())),
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => catalog.problem = Some(format!("{}: {e}", path.display())),
         }
         catalog
     }
@@ -230,6 +214,7 @@ impl Catalog {
     pub fn empty() -> Self {
         Self {
             paths: Vec::new(),
+            keys: std::collections::HashMap::new(),
             providers: Vec::new(),
             problem: None,
             generation: 0,
@@ -271,7 +256,7 @@ impl Catalog {
     pub fn models_with(&self, lookup: &dyn Fn(&str) -> Option<String>) -> Vec<String> {
         let mut out = Vec::new();
         for provider in &self.providers {
-            if credential(provider, lookup).is_none() {
+            if credential(provider, lookup, None).is_none() {
                 continue;
             }
             for model in &provider.models {
@@ -342,7 +327,8 @@ impl Catalog {
     /// A provider's allowance queries, and the key a request there would use.
     pub fn quota_of(&self, provider_id: &str) -> Option<QuotaAccess> {
         let provider = self.providers.iter().find(|p| p.id == provider_id)?;
-        let key = credential(provider, &lookup_env).map(|(key, _)| key);
+        let kept = self.keys.get(&provider.id);
+        let key = credential(provider, &lookup_env, kept).map(|(key, _)| key);
         Some(QuotaAccess {
             provider: provider.id.clone(),
             queries: provider.quota.clone(),
@@ -361,8 +347,8 @@ impl Catalog {
             .iter()
             .find(|p| p.id == entry.provider)
             .ok_or_else(|| format!("no provider {:?}", entry.provider))?;
-        let (api_key, api_key_env) =
-            credential(provider, lookup).ok_or_else(|| match &provider.key_env {
+        let (api_key, api_key_env) = credential(provider, lookup, self.keys.get(&provider.id))
+            .ok_or_else(|| match &provider.key_env {
                 Some(env) => format!(
                     "no key for provider {}: set {env} (the roster has no literal key either)",
                     provider.id
@@ -420,7 +406,9 @@ impl Catalog {
             model_title: found.name.clone(),
             base_url: endpoint.base_url.trim_end_matches('/').to_string(),
             api_key_env: provider.key_env.clone(),
-            key: provider.key.clone(),
+            // The keystore's answer, not a roster field: what the server falls back
+            // to for its own model, and what `credential` already prefers.
+            key: self.keys.get(&provider.id).cloned(),
             context: found.context,
             reasoning_levels: found.reasoning_levels.clone(),
             reasoning_default: found.reasoning_default.clone(),
@@ -456,17 +444,37 @@ fn openai_endpoint(provider: &Provider) -> Option<&Endpoint> {
 /// An exported environment variable wins over a literal key in the file.
 ///
 /// See `docs/notes/server-providers.md`.
+/// A provider's key, from the one place a key may live.
+///
+/// # Invariant
+///
+/// Only two sources, and the keystore wins:
+///
+/// 1. `~/.agents/keys.toml` -- a file git does not track, stamped with the roster
+///    so an edit re-reads the catalog and takes effect on the next request.
+/// 2. the environment variable `key_env` names -- for a one-off (`FOO_KEY=... cmd`)
+///    or a machine that has not written a keystore.
+///
+/// The keystore must beat the environment, not the other way round: a variable is
+/// copied into a process once, at creation, so a stale one would shadow every edit
+/// to the file and make rotation require a restart -- which is the defect this
+/// ordering removes.
+///
+/// A `key` written in the roster is **ignored**. The roster is a git checkout, and
+/// a secret in one is a secret in git; leaving that path open invites exactly the
+/// leak this design exists to prevent.
 fn credential(
     provider: &Provider,
     lookup: &dyn Fn(&str) -> Option<String>,
+    kept: Option<&String>,
 ) -> Option<(String, Option<String>)> {
+    if let Some(value) = kept.filter(|v| !v.is_empty()) {
+        return Some((value.clone(), provider.key_env.clone()));
+    }
     if let Some(name) = &provider.key_env {
         if let Some(value) = lookup(name).filter(|v| !v.is_empty()) {
             return Some((value, Some(name.clone())));
         }
-    }
-    if let Some(key) = provider.key.as_ref().filter(|k| !k.is_empty()) {
-        return Some((key.clone(), provider.key_env.clone()));
     }
     None
 }
@@ -612,7 +620,6 @@ fn parse_value(value: toml::Value) -> Result<Vec<Provider>, toml::de::Error> {
                     .collect(),
                 id: p.id,
                 name,
-                key: p.key,
                 key_env: p.key_env,
             }
         })
@@ -664,49 +671,6 @@ fn resolve_scripts(value: &mut toml::Value, dir: Option<&Path>) {
             }
         }
     }
-}
-
-/// Lays `over` onto `base`: tables key by key, `[[tables]]` by their `id`.
-///
-/// # Invariant
-///
-/// A key only `over` has is added, and one both have is merged, never dropped:
-/// the private file may name one field of a provider and leave the rest to the
-/// community copy. Array order is the base's, so the preference order a roster
-/// spells with file order survives the merge.
-fn merge_into(base: &mut toml::Value, over: toml::Value) {
-    match (base, over) {
-        (toml::Value::Table(base), toml::Value::Table(over)) => {
-            for (key, value) in over {
-                match base.get_mut(&key) {
-                    Some(slot) => merge_into(slot, value),
-                    None => {
-                        base.insert(key, value);
-                    }
-                }
-            }
-        }
-        (toml::Value::Array(base), toml::Value::Array(over)) if by_id(base, &over) => {
-            for element in over {
-                let id = element.get("id").cloned();
-                match base
-                    .iter_mut()
-                    .find(|candidate| candidate.get("id").cloned() == id)
-                {
-                    Some(slot) => merge_into(slot, element),
-                    None => base.push(element),
-                }
-            }
-        }
-        (slot, over) => *slot = over,
-    }
-}
-
-/// Whether both arrays are tables a merge can pair up by `id` rather than replace.
-fn by_id(base: &[toml::Value], over: &[toml::Value]) -> bool {
-    base.iter()
-        .chain(over.iter())
-        .all(|v| v.get("id").map(|id| id.is_str()).unwrap_or(false))
 }
 
 /// The file state a roster was read from: enough to notice an edit without
@@ -772,16 +736,53 @@ impl Handle {
 /// Counts the reads, so a client built from a retired list is recognised as one.
 static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// A machine's keys, kept out of the roster because a roster is a git checkout.
+///
+/// # Invariant
+///
+/// `[keys]` maps a provider id to its key: `<id> = "sk-..."`. It is read on every
+/// roster generation, so editing it hot-updates the credential without a restart
+/// -- which is the whole reason it is not the environment: Windows copies a
+/// process's environment once, at creation, and `setx` can never reach a server
+/// that is already running.
+///
+/// It is never committed: `~/.agents/` is not a repository, and the file is
+/// created `0600` where the platform honours that.
+fn keys_path() -> PathBuf {
+    crate::agents::Roots::of().private.join("keys.toml")
+}
+
+fn read_keys() -> std::collections::HashMap<String, String> {
+    let Ok(text) = std::fs::read_to_string(keys_path()) else {
+        return std::collections::HashMap::new();
+    };
+    let Ok(value) = toml::from_str::<toml::Value>(&text) else {
+        tracing::warn!(file = %keys_path().display(), "the keystore is not TOML; ignoring it");
+        return std::collections::HashMap::new();
+    };
+    value
+        .get("keys")
+        .and_then(|keys| keys.as_table())
+        .map(|table| {
+            table
+                .iter()
+                .filter_map(|(id, key)| key.as_str().map(|key| (id.clone(), key.to_string())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Where the roster is: an override, then the community copy under this machine's.
 fn roster_paths() -> Vec<PathBuf> {
     match std::env::var("GONGGA_PROVIDERS_CATALOG") {
         Ok(over) if !over.is_empty() => vec![PathBuf::from(over)],
-        _ => crate::agents::Roots::of().rosters(),
+        _ => vec![crate::agents::Roots::of().roster()],
     }
 }
 
 impl Live {
-    /// Whether the roster on hand still matches the files it came from.
+    /// Whether the roster on hand still matches the files it came from -- the
+    /// roster, and the keystore beside it, since a key is a file edit too.
     fn is_fresh(&self, paths: &[PathBuf]) -> bool {
         self.read && self.stamps == stamps(paths)
     }
@@ -794,7 +795,8 @@ fn stamps(paths: &[PathBuf]) -> Vec<Option<Stamp>> {
 
 /// One read of every roster file, stamped with the generation it belongs to.
 fn read_fresh(paths: &[PathBuf]) -> Catalog {
-    let mut catalog = Catalog::load_layers(paths);
+    let mut catalog = Catalog::load_file(&paths[0]);
+    catalog.keys = read_keys();
     catalog.generation = GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     catalog
 }
@@ -815,7 +817,11 @@ pub fn roster() -> Arc<Catalog> {
             catalog: Arc::new(Catalog::empty()),
         })
     });
-    let paths = roster_paths();
+    // The keystore is watched as a file of its own: rotating a key is an edit to
+    // it and nothing else, so leaving it out here would make the one operation
+    // this exists for the one operation that needs a restart.
+    let mut paths = roster_paths();
+    paths.push(keys_path());
     if let Ok(guard) = live.read() {
         if guard.is_fresh(&paths) {
             return guard.catalog.clone();
@@ -849,7 +855,7 @@ mod tests {
             &path,
             r#"[[provider]]
 id = "p"
-key = "k"
+key_env = "P_KEY"
 [[provider.endpoint]]
 api = "openai-responses"
 base_url = "http://127.0.0.1:1/v1"
@@ -880,7 +886,7 @@ id = "m1"
             &path,
             r#"[[provider]]
 id = "p"
-key = "k"
+key_env = "P_KEY"
 [[provider.endpoint]]
 api = "openai-responses"
 base_url = "http://127.0.0.1:1/v1"
@@ -897,7 +903,7 @@ id = "m2"
         );
         let third = read_fresh(std::slice::from_ref(&path));
         assert_eq!(
-            third.models().len(),
+            third.providers()[0].models.len(),
             2,
             "the new roster is what the next route resolves against"
         );
@@ -916,7 +922,6 @@ id = "m2"
 [[provider]]
 id = "deepseek-official"
 name = "DeepSeek 官方"
-key = "sk-literal"
 key_env = "DEEPSEEK_API_KEY"
 
   [[provider.endpoint]]
@@ -929,6 +934,9 @@ key_env = "DEEPSEEK_API_KEY"
   name = "DeepSeek V4.1-Flash-1017"
   context = 1000000
   max_output = 384000
+  # A field this server ignores: which tier a model is in is `model_pool`'s
+  # judgement, written here so the judgement lives where a person edits it.
+  tier = "flash"
 
   [[provider.model]]
   id = "deepseek-v4-pro"
@@ -938,7 +946,6 @@ key_env = "DEEPSEEK_API_KEY"
 [[provider]]
 id = "goat"
 name = "GOAT"
-key = "user_literal"
 
   [[provider.endpoint]]
   id = "openai"
@@ -953,7 +960,6 @@ key = "user_literal"
 
 [[provider]]
 id = "anthropic-only"
-key = "x"
 
   [[provider.endpoint]]
   id = "anthropic"
@@ -965,12 +971,30 @@ key = "x"
   context = 200000
 "#;
 
+    /// The fixture roster, with the keys a machine would keep in its keystore:
+    /// three providers, so a test can say which one a lookup picked.
     fn catalog() -> Catalog {
         Catalog {
+            keys: [
+                ("deepseek-official", "sk-kept"),
+                ("goat", "user-kept"),
+                ("anthropic-only", "x"),
+            ]
+            .into_iter()
+            .map(|(id, key)| (id.to_string(), key.to_string()))
+            .collect(),
             generation: 0,
             paths: Vec::new(),
             providers: parse(ROSTER).unwrap(),
             problem: None,
+        }
+    }
+
+    /// The same roster with no keystore: what a machine that wrote none is.
+    fn unkeyed() -> Catalog {
+        Catalog {
+            keys: std::collections::HashMap::new(),
+            ..catalog()
         }
     }
 
@@ -980,43 +1004,26 @@ key = "x"
 
     /// # Invariant
     ///
-    /// Completion is a promise that the model can be run here. A provider whose
-    /// credential resolves is offered; one that names a key this machine does not
-    /// have is not, because the request it would name fails with the roster's own
-    /// "no key" error before it leaves. `models()` asks the environment; this test
-    /// drives `models_with` with its own answer.
+    /// Completion is a promise that the model can be run here, so only a provider
+    /// whose credential resolves is offered. A `key` written in a roster is not a
+    /// credential: it is a secret in a git checkout, and it is ignored.
     #[test]
     fn a_provider_without_a_key_is_not_offered() {
-        let c = catalog();
-        let none = c.models_with(&|_| None);
-        // Every provider in the fixture carries a literal key except this one.
+        let c = unkeyed();
         assert!(
-            none.iter().any(|m| m.starts_with("deepseek-official/")),
-            "a literal key counts: {none:?}"
-        );
-        assert!(
-            none.iter().any(|m| m.starts_with("goat/")),
-            "a literal key counts: {none:?}"
+            c.models_with(&|_| None).is_empty(),
+            "a roster key is not a credential"
         );
 
-        let mut no_literal = catalog();
-        for provider in &mut no_literal.providers {
-            provider.key = None;
-        }
-        let by_env =
-            no_literal.models_with(&|name| (name == "DEEPSEEK_API_KEY").then(|| "k".to_string()));
+        let by_env = c.models_with(&|name| (name == "DEEPSEEK_API_KEY").then(|| "k".to_string()));
         assert!(
             by_env.iter().all(|m| m.starts_with("deepseek-official/")),
             "only the provider whose variable is set is offered: {by_env:?}"
         );
         assert_eq!(
             by_env.len(),
-            no_literal.providers[0].models.len(),
+            c.providers[0].models.len(),
             "every model of a keyed provider is offered"
-        );
-        assert!(
-            no_literal.models_with(&|_| None).is_empty(),
-            "no key anywhere offers nothing, rather than what cannot run"
         );
     }
 
@@ -1030,6 +1037,17 @@ key = "x"
         assert_eq!(p.endpoints[0].base_url, "https://api.deepseek.com/v1/");
         assert_eq!(p.models[0].id, "deepseek-flash");
         assert_eq!(p.models[0].context, Some(1_000_000));
+    }
+
+    /// Fields this server does not read (`tier`) are tolerated: a stricter parser
+    /// would refuse a roster a person annotated.
+    #[test]
+    fn a_model_field_this_server_ignores_is_tolerated() {
+        let c = catalog();
+        let model = c
+            .entry("deepseek-official/deepseek-flash")
+            .expect("a model beside an ignored field still resolves");
+        assert_eq!(model.model_name, "deepseek-flash");
     }
 
     /// The quota a provider publishes, and the key it is read with: the same
@@ -1048,15 +1066,16 @@ script_env = "P_KEY"
 id = "second"
 unit = "percent-left"
 "#;
-        let catalog = Catalog {
+        let mut catalog = Catalog {
             generation: 0,
             paths: Vec::new(),
+            keys: std::collections::HashMap::from([("p".to_string(), "sk-kept".to_string())]),
             providers: parse(text).unwrap(),
             problem: None,
         };
         let env = |name: &str| (name == "P_KEY").then(|| "sk-env".to_string());
         let provider = &catalog.providers()[0];
-        let key = credential(provider, &env).map(|(k, _)| k);
+        let key = credential(provider, &env, None).map(|(k, _)| k);
         assert_eq!(key.as_deref(), Some("sk-env"));
         assert_eq!(
             provider.quota.len(),
@@ -1073,11 +1092,10 @@ unit = "percent-left"
         assert!(catalog.quota_of("nobody").is_none());
     }
 
-    /// A `script` is a path inside the layer that wrote it: resolved before merging.
+    /// A `script` is a path inside the roster that wrote it.
     #[test]
-    fn a_quota_script_resolves_against_its_own_layer() {
-        let community = tempfile::tempdir().unwrap();
-        let private = tempfile::tempdir().unwrap();
+    fn a_quota_script_resolves_against_the_roster_that_wrote_it() {
+        let roster = tempfile::tempdir().unwrap();
         let text = r#"[[provider]]
 id = "p"
 [[provider.model]]
@@ -1086,17 +1104,16 @@ id = "m"
 id = "wallet"
 script = "providers/p.py"
 "#;
-        let base = community.path().join("providers.toml");
-        let over = private.path().join("providers.toml");
-        std::fs::write(&base, text).unwrap();
-        std::fs::write(&over, text).unwrap();
-        let catalog = Catalog::load_layers(&[base.clone(), over.clone()]);
+        let path = roster.path().join("providers.toml");
+        std::fs::write(&path, text).unwrap();
+        let catalog = Catalog::load_file(&path);
         let script = catalog.providers()[0].quota[0]
             .script
             .clone()
             .expect("a script");
-        // The later layer wins the merge, and its own directory comes with it.
-        assert_eq!(script, private.path().join("providers").join("p.py"));
+        // Relative to the file that named it, which is what makes the path mean
+        // anything next to a roster clone.
+        assert_eq!(script, roster.path().join("providers").join("p.py"));
         assert!(script.is_absolute());
     }
 
@@ -1110,7 +1127,7 @@ script = "providers/p.py"
         // The trailing slash in the file must not become a double slash in the
         // URL the request is built from.
         assert_eq!(choice.entry.base_url, "https://api.deepseek.com/v1");
-        assert_eq!(choice.api_key, "sk-literal");
+        assert_eq!(choice.api_key, "sk-kept");
         assert_eq!(choice.entry.context, Some(1_000_000));
     }
 
@@ -1129,10 +1146,21 @@ script = "providers/p.py"
     }
 
     #[test]
-    fn the_environment_beats_the_literal_key() {
+    fn the_keystore_beats_the_environment() {
+        // The order is the whole of hot rotation: a variable is copied into the
+        // process once, so letting it win would shadow every edit to the file and
+        // make a rotated key need a restart.
         let c = catalog();
         let env = |name: &str| (name == "DEEPSEEK_API_KEY").then(|| "sk-from-env".to_string());
         let choice = c
+            .resolve_with("deepseek-official/deepseek-flash", &env)
+            .unwrap();
+        assert_eq!(choice.api_key, "sk-kept");
+
+        // With no keystore entry the variable is the answer, which is what makes
+        // `FOO_KEY=... cmd` work on a machine that keeps no file.
+        let bare = unkeyed();
+        let choice = bare
             .resolve_with("deepseek-official/deepseek-flash", &env)
             .unwrap();
         assert_eq!(choice.api_key, "sk-from-env");
@@ -1152,14 +1180,11 @@ script = "providers/p.py"
         assert!(err.contains("has no model"), "{err}");
     }
 
+    /// The refusal names the variable, which is the whole fix a reader needs --
+    /// and a key written in the roster does not count as one.
     #[test]
     fn a_provider_without_a_key_is_refused_by_name() {
-        let c = catalog();
-        let err = c.resolve_with("deepseek-official/deepseek-flash", &no_env);
-        assert!(err.is_ok(), "the literal key is enough");
-
-        let mut c = catalog();
-        c.providers[0].key = None;
+        let c = unkeyed();
         let err = c
             .resolve_with("deepseek-official/deepseek-flash", &no_env)
             .unwrap_err();
@@ -1210,6 +1235,7 @@ key = "k"
         let c = Catalog {
             generation: 0,
             paths: Vec::new(),
+            keys: std::collections::HashMap::new(),
             providers: parse(text).unwrap(),
             problem: None,
         };
@@ -1233,105 +1259,60 @@ key = "k"
         assert!(c.default_entry().is_none());
     }
 
-    /// The community copy is the base; the private one overrides field by field.
+    /// The keystore answers first, and a `key` in the roster is not a credential
+    /// at all -- that is the leak this design exists to prevent.
     #[test]
-    fn a_private_field_overrides_the_community_one() {
-        let d = tempfile::tempdir().unwrap();
-        let community = d.path().join("community.toml");
-        let private = d.path().join("private.toml");
+    fn only_the_keystore_and_the_environment_answer() {
+        let roster = tempfile::tempdir().unwrap();
+        let path = roster.path().join("providers.toml");
         std::fs::write(
-            &community,
-            r#"
-[[provider]]
-id = "shared"
-name = "Shared"
-key_env = "SHARED_API_KEY"
-  [[provider.endpoint]]
-  id = "openai"
-  api = "openai-responses"
-  base_url = "https://community.example/v1"
-  [[provider.model]]
-  id = "m1"
-  context = 1000
-  [[provider.model]]
-  id = "m2"
-  context = 2000
-[[provider]]
-id = "community-only"
-  [[provider.endpoint]]
-  api = "openai-responses"
-  base_url = "https://only.example/v1"
-  [[provider.model]]
-  id = "m"
-"#,
-        )
-        .unwrap();
-        // Only what this machine knows differently: one endpoint host, one key.
-        std::fs::write(
-            &private,
-            r#"
-[[provider]]
-id = "shared"
-key = "private-key"
-  [[provider.endpoint]]
-  id = "openai"
-  base_url = "https://private.example/v1"
-  [[provider.model]]
-  id = "m2"
-  context = 9000
-"#,
-        )
-        .unwrap();
-        let c = Catalog::load_layers(&[community, private]);
-        let ids: Vec<&str> = c.providers().iter().map(|p| p.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            ["shared", "community-only"],
-            "community order, then new"
-        );
-
-        // The endpoint stays the community one, with the private host on it.
-        let entry = c.entry("shared/m1").unwrap();
-        assert_eq!(
-            entry.provider_name, "Shared",
-            "an unset field keeps its base"
-        );
-        assert_eq!(entry.base_url, "https://private.example/v1");
-        assert_eq!(
-            entry.context,
-            Some(1000),
-            "an untouched model is the base's"
-        );
-        assert_eq!(c.entry("shared/m2").unwrap().context, Some(9000));
-        assert_eq!(
-            c.resolve_with("shared/m1", &no_env).unwrap().api_key,
-            "private-key"
-        );
-    }
-
-    /// One layer that does not parse costs only itself: the others still answer.
-    #[test]
-    fn a_broken_layer_is_reported_and_the_rest_still_loads() {
-        let d = tempfile::tempdir().unwrap();
-        let community = d.path().join("community.toml");
-        let private = d.path().join("private.toml");
-        std::fs::write(
-            &community,
-            r#"
-[[provider]]
+            &path,
+            r#"[[provider]]
 id = "p"
+key_env = "P_KEY"
+key = "a-key-in-git"
   [[provider.endpoint]]
   api = "openai-responses"
   base_url = "https://p.example/v1"
-  [[provider.model]]
-  id = "m"
+[[provider.model]]
+id = "m"
+context = 1000
 "#,
         )
         .unwrap();
-        std::fs::write(&private, "[[provider]\nid = ").unwrap();
-        let c = Catalog::load_layers(&[community, private]);
-        assert_eq!(c.providers().len(), 1, "the good layer is still read");
-        assert!(c.problem().unwrap().contains("private.toml"));
+        let mut catalog = Catalog::load_file(&path);
+        catalog.keys = std::collections::HashMap::from([("p".to_string(), "kept".to_string())]);
+
+        assert_eq!(
+            catalog.resolve_with("p/m", &no_env).unwrap().api_key,
+            "kept",
+            "the keystore answers when no variable does"
+        );
+        assert_eq!(
+            catalog
+                .resolve_with("p/m", &|name| (name == "P_KEY").then(|| "env".to_string()))
+                .unwrap()
+                .api_key,
+            "kept",
+            "the keystore beats the environment, so a rotation is not shadowed"
+        );
+
+        // Without a keystore entry: the variable, then nothing -- never the roster.
+        let bare = Catalog {
+            keys: std::collections::HashMap::new(),
+            ..catalog
+        };
+        assert_eq!(
+            bare.resolve_with("p/m", &|name| (name == "P_KEY").then(|| "env".to_string()))
+                .unwrap()
+                .api_key,
+            "env"
+        );
+        let err = bare.resolve_with("p/m", &no_env).unwrap_err();
+        assert!(
+            err.contains("P_KEY"),
+            "a key written in the roster is ignored: {err}"
+        );
     }
 
     #[test]
@@ -1344,8 +1325,7 @@ id = "p"
         assert!(c.problem().unwrap().contains("providers.toml"));
     }
 
-    /// A duplicate id would make `--model` ambiguous; the first one wins so the
-    /// answer does not depend on map iteration order.
+    /// A duplicate id would make `--model` ambiguous: the first one wins.
     #[test]
     fn duplicate_provider_ids_keep_the_first() {
         let text = r#"

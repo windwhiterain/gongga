@@ -1221,7 +1221,7 @@ impl Client {
     fn follow_shown(&mut self, name: &str, show: bool, sink: &mut dyn Sink) {
         let saved = if show {
             self.sticky.set("session", name)
-        } else if self.sticky.get("session").as_deref() == Some(name) {
+        } else if self.sticky.get("session") == Some(name) {
             self.sticky.del("session").map(|_| ())
         } else {
             Ok(())
@@ -2946,6 +2946,52 @@ mod tests {
         let named = s.announced.clone().expect("a layout was announced");
         assert_eq!(named.shown, vec!["main"]);
         assert_eq!(named.listed.len(), 2, "and the announcement keeps both");
+    }
+
+    /// What each session is doing, so a window can draw `running` without its events.
+    ///
+    /// # Invariant
+    ///
+    /// One word per session, in the announcement's order, and a `Status` event
+    /// replaces it -- including for a hidden session, whose word the list still
+    /// draws.
+    #[test]
+    fn the_announcement_says_what_each_session_is_doing() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = client_with(Catalog::new(), Sticky::load(d.path()), vec!["main", "peer"]);
+        let mut s = StreamSink::default();
+        c.refresh(&mut s);
+        let first = s.announced.clone().expect("a layout was announced");
+        assert_eq!(
+            first
+                .listed
+                .iter()
+                .map(|l| l.status.as_str())
+                .collect::<Vec<_>>(),
+            vec!["idle", "idle"],
+            "a session the server has said nothing about is idle"
+        );
+
+        c.handle_event(
+            Event::Status {
+                session: "peer".into(),
+                status: SessionStatus::Running,
+                detail: None,
+            },
+            &mut s,
+        );
+        c.shown.set("peer", false).unwrap();
+        c.refresh(&mut s);
+        let named = s.announced.clone().expect("a layout was announced");
+        assert_eq!(
+            named
+                .listed
+                .iter()
+                .map(|l| (l.name.as_str(), l.status.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("main", "idle"), ("peer", "running")],
+            "the list draws a hidden session's word too"
+        );
     }
 
     /// The two lists agree whatever the flags say: every name is listed, and

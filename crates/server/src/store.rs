@@ -92,7 +92,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- completed request: SPEC's `tps (latest)` and `ttft (latest)`, kept beside the
     -- context so a window attached now has the numbers without replaying a turn.
     tps REAL,
-    ttft_ms INTEGER
+    ttft_ms INTEGER,
+    -- The endpoint this session's shells run on, as a named target from the
+    -- server's config. NULL is `local`, and it is fixed once the session has run.
+    target TEXT
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -229,6 +232,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             "ALTER TABLE sessions ADD COLUMN cached_tokens INTEGER",
         ),
         ("tps", "ALTER TABLE sessions ADD COLUMN tps REAL"),
+        ("target", "ALTER TABLE sessions ADD COLUMN target TEXT"),
         ("ttft_ms", "ALTER TABLE sessions ADD COLUMN ttft_ms INTEGER"),
     ] {
         add_column_if_missing(conn, "sessions", column, ddl)?;
@@ -335,6 +339,17 @@ impl Store {
     /// only one of them could not be inserted at all -- and a bare name is right
     /// for a row the roster cannot place.
     pub fn create_session(&self, name: &str, model: &str, cwd: &str) -> anyhow::Result<i64> {
+        self.create_session_on(name, model, cwd, None)
+    }
+
+    /// Creates a session on `target`, which `None` spells `local`.
+    pub fn create_session_on(
+        &self,
+        name: &str,
+        model: &str,
+        cwd: &str,
+        target: Option<&str>,
+    ) -> anyhow::Result<i64> {
         if name.trim().is_empty() {
             anyhow::bail!("session name must not be empty");
         }
@@ -342,14 +357,29 @@ impl Store {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
         tx.execute(
-            "INSERT INTO sessions (name, status, model, model_name, cwd, created_at, updated_at)
-             VALUES (?1, 'idle', ?2, ?3, ?4, ?5, ?5)",
-            params![name, model, bare_model(model), cwd, now],
+            "INSERT INTO sessions (name, status, model, model_name, cwd, created_at, updated_at, target)
+             VALUES (?1, 'idle', ?2, ?3, ?4, ?5, ?5, ?6)",
+            params![name, model, bare_model(model), cwd, now, target],
         )
         .map_err(|e| duplicate_session(name, e))?;
         let id = tx.last_insert_rowid();
         tx.commit()?;
         Ok(id)
+    }
+
+    /// Keeps a row's directory equal to where an endpoint put the session's shell.
+    ///
+    /// # Invariant
+    ///
+    /// Only an endpoint session writes this: a local row is the directory the
+    /// session was made in. See `docs/notes/server-remote.md`.
+    pub fn set_session_cwd(&self, name: &str, cwd: &str) -> anyhow::Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "UPDATE sessions SET cwd = ?1 WHERE name = ?2 AND cwd IS NOT ?1",
+            params![cwd, name],
+        )?;
+        Ok(())
     }
 
     pub fn delete_session(&self, name: &str) -> anyhow::Result<bool> {
@@ -437,7 +467,7 @@ impl Store {
                     s.created_at, s.updated_at,
                     (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS messages,
                     s.context_limit, s.thinking_effort,
-                    s.context_tokens, s.cached_tokens, s.tps, s.ttft_ms
+                    s.context_tokens, s.cached_tokens, s.tps, s.ttft_ms, s.target
              FROM sessions s";
 
     /// One session, in the same shape the list returns, by name rather than by scan.
@@ -466,6 +496,7 @@ impl Store {
                 tps: r.get(12)?,
                 ttft_ms: r.get::<_, Option<i64>>(13)?.map(|ms| ms.max(0) as u64),
             },
+            target: r.get(14)?,
         })
     }
 
@@ -1036,6 +1067,8 @@ pub struct SessionRow {
     /// SPEC's `context (tok)`, `tps (latest)` and `ttft (latest)`: what the last
     /// completed request measured.
     pub usage: protocol::Usage,
+    /// The endpoint this session's shells run on, when it is not `local`.
+    pub target: Option<String>,
 }
 
 /// A window of the transcript plus where it ends, as `get_messages` reports it.

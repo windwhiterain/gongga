@@ -215,11 +215,13 @@ pub fn server_catalog() -> Vec<CommandSpec> {
                 ),
                 arg(
                     "cwd",
-                    "Working directory for a newly created session. Defaults to the server's.",
+                    "Working directory for a newly created session. For a session on a \
+                     target this is a path on that machine, which the endpoint \
+                     canonicalises and refuses when it does not exist; completion offers \
+                     this machine's paths, which prove nothing about that one.",
                     false,
                     Some("path"),
-                    // The client lists its own filesystem: it is on the same
-                    // machine, and it is the one the user was looking at.
+                    // The client lists the filesystem it sits on, which is a hint only.
                     CompletionSource::Paths,
                 ),
                 // SPEC: `--model (sticky)`, so a model set once is a mode rather
@@ -253,6 +255,16 @@ pub fn server_catalog() -> Vec<CommandSpec> {
                         .map(|s| s.to_string())
                         .collect(),
                     ),
+                ),
+                arg(
+                    "target",
+                    "Which machine this session's shells run on, named by a `[targets.<name>]` \
+                     table in the server's config. Omit for this machine. Fixed when the \
+                     session is created: naming a different one later is refused, because \
+                     the shells are already on the old machine.",
+                    false,
+                    Some("name"),
+                    CompletionSource::None,
                 ),
                 arg(
                     "thinking_effort",
@@ -464,10 +476,32 @@ async fn expand_message(
     d: &Dispatch,
     session: &crate::session::SessionHandle,
     message: String,
-) -> crate::meta::Expanded {
+) -> Result<crate::meta::Expanded, String> {
+    let on_endpoint = d
+        .sessions
+        .recorded_target(session.name())
+        .is_some_and(|target| target != "local");
+    // These resolve on the peer, so they are refused here; `@file:` stays literal.
+    if on_endpoint {
+        let named: Vec<String> = crate::meta::mentions(&message)
+            .into_iter()
+            .filter(|m| m.kind != protocol::Reference::File)
+            .map(|m| m.value)
+            .collect();
+        if !named.is_empty() {
+            return Err(format!(
+                "this session runs on a remote endpoint, and {} cannot be resolved here:                  the file it names is on that machine. Send the text without the reference,                  or name the path for the endpoint to read itself.",
+                named.join(", ")
+            ));
+        }
+        return Ok(crate::meta::Expanded {
+            text: message,
+            images: Vec::new(),
+        });
+    }
     let llm = d.agent.route(session.name(), &session.tuning()).ok();
     let llm = llm.as_ref().map(|(client, _)| client.as_ref());
-    crate::meta::expand(&session.cwd(), &message, llm).await
+    Ok(crate::meta::expand(&session.cwd(), &message, llm).await)
 }
 
 /// Puts `message` into `name`'s hands: a turn when it is free, an inbox row when not.
@@ -484,7 +518,10 @@ async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcome {
     if session.is_deleted() {
         return Outcome::err(format!("session {name:?} is being deleted"));
     }
-    let message = expand_message(d, &session, message).await;
+    let message = match expand_message(d, &session, message).await {
+        Ok(message) => message,
+        Err(e) => return Outcome::err(e),
+    };
     let epoch = session.cancel_epoch();
     if let Some(gate) = session.try_claim() {
         // The gate is claimed before the durable write, so a second sender can only
@@ -571,10 +608,11 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         ));
     }
     // Naming a session creates it: that is the only way to get one.
-    let session = match d.sessions.ensure(
+    let session = match d.sessions.ensure_on(
         &name,
         args.get("cwd").map(String::as_str),
         Some(&entry.model),
+        args.get("target").map(String::as_str),
     ) {
         Ok(session) => session,
         Err(e) => return Outcome::err(e.to_string()),
@@ -622,6 +660,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         json!({
             "session": name,
             "cwd": cwd,
+            "target": d.sessions.recorded_target(&name),
             "model": tuning.model,
             "context_limit": tuning.context_limit,
             "thinking_effort": tuning.thinking_effort,
@@ -1310,7 +1349,6 @@ mod tests {
         assert!(session.required, "--session is required");
     }
 
-    #[test]
     /// SPEC spells `set_session --model (sticky)`: declared here and nowhere else.
     #[test]
     fn only_the_model_is_a_sticky_argument() {
@@ -1685,7 +1723,8 @@ mod tests {
             dir.path().join("detached"),
             vec![],
         );
-        let sessions = SessionManager::new(store.clone(), config, "m".into(), detached, vec![]);
+        let sessions =
+            SessionManager::new(store.clone(), config, "m".into(), detached, vec![], vec![]);
 
         let err = match sessions.get("ghost") {
             Ok(_) => panic!("a name nobody created must not resolve"),

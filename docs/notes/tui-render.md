@@ -194,19 +194,31 @@ was hidden rather than the list of what exists -- and a session drawn `full` had
 name in two places. SPEC now gives the list every name and puts the toggle in the
 click: a shown session is still a row, because that row is where it is hidden again.
 
-The row's one look says one thing: **bright when that session has a window beside the
-list, dim when it does not**. That is the same fact the right-hand split states, said
-again where it is clicked.
+The name's brightness says one thing: **bright when that session has a window beside
+the list, dim when it does not**. That is the same fact the right-hand split states,
+said again where it is clicked.
+
+The word after the name is what the announcement says the session is doing -- `idle`,
+`running`, `error` -- and it is painted by that word: `running` green, `error` red and
+bold, everything else chrome (`status_style`). It used to be announced and dropped, so
+"is it running?" could only be answered by reading that session's events. Two words
+earn a colour because they are the two that change what an operator would do next;
+`idle` is the state of a session that needs nothing, so drawing attention to it would
+be drawing attention to nothing.
+
+The words are padded to the widest one the list draws (`Panes::status_width`), so they
+start on one column down the list and `list_width` charges the column for them. A list
+of two names and one status is not worth two different alignments.
 
 It does *not* say which session is sticky. The sticky one is necessarily shown, and its
 window is framed (`pane_slots`) -- so a second mark here would be the same thing twice,
 in the area that is about something else. The list used to carry the mark column `▸`
 and a fill to the right edge for it; both went when the frame became the sticky mark.
 
-A name is bracketed -- `[main]` -- in the list and in the window's header: one spelling
-in both areas, so a name cannot be mistaken for the first word of the events beside it.
-`bracketed` is that spelling, and `list_width` counts the two columns it adds plus one
-of air.
+A name is bracketed -- `[main] running` -- in the list, and `[main]` in the window's
+header: one spelling in both areas, so a name cannot be mistaken for the first word of
+the events beside it. `bracketed` is that spelling, and `list_width` counts the two
+columns it adds, the status and one of air.
 
 `list_window` still centres the list on the sticky session even though the row no
 longer says so: which rows are on screen is a scroll position, not a mark, and the
@@ -452,12 +464,12 @@ is the whole of SPEC's rule about where they live.
 The announcement arrives on every step of a turn, so it is not a reason to move a
 view: a pane that kept its rows keeps its place in them.
 
-## the_list_is_bright_for_the_sessions_it_draws_beside_it
+## the_list_is_bright_for_the_sessions_it_draws_and_names_what_each_is_doing
 
-The rule, measured on a frame: every announced name is a row in the announcement's
-order, a shown session is one of them rather than absent, and the row's colour is the
-answer to "does it have a window" -- white for shown, dark grey for hidden, even for
-the session that is sticky.
+Both answers, read off one frame: every announced name is a row in the announcement's
+order, its colour says whether it has a window (white for shown, dark grey for hidden,
+even for the session that is sticky), and the word beside it says what it is doing --
+chrome for `idle`, green for `running`, red for `error`.
 
 ## the_sticky_session_is_a_frame_and_the_list_says_only_what_is_shown
 

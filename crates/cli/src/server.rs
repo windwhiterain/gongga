@@ -18,6 +18,8 @@ const SERVE: &str = "serve";
 /// The program that carries the server, and the variable that names one.
 const SERVER: &str = "gongga-server";
 const SERVER_BIN: &str = "GONGGA_SERVER_BIN";
+/// The peer-side program a session's shells run under, when a build has one.
+const RUNNER: &str = "gongga-runner";
 
 /// The log a started server writes, and the only place its refusal is explained.
 fn log_path(home: &Path) -> PathBuf {
@@ -353,6 +355,30 @@ fn install_commands(home: &Path, server: &Path) {
         return;
     };
     install_pair(home, &me, &server);
+    install_runner(home, &me);
+}
+
+/// The runner beside this program, kept in `<home>/bin` so it can be carried to a peer.
+///
+/// # Invariant
+///
+/// Absent is normal: a build of the command layer alone has no runner, and a
+/// target whose `runner` names a path on the peer never reads this copy. The
+/// bundle carries all four programs, which is what puts one here to copy.
+fn install_runner(home: &Path, me: &Path) {
+    let Some(sibling) = me.parent().map(|dir| dir.join(program_name(RUNNER))) else {
+        return;
+    };
+    if !sibling.is_file() {
+        return;
+    }
+    if let Err(e) = place(home, RUNNER, &sibling) {
+        eprintln!(
+            "warning: cannot install `{RUNNER}` in {}: {e}; a session on a remote target needs \
+             that program on the peer",
+            home.join("bin").display()
+        );
+    }
 }
 
 /// The pair landing in `<home>/bin`, with both paths already resolved.
@@ -654,6 +680,35 @@ mod tests {
         assert_eq!(
             std::fs::read(bin.join(program_name(SERVER))).unwrap(),
             b"the server"
+        );
+    }
+
+    /// A runner beside the command layer is installed too, so a peer can be given it.
+    ///
+    /// # Invariant
+    ///
+    /// A build without one installs nothing and says nothing: only an install that
+    /// owns a runner has a copy to place. See `docs/notes/cli-server.md`.
+    #[test]
+    fn a_runner_beside_the_command_layer_reaches_the_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let build = dir.path().join("build");
+        std::fs::create_dir_all(&build).unwrap();
+        let me = build.join(program_name(COMMAND));
+        std::fs::write(&me, b"the command").unwrap();
+        install_runner(&home, &me);
+        assert!(
+            !home.join("bin").join(program_name(RUNNER)).exists(),
+            "nothing to install must install nothing"
+        );
+
+        let sibling = build.join(program_name(RUNNER));
+        std::fs::write(&sibling, b"the runner").unwrap();
+        install_runner(&home, &me);
+        assert_eq!(
+            std::fs::read(home.join("bin").join(program_name(RUNNER))).unwrap(),
+            b"the runner"
         );
     }
 

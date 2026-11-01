@@ -4,6 +4,7 @@
 
 mod agent;
 mod agents;
+mod base64;
 mod blobs;
 mod body;
 mod bus;
@@ -19,6 +20,7 @@ mod probe;
 mod prompts;
 mod providers;
 mod quota;
+pub mod remote;
 mod script;
 mod session;
 mod shell_command;
@@ -249,6 +251,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         cfg.model.model(),
         detached.clone(),
         shell_env,
+        cfg.targets.clone(),
     );
     let bus = EventBus::new(4096);
 

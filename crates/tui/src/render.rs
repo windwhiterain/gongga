@@ -113,9 +113,10 @@ pub fn areas(area: Rect, input_rows: u16, chrome: Chrome) -> Vec<Rect> {
 ///
 /// # Invariant
 ///
-/// The list is as wide as its own content -- the mark, the longest name, one
-/// column of air -- so a short name is not padded out with empty screen. It never
-/// takes more than half the window: the windows are where the work is read.
+/// The list is as wide as its own content -- the brackets, the longest name, the
+/// status word and one column of air -- so a short name is not padded out with empty
+/// screen. It never takes more than half the window: the windows are where the work
+/// is read.
 pub fn body(area: Rect, panes: &Panes) -> (Rect, Rect) {
     let list = list_width(panes).min(area.width.saturating_sub(1) / 2);
     let list = Rect {
@@ -130,7 +131,7 @@ pub fn body(area: Rect, panes: &Panes) -> (Rect, Rect) {
     (list, panes)
 }
 
-/// Columns the session list needs for its longest name, brackets and air included.
+/// Columns the session list needs: brackets, the longest name, the status, and air.
 pub fn list_width(panes: &Panes) -> u16 {
     let longest = panes
         .list_names()
@@ -138,8 +139,15 @@ pub fn list_width(panes: &Panes) -> u16 {
         .map(|name| UnicodeWidthStr::width(name.as_str()))
         .max()
         .unwrap_or(0);
-    // The brackets around the name, and one column of air.
-    (longest as u16 + 3).max(LIST_MIN)
+    let status = panes.status_width();
+    // The two brackets and one column of air; a status word costs its space too.
+    let word = if status > 0 { status + 1 } else { 0 };
+    ((longest + 2 + word + 1) as u16).max(LIST_MIN)
+}
+
+/// The columns `text` takes on screen.
+pub fn width_of(text: &str) -> usize {
+    UnicodeWidthStr::width(text)
 }
 
 /// Where one pane is drawn: its header, if it has one, and the rows below it.
@@ -479,14 +487,14 @@ fn draw_header(f: &mut Frame, s: &Screen, area: Rect) {
     );
 }
 
-/// The session list: one row per session, bright when it has a window.
+/// The session list: a name per row, bright when it has a window, then its status.
 ///
 /// # Invariant
 ///
-/// A name is bright exactly when that session is shown beside the list: brightness
-/// is the same fact the right-hand split states, said once more where it is
-/// clicked. The sticky session is *not* marked here -- it is necessarily shown, and
-/// the frame around its window is its mark. See `docs/notes/tui-render.md`.
+/// Two facts, two looks: the name is bright exactly when that session is shown beside
+/// the list, and the word after it is what the announcement says it is doing. The
+/// sticky session is not marked here -- it is shown by definition, and the frame
+/// around its window is its mark. See `docs/notes/tui-render.md`.
 fn draw_list(f: &mut Frame, s: &Screen, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -495,6 +503,7 @@ fn draw_list(f: &mut Frame, s: &Screen, area: Rect) {
     let names = s.panes.list_names();
     let sticky = s.sticky_session.as_deref();
     let (start, end) = list_window(names.len(), height, sticky, names);
+    let widest = s.panes.status_width();
     let rows: Vec<Line> = names
         .get(start..end)
         .unwrap_or_default()
@@ -504,13 +513,38 @@ fn draw_list(f: &mut Frame, s: &Screen, area: Rect) {
                 .panes
                 .get(name)
                 .is_some_and(|pane| pane.kind == crate::panes::Kind::Shown);
-            Line::from(Span::styled(
+            let mut spans = vec![Span::styled(
                 bracketed(name),
                 if shown { bright() } else { dim() },
-            ))
+            )];
+            let status = s.panes.status_of(name);
+            if !status.is_empty() {
+                // Padded to the widest word, so the words line up down the list.
+                let pad = widest.saturating_sub(width_of(status));
+                spans.push(Span::styled(
+                    format!(" {status}{}", " ".repeat(pad)),
+                    status_style(status),
+                ));
+            }
+            Line::from(spans)
         })
         .collect();
     f.render_widget(Paragraph::new(rows), area);
+}
+
+/// The look of a status word: what the session is doing, not where it is drawn.
+///
+/// # Invariant
+///
+/// `running` and `error` are the two worth a colour of their own; every other word,
+/// `idle` included, is chrome. A session that is doing nothing is the one case that
+/// needs no attention drawn to it. See `docs/notes/tui-render.md`.
+fn status_style(status: &str) -> Style {
+    match status {
+        "running" => Style::default().fg(Color::Green),
+        "error" => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        _ => dim(),
+    }
 }
 
 /// How the sticky session is painted where a row is filled for it.
@@ -1110,27 +1144,27 @@ mod tests {
         assert!(slots.iter().all(|slot| slot.body.height > 0), "{slots:?}");
     }
 
-    /// SPEC's session list: every name, one per row, bright when it has a window.
+    /// SPEC's session list: every name, bright when it has a window, then its status.
     ///
     /// # Invariant
     ///
-    /// Two looks and one question: a shown session's row is bright, a hidden one's
-    /// is dim, and nothing in the list says which session is sticky -- that is the
-    /// frame around its window.
+    /// Three looks for two questions: the name is bright when that session is shown
+    /// beside the list and dim when it is not, and the word after it is painted by
+    /// what the session is doing -- `running` green, `error` red, `idle` chrome.
     #[test]
-    fn the_list_is_bright_for_the_sessions_it_draws_beside_it() {
+    fn the_list_is_bright_for_the_sessions_it_draws_and_names_what_each_is_doing() {
         let mut screen = screen_with(&[]);
-        let listed = |name: &str, usage: &str| Listed {
+        let listed = |name: &str, status: &str, usage: &str| Listed {
             name: name.to_string(),
-            status: "idle".to_string(),
+            status: status.to_string(),
             title: usage.to_string(),
         };
         screen.panes.layout(&Layout {
             listed: vec![
-                listed("main", "ctx 900 · tps 12.0"),
-                listed("peer", ""),
-                listed("third", ""),
-                listed("fourth", ""),
+                listed("main", "idle", "ctx 900 · tps 12.0"),
+                listed("peer", "running", ""),
+                listed("third", "error", ""),
+                listed("fourth", "idle", ""),
             ],
             shown: vec!["main".to_string(), "third".to_string()],
             command: "cmd".to_string(),
@@ -1145,25 +1179,41 @@ mod tests {
         let buf = term.backend().buffer().clone();
         let body = parts(60, 12, 1, true)[1];
         let (list, panes) = crate::render::body(body, &screen.panes);
-        // Every name, in the announcement's order, and nothing else.
+        // Every name, in the announcement's order, each with its status word.
         let rows: Vec<String> = (0..list.height)
             .map(|offset| read(&buf, list.x, list.width, list.y + offset))
             .collect();
         assert_eq!(
             &rows[..4],
-            ["[main]", "[peer]", "[third]", "[fourth]"],
+            [
+                "[main] idle",
+                "[peer] running",
+                "[third] error",
+                "[fourth] idle"
+            ],
             "{rows:?}"
         );
-        // Bright for the shown ones, dim for the rest; the sticky one is not
-        // marked here -- its window's frame is its mark.
+        // The name says shown or not; the word says what it is doing.
         let looks: Vec<Color> = (0..4)
             .map(|offset| buf[(list.x, list.y + offset)].fg)
             .collect();
         assert_eq!(
             looks,
             vec![Color::White, Color::DarkGray, Color::White, Color::DarkGray],
-            "the list says what is shown, not what is sticky"
+            "the list says what is shown"
         );
+        let words = |row: u16| {
+            let text = read(&buf, list.x, list.width, row);
+            let at = list.x + width_of(&text[..text.find(']').unwrap() + 1]) as u16 + 1;
+            buf[(at, row)].fg
+        };
+        assert_eq!(words(list.y), Color::DarkGray, "idle is chrome");
+        assert_eq!(
+            words(list.y + 1),
+            Color::Green,
+            "running is the one to notice"
+        );
+        assert_eq!(words(list.y + 2), Color::Red, "a session in error says so");
         // And the ones that are shown have columns of their own beside the list.
         let (slots, _) = pane_slots(panes, &screen.panes, None);
         assert_eq!(
@@ -1222,7 +1272,7 @@ mod tests {
         // The list's row for the sticky session carries no fill: every row is
         // painted by what it means -- shown or not.
         let row = read(&buf, list.x, list.width, list.y);
-        assert_eq!(row, "[main]", "{row:?}");
+        assert_eq!(row, "[main] idle", "{row:?}");
         let filled = buf[(list.right() - 1, list.y)].clone();
         assert_ne!(filled.bg, Color::Cyan, "the list is not a sticky mark");
     }
@@ -1276,7 +1326,7 @@ mod tests {
         );
         let at = rows
             .iter()
-            .position(|row| row.trim() == "[s9]")
+            .position(|row| row.trim().starts_with("[s9]"))
             .unwrap_or_else(|| panic!("s9 is not drawn: {rows:?}"));
         assert_eq!(
             list_at(
@@ -1695,7 +1745,7 @@ mod tests {
         screen.panes.line("cmd", LineKind::System, "$ get_messages");
 
         // An odd body width, so the division leaves a column for the sticky one.
-        let mut term = Terminal::new(TestBackend::new(45, 12)).unwrap();
+        let mut term = Terminal::new(TestBackend::new(50, 12)).unwrap();
         term.draw(|f| {
             draw(f, &mut screen);
         })
@@ -1703,7 +1753,7 @@ mod tests {
         let buf = term.backend().buffer().clone();
 
         // Each session is its own column: a header row, then its own rows under it.
-        let body = parts(45, 12, 1, true)[1];
+        let body = parts(50, 12, 1, true)[1];
         let (_, panes) = crate::render::body(body, &screen.panes);
         let (slots, hidden) = pane_slots(panes, &screen.panes, screen.sticky_session.as_deref());
         assert_eq!(hidden, 0);
@@ -1736,7 +1786,7 @@ mod tests {
         );
 
         // The command line sits above the input, which is the last row.
-        let parts = parts(45, 12, 1, true);
+        let parts = parts(50, 12, 1, true);
         assert_eq!(row_text(&buf, parts[3].y), "$ get_messages");
 
         // Scrolling the sticky session moves only that column: the other keeps its newest.
