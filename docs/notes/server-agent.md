@@ -157,6 +157,33 @@ One line for a request that is about to be tried again, naming the attempt, the
 ceiling and why the last one gave nothing. `max == 0` reads as "until
 cancelled": printing `1/0` said the opposite of what it meant.
 
+## a failed attempt's fragments are dropped before the retry
+
+`llm.stream` retries inside one call, so a retry sends the window pinned when the
+request started (`RequestSource::upto_seq`, which is `store.last_seq` at that
+moment). Anything a failed attempt wrote after that number is therefore *not* in
+the retry's request and cannot be in its answer: it is a fragment of a stream
+that died. `step_inner` keeps the number as `window` and, when the stream finally
+reports a failure no retry could fix, deletes everything after it with
+`store.truncate_after`.
+
+Without this the transcript kept a piece of an answer the model never gave: the
+row sat there for every later request to replay, and the operator read it as the
+start of the sentence that was never finished. `builtin_call` rows go the same
+way -- a provider-side call from an attempt nobody will resume is not a fact
+about this turn.
+
+The parts the attempt streamed are closed on the front-end at the same moment
+(`done: true` with no text), because a block is a partial answer by definition
+and the failure is the end of that answer.
+
+## failed_warning
+
+One line for the operator when nothing more will be tried, in the voice
+`retry_warning` uses. It says what the provider said, whether the attempt had
+already streamed part of an answer, and how many rows went with it: a reader who
+watched six characters appear needs to know they were withdrawn.
+
 ## Agent::error
 
 Reports a failure and leaves it somewhere readable. The `Event::Log` is
@@ -360,6 +387,12 @@ turn, the cancellation token.
 
 A known window decides the threshold, so a model with a bigger window gets a
 bigger budget without anyone retuning the config.
+
+## failed_warning_names_what_was_dropped
+
+Left silent about discarded text, the line is the one that made this bug
+invisible: the operator saw a partial answer on screen and a failure with no
+mention of it.
 
 ## a_retry_warning_names_why
 

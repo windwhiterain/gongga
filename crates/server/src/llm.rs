@@ -213,7 +213,9 @@ impl LlmClient {
     /// the caller always sees one stream, and each retry is announced as
     /// [`LlmEvent::Retrying`]. A panic inside one attempt is that attempt's
     /// failure and enters the same loop, so it never ends this stream by
-    /// unwinding past it. See `docs/notes/server-llm.md`.
+    /// unwinding past it. How far an attempt got is not a reason to stop: only
+    /// the provider saying the request itself is wrong ends this stream. See
+    /// `docs/notes/server-llm.md`.
     pub fn stream(
         &self,
         instructions: &str,
@@ -310,7 +312,7 @@ impl LlmClient {
                 // Empty completion or cut-short stream: both are retryable, so
                 // long as nothing said this attempt can never work.
                 let refused = failure.as_ref().is_some_and(|(_, again)| !*again);
-                if refused || !retryable(attempt, max_retries, produced) || cancel.is_cancelled() {
+                if refused || !retryable(attempt, max_retries) || cancel.is_cancelled() {
                     if let Some((message, again)) = failure {
                         let _ = tx
                             .send(LlmEvent::Failed {
@@ -561,16 +563,18 @@ fn backoff(base: Duration, attempt: u32) -> Duration {
     base.saturating_mul(factor).min(MAX_RETRY_DELAY)
 }
 
-/// Whether another attempt is worth making; only `produced` rules one out.
+/// Whether another attempt is worth making.
 ///
 /// # Invariant
 ///
-/// `max_retries == 0` is no ceiling, and a produced answer is never retried:
-/// asking again would stand a second, different answer behind the first.
+/// `max_retries == 0` is no ceiling, and how far an attempt got is not part of
+/// the question: a provider that dies mid-answer is the same bad minute as one
+/// that dies before its first byte, and the caller drops what the failed attempt
+/// wrote before the next one is sent. Only a refusal ends the stream.
 ///
 /// See `docs/notes/server-llm.md`.
-fn retryable(attempt: u32, max_retries: u32, produced: bool) -> bool {
-    (max_retries == 0 || attempt < max_retries) && !produced
+fn retryable(attempt: u32, max_retries: u32) -> bool {
+    max_retries == 0 || attempt < max_retries
 }
 
 /// Whether resending the same request could succeed: a bad minute could, a
@@ -1917,21 +1921,17 @@ mod tests {
         assert_eq!(backoff(base, 64), MAX_RETRY_DELAY);
     }
 
-    /// A silent request is retried; a spoken one is not, since a retry would
-    /// answer twice.
+    /// How far an attempt got says nothing about the next one: only the
+    /// ceiling, and only when one was set.
     #[test]
-    fn a_silent_response_is_retried_but_a_spoken_one_is_not() {
-        assert!(retryable(0, 3, false));
-        assert!(retryable(2, 3, false));
+    fn a_failed_attempt_is_retried_however_far_it_got() {
+        assert!(retryable(0, 3));
+        assert!(retryable(2, 3));
         // Out of attempts under an explicit ceiling.
-        assert!(!retryable(3, 3, false));
-        // Already produced content: another answer would contradict it.
-        assert!(!retryable(0, 3, true));
+        assert!(!retryable(3, 3));
         // 0 is no ceiling, not no retries: the cancel token is the only stop.
-        assert!(retryable(0, 0, false));
-        assert!(retryable(10_000, 0, false));
-        // Even unlimited retries never ask twice after the model has spoken.
-        assert!(!retryable(0, 0, true));
+        assert!(retryable(0, 0));
+        assert!(retryable(10_000, 0));
     }
 
     /// Provider-side work is a response even when there is no assistant text.
@@ -1949,8 +1949,8 @@ mod tests {
         };
         assert!(event_produced(&builtin));
         assert!(event_produced(&activity));
-        assert!(!retryable(0, 0, event_produced(&builtin)));
-        assert!(!retryable(0, 0, event_produced(&activity)));
+        // Produced, and retried anyway: the caller drops these items first.
+        assert!(retryable(0, 0));
         assert!(!event_produced(&LlmEvent::Completed { usage: None }));
     }
 

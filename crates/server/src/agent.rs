@@ -495,6 +495,10 @@ impl Agent {
         let phase_started = std::time::Instant::now();
         let source = self.store.request_source(id)?;
         phases.source_ms = phase_started.elapsed().as_millis() as u64;
+        // The same number is where a failed attempt's rows end: the retry inside
+        // `llm.stream` sends this window, so what a failed attempt wrote after it
+        // is dropped before the next one. See `docs/notes/server-agent.md`.
+        let window = source.upto_seq;
         // One number for "how long the model took": the whole stream, retries
         // inside it included, because that is what the wall clock paid.
         let requested = std::time::Instant::now();
@@ -513,6 +517,13 @@ impl Agent {
 
         // Which call each streamed item is, so its chunks are addressed by call id.
         let mut calls: std::collections::HashMap<String, String> = Default::default();
+        // The parts already handed to the front-end as blocks. A refusal can land
+        // mid-item, and a block left open there would take the next answer's text
+        // for its own.
+        let mut began: std::collections::HashSet<(String, ResponsePart)> = Default::default();
+        // The items whose content the reader has already seen, so the failure line
+        // can say that fragment is being withdrawn.
+        let mut said: std::collections::HashSet<String> = Default::default();
         let mut ran_tools = false;
         let mut failure: Option<String> = None;
         let mut saw_completion = false;
@@ -538,6 +549,8 @@ impl Agent {
                 } => {
                     first_token.get_or_insert_with(std::time::Instant::now);
                     let call_id = calls.get(&item_id).cloned();
+                    began.insert((item_id.clone(), part));
+                    said.insert(item_id.clone());
                     self.bus.publish(Event::Response(ResponseEvent {
                         session: name.to_string(),
                         turn,
@@ -549,6 +562,7 @@ impl Agent {
                 }
                 LlmEvent::PartDone { part, item_id } => {
                     let call_id = calls.get(&item_id).cloned();
+                    began.insert((item_id.clone(), part));
                     self.bus.publish(Event::Response(ResponseEvent {
                         session: name.to_string(),
                         turn,
@@ -568,6 +582,7 @@ impl Agent {
                         payload["encrypted"] = json!(e);
                     }
                     payload["item_id"] = json!(item_id);
+                    said.insert(item_id.clone());
                     let _ = self.store.append_message(id, "reasoning", &payload);
                 }
                 // The provider executed this one; keeping the item verbatim is
@@ -575,6 +590,7 @@ impl Agent {
                 LlmEvent::BuiltinCall {
                     item, replayable, ..
                 } => {
+                    said.insert(item["id"].as_str().unwrap_or_default().to_string());
                     let _ = self.store.append_message(
                         id,
                         "builtin_call",
@@ -738,7 +754,34 @@ impl Agent {
             }
         }
 
+        // Nothing follows a failure: `llm.stream` retries what another attempt
+        // could fix, so what is left here said the request itself is wrong and
+        // the fragments this attempt streamed are not its answer.
         if let Some(message) = failure {
+            for (item_id, part) in began {
+                let call_id = calls.get(&item_id).cloned();
+                self.bus.publish(Event::Response(ResponseEvent {
+                    session: name.to_string(),
+                    turn,
+                    part,
+                    text: String::new(),
+                    done: true,
+                    call_id,
+                }));
+            }
+            let discarded = match self.store.truncate_after(id, window) {
+                Ok(count) => count,
+                Err(e) => {
+                    tracing::warn!(session = %name, step, error = %e, "a failed attempt's rows stayed");
+                    0
+                }
+            };
+            // One line for the operator, in the voice the retries already use: a
+            // refusal is news, and taken-for-an-answer text is never resumed.
+            self.bus.publish(Event::Log {
+                level: LogLevel::Warn,
+                message: failed_warning(&name, &message, &said, discarded),
+            });
             anyhow::bail!("{message}");
         }
         if !saw_completion {
@@ -1043,6 +1086,30 @@ fn retry_warning(
         format!("of {max}")
     };
     format!("{session}: model request failed ({reason}); retry {attempt} {of} in {delay:?}")
+}
+
+/// The operator-facing line for a request no further attempt can fix.
+///
+/// # Invariant
+///
+/// Never empty and never silent about what the attempt already said: a failed
+/// attempt that streamed part of an answer leaves text the reader has seen and
+/// the transcript does not keep, and the line has to say so or the gap is
+/// unexplained. See `docs/notes/server-agent.md`.
+fn failed_warning(
+    session: &str,
+    reason: &str,
+    said: &std::collections::HashSet<String>,
+    discarded: usize,
+) -> String {
+    let mut line = format!("{session}: model request failed and will not be retried ({reason})");
+    if !said.is_empty() {
+        line.push_str("; the partial answer this attempt streamed is discarded");
+    }
+    if discarded > 0 {
+        line.push_str(&format!(" ({discarded} row(s) the attempt wrote dropped)"));
+    }
+    line
 }
 
 /// Whether the prose has to be rendered and stored again for this step.

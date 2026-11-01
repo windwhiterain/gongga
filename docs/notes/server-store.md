@@ -198,6 +198,16 @@ provider sees, and make the model answer questions nobody asked. That is decided
 where the row is written (`wire_item`), not here, so the walk has no drop rules
 of its own.
 
+## Store::truncate_after
+
+The other half of the retry rule. `llm.stream` retries a failed attempt against
+the window that was pinned before it was sent, so a row past that number belongs
+to the failed attempt alone and is deleted before the next attempt runs --
+otherwise the transcript replays half an answer the model never gave.
+
+Only `messages` rows: the attempt's tool calls ran inside that window and their
+`tool_calls` rows are the record of what actually happened on the machine.
+
 ## Store::last_seq
 
 Where the transcript ends. A negative bound in `--range` is resolved against it at
