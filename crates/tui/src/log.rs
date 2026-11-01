@@ -358,9 +358,16 @@ impl Entry {
     /// `docs/notes/tui-log.md`.
     fn row(&self, row: usize) -> &str {
         let text = self.body();
-        let start = self.starts[row];
+        let start = match self.starts.get(row) {
+            Some(start) => *start,
+            None => return "",
+        };
         let end = self.starts.get(row + 1).copied().unwrap_or(text.len());
-        let text = &text[start..end];
+        // A start the text no longer reaches is no slice to take: return nothing.
+        let text = match text.get(start..end) {
+            Some(text) => text,
+            None => return "",
+        };
         text.strip_suffix('\n').unwrap_or(text)
     }
 
@@ -1302,13 +1309,11 @@ impl Log {
         let start = end.saturating_sub(height);
 
         let mut rows: Vec<Row<'_>> = Vec::with_capacity(end - start);
-        if start < end {
+        if start < end && !ledger.blocks.is_empty() {
             // Jump to the block holding the first visible row: O(log blocks).
             let mut pos = ledger.index.line_at(start).min(ledger.blocks.len() - 1);
             let mut first = ledger.index.prefix(pos);
-            loop {
-                let at = ledger.blocks[pos];
-                let entry = &self.entries[at];
+            while let Some(entry) = ledger.blocks.get(pos).and_then(|at| self.entries.get(*at)) {
                 let cap = self.room(entry.kind, ledger.cap);
                 let body = entry.rows().min(cap);
                 let boxed = entry.boxed();

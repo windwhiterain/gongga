@@ -183,6 +183,14 @@ not in the text; the room it takes is in the wrap.
 
 ## Entry::row
 
+No index a row cannot have: `starts` is the row list, so `row(i)` used to be
+`starts[i]` on the argument that the caller asked for a row the index had counted. The
+window can ask for one it has not -- a block's rows are recomputed for a new width while
+the frame in flight was measured at the old one, and `clear` and `forget` drop entries
+under a view that is still being read. Both answers are `get`: a start that is not there
+is an empty row, and a byte range the text no longer reaches is no slice at all. A blank
+row on screen is a cosmetic bug; a panic in a frame is a dead window.
+
 The row runs from its own start to the next row's start, which is one byte past
 the newline that forced the break -- so trimming a trailing newline is exactly
 the difference between the two offsets. That is also why a trailing newline
@@ -400,6 +408,12 @@ a workaround for having one window for every session, and windows now do that
 properly (see `docs/notes/tui-panes.md`).
 
 ## Log::window
+
+A ledger may name a block that is gone: the block list of a view and the block table are
+separate, and a frame can read the first after the second changed (`clear`, `forget`, a
+window hidden). The walk is therefore
+`while let Some(entry) = blocks.get(pos).and_then(|at| entries.get(at))`, which ends
+where the ledger does; a stale name draws nothing instead of panicking.
 
 The rows for one frame: everything visible, nothing more.
 

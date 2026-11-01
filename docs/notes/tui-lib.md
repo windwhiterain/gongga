@@ -245,6 +245,24 @@ announcement and says so, because the name can come back. The pane and its block
 with the name; the status line and the sticky session are the command layer's, so
 neither is touched here -- a sticky session naming a deleted session scrolls nothing.
 
+## Tui::draw — the frame is under a net
+
+Drawing runs on every event, so a panic inside it is not a bug report: it takes the
+terminal, the turn in flight and the operator's place in the log with it. The frame is
+therefore painted through `std::panic::catch_unwind` (`guarded`), and a frame that
+broke is abandoned rather than thrown: `Terminal::clear` resets the back buffer so the
+half-drawn one cannot be diffed against, the status row carries what the payload said,
+and the next event paints again.
+
+This is a net, not a fix -- the fix is that the draw path has no reachable panic left
+(see `docs/notes/tui-fold.md` and `docs/notes/tui-log.md`). The net exists because the
+window has already died several times to one bug, and "abandon this frame" costs an
+operator a repaint while "abort" costs them the session.
+
+It is sound because a frame owns nothing: the screen is a value this struct holds, its
+rows are recomputed from the log every time, and nothing is left half-committed for the
+next frame to trust.
+
 ## Tui::draw
 
 Nothing changed, so nothing is written. This is what keeps a stream that arrives

@@ -16,11 +16,6 @@ mod render;
 pub mod run;
 mod table;
 
-#[doc(hidden)]
-pub fn markdown_rows_for_test(text: &str, width: usize) -> usize {
-    markdown::rows(text, width).len()
-}
-
 use std::io::{self, Stdout, Write, stdout};
 use std::path::Path;
 use std::time::Duration;
@@ -647,7 +642,15 @@ impl Tui {
         let seen = (self.screen.input.text().len(), self.screen.input.cursor());
         let typed = self.input_seen != Some(seen);
         self.input_seen = Some(seen);
-        present(&mut self.terminal, &mut self.screen, typed)?;
+        let frame = guarded(|| present(&mut self.terminal, &mut self.screen, typed));
+        match frame {
+            Ok(painted) => painted?,
+            // Abandoned, not fatal: the screen is cleared, and the row says why.
+            Err(payload) => {
+                let _ = self.terminal.clear();
+                self.screen.note(LineKind::Error, frame_failed(&payload));
+            }
+        }
         // Cleared only after the frame landed, so a failed paint is retried.
         self.dirty = false;
         Ok(())
@@ -1212,9 +1215,12 @@ impl Tui {
             Some(0) => 0,
             Some(p) => p - 1,
         };
+        let Some(line) = self.history.get(pos) else {
+            return;
+        };
         self.history_pos = Some(pos);
         self.screen.input.clear();
-        self.screen.input.insert_str(&self.history[pos]);
+        self.screen.input.insert_str(line);
     }
 
     /// Puts the terminal back. Idempotent, and also run on drop.
@@ -1303,6 +1309,30 @@ where
     terminal.set_cursor_position(render::caret(screen, input))?;
     terminal.backend_mut().flush()?;
     Ok(())
+}
+
+/// Runs one frame, with a panic in it caught rather than thrown at the window.
+///
+/// # Invariant
+///
+/// Drawing happens on every event, so a bug in it may not end the session: the frame
+/// is abandoned, the status row says what broke, and the next event paints again. The
+/// state a frame touches is owned by this window and rewritten whole next time, which
+/// is what makes it sound to carry on. See `docs/notes/tui-lib.md`.
+fn guarded<T>(frame: impl FnOnce() -> T) -> std::thread::Result<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(frame))
+}
+
+/// What a caught panic said, for a row an operator can read.
+fn frame_failed(payload: &(dyn std::any::Any + Send)) -> String {
+    let said = match payload.downcast_ref::<&str>() {
+        Some(said) => said.to_string(),
+        None => match payload.downcast_ref::<String>() {
+            Some(said) => said.clone(),
+            None => "the frame panicked".to_string(),
+        },
+    };
+    format!("frame: {}", said.replace('\n', " "))
 }
 
 fn restore_terminal(out: &mut impl Write) -> io::Result<()> {

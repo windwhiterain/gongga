@@ -2,10 +2,10 @@
 //!
 //! # Invariant
 //!
-//! No character is dropped, and a run keeps its style on both sides of a break: what
-//! ink a word is drawn in never depends on where the window ends. A break falls where
-//! a word ends when one is in reach, so a narrow column still shows whole words.
-//! See `docs/notes/tui-fold.md`.
+//! This is draw-path code, so it may not panic on any input: every character is
+//! either drawn or is the one space a break landed on, and a run keeps its style on
+//! both sides of a break. A break falls where a word ends when one is in reach, so a
+//! narrow column still shows whole words. See `docs/notes/tui-fold.md`.
 
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -23,30 +23,32 @@ pub fn rows(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
                 rows.push(Line::default());
                 used = 0;
             }
-            // A row after a break starts with a word, not with the space that broke it.
+            // A row after a break starts with a word, not with the space it broke at.
             if used == 0 && rows.len() > 1 {
                 rest = rest.trim_start_matches(' ');
+                if rest.is_empty() {
+                    break;
+                }
             }
             let fit = match room(rest, width - used) {
-                Room {
-                    bytes: 0,
-                    done: false,
-                    ..
-                } if used > 0 => {
+                Room { bytes: 0, .. } if used > 0 => {
                     // Not even one character fits in what is left of this row.
                     rows.push(Line::default());
                     used = 0;
                     continue;
                 }
-                // A character wider than the whole row is still text.
-                Room { bytes: 0, .. } => first(rest),
+                // A character wider than the whole row is still text: it is drawn,
+                // and it is the last thing this row can hold.
+                Room { bytes: 0, .. } => match first(rest) {
+                    Some(wide) => wide,
+                    None => break,
+                },
                 fit => fit,
             };
-            push(
-                rows.last_mut().expect("a row is open"),
-                span.style,
-                &rest[..fit.bytes],
-            );
+            match rows.last_mut() {
+                Some(row) => push(row, span.style, &rest[..fit.bytes]),
+                None => break,
+            }
             rest = &rest[fit.bytes..];
             used += fit.wide;
             if fit.done {
@@ -108,17 +110,20 @@ fn room(text: &str, room: usize) -> Room {
 }
 
 /// The first character of `text`, however wide it is.
-fn first(text: &str) -> Room {
-    let ch = text.chars().next().expect("text is not empty");
-    Room {
+fn first(text: &str) -> Option<Room> {
+    let ch = text.chars().next()?;
+    Some(Room {
         wide: ch.width().unwrap_or(0).max(1),
         bytes: ch.len_utf8(),
         done: false,
-    }
+    })
 }
 
 /// Adds `text` to `line` in `style`, continuing a run of the same ink.
 pub fn push(line: &mut Line<'static>, style: Style, text: &str) {
+    if text.is_empty() {
+        return;
+    }
     match line.spans.last_mut() {
         Some(last) if last.style == style => last.content.to_mut().push_str(text),
         _ => line.spans.push(Span::styled(text.to_string(), style)),

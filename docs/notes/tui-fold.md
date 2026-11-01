@@ -11,6 +11,27 @@ Keeping one wrapper for both would mean the log knowing about styles, or the mar
 renderer knowing about row indexes. So the document folds its own rows, and the log
 stores the result: `Vec<Line>`, one per drawn row, counted and drawn as they are.
 
+## Nothing here may panic
+
+This runs inside the window, on every event, so a panic is not a bug report -- it is a
+dead session. The first version had two `expect`s and one of them was reachable: a
+streamed chunk that was only spaces, arriving at the end of a full row, trimmed to
+nothing and then asked for its first character. That is ordinary traffic for an answer
+(a delta is a few characters, and a space is one of them).
+
+So every step of `rows` answers with something it can carry on from. A span trimmed to
+nothing ends the loop for that span. `first` answers `Option`, and the caller treats
+`None` as "nothing left to draw". The `last_mut` that pushes a row is a `match`, not an
+`expect`, because the row it names is a value this function just pushed. `push` ignores
+an empty run instead of adding a span that draws nothing.
+
+The rule that follows from this: in draw-path code, an index is chosen with `get` or
+proved by construction, and a helper that can have no answer says so in its type.
+
+The shape that cannot fail is the fix; finding the one reachable `expect` was only how
+it started. `Tui::draw` also runs the whole frame under a net (`guarded`), which is a
+last resort for one that has not been found yet -- see `docs/notes/tui-lib.md`.
+
 ## rows
 
 One span at a time, filling the current row until the next character does not fit.
