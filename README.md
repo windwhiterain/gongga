@@ -10,7 +10,7 @@ _Post Modern Agent Harness_
 - Heir based context compact, new session can ask mentor session about the history.
 - Network traffic optimized for remote use.
 - Infinite forward compatibility via chain of migraters.
-- Elegant cancle, restart auto continue, interrupt no session nor tasks, covinent for long running agents and self-evolve.
+- Elegant server cancle, restart auto continue, interrupt no session, tasks nor client, covinent for long running agents and self-evolving.
 - Git managed configuration.
 - Streaming LLM reqwest optimized for minimal allocation.
 - Large too_result save to file for agents to grep instead of directly return.
@@ -43,7 +43,7 @@ gongga tui
 ```
 
 ## Use
-type this command in the tui to create your fist session "hello":
+type this command in the tui to create your fist session "hello" with "provider/model":
 ```tui
-/set_session --session hello
+/set_session --session hello --model provider/model
 ```

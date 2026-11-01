@@ -44,23 +44,34 @@ in cmd_input, those three should be auto complete.
 ## UI
 - main (vertical)
   - horizontal
-    - [session (render mode = none){name (double click change mode to full)}] (vertical scroll)
-    - [{session (render mode = full){name (double click change mode to line), context (in tokens), cached (in n%, latest), tps (latest), ttft (latest), cwd, model, thinking_effort, context_limit}, events (vertical scroll)}] (horizontal split):
-  - [{session (render mode = line){name (double click change mode to none)}, event} (line)] (vertical)
+    - [session{name (click: toggle show, if show change to true, set sticky session, if false and sticky, del sticky session)}] (vertical scroll)
+    - [{session(show = true){name, context (in tokens), cached (in n%, latest), tps (latest), ttft (latest), cwd, model, thinking_effort, context_limit}(click: set sticky session), events}] (horizontal split):(vertical)
   - [active_quota{provider, [mouth n%] [week n%] [5h n%] [credit n] [money n¥]}]: update each step end.
-  - [{cmd, cmd_result}] (line)
+  - last cmd | cmd_result (non session related)
   - cmd_input: perfix select, auto complete (match candidates in any char position).
     - `/<cmd>`
     - `<pure text>` expand to `/send_message --message "<pure text>"`: need escape.
   - hot-keys reminder
-
-- session{name}: click to set session sticky.
 
 - event
   - | user_message
   - | assistant_message_item{reasoning | toolcall | output}: streaming.
   - | tool_result: 
     - bash's output streaming.
+
+- events (vertical)
+  - [
+      |abstract{
+        symbol (colored), 
+        |reasoning{beginning (line), ending (line)} (vertical)
+        |toolcall{tool_name, {name, task, backgound, detached, timeout} (bash) | ...} (line)
+        |tool_result{ok, time (spent)} (line)
+      } (horizontal, 点击展开, block_size, scroll if block_size!=0)
+      |output (colored markdown)
+      |(server cmd/cmd_result that related to this session){symbol (colored), content}
+      |error{symbol (colored), content}
+    ] (vertical scroll)
+  - streaming: currently stream, block_size, scorll if block_size!=0
 
 - scroll
   - if scrolled from bottom, do not auto scroll, show a go to bottom button.
@@ -74,10 +85,8 @@ in cmd_input, those three should be auto complete.
 
 
 ## Cmd
-- invocation: `gongga-cli <cmd> [--arg <v> ...]` -- argv is already tokens, so a command line
-  carries no `/` and no prose form. `/` belongs to `cmd_input` only.
 - server:
-  - `set_session --session <name> [--cwd <path>] [--model <provider>/<model name>] [--thinking_effort <level>] [--context_limit <n%>]`:
+  - `set_session --session (sticky) <name> --model (sticky) <provider/model> [--thinking_effort <level>] [--context_limit <n%>](default: "70%") [--cwd <path>](default: ".")`:
     - plus `set_sticky_cmd_argument --name session --value <session>`
   - `del_session --session <name>`: also delete all bash with the session name in key.
   - `send_message --session <name> --message <string>`: inject message instantly, turn waiting bash to backgound.
@@ -90,7 +99,7 @@ in cmd_input, those three should be auto complete.
   - `del_sticky --name <name>`
   - `set_render [--block_size <line>]`:
     - `block_size`: max line count of non-output block, auto scroll.
-  - `set_render_session --session <name> [--mode <none|line|full>]`
+  - `set_render_session --session <name> [--show <bool>]`
   - `connect_server [--ip <ip>](default: localhost) --port <port>`
   - `serve --port <port> [--home <path>](default: "~/.gongga")`
 
@@ -108,14 +117,15 @@ agents play certain roles to keep context focus.
 
 roles: 
 - justice: talk to the user, understand user.
-  - judge if approve report about the implementation based on spec. 
-  - judge if approve proposal and send to user for approval.
+  - judge if plan is conform to the spec and approve to implment. 
+  - judge if proposal is in spirit of the spec and send to user for approval.
 - premier: plan, orchestrate, spawn subagents, review.
-  - report the implementation to the justice.
+  - present plan for implementation to the justice.
   - present proposal of changes to the spec.
+- HR: monitor each sessions situation, fix errors (provider, transcript).
 
 record:
-- proposal
-- report
-- judgement over proposal/report
-- spec amendment
+- proposal{example, expected, actual, actual_spec, expected_spec}
+- plan
+- judgement over proposal/report{spec violation: none | premise | direct}
+- spec amendment{ref proposal, ref judgement}
