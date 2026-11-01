@@ -183,7 +183,8 @@ impl Agent {
         let mut step: u32 = 0;
 
         let outcome = loop {
-            if cancel.is_cancelled() {
+            // A `cancel` ends the turn here, where it can be stored whole.
+            if cancel.is_cancelled() || session.stop_requested() {
                 break (TurnOutcome::Cancelled, step);
             }
             // Step boundary: a user line between a call and its result is rejected, so inject here.
