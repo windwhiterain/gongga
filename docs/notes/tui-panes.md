@@ -90,10 +90,17 @@ The pane goes with the blocks. A session created under the deleted one's name is
 pane, and it starts at its own newest row instead of inheriting the scroll of a view
 nobody can see any more.
 
-## Panes::pin and Panes::scroll_by
+## Panes::pin, Panes::scroll_by and Pane::scroll_by
 
 One pane's scroll, by name: SPEC's page keys act on the sticky session, not on
-whatever the keyboard last pointed at.
+whatever the keyboard last pointed at. The arithmetic is `Pane::scroll_by`, one
+clamp against the bound the last frame wrote, so a window and the list cannot drift
+apart in how far a notch takes them.
+
+`Panes::scroll_list_by` is the same call on the list. The list is a pane like the
+others -- SPEC's `(vertical scroll)` is on it -- and it is the one pane whose rows do
+not come from the log, so `Panes::list` finds it by kind rather than by name. Its name
+is empty: a name is a window of the log, and the list reads the announcement instead.
 
 The list is what is *shown*; a window that drops out of it keeps nothing of its own,
 because it never held anything -- the log does. Re-announcing the same list is not a
@@ -128,7 +135,12 @@ refusal.
 
 ## Panes::pin_newest
 
-Submitting a line pins every view to its newest row. The operator is about to cause an
-answer; leaving a view parked three pages up means the answer appears off screen and
-looks like nothing happened.
+Submitting a line pins every view of the log to its newest row. The operator is about
+to cause an answer; leaving a view parked three pages up means the answer appears off
+screen and looks like nothing happened.
+
+The list is not one of them. A submitted line appends to a session, never to the names,
+so pinning the list would be a scroll nobody asked for -- SPEC's "if scrolled from
+bottom, do not auto scroll" applied to the one view that has an offset and no new
+rows to follow.
 

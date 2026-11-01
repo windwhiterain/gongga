@@ -281,24 +281,18 @@ impl Screen {
         let chrome = self.panes.chrome(width.saturating_sub(1).max(1) as usize);
         let chunks = render::areas(area, input, chrome);
         let (list, _) = render::body(chunks[1], &self.panes);
-        if let Some(name) = render::list_at(
-            list,
-            &self.panes,
-            self.sticky_session.as_deref(),
-            column,
-            row,
-        ) {
-            return Some(Hit {
-                name,
-                part: Part::List,
-            });
-        }
         let slots = self.slots(width, height);
-        // The hint is drawn over the pane's last row, so it answers before it.
-        if let Some(name) = render::bottom_at(&slots, &self.panes, column, row) {
+        // The hint answers before the row it covers, the list's included.
+        if let Some(name) = render::bottom_at(&slots, list, &self.panes, column, row) {
             return Some(Hit {
                 name,
                 part: Part::Bottom,
+            });
+        }
+        if let Some(name) = render::list_at(list, &self.panes, column, row) {
+            return Some(Hit {
+                name,
+                part: Part::List,
             });
         }
         if let Some(name) = render::header_at(&slots, column, row) {
@@ -400,8 +394,11 @@ impl Screen {
                 return true;
             }
         }
-        if hit.part != Part::List {
-            self.scroll_pane(&hit.name, rows);
+        // The list is its own scroll -- SPEC gives it one -- and the empty name
+        // it is filed under is the pane, not a session.
+        match hit.part {
+            Part::List => self.panes.scroll_list_by(rows),
+            _ => self.scroll_pane(&hit.name, rows),
         }
         true
     }
@@ -1038,15 +1035,15 @@ impl Tui {
             return;
         };
         if let Some(rows) = rows {
-            // The wheel writes no state. Over an opened item it scrolls that
-            // item's box -- the one scroll SPEC gives a block.
+            // The wheel moves what it is over -- a window, the list, an opened
+            // item's box -- and writes no state any key reads.
             self.screen
                 .scroll_at(size.width, size.height, mouse.column, mouse.row, rows);
             self.dirty = true;
             return;
         }
         self.dirty = true;
-        // The way back to the newest row is not a click on the session under it.
+        // Not a click on the row under it: over the list it pins the list itself.
         if hit.part == Part::Bottom {
             self.screen.panes.pin(&hit.name);
             return;

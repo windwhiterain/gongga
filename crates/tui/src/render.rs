@@ -362,20 +362,15 @@ fn split_at_width(text: &str, width: usize) -> (String, &str) {
 ///
 /// # Invariant
 ///
-/// It reads the same rows `draw_list` writes, so a click lands on the name the
-/// operator read. See `docs/notes/tui-render.md`.
-pub fn list_at(
-    area: Rect,
-    panes: &Panes,
-    sticky: Option<&str>,
-    column: u16,
-    row: u16,
-) -> Option<String> {
+/// It reads the same rows `draw_list` writes -- from the list's own offset -- so a
+/// click lands on the name the operator read. See `docs/notes/tui-render.md`.
+pub fn list_at(area: Rect, panes: &Panes, column: u16, row: u16) -> Option<String> {
     if !covers(&area, column, row) {
         return None;
     }
     let names = panes.list_names();
-    let (start, _end) = list_window(names.len(), area.height as usize, sticky, names);
+    let scroll = panes.list().map(|pane| pane.scroll).unwrap_or(0);
+    let (start, _end) = list_window(names.len(), area.height as usize, scroll);
     let index = start + (row - area.y) as usize;
     names.get(index).cloned()
 }
@@ -520,14 +515,20 @@ fn draw_header(f: &mut Frame, s: &Screen, area: Rect) {
 /// session is doing, and the name is bright exactly when that session is shown beside
 /// the list. The sticky session is not marked here -- it is shown by definition, and
 /// the frame around its window is its mark. See `docs/notes/tui-render.md`.
-fn draw_list(f: &mut Frame, s: &Screen, area: Rect) {
+fn draw_list(f: &mut Frame, s: &mut Screen, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
     let height = area.height as usize;
+    let total = s.panes.list_names().len();
+    let Some(scroll) = s.panes.list_mut().map(|pane| {
+        pane.bound(total.saturating_sub(height));
+        pane.scroll
+    }) else {
+        return;
+    };
     let names = s.panes.list_names();
-    let sticky = s.sticky_session.as_deref();
-    let (start, end) = list_window(names.len(), height, sticky, names);
+    let (start, end) = list_window(total, height, scroll);
     let rows: Vec<Line> = names
         .get(start..end)
         .unwrap_or_default()
@@ -545,6 +546,9 @@ fn draw_list(f: &mut Frame, s: &Screen, area: Rect) {
         })
         .collect();
     f.render_widget(Paragraph::new(rows), area);
+    if scroll > 0 {
+        draw_bottom(f, area);
+    }
 }
 
 /// A status as one column: what the session is doing, in the space of a letter.
@@ -582,28 +586,15 @@ fn name_style(sticky: bool, base: Style) -> Style {
     }
 }
 
-/// The rows of the list a frame shows: the ones around the sticky session.
+/// The rows of the list a frame shows: its tail, scrolled up by `scroll`.
 ///
 /// # Invariant
 ///
-/// The frame and the click read the same window, so a click lands on the name the
-/// operator saw. See `docs/notes/tui-render.md`.
-fn list_window(
-    total: usize,
-    height: usize,
-    sticky: Option<&str>,
-    names: &[String],
-) -> (usize, usize) {
-    if total <= height {
-        return (0, total);
-    }
-    // The only position the list has is the sticky session, so the row that
-    // says where a message goes is never off screen.
-    let at = sticky
-        .and_then(|name| names.iter().position(|known| known == name))
-        .unwrap_or(0);
-    let start = at.saturating_sub(height / 2).min(total - height);
-    (start, start + height)
+/// The frame and the click read the same window, from the same offset, so a click
+/// lands on the name the operator saw. See `docs/notes/tui-render.md`.
+fn list_window(total: usize, height: usize, scroll: usize) -> (usize, usize) {
+    let end = total - scroll.min(total.saturating_sub(height));
+    (end.saturating_sub(height), end)
 }
 
 /// The way back to the newest row: its text and the one row it covers.
@@ -661,13 +652,24 @@ fn draw_bottom(f: &mut Frame, area: Rect) {
     );
 }
 
-/// The pane whose hint covers this cell, for a click.
+/// The view whose hint covers this cell, for a click: the list's, or a window's.
 ///
 /// # Invariant
 ///
-/// Asked before the pane it is drawn on: the way back to the newest row must not
-/// become a click on the session that holds it.
-pub fn bottom_at(slots: &[Slot], panes: &Panes, column: u16, row: u16) -> Option<String> {
+/// Asked before the row it is drawn over: the way back to the newest row must not
+/// become a click on the name or the session that holds it. See
+/// `docs/notes/tui-render.md`.
+pub fn bottom_at(
+    slots: &[Slot],
+    list: Rect,
+    panes: &Panes,
+    column: u16,
+    row: u16,
+) -> Option<String> {
+    let scrolled = panes.list().is_some_and(|pane| pane.scroll > 0);
+    if scrolled && bottom_rect(list).is_some_and(|rect| covers(&rect, column, row)) {
+        return panes.list().map(|pane| pane.name.clone());
+    }
     for slot in slots {
         let scrolled = panes.get(&slot.name).is_some_and(|pane| pane.scroll > 0);
         if !scrolled {
@@ -877,9 +879,8 @@ fn draw_rows(f: &mut Frame, s: &mut Screen, name: &str, area: Rect) {
         .collect();
     drop(window);
     if let Some(pane) = s.panes.get_mut(&name) {
-        pane.max_scroll = max_scroll;
         // Clamped here too, for a pane that just grew or a log that just shrank.
-        pane.scroll = scroll.min(max_scroll);
+        pane.bound(max_scroll);
     }
     f.render_widget(Paragraph::new(lines), area);
     if scroll > 0 {

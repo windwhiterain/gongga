@@ -173,22 +173,34 @@ pointer cannot press is a picture of a button, and a click that lands on one use
 fall through to the pane under it and set that session sticky -- so the way back to
 the newest row asked for a command instead.
 
-`bottom_at` is asked before `pane_at` in `Screen::session_at_row` for that reason,
-and it only answers for a pane that is actually scrolled: a hidden hint is not a click
-target.
+`bottom_at` is asked before `list_at` and `pane_at` in `Screen::session_at_row` for
+that reason, and it only answers for a view that is actually scrolled: a hidden hint is
+not a click target.
+
+The list is one of the views it answers for, and it is the reason the order is
+`bottom_at` first: the hint sits on the last row the list -- which draws one name per
+row -- would otherwise hand to its own toggle. The list's hint names the list's own
+pane, whose name is empty because it reads no window of the log, so pressing it pins
+the list and toggles no session.
 
 ## list_window
 
-The rows of the session list a frame shows: the ones around the sticky session.
+The rows of the session list a frame shows: its tail, scrolled up by the list's own
+offset.
 
-The list owns no scroll. SPEC gives it a vertical scroll, and the sticky session is
-that scroll's only position: the window follows the name, so the row that says where
-a message will go is never the one that scrolled away, and a click lands on a name
-the operator can see. A name nobody knows -- before the first `set_session` -- pins
-the window at the top.
+SPEC's `(vertical scroll)` is on the list as it is on a window, so the list holds a
+scroll and the wheel over it is the list's -- the same number, counted the same way,
+as a window's. It was derived from the sticky session for a while, which read as a
+list that could not be scrolled at all: a wheel over it moved nothing, and the note
+that said the list had a scroll of its own was the only thing claiming otherwise.
 
-The frame and the click read this one function with the same sticky session, so
-they cannot disagree about which name sits on which row.
+The frame and the click read this one function from the same offset, so they cannot
+disagree about which name sits on which row.
+
+A consequence, said out loud because it is visible: the list no longer follows the
+sticky session. The name a message will go to is marked by the frame around that
+session's window, which is beside the list, and the list is a list of every session
+-- scrolling it is what says which part of it is on screen.
 
 ## draw_header
 
@@ -238,9 +250,14 @@ one spelling in both areas, so a name cannot be mistaken for the first word of t
 events beside it. `bracketed` is that spelling, and `list_width` counts the mark, its
 space, the two brackets and one column of air.
 
-`list_window` still centres the list on the sticky session even though the row no
-longer says so: which rows are on screen is a scroll position, not a mark, and the
-session the operator is reading is the useful thing to centre on.
+The frame is also the only place the list's height is known, so `draw_list` writes
+the bound back (`Pane::bound`, the same call a window makes in `draw_rows`) and clamps
+the offset into it: a list that just lost a session, or a window that just grew,
+lands inside its own rows before it is drawn. Every other reader -- the wheel between
+frames, the click -- reads that bound instead of working it out again.
+
+Scrolled away from its newest row, the list shows the way back to it: the same hint,
+on the same condition, as any other view.
 
 ## name_style
 

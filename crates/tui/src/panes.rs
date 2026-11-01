@@ -41,9 +41,10 @@ impl Kind {
         matches!(self, Kind::Shown | Kind::Command)
     }
 
-    /// Whether the wheel and the keyboard may scroll it.
+    /// Whether the wheel may scroll it: SPEC gives the list and a shown session a
+    /// vertical scroll, and the command line none.
     pub fn scrolls(self) -> bool {
-        self == Kind::Shown
+        matches!(self, Kind::List | Kind::Shown)
     }
 }
 
@@ -83,6 +84,28 @@ impl Pane {
     /// Which rows this pane reads.
     pub fn view(&self) -> View<'_> {
         View::Window(&self.name)
+    }
+
+    /// Moves this view `rows` rows, positive into its past, within its bound.
+    ///
+    /// # Invariant
+    ///
+    /// The bound is the renderer's: only a frame knows how tall this view is drawn,
+    /// so a scroll between frames stops where the last one ended. See
+    /// `docs/notes/tui-panes.md`.
+    pub fn scroll_by(&mut self, rows: i64) {
+        self.scroll = (self.scroll as i64 + rows).clamp(0, self.max_scroll as i64) as usize;
+    }
+
+    /// Writes the bound this view is drawn within, keeping the offset inside it.
+    ///
+    /// # Invariant
+    ///
+    /// Called by the frame that draws it, because only a frame knows how tall the
+    /// view is: the wheel between frames stops at this bound.
+    pub fn bound(&mut self, max_scroll: usize) {
+        self.max_scroll = max_scroll;
+        self.scroll = self.scroll.min(max_scroll);
     }
 }
 
@@ -333,12 +356,32 @@ impl Panes {
         self.panes.iter_mut().find(|pane| pane.name == name)
     }
 
+    /// The session list: the one view drawn from the announcement, not the log.
+    ///
+    /// # Invariant
+    ///
+    /// Its name is empty because it has no window of the log to read: the rows it
+    /// draws are SPEC's session list, and `list_names` is where they come from.
+    pub fn list(&self) -> Option<&Pane> {
+        self.panes.iter().find(|pane| pane.kind == Kind::List)
+    }
+
+    pub fn list_mut(&mut self) -> Option<&mut Pane> {
+        self.panes.iter_mut().find(|pane| pane.kind == Kind::List)
+    }
+
     /// Positive scrolls into the past, negative towards the newest line.
     pub fn scroll_by(&mut self, name: &str, rows: i64) {
-        let Some(pane) = self.get_mut(name) else {
-            return;
-        };
-        pane.scroll = (pane.scroll as i64 + rows).clamp(0, pane.max_scroll as i64) as usize;
+        if let Some(pane) = self.get_mut(name) {
+            pane.scroll_by(rows);
+        }
+    }
+
+    /// Scrolls the session list by `rows`, by the rule every other view obeys.
+    pub fn scroll_list_by(&mut self, rows: i64) {
+        if let Some(pane) = self.list_mut() {
+            pane.scroll_by(rows);
+        }
     }
 
     /// Pins one pane to its newest line: what "back to the bottom" means.
@@ -348,10 +391,18 @@ impl Panes {
         }
     }
 
-    /// Pins every pane to its newest line.
+    /// Pins every view of the log to its newest line.
+    ///
+    /// # Invariant
+    ///
+    /// The list is not one of them: a submitted line appends to the sessions, never
+    /// to the names, so pinning it would be the auto scroll SPEC forbids. See
+    /// `docs/notes/tui-panes.md`.
     pub fn pin_newest(&mut self) {
         for pane in &mut self.panes {
-            pane.scroll = 0;
+            if pane.kind.is_events() {
+                pane.scroll = 0;
+            }
         }
     }
 

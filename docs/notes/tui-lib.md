@@ -185,7 +185,7 @@ from `offline — reconnecting (attempt 1)` to `3 session(s)` is that
 sentence said in facts. A build mismatch is said *after* the refresh, so the facts
 do not wipe it in the same breath.
 
-## Screen::sticky_session is the only state
+## Screen::sticky_session decides the keyboard
 
 There is no `focus`: no "which pane did the pointer last touch", no second name that
 can drift from the one the keys obey. The sticky session decides everything the
@@ -193,14 +193,14 @@ keyboard does -- which window a page scrolls, whose window is framed, which colu
 takes the width an even share leaves over -- and a click is what changes it, by asking
 the command layer for the command that sets it.
 
-The wheel is momentary: it moves what it is over and writes no state, so a glance at
-an older line does not retarget the next page key. A click sets the sticky, and that
-is the only way the keys' target moves.
+The wheel retargets nothing, so a glance at an older line does not move the next page
+key. A click sets the sticky, and that is the only way the keys' target moves.
 
-The session list has no scroll of its own either. Its window is derived from the
-sticky session (`render::list_window`), which is what makes one name the whole of the
-state: the list cannot drift to showing a different set of rows than the loop is
-sending to.
+What the wheel does write is the scroll of what it is over, and the session list is
+one of those views: SPEC gives the list a `(vertical scroll)`, so it holds an offset
+of its own (`render::list_window`) instead of being derived from the sticky session.
+A wheel over the list moves the list and nothing else, so the name the keys send to
+does not depend on which row of names the operator happened to be reading.
 
 ## Screen::slots, Screen::visible_rows, Screen::page_height
 
