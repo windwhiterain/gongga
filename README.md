@@ -19,7 +19,8 @@ _Post Modern Agent Harness_
 ### Quality of Life
 
 - Message/notice/interruption will wake the waiting agent immediately, turn the waited process into background.
-- provider quota update in realtime. 
+- Provider quota update in realtime. 
+- Reasoning abstraction show both first line and second line so you know the reaction of the agents, and what it gonna do.
 
 ## Environment Requirement
 

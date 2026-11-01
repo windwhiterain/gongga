@@ -22,6 +22,10 @@ all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, l
 standard OpenAI Response API.
 - images: File API, gated by the roster's modalities.
 
+### Invarian
+- everything in message must store and send.
+- every message that has been sent must not be changed.
+
 ## Tool
 use `which("bash")` as bash.
 - bash{command, name = "default", task = "default", background = false, detached = false}:
@@ -103,7 +107,7 @@ for the first user message to a empty session, find all meta references recursiv
 - client:
   - `set_sticky --name <name> --value <value>`:
   - `del_sticky --name <name>`
-  - `set_render [--block_size <n>](initial: 6)`:
+  - `set_render [--block_size <n>](initial: 8)`:
     - `block_size`: max line count of non-output block, auto scroll.
   - `set_render_session --session <name> [--show <bool>]`
   - `connect_server [--ip <ip>](default: localhost) --port <port>`
