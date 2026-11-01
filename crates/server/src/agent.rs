@@ -426,7 +426,7 @@ impl Agent {
         // in front of the transcript, so growing it would re-bill the prefix.
         let (index, rooted) = match &stored {
             Some(kept) => (kept.index.clone(), kept.rooted.clone()),
-            None => match self.index_of(id, cwd) {
+            None => match self.index_of(id, name, cwd) {
                 Some((index, rooted)) => (Some(index), rooted),
                 None => (None, Vec::new()),
             },
@@ -468,16 +468,27 @@ impl Agent {
     /// entry is invented for a reference that could not be read, and the spellings
     /// returned are exactly the ones the index carries, so `meta::expand` leaves
     /// those mentions literal. See `docs/notes/server-agent.md`.
-    fn index_of(&self, id: i64, cwd: &std::path::Path) -> Option<(String, Vec<String>)> {
-        let texts = self.store.user_texts(id).ok()?;
+    fn index_of(
+        &self,
+        id: i64,
+        name: &str,
+        cwd: &std::path::Path,
+    ) -> Option<(String, Vec<String>)> {
+        // The queue as well as the transcript: a message delivered before this row
+        // was left literal on the promise that the row would carry it.
+        let mut texts = self.store.user_texts(id).ok()?;
+        texts.extend(self.store.queued_texts(name).unwrap_or_default());
         let borrowed: Vec<&str> = texts.iter().map(String::as_str).collect();
         let roots = crate::meta::roots(cwd, &borrowed);
         if roots.is_empty() {
             return None;
         }
-        let wanted: Vec<(&str, usize)> = roots
+        let wanted: Vec<(&str, usize, u64)> = roots
             .iter()
-            .map(|root| (root.spelling.as_str(), root.len()))
+            .map(|root| {
+                let digest = crate::prefix_cache::digest(&root.content);
+                (root.spelling.as_str(), root.len(), digest)
+            })
             .collect();
         let order = crate::prefix_cache::plan(&self.store, &wanted);
         let mut entries: Vec<&crate::meta::Root> = Vec::with_capacity(order.len());
@@ -491,7 +502,7 @@ impl Agent {
             .map(|root| root.text())
             .collect::<Vec<_>>()
             .join("\n\n");
-        let index = format!("{}\n\n{body}", crate::meta::INDEX_HEAD);
+        let index = crate::prompts::shared().render("reference_index", &[("entries", &body)]);
         let rooted: Vec<String> = entries.iter().map(|r| r.spelling.clone()).collect();
         Some((index, rooted))
     }

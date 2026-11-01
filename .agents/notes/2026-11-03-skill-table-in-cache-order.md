@@ -107,3 +107,38 @@ across anything, so it should be serializable」。
 - index 只在首轮建立；之后新提到的 `@...` 仍按老路内联展开。要不要「长大」是缓存账，不是
   正确性问题——长大一次，后面整段 transcript 失去命中。
 - `MISS_SCALE` 仍是 liana 的 64，没在真 provider 上量过。
+
+## 第四轮：对照 SPEC 的检查 + 内容即身份
+
+User：「再对照 SPEC 检查一下有无遗漏」然后「如果 @... 引用的内容变了，cache 里要删掉旧的，不能把
+新的当成旧的」。
+
+### 对照 SPEC 第 44-46 行（`### Meta Prefix Cache Opt`）发现的三个遗漏，全已修
+
+1. **图片会丢**。原文「find all meta references」包括 `@image:`，但图片没有「content」，我把
+   它排除在 index 外，就顺手把消息里的 mention 也留成字面了——结果首轮的���片不再上传。
+   现在由 `meta::literal(cwd, text, rooted)` 决定哪些 mention 保持字面：只有「index 真的收录了
+   文本」的那些，其余照旧展开。图片、未知 skill 因此恢复原行为。变异测试：
+   `a_message_leaves_literal_only_what_the_index_carries`。
+2. **排队的消息不在 index 里**。首轮消息可能先进 inbox（`kind='inject'`），它被留成字面是因为
+   「马上要写的那行会收录它」；但 `index_of` 只读 transcript，那条消息就永久悬空。现在
+   `store::queued_texts` 一并读。
+3. **index 的说明文字写在 Rust 里**（`meta::INDEX_HEAD`）。这正是 `prompts::REQUIRED` 存在的
+   理由，而且启动检查当场抓到：新 pin 里没有 `reference_index` 模板时服务端拒绝启动，而不是
+   发出带洞的 prompt。已改成 ship 里 `[prompts] reference_index`。
+
+### 内容变了就是新东西
+
+liana 的 memory 是追加式，id 即内容；这里相反——skill 正文、文件、表格行都会被改，名字不变、
+字节变了。所以 `Item` 的身份是 `(key, content)`，`content` 是字节的 digest，`plan` 由调用方给：
+`digest(&text)`。两条后果：
+
+- 改过的文本是**新** item，旧链不能给它「预热」——否则就是「把新的当成旧的」，表现为每次
+  复用该链都 miss，而 miss 恰恰是这模块要省掉的东西，且完全不可见。
+- 旧 item 由 `forget_unwanted` 在每次 plan 后清掉（连同穿过它的链）；`forget` 放在 plan
+  **之后**，否则会重编号 `ids`。留下的一定是刚被要过的。
+
+`Layout::index` 是派生数据（JSON 没有元组 key），`#[serde(skip)]`，读盘后由 `reindex` 重建。
+
+E2E 覆盖：首轮 index 有旧正文 → 改 skill 正文 → 之后两个会话 index 是新正文且两者逐字节相同
+→ 磁盘 layout 里 `@skill:helper` 只有一个 item（新正文大小）。12 项全 ok。

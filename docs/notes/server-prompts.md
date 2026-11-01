@@ -76,6 +76,15 @@ that is neither on `REQUIRED` nor in the pinned content.
 
 `complained` is why the same damaged file does not produce one line per request.
 
+## reference_index
+
+The one template whose value is not a notice but a document: the text of every
+reference the conversation named, each after the spelling that names it. It is rendered
+once, into the first prompt row, and copied verbatim by every row after it -- growing
+it would re-bill the transcript behind it. `{{entries}}` is the whole body, so the order
+the entries arrive in is `prefix_cache`'s rather than the template's: a reader who
+reorders that text is reordering a cache, not a document.
+
 ## substitute
 
 For the notices only -- never for `SYSTEM`. `{{name}}` and nothing else: no

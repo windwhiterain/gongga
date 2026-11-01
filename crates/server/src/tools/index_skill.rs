@@ -155,10 +155,14 @@ fn ordered(skills: Vec<Installed>, store: &crate::store::Store) -> Vec<Value> {
             (key, row)
         })
         .collect();
-    // The bytes each row costs on the wire, which is what a warmed prefix holds.
-    let wanted: Vec<(&str, usize)> = rows
+    // The bytes and their digest: an edited row is a new item.
+    let wanted: Vec<(&str, usize, u64)> = rows
         .iter()
-        .map(|(key, row)| (key.as_str(), row.to_string().len()))
+        .map(|(key, row)| {
+            let text = row.to_string();
+            let digest = crate::prefix_cache::digest(&text);
+            (key.as_str(), text.len(), digest)
+        })
         .collect();
     let order = crate::prefix_cache::plan(store, &wanted);
     let mut by_key: HashMap<String, Value> = rows.into_iter().collect();

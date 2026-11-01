@@ -34,10 +34,36 @@ not text, or a skill this machine does not have -- is left out entirely rather t
 invented: its mention stays literal in the message, so the reader sees a name with
 nothing behind it, which is the truth.
 
+`literal` decides which mentions stay raw: the spellings the stored row's index
+carries, or -- for a message delivered before that row exists -- the spellings the row
+is about to carry, which is `roots` of the message. Everything outside that set is
+resolved as it always was, and that is not a detail: `@image:` is never indexed (a
+picture is not text), so it must still be uploaded and attached, or a first message
+that pointed at a screenshot would lose it. An unknown skill is the same shape -- no
+text to index, so it answers with its path instead of a hint about a file.
+
 `spelling` is one function because it must be one spelling. The index carries it and
 `expand` matches against it, so two spellings of one reference would leave the message
 expanded *and* its text in the index. `@skill: heir` and `@skill:heir` are one
 reference, and the canonical form is the one with no space.
+
+## the queue, and why the index is not only the transcript
+
+A message delivered while the session has no prompt row yet is left literal, on the
+promise that the row about to be written will index it. That promise is only true if
+the row reads the inbox too, so `agent::index_of` takes `store.user_texts` (the
+transcript) *and* `store.queued_texts` (the messages still waiting there). Without the
+second, a message queued during the first turn would have been stored with a literal
+`@skill:` that no index entry ever backed -- the reader would see a name with nothing
+behind it.
+
+## the index's prose is the config's
+
+The sentence introducing the entries is a `[prompts]` template, `reference_index`,
+required like every other word the model reads. It was a `const` in this module for one
+commit, which is exactly the thing `prompts::REQUIRED` exists to prevent -- and the
+startup check caught it: a build whose pin did not yet carry the template refused to
+start rather than sending a prompt with a hole in it.
 
 ## why the index is built once
 

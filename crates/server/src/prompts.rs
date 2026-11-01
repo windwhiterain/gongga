@@ -32,6 +32,7 @@ pub const REQUIRED: &[&str] = &[
     "interrupted_call",
     "size_hint",
     "image_refusal",
+    "reference_index",
     "output_cap",
     "output_omitted",
 ];
@@ -306,6 +307,16 @@ mod tests {
             prompts.system(),
             prompts.system(),
             "one text for every caller"
+        );
+    }
+
+    /// The index's prose is the config's, and its entries are what fills it.
+    #[test]
+    fn the_reference_index_is_rendered_from_the_config() {
+        let prompts = Prompts::of(&[("reference_index", "The text follows.\n\n{{entries}}")]);
+        assert_eq!(
+            prompts.render("reference_index", &[("entries", "@skill:x\nbody")]),
+            "The text follows.\n\n@skill:x\nbody"
         );
     }
 

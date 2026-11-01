@@ -15,7 +15,10 @@ fn shared(store: &Store) -> MutexGuard<'static, Layout> {
     SHARED
         .get_or_init(|| {
             Mutex::new(match store.prefix_layout() {
-                Ok(Some(layout)) => layout,
+                Ok(Some(mut layout)) => {
+                    layout.reindex();
+                    layout
+                }
                 Ok(None) => Layout::new(),
                 Err(e) => {
                     tracing::warn!(error = %e, "the stored prefix layout cannot be read; starting empty");
@@ -27,8 +30,16 @@ fn shared(store: &Store) -> MutexGuard<'static, Layout> {
         .unwrap_or_else(|e| e.into_inner())
 }
 
+/// The digest that says "the same text as last time", for a caller's content.
+pub fn digest(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// The cheapest order for `wanted`, learnt across callers and runs.
-pub fn plan(store: &Store, wanted: &[(&str, usize)]) -> Vec<String> {
+pub fn plan(store: &Store, wanted: &[(&str, usize, u64)]) -> Vec<String> {
     let mut layout = shared(store);
     let order = layout.plan(wanted);
     if let Err(e) = store.save_prefix_layout(&layout) {
@@ -45,10 +56,18 @@ const MISS_SCALE: usize = 64;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct NodeId(usize);
 
-/// One thing that can be emitted: a table row, a memory, a message.
+/// One thing that can be emitted: a table row, an indexed reference, a message.
+///
+/// # Invariant
+///
+/// The identity is the text, not the name: edited content is a different item, or
+/// the cache would claim a prefix it cannot serve.
 #[derive(Debug, Serialize, Deserialize)]
-struct Item {
-    key: String,
+pub struct Item {
+    /// The name the caller knows it by, which may come to name other text later.
+    pub key: String,
+    /// A digest of the bytes, which is what says "the same text as last time".
+    pub content: u64,
     /// One node per order this item has ended.
     nodes: Vec<NodeId>,
     /// The bytes sending it costs the provider.
@@ -68,7 +87,10 @@ struct Node {
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Layout {
     items: Vec<Item>,
-    index: HashMap<String, usize>,
+    /// `key` and the digest of its text, to the item that text is. Derived from
+    /// `items`, so it is rebuilt rather than stored.
+    #[serde(skip)]
+    index: HashMap<(String, u64), usize>,
     nodes: Vec<Node>,
 }
 
@@ -77,8 +99,16 @@ impl Layout {
         Self::default()
     }
 
+    /// Rebuilds the lookup from `items`, for a layout that came off disk.
+    pub fn reindex(&mut self) {
+        self.index.clear();
+        for (id, item) in self.items.iter().enumerate() {
+            self.index.insert((item.key.clone(), item.content), id);
+        }
+    }
+
     /// The cheapest chain, then whatever is new. See the note.
-    pub fn plan(&mut self, wanted: &[(&str, usize)]) -> Vec<String> {
+    pub fn plan(&mut self, wanted: &[(&str, usize, u64)]) -> Vec<String> {
         let ids = self.ids(wanted);
         if ids.is_empty() {
             return Vec::new();
@@ -105,7 +135,11 @@ impl Layout {
                 tail = Some(self.add(id, tail));
             }
         }
-        self.order(tail)
+        let order = self.order(tail);
+        // After the plan, never before: forgetting first would renumber the items
+        // these ids name.
+        self.forget_unwanted(&ids);
+        order
     }
 
     /// Each chain's cost to send, and `None` for a chain that cannot be sent now.
@@ -165,11 +199,11 @@ impl Layout {
     }
 
     /// The item ids `wanted` names, in its order, declaring what is new.
-    fn ids(&mut self, wanted: &[(&str, usize)]) -> Vec<usize> {
+    fn ids(&mut self, wanted: &[(&str, usize, u64)]) -> Vec<usize> {
         let mut ids: Vec<usize> = Vec::with_capacity(wanted.len());
         let mut restated = false;
-        for &(key, size) in wanted {
-            let id = match self.index.get(key) {
+        for &(key, size, content) in wanted {
+            let id = match self.index.get(&(key.to_string(), content)) {
                 Some(&id) => {
                     if self.items[id].size != size {
                         self.items[id].size = size;
@@ -181,10 +215,11 @@ impl Layout {
                     let id = self.items.len();
                     self.items.push(Item {
                         key: key.to_string(),
+                        content,
                         nodes: Vec::new(),
                         size,
                     });
-                    self.index.insert(key.to_string(), id);
+                    self.index.insert((key.to_string(), content), id);
                     id
                 }
             };
@@ -196,6 +231,78 @@ impl Layout {
             self.recost();
         }
         ids
+    }
+
+    /// Drops every item whose text is not in `ids`, and the chains through it.
+    ///
+    /// # Invariant
+    ///
+    /// What stays can only be what was just asked for: a chain left through an item
+    /// nobody wants is a chain no future plan could choose, so keeping it would make
+    /// the layout grow without ever paying for itself.
+    fn forget_unwanted(&mut self, ids: &[usize]) {
+        if self.items.len() == ids.len() {
+            return;
+        }
+        let mut doomed = vec![false; self.nodes.len()];
+        for item in 0..self.items.len() {
+            if !ids.contains(&item) {
+                for node in self.subtree(item) {
+                    doomed[node] = true;
+                }
+            }
+        }
+        let mut remap: Vec<Option<usize>> = vec![None; self.nodes.len()];
+        let mut next = 0;
+        for (node, kept) in remap.iter_mut().enumerate() {
+            if !doomed[node] {
+                *kept = Some(next);
+                next += 1;
+            }
+        }
+        let nodes = std::mem::take(&mut self.nodes);
+        self.nodes = nodes
+            .into_iter()
+            .enumerate()
+            .filter(|(node, _)| !doomed[*node])
+            .map(|(_, node)| Node {
+                item: node.item,
+                parent: node.parent.and_then(|parent| remap[parent.0]).map(NodeId),
+                children: node
+                    .children
+                    .into_iter()
+                    .filter_map(|child| remap[child.0].map(NodeId))
+                    .collect(),
+                size: node.size,
+            })
+            .collect();
+        let kept: Vec<usize> = (0..self.items.len())
+            .filter(|id| ids.contains(id))
+            .collect();
+        let reindex: Vec<Option<usize>> = (0..self.items.len())
+            .map(|id| kept.iter().position(|kept| *kept == id))
+            .collect();
+        let items = std::mem::take(&mut self.items);
+        self.items = items
+            .into_iter()
+            .enumerate()
+            .filter(|(id, _)| reindex[*id].is_some())
+            .map(|(_, mut item)| {
+                item.nodes = item
+                    .nodes
+                    .into_iter()
+                    .filter_map(|node| remap[node.0].map(NodeId))
+                    .collect();
+                item
+            })
+            .collect();
+        for node in &mut self.nodes {
+            node.item = reindex[node.item].expect("a kept node's item was kept");
+        }
+        self.index.clear();
+        for (id, item) in self.items.iter().enumerate() {
+            self.index.insert((item.key.clone(), item.content), id);
+        }
     }
 
     /// Re-derives every chain's size after one item's size changed.
@@ -248,17 +355,53 @@ impl Layout {
     fn chain_count(&self) -> usize {
         self.nodes.len()
     }
+
+    /// What a fresh plan of `wanted` would choose, without teaching the layout.
+    #[cfg(test)]
+    fn chain_order(&self, wanted: &[(&str, usize, u64)]) -> Vec<String> {
+        let ids: Vec<usize> = wanted
+            .iter()
+            .filter_map(|(key, _, content)| self.index.get(&(key.to_string(), *content)).copied())
+            .collect();
+        let mut best = ids.iter().map(|&id| self.items[id].size).sum::<usize>() * MISS_SCALE;
+        let mut chosen = None;
+        for (node, cost) in self.cold_chains(&ids).into_iter().enumerate() {
+            let Some(cost) = cost else { continue };
+            if cost < best {
+                best = cost;
+                chosen = Some(NodeId(node));
+            }
+        }
+        let mut keys = self.order(chosen);
+        for &id in &ids {
+            let key = self.items[id].key.clone();
+            if !keys.contains(&key) {
+                keys.push(key);
+            }
+        }
+        keys
+    }
+
+    #[cfg(test)]
+    fn item_keys(&self) -> Vec<String> {
+        self.items.iter().map(|item| item.key.clone()).collect()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The digest a caller would pass: the text, and nothing about its name.
+    fn d(text: &str) -> u64 {
+        digest(text)
+    }
+
     /// A set emitted for the first time comes out in the order it was given.
     #[test]
     fn the_first_plan_is_the_order_it_was_given() {
         let mut layout = Layout::new();
-        let planned = layout.plan(&[("a", 10), ("b", 20), ("c", 30)]);
+        let planned = layout.plan(&[("a", 10, d("a")), ("b", 20, d("b")), ("c", 30, d("c"))]);
         assert_eq!(planned, vec!["a", "b", "c"]);
     }
 
@@ -266,9 +409,9 @@ mod tests {
     #[test]
     fn a_repeated_set_is_emitted_unchanged() {
         let mut layout = Layout::new();
-        let once = layout.plan(&[("a", 10), ("b", 20), ("c", 30)]);
+        let once = layout.plan(&[("a", 10, d("a")), ("b", 20, d("b")), ("c", 30, d("c"))]);
         let chains = layout.chain_count();
-        let again = layout.plan(&[("a", 10), ("b", 20), ("c", 30)]);
+        let again = layout.plan(&[("a", 10, d("a")), ("b", 20, d("b")), ("c", 30, d("c"))]);
         assert_eq!(once, again);
         assert_eq!(layout.chain_count(), chains, "nothing new was learnt");
     }
@@ -277,16 +420,25 @@ mod tests {
     #[test]
     fn a_warm_chain_beats_the_order_asked_for() {
         let mut layout = Layout::new();
-        assert_eq!(layout.plan(&[("a", 10), ("b", 20)]), vec!["a", "b"]);
-        assert_eq!(layout.plan(&[("b", 20), ("a", 10)]), vec!["a", "b"]);
+        assert_eq!(
+            layout.plan(&[("a", 10, d("a")), ("b", 20, d("b"))]),
+            vec!["a", "b"]
+        );
+        assert_eq!(
+            layout.plan(&[("b", 20, d("b")), ("a", 10, d("a"))]),
+            vec!["a", "b"]
+        );
     }
 
     /// A prefix that is partly warm keeps what it can and appends the rest.
     #[test]
     fn what_is_new_goes_after_what_is_warm() {
         let mut layout = Layout::new();
-        layout.plan(&[("a", 10), ("b", 20)]);
-        assert_eq!(layout.plan(&[("a", 10), ("z", 5)]), vec!["a", "z"]);
+        layout.plan(&[("a", 10, d("a")), ("b", 20, d("b"))]);
+        assert_eq!(
+            layout.plan(&[("a", 10, d("a")), ("z", 5, d("z"))]),
+            vec!["a", "z"]
+        );
     }
 
     /// A row dropped from the set is never emitted, however warm its chain is.
@@ -298,8 +450,8 @@ mod tests {
     #[test]
     fn a_chain_through_an_absent_item_is_not_a_candidate() {
         let mut layout = Layout::new();
-        layout.plan(&[("a", 10), ("b", 20), ("c", 30)]);
-        let planned = layout.plan(&[("c", 30)]);
+        layout.plan(&[("a", 10, d("a")), ("b", 20, d("b")), ("c", 30, d("c"))]);
+        let planned = layout.plan(&[("c", 30, d("c"))]);
         assert_eq!(planned, vec!["c"]);
     }
 
@@ -307,9 +459,9 @@ mod tests {
     #[test]
     fn a_shrunk_item_is_cheaper_than_sending_it_cold() {
         let mut layout = Layout::new();
-        assert_eq!(layout.plan(&[("a", 1000)]), vec!["a"]);
+        assert_eq!(layout.plan(&[("a", 1000, d("a"))]), vec!["a"]);
         let chains = layout.chain_count();
-        assert_eq!(layout.plan(&[("a", 10)]), vec!["a"]);
+        assert_eq!(layout.plan(&[("a", 10, d("a"))]), vec!["a"]);
         assert_eq!(layout.chain_count(), chains, "re-costed, not abandoned");
     }
 
@@ -324,12 +476,52 @@ mod tests {
     fn a_layout_survives_a_round_trip_through_the_store() {
         let store =
             crate::store::Store::open(std::path::Path::new(":memory:")).expect("a throwaway store");
-        let wanted = [("skill:a", 10usize), ("skill:b", 20)];
-        let reversed = [("skill:b", 20usize), ("skill:a", 10)];
-        assert_eq!(plan(&store, &wanted), vec!["skill:a", "skill:b"]);
-        let stored = store.prefix_layout().expect("a readable layout");
-        let mut restored = stored.expect("the plan wrote one");
+        let wanted = [("skill:a", 10usize, d("a")), ("skill:b", 20, d("b"))];
+        let reversed = [("skill:b", 20usize, d("b")), ("skill:a", 10, d("a"))];
+        let mut layout = Layout::new();
+        assert_eq!(layout.plan(&wanted), vec!["skill:a", "skill:b"]);
+        store.save_prefix_layout(&layout).expect("a writable store");
+        let mut restored = store
+            .prefix_layout()
+            .expect("a readable layout")
+            .expect("the plan wrote one");
+        restored.reindex();
         assert_eq!(restored.plan(&reversed), vec!["skill:a", "skill:b"]);
+    }
+
+    /// Edited content is a new item, not the old one under the same name.
+    ///
+    /// # Invariant
+    ///
+    /// A key that now names other bytes cannot be warmed by the chain that carried
+    /// the old bytes: the cache would claim a prefix the endpoint cannot serve.
+    #[test]
+    fn changed_content_is_a_new_item() {
+        let mut layout = Layout::new();
+        layout.plan(&[("skill", 10, d("old body"))]);
+        layout.plan(&[("skill", 10, d("new body"))]);
+        assert_eq!(
+            layout.chain_order(&[("skill", 10, d("new body"))]),
+            vec!["skill"],
+            "the new text is planned on its own"
+        );
+        let items = layout.item_keys();
+        assert_eq!(items, vec!["skill".to_string()], "one name, one live item");
+    }
+
+    /// The item nothing wants any more is dropped, and its chains with it.
+    ///
+    /// # Invariant
+    ///
+    /// What stays is what was just asked for: an item whose text is gone cannot be
+    /// revived by a later plan, so its chains are dead weight.
+    #[test]
+    fn what_is_no_longer_wanted_is_forgotten() {
+        let mut layout = Layout::new();
+        layout.plan(&[("a", 10, d("a")), ("b", 20, d("b"))]);
+        assert_eq!(layout.item_keys(), vec!["a".to_string(), "b".to_string()]);
+        layout.plan(&[("a", 10, d("a"))]);
+        assert_eq!(layout.item_keys(), vec!["a".to_string()]);
     }
 
     #[test]

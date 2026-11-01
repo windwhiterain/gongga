@@ -77,6 +77,31 @@ is already this pass's answer. liana's opposite choice -- keep `remove_memory`
 around and patch the sizes it touched -- answers a question this port does not ask:
 a row of a skill table is re-measured, never deleted.
 
+## the identity is the content
+
+A key is a name; the same name can come to mean other bytes. A skill body is edited, a
+row's description is reworded, a file the index carries gains a paragraph -- and every
+one of those leaves the name intact while the bytes the endpoint cached are gone.
+
+liana had no such problem: a memory was append-only, so a memory id was its content.
+This port has the opposite, so an item is `(key, content)` where `content` is a digest
+of the bytes and `plan` takes it from the caller. Two consequences, both wanted:
+
+- edited text is a *new* item, so the chain that carried the old bytes cannot warm it.
+  Without this the layout would claim a prefix the endpoint cannot serve, which shows up
+  as a cache miss on every request that reuses the chain -- the exact cost this module
+  exists to avoid, made invisible.
+- the old item is dropped by `forget_unwanted` once nothing asks for it. What stays is
+  only what was just planned, so a layout does not grow a dead branch per edit.
+
+The cost is one item per revision rather than one per name, but only until the next
+plan: `forget_unwanted` runs every time, so a home that edits a skill daily holds one
+version of it, not thirty.
+
+A digest rather than the text itself: the layout is one SQLite row, and a skill body
+can be larger than everything else in it put together. The digest is the identity, the
+size is the cost, and the bytes stay where they live.
+
 ## shared, plan: one layout per home, on disk
 
 A provider caches a prefix per endpoint, not per session and not per process. So the
@@ -97,6 +122,14 @@ The one cost of sharing is a chain that is only partly useful to the next caller
 that is already handled: a chain carrying an item outside `wanted` is not a candidate.
 So two callers sharing one layout cannot corrupt each other's order, only fail to
 share it.
+
+## the index is derived, not stored
+
+`Layout::index` maps `(key, digest)` to an item, and it is `#[serde(skip)]`: JSON has no
+tuple key, and the map is a lookup over `items` rather than a fact of its own. So the
+store holds the list and the chains, and `reindex` rebuilds the map when the row is
+read. That is also why `forget_unwanted` rebuilds it after renumbering: one writer for
+one map, and no way for the two to disagree.
 
 ## chain_count
 

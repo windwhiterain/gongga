@@ -762,6 +762,23 @@ impl Store {
         self.append_message(session_id, "system", &payload)
     }
 
+    /// The text of every message waiting in the inbox, oldest first.
+    pub fn queued_texts(&self, session: &str) -> anyhow::Result<Vec<String>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT payload FROM pending_tasks WHERE session = ?1 AND kind = 'inject' ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![session], |row| row.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let value: serde_json::Value = serde_json::from_str(&row?).unwrap_or_default();
+            if let Some(text) = value.get("message").and_then(|m| m.as_str()) {
+                out.push(text.to_string());
+            }
+        }
+        Ok(out)
+    }
+
     /// The orderings this home has already emitted, as `prefix_cache` records them.
     pub fn prefix_layout(&self) -> anyhow::Result<Option<crate::prefix_cache::Layout>> {
         let row: Option<String> = {

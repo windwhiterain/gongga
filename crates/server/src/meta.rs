@@ -188,10 +188,6 @@ fn skill_body(cwd: &Path, name: &str) -> Option<String> {
     std::fs::read_to_string(found.path).ok()
 }
 
-/// What introduces the index in front of the entries it carries.
-pub const INDEX_HEAD: &str = "The text of every reference named here. A line that is only a \
-     reference is followed by the text it stands for.";
-
 /// A message with its references resolved, and the pictures they named.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Expanded {
@@ -224,6 +220,17 @@ impl Expanded {
                 .map(|images| images.iter().filter_map(ImageRef::from_json).collect())
                 .unwrap_or_default(),
         })
+    }
+}
+
+/// The spellings `text` leaves literal. See `docs/notes/server-meta.md`.
+pub fn literal(cwd: &Path, text: &str, rooted: Option<&[String]>) -> Vec<String> {
+    match rooted {
+        Some(rooted) => rooted.to_vec(),
+        None => roots(cwd, &[text])
+            .into_iter()
+            .map(|root| root.spelling)
+            .collect(),
     }
 }
 
@@ -419,6 +426,38 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let found = roots(dir.path(), &["see @skill: missing and @image: gone.png"]);
         assert!(found.is_empty(), "{found:?}");
+    }
+
+    /// A picture is never indexed, so it is still attached on the first turn.
+    ///
+    /// # Invariant
+    ///
+    /// What leaves a mention literal is the index carrying its text, and an index
+    /// carries no picture: `@image:` reaches the File API exactly as before.
+    #[test]
+    fn a_picture_is_not_a_reference_the_index_can_carry() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("shot.png"), b"not really a png").unwrap();
+        let found = roots(dir.path(), &["look at @image: shot.png"]);
+        assert!(found.is_empty(), "{found:?}");
+    }
+
+    /// The literal set is what the index carries, so a picture is never in it.
+    #[test]
+    fn a_message_leaves_literal_only_what_the_index_carries() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("shot.png"), b"bytes").unwrap();
+        std::fs::create_dir_all(dir.path().join(".agents/skills/s")).unwrap();
+        std::fs::write(
+            dir.path().join(".agents/skills/s/SKILL.md"),
+            "---\nname: s\ndescription: d\n---\nbody\n",
+        )
+        .unwrap();
+        let text = "read @skill:s and look at @image: shot.png";
+        let before = literal(dir.path(), text, None);
+        assert_eq!(before, vec!["@skill:s"], "{before:?}");
+        let after = literal(dir.path(), text, Some(&["@file:kept".to_string()]));
+        assert_eq!(after, vec!["@file:kept"], "the stored row is the answer");
     }
 
     /// A spelling in the index is not replaced in the message: it keys the index.
