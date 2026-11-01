@@ -50,8 +50,10 @@ pub struct LlmClient {
     idle_timeout: Duration,
     /// Extra attempts after a failure or an empty response.
     max_retries: u32,
-    /// First retry delay; doubled per attempt up to [`MAX_RETRY_DELAY`].
+    /// First retry delay; doubled per attempt up to `retry_ceiling`.
     retry_base: Duration,
+    /// The longest one retry delay may grow to.
+    retry_ceiling: Duration,
     /// Provider-side tools, in the provider's own spelling; sent verbatim.
     builtin_tools: Vec<String>,
     /// What the roster says this model takes in; empty is "unstated".
@@ -134,6 +136,7 @@ impl LlmClient {
             idle_timeout: cfg.idle_timeout,
             max_retries: cfg.max_retries,
             retry_base: cfg.retry_base,
+            retry_ceiling: cfg.retry_ceiling,
             builtin_tools: cfg.builtin_tools.clone(),
             modalities: cfg.modalities.clone(),
         })
@@ -248,6 +251,7 @@ impl LlmClient {
         let idle_timeout = self.idle_timeout;
         let max_retries = self.max_retries;
         let retry_base = self.retry_base;
+        let retry_ceiling = self.retry_ceiling;
 
         tokio::spawn(async move {
             let mut attempt: u32 = 0;
@@ -336,7 +340,7 @@ impl LlmClient {
                 }
 
                 attempt += 1;
-                let delay = backoff(retry_base, attempt);
+                let delay = backoff(retry_base, retry_ceiling, attempt);
                 let reason = retry_reason(&failure, completed, produced);
                 tracing::warn!(
                     attempt,
@@ -572,17 +576,19 @@ fn event_produced(event: &LlmEvent) -> bool {
         )
 }
 
-/// Cap on one retry delay. Doubling is meant to wait out a provider's bad
-/// minute, not to add a silent one of our own.
-const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
-
 /// Delay before attempt `attempt` (1-based): the base doubled each time, capped
-/// at [`MAX_RETRY_DELAY`].
-fn backoff(base: Duration, attempt: u32) -> Duration {
+/// at `ceiling`.
+///
+/// # Invariant
+///
+/// Doubling is meant to wait out a provider's bad minute, not to add a silent one
+/// of our own, so the cap arrives from the config rather than from here: a home
+/// that wants to give up sooner says so, and this function has no opinion.
+fn backoff(base: Duration, ceiling: Duration, attempt: u32) -> Duration {
     let factor = 1u32
         .checked_shl(attempt.saturating_sub(1))
         .unwrap_or(u32::MAX);
-    base.saturating_mul(factor).min(MAX_RETRY_DELAY)
+    base.saturating_mul(factor).min(ceiling)
 }
 
 /// Whether another attempt is worth making.
@@ -1506,6 +1512,7 @@ mod tests {
             idle_timeout: Duration::from_secs(1),
             max_retries: 0,
             retry_base: Duration::from_millis(1),
+            retry_ceiling: Duration::from_secs(30),
             builtin_tools: builtin_tools.iter().map(|t| t.to_string()).collect(),
             modalities: modalities.iter().map(|m| m.to_string()).collect(),
         };
@@ -1978,13 +1985,29 @@ mod tests {
     #[test]
     fn retry_delays_double_and_then_stop_growing() {
         let base = Duration::from_millis(500);
-        assert_eq!(backoff(base, 1), Duration::from_millis(500));
-        assert_eq!(backoff(base, 2), Duration::from_millis(1_000));
-        assert_eq!(backoff(base, 3), Duration::from_millis(2_000));
+        let ceiling = Duration::from_secs(30);
+        assert_eq!(backoff(base, ceiling, 1), Duration::from_millis(500));
+        assert_eq!(backoff(base, ceiling, 2), Duration::from_millis(1_000));
+        assert_eq!(backoff(base, ceiling, 3), Duration::from_millis(2_000));
         // Past the cap the wait stays the same rather than becoming a silence
         // of its own.
-        assert_eq!(backoff(base, 12), MAX_RETRY_DELAY);
-        assert_eq!(backoff(base, 64), MAX_RETRY_DELAY);
+        assert_eq!(backoff(base, ceiling, 12), ceiling);
+        assert_eq!(backoff(base, ceiling, 64), ceiling);
+    }
+
+    /// The cap comes from the home; doubling below it is unchanged.
+    #[test]
+    fn the_ceiling_is_whatever_the_config_says() {
+        let base = Duration::from_millis(1_000);
+        assert_eq!(
+            backoff(base, Duration::from_secs(5), 4),
+            Duration::from_secs(5)
+        );
+        // Below the cap, doubling is still doubling.
+        assert_eq!(
+            backoff(base, Duration::from_secs(5), 2),
+            Duration::from_secs(2)
+        );
     }
 
     /// How far an attempt got says nothing about the next one: only the

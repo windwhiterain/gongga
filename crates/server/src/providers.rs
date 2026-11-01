@@ -147,22 +147,46 @@ impl Entry {
     ///
     /// # Invariant
     ///
-    /// The answer is only ever a level this model publishes, so a stored level is
-    /// always one its request can carry: `stored` while this model publishes it,
-    /// else this model's default, else nothing. A model publishing no level answers
-    /// `None`: its `reasoning_default` is then a mode, and sending that would be
-    /// this server inventing a value. See `docs/notes/server-providers.md`.
+    /// `stored` while this model publishes it, else the highest it publishes, else
+    /// its `reasoning_default` -- and always a level this model publishes, so a
+    /// stored level is always one its request can carry.
+    /// See `docs/notes/server-providers.md`.
     pub fn level_in_force(&self, stored: Option<&str>) -> Option<String> {
         let published = |level: &str| self.reasoning_levels.iter().any(|known| known == level);
-        match stored {
-            Some(level) if published(level) => Some(level.to_string()),
-            _ => self
-                .reasoning_default
+        if let Some(level) = stored.filter(|level| published(level)) {
+            return Some(level.to_string());
+        }
+        self.highest_published().or_else(|| {
+            self.reasoning_default
                 .as_deref()
                 .filter(|level| published(level))
-                .map(str::to_string),
-        }
+                .map(str::to_string)
+        })
     }
+
+    /// The hardest level this model publishes, when [`LEVELS`] can rank any of them.
+    fn highest_published(&self) -> Option<String> {
+        self.reasoning_levels
+            .iter()
+            .filter_map(|level| Some((rank(level)?, level)))
+            .max_by_key(|(rank, _)| *rank)
+            .map(|(_, level)| level.clone())
+    }
+}
+
+/// How hard an agent is being asked to think, weakest first.
+///
+/// # Invariant
+///
+/// The one order this server knows, so `highest in supported` and the completion
+/// list cannot disagree. A roster entry is free to publish a spelling of its own
+/// (`on`, `off`): [`rank`] then answers `None` rather than inventing a position,
+/// and nothing is capped on that model's behalf.
+pub const LEVELS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/// Where `level` sits in [`LEVELS`], or `None` for a spelling that is not a rung.
+pub fn rank(level: &str) -> Option<usize> {
+    LEVELS.iter().position(|known| *known == level)
 }
 
 /// An [`Entry`] plus the key that resolved for it.
@@ -1513,5 +1537,51 @@ key = "k"
             ..entry
         };
         assert_eq!(silent.reasoning_effort("ultra").unwrap(), "ultra");
+    }
+
+    /// SPEC's `initial: highest in supported or default if unkown`, in that order.
+    #[test]
+    fn a_session_starts_at_the_highest_level_this_model_takes() {
+        let entry = Entry {
+            provider: "p".into(),
+            provider_name: "P".into(),
+            model: "p/m".into(),
+            model_name: "m".into(),
+            model_title: "M".into(),
+            base_url: String::new(),
+            api_key_env: None,
+            key: None,
+            context: None,
+            reasoning_levels: vec!["low".into(), "medium".into(), "high".into(), "max".into()],
+            modalities: Vec::new(),
+            builtin_tools: Vec::new(),
+            reasoning_default: Some("low".into()),
+            reasoning_mapping: Default::default(),
+        };
+        // Nothing stored: the highest, not the roster's own default.
+        assert_eq!(entry.level_in_force(None).as_deref(), Some("max"));
+        // A stored level this model takes is what stays.
+        assert_eq!(
+            entry.level_in_force(Some("medium")).as_deref(),
+            Some("medium")
+        );
+        // A stored level it no longer takes is replaced, not sent and hoped for.
+        assert_eq!(entry.level_in_force(Some("ultra")).as_deref(), Some("max"));
+
+        // A switch is not a scale, so nothing outranks anything: the default stands.
+        let switch = Entry {
+            reasoning_levels: vec!["on".into(), "off".into()],
+            reasoning_default: Some("on".into()),
+            ..entry.clone()
+        };
+        assert_eq!(switch.level_in_force(None).as_deref(), Some("on"));
+
+        // A model publishing no level at all has no level to send.
+        let bare = Entry {
+            reasoning_levels: Vec::new(),
+            reasoning_default: Some("off".into()),
+            ..entry
+        };
+        assert_eq!(bare.level_in_force(None), None);
     }
 }

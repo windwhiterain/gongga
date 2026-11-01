@@ -293,6 +293,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             )),
             bus: bus.clone(),
             compress_above_tokens: cfg.agent.compress_above_tokens,
+            context_limit_percent: cfg.agent.context_limit_percent,
             output_dir: output_dir.clone(),
             detached: detached.clone(),
         }),

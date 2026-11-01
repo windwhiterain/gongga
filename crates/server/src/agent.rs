@@ -22,9 +22,6 @@ use crate::store::Store;
 use crate::tools::detached::DetachedRegistry;
 use crate::tools::{ToolContext, ToolRegistry};
 
-/// Share of the window the notice is sent at; the rest is headroom for one step's output.
-pub const DEFAULT_CONTEXT_LIMIT_PERCENT: u8 = 70;
-
 pub struct Agent {
     pub store: Store,
     /// What a session talks to unless it named its own `--model`.
@@ -49,6 +46,8 @@ pub struct Agent {
     /// Compress once a request would carry more than this many input tokens.
     /// 0 disables it.
     pub compress_above_tokens: u64,
+    /// Share of the window a session states no percentage for.
+    pub context_limit_percent: u8,
     /// Where capped tool output is spilled; without it the tail is lost.
     pub output_dir: PathBuf,
     /// Detached jobs of every session, reached through `ToolContext`.
@@ -292,7 +291,12 @@ impl Agent {
                 "no context window is known for this model; using the configured token budget"
             );
         }
-        notice_budget(self.compress_above_tokens, context, percent)
+        notice_budget(
+            self.compress_above_tokens,
+            self.context_limit_percent,
+            context,
+            percent,
+        )
     }
 
     /// The client for one roster entry, built once and shared.
@@ -1248,14 +1252,19 @@ fn context_notice(
 }
 
 /// The notice threshold in input tokens, or 0 for "off".
-fn notice_budget(configured: u64, context: Option<u64>, percent: Option<u8>) -> u64 {
+///
+/// # Invariant
+///
+/// `fallback` is what a session that names no percentage gets, and it comes from the
+/// config: the sentinel is not spelled here, so a home that changed it changes this.
+fn notice_budget(configured: u64, fallback: u8, context: Option<u64>, percent: Option<u8>) -> u64 {
     if configured == 0 {
         return 0;
     }
     let Some(window) = context.filter(|w| *w > 0) else {
         return configured;
     };
-    providers::tokens_for_percent(window, percent.unwrap_or(DEFAULT_CONTEXT_LIMIT_PERCENT))
+    providers::tokens_for_percent(window, percent.unwrap_or(fallback))
 }
 
 #[cfg(test)]
@@ -1264,19 +1273,31 @@ mod tests {
 
     #[test]
     fn a_zero_config_turns_the_notice_off_whatever_the_window_is() {
-        assert_eq!(notice_budget(0, Some(1_000_000), Some(50)), 0);
-        assert_eq!(notice_budget(0, Some(1_000_000), None), 0);
-        assert_eq!(notice_budget(0, None, None), 0);
+        assert_eq!(notice_budget(0, 70, Some(1_000_000), Some(50)), 0);
+        assert_eq!(notice_budget(0, 70, Some(1_000_000), None), 0);
+        assert_eq!(notice_budget(0, 70, None, None), 0);
     }
 
     /// A known window decides the threshold, so a bigger model needs no retuning.
     #[test]
     fn a_known_window_beats_the_configured_number() {
-        assert_eq!(notice_budget(40_000, Some(1_000_000), None), 700_000);
-        assert_eq!(notice_budget(40_000, Some(200_000), Some(50)), 100_000);
+        assert_eq!(notice_budget(40_000, 70, Some(1_000_000), None), 700_000);
+        assert_eq!(notice_budget(40_000, 70, Some(200_000), Some(50)), 100_000);
         // No window in the roster: the configured number is all there is.
-        assert_eq!(notice_budget(40_000, None, Some(50)), 40_000);
-        assert_eq!(notice_budget(40_000, None, None), 40_000);
+        assert_eq!(notice_budget(40_000, 70, None, Some(50)), 40_000);
+        assert_eq!(notice_budget(40_000, 70, None, None), 40_000);
+    }
+
+    /// The share a session names nothing for is the config's, not a constant here.
+    #[test]
+    fn the_fallback_share_is_whatever_the_config_says() {
+        assert_eq!(notice_budget(40_000, 70, Some(1_000_000), None), 700_000);
+        assert_eq!(notice_budget(40_000, 50, Some(1_000_000), None), 500_000);
+        // A session that named a percentage keeps it whatever the fallback is.
+        assert_eq!(
+            notice_budget(40_000, 50, Some(1_000_000), Some(30)),
+            300_000
+        );
     }
 
     /// Every value the template can name has to arrive: the words are the

@@ -37,6 +37,12 @@ pub const DEFAULT_MAX_OUTPUT_CHARS: usize = 8_000;
 /// Input-token ceiling that triggers the context notice; fallback with no roster window.
 pub const DEFAULT_COMPRESS_ABOVE_TOKENS: u64 = 40_000;
 
+/// The longest a retry delay may grow to. See `docs/notes/server-config.md`.
+pub const DEFAULT_RETRY_CEILING_MS: u64 = 30_000;
+
+/// Share of a model's window `--context_limit` starts at; see `docs/notes/server-config.md`.
+pub const DEFAULT_CONTEXT_LIMIT_PERCENT: u8 = 70;
+
 /// Everything the server needs to boot.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -89,8 +95,10 @@ pub struct ModelConfig {
     pub idle_timeout: Duration,
     /// Extra attempts after a failure or an empty response; 0 is no ceiling.
     pub max_retries: u32,
-    /// First retry delay; doubles per attempt up to the [`MAX_RETRY_DELAY`] cap.
+    /// First retry delay; doubles per attempt up to [`Self::retry_ceiling`].
     pub retry_base: Duration,
+    /// The longest a retry delay may grow to.
+    pub retry_ceiling: Duration,
     /// Provider-side tools, in the provider's spelling; sent verbatim. Empty is none.
     pub builtin_tools: Vec<String>,
     /// What the roster says this model takes in; empty means unstated.
@@ -200,6 +208,8 @@ pub fn detect_python() -> Option<PathBuf> {
 pub struct AgentConfig {
     /// Input tokens above which the agent is told to fold its own context.
     pub compress_above_tokens: u64,
+    /// Share of the window a `--context_limit` percentage defaults to.
+    pub context_limit_percent: u8,
 }
 
 /// The on-disk shape. Every field is optional so a config file can be tiny.
@@ -239,6 +249,7 @@ struct FileModel {
     idle_timeout_ms: Option<u64>,
     max_retries: Option<u32>,
     retry_base_ms: Option<u64>,
+    retry_ceiling_ms: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -271,6 +282,7 @@ struct FileScripts {
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct FileAgent {
     compress_above_tokens: Option<u64>,
+    context_limit_percent: Option<u8>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -412,6 +424,14 @@ impl Config {
                     })
                     .unwrap_or(1_000),
             ),
+            retry_ceiling: Duration::from_millis(
+                model_file
+                    .retry_ceiling_ms
+                    .or_else(|| {
+                        env_or("GONGGA_PROVIDER_RETRY_CEILING_MS").and_then(|v| v.parse().ok())
+                    })
+                    .unwrap_or(DEFAULT_RETRY_CEILING_MS),
+            ),
             builtin_tools: entry
                 .as_ref()
                 .map(|e| e.builtin_tools.clone())
@@ -494,6 +514,14 @@ impl Config {
                 .and_then(|a| a.compress_above_tokens)
                 .or_else(|| env_or("GONGGA_COMPRESS_ABOVE_TOKENS").and_then(|v| v.parse().ok()))
                 .unwrap_or(DEFAULT_COMPRESS_ABOVE_TOKENS),
+            // Above 100 would put the notice past the window it is a share of.
+            context_limit_percent: file
+                .agent
+                .as_ref()
+                .and_then(|a| a.context_limit_percent)
+                .or_else(|| env_or("GONGGA_CONTEXT_LIMIT_PERCENT").and_then(|v| v.parse().ok()))
+                .unwrap_or(DEFAULT_CONTEXT_LIMIT_PERCENT)
+                .min(100),
         };
 
         let transport = file.transport.unwrap_or_default();

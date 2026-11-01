@@ -279,8 +279,10 @@ pub fn server_catalog() -> Vec<CommandSpec> {
                      model's own.",
                     false,
                     Some("level"),
+                    // The one vocabulary the server ranks by, so the list offered
+                    // here and `highest in supported` cannot drift apart.
                     CompletionSource::Static(
-                        ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+                        crate::providers::LEVELS
                             .iter()
                             .map(|s| s.to_string())
                             .collect(),
@@ -1397,9 +1399,7 @@ pub fn session_info(d: &Dispatch, row: &crate::store::SessionRow) -> protocol::S
         usage: row.usage,
         model,
         thinking_effort,
-        context_limit: tuning
-            .context_limit
-            .or(Some(crate::agent::DEFAULT_CONTEXT_LIMIT_PERCENT)),
+        context_limit: tuning.context_limit.or(Some(d.agent.context_limit_percent)),
     }
 }
 
