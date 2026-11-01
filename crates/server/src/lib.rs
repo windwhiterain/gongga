@@ -46,6 +46,7 @@ use crate::agent::Agent;
 use crate::bus::EventBus;
 use crate::commands::Dispatch;
 use crate::config::Config;
+use crate::llm::LlmClient;
 use crate::session::SessionManager;
 use crate::tools::ToolRegistry;
 use crate::tools::detached::DetachedRegistry;
@@ -207,6 +208,10 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     );
 
     let store = store::Store::open(&cfg.db_path)?;
+    // A home with no usable model refuses here rather than on a first turn, and
+    // what checks it is building the client. Sessions build their own from the
+    // same config, so this one is only the check.
+    drop(LlmClient::new(&cfg.model)?);
     // A script drives this server by the same name a shell does: `gongga`, which
     // is this program under the command's name in the home's `bin`.
     // Before any shell exists: the command it types has to be there, and a

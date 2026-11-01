@@ -130,8 +130,8 @@ is read. `model_title` is the roster's human name for it.
 Kept separate from `Choice` because the two callers need different things.
 `--model` must be able to say "this is wrong" at the moment it is typed, so it
 wants a key. Startup must not: the server's own key comes from a longer chain
-(an exported `GONGGA_API_KEY`, its `key_env` variable, or the roster's `key`),
-and refusing to boot because `providers.toml` did not hold one would be a step
+(an exported `GONGGA_API_KEY`, its `key_env` variable, or `keys.toml`), and
+refusing to boot because `providers.toml` did not hold one would be a step
 backwards.
 
 ## Model::modalities
