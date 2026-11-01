@@ -37,29 +37,27 @@ The rule for any future prose: a value that changes every turn goes last among t
 
 ## auto-recovering an invalid transcript
 
-SPEC asks for two things at once: everything in a message must be stored and sent, and
-a transcript that has been sent must not be changed. Between them sits every shape a
-crash or a cancel can leave in the rows, and the body's job is to send it in a form the
-provider accepts without editing what was already sent.
+SPEC asks for three things at once: everything in a message is stored and sent, a
+transcript that has been sent is not changed, and an invalid transcript is recovered
+automatically. The provider's own rule is the one that decides what "valid" means, and
+it is positional: **a `function_call` is answered by the item after it.** So a step is
+one block — its reasoning, then its calls, then one output each, in that order — and
+nothing may land inside it.
 
-Two repairs, both invented at request time and never written back:
+Read that way, "recover" is not a rewrite of the rows. It is choosing the block:
 
-- **A call with no result** is answered in the step it belongs to, with a placeholder
-  saying the outcome is unknown. A provider refuses a `function_call` without output.
-- **A result whose call was already written** -- an interrupted step whose answer landed
-  after the next step began -- is emitted as it stands, after its call. It used to be
-  dropped, which lost the message the agent had been shown.
-
-And one shape that is not a repair but a fix: reasoning or text arriving while a step's
-calls are unanswered ends the step. Holding it in the buffer put an assistant message
-between a call and its output, which a live `config` session got back as
-`HTTP 400 No tool output found for tool call`. `a_step_ends_at_the_next_steps_output`
-is built from exactly those rows.
-
-A result whose call is nowhere in the request is the one thing that cannot be repaired:
-the provider would reject the item itself, so it is logged and not sent. One output per
-call is enforced the same way -- a call already answered, by a placeholder or by its real
-result, takes no second answer.
+- **A call nobody answered** — the turn was cancelled, the process died — gets a
+  placeholder when its block is written, saying the outcome is unknown. This is the
+  auto-fill: the pair is completed at request time, in the request only.
+- **A row that is not half of this block** ends the block. An assistant message or a
+  reasoning item that arrives while a call is still unanswered belongs to the next step
+  and cannot be held in this one, because holding it puts a message between the call and
+  its output — which the provider reports as `No tool output found for tool call`. That
+  is exactly what a live `config` session got back.
+- **A result whose call is not in this block** cannot be placed beside its call, and
+  alone it is the item a provider rejects, so it is left out of the request and logged.
+  The row stays in the store; leaving a message out of a request is not the same thing
+  as changing it.
 
 ## Step — the one buffer
 
@@ -84,10 +82,11 @@ A call with no result at the end of the transcript -- the process died inside th
 tool -- gets a placeholder saying so. It is the last thing the walk can do, because
 only there is "no more rows" known.
 
-A result whose call is not in the same step is left out. A call and its result
+A result whose call is not in the same step is left out, logged. A call and its result
 belong to one step, so this is decidable inside the step's own buffer without
 remembering what was already sent; it names a row whose partner was deleted from
-under it, and sent alone it is the request a provider rejects.
+under it, and sent alone it is the request a provider rejects. See above for why
+leaving it out is not the same as changing it.
 
 ## with_pictures — which field a picture rides in
 

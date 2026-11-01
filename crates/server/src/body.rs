@@ -100,8 +100,6 @@ struct Step {
     entries: Vec<Entry>,
     /// The calls written so far whose result has not arrived.
     open: Vec<String>,
-    /// Every call id this request has written, so a late result can still be sent.
-    sent: Vec<String>,
     /// Every call id this request has already answered, invented answers included:
     /// one output per call is what a provider accepts.
     answered: Vec<String>,
@@ -139,27 +137,21 @@ impl Step {
                     self.entries.push(entry);
                     return out;
                 }
-                // The call is already written but steps back -- an interrupted step
-                // whose result landed after the next one began. SPEC wants every
-                // stored message sent, so it goes out now, after its call.
-                if self.sent.contains(&id) && !self.answered.contains(&id) {
-                    self.answered.push(id);
-                    out = self.flush(placeholder);
-                    out.push(entry.bytes);
-                    return out;
-                }
-                // No call in this request at all: sending it would be a 400, so it is
-                // the one thing this cannot repair.
-                tracing::debug!(
+                // Pairing is by position: a result whose call is not in this step
+                // cannot be placed beside it, and alone it is the item a provider
+                // rejects. The row stays in the store; the request leaves it out.
+                tracing::warn!(
                     call_id = entry.call_id.as_deref().unwrap_or("?"),
-                    "a tool result whose call is not in this request: not sent"
+                    "a tool result whose call is not in its step: not sent"
                 );
             }
-            // Anything else ends the buffered step, open calls and all. Reasoning and
-            // text are a step's *output*, so one arriving while calls are unanswered
-            // belongs to the next step: holding it here would put an assistant message
-            // between a call and its output, and the provider answers that with "no
-            // tool output found".
+            // A row that is not half of this step's pair ends the step. A provider
+            // reads a call as answered by the item after it, so the buffer is written
+            // as one block -- reasoning, calls, then one output each -- and nothing may
+            // land inside that block: an assistant message between them is what the
+            // provider reports as "no tool output found". Ending the step here is also
+            // where an interrupted step's unanswered calls get their placeholder, so
+            // the pair is complete by the time it is written.
             _ => {
                 out = self.flush(placeholder);
                 out.push(entry.bytes);
@@ -202,12 +194,7 @@ impl Step {
                     results.push(entry.bytes);
                 }
                 "reasoning" => reasoned.push(entry.bytes),
-                _ => {
-                    if let Some(id) = &entry.call_id {
-                        self.sent.push(id.clone());
-                    }
-                    calls.push(entry.bytes);
-                }
+                _ => calls.push(entry.bytes),
             }
         }
         let mut out = Vec::with_capacity(reasoned.len() + calls.len() + results.len());
