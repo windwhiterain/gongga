@@ -147,11 +147,18 @@ right: only the block knows both the document and the width.
 It is also what `Log::rewrite` and `trim_tail` edit -- an answer's `text` is the
 laid-out rows, so trimming the text and reflowing would have nothing to reflow from.
 
-## Entry::ink
+## Entry::styled
 
-What each drawn row is, parallel to `starts`, and filled only by `Entry::lay_out`.
-A block that keeps no document has no entry here, and `row_ink` answers `Prose` for
-it -- one rule for "this row is its own text", not a per-kind table.
+The rows of that document: `Vec<Line>`, already styled and already fitted to the
+block's width. Non-empty exactly when `source` is, so `rows()` answers from one or the
+other and no block is a special case at draw time.
+
+This replaced `Entry::ink`, a parallel list of "what kind of row is this" that the
+renderer used to pick a colour from the *text* of the row. That could not be right
+twice over: the colour was applied after the wrap, so a run the window split lost its
+ink on the second row, and a row whose kind was not in the list -- a heading's words,
+a link's -- had no way to say what it was. A row that carries its own runs needs
+neither list nor guess.
 
 ## Entry::reflow
 
@@ -162,17 +169,13 @@ Width 0 is "not measured yet" and returns after one row: laying a table out at o
 column would produce a grid that is thrown away on the next frame anyway, and the
 first draw reflows at the width it actually has.
 
-An answer goes to `Entry::lay_out` instead of being wrapped: its rows are the pieces
-the document makes, and its ink comes with them.
+An answer is not wrapped by `Wrap` at all: `markdown::rows` answers with the rows, at
+this width, runs and all -- so a break inside a run is that renderer's business, and
+`docs/notes/tui-fold.md` is where it is decided.
 
-## Entry::lay_out
-
-The document, laid out at this width, then joined into `text` one piece per row with
-a newline between -- and the same text fed through `Wrap` so that a piece too wide
-for the block still lands on the rows the frame will show. Each `feed` carries the
-piece's ink, so the rows a wrap inserts inherit it; a `Piece` and its wrapped
-continuation are the same thing said twice, and colouring them differently would be a
-frame that lies about the row.
+The label is the one thing put on a styled block after the fact: it is chrome on every
+block, and the first row carries it, clipped to the block's own title budget as every
+other block's label is.
 
 A label never reserves columns on a body or continuation row. Its title budget
 it wraps where it would have wrapped with the label glued in front. The label is

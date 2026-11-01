@@ -6,6 +6,7 @@
 //! from a script and a new command never changes this crate.
 
 mod clipboard;
+mod fold;
 mod input;
 mod log;
 mod markdown;
@@ -397,7 +398,7 @@ impl Screen {
         window
             .rows
             .iter()
-            .map(|(_, row, _, _)| row.to_string())
+            .map(|(_, row, _)| row.text().to_string())
             .collect()
     }
 
@@ -1768,7 +1769,7 @@ mod tests {
                 .window(View::All, 200, 100, 0)
                 .rows
                 .iter()
-                .map(|(_, text, _, _)| text.to_string())
+                .map(|(_, text, _)| text.text().to_string())
                 .collect()
         }
     }
@@ -2124,7 +2125,7 @@ mod tests {
         );
         // Two rows: the peer block is cut to its tail and repeats its tag.
         let rows = h.screen.panes.window(View::All, 40, 2, 0).rows;
-        let shown: Vec<String> = rows.iter().map(|(_, t, _, _)| t.to_string()).collect();
+        let shown: Vec<String> = rows.iter().map(|(_, t, _)| t.text().to_string()).collect();
         assert_eq!(shown, vec!["\u{25c7} [peer] aaaccc", "[test1] bbb"]);
     }
 

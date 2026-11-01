@@ -83,6 +83,7 @@ note is a bug.
 | [`tui-main.md`](tui-main.md) | `crates/tui/src/main.rs` |
 | [`tui-program.md`](tui-program.md) | `crates/tui/src/program.rs` |
 | [`tui-lib.md`](tui-lib.md) | `crates/tui/src/lib.rs` |
+| [`tui-fold.md`](tui-fold.md) | `crates/tui/src/fold.rs` |
 | [`tui-input.md`](tui-input.md) | `crates/tui/src/input.rs` |
 | [`tui-log.md`](tui-log.md) | `crates/tui/src/log.rs` |
 | [`tui-markdown.md`](tui-markdown.md) | `crates/tui/src/markdown.rs` |

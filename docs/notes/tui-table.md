@@ -25,9 +25,14 @@ The header first, then the rule, then the body. Every row is the same display wi
 which is what makes the table a table: the frame draws rows, so alignment only
 exists if the rows are padded.
 
-`rule` is a flag on the row rather than a row that says `|---|` in its text. The
-renderer paints it differently (it is the table's chrome, not one of its cells), and
-a rule recognised by its characters would be a rule guessed at.
+A cell is a `Line` of runs, not a string: what ink a word was written in is the
+markdown renderer's answer, and it has to survive the column. `fold::rows` does the
+wrapping inside the column -- the log's wrapper would put a second row's worth of a
+cell where the next column's space is.
+
+`rule` answers with a `Line` whose runs are all the marker ink. It is the table's
+chrome rather than one of its cells, and a rule recognised by its characters later
+would be a rule guessed at.
 
 ## fit
 
@@ -52,9 +57,11 @@ One logical row can be several drawn rows: a cell that wraps needs its neighbour
 rows padded beside it. The height is the tallest cell's, and every shorter cell is
 padded with blanks -- unchanged text, just air where the column has none.
 
-Cell text is wrapped by `wrap_cell`, not by the log: a table row that the log wrapped
-would land its second half in the next column's space. That is the whole reason the
-table is laid out at a known width in the first place.
+The segment between two borders is `width + 2` columns, and it is the same in every
+row: one column of air, the alignment's padding, the cell, the rest of the padding,
+one column of air. The rule row spends the same `width + 2` on its dashes and colons,
+so a table's rule is exactly as wide as the rows around it -- which is what the first
+version of this file got wrong, by one column per column.
 
 A word wider than its column is cut at the column's edge rather than being allowed to
 overflow: the alternative is a row that pushes every column after it out of line.

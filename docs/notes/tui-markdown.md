@@ -29,10 +29,11 @@ different from "drop the asterisks".
 
 ## A soft break is a space
 
-A newline inside a paragraph is a space in CommonMark, and the log wraps at the width
+A newline inside a paragraph is a space in CommonMark, and the fold wraps at the width
 the window actually has. Printing the source newlines would fight that wrap and
 produce ragged rows. A hard break (two spaces or a backslash) does end a row, because
-that is what it means.
+that is what it means -- and inside a table cell it is a space, because a cell is one
+row.
 
 ## Why a parser
 
@@ -42,46 +43,42 @@ document nests: a continuation line of a list item, a lazy quote continuation, a
 inside a list. Those are the cases a reader notices, and a parser already knows them.
 
 Not `tui-markdown`: it produces a `Text` of styled spans, and taking those would mean
-rebuilding the log's row model around spans. Here the parse is used for structure only,
-and the spans are built at draw time from the markers a row prints (`colored_row`), so
-the log keeps handing over text.
+rebuilding the log's row model around spans *and* the log's wrap around them. This file
+builds its own runs, and hands back `Vec<Line>` -- the log stores rows, and a row is a
+list of runs.
 
-## Colour comes from the markers
+## The ink comes from the parse
 
-`colored_row` is the other half of the file, and it is the reason the markers had to
-stay: a frame draws rows, so what it can colour by is what a row prints. A marker is
-read where it sits -- `# ` opens a heading, `- ` / `N. ` a list item, `> ` a quote,
-`**` a strong run, `*` emphasis, `~~` a strike, a backtick a code span, `[text](url)` a
-link, a fence and `---` their own rows -- and the words it covers take the ink that says
-what they are. The marker itself is drawn in the quiet gray, so the words are the loud
-thing and the source is still readable.
+`rows` is one pass over the events, and the ink is decided where the event is: an
+`Event::Text` inside `Tag::Emphasis` is italic because the parse says so, not because
+the word happens to sit between two asterisks. The marks are a stack (`Mark`), so
+nesting composes -- `**a *b* c**` is bold, then bold-and-italic, then bold again --
+and what a mark gives its words is `base.patch(mark.style)`, the block's ink with the
+marks over it.
 
-What it reads is this file's spelling, not the writer's: `render` writes `*`/`**` for
-emphasis however the document spelled it, `- ` for every bullet, `+ ` / `* ` where the
-writer used them, and `N. ` for every numbered item. A document whose markers did not
-come through `render` has no colour, which is exactly right: nothing in the log is styled
-by a rule it did not print.
+The markers are still printed: the `*`, the `**`, the backtick, the `](url)`. They are
+drawn in `marker_style` (the quiet gray), so the words are the loud thing and the source
+is still readable. `open_mark_text` is the one place a mark is opened, which is why the
+closing text is remembered with it -- a link closes with `](target)`, everything else
+with itself.
 
-Two rules keep the colour honest. A pair needs both markers on the row and words between
-them with no space at either end: `2 * 3 * 4` is arithmetic, and a marker read there
-would colour a word the writer never marked. And only markers colour anything -- a
-paragraph's own words keep the window's foreground, which is what a reader is reading.
+An earlier version styled the *printed* row instead: it re-read the text a row happened
+to contain and coloured `**bold**` between its markers. Two things were wrong with it.
+The obvious one is that a run the window wrapped lost its ink on the second row, because
+that row no longer held the marker. The subtler one is that the text is not the truth:
+`2 * 3 * 4` is arithmetic, and a `#` inside a code block is a comment in the code, and
+both were read as markdown by a rule that only saw characters. The parse knows, so the
+parse decides.
 
-A row whose colour its own text cannot say carries it: `Ink`. That is the code block's
-body, a table's rows, and the fences around a block -- the four cases where the marker
-that would say what the row is (a fence, a pipe, none at all) is either absent or
-ambiguous. Everything else is read off the text, because everything else prints a
-marker and a row of this log is its text.
+## The colour and the break are not related
 
-The split is not cosmetic: a `#` inside a code block is a comment in the code, and a
-`|` inside a cell is not a column. Reading ink off the text would get both wrong, so
-the block that knows -- the layout, which saw the fence open -- is the one that says.
+Because the run is decided before the width is known, a break can fall anywhere inside
+it: `docs/notes/tui-fold.md` splits the runs and keeps the ink, so a link reads as one
+link on however many rows it takes. That is the whole reason the layout produces runs
+rather than rows of text.
 
-Colour is per row and markers are not: a link the log wrapped across two rows draws its
-second half as text, because that row no longer holds the `[`. The text is right and the
-ink is one row behind; carrying the ink across the wrap would mean styling rows by
-something other than what they print, which is the rule that makes the rest of this
-sound.
+The one thing that stays per row is indentation: a continuation row of a paragraph
+starts at the block's left edge, not under the text it continues.
 
 ## The document, and who holds it
 
@@ -113,18 +110,14 @@ layout width has to be real. `Tag::Table` carries the alignment list, the header
 buffer everything else is drawn in, and taken out at `End(TableCell)` instead of being
 kept as a row.
 
-`table::rows` then answers with the grid, and every one of its rows becomes a `Piece`
-with `Ink::Table`, except the rule, which is `Ink::TableRule`. Nothing of the table is
-drawn here -- see `docs/notes/tui-table.md` for the columns.
+A cell is a `Line` of runs, not a string, because the ink inside a cell is the same
+question as the ink outside it: `**bold**` in a cell is bold, and a cell that wraps
+keeps its runs. `table::rows` answers with the grid; nothing of the table is drawn
+here -- see `docs/notes/tui-table.md` for the columns.
 
-## Ink
-
-Five answers, and each one is a statement about what a row *is*: `Prose` (every marker
-in it is markdown), `Code` (a code block's body), `Fence` (the ``` around it), `Table`
-(a row of the grid), `TableRule` (the rule between header and body).
-
-There is no `Heading` or `ListItem` because those print their marker and the renderer
-reads it: a second source for the same fact is a source that can disagree.
+A table inside a quote keeps the quote's marks on every row, and pays for them out of
+the width the table may use: the marks are chrome the source wrote, not part of the
+grid.
 
 ## Raw HTML
 

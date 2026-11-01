@@ -428,9 +428,20 @@ came to read, so its rows are drawn as the markdown they print -- `markdown::col
 and `docs/notes/tui-markdown.md` for what a row can say. It carries no mark, so its colours
 are spent on structure and none on the question of what kind of row it is.
 
-The row's ink is the fourth thing a frame gets from the log, and it is passed through
-rather than guessed: a code block's body and a table's row are the two rows whose own
-text does not say what they are, and `markdown::colored_row` decides by ink first.
+## shown_row
+
+A row of a pane arrives two ways, and the difference is who decided how it is drawn.
+`Shown::Styled` is an answer's row: the log holds the document's runs, and the frame
+draws them as they are -- no mark, no gray, no re-reading of the text. `Shown::Text` is
+every other row: the kind's mark in its colour, then the quiet gray.
+
+The split is not a shortcut for the answer. It is what makes a break harmless: the ink
+was decided before the width was, so a row a fold split carries the same runs on both
+sides, and `framed_row` -- which draws a box and a label around text -- never has to
+know a document exists.
+
+Styled rows are cloned per frame, as text rows are: the frame outlives the borrow of
+the log it read, and a screenful of runs is cheap next to a redraw.
 
 ## draw_input
 

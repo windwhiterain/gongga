@@ -10,8 +10,11 @@ use std::collections::HashMap;
 
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+use ratatui::style::Style;
+use ratatui::text::{Line, Span};
+
 use crate::LineKind;
-use crate::markdown::{self, Ink};
+use crate::markdown;
 
 /// One block: a line that may still be growing, plus its rows.
 ///
@@ -52,8 +55,12 @@ struct Entry {
     /// An answer's rows are derived from it, never appended to: one more delta can
     /// change a row above the last one, and a table's columns depend on the width.
     source: Option<String>,
-    /// What each drawn row is, parallel to `starts`.
-    ink: Vec<Ink>,
+    /// The rows of that document, already styled and already fitted to `width`.
+    ///
+    /// # Invariant
+    ///
+    /// Non-empty exactly when `source` is: a row is a `Line` of runs, drawn as it is.
+    styled: Vec<Line<'static>>,
     /// Where this block sits among the blocks of its own window.
     at: usize,
     /// Where it sits in the merged view, or `None` when a hidden window holds it.
@@ -76,7 +83,10 @@ impl Entry {
                 LineKind::Assistant => Some(text.clone()),
                 _ => None,
             },
-            text,
+            text: match kind {
+                LineKind::Assistant => String::new(),
+                _ => text,
+            },
             width,
             expanded: false,
             inner: 0,
@@ -85,7 +95,7 @@ impl Entry {
             sealed: false,
             call: None,
             sections: String::new(),
-            ink: Vec::new(),
+            styled: Vec::new(),
             at: 0,
             merged_at: None,
         };
@@ -100,7 +110,11 @@ impl Entry {
         if self.folded() {
             return self.folded_rows();
         }
-        self.starts.len()
+        match self.source {
+            // Not measured yet: a block still owes the frame its one blank row.
+            Some(_) => self.styled.len().max(1),
+            None => self.starts.len(),
+        }
     }
 
     /// Every opened item uses the same frame, whether or not its body is capped.
@@ -252,18 +266,18 @@ impl Entry {
         }
     }
 
-    /// Recomputes every body-row offset at `width`, independently of the title.
+    /// Recomputes every body row at `width`, independently of the title.
     ///
     /// # Invariant
     ///
     /// A markdown block is laid out at the width it is drawn at, so a table's columns
-    /// are the window's and its rows never wrap. Every other block is wrapped from the
-    /// text it already holds. See `docs/notes/tui-log.md`.
+    /// are the window's and a run keeps its ink across a break. Every other block is
+    /// wrapped from the text it already holds. See `docs/notes/tui-log.md`.
     fn reflow(&mut self, width: usize) {
         if width == 0 {
             // Not measured yet: the first draw reflows at its own width.
             self.starts = vec![0];
-            self.ink = vec![Ink::Prose];
+            self.styled = vec![Line::default()];
             return;
         }
         let width = self.content_width(width);
@@ -273,68 +287,39 @@ impl Entry {
         };
         let structured = self.expanded && self.call.is_some();
         self.width = width;
+        if let Some(source) = &self.source {
+            self.styled = markdown::rows(source, width);
+            // The label is chrome on every block, and the first row carries it.
+            if !self.tag.is_empty() {
+                let room = width.saturating_sub(self.kind.mark().width());
+                let label = format!("{}{}", self.kind.mark(), cut(&self.tag, room));
+                if let Some(first) = self.styled.first_mut() {
+                    first.spans.insert(0, Span::styled(label, Style::default()));
+                }
+            }
+            if self.styled.is_empty() {
+                self.styled.push(Line::default());
+            }
+            self.col = self.styled.last().map_or(0, |row| row.width().min(width));
+            return;
+        }
         self.starts.clear();
-        self.ink.clear();
         // The top border owns the label. A structured body starts immediately
         // inside the left border, not behind another copy of the mark's padding.
         // Symbols and labels are title chrome, never a hanging indent on the body.
         let mut wrap = Wrap { width, col: 0 };
         // The first row of any block exists before a character is wrapped into it.
         self.starts.push(0);
-        self.ink.push(Ink::Prose);
         if structured {
             let text = self.sections.clone();
-            wrap.feed(&text, 0, Ink::Prose, &mut self.starts, &mut self.ink);
+            wrap.feed(&text, 0, &mut self.starts);
             self.col = wrap.col;
             return;
         }
-        if self.source.is_some() {
-            self.lay_out(width, &mut wrap);
-            self.col = wrap.col;
-            return;
-        }
-        let Self {
-            text, starts, ink, ..
-        } = self;
+        let Self { text, starts, .. } = self;
         let text = text.as_str();
-        wrap.feed(text, 0, Ink::Prose, starts, ink);
+        wrap.feed(text, 0, starts);
         self.col = wrap.col;
-    }
-
-    /// The rows of the markdown document this block was written as.
-    ///
-    /// # Invariant
-    ///
-    /// One row per piece the document laid out, so a row's ink is the piece's: the
-    /// text a frame reads and the ink it is read in are the same row.
-    fn lay_out(&mut self, width: usize, wrap: &mut Wrap) {
-        let pieces = match &self.source {
-            Some(source) => markdown::layout(source, width),
-            None => Vec::new(),
-        };
-        self.text.clear();
-        self.starts.clear();
-        self.ink.clear();
-        self.starts.push(0);
-        // The first row is the first piece's; a document with no rows has one blank.
-        self.ink
-            .push(pieces.first().map_or(Ink::Prose, |piece| piece.ink));
-        for (index, piece) in pieces.iter().enumerate() {
-            if index > 0 {
-                self.text.push('\n');
-                let base = self.text.len() - 1;
-                wrap.feed("\n", base, piece.ink, &mut self.starts, &mut self.ink);
-            }
-            let base = self.text.len();
-            self.text.push_str(&piece.text);
-            wrap.feed(
-                &piece.text,
-                base,
-                piece.ink,
-                &mut self.starts,
-                &mut self.ink,
-            );
-        }
     }
 
     /// Appends to the body the current view reads.
@@ -358,7 +343,7 @@ impl Entry {
                 width,
                 col: self.col,
             };
-            wrap.feed(text, base, Ink::Prose, &mut self.starts, &mut self.ink);
+            wrap.feed(text, base, &mut self.starts);
             self.col = wrap.col;
         }
         self.text.push_str(text);
@@ -379,14 +364,26 @@ impl Entry {
         text.strip_suffix('\n').unwrap_or(text)
     }
 
-    /// What row `row` is, when the block's own document said so.
-    fn row_ink(&self, row: usize) -> Ink {
-        self.ink.get(row).copied().unwrap_or(Ink::Prose)
-    }
-
     /// The item's own label: its mark and its tag, and none of its body.
     fn label(&self) -> Cow<'_, str> {
         Cow::Owned(format!("{}{}", self.kind.mark(), self.summary()))
+    }
+
+    /// How row `row` is drawn: a document's runs, or the block's own text.
+    ///
+    /// # Invariant
+    ///
+    /// A markdown block yields its rows exactly as the document styled them: nothing
+    /// about the drawing is decided again here -- not the ink, not the wrap.
+    /// See `docs/notes/tui-log.md`.
+    fn shown(&self, row: usize, labelled: bool) -> Shown<'_> {
+        match self.source {
+            Some(_) => match self.styled.get(row) {
+                Some(line) => Shown::Styled(&line.spans),
+                None => Shown::Text(Cow::Borrowed("")),
+            },
+            None => Shown::Text(self.view_row(row, labelled)),
+        }
     }
 
     /// One row as a frame shows it, with the block's label on the row the window
@@ -488,24 +485,10 @@ struct Wrap {
 
 impl Wrap {
     /// Feeds `text` into the wrapper, recording each row start shifted by `base`.
-    ///
-    /// # Invariant
-    ///
-    /// The ink of a row is the ink of the text it starts: a wrap inside one piece
-    /// leaves both rows that piece's, which is what makes a table row's two halves
-    /// one row of a table.
-    fn feed(
-        &mut self,
-        text: &str,
-        base: usize,
-        ink: Ink,
-        starts: &mut Vec<usize>,
-        inks: &mut Vec<Ink>,
-    ) {
+    fn feed(&mut self, text: &str, base: usize, starts: &mut Vec<usize>) {
         for (i, ch) in text.char_indices() {
             if ch == '\n' {
                 starts.push(base + i + 1);
-                inks.push(ink);
                 self.col = 0;
                 continue;
             }
@@ -513,7 +496,6 @@ impl Wrap {
             let w = ch.width().unwrap_or(0).max(1);
             if self.col + w > self.width && self.col > 0 {
                 starts.push(base + i);
-                inks.push(ink);
                 self.col = 0;
             }
             self.col += w;
@@ -592,15 +574,41 @@ impl RowIndex {
     }
 }
 
-/// One row of a frame: what it is, its text, the box it is drawn inside, and its ink.
+/// One row of a frame: what it is, how it is drawn, and the box it sits inside.
 ///
 /// # Invariant
 ///
 /// `edges` is empty for a row that is not part of a frame; a block the operator
 /// opened is the only thing SPEC gives a scroll of its own, so it is the only one
-/// that has a box, and the box's sides are what the renderer draws around it. The ink
-/// is what the block's own document said the row is, and never a guess at its text.
-pub type Row<'a> = (LineKind, Cow<'a, str>, Edges, Ink);
+/// that has a box, and the box's sides are what the renderer draws around it.
+pub type Row<'a> = (LineKind, Shown<'a>, Edges);
+
+/// How one row of a frame is drawn.
+///
+/// # Invariant
+///
+/// A `Styled` row is drawn exactly as it is: its runs were decided by the document
+/// that wrote it, so a row a break split keeps its ink on both sides. `Text` is a row
+/// no document wrote, and the frame draws it in its kind's ink.
+pub enum Shown<'a> {
+    Text(Cow<'a, str>),
+    Styled(&'a [Span<'static>]),
+}
+
+impl Shown<'_> {
+    /// The row's characters, whatever ink they are drawn in.
+    pub fn text(&self) -> Cow<'_, str> {
+        match self {
+            Shown::Text(text) => Cow::Borrowed(text),
+            Shown::Styled(spans) => Cow::Owned(
+                spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>(),
+            ),
+        }
+    }
+}
 
 /// Which sides of a frame a row carries.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1233,7 +1241,7 @@ impl Log {
             entry.reflow(width);
         } else {
             entry.starts = vec![0];
-            entry.ink = vec![Ink::Prose];
+            entry.styled = vec![Line::default()];
         }
         let after = self.contributions(at);
         self.shift(at, before, after);
@@ -1321,11 +1329,11 @@ impl Log {
                     let index = row - first;
                     // SPEC's opened item: a box whose top row carries the label.
                     if boxed && index == 0 {
-                        rows.push((entry.kind, entry.label(), Edges::TOP, Ink::Prose));
+                        rows.push((entry.kind, Shown::Text(entry.label()), Edges::TOP));
                         continue;
                     }
                     if boxed && index + 1 == shown {
-                        rows.push((entry.kind, Cow::Borrowed(""), Edges::BOTTOM, Ink::Prose));
+                        rows.push((entry.kind, Shown::Text(Cow::Borrowed("")), Edges::BOTTOM));
                         continue;
                     }
                     let body_row = match boxed {
@@ -1339,12 +1347,7 @@ impl Log {
                         true => Edges::INSIDE,
                         false => Edges::default(),
                     };
-                    rows.push((
-                        entry.kind,
-                        entry.view_row(body_row, print),
-                        edges,
-                        entry.row_ink(body_row),
-                    ));
+                    rows.push((entry.kind, entry.shown(body_row, print), edges));
                 }
                 if bottom >= end || pos + 1 >= ledger.blocks.len() {
                     break;
@@ -1871,7 +1874,7 @@ mod tests {
         log.window(View::All, width, height, scroll)
             .rows
             .iter()
-            .map(|(_, text, _, _)| text.to_string())
+            .map(|(_, text, _)| text.text().to_string())
             .collect()
     }
 
@@ -2314,7 +2317,7 @@ mod tests {
             log.window(View::All, 40, 10, 0)
                 .rows
                 .iter()
-                .map(|(_, t, _, _)| t.to_string())
+                .map(|(_, t, _)| t.text().to_string())
                 .collect::<Vec<_>>(),
             vec!["[main] one", "[peer] two"]
         );
@@ -2322,7 +2325,7 @@ mod tests {
             log.window(View::Window("main"), 40, 10, 0)
                 .rows
                 .iter()
-                .map(|(_, t, _, _)| t.to_string())
+                .map(|(_, t, _)| t.text().to_string())
                 .collect::<Vec<_>>(),
             vec!["[main] one"]
         );

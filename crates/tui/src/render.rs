@@ -7,8 +7,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+use crate::log::Shown;
 use crate::log::View;
-use crate::markdown::{self, Ink};
 use crate::panes::{Pane, Panes};
 use crate::{LineKind, Screen};
 
@@ -728,15 +728,9 @@ fn draw_quota(f: &mut Frame, s: &Screen, area: Rect) {
 /// A boxed row loses two columns to its borders and is one row shorter, which is
 /// what its own scroll accounts for: the box is drawn here, so the rows the log
 /// handed back are exactly the rows drawn.
-fn framed_row(
-    kind: LineKind,
-    text: &str,
-    edges: crate::log::Edges,
-    ink: Ink,
-    width: u16,
-) -> Line<'static> {
+fn framed_row(kind: LineKind, text: &str, edges: crate::log::Edges, width: u16) -> Line<'static> {
     if !edges.framed() {
-        return item_row(kind, text, ink);
+        return item_row(kind, text);
     }
     let inner = width.saturating_sub(2).max(1);
     let mut spans: Vec<Span<'static>> = Vec::new();
@@ -745,7 +739,7 @@ fn framed_row(
         // rest, and clipping cannot take the right border.
         let available = (inner as usize).saturating_sub(1);
         let (title, _) = split_at_width(text, available);
-        let body = item_row(kind, &title, ink);
+        let body = item_row(kind, &title);
         let used = UnicodeWidthStr::width(title.as_str());
         let left = available.saturating_sub(used);
         spans.push(Span::styled(
@@ -766,7 +760,7 @@ fn framed_row(
         ));
         return Line::from(spans);
     }
-    let body = item_row(kind, text, ink);
+    let body = item_row(kind, text);
     let used: usize = body
         .spans
         .iter()
@@ -782,19 +776,15 @@ fn framed_row(
     Line::from(spans)
 }
 
-/// One row of an item: SPEC's coloured `symbol`, then the row's own ink.
+/// One row of an item: SPEC's coloured `symbol`, then the quiet gray beside it.
 ///
 /// # Invariant
 ///
-/// The kind's colour is the mark's, and the text beside it is the one quiet gray
-/// that every item but the answer is read in -- so that what colour is left for is
-/// what the reader came for. `output` carries no mark: its rows are drawn as the
-/// markdown they print, in the ink the block's own document gave them.
-/// See `docs/notes/tui-render.md` and `docs/notes/tui-markdown.md`.
-fn item_row(kind: LineKind, text: &str, ink: Ink) -> Line<'static> {
-    if kind == LineKind::Assistant {
-        return markdown::colored_row(text, ink);
-    }
+/// The kind's colour is the mark's, and the text after it is the one quiet gray --
+/// so that what colour is left for is what the reader came for. An answer's rows are
+/// never here: a document styled them, and `shown_row` draws them as they are.
+/// See `docs/notes/tui-render.md`.
+fn item_row(kind: LineKind, text: &str) -> Line<'static> {
     let mark = kind.mark();
     let rest = match mark.is_empty() {
         true => None,
@@ -806,6 +796,26 @@ fn item_row(kind: LineKind, text: &str, ink: Ink) -> Line<'static> {
             Span::styled(rest.to_string(), dim()),
         ]),
         None => Line::from(Span::styled(text.to_string(), dim())),
+    }
+}
+
+/// One row of a pane, in the ink the log said it is drawn in.
+///
+/// # Invariant
+///
+/// A row a document styled is drawn as it is and nothing else: the runs are the
+/// answer, so a break the log made cannot take a run's ink away. Every other row is
+/// the kind's mark plus the quiet gray.
+fn shown_row(
+    kind: LineKind,
+    shown: &Shown<'_>,
+    edges: crate::log::Edges,
+    width: u16,
+) -> Line<'static> {
+    match shown {
+        // Cloned: the frame outlives the borrow of the log it read.
+        Shown::Styled(spans) => Line::from(spans.to_vec()),
+        Shown::Text(text) => framed_row(kind, text.as_ref(), edges, width),
     }
 }
 
@@ -863,9 +873,7 @@ fn draw_rows(f: &mut Frame, s: &mut Screen, name: &str, area: Rect) {
     let lines: Vec<Line> = window
         .rows
         .iter()
-        .map(|(kind, text, edges, ink)| {
-            framed_row(*kind, text.as_ref(), *edges, *ink, width as u16)
-        })
+        .map(|(kind, shown, edges)| shown_row(*kind, shown, *edges, width as u16))
         .collect();
     drop(window);
     if let Some(pane) = s.panes.get_mut(&name) {
@@ -2724,24 +2732,11 @@ mod tests {
                 LineKind::ToolCall,
                 "\u{25b8} bash, task=state after the interrupt",
                 crate::log::Edges::TOP,
-                Ink::Prose,
                 width,
             );
             // The log hands a row already wrapped, so the sides are measured bare.
-            let side = framed_row(
-                LineKind::ToolCall,
-                "",
-                crate::log::Edges::INSIDE,
-                Ink::Prose,
-                width,
-            );
-            let bottom = framed_row(
-                LineKind::ToolCall,
-                "",
-                crate::log::Edges::BOTTOM,
-                Ink::Prose,
-                width,
-            );
+            let side = framed_row(LineKind::ToolCall, "", crate::log::Edges::INSIDE, width);
+            let bottom = framed_row(LineKind::ToolCall, "", crate::log::Edges::BOTTOM, width);
             let want = width_of(&side);
             assert_eq!(width_of(&top), want, "top rule at {width}: {top:?}");
             assert_eq!(

@@ -3,10 +3,15 @@
 //! # Invariant
 //!
 //! Every row drawn is the same display width and no wider than it was given, so a
-//! frame draws a table as a table instead of wrapping it into a paragraph.
+//! frame draws a table as a table instead of wrapping it into a paragraph. A cell's
+//! runs survive the column: what ink its words were written in is what they keep.
 //! See `docs/notes/tui-table.md`.
 
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use ratatui::style::Style;
+use ratatui::text::Line;
+
+use crate::fold;
+use crate::markdown;
 
 /// How a column's cells sit inside it, as the source's `:` markers say.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,20 +23,19 @@ pub enum Align {
     Right,
 }
 
-/// One row of the drawn table: its text, and whether it is the header's rule.
-pub struct Row {
-    pub text: String,
-    pub rule: bool,
-}
-
 /// The narrowest a column is squeezed to: its rule row spends three dashes.
 const MIN: usize = 3;
 
 /// The columns one cell spends on its border and its air: `| a ` is three.
 const PADDING: usize = 3;
 
-/// The rows `header` and `body` are drawn in, at most `width` columns wide.
-pub fn rows(header: &[String], aligns: &[Align], body: &[Vec<String>], width: usize) -> Vec<Row> {
+/// The rows a table is drawn in: its header, the rule, then its body.
+pub fn rows(
+    header: &[Line<'static>],
+    aligns: &[Align],
+    body: &[Vec<Line<'static>>],
+    width: usize,
+) -> Vec<Line<'static>> {
     let columns = header
         .len()
         .max(body.iter().map(Vec::len).max().unwrap_or(0));
@@ -40,37 +44,35 @@ pub fn rows(header: &[String], aligns: &[Align], body: &[Vec<String>], width: us
     }
     let natural: Vec<usize> = (0..columns)
         .map(|column| {
-            let widest = lines(header, body)
-                .map(|row| cell(row, column).map_or(0, UnicodeWidthStr::width))
+            lines(header, body)
+                .map(|row| cell(row, column).map_or(0, Line::width))
                 .max()
-                .unwrap_or(0);
-            widest.max(MIN)
+                .unwrap_or(0)
+                .max(MIN)
         })
         .collect();
     let widths = fit(&natural, width);
-    let mut out: Vec<Row> = Vec::new();
+    let mut out: Vec<Line<'static>> = Vec::new();
     for (index, row) in lines(header, body).enumerate() {
         // The rule sits between what the columns are said to hold and what they do.
         if index == 1 {
-            out.push(Row {
-                text: rule(&widths, aligns),
-                rule: true,
-            });
+            out.push(rule(&widths, aligns));
         }
-        for text in compose(row, &widths, aligns) {
-            out.push(Row { text, rule: false });
-        }
+        out.extend(compose(row, &widths, aligns));
     }
     out
 }
 
 /// The header first, then the body: the order the table is read in.
-fn lines<'a>(header: &'a [String], body: &'a [Vec<String>]) -> impl Iterator<Item = &'a [String]> {
+fn lines<'a>(
+    header: &'a [Line<'static>],
+    body: &'a [Vec<Line<'static>>],
+) -> impl Iterator<Item = &'a [Line<'static>]> {
     std::iter::once(header).chain(body.iter().map(|row| row.as_slice()))
 }
 
-fn cell(row: &[String], column: usize) -> Option<&str> {
-    row.get(column).map(String::as_str)
+fn cell<'a>(row: &'a [Line<'static>], column: usize) -> Option<&'a Line<'static>> {
+    row.get(column)
 }
 
 /// The column widths that fit `width`, the widest columns yielding first.
@@ -99,104 +101,87 @@ fn fit(natural: &[usize], width: usize) -> Vec<usize> {
 }
 
 /// One logical row as the rows its cells wrap into, each the table's whole width.
-fn compose(cells: &[String], widths: &[usize], aligns: &[Align]) -> Vec<String> {
-    let wrapped: Vec<Vec<String>> = widths
+fn compose(cells: &[Line<'static>], widths: &[usize], aligns: &[Align]) -> Vec<Line<'static>> {
+    let wrapped: Vec<Vec<Line<'static>>> = widths
         .iter()
         .enumerate()
-        .map(|(column, width)| wrap_cell(cell(cells, column).unwrap_or_default(), *width))
+        .map(|(column, width)| match cell(cells, column) {
+            Some(line) => fold::rows(line.clone(), *width),
+            None => vec![Line::default()],
+        })
         .collect();
     let height = wrapped.iter().map(Vec::len).max().unwrap_or(1).max(1);
     (0..height)
-        .map(|line| {
-            let mut out = String::from("|");
+        .map(|row| {
+            let mut out = Line::default();
+            let style = markdown::marker_style();
+            fold::push(&mut out, style, "|");
             for (column, width) in widths.iter().enumerate() {
-                let text = wrapped[column].get(line).map(String::as_str).unwrap_or("");
-                out.push(' ');
-                out.push_str(&pad(text, *width, align_of(aligns, column)));
-                out.push_str(" |");
+                let line = wrapped[column].get(row);
+                let used = line.map_or(0, Line::width);
+                let spare = width.saturating_sub(used);
+                let (before, after) = match aligns.get(column).copied().unwrap_or(Align::None) {
+                    Align::Right => (spare, 0),
+                    Align::Center => (spare / 2, spare - spare / 2),
+                    Align::None | Align::Left => (0, spare),
+                };
+                // Between two borders: air, the alignment's padding, and the cell.
+                fold::push(
+                    &mut out,
+                    Style::default(),
+                    &format!(" {}", " ".repeat(before)),
+                );
+                for span in line.map(|line| line.spans.as_slice()).unwrap_or_default() {
+                    fold::push(&mut out, span.style, span.content.as_ref());
+                }
+                fold::push(
+                    &mut out,
+                    Style::default(),
+                    &format!("{} ", " ".repeat(after)),
+                );
+                fold::push(&mut out, style, "|");
             }
             out
         })
         .collect()
 }
 
-/// A cell's words as lines that fit `width` columns.
-///
-/// # Invariant
-///
-/// No word is dropped: one wider than its column is cut where the column ends. A
-/// table row may not rely on the log wrapping it afterwards -- that would break the
-/// columns the row is drawn in.
-fn wrap_cell(text: &str, width: usize) -> Vec<String> {
-    let width = width.max(1);
-    let mut lines = vec![String::new()];
-    let mut used = 0usize;
-    for word in text.split_whitespace() {
-        if used > 0 && used + 1 + UnicodeWidthStr::width(word) > width {
-            lines.push(String::new());
-            used = 0;
-        }
-        if used > 0 {
-            lines.last_mut().expect("a line is open").push(' ');
-            used += 1;
-        }
-        for ch in word.chars() {
-            let advance = ch.width().unwrap_or(0).max(1);
-            if used + advance > width && used > 0 {
-                lines.push(String::new());
-                used = 0;
-            }
-            lines.last_mut().expect("a line is open").push(ch);
-            used += advance;
-        }
-    }
-    lines
-}
-
-/// `text` in a column `width` wide, by the alignment the source asked for.
-fn pad(text: &str, width: usize, align: Align) -> String {
-    let spare = width.saturating_sub(UnicodeWidthStr::width(text));
-    let (left, right) = match align {
-        Align::Right => (spare, 0),
-        Align::Center => (spare / 2, spare - spare / 2),
-        Align::None | Align::Left => (0, spare),
-    };
-    format!("{}{text}{}", " ".repeat(left), " ".repeat(right))
-}
-
 /// The row between header and body: dashes, and the `:` markers that align.
-fn rule(widths: &[usize], aligns: &[Align]) -> String {
-    let mut out = String::from("|");
+fn rule(widths: &[usize], aligns: &[Align]) -> Line<'static> {
+    let style = markdown::marker_style();
+    let mut out = Line::default();
+    fold::push(&mut out, style, "|");
     for (column, width) in widths.iter().enumerate() {
-        let align = align_of(aligns, column);
+        let align = aligns.get(column).copied().unwrap_or(Align::None);
         let colons = match align {
             Align::None => 0,
             Align::Left | Align::Right => 1,
             Align::Center => 2,
         };
-        let dashes = width + 2 - colons;
-        let body = "-".repeat(dashes);
-        out.push_str(&match align {
-            Align::None => body,
-            Align::Left => format!(":{body}"),
-            Align::Right => format!("{body}:"),
-            Align::Center => format!(":{body}:"),
-        });
-        out.push('|');
+        let body = "-".repeat(width + 2 - colons);
+        let text = match align {
+            Align::None => format!("{body}|"),
+            Align::Left => format!(":{body}|"),
+            Align::Right => format!("{body}:|"),
+            Align::Center => format!(":{body}:|"),
+        };
+        fold::push(&mut out, style, &text);
     }
     out
 }
 
-fn align_of(aligns: &[Align], column: usize) -> Align {
-    aligns.get(column).copied().unwrap_or(Align::None)
+/// One cell as the runs a table row draws: the text, in one ink.
+#[cfg(test)]
+fn plain(text: &str) -> Line<'static> {
+    Line::from(ratatui::text::Span::raw(text.to_string()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn cells(text: &str) -> Vec<String> {
-        text.split('|').map(str::to_string).collect()
+    fn cells(text: &str) -> Vec<Line<'static>> {
+        text.split('|').map(plain).collect()
     }
 
     /// Every drawn row is the width the table was given, and the columns line up.
@@ -207,16 +192,12 @@ mod tests {
         let aligns = vec![Align::Left, Align::Right];
         for width in [80usize, 24, 16] {
             let rows = rows(&header, &aligns, &body, width);
-            let wide: Vec<usize> = rows
-                .iter()
-                .map(|row| UnicodeWidthStr::width(row.text.as_str()))
-                .collect();
+            let wide: Vec<usize> = rows.iter().map(Line::width).collect();
             assert!(wide.iter().all(|w| *w <= width), "{width}: {wide:?}");
             assert!(
                 wide.windows(2).all(|pair| pair[0] == pair[1]),
                 "{width}: every row is the same width: {wide:?}"
             );
-            assert_eq!(rows.iter().filter(|row| row.rule).count(), 1, "{width}");
         }
     }
 
@@ -226,12 +207,10 @@ mod tests {
         let header = cells("h|i");
         let body = vec![cells("one two three|x")];
         let rows = rows(&header, &[Align::None, Align::None], &body, 18);
-        let drawn: Vec<&str> = rows.iter().map(|row| row.text.as_str()).collect();
-        assert!(drawn.len() > 3, "the row grew: {drawn:?}");
-        assert!(
-            drawn.iter().all(|row| row.contains('|')),
-            "every row is a table row: {drawn:?}"
-        );
+        assert!(rows.len() > 3, "the row grew: {rows:?}");
+        for row in &rows {
+            assert!(plain_text(row).contains('|'), "a table row: {row:?}");
+        }
     }
 
     /// The rule row spells the alignment the source spelled.
@@ -239,10 +218,23 @@ mod tests {
     fn the_rule_row_keeps_the_alignment_markers() {
         let widths = [4usize, 4, 4, 4];
         let aligns = [Align::None, Align::Left, Align::Center, Align::Right];
-        assert_eq!(rule(&widths, &aligns), "|------|:-----|:----:|-----:|");
+        assert_eq!(
+            plain_text(&rule(&widths, &aligns)),
+            "|------|:-----|:----:|-----:|"
+        );
         for width in [0usize, 1, 2] {
             let rows = rows(&cells("a|b"), &[Align::None, Align::None], &[], width);
-            assert!(rows.iter().all(|row| row.text.starts_with('|')));
+            assert!(
+                rows.iter().all(|row| plain_text(row).starts_with('|')),
+                "{width}: {rows:?}"
+            );
         }
+    }
+
+    fn plain_text(line: &Line<'static>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
     }
 }
