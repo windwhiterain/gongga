@@ -272,7 +272,7 @@ fn reconcile(
 ) -> anyhow::Result<()> {
     // The report is shared by both roots, so this root judges only what it adds.
     let conflicts_at = report.conflicts.len();
-    let kept_at = report.kept.len();
+    let _kept_at = report.kept.len();
     let old = read_pin(root);
     // Paths this root already kept from its reader: still theirs, and no longer
     // holding the pin back.

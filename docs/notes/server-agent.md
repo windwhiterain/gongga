@@ -77,14 +77,17 @@ asked to keep it.
 The wait was behind a `del_session`. There is nothing to write to any more, and
 writing would resurrect rows the operator asked to be gone.
 
-Which model this turn talks to, and how much transcript it may carry before
-a notice. Resolved once, at the top: a session can be pointed at a different
-provider between turns, but every step of one turn has to agree on where it is
-sending.
+Which model the next request talks to, the level it carries, and how much
+transcript this session may carry before a notice. All three are read at every
+step boundary, not once at the top: a `set_session` is a statement about the next
+request, and one step is the longest anything may lag behind it. A turn whose
+model changes mid-way therefore switches on the step after the command, and the
+pane's title -- which reads the same tuning -- never claims something the next
+request will not do.
 
-Read once, like the route: a `set_session --thinking-effort` between turns
-applies to the next turn, and every step of this one sends the level it started
-with.
+The cost of reading per step is a roster lookup and a locked read of three
+fields; the clients themselves are cached by roster entry, so only a real model
+change builds one.
 
 No step budget. A turn runs until the model stops asking for tools, the user
 cancels, or a request fails.
@@ -286,24 +289,27 @@ the threshold follow the model instead of the other way round.
 
 It is a threshold for *asking*, not for acting: zero turns the notice off.
 
-## prompt_in_force, prompt_moved
+## prompt_in_force
 
-The prose a session sends is the stored row, unless something moved: this is the
-first step of a turn and the directory changed, the handover note is not the one the
-row was rendered from, or there is no row yet. Everything else -- a template edit
-noticed at three in the morning -- waits for the next turn. That is the rule the
-user set for this feature: 重读只重读新入库的，入库的不改.
+The prose a session sends is rendered from the templates as they are *now*, compared
+with the stored row, and appended only when it differs. So the row always holds
+exactly what the last request carried, and an edit is in effect on the very next
+step: a template, a handover note, a directory.
 
-It is also the cheaper rule. Prose sits in front of the whole transcript in the
-provider's cached prefix, so re-rendering per step turns every edit into a re-billed
-history; measured against the fake, an edit costs the boundary step its hit (99% to
-35%) and the very next step recovers it. `scripts/replay_audit.py` asserts the other
-half: for every request sent, each input item is a stored row or the stored note, and
-each distinct `instructions` the provider saw is a `system` row.
+The earlier rule kept the store's row and only re-rendered at a boundary -- the first
+step of a turn, a moved note, a changed directory -- so a template edit waited for the
+next turn (「重读只重读新入库的，入库的不改」). The user superseded that half on
+2026-11-01: 每次读都必须读的是最新的. What survives is the half that was about the
+store: rows are append-only and the row sent is the row stored, so a request is never
+a rendering nobody recorded.
 
-A command the agent runs from its own shell reaches the same place:
-`set_session --cwd` moves the directory, and the next turn's first step picks up
-that directory's rules.
+The cache cost is one missed hit, once, at the edit: prose sits in front of the whole
+transcript in the provider's cached prefix, and measured against the fake an edit costs
+the boundary step its hit (99% to 35%) with the next step recovering it. Steady state
+costs nothing, because an unchanged render is byte-identical to the stored row and
+writes nothing. `scripts/replay_audit.py` asserts the other half: for every request
+sent, each input item is a stored row or the stored note, and each distinct
+`instructions` the provider saw is a `system` row.
 
 ## Agent::step
 

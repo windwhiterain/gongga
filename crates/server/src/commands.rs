@@ -659,6 +659,25 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             entry.model
         ));
     }
+    // A session that exists is already standing somewhere, and that place is its
+    // shell's: accepting a `--cwd` it will not move to would be a setting that
+    // never takes effect. Creating a session is the one time this names a place.
+    if let Some(cwd) = args.get("cwd") {
+        if let Ok(Some(row)) = d.store.get_session(&name) {
+            let there = d
+                .sessions
+                .peek(&name)
+                .map(|live| live.cwd())
+                .unwrap_or_else(|| std::path::PathBuf::from(&row.cwd));
+            if !same_directory(cwd, &there) {
+                return Outcome::err(format!(
+                    "--cwd names where a session is created, not a setting: {name} is in {}, \
+                     and its shell is what moves -- `cd` there in it",
+                    there.display()
+                ));
+            }
+        }
+    }
     // Naming a session creates it: that is the only way to get one.
     let session = match d.sessions.ensure_on(
         &name,
@@ -724,6 +743,35 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             "thinking_effort": tuning.thinking_effort,
         }),
     )
+}
+
+/// Whether two spellings name one directory, so a `--cwd` that agrees is not a move.
+///
+/// # Invariant
+///
+/// Comparing paths as strings would refuse `C:/work` against `C:\\work`, which name
+/// one directory; this compares what the platform compares.
+fn same_directory(written: &str, actual: &std::path::Path) -> bool {
+    let spelled = std::path::Path::new(written.trim());
+    if spelled == actual {
+        return true;
+    }
+    // A canonicalising comparison would answer "no" for a path that does not
+    // exist, so this flattens what the platform ignores: separators, and case
+    // where the filesystem ignores it.
+    fn flatten(path: &std::path::Path) -> String {
+        let text = path
+            .to_string_lossy()
+            .replace(['/', '\\'], std::path::MAIN_SEPARATOR_STR)
+            .trim_end_matches(std::path::MAIN_SEPARATOR)
+            .to_string();
+        if cfg!(windows) {
+            text.to_lowercase()
+        } else {
+            text
+        }
+    }
+    flatten(spelled) == flatten(actual)
 }
 
 /// `--model` to a roster entry: the pair first, then a bare name.

@@ -167,23 +167,6 @@ impl Agent {
         }
         let (turn, cancel) = session.new_turn();
         let started = std::time::Instant::now();
-        // Resolved once: every step of a turn sends to the model it started on.
-        let (llm, budget) = match self.route(&name, &session.tuning()) {
-            Ok(route) => route,
-            Err(e) => {
-                self.error(id, &name, "resolving the session's provider", e);
-                return (TurnOutcome::Failed, 0);
-            }
-        };
-        // Read once, like the route: every step sends the level this turn began with.
-        let effort = session.tuning().thinking_effort;
-        tracing::info!(
-            session = %name,
-            model = %llm.model(),
-            effort = effort.as_deref().unwrap_or("-"),
-            budget,
-            "turn start"
-        );
 
         self.bus.publish(Event::Status {
             session: name.clone(),
@@ -201,15 +184,39 @@ impl Agent {
             }
             // Step boundary: a user line between a call and its result is rejected, so inject here.
             self.deliver_inbox(id, &name);
+            // Everything a request is built from is read here, every step: a
+            // `set_session` that lands while this turn runs is meant for the next
+            // request, and one step is the longest anything may lag behind it.
+            let (llm, effort, budget) = match self.settings(&name, session) {
+                Ok(settings) => settings,
+                Err(e) => {
+                    self.error(id, &name, "resolving the session's provider", e);
+                    break (TurnOutcome::Failed, step);
+                }
+            };
+            if step == 0 {
+                tracing::info!(
+                    session = %name,
+                    model = %llm.model(),
+                    effort = effort.as_deref().unwrap_or("-"),
+                    budget,
+                    "turn start"
+                );
+            }
             // Ask before the request is built, so this is the step that hears it.
             self.maybe_notify_context(session, id, &name, budget);
             let cwd = session.cwd();
-            tracing::info!(session = %name, step, "step start");
+            tracing::info!(
+                session = %name,
+                step,
+                model = %llm.model(),
+                effort = effort.as_deref().unwrap_or("-"),
+                "step start"
+            );
             let attempt = Attempt {
                 number: step,
                 llm: &llm,
                 effort: effort.as_deref(),
-                // Read again per step, like every other word of the prompt.
                 cwd: &cwd,
             };
             match self.step(session, id, &name, turn, &cancel, &attempt).await {
@@ -234,6 +241,18 @@ impl Agent {
 
         tracing::info!(session = %name, outcome = ?outcome.0, elapsed = ?started.elapsed(), "turn end");
         outcome
+    }
+
+    /// Where the next request sends: the model, the level and the notice budget, all
+    /// read from the session as it is now.
+    fn settings(
+        &self,
+        name: &str,
+        session: &SessionHandle,
+    ) -> anyhow::Result<(Arc<LlmClient>, Option<String>, u64)> {
+        let tuning = session.tuning();
+        let (llm, budget) = self.route(name, &tuning)?;
+        Ok((llm, tuning.thinking_effort, budget))
     }
 
     /// Where this turn sends, and how many input tokens it may carry before it is worth a notice.
@@ -383,32 +402,22 @@ impl Agent {
         });
     }
 
-    /// The prose this session sends, read from the row written when it last moved.
+    /// The prose this session sends, rendered now and stored when it differs.
     ///
     /// # Invariant
     ///
-    /// Templates and rule files are read at a step that *stores* something new --
-    /// the turn's first step, a handover note that moved, a directory that changed --
-    /// and never re-rendered for a step that does not. A stored row is what gets
-    /// sent, so a session's requests share one prefix and an edit lands at a
-    /// boundary instead of re-billing the whole history mid-turn.
+    /// A request carries the templates as they are. The rendered prose is compared
+    /// with the stored row and a row is written only when it differs, so an edited
+    /// template or a moved handover lands on the very next step, while a step that
+    /// changes nothing re-bills nothing. See `docs/notes/server-agent.md`.
     fn prompt_in_force(
         &self,
         id: i64,
         name: &str,
         cwd: &std::path::Path,
         note: Option<&str>,
-        turn_start: bool,
     ) -> anyhow::Result<crate::store::Prompt> {
         let stored = self.store.prompt(id)?;
-        let cwd = cwd.display().to_string();
-        let here = crate::store::stamp(note);
-        if let Some(kept) = stored
-            .clone()
-            .filter(|p| !prompt_moved(p, &cwd, &here, turn_start))
-        {
-            return Ok(kept);
-        }
         let prompts = crate::prompts::shared();
         // Rendered per session, not per turn: the name never changes for a
         // session, so the row this writes stays valid across steps.
@@ -417,9 +426,17 @@ impl Agent {
         let prompt = crate::store::Prompt {
             instructions,
             handover,
-            cwd,
-            stamp: here,
+            cwd: cwd.display().to_string(),
+            stamp: crate::store::stamp(note),
         };
+        // Only the two texts are compared: they are what goes on the wire, and the
+        // row's `cwd` is a record rather than prose -- a shell reports one directory
+        // under two spellings, and a spelling is not a reason to re-bill a prefix.
+        if let Some(kept) = stored.clone().filter(|kept| {
+            kept.instructions == prompt.instructions && kept.handover == prompt.handover
+        }) {
+            return Ok(kept);
+        }
         // Rewritten prose is a real event: the prefix the provider cached is gone
         // from here, and the ledger will show the miss.
         if let Some(p) = &stored {
@@ -494,7 +511,7 @@ impl Agent {
         let generation = self.store.context_generation(id)?;
         let phase_started = std::time::Instant::now();
         let definitions = self.tools.definitions();
-        let prompt = self.prompt_in_force(id, &name, cwd, note.as_deref(), step == 1)?;
+        let prompt = self.prompt_in_force(id, &name, cwd, note.as_deref())?;
         phases.prompt_ms = phase_started.elapsed().as_millis() as u64;
         // Pinned here, so every retry of this request replays the window that was
         // current when it started.
@@ -1118,18 +1135,6 @@ fn failed_warning(
     line
 }
 
-/// Whether the prose has to be rendered and stored again for this step.
-///
-/// # Invariant
-///
-/// A note that moved is content entering the store, so it is noticed at any step. A
-/// different directory is noticed only at a turn's first step, and an edited template
-/// is not noticed here at all -- it lands at the next turn. The alternative,
-/// re-rendering per step, re-bills the history that sits behind the prose.
-fn prompt_moved(stored: &crate::store::Prompt, cwd: &str, stamp: &str, turn_start: bool) -> bool {
-    stored.stamp != stamp || (turn_start && stored.cwd != cwd)
-}
-
 /// The message that hands the folding decision to the agent, from the templates.
 ///
 /// # Invariant
@@ -1183,33 +1188,6 @@ mod tests {
         // No window in the roster: the configured number is all there is.
         assert_eq!(notice_budget(40_000, None, Some(50)), 40_000);
         assert_eq!(notice_budget(40_000, None, None), 40_000);
-    }
-
-    /// A template edit waits for the next turn; a fold does not; a step that
-    /// stores nothing re-renders nothing.
-    #[test]
-    fn the_prompt_is_rebuilt_only_when_something_moved() {
-        let stored = crate::store::Prompt {
-            instructions: "i".into(),
-            handover: None,
-            cwd: "C:/a".into(),
-            stamp: crate::store::stamp(None),
-        };
-        let same = crate::store::stamp(None);
-        let folded = crate::store::stamp(Some("the note"));
-        assert!(!prompt_moved(&stored, "C:/a", &same, true), "nothing moved");
-        assert!(
-            !prompt_moved(&stored, "C:/b", &same, false),
-            "a step is not a turn"
-        );
-        assert!(
-            prompt_moved(&stored, "C:/b", &same, true),
-            "the row names the directory"
-        );
-        assert!(
-            prompt_moved(&stored, "C:/a", &folded, false),
-            "a handover is new content"
-        );
     }
 
     /// Every value the template can name has to arrive: the words are the

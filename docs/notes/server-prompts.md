@@ -109,9 +109,10 @@ ignored it. A rules file was in every request whether or not the turn needed it,
 edit to it changed what the model was told without any row recording that the user said
 it. A skill costs a name and a description until the work asks for the body.
 
-What stays is the boundary the reads used to sit on: `prompt_moved` still notices a
-different directory at a turn's first step, because the row records where the shell
-stood, and a template edit still lands at the next turn rather than the next step.
+What stays is where the reads sit: the templates are re-read whenever the file's stamp
+moves, and `prompt_in_force` renders them at every step and stores a new row only when
+the text differs. So a template edit is in the next request rather than the next turn,
+and a step whose prose did not change writes nothing.
 
 ## where the prose comes from, and why not from here
 

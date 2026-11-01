@@ -15,7 +15,7 @@ use serde_json::json;
 ///
 /// What the model was told is in the database rather than a rendering to re-guess:
 /// a step sends this row, and `#[serde(default)]` keeps an older row readable.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Prompt {
     /// The system instructions this session was sent under, verbatim.
     #[serde(default)]

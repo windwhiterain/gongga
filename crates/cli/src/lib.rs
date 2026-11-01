@@ -1280,6 +1280,20 @@ impl Client {
                     self.row(sink, LineKind::Error, "set_sticky requires --value");
                     return;
                 };
+                // A sticky nothing would ever read is a setting that never takes
+                // effect, so it is refused while the caller is still looking.
+                if self.catalog.fills_sticky(&arg_name) == Some(false) {
+                    self.row(
+                        sink,
+                        LineKind::Error,
+                        &format!(
+                            "no command argument named {arg_name:?} is filled from a sticky; it \
+                             takes: {}",
+                            self.catalog.sticky_names().join(", ")
+                        ),
+                    );
+                    return;
+                }
                 match self.sticky.set(&arg_name, &value) {
                     Ok(()) => {
                         self.row(

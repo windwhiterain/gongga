@@ -87,6 +87,40 @@ impl Catalog {
             .cloned()
     }
 
+    /// Whether some published command declares an argument by this name as one a
+    /// sticky value would fill.
+    ///
+    /// # Invariant
+    ///
+    /// `None` when no catalog has been published yet: that cannot prove a name
+    /// wrong, and a client that has not connected must still store one.
+    pub fn fills_sticky(&self, name: &str) -> Option<bool> {
+        let published = self.read().published.clone();
+        if published.is_empty() {
+            return None;
+        }
+        Some(published.iter().any(|command| {
+            command
+                .args
+                .iter()
+                .any(|a| a.name == name && (a.sticky || a.required))
+        }))
+    }
+
+    /// The names a sticky value could ever fill, sorted, for a refusal to name.
+    pub fn sticky_names(&self) -> Vec<String> {
+        let published = self.read().published.clone();
+        let mut names: Vec<String> = published
+            .iter()
+            .flat_map(|command| command.args.iter())
+            .filter(|a| a.sticky || a.required)
+            .map(|a| a.name.clone())
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        names
+    }
+
     /// Whether the caller runs this one itself. Answered from the published
     /// target, never from a list here.
     pub fn is_client_command(&self, name: &str) -> bool {
