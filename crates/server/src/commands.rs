@@ -1278,6 +1278,28 @@ pub fn publish_sessions(d: &Dispatch) {
     }
 }
 
+/// What a session would send now: its live handle when it has one, else its row.
+///
+/// # Invariant
+///
+/// A live handle was materialised from the row, so the two agree. A session nobody
+/// has touched since this process started has no handle, and then the row is the
+/// only record of what it was told: reading `Tuning::default()` there reports a
+/// session that runs on no model at all.
+fn stated_tuning(
+    live: Option<crate::session::Tuning>,
+    row: &crate::store::SessionRow,
+) -> crate::session::Tuning {
+    match live {
+        Some(tuning) => tuning,
+        None => crate::session::Tuning {
+            model: (!row.model.is_empty()).then(|| row.model.clone()),
+            context_limit: row.context_limit,
+            thinking_effort: row.thinking_effort.clone(),
+        },
+    }
+}
+
 /// A stored row as a client is told about it, whatever told it.
 ///
 /// # Invariant
@@ -1287,11 +1309,7 @@ pub fn publish_sessions(d: &Dispatch) {
 /// that never named a share is noticed at the default. One function, because the
 /// greeting and the list must not disagree about a session's model.
 pub fn session_info(d: &Dispatch, row: &crate::store::SessionRow) -> protocol::SessionInfo {
-    let tuning = d
-        .sessions
-        .peek(&row.name)
-        .map(|s| s.tuning())
-        .unwrap_or_default();
+    let tuning = stated_tuning(d.sessions.peek(&row.name).map(|s| s.tuning()), row);
     let entry = tuning
         .model
         .as_deref()
@@ -1405,6 +1423,51 @@ mod tests {
             payload: json!({"message": "late", "notice": "background"}),
             created_at: 0,
         }])
+    }
+
+    /// Every pane says what its session runs on, including the ones nobody has
+    /// touched since the last restart.
+    #[test]
+    fn a_session_without_a_live_handle_still_says_what_it_runs_on() {
+        let row = crate::store::SessionRow {
+            id: 1,
+            name: "quiet".into(),
+            status: protocol::SessionStatus::Idle,
+            model: "deepseek-official/deepseek-flash".into(),
+            context_limit: Some(40),
+            thinking_effort: Some("low".into()),
+            cwd: "C:/x".into(),
+            created_at: 0,
+            updated_at: 0,
+            messages: 0,
+            usage: protocol::Usage::default(),
+            target: None,
+        };
+        let from_row = stated_tuning(None, &row);
+        assert_eq!(
+            from_row.model.as_deref(),
+            Some("deepseek-official/deepseek-flash"),
+            "the row is the record when nothing loaded the session"
+        );
+        assert_eq!(from_row.context_limit, Some(40));
+        assert_eq!(from_row.thinking_effort.as_deref(), Some("low"));
+
+        // A live handle wins, because it is what the session would send now.
+        let live = crate::session::Tuning {
+            model: Some("kimi-coding/k3.1-pro".into()),
+            context_limit: None,
+            thinking_effort: None,
+        };
+        let from_live = stated_tuning(Some(live), &row);
+        assert_eq!(from_live.model.as_deref(), Some("kimi-coding/k3.1-pro"));
+        assert_eq!(from_live.context_limit, None);
+
+        // A row written before the column existed says nothing rather than "".
+        let blank = crate::store::SessionRow {
+            model: String::new(),
+            ..row
+        };
+        assert_eq!(stated_tuning(None, &blank).model, None);
     }
 
     #[test]
