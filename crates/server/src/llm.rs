@@ -84,7 +84,6 @@ impl RequestSource {
     fn open(
         &self,
         head: &[u8],
-        last: Option<Vec<u8>>,
     ) -> anyhow::Result<(
         crate::body::RequestBody,
         std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -95,7 +94,6 @@ impl RequestSource {
         let body = crate::body::RequestBody::new(
             head.to_vec(),
             rows,
-            last,
             self.placeholder.clone(),
             counter.clone(),
         );
@@ -237,11 +235,7 @@ impl LlmClient {
     ) -> mpsc::Receiver<LlmEvent> {
         let (tx, rx) = mpsc::channel(256);
         let build_started = Instant::now();
-        let head = self.build_head(instructions, index, handover, tools, effort);
-        // The turn's own facts, as the item after the transcript.
-        let last_item = tail
-            .filter(|tail| !tail.is_empty())
-            .map(crate::body::RequestBody::own_facts);
+        let head = self.build_head(instructions, index, tail, handover, tools, effort);
         // Owned, because the attempt below records it after this body is gone.
         let effort_sent = effort.map(str::to_string);
         let build_head_ms = build_started.elapsed().as_millis() as u64;
@@ -264,7 +258,7 @@ impl LlmClient {
                 // Opened again for every attempt: a body is read once, and a retry
                 // has to send what the attempt before it sent.
                 let open_started = Instant::now();
-                let opened = source.open(&head, last_item.clone());
+                let opened = source.open(&head);
                 let transcript_open_ms = open_started.elapsed().as_millis() as u64;
                 let mut probe =
                     crate::probe::AttemptProbe::new(build_head_ms, transcript_open_ms, head_bytes);
@@ -399,6 +393,7 @@ impl LlmClient {
         &self,
         instructions: &str,
         index: Option<&str>,
+        card: Option<&str>,
         note: Option<&str>,
         tools: &[ToolDefinition],
         effort: Option<&str>,
@@ -409,8 +404,8 @@ impl LlmClient {
             "store": self.store,
         });
         // The index joins the prose because it changes only when a file does, and one
-        // value costs one item either way. The turn's own facts do not: they are sent
-        // after the transcript, so changing them disturbs nothing before them.
+        // value costs one item either way. The start card does not join it: it is the
+        // item after this one, so a change there cannot disturb what precedes it.
         let mut instructions = instructions.to_string();
         if let Some(index) = index.filter(|index| !index.is_empty()) {
             if !instructions.is_empty() {
@@ -463,7 +458,20 @@ impl LlmClient {
         let mut head = body.to_string();
         head.pop();
         head.push_str(",\"input\":[");
-        // The note is the array's first item, so the transcript never displaces it.
+        // SPEC's card: one message after the system prompt and before the first user
+        // message, so it goes in first -- ahead of the note, which is also one.
+        if let Some(card) = card.filter(|card| !card.is_empty()) {
+            head.push_str(
+                &json!({
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": card}],
+                })
+                .to_string(),
+            );
+            head.push(',');
+        }
+        // The note is the array's first message after the card, so the transcript
+        // never displaces it.
         if let Some(note) = note {
             head.push_str(
                 &json!({
@@ -1621,7 +1629,7 @@ mod tests {
         effort: Option<&str>,
     ) -> Value {
         let mut text =
-            String::from_utf8(client.build_head(instructions, None, note, tools, effort))
+            String::from_utf8(client.build_head(instructions, None, None, note, tools, effort))
                 .expect("a head is built from text");
         // Cut at the marker: a note is written after it.
         let at = text
@@ -1641,22 +1649,40 @@ mod tests {
     #[test]
     fn the_system_prompt_is_prose_then_index_then_this_turn() {
         let client = client_with("m", &[], &[]);
-        let text = String::from_utf8(client.build_head("prose", Some("index"), None, &[], None))
-            .expect("a head is built from text");
+        let text =
+            String::from_utf8(client.build_head("prose", Some("index"), None, None, &[], None))
+                .expect("a head is built from text");
         assert!(
             text.contains("\"instructions\":\"prose\\n\\nindex\""),
             "{text}"
         );
     }
 
-    /// The turn's own facts are an item of their own, after everything else.
+    /// The card is one message after the prose, ahead of the note and the transcript.
+    ///
+    /// # Invariant
+    ///
+    /// SPEC: "after the system prompt, before the first user message, inject one
+    /// message". A fold's note is a user message too, so the card precedes it.
     #[test]
-    fn this_turns_facts_are_one_item_after_the_transcript() {
-        let item = String::from_utf8(crate::body::RequestBody::own_facts("Session `s`"))
-            .expect("an item is text");
-        let value: serde_json::Value = serde_json::from_str(&item).expect("one JSON item");
-        assert_eq!(value["role"], "user");
-        assert_eq!(value["content"][0]["text"], "Session `s`");
+    fn the_start_card_is_the_first_message_after_the_prose() {
+        let client = client_with("m", &[], &[]);
+        let head = String::from_utf8(client.build_head(
+            "prose",
+            Some("index"),
+            Some("the card"),
+            Some("the note"),
+            &[],
+            None,
+        ))
+        .expect("a head is built from text");
+        let at = head.find("the card").expect("the card is in the head");
+        let note = head.find("the note").expect("the note is in the head");
+        assert!(at < note, "the card comes before the note: {head}");
+        assert!(
+            head.contains("\"instructions\":\"prose\\n\\nindex\""),
+            "and the card is not in the prose: {head}"
+        );
     }
 
     /// The tool schema is out of band, so a fold cannot drop it -- and this

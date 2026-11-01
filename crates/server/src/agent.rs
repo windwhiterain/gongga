@@ -431,8 +431,9 @@ impl Agent {
         let prompts = crate::prompts::shared();
         // Read, not rendered, and the one text every turn of every session shares.
         let instructions = prompts.system();
-        // Stamped once, with the first row, and replayed verbatim after: what a
-        // request has sent never changes, so this is the session's start card.
+        // Stamped with the first row and replayed verbatim after, including when there
+        // is none: a row written before the card existed stays without one, because
+        // inserting a message now would rewrite what was already sent.
         let tail = match &stored {
             Some(kept) => kept.tail.clone(),
             None => Some(prompts.render(

@@ -1663,7 +1663,6 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// A message with no references: what most rows here hold.
     /// A shell that moved writes no row; a changed text does.
     ///
     /// # Invariant

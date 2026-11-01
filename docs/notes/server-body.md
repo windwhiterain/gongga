@@ -11,40 +11,29 @@ and it made a retry send a body that had already been read.
 serialized as JSON; every item after it is the bytes the database already holds,
 and the array is closed with a tail. Nothing parses the transcript.
 
-## `last`, and why the tail is an item
+## the card is the head's first message
 
-`RequestBody::own_facts` is the one item the body writes that no row holds: the tail of
-the system prompt -- session, harness build, the minute, the cwd.
+SPEC: "after the system prompt, before the first user message, inject one message with
+useful information about session name, harness version, cwd, time." So the request's head
+opens with it — one `input` item, ahead of a fold's note and of every row.
 
-It is an item rather than part of `instructions` because of what the measurement showed.
-The same prose, the same index and the same tool schemas, with only the minute changed,
-against `MiniMax-M3.1-Flash`:
+Both halves of where it goes are load-bearing, and I got the second one wrong first:
 
-| where the tail lives | cold turn | next turn, minute changed |
-| --- | --- | --- |
-| appended to `instructions` | 1.8% cached | **1.2%** -- the whole prefix |
-| as the last input item | 1.8% cached | **98.2%** |
+- **Before the transcript, not after.** A value written after the rows is a *new
+  message on every step*. A live session read that as "the harness keeps injecting" and
+  spent a 45-step turn answering it, and each step re-billed the whole prefix behind it.
+- **After the system prompt, not in it.** A provider's cache is taken item by item —
+  measured: with the same prose and only the minute changed inside `instructions`, a
+  turn answered with 1.2% cached; as its own item, 98.2%. So the volatile part cannot
+  live in the `instructions` value.
 
-So a provider's cache is not an intra-string prefix: it is taken item by item (here, one
-`instructions` value plus the `input` array), and the first unit that differs takes
-everything after it with it. A value inside `instructions` therefore costs the whole
-request when it changes, while the same value as the last item costs itself.
+The card itself is stamped once, with the session's first prompt row, and replayed
+verbatim from the store after that: the minute it says is the session's start, not the
+current time. A request that has been sent is never rewritten, and a session whose row
+predates the card gets one exactly once.
 
-The second half of that is not "keep it out of `instructions`" but "do not change it at
-all". The card is stamped with the session's **first** prompt row -- name, build, that
-turn's minute, that turn's cwd -- and every later request replays those bytes from the
-store. So the minute in the prompt is the session's start time, not the current one, and
-it is the same text for the life of the session: one prompt row, one item, 99.7% cached
-on the second turn.
-
-That is the general rule, and it is about the transcript rather than the cache: **what a
-request has sent is never rewritten.** A row is appended when its content differs, and a
-value that would differ every turn is simply not re-derived. A session that wants the
-current time asks a shell for it -- `date` is a tool call, and a tool call is a new row
-rather than an edit to an old one.
-
-So when adding prose: **a value that changes every turn goes last, and a value that never
-changes goes first.** Between them is the index, which changes only when a file does.
+The rule for any future prose: a value that changes every turn goes last among the
+*stable* things and never after the transcript; a value that never changes goes first.
 
 ## Step — the one buffer
 

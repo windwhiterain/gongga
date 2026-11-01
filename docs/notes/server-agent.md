@@ -317,14 +317,17 @@ sent, each input item is a stored row or the stored note, and each distinct
 `llm::build_head` composes `instructions` from the prose (`prompts::SYSTEM`, read not
 rendered, identical for every session of a home) and the index (`index_of`). The start
 card (`dynamic_tail`: session, harness build, the first turn's minute, its cwd) is
-**not** in that value: it is one input item written after the transcript,
-`RequestBody::own_facts`, and it is stamped once -- carried from the stored row, never
-re-rendered.
+**not** in that value: it is the request's first `input` item, ahead of a fold's note and
+of every row, which is where SPEC puts it and the only place that is both outside the
+prose and stable across steps.
 
-Measured, that distinction is worth 98 points of cache: with the tail in `instructions`,
-a turn that crossed a minute boundary answered with 1.2% cached; as the last item 98.2%;
-stamped once so it never changes, **99.7%**. A provider's cache is taken item by item, so
-the first unit that differs takes everything behind it.
+Both halves were measured, and the second one cost a live session a turn. Inside
+`instructions`: 1.2% cached when the minute changed. As its own item after the
+transcript: 98.2% -- but read as a new message on every step, which that session spent 45
+steps answering. As the *first* item, stamped once: 99.7%, and nothing to read as an
+injection. A provider's cache is taken item by item, so the first unit that differs
+takes everything behind it -- and a message that follows the transcript is a new message,
+however identical its bytes.
 
 The stronger rule sits above the cache one: **what a request has sent is never
 rewritten.** That is why the card is stamped rather than refreshed -- a prompt row is

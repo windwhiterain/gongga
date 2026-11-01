@@ -208,8 +208,6 @@ pub struct RequestBody {
     placeholder: String,
     /// Encoded items waiting to be read.
     ready: VecDeque<Vec<u8>>,
-    /// The one item written after every row, if this request has one.
-    last: Option<Vec<u8>>,
     tail: Option<Vec<u8>>,
     /// An item has been written, so the next needs a separator before it.
     wrote: bool,
@@ -221,7 +219,6 @@ impl RequestBody {
     pub fn new(
         head: Vec<u8>,
         rows: Transcript,
-        last: Option<Vec<u8>>,
         placeholder: String,
         counter: Arc<AtomicUsize>,
     ) -> Self {
@@ -231,27 +228,10 @@ impl RequestBody {
             step: Step::default(),
             placeholder,
             ready: VecDeque::new(),
-            last,
             tail: Some(b"]}".to_vec()),
             wrote: false,
             counter,
         }
-    }
-
-    /// The item that goes after the transcript: this turn's own facts.
-    ///
-    /// # Invariant
-    ///
-    /// Last, and never inside another item: a provider caches what it was sent item
-    /// by item, so a value that changes every turn must not sit in front of the
-    /// transcript. See `docs/notes/server-body.md`.
-    pub fn own_facts(text: &str) -> Vec<u8> {
-        json!({
-            "role": "user",
-            "content": [{"type": "input_text", "text": text}],
-        })
-        .to_string()
-        .into_bytes()
     }
 
     /// Queues one item, with the comma that separates it from the last.
@@ -289,10 +269,6 @@ impl RequestBody {
                     return Ok(true);
                 }
             }
-        }
-        if let Some(last) = self.last.take() {
-            self.emit(last);
-            return Ok(true);
         }
         if let Some(tail) = self.tail.take() {
             self.ready.push_back(tail);
@@ -334,47 +310,6 @@ impl Stream for RequestBody {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The request's own facts come last, after every row and every tool result.
-    ///
-    /// # Invariant
-    ///
-    /// A provider caches what it was sent item by item, so the one item that changes
-    /// every turn has to be the last: anything behind it would be re-sent with it.
-    #[test]
-    fn the_last_item_is_written_after_the_transcript() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("g.db");
-        let store = crate::store::Store::open(&path).expect("a throwaway store");
-        let id = store.create_session("s", "m", ".").expect("a session");
-        store
-            .append_message(
-                id,
-                "text",
-                &json!({"role": "user", "text": "the transcript"}),
-            )
-            .expect("one row");
-        let rows = Transcript::open(&path, id, 10).expect("the row");
-        let mut body = RequestBody::new(
-            b"{\"input\":[".to_vec(),
-            rows,
-            Some(RequestBody::own_facts("Session `s`")),
-            String::new(),
-            std::sync::Arc::new(AtomicUsize::new(0)),
-        );
-        let mut text = String::new();
-        while body.fill().expect("the body is produced") {
-            for chunk in body.ready.drain(..) {
-                text.push_str(&String::from_utf8_lossy(&chunk));
-            }
-        }
-        drop(store);
-        let value: Value = serde_json::from_str(&text).expect("the body is one JSON object");
-        let items = value["input"].as_array().expect("an input array");
-        assert_eq!(items.len(), 2, "the row, then the facts: {text}");
-        assert_eq!(items[0]["content"], "the transcript");
-        assert_eq!(items[1]["content"][0]["text"], "Session `s`");
-    }
 
     fn entry(kind: &str, value: Value, step: Option<u64>) -> Entry {
         Entry {

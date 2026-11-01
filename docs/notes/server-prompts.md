@@ -93,8 +93,9 @@ row and replayed verbatim from the store after that -- it is sent as the last in
 and it never changes, because what a request has sent is never rewritten. `{{build}}` is `protocol::BUILD`, the same identity a bug
 report carries, so a model reading its own prompt can say which build it is.
 
-It is last for the reason `docs/notes/server-body.md` gives, and minute-precision is
-enough because it is read once, at the start. What it
+It is not part of `instructions` and not part of the transcript either: `build_head`
+writes it as the request's first `input` item, which is where SPEC puts it. See
+`docs/notes/server-body.md` for why both halves of that position matter. What it
 buys: a session that is asked "what time is it" or "where are you" answers without a
 tool call, and a transcript replayed later says when it happened and which build said it.
 
