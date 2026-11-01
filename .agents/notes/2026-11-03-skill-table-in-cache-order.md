@@ -71,3 +71,39 @@ User：「还没有 load skill 呢，你就接线了。先把 system prompt 的�
   写的是 "replaced as skill content with wrapper"——真正的 load skill 还没接。这才是顺序该被
   缓存算法管的那条路（正文进 transcript 才是贵的部分），`index_skill` 的表格只是它之前的
   廉价一步。
+
+## 第三轮：真正的接线——首轮 index + 可��列化的 layout
+
+User：「现在做真正的 prefix cache opt 接线：给空 session 发的首轮提示词，递归地搜索出全部的
+@...，然后使用 opt find 找到最佳顺序，把他们的内容和 `@...` 原文作为索引 append 到 system
+prompt 后面，prompt 里的根 `@...` 不再替换，用来索引 opt 的内容」+「i need the cache opt
+across anything, so it should be serializable」。
+
+- **首轮 index**：`meta::roots(cwd, texts)` BFS、先见先得、每个 spelling 一次；读得到的是
+  skill 的整份 `SKILL.md` 和文本文件的字节，读不到（图片、未知 skill）不伪造、不入 index。
+  `meta::spelling(mention)` 是唯一的规范拼写（`@skill:heir`，无空格）——index 用它，
+  `expand` 拿它比对，两处不一致会让同一段文本进两次。
+- **落点**：`store::Prompt` 新增 `index` 与 `rooted`。`agent::index_of` 只在**没有 prompt 行**
+  时跑，之后每行原样复制：index 在 transcript 之前，长大一次就要为后面全部缓存付费。
+  `llm::build_head` 把 index 拼在 `instructions` 同一个值里（不是第二个 input item），
+  这样它跟散文一起被缓存。
+- **不再替换**：`meta::expand(..., indexed)` 对 `rooted` 里的 spelling 原样保留，作为 index 的
+  键；`commands::expand_message` 在**还没有 prompt 行**时假定「刚要写的那行会收录这条消息里的
+  全部引用」，于是首轮既不展开也不漏，第二轮起读行上的 `rooted`。
+- **可序列化 + 跨一切**：`Layout` 整个 `Serialize/Deserialize`，存进新表
+  `prefix_layout(id=1, layout TEXT)`（`CREATE TABLE IF NOT EXISTS`，老 home 自动获得）。
+  `prefix_cache::plan(store, wanted)` 是唯一入口：首次从库里读、plan、写回。进程内 Mutex 只
+  缓存一份解码结果。会话字段删掉了——上一轮的 `SessionInner.layout` 是错的：provider 的缓存
+  是按 endpoint 的，不是按对话的，重启后更该还记得。
+- **E2E**（`scripts/fake_llm.py` + 真服务端 + 真 CLI）：两个会话 + 第二回合共 3 次请求，
+  `instructions` 只有 **1 种**，index 在全部里，消息里的 `@skill:helper` 保持字面，
+  `@file:` 文本里再提到的 skill 也被递归收录，磁盘上一个 2 节点的链。
+- 单测：`roots` 递归/去重/读不到就跳过，`spelling` 一致才不重复展开，layout 存读往返后
+  仍给出同一顺序。
+- 已删临时脚本与 `.dev/idx-e2e`（`.dev` 是 gitignore 的，但也不留）。
+
+## 还没做
+
+- index 只在首轮建立；之后新提到的 `@...` 仍按老路内联展开。要不要「长大」是缓存账，不是
+  正确性问题——长大一次，后面整段 transcript 失去命中。
+- `MISS_SCALE` 仍是 liana 的 64，没在真 provider 上量过。
