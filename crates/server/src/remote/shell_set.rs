@@ -252,6 +252,7 @@ impl ShellSet {
     pub fn discard(&mut self, name: &str) -> Option<Discarded> {
         let handle = self.shells.remove(name)?;
         Some(Discarded {
+            name: name.to_string(),
             handle,
             local_pid: self.local_pids.remove(name),
             door: self.doors.remove(name),
@@ -283,6 +284,23 @@ impl ShellSet {
         Ok(true)
     }
 
+    /// Takes the active shell and every retired shell that ever carried `name`.
+    pub fn discard_all(&mut self, name: &str) -> Vec<Discarded> {
+        let mut discarded = Vec::new();
+        if let Some(shell) = self.discard(name) {
+            discarded.push(shell);
+        }
+        let mut index = 0;
+        while index < self.retired.len() {
+            if self.retired[index].name == name {
+                discarded.push(self.retired.remove(index));
+            } else {
+                index += 1;
+            }
+        }
+        discarded
+    }
+
     /// Takes every shell, leaving the set empty.
     pub fn drain(&mut self) -> Vec<Discarded> {
         let names: Vec<String> = self.shells.keys().cloned().collect();
@@ -305,6 +323,8 @@ impl ShellSet {
 
 /// A shell taken out of its set: still running, and still this session's to end.
 pub struct Discarded {
+    /// The name every replacement of this shell shares, so a delete reaches it.
+    name: String,
     handle: Arc<AsyncMutex<Shell>>,
     /// This machine's pid, recorded for a shell this machine owns and no other.
     local_pid: Option<u32>,
@@ -442,6 +462,41 @@ mod tests {
         };
         assert!(message.contains("discarded"), "{message}");
         assert_eq!(shell.pid(), 0, "no shell was opened on the peer");
+    }
+
+    /// A retired command is part of its name, not forgotten when a replacement starts.
+    #[tokio::test]
+    async fn deleting_a_name_ends_its_retired_shell_as_well() {
+        let Some(runner) = crate::remote::test_runner() else {
+            return;
+        };
+        let root = tempfile::tempdir().expect("a directory the endpoint owns");
+        let mut set = endpoint_set(root.path(), runner);
+        let handle = set.get("busy").expect("a shell");
+        let running = handle.clone();
+        let command = tokio::spawn(async move {
+            let mut shell = running.lock().await;
+            shell.run("sleep 30", Duration::from_secs(60), None).await
+        });
+        let control = tokio::time::timeout(Duration::from_secs(20), async {
+            while set.control("busy").is_none() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(control.is_ok(), "the endpoint never opened the shell");
+        assert!(set.retire("busy", &handle));
+        set.get("busy").expect("a replacement");
+        let discarded = set.discard_all("busy");
+        assert_eq!(discarded.len(), 2, "the active and retired shell");
+        for shell in discarded {
+            assert!(shell.end().await.confirmed);
+        }
+        tokio::time::timeout(Duration::from_secs(30), command)
+            .await
+            .expect("the retired reader stopped")
+            .expect("the retired reader joined")
+            .expect("the retired command returned");
     }
 
     /// A busy endpoint shell is ended by its control: never by its lock, never by a

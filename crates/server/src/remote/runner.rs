@@ -222,13 +222,30 @@ impl Runner {
         {
             command.process_group(0);
         }
+        // Suspended until the shell joins its job; nesting works beneath sshd.
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
+            tokio::process::Command::creation_flags(&mut command, CREATE_SUSPENDED);
+        }
         let mut child = command
             .spawn()
             .map_err(|e| format!("could not start {program} on the endpoint: {e}"))?;
         let pid = child.id().unwrap_or_default();
-        // Joined before stdin: a process-table walk misses a re-parented MSYS child.
         #[cfg(windows)]
-        let job = crate::tools::job::ProcessJob::adopt(pid);
+        let job = match crate::tools::job::ProcessJob::adopt(pid)
+            .ok_or_else(|| std::io::Error::other("could not put the shell in a job"))
+            .and_then(|job| {
+                crate::tools::job::ProcessJob::resume_main(pid)?;
+                Ok(job)
+            }) {
+            Ok(job) => job,
+            Err(e) => {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                return Err(format!("could not isolate shell on the endpoint: {e}"));
+            }
+        };
         let stdin = child.stdin.take().ok_or("the shell has no stdin")?;
         let stdout = child.stdout.take().ok_or("the shell has no stdout")?;
         let stderr = child.stderr.take().ok_or("the shell has no stderr")?;
@@ -236,7 +253,7 @@ impl Runner {
         let entry = Arc::new(Shell {
             pid,
             #[cfg(windows)]
-            job,
+            job: Some(job),
             paused: Mutex::new(false),
             resumed: tokio::sync::Notify::new(),
             stdin: Mutex::new(stdin),

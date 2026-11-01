@@ -3,13 +3,19 @@
 //! See `docs/notes/server-tools-job.md`.
 
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
     QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
 };
-use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
+use windows_sys::Win32::System::Threading::{
+    OpenProcess, OpenThread, PROCESS_SET_QUOTA, PROCESS_TERMINATE, ResumeThread,
+    THREAD_SUSPEND_RESUME,
+};
 
 /// A job object with one shell in it; dropping it ends the shell and its processes.
 pub struct ProcessJob {
@@ -56,6 +62,52 @@ impl ProcessJob {
                 return None;
             }
             Some(Self { handle })
+        }
+    }
+
+    /// Resumes the only thread a process created suspended can have.
+    ///
+    /// # Invariant
+    ///
+    /// Called only after the process joined its job. Before this, no shell input
+    /// or descendant can escape the job; afterwards, every child belongs to it.
+    pub fn resume_main(pid: u32) -> std::io::Result<()> {
+        unsafe {
+            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+            if snapshot.is_null() {
+                return Err(std::io::Error::last_os_error());
+            }
+            let mut entry: THREADENTRY32 = std::mem::zeroed();
+            entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+            let mut found = Thread32First(snapshot, &mut entry) != 0;
+            let mut thread = None;
+            while found {
+                if entry.th32OwnerProcessID == pid {
+                    if thread.is_some() {
+                        CloseHandle(snapshot);
+                        return Err(std::io::Error::other(
+                            "a suspended process has more than one initial thread",
+                        ));
+                    }
+                    thread = Some(entry.th32ThreadID);
+                }
+                found = Thread32Next(snapshot, &mut entry) != 0;
+            }
+            CloseHandle(snapshot);
+            let id = thread.ok_or_else(|| {
+                std::io::Error::other("a suspended process has no initial thread")
+            })?;
+            let thread = OpenThread(THREAD_SUSPEND_RESUME, 0, id);
+            if thread.is_null() {
+                return Err(std::io::Error::last_os_error());
+            }
+            let resumed = ResumeThread(thread);
+            CloseHandle(thread);
+            if resumed == u32::MAX {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
         }
     }
 

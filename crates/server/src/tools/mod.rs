@@ -97,11 +97,11 @@ impl ToolContext {
             .names()
     }
 
-    fn discard(&self, name: &str) -> Option<crate::remote::shell_set::Discarded> {
+    fn discard(&self, name: &str) -> Vec<crate::remote::shell_set::Discarded> {
         self.shells
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .discard(name)
+            .discard_all(name)
     }
 
     /// Retires `handle` and puts a fresh shell under `name`; false means another shell took it.
@@ -1098,16 +1098,16 @@ impl Tool for DelBashTool {
             let mut discarded = Vec::new();
             let mut unconfirmed = Vec::new();
             for name in &names {
-                let Some(shell) = ctx.discard(name) else {
-                    continue;
-                };
-                // Ended now: its command may be running, and only the endpoint can stop it.
-                let report = shell.end().await;
-                if !report.confirmed {
-                    unconfirmed.push(format!(
-                        "{name}: {}",
-                        report.unknown.unwrap_or_else(|| "unknown".to_string())
-                    ));
+                // A timeout replaced the handle but kept the old command. Deleting
+                // the name must end both, not only the idle replacement.
+                for shell in ctx.discard(name) {
+                    let report = shell.end().await;
+                    if !report.confirmed {
+                        unconfirmed.push(format!(
+                            "{name}: {}",
+                            report.unknown.unwrap_or_else(|| "unknown".to_string())
+                        ));
+                    }
                 }
                 discarded.push(name.clone());
             }

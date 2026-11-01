@@ -39,9 +39,11 @@ look is `unknown`, which is not the same as stopped.
 `taskkill /T` misses the children Git Bash re-parents: `bash -c 'sleep 30'` runs
 `sleep` in a process whose Windows parent has already gone, so the walk that ends
 the shell finds the bash tree and leaves `sleep` running. It was observed doing
-exactly that, and the local shell had already solved it the same way: the shell is
-put in a job object (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) right after `spawn`, and
-membership then follows every descendant including re-parented ones. `terminate`
+exactly that. The shell is created suspended, joins its nested job
+(`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`), and only then has its initial thread resumed.
+Membership follows every descendant including re-parented ones, even when sshd
+already owns the runner's parent job. A failed join or resume ends the child rather
+than starting a shell this runner cannot own. `terminate`
 plus `ActiveProcesses == 0` is the proof; a member that left the job would not be
 counted, and nothing in this stack leaves it.
 
@@ -214,7 +216,8 @@ opening, connected (with a clonable `ShellControl` = runner + shell id), retired
 closed with the outcome.
 
 - `del_bash` and session teardown ask the door, never the lock, so a shell busy with
-  a `sleep 30` is ended while the reader still holds it;
+  a `sleep 30` is ended while the reader still holds it. Deleting a name ends its
+  active shell and every retired shell of that name, not just its replacement;
 - the close is **single-flight**: the first caller to find `Connected` closes, and
   every later caller — a second `del_bash`, the command owner noticing
   `out_of_sync`, teardown — waits for and receives the *same* report. None of them
