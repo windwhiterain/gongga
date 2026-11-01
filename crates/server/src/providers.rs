@@ -15,8 +15,8 @@ pub struct Provider {
     pub name: String,
     pub endpoints: Vec<Endpoint>,
     pub models: Vec<Model>,
-    /// The key as written in the file, if it was written there.
-    key: Option<String>,
+    // No `key` here on purpose: a roster is a git checkout, and a key in one is a
+    // key in git. Keys come from `~/.agents/keys.toml` (see `credential`).
     /// The variable that should hold the key instead, if one is named.
     key_env: Option<String>,
     /// How to read what is left, in the roster's own order of preference.
@@ -406,7 +406,9 @@ impl Catalog {
             model_title: found.name.clone(),
             base_url: endpoint.base_url.trim_end_matches('/').to_string(),
             api_key_env: provider.key_env.clone(),
-            key: provider.key.clone(),
+            // The keystore's answer, not a roster field: what the server falls back
+            // to for its own model, and what `credential` already prefers.
+            key: self.keys.get(&provider.id).cloned(),
             context: found.context,
             reasoning_levels: found.reasoning_levels.clone(),
             reasoning_default: found.reasoning_default.clone(),
@@ -442,30 +444,37 @@ fn openai_endpoint(provider: &Provider) -> Option<&Endpoint> {
 /// An exported environment variable wins over a literal key in the file.
 ///
 /// See `docs/notes/server-providers.md`.
-/// A provider's key, and which of the three places answered.
+/// A provider's key, from the one place a key may live.
 ///
 /// # Invariant
 ///
-/// The order is deliberate: the environment beats the keystore, which beats the
-/// roster field. An exported variable is a deliberate act for one process (a test,
-/// a one-off); the keystore is this machine's standing answer and is not in git;
-/// the roster's own field is the checkout's, and only a fork that knows what it is
-/// doing would put a secret there.
+/// Only two sources, and the keystore wins:
+///
+/// 1. `~/.agents/keys.toml` -- a file git does not track, stamped with the roster
+///    so an edit re-reads the catalog and takes effect on the next request.
+/// 2. the environment variable `key_env` names -- for a one-off (`FOO_KEY=... cmd`)
+///    or a machine that has not written a keystore.
+///
+/// The keystore must beat the environment, not the other way round: a variable is
+/// copied into a process once, at creation, so a stale one would shadow every edit
+/// to the file and make rotation require a restart -- which is the defect this
+/// ordering removes.
+///
+/// A `key` written in the roster is **ignored**. The roster is a git checkout, and
+/// a secret in one is a secret in git; leaving that path open invites exactly the
+/// leak this design exists to prevent.
 fn credential(
     provider: &Provider,
     lookup: &dyn Fn(&str) -> Option<String>,
     kept: Option<&String>,
 ) -> Option<(String, Option<String>)> {
+    if let Some(value) = kept.filter(|v| !v.is_empty()) {
+        return Some((value.clone(), provider.key_env.clone()));
+    }
     if let Some(name) = &provider.key_env {
         if let Some(value) = lookup(name).filter(|v| !v.is_empty()) {
             return Some((value, Some(name.clone())));
         }
-    }
-    if let Some(value) = kept.filter(|v| !v.is_empty()) {
-        return Some((value.clone(), provider.key_env.clone()));
-    }
-    if let Some(key) = provider.key.as_ref().filter(|k| !k.is_empty()) {
-        return Some((key.clone(), provider.key_env.clone()));
     }
     None
 }
@@ -611,7 +620,6 @@ fn parse_value(value: toml::Value) -> Result<Vec<Provider>, toml::de::Error> {
                     .collect(),
                 id: p.id,
                 name,
-                key: p.key,
                 key_env: p.key_env,
             }
         })
@@ -847,7 +855,7 @@ mod tests {
             &path,
             r#"[[provider]]
 id = "p"
-key = "k"
+key_env = "P_KEY"
 [[provider.endpoint]]
 api = "openai-responses"
 base_url = "http://127.0.0.1:1/v1"
@@ -878,7 +886,7 @@ id = "m1"
             &path,
             r#"[[provider]]
 id = "p"
-key = "k"
+key_env = "P_KEY"
 [[provider.endpoint]]
 api = "openai-responses"
 base_url = "http://127.0.0.1:1/v1"
@@ -895,7 +903,7 @@ id = "m2"
         );
         let third = read_fresh(std::slice::from_ref(&path));
         assert_eq!(
-            third.models().len(),
+            third.providers()[0].models.len(),
             2,
             "the new roster is what the next route resolves against"
         );
@@ -914,7 +922,6 @@ id = "m2"
 [[provider]]
 id = "deepseek-official"
 name = "DeepSeek 官方"
-key = "sk-literal"
 key_env = "DEEPSEEK_API_KEY"
 
   [[provider.endpoint]]
@@ -939,7 +946,6 @@ key_env = "DEEPSEEK_API_KEY"
 [[provider]]
 id = "goat"
 name = "GOAT"
-key = "user_literal"
 
   [[provider.endpoint]]
   id = "openai"
@@ -954,7 +960,6 @@ key = "user_literal"
 
 [[provider]]
 id = "anthropic-only"
-key = "x"
 
   [[provider.endpoint]]
   id = "anthropic"
@@ -966,13 +971,30 @@ key = "x"
   context = 200000
 "#;
 
+    /// The fixture roster, with the keys a machine would keep in its keystore:
+    /// three providers, so a test can say which one a lookup picked.
     fn catalog() -> Catalog {
         Catalog {
-            keys: std::collections::HashMap::new(),
+            keys: [
+                ("deepseek-official", "sk-kept"),
+                ("goat", "user-kept"),
+                ("anthropic-only", "x"),
+            ]
+            .into_iter()
+            .map(|(id, key)| (id.to_string(), key.to_string()))
+            .collect(),
             generation: 0,
             paths: Vec::new(),
             providers: parse(ROSTER).unwrap(),
             problem: None,
+        }
+    }
+
+    /// The same roster with no keystore: what a machine that wrote none is.
+    fn unkeyed() -> Catalog {
+        Catalog {
+            keys: std::collections::HashMap::new(),
+            ..catalog()
         }
     }
 
@@ -982,43 +1004,26 @@ key = "x"
 
     /// # Invariant
     ///
-    /// Completion is a promise that the model can be run here. A provider whose
-    /// credential resolves is offered; one that names a key this machine does not
-    /// have is not, because the request it would name fails with the roster's own
-    /// "no key" error before it leaves. `models()` asks the environment; this test
-    /// drives `models_with` with its own answer.
+    /// Completion is a promise that the model can be run here, so only a provider
+    /// whose credential resolves is offered. A `key` written in a roster is not a
+    /// credential: it is a secret in a git checkout, and it is ignored.
     #[test]
     fn a_provider_without_a_key_is_not_offered() {
-        let c = catalog();
-        let none = c.models_with(&|_| None);
-        // Every provider in the fixture carries a literal key except this one.
+        let c = unkeyed();
         assert!(
-            none.iter().any(|m| m.starts_with("deepseek-official/")),
-            "a literal key counts: {none:?}"
-        );
-        assert!(
-            none.iter().any(|m| m.starts_with("goat/")),
-            "a literal key counts: {none:?}"
+            c.models_with(&|_| None).is_empty(),
+            "a roster key is not a credential"
         );
 
-        let mut no_literal = catalog();
-        for provider in &mut no_literal.providers {
-            provider.key = None;
-        }
-        let by_env =
-            no_literal.models_with(&|name| (name == "DEEPSEEK_API_KEY").then(|| "k".to_string()));
+        let by_env = c.models_with(&|name| (name == "DEEPSEEK_API_KEY").then(|| "k".to_string()));
         assert!(
             by_env.iter().all(|m| m.starts_with("deepseek-official/")),
             "only the provider whose variable is set is offered: {by_env:?}"
         );
         assert_eq!(
             by_env.len(),
-            no_literal.providers[0].models.len(),
+            c.providers[0].models.len(),
             "every model of a keyed provider is offered"
-        );
-        assert!(
-            no_literal.models_with(&|_| None).is_empty(),
-            "no key anywhere offers nothing, rather than what cannot run"
         );
     }
 
@@ -1122,7 +1127,7 @@ script = "providers/p.py"
         // The trailing slash in the file must not become a double slash in the
         // URL the request is built from.
         assert_eq!(choice.entry.base_url, "https://api.deepseek.com/v1");
-        assert_eq!(choice.api_key, "sk-literal");
+        assert_eq!(choice.api_key, "sk-kept");
         assert_eq!(choice.entry.context, Some(1_000_000));
     }
 
@@ -1141,10 +1146,21 @@ script = "providers/p.py"
     }
 
     #[test]
-    fn the_environment_beats_the_literal_key() {
+    fn the_keystore_beats_the_environment() {
+        // The order is the whole of hot rotation: a variable is copied into the
+        // process once, so letting it win would shadow every edit to the file and
+        // make a rotated key need a restart.
         let c = catalog();
         let env = |name: &str| (name == "DEEPSEEK_API_KEY").then(|| "sk-from-env".to_string());
         let choice = c
+            .resolve_with("deepseek-official/deepseek-flash", &env)
+            .unwrap();
+        assert_eq!(choice.api_key, "sk-kept");
+
+        // With no keystore entry the variable is the answer, which is what makes
+        // `FOO_KEY=... cmd` work on a machine that keeps no file.
+        let bare = unkeyed();
+        let choice = bare
             .resolve_with("deepseek-official/deepseek-flash", &env)
             .unwrap();
         assert_eq!(choice.api_key, "sk-from-env");
@@ -1164,14 +1180,11 @@ script = "providers/p.py"
         assert!(err.contains("has no model"), "{err}");
     }
 
+    /// The refusal names the variable, which is the whole fix a reader needs --
+    /// and a key written in the roster does not count as one.
     #[test]
     fn a_provider_without_a_key_is_refused_by_name() {
-        let c = catalog();
-        let err = c.resolve_with("deepseek-official/deepseek-flash", &no_env);
-        assert!(err.is_ok(), "the literal key is enough");
-
-        let mut c = catalog();
-        c.providers[0].key = None;
+        let c = unkeyed();
         let err = c
             .resolve_with("deepseek-official/deepseek-flash", &no_env)
             .unwrap_err();
@@ -1246,10 +1259,10 @@ key = "k"
         assert!(c.default_entry().is_none());
     }
 
-    /// The keystore answers for a provider the roster gives no key, and the
-    /// environment still beats it.
+    /// The keystore answers first, and a `key` in the roster is not a credential
+    /// at all -- that is the leak this design exists to prevent.
     #[test]
-    fn a_kept_key_answers_and_the_environment_beats_it() {
+    fn only_the_keystore_and_the_environment_answer() {
         let roster = tempfile::tempdir().unwrap();
         let path = roster.path().join("providers.toml");
         std::fs::write(
@@ -1257,66 +1270,48 @@ key = "k"
             r#"[[provider]]
 id = "p"
 key_env = "P_KEY"
+key = "a-key-in-git"
   [[provider.endpoint]]
   api = "openai-responses"
   base_url = "https://p.example/v1"
 [[provider.model]]
 id = "m"
+context = 1000
 "#,
         )
         .unwrap();
         let mut catalog = Catalog::load_file(&path);
         catalog.keys = std::collections::HashMap::from([("p".to_string(), "kept".to_string())]);
+
         assert_eq!(
             catalog.resolve_with("p/m", &no_env).unwrap().api_key,
             "kept",
-            "the keystore answers when nothing else does"
+            "the keystore answers when no variable does"
         );
         assert_eq!(
             catalog
                 .resolve_with("p/m", &|name| (name == "P_KEY").then(|| "env".to_string()))
                 .unwrap()
                 .api_key,
-            "env",
-            "an exported variable still wins"
+            "kept",
+            "the keystore beats the environment, so a rotation is not shadowed"
         );
-    }
 
-    /// A machine's key is a field of the roster; the environment still wins.
-    #[test]
-    fn a_machines_key_is_a_field_of_the_roster() {
-        let d = tempfile::tempdir().unwrap();
-        let path = d.path().join("providers.toml");
-        std::fs::write(
-            &path,
-            r#"
-[[provider]]
-id = "shared"
-name = "Shared"
-key_env = "SHARED_API_KEY"
-key = "the-machines-key"
-  [[provider.endpoint]]
-  id = "openai"
-  api = "openai-responses"
-  base_url = "https://shared.example/v1"
-  [[provider.model]]
-  id = "m1"
-  context = 1000
-"#,
-        )
-        .unwrap();
-        let c = Catalog::load_file(&path);
+        // Without a keystore entry: the variable, then nothing -- never the roster.
+        let bare = Catalog {
+            keys: std::collections::HashMap::new(),
+            ..catalog
+        };
         assert_eq!(
-            c.resolve_with("shared/m1", &no_env).unwrap().api_key,
-            "the-machines-key"
-        );
-        // The variable still wins: a machine can rotate a key without editing.
-        assert_eq!(
-            c.resolve_with("shared/m1", &|name| (name == "SHARED_API_KEY")
-                .then(|| "exported".to_string()))
+            bare.resolve_with("p/m", &|name| (name == "P_KEY").then(|| "env".to_string()))
                 .unwrap()
                 .api_key,
-            "exported"
+            "env"
+        );
+        let err = bare.resolve_with("p/m", &no_env).unwrap_err();
+        assert!(
+            err.contains("P_KEY"),
+            "a key written in the roster is ignored: {err}"
         );
     }
 
