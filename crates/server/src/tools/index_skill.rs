@@ -164,7 +164,7 @@ fn ordered(skills: Vec<Installed>, store: &crate::store::Store, session: &str) -
             (key.as_str(), text.len(), digest)
         })
         .collect();
-    let order = crate::prefix_cache::plan(store, session, &wanted);
+    let order = crate::prefix_cache::plan(store, session, "skill table", &wanted);
     let mut by_key: HashMap<String, Value> = rows.into_iter().collect();
     order
         .into_iter()

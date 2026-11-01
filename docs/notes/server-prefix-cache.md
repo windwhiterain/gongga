@@ -143,6 +143,42 @@ that is already handled: a chain carrying an item outside `wanted` is not a cand
 So two callers sharing one layout cannot corrupt each other's order, only fail to
 share it.
 
+## purpose: two callers, one session
+
+The skill table and the prompt index both plan for the same session, and their keys are
+different things (a `SKILL.md` path, a raw spelling). One shared map was wrong in a way
+the measurement caught: each plan forgot every item it had not just been given, so the
+two callers evicted each other on every call and neither kept a chain -- `skill table`
+planned, then `prompt index` planned and dropped it, forever.
+
+So an item carries the `purpose` that emitted it, `plan` takes one, and
+`forget_unwanted` prunes only its own. Two callers in one conversation now coexist: they
+emit different parts of the request, and a chain never crosses into another's keys.
+
+## measured, against a real provider
+
+MiniMax `MiniMax-M3.1-Flash`, the machine's own key, a 10.3k-token prefix (system
+prose + a 355-line `self-control` body + `AGENTS.md` + tool schemas):
+
+| request | input | cached | paid |
+| --- | --- | --- | --- |
+| cold first turn | 10321 | 189 | 1.8% |
+| same session, next turn | 10371 | 10240 | 98.7% |
+| same session, turn after the minute ticked | 10481 | 128 | 1.2% |
+
+Two readings. The good one: the index is worth its bytes, because a turn that follows
+in the same minute is billed almost entirely at the cache rate (¥0.10/1M against
+¥1.00/1M on this roster) -- the whole index, the prose and the schemas are re-used
+rather than re-sent.
+
+The expensive one: **the clock in the system prompt is the single most costly thing this
+harness can put there.** `dynamic_tail` carries the minute, so every turn that crosses a
+minute boundary writes a new prompt row and the provider answers with a cold prefix --
+measured above, 98.7% to 1.2%. With real turn latencies (tens of seconds) that is most
+turns. The one-line remedy is the home's, not the code's: override the template without
+`{{now}}`, and the prompt row is written once per session instead of once per minute.
+A session that needs the time asks a shell for it.
+
 ## the index is derived, not stored
 
 `Layout::index` maps `(key, digest)` to an item, and it is `#[serde(skip)]`: JSON has no

@@ -428,7 +428,7 @@ impl Agent {
                 ("session", name),
                 ("build", protocol::BUILD),
                 ("now", &crate::clock::now()),
-                ("cwd", &cwd.display().to_string()),
+                ("cwd", &Self::stated(cwd)),
             ],
         );
         // Built from what the references say now: an edited body must reach the model.
@@ -470,6 +470,21 @@ impl Agent {
         Ok(prompt)
     }
 
+    /// The one spelling of `cwd` the prompt says.
+    ///
+    /// # Invariant
+    ///
+    /// Two spellings of one directory render one string: a re-spelling would rewrite
+    /// the cached tail.
+    fn stated(cwd: &std::path::Path) -> String {
+        let resolved = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+        let text = resolved.display().to_string();
+        match text.strip_prefix(r"\\?\") {
+            Some(rest) => rest.to_string(),
+            None => text,
+        }
+    }
+
     /// The index this request carries: the text every reference its messages name
     /// says now, in the order the cache pays least for.
     ///
@@ -501,7 +516,7 @@ impl Agent {
                 (root.spelling.as_str(), root.len(), digest)
             })
             .collect();
-        let order = crate::prefix_cache::plan(&self.store, name, &wanted);
+        let order = crate::prefix_cache::plan(&self.store, name, "prompt index", &wanted);
         let mut entries: Vec<&crate::meta::Root> = Vec::with_capacity(order.len());
         for spelling in &order {
             if let Some(root) = roots.iter().find(|root| &root.spelling == spelling) {
@@ -1274,6 +1289,28 @@ mod tests {
         assert!(
             !notice.contains("{{"),
             "a placeholder nobody filled: {notice}"
+        );
+    }
+
+    /// One directory, two spellings a shell may report: one string in the prompt.
+    ///
+    /// # Invariant
+    ///
+    /// The tail is cached prose, so a re-spelling must not rewrite it.
+    #[test]
+    fn a_directory_is_stated_one_way() {
+        let dir = tempfile::tempdir().unwrap();
+        let forward = dir.path().display().to_string().replace('\\', "/");
+        let slashed = std::path::PathBuf::from(&forward);
+        assert_eq!(
+            Agent::stated(dir.path()),
+            Agent::stated(&slashed),
+            "{forward} and {} name one directory",
+            dir.path().display()
+        );
+        assert!(
+            !Agent::stated(dir.path()).starts_with(r"\\?\"),
+            "the canonical prefix is not prose"
         );
     }
 

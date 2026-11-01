@@ -324,6 +324,14 @@ the index is before it because it is a document that changes when a file does, a
 prose is first because it never changes. The test that pins this is
 `the_system_prompt_is_prose_then_index_then_this_turn` in `llm.rs`.
 
+## stated
+
+`cwd` reaches the prompt through `stated`, which canonicalises it and strips Windows'
+`\\?\` prefix. The reason is measured: the shell adopts whatever spelling the endpoint
+reports, so one turn said `C:\...` and the next `C:/...`, which rewrote the tail and cost
+the whole prefix -- 2462 tokens of context, 189 cached. One directory now renders one
+string, and a re-spelling is no longer a reason to re-bill.
+
 ## index_of, rebuilt rather than remembered
 
 The first prompt row's second half: the text of every reference the session's messages
