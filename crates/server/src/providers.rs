@@ -1183,7 +1183,7 @@ key = "k"
         assert!(c.default_entry().is_none());
     }
 
-    /// A machine's key is a field of the same roster, not a file of its own.
+    /// A machine's key is a field of the roster; the environment still wins.
     #[test]
     fn a_machines_key_is_a_field_of_the_roster() {
         let d = tempfile::tempdir().unwrap();
