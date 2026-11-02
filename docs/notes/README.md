@@ -114,3 +114,13 @@ note is a bug.
 | [`bridge-config.md`](bridge-config.md) | `crates/bridge/src/config.rs` |
 | [`bridge-channel-mod.md`](bridge-channel-mod.md) | `crates/bridge/src/channel/mod.rs` |
 | [`bridge-channel-qq.md`](bridge-channel-qq.md) | `crates/bridge/src/channel/qq.rs` |
+
+### reference
+
+`docs/reference/` holds what the *providers* define rather than what we chose: the shapes
+this server must fit, with sources and fetch dates.
+
+| doc | what it is |
+| --- | --- |
+| [`../reference/openai-responses.md`](../reference/openai-responses.md) | the Responses API this server speaks |
+| [`../reference/prefix-cache.md`](../reference/prefix-cache.md) | cache modes, lifetimes and billing, per vendor |

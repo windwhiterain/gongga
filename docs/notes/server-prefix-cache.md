@@ -106,7 +106,8 @@ gone, the rest of it cannot be served from cache either, and keeping it would le
 choose a chain whose first half is a miss.
 
 `ttl_ms` is the roster's number for the model in use: `[[provider]] cache_ttl_secs` is a
-fact about that provider, so a session on a five-minute cache stops planning for warmth
+fact about that provider -- which mode's cache, and how each vendor bills it, is
+`docs/reference/prefix-cache.md` -- so a session on a five-minute cache stops planning for warmth
 five minutes after it was last sent, while the session beside it on a three-day cache
 does not. It used to be one number for the whole machine, which meant either believing
 nothing (the shipped `0`, every provider planned for as warm forever) or believing one

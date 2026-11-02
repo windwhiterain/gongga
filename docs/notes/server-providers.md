@@ -45,7 +45,8 @@ Nothing here parses prose, so a provider that states no number keeps `None`, and
 treats it as holding its cache forever.
 
 A provider with more than one tier keeps its other tiers in `cache_ttl_tiers`, and
-`cache_ttl_tier` names the one `cache_ttl_secs` is. Neither is read here: this server
+`cache_ttl_tier` names the one `cache_ttl_secs` is. What modes exist, which wire field
+selects a tier, and how each of them bills: `docs/reference/prefix-cache.md`. Neither is read here: this server
 sends no cache directive, so the tier in force is always that one, and the others are a
 fact for whoever later teaches it to ask. See `docs/notes/server-prefix-cache.md`.
 
