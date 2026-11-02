@@ -176,7 +176,8 @@ pub struct Entry {
     pub builtin_tools: Vec<String>,
     /// What the roster says this model charges, for the prefix cache's arithmetic.
     pub price: Option<Price>,
-    /// How long this model's provider holds a cached prefix, when it states it.
+    /// How long a cached prefix lives in the tier a request naming no cache mode lands
+    /// in; `None` when the provider states none.
     pub cache_ttl_secs: Option<u64>,
     /// The roster's tier for this model, as written.
     pub tier: Option<String>,

@@ -118,6 +118,27 @@ is not parsed into one. `[agent] cache_ttl_secs` / `GONGGA_CACHE_TTL_SECS` is th
 machine's own answer and wins when it is not zero -- one lifetime for every provider, for
 a machine that knows better than the roster.
 
+## the tier in force, and the one assumption under `expire`
+
+A provider rarely has *one* cache lifetime. Kimi sells 5m and 1h; Volcengine sells an
+explicit `expire_at` from one hour to seven days beside an unpromised implicit cache;
+Alibaba sells a five-minute explicit cache beside an implicit one with no stated expiry.
+So the roster's number is not "how long a prefix lives" but "which tier a request that
+names no cache mode lands in, and how long that one lives" -- `cache_ttl_tier` names it
+and `cache_ttl_secs` is its length.
+
+That is the tier this server buys, because **it sends no cache directive at all**: no
+`cache_control`, no `expire_at`, no `prompt_cache_retention`. The choice is therefore the
+provider's default, and planning for the longest tier it offers instead would be a plan
+that finds cold chains and re-sends them at full price without saying so.
+
+`expire` counts from `touched`, refreshed every time a chain is sent, which is right
+exactly for the tiers that renew on a hit -- Kimi, MiniMax and Alibaba's explicit cache
+all state that. Volcengine's explicit tier is the counterexample: `expire_at` is a
+deadline from the write, and continuing to use it does not move it. No in-force tier is
+of that kind today; a tier that is would need the deadline recorded when the chain was
+first written, not when it was last sent.
+
 ## priced from the roster: Rates
 
 The cost model used to be a constant of this module (`MISS_SCALE = 64`). It is now
