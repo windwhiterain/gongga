@@ -49,6 +49,8 @@ pub struct Agent {
     pub cache_invalid_rate: f64,
     /// How long a cached prefix survives, in millis; `0` never expires.
     pub cache_ttl_ms: u64,
+    /// The share of an indexed entry's lines that may change and still be patched.
+    pub index_change_tolerance: f64,
     /// What the session's model charges, from the roster.
     pub price: Option<crate::providers::Price>,
     /// Compress once a request would carry more than this many input tokens.
@@ -426,7 +428,6 @@ impl Agent {
         cwd: &std::path::Path,
         placed: Option<&std::path::Path>,
         source: crate::meta::Source<'_>,
-        note: Option<&str>,
     ) -> anyhow::Result<crate::store::Prompt> {
         let stored = self.store.prompt(id)?;
         let prompts = crate::prompts::shared();
@@ -470,17 +471,14 @@ impl Agent {
                 None => (None, Vec::new()),
             },
         };
-        let handover = note.map(|s| prompts.render("handover_preamble", &[("handover", s)]));
         let prompt = crate::store::Prompt {
             instructions,
             index,
             tail,
             rooted,
-            handover,
             // Where the request said the shell stood, which is the stored row's
             // answer once there is one: a later move is not a rewrite.
             cwd: here.clone(),
-            stamp: crate::store::stamp(note),
         };
         // Only the texts that go on the wire are compared; `cwd` is a record.
         if let Some(kept) = stored
@@ -496,6 +494,21 @@ impl Agent {
         }
         self.store.append_prompt(id, &prompt)?;
         Ok(prompt)
+    }
+
+    /// How much an indexed entry may change before it is re-sent, or nothing when
+    /// no patch may be appended.
+    ///
+    /// # Invariant
+    ///
+    /// A patch is appended only where the prose introducing it exists: a diff with no
+    /// template behind it would arrive as an unexplained second copy of the entry.
+    fn index_tolerance(&self) -> Option<f64> {
+        let prompts = crate::prompts::shared();
+        let explained = prompts.text(crate::prompts::REVISION).is_some();
+        explained
+            .then_some(self.index_change_tolerance)
+            .filter(|tolerance| *tolerance > 0.0)
     }
 
     /// The one spelling of `cwd` the prompt says.
@@ -552,31 +565,41 @@ impl Agent {
             invalid: self.cache_invalid_rate,
             ttl_ms: self.cache_ttl_ms,
         };
-        let wanted: Vec<(&str, usize, u64)> = roots
+        let wanted: Vec<crate::prefix_cache::Wanted> = roots
             .iter()
-            .map(|root| {
-                let digest = crate::prefix_cache::digest(&root.content);
-                (
-                    root.spelling.as_str(),
-                    self.tokens_on(&model, &root.content),
-                    digest,
-                )
+            .map(|root| crate::prefix_cache::Wanted {
+                key: root.spelling.as_str(),
+                text: root.content.as_str(),
+                tokens: self.tokens_on(&model, &root.content),
             })
             .collect();
-        let order = crate::prefix_cache::plan(&self.store, name, "prompt index", &wanted, rates);
-        let mut entries: Vec<&crate::meta::Root> = Vec::with_capacity(order.len());
-        for spelling in &order {
-            if let Some(root) = roots.iter().find(|root| &root.spelling == spelling) {
-                entries.push(root);
-            }
-        }
-        let body = entries
+        let planned = crate::prefix_cache::plan(
+            &self.store,
+            name,
+            "prompt index",
+            &wanted,
+            rates,
+            self.index_tolerance(),
+        );
+        let body = planned
+            .entries
             .iter()
-            .map(|root| root.text())
+            .map(|(spelling, text)| format!("{spelling}\n{text}"))
             .collect::<Vec<_>>()
             .join("\n\n");
-        let index = crate::prompts::shared().render("reference_index", &[("entries", &body)]);
-        let rooted: Vec<String> = entries.iter().map(|r| r.spelling.clone()).collect();
+        let prompts = crate::prompts::shared();
+        let mut index = prompts.render("reference_index", &[("entries", &body)]);
+        if !planned.revisions.is_empty() {
+            let changes = planned
+                .revisions
+                .iter()
+                .map(|(spelling, patch)| format!("{spelling}\n{patch}"))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            index.push_str("\n\n");
+            index.push_str(&prompts.render(crate::prompts::REVISION, &[("revisions", &changes)]));
+        }
+        let rooted: Vec<String> = planned.entries.into_iter().map(|(key, _)| key).collect();
         Some((index, rooted))
     }
 
@@ -639,7 +662,6 @@ impl Agent {
             effort,
             cwd,
         } = *attempt;
-        let note = self.store.handover(id)?;
         let generation = self.store.context_generation(id)?;
         let phase_started = std::time::Instant::now();
         let definitions = self.tools.definitions(session.on_remote());
@@ -657,7 +679,6 @@ impl Agent {
                 cwd,
                 session.placed().as_deref(),
                 source,
-                note.as_deref(),
             )
             .await?;
         phases.prompt_ms = phase_started.elapsed().as_millis() as u64;
@@ -681,7 +702,6 @@ impl Agent {
             &prompt.instructions,
             prompt.index.as_deref(),
             prompt.tail.as_deref(),
-            prompt.handover.as_deref(),
             &source,
             &definitions,
             effort,

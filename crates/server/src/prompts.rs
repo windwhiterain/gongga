@@ -7,6 +7,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
+/// What introduces a patch for an entry of the index that has changed since.
+///
+/// # Invariant
+///
+/// Deliberately not in [`REQUIRED`]: a home that predates this template indexes and
+/// re-sends as before, rather than refusing to start over prose it may never need.
+pub const REVISION: &str = "reference_revision";
+
 /// The system instructions: the prose, with the session's own name in it.
 ///
 /// # Invariant
@@ -28,7 +36,6 @@ pub const SYSTEM: &str = "instructions";
 /// empty system prompt and look healthy. Startup asks for this list instead.
 pub const REQUIRED: &[&str] = &[
     SYSTEM,
-    "handover_preamble",
     "context_notice",
     "interrupted_call",
     "size_hint",

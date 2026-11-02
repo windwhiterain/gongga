@@ -47,6 +47,9 @@ pub const DEFAULT_CACHE_INVALID_RATE: f64 = 0.0;
 /// the layout remembers", because a lifetime nobody stated is not one to invent.
 pub const DEFAULT_CACHE_TTL_SECS: u64 = 0;
 
+/// The share of an indexed entry's lines that may change before it is re-sent.
+pub const DEFAULT_INDEX_CHANGE_TOLERANCE: f64 = 0.2;
+
 /// Everything the server needs to boot.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -218,6 +221,8 @@ pub struct AgentConfig {
     pub cache_invalid_rate: f64,
     /// How long a cached prefix survives, in seconds; `0` never expires.
     pub cache_ttl_secs: u64,
+    /// The share of an indexed entry's lines that may change and still be patched.
+    pub index_change_tolerance: f64,
 }
 
 /// The on-disk shape. Every field is optional so a config file can be tiny.
@@ -293,6 +298,7 @@ struct FileAgent {
     compress_above_tokens: Option<u64>,
     cache_invalid_rate: Option<f64>,
     cache_ttl_secs: Option<u64>,
+    index_change_tolerance: Option<f64>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -531,6 +537,13 @@ impl Config {
                 .and_then(|a| a.cache_ttl_secs)
                 .or_else(|| env_or("GONGGA_CACHE_TTL_SECS").and_then(|v| v.parse().ok()))
                 .unwrap_or(DEFAULT_CACHE_TTL_SECS),
+            index_change_tolerance: file
+                .agent
+                .as_ref()
+                .and_then(|a| a.index_change_tolerance)
+                .or_else(|| env_or("GONGGA_INDEX_CHANGE_TOLERANCE").and_then(|v| v.parse().ok()))
+                .unwrap_or(DEFAULT_INDEX_CHANGE_TOLERANCE)
+                .clamp(0.0, 1.0),
         };
 
         let transport = file.transport.unwrap_or_default();

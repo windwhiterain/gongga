@@ -29,14 +29,9 @@ pub struct Prompt {
     /// The spellings `index` carries, so a mention of one stays literal.
     #[serde(default)]
     pub rooted: Vec<String>,
-    /// The handover note as the model reads it; nothing before the first fold.
-    #[serde(default)]
-    pub handover: Option<String>,
     /// The directory the shell stood in, so a move is noticed.
     #[serde(default)]
     pub cwd: String,
-    #[serde(default)]
-    pub stamp: String,
 }
 
 impl Prompt {
@@ -44,23 +39,14 @@ impl Prompt {
     ///
     /// # Invariant
     ///
-    /// Only the texts a request sends are compared. `cwd` and `stamp` are records: a
-    /// shell reports one directory under several spellings, and a spelling is not a
-    /// reason to write a row or to re-bill a prefix. See `docs/notes/server-store.md`.
+    /// Only the texts a request sends are compared. `cwd` is a record: a shell
+    /// reports one directory under several spellings, and a spelling is not a reason
+    /// to write a row or to re-bill a prefix. See `docs/notes/server-store.md`.
     pub fn rewritten_by(&self, later: &Prompt) -> bool {
         self.instructions != later.instructions
             || self.index != later.index
             || self.tail != later.tail
-            || self.handover != later.handover
     }
-}
-
-/// What the note is, so a fold shows up without rendering prose.
-pub fn stamp(note: Option<&str>) -> String {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    note.hash(&mut h);
-    format!("{:x}", h.finish())
 }
 
 /// What the model is told about a call that never returned: the
@@ -85,13 +71,6 @@ CREATE TABLE IF NOT EXISTS sessions (
     cwd        TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
-    -- Set once the agent has handed the transcript to a mentor and woken up to
-    -- this note: a row is either here or in the mentor, so there is no boundary
-    -- to record. Nothing here rewrites a row. The rows can still be
-    -- deleted -- by the agent, from a shell, through the `heir` skill, and only
-    -- after the whole transcript has been copied into a mentor session and the
-    -- copy checked row for row. The server's own hands stay off the transcript.
-    handover TEXT,
     -- Per-session overrides given by `set_session`. NULL means "the server's
     -- configuration", so a session that never asked is indistinguishable from
     -- one created before these columns existed. `model` holds the whole model,
@@ -132,6 +111,10 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS sessions_by_status ON sessions(status);
 
+-- A session's rows can still be deleted -- by the agent, from a shell, through the
+-- `heir` skill, and only after the whole transcript has been copied into a mentor
+-- session and the copy checked row for row. The server's own hands stay off the
+-- transcript.
 CREATE TABLE IF NOT EXISTS messages (
     id         INTEGER PRIMARY KEY,
     session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -260,7 +243,6 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         conn.execute("ALTER TABLE sessions RENAME COLUMN provider TO model", [])?;
     }
     for (column, ddl) in [
-        ("handover", "ALTER TABLE sessions ADD COLUMN handover TEXT"),
         ("model", "ALTER TABLE sessions ADD COLUMN model TEXT"),
         (
             "model_name",
@@ -300,6 +282,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     ] {
         add_column_if_missing(conn, "sessions", column, ddl)?;
     }
+    settle_handover(conn)?;
     // An old row needs a name before it can be listed or deleted.
     add_column_if_missing(
         conn,
@@ -329,6 +312,48 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
          END;",
     )?;
     Ok(())
+}
+
+/// Turns a home's handover notes into the messages they are now, and drops the column.
+///
+/// # Invariant
+///
+/// The note used to be prose this server printed ahead of the transcript; a lesson is
+/// an ordinary message now, so no column holds request content and the agent's own
+/// `send_message` is the only way one gets there. Appended rather than placed at the
+/// front: the rows already in the transcript were sent, and a row is never put ahead
+/// of them. One transaction, because a start that stopped between the insert and the
+/// drop would append the same lesson again on the next one. See
+/// `docs/notes/server-handover.md`.
+fn settle_handover(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    if !has_column(conn, "sessions", "handover") {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    let notes: Vec<(i64, String)> = {
+        let mut statement = tx.prepare(
+            "SELECT id, handover FROM sessions
+              WHERE handover IS NOT NULL AND TRIM(handover) <> ''",
+        )?;
+        let rows = statement.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    for (session_id, note) in notes {
+        let value = json!({"role": "user", "text": note});
+        tx.execute(
+            "INSERT INTO messages (session_id, seq, kind, content, display, call_id, created_at)
+             VALUES (?1, (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?1),
+                     'text', ?2, ?3, NULL, ?4)",
+            params![
+                session_id,
+                wire_item("text", &value).map(|item| item.to_string()),
+                value.to_string(),
+                now_millis()
+            ],
+        )?;
+    }
+    tx.execute("ALTER TABLE sessions DROP COLUMN handover", [])?;
+    tx.commit()
 }
 
 /// Gives the rows a version-1 home wrote the item their requests will send.
@@ -806,17 +831,6 @@ impl Store {
         })
     }
 
-    /// The handover note, if the agent has written one.
-    pub fn handover(&self, session_id: i64) -> anyhow::Result<Option<String>> {
-        let conn = self.lock();
-        let note = conn.query_row(
-            "SELECT handover FROM sessions WHERE id = ?1",
-            params![session_id],
-            |r| r.get::<_, Option<String>>(0),
-        )?;
-        Ok(note)
-    }
-
     /// The provider's last input measurement and the transcript generation it belongs to.
     pub fn context_measurement(&self, session_id: i64) -> anyhow::Result<(u64, u64)> {
         let conn = self.lock();
@@ -956,8 +970,12 @@ impl Store {
             .optional()?
         };
         let Some(text) = row else { return Ok(None) };
-        match serde_json::from_str(&text) {
-            Ok(layout) => Ok(Some(layout)),
+        match serde_json::from_str::<crate::prefix_cache::Layout>(&text) {
+            // Both lookups are derived: reading the row is what rebuilds them.
+            Ok(mut layout) => {
+                layout.reindex();
+                Ok(Some(layout))
+            }
             Err(e) => {
                 tracing::warn!(error = %e, "the stored prefix layout is not readable");
                 Ok(None)
@@ -1231,7 +1249,8 @@ impl Store {
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )?;
                 // A notice is advice about a measurement, not an operator's message.
-                // A handover advances the generation even if old usage arrives late.
+                // Emptying the transcript advances the generation even if old usage
+                // arrives late.
                 if (current_generation.max(0) as u64) != generation
                     || (tokens.max(0) as u64) < limit
                 {
@@ -1542,11 +1561,8 @@ impl MessageRow {
             "system" => {
                 let cwd = str_of("cwd").unwrap_or_default();
                 let chars = str_of("instructions").unwrap_or_default().chars().count();
-                let folded = value.get("handover").is_some_and(|v| !v.is_null());
                 row.text = format!(
-                    "[prompt in force] {chars} characters of instructions, \n\
-                     {}a handover note, read from {cwd}",
-                    if folded { "with " } else { "without " },
+                    "[prompt in force] {chars} characters of instructions, read from {cwd}"
                 );
             }
             // Something that ran at the provider, not here: it has no output to

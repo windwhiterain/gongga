@@ -213,7 +213,9 @@ sha。两处不一致时服务端装的是 `ship.toml` 里那个 commit，不是
   砍断：先提交、把只存在脑子里的状态写下来、把 git 状态整理好，再交棒；不要再开新活。用
   `$GONGGA_HOME/skills/heir/transcript`（脚本，不是服务端工具）——服务端只测量和要求。
   `heir` 先把整份 transcript 拷进一个 mentor 会话、逐行校验副本，然后**删空自己**——只留在
-  飞的那个 tool call（服务端一收到 call 就执行，所以它总在最后一行），指引就写在它的结果里，
-  不再多插一行；mentor 那边会补一条 tool_result 告它自己成了 mentor，只答被问的。
+  飞的那个 tool call（服务端一收到 call 就执行，所以它总在最后一行）；指引写在它的结果里，
+  第一课则由脚本用一次 `send_message` 发出，在下一个 step 边界落成一条普通 user 消息（所以它的
+  `@file:`/`@skill:` 会进 index，和空会话的首轮一样）；mentor 那边会补一条 tool_result 告它
+  自己成了 mentor，只答被问的。
   之后卡住了用 `get_messages` 读 mentor、用 `send_message` 问 mentor。
   read 读的是消息（模型输出 + 注入），工具调用与 reasoning 被过滤掉。

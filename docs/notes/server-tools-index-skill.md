@@ -62,6 +62,12 @@ construction. The size is the row's serialized length, the text the request carr
 order (project, then home, then machine), so `@skill: <name>` still opens the same
 file. Only the table's order is the layout's.
 
+A reworded description is a row whose text changed, and the prompt index would keep such
+an entry and append a patch for it -- `git diff`-shaped prose, appended after the index.
+This caller passes no tolerance instead: a row here is one line of json, where a patch
+saves a handful of characters and costs a reader a parse. See
+`docs/notes/server-prefix-cache.md`.
+
 ## frontmatter
 
 `---`, then `name:` and `description:` lines, then `---`: the same rule every skill

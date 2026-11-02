@@ -12,6 +12,8 @@ _Post Modern Agent Harness_
 - Heir based context compact, new session can ask mentor session about the history.
 - Infinite forward compatibility via chain of migraters.
 - Elegant server cancle, restart auto continue, interrupt no session, tasks nor client, covinent for long running agents and self-evolving.
+- Server watchdog auto restart server if crashed.
+- Monitor session auto wakened to fix the harness when any session report an error.
 - Git managed configuration.
 - Streaming LLM reqwest optimized for minimal allocation.
 - Large too_result save to file for agents to grep instead of directly return.

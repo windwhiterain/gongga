@@ -44,6 +44,7 @@ note is a bug.
 | [`server-clock.md`](server-clock.md) | `crates/server/src/clock.rs` |
 | [`server-commands.md`](server-commands.md) | `crates/server/src/commands.rs` |
 | [`server-config.md`](server-config.md) | `crates/server/src/config.rs` |
+| [`server-diff.md`](server-diff.md) | `crates/server/src/diff.rs` |
 | [`server-instance.md`](server-instance.md) | `crates/server/src/instance.rs` |
 | [`server-llm.md`](server-llm.md) | `crates/server/src/llm.rs` |
 | [`server-meta.md`](server-meta.md) | `crates/server/src/meta.rs` |
