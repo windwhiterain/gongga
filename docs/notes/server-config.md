@@ -128,6 +128,14 @@ overwrite the secret or be blocked by it. A home that predates the split keeps
 working: `[server] key` in its config.toml is still read, after the key file and
 before a fresh mint, so no home is told its own clients are suddenly wrong.
 
+## Config::load_with_home (remotes are not here)
+
+A remote — a `host`, a private key's `identity`, a `runner` path — is this machine's
+fact, and this file is the merged one. So the list is read from
+`~/.agents/remotes.toml` (`crate::remotes`) and a `[remotes.<name>]` table left here is
+warned about at startup rather than honoured. The reasoning is the key's, one section
+up, and the file is `docs/notes/server-remotes.md`.
+
 ## Config::load_with_home (roster)
 
 The roster (`~/.agents/gongga-agents/providers.toml`) is the machine's own list of

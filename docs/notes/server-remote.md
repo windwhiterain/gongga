@@ -111,7 +111,9 @@ runs exactly that.
    `gongga-tui` and `gongga-runner`, and it dispatches on its first word, so the
    whole remote side is the one file `ssh` already has to be able to execute.
 
-2. A remote in the server's config, and nothing else:
+2. A remote in this machine's remotes file — `~/.agents/remotes.toml`, and nothing
+   else. It is not the home's `config.toml`; why is
+   `docs/notes/server-remotes.md`.
 
        [remotes.build]
        host = "peer"
@@ -178,9 +180,10 @@ Three kinds of endpoint, and only one of them can come from a config file:
   prompt from hanging a turn, and a host that is not in `known_hosts` is refused by
   `ssh` itself, which is the answer a caller wants.
 - `Direct { runner }` — a runner process on this machine, which is how a peer is
-  exercised without ssh. **Test-only**: `[remotes.<name>]` has `host`, `port`,
+  exercised without ssh. **Test-only**: a `[remotes.<name>]` table has `host`, `port`,
   `identity` and `runner`, and parsing can only produce `Endpoint::Remote`, so no
-  TOML file reaches `Direct`; `local` and hostless entries are refused at load.
+  TOML file reaches `Direct`; `local`, `none` and hostless entries are refused at load
+  (`docs/notes/server-remotes.md`).
 
 A remote directory is the endpoint's to accept: `open` canonicalises it on the peer
 and an unknown one is a hard error, never a substitution of this machine's.
