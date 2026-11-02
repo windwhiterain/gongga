@@ -101,17 +101,28 @@ impl Root {
     }
 }
 
-/// Every reference `texts` name, and everything those name in turn.
+/// The file a directory keeps its standing rules in.
 ///
 /// # Invariant
 ///
-/// The walk is breadth-first in first-seen order and depth-bounded by what it has
-/// already seen, so a file naming itself, or two skills naming each other, is one
-/// entry each rather than a loop. A reference whose text cannot be read is left
-/// out: the mention stays in the prompt, and nothing invents content for it.
+/// One name in the directory the session stands in: a prompt is the rules of where it
+/// stands, and no ancestor's copy is inherited.
+pub const RULES: &str = "AGENTS.md";
+
+/// This directory's rules file, then every reference `texts` name, and their own.
+///
+/// # Invariant
+///
+/// The rules file is a root whether or not a message names it. The walk is
+/// breadth-first in first-seen order and depth-bounded by what it has already seen, so
+/// a file naming itself, or two skills naming each other, is one entry each rather
+/// than a loop. A reference whose text cannot be read is left out: nothing invents
+/// content for it.
 pub fn roots(cwd: &Path, texts: &[&str]) -> Vec<Root> {
-    let mut queue: Vec<String> = Vec::new();
-    let mut seen: Vec<String> = Vec::new();
+    // Seeded here rather than named by a message: the index holds it behind the prose.
+    let first = format!("{}{}", Reference::File.prefix(), RULES);
+    let mut queue: Vec<String> = vec![first.clone()];
+    let mut seen: Vec<String> = vec![first];
     let mut out: Vec<Root> = Vec::new();
     for text in texts {
         for mention in mentions(text) {

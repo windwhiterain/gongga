@@ -367,9 +367,11 @@ string, and a re-spelling is no longer a reason to re-bill.
 
 ## index_of, rebuilt rather than remembered
 
-The first prompt row's second half: the text of every reference the session's messages
-name, walked recursively, ordered by `prefix_cache::plan`, appended to the instructions
-as one string. One string rather than an item per entry: the entries are one thing to
+The first prompt row's second half: the `AGENTS.md` the session's directory carries,
+the text of every reference its messages name, and everything those name in turn --
+walked recursively, ordered by `prefix_cache::plan`, appended to the instructions as one
+string. The rules file is seeded by `meta::roots` rather than named by a message, so a
+session is under its directory's rules without having to ask for them. One string rather than an item per entry: the entries are one thing to
 plan, a chain in `prefix_cache`, and measured, an item per node re-uses slightly less at
 steady state (94.5% against 97.7%), not more.
 

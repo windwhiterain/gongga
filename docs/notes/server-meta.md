@@ -16,16 +16,41 @@ user only meant to talk about. The prefix decides, not the file's extension.
 ## indexed on the first turn: the root set
 
 The table above is what a reference becomes when it is expanded *in place*. It is not
-what the first turn does. A session's first prompt row carries an index: every
-reference its messages name, and everything those name in turn, as `spelling` and the
-text it stands for, appended to the system instructions. Those mentions are then left
-literal in the message, because the literal spelling is the key into the index.
+what the first turn does. A session's first prompt row carries an index: the `AGENTS.md`
+its directory keeps (`roots`'s `RULES`), every reference its messages name, and
+everything those name in turn, as `spelling` and the text it stands for, appended to the
+system instructions. Those mentions are then left literal in the message, because the
+literal spelling is the key into the index.
 
 The reason is the prefix cache. Whatever is in the system instructions is charged once
 and then reused by every later request of that conversation; whatever is inline in a
 message is re-sent as part of the transcript from that point on. A skill body is the
 one thing whose size makes that difference matter, and SPEC already asks for the body
 (`replaced as skill content with wrapper`) rather than a line of metadata.
+
+## the rules file is a root, not a message
+
+`AGENTS.md` in the session's own directory is the walk's first spelling, named by
+`roots` rather than by a message: what a directory keeps as its rules is standing
+instruction for the work done in it, and a session that has to be told to read it has
+already spent the turn it was meant to save. It is one file, and no ancestor's copy:
+`cwd/AGENTS.md` and nothing above it, so a subdirectory with none of its own inherits
+nothing.
+
+Where it lands is the whole point. The index sits in `instructions`, in front of the
+transcript, so the rules are charged once and re-used by every later request of the
+conversation; a rules file expanded into a message would ride the transcript instead and
+be re-sent for the life of the session. Being a spelling also means a message that writes
+`@file: AGENTS.md` stays literal and keys the same entry, so one file is never carried
+twice.
+
+It is read on every request, like every other root, from the directory the shell reports
+for that turn, so an edit reaches the next turn -- at the price the index always charges
+for an edit: a new prompt row, and the prefix behind it re-billed. The same read is what
+makes the file the *directory's*: a session standing elsewhere reads that directory's
+rules, and one whose directory has none reads none.
+
+## `roots` is the walk
 
 `roots` is the walk: breadth first, first seen, once each. A file that names itself, or
 two files that name each other, is two entries rather than a loop, because `seen` is

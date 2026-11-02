@@ -136,19 +136,31 @@ possible the moment the prose left the binary. A parameter keeps the test honest
 the mechanism it owns -- that the numbers arrive, that the spill path is named, that the
 provider's own sentence survives -- while the words themselves are the config's to say.
 
-## no rules file is read
+## one rules file, and it is a root
 
-The server reads no `AGENTS.md`. Two used to be joined into `instructions` when a prompt
-row was written -- the machine's `~/.agents/agents.md`, then `AGENTS.md` beside the
-session's directory -- and both reads are gone, along with the `constitution` template
-that wrapped them. Standing rules now live where this machine keeps every other
-procedure: a skill under `~/.agents/skills/`, listed by `index_skill`, read when a task
-matches its description.
+The server joins no `AGENTS.md` into `instructions`. Between 2026-10-28 and 2026-11-02 it
+read none at all: `prompts::constitution` used to join two of them -- the machine's
+`~/.agents/agents.md`, then `AGENTS.md` beside the session's directory -- and both reads
+left with that template. The machine's own standing rules moved to a skill
+(`~/.agents/skills/whiting-dev`), which is where this machine keeps every other
+procedure: listed by `index_skill`, read when a task matches its description.
 
-That is the same argument the skill root already makes, applied to the one prose that
-ignored it. A rules file was in every request whether or not the turn needed it, and an
-edit to it changed what the model was told without any row recording that the user said
-it. A skill costs a name and a description until the work asks for the body.
+What came back on 2026-11-02 is narrower, and it comes back by a different road: the
+session's own `AGENTS.md` is a *root* of the prompt index (`meta::RULES`), so it lands in
+`instructions` behind the index rather than being concatenated onto the prose here. Three
+things follow from that, and they are why this is not the deleted read returning:
+
+- **One file, in the directory the shell stands in.** No machine-wide copy, no ancestor's.
+- **It is compared, ordered and stored with the other roots.** The index plans the order
+  (`prefix_cache::plan`), the row keeps the bytes, and a change appends a row instead of
+  quietly altering what was sent.
+- **A message that names it stays literal**, because it is also a spelling in the index --
+  one file is never carried twice.
+
+The older argument still holds where it applies: prose in every request whether or not
+the turn needed it is what a skill exists to avoid. It is why the machine's rules stayed
+a skill, and why the directory's rules -- which are about the work in that directory, and
+which every turn there is done under -- are read from that directory and not from home.
 
 What stays is where the reads sit: the templates are re-read whenever the file's stamp
 moves, and `prompt_in_force` renders them at every step and stores a new row only when
