@@ -162,7 +162,7 @@ impl Runner {
     }
 }
 
-/// An entry is a shell script, a Python script, or a program of its own.
+/// An entry is a program of its own, or a script whose first line names one.
 fn runner(entry: &Path) -> anyhow::Result<Runner> {
     let extension = entry
         .extension()
@@ -185,8 +185,61 @@ fn runner(entry: &Path) -> anyhow::Result<Runner> {
             ["-NoProfile", "-File"].map(str::to_string).to_vec(),
         ),
         "cmd" | "bat" => plain(PathBuf::from("cmd"), vec!["/c".to_string()]),
-        _ => plain(entry.to_path_buf(), Vec::new()),
+        // No extension worth naming: the file's own `#!` says what runs it.
+        _ => match shebang(entry) {
+            Some(program) => interpreted(&program)?,
+            None => plain(entry.to_path_buf(), Vec::new()),
+        },
     })
+}
+
+/// The program a `#!` line names, which is the file's answer even under Windows.
+fn shebang(entry: &Path) -> Option<String> {
+    let first = std::fs::read_to_string(entry).ok()?;
+    let line = first.lines().next()?.strip_prefix("#!")?;
+    let mut words = line.split_whitespace();
+    let mut program = words.next()?;
+    let name = file_name(program);
+    // `#!/usr/bin/env bash` names the interpreter in its argument, not in `env`.
+    if name == "env" {
+        program = words.find(|word| !word.starts_with('-'))?;
+        return Some(file_name(program));
+    }
+    Some(name)
+}
+
+fn file_name(program: &str) -> String {
+    program
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(program)
+        .to_string()
+}
+
+/// The program a `#!` line names.
+fn interpreted(program: &str) -> anyhow::Result<Runner> {
+    let program = if program.starts_with("python") {
+        python()?
+    } else {
+        which::which(program).with_context(|| format!("no {program} on PATH"))?
+    };
+    let posix = matches!(
+        program_name(&program).as_str(),
+        "sh" | "bash" | "zsh" | "dash"
+    );
+    Ok(Runner {
+        program,
+        leading: Vec::new(),
+        posix,
+    })
+}
+
+/// The last component of a program's path, which is how a shell is recognised.
+fn program_name(program: &Path) -> String {
+    program
+        .file_stem()
+        .map(|name| name.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default()
 }
 
 /// The first Python that runs: Windows' Store alias sits on `PATH` and answers 49.

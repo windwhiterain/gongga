@@ -58,6 +58,39 @@
 - **SPEC.md 的改动**：需要用户点头。要改三处 —— `Crate Structure` 加 `skill`；`Meta`/`Skill`
   段写明「skill 可声明入口，正文从它自己的目录出发」；`Cmd` 加 `skill` 动词。等批准。
 
+## 落地时撞到的一个旧 bug：这个 home 早就收不到内容了
+
+换手之后 `skill ls` 里 heir/remote/subagent 的门是 `-`（没有入口），`~/.gongga/skills/` 里
+那几个 SKILL.md 还是旧正文。日志说明了原因：
+
+    pin=b6493bac2a written=0 updated=1 merged=2 removed=0
+      conflicts=[skills/heir/SKILL.md, skills/heir/test_heir.py, skills/remote/SKILL.md,
+                 skills/remote/remote.py, skills/subagent/SKILL.md]
+
+`reconcile` 是三方合并：base = `.ship-pin` 记的那个 pin，ours = 磁盘，theirs = 新 pin。
+这个 home 的 `.ship-pin` 停在 `2e11a077`，而磁盘上的文件是**好几个更新的 pin** 装进去的
+（`subagent/SKILL.md` 逐字节等于 c7e9e64，`remote/*` 等于 a6b5c3ef，`heir/SKILL.md` 等于
+2b2061d0）。base 一旦落后于磁盘，每个改动过的文件都是「ours≠base 且 ours≠theirs」→
+Conflict；而**只要还有一个 Conflict，pin 就不前进**。于是 base 永远停在那个旧 pin，下一次
+启动把所有改动过的文件再判一遍——一个棘轮：第一次冲突之后这个 home 再也收不到内容更新，
+而且日志里每次都是同一串 conflicts，看起来像"用户改过这些文件"。
+
+这次的处理：把那五个文件按 pin 的 **blob 字节**写回 home。注意是 blob 字节，不是 `ship/`
+工作树的字节——工作树是 CRLF，装进去的是 LF，差一个字节就再冲突一次。写回之后四个入口
+都在，`skill heir/remote/image/subagent --help` 四条都跑通。
+
+**没有动 `reconcile`。** 它的 Invariant（"A file is never overwritten while it differs from
+the content that installed it"）不该我一个人改，两个候选方向留给用户：
+
+- **A 冲突也记账**：Conflict 时把路径写进 `kept` 并让 pin 前进，base 立刻变新鲜，这个文件
+  从此按"当前字节"参与下一次合并。代价：真冲突之后用户不再被提醒，而现在这条 halting
+  就是"提醒"的实现。
+- **B 认出身世**：冲突分支里也走 `is_a_past_install`（磁盘字节等于缓存里某个 commit 的同名
+  blob → 安装产物而不是人改的 → 更新）。代价是每个冲突文件一次历史遍历，与"O(1)，至少
+  O(log n)"的品味冲突，除非换成一次 hash 索引。
+
+两者都要单独验证。这一轮已经换过一次手，不适合在同一轮再 stage 一次。
+
 ## 验证
 
 `cargo test --workspace` 在这个仓库是**空的**（全 workspace 零个 `#[cfg(test)]`），所以 L1 没有

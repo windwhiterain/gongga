@@ -41,11 +41,17 @@ business.
 
 ## runner
 
-An entry is run by the program its extension names: `bash` for a shell script, a Python
-for a `.py`, PowerShell for `.ps1`, `cmd /c` for a batch file, and otherwise the file
-itself. The path it is handed is spelled for that program, because the two spellings are
-not interchangeable: `bash` reads `/c/a/b`, and Python and Windows read `C:\a\b`. Handing
-a POSIX spelling to Python is a file it cannot open; handing a Windows spelling to bash
+An entry is run by the program its extension names -- `bash` for a shell script, a Python
+for a `.py`, PowerShell for `.ps1`, `cmd /c` for a batch file -- and an entry with no
+extension is run by the program its own `#!` line names, because Windows does not honour
+one. That last case is not hypothetical: `transcript`, `show`, `remote` and `wait_turn` are
+all spelled without an extension, and handing one to `CreateProcess` is `os error 193`. So
+an extension-less entry is dispatched on the interpreter its first line asks for, `env` or
+not, and only a file that asks for nothing is executed as itself.
+
+The path it is handed is spelled for that program, because the two spellings are not
+interchangeable: `bash` reads `/c/a/b`, and Python and Windows read `C:\a\b`. Handing a
+POSIX spelling to Python is a file it cannot open; handing a Windows spelling to bash
 breaks the `dirname "${BASH_SOURCE[0]}"` every one of these scripts starts with.
 
 The Python probe is the six-times-duplicated loop the entry scripts carry (`for candidate
