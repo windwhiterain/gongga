@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use tokio::process::Command;
 
 use crate::remote::endpoint::Endpoint;
-use crate::remote::transport::{DirEntry, Runner};
+use crate::remote::transport::{DirEntry, EndpointFile, Runner};
 
 /// One remote, and the connection kept open to read its files.
 pub struct Reader {
@@ -29,36 +29,45 @@ impl Reader {
     }
 
     /// The whole of one file on the peer.
+    pub async fn read(&self, path: &str) -> anyhow::Result<Vec<u8>> {
+        self.redial(|| self.read_whole(path)).await
+    }
+
+    /// The names in one peer directory, read the same way.
+    pub async fn list(&self, path: &str) -> anyhow::Result<Vec<DirEntry>> {
+        self.redial(|| self.list_once(path)).await
+    }
+
+    /// What the peer says about one path, asked the same way.
+    pub async fn stat(&self, path: &str) -> anyhow::Result<EndpointFile> {
+        self.redial(|| self.stat_once(path)).await
+    }
+
+    /// Runs one read, and once more on a fresh connection if the first died.
     ///
     /// # Invariant
     ///
-    /// A dead connection costs one re-dial for the whole read, never a failed read
-    /// that a caller would have to know to retry: the file a message names may be
-    /// the first thing asked for after a stall, and a message is not a place to
-    /// explain a transport.
-    pub async fn read(&self, path: &str) -> anyhow::Result<Vec<u8>> {
-        match self.read_whole(path).await {
-            Ok(bytes) => Ok(bytes),
+    /// A dead connection costs one re-dial for the whole read, never a failed
+    /// read a caller would have to know to retry: the file a message names may be
+    /// the first thing asked after a stall.
+    async fn redial<T, F, Fut>(&self, once: F) -> anyhow::Result<T>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = anyhow::Result<T>>,
+    {
+        match once().await {
+            Ok(value) => Ok(value),
             Err(first) => {
                 self.forget();
-                self.read_whole(path)
+                once()
                     .await
                     .map_err(|e| anyhow::anyhow!("after one re-dial, {first}; then {e}"))
             }
         }
     }
 
-    /// The names in one peer directory, read the same way.
-    pub async fn list(&self, path: &str) -> anyhow::Result<Vec<DirEntry>> {
-        match self.list_once(path).await {
-            Ok(entries) => Ok(entries),
-            Err(first) => {
-                self.forget();
-                self.list_once(path)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("after one re-dial, {first}; then {e}"))
-            }
-        }
+    async fn stat_once(&self, path: &str) -> anyhow::Result<EndpointFile> {
+        self.runner().await?.stat(path).await
     }
 
     async fn read_whole(&self, path: &str) -> anyhow::Result<Vec<u8>> {

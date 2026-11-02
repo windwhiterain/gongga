@@ -895,6 +895,20 @@ pub fn stated_directory(stated: &str, base: &Path) -> PathBuf {
     std::path::absolute(&joined).unwrap_or(joined)
 }
 
+/// Where a stated `--cwd` lands, resolved on the destination's side.
+///
+/// # Invariant
+///
+/// A path landing on this machine is made absolute against `base`; a path
+/// landing on a peer is passed through as written, because only that machine
+/// can expand it.
+pub fn placed_directory(stated: &str, remote: Option<&str>, base: &Path) -> PathBuf {
+    match remote {
+        None => stated_directory(stated, base),
+        Some(_) => PathBuf::from(stated.trim()),
+    }
+}
+
 /// Whether a message landed for this session since this signal was taken.
 ///
 /// See `docs/notes/server-session.md`.
@@ -996,33 +1010,20 @@ impl SessionManager {
             return Ok(entries);
         }
         let name = remote.unwrap_or_default().to_string();
-        // The handle is taken and the map released before awaiting: a listing must
-        // not hold the map across a peer's answer.
-        let shell = {
-            let mut shells = self
-                .listing_shells
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            let set = shells
-                .entry(name.clone())
-                .or_insert_with(|| ShellSet::new(endpoint, None, self.shell_env.clone()));
-            set.get(LISTING_SHELL)?
+        let outcome = match self.listing_run(&name, endpoint, directory).await {
+            Ok(outcome) => outcome,
+            // A shell the peer no longer has is not a directory it refused, and the
+            // handle would never be usable again, so one fresh one is dialled.
+            Err(_) => {
+                self.listing_run(&name, self.endpoint_for(remote)?, directory)
+                    .await?
+            }
         };
-        let command = listing_script(directory);
-        let mut shell = shell.lock().await;
-        // Measured: 1.7s for the first listing on a fresh remote (ssh, the runner and
-        // a shell), 0.17-0.21s for every one after. The deadline is well above that
-        // and well below the half minute a stalled link once cost -- and a listing
-        // does not follow with `pwd`, because nothing here reads the shell's directory.
-        let outcome = shell
-            .run_without_cwd(&command, std::time::Duration::from_secs(8))
-            .await?;
         // A listing the peer did not answer in time is not a directory it refused:
         // saying so would send a reader looking for a path that is there. The shell is
         // dropped rather than drained, because a stalled link is what this is, and a
         // shell kept for the next question would hold it behind the same stall.
         if outcome.still_running {
-            drop(shell);
             self.forget_listing_shell(&name);
             anyhow::bail!(
                 "remote {name:?} did not answer while listing {directory:?}; \
@@ -1046,6 +1047,88 @@ impl SessionManager {
             .collect();
         entries.sort();
         Ok(entries)
+    }
+
+    /// One listing through the shell kept for `name`, dropping it if that fails.
+    ///
+    /// # Invariant
+    ///
+    /// A run that fails forgets the shell: a peer that has lost one of its own
+    /// answers every later run with a refusal, and the kept handle would turn one
+    /// bad minute into a remote whose completion never works again.
+    async fn listing_run(
+        &self,
+        name: &str,
+        endpoint: Endpoint,
+        directory: &str,
+    ) -> anyhow::Result<crate::tools::bash::BashOutcome> {
+        // The handle is taken and the map released before awaiting: a listing must
+        // not hold the map across a peer's answer.
+        let shell = {
+            let mut shells = self
+                .listing_shells
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let set = shells
+                .entry(name.to_string())
+                .or_insert_with(|| ShellSet::new(endpoint, None, self.shell_env.clone()));
+            set.get(LISTING_SHELL)?
+        };
+        let command = listing_script(directory);
+        let mut shell = shell.lock().await;
+        // Measured: 1.7s for the first listing on a fresh remote (ssh, the runner and
+        // a shell), 0.17-0.21s for every one after. The deadline is well above that
+        // and well below the half minute a stalled link once cost -- and a listing
+        // does not follow with `pwd`, because nothing here reads the shell's directory.
+        let outcome = shell
+            .run_without_cwd(&command, std::time::Duration::from_secs(8))
+            .await;
+        if outcome.is_err() {
+            drop(shell);
+            self.forget_listing_shell(name);
+        }
+        outcome
+    }
+
+    /// Refuses a directory the destination does not have.
+    ///
+    /// # Invariant
+    ///
+    /// Asked of a `--cwd` a caller states now, never of one a row records: a
+    /// session whose directory has since been removed still starts where its row
+    /// says, so the removal refuses that command rather than that session.
+    pub async fn check_placement(
+        &self,
+        remote: Option<&str>,
+        directory: &Path,
+    ) -> anyhow::Result<()> {
+        let endpoint = self.endpoint_for(remote)?;
+        if !endpoint.is_remote() {
+            if directory.is_dir() {
+                return Ok(());
+            }
+            let fault = if directory.exists() {
+                "is not a directory"
+            } else {
+                "does not exist"
+            };
+            anyhow::bail!("--cwd {} {fault} on this machine", directory.display());
+        }
+        let name = remote.unwrap_or_default();
+        let reader = self
+            .reader_for(Some(name))
+            .ok_or_else(|| anyhow::anyhow!("remote {name:?} has no readable filesystem"))?;
+        let path = directory.to_string_lossy();
+        let file = reader.stat(&path).await?;
+        if file.is_dir {
+            return Ok(());
+        }
+        let fault = if file.exists {
+            "is not a directory"
+        } else {
+            "does not exist"
+        };
+        anyhow::bail!("--cwd {path} {fault} on remote {name:?}")
     }
 
     /// The connection a session on `remote` reads its files through.
@@ -1164,8 +1247,11 @@ impl SessionManager {
         // A remote session with no directory starts where its endpoint is. A
         // stated one is read where its shell would read it.
         let cwd = match (cwd, endpoint.is_remote()) {
-            (Some(stated), true) => Some(PathBuf::from(stated.trim())),
-            (Some(stated), false) => Some(stated_directory(stated, &std::env::current_dir()?)),
+            (Some(stated), remote) => Some(placed_directory(
+                stated,
+                if remote { recorded.as_deref() } else { None },
+                &std::env::current_dir()?,
+            )),
             (None, true) => None,
             (None, false) => Some(std::env::current_dir()?),
         };
@@ -1361,12 +1447,19 @@ impl SessionManager {
     ) -> anyhow::Result<MoveReport> {
         let remote = self.peer(request.remote.as_deref())?;
         let single_cwd = remote.is_none();
-        let wanted = match (request.cwd.as_deref(), single_cwd) {
-            // The row is handed to a shell later, and a relative path there would
-            // mean wherever that shell happens to stand.
-            (Some(stated), true) => Some(stated_directory(stated, &session.cwd())),
-            (Some(stated), false) => Some(PathBuf::from(stated.trim())),
-            (None, _) => None,
+        // The row is handed to a shell later, and a relative path there would
+        // mean wherever that shell happens to stand.
+        let wanted = match request.cwd.as_deref() {
+            Some(stated) => Some(placed_directory(
+                stated,
+                if single_cwd {
+                    None
+                } else {
+                    request.remote.as_deref()
+                },
+                &session.cwd(),
+            )),
+            None => None,
         };
         let env = self.session_env(session.name());
         let report = session

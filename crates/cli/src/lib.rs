@@ -549,9 +549,8 @@ pub struct Client {
     sessions: Vec<SessionInfo>,
     model: String,
     next_id: u64,
-    /// Commands sent for the completion's own bookkeeping: their answers fill a
-    /// popup rather than a line, so neither echo nor result is drawn.
-    quiet: std::collections::HashSet<u64>,
+    /// Commands the completion sent, by the remote each asked: a popup, not a line.
+    quiet: HashMap<u64, String>,
     /// Whether a link is open right now; while false, all server knowledge is
     /// stale.
     connected: bool,
@@ -716,7 +715,7 @@ impl Client {
             sessions: Vec::new(),
             model: "-".to_string(),
             next_id: Self::seed_command_id(),
-            quiet: std::collections::HashSet::new(),
+            quiet: HashMap::new(),
             connected: false,
             attempts: 0,
             server_changed: false,
@@ -857,7 +856,7 @@ impl Client {
             Event::Cmd { id, name, args } => {
                 // A question the completion asked is not a line of the operator's,
                 // so it is not shown, and its answer is not either.
-                if self.quiet.contains(&id) {
+                if self.quiet.contains_key(&id) {
                     return;
                 }
                 let session = args.get("session").map(String::as_str);
@@ -883,11 +882,11 @@ impl Client {
                 data,
                 ..
             } => {
-                if self.quiet.remove(&id) {
-                    if ok {
-                        if let Some(named) = data.as_ref() {
-                            self.fill_listing(named);
-                        }
+                if let Some(remote) = self.quiet.remove(&id) {
+                    match (ok, data.as_ref()) {
+                        (true, Some(named)) => self.fill_listing(named),
+                        // Asked again next time: a refusal is not an answer.
+                        _ => self.catalog.fail_paths(&remote),
                     }
                     return;
                 }
@@ -1150,7 +1149,7 @@ impl Client {
         let mut args = protocol::Args::new();
         args.insert("remote".to_string(), remote.to_string());
         args.insert("path".to_string(), directory.to_string());
-        self.quiet.insert(id);
+        self.quiet.insert(id, remote.to_string());
         Some(ClientMessage::Command {
             id,
             name: "list_paths".to_string(),

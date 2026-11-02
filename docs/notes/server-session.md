@@ -141,9 +141,18 @@ from `base`. Both ends of it matter.
 
 The row is what a later start hands to a shell, so a path stored as typed would move
 with wherever that shell happened to be; `std::path::absolute` is enough because it is
-lexical -- `canonicalize` would refuse a directory that does not exist yet, and a
-`--cwd` naming one is a move the endpoint is allowed to refuse, not a reason to fail
-earlier here.
+lexical, and a row may name a directory that has since been removed: it is `set_session`
+that refuses a `--cwd` the destination does not have, asked at the moment a caller
+states one (`SessionManager::check_placement`), never a start that reads a row.
+
+Refusing at the statement is what keeps a removed directory from costing a session:
+reached at the start instead, it would either kill a session that was working or --
+worse, for this machine's own shells -- fall back to the server's directory and say
+`ok`, so a command ran somewhere the operator never named.
+
+`placed_directory` is the one place the two spellings meet: a path landing here is
+made absolute, and a path landing on a peer is passed on exactly as written, because
+only that machine can expand it.
 
 `base` is the caller's statement of where the operator was speaking from: the
 session's own directory for a move on this machine, the server's for a session being

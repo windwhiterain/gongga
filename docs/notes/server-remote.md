@@ -223,8 +223,17 @@ Two rules a reader should not have to re-derive:
   runner and canonicalised there; a path that does not exist on the peer is an
   error. With no `--cwd` the row keeps no directory at all and the endpoint chooses
   its own, after which the reported path is adopted as the shell's directory and
-  written into `sessions.cwd`, so the next start begins where the endpoint is. A
-  local session is unchanged: this machine's `current_dir` and the existing fallback.
+  written into `sessions.cwd`, so the next start begins where the endpoint is.
+- **a stated directory is checked before the move.** `set_session` asks the
+  destination -- `is_dir` here, `Op::Stat` through the remote's `Reader` on a peer --
+  and refuses the command when the answer is no. Both machines are asked the same
+  question, so a local `--cwd` no longer falls back to the server's directory and
+  reports `ok`; a session whose row already names a removed directory still starts,
+  because the check is on what a caller states, not on what a row records.
+- **a listing shell the peer has lost is replaced.** The shell `list_paths` keeps is
+  reused across completions, and a peer that has dropped its end answers every later
+  run with `no shell 1 is open`; one failed run forgets the shell and dials a fresh
+  one, so a bad minute costs one listing instead of every completion after it.
 
 ### Endpoint shells are ended without their lock
 

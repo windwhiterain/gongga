@@ -44,6 +44,23 @@ and the directory, which is the session's when the line has one. A message names
 no session on the line, which is why `words` is empty for one: prose containing
 `--session` is prose, and the session it goes to is the sticky one.
 
+## remote_paths, wanted, inflight, fail_paths
+
+A peer's listing cannot be read synchronously, so the completion offers what has
+arrived and asks for the rest: `wanted` holds the one directory each remote is
+still missing, `take_wanted` moves it to `inflight`, and the answer lands in
+`remote_paths` keyed by the pair it answered.
+
+`inflight` is what stops the same question being asked on every keystroke, which
+makes releasing it the whole of a refusal: an unanswered listing that stayed in
+flight would never be asked again, and its popup would stay empty for good. A
+refused or unanswered `list_paths` therefore calls `fail_paths`, and the next
+completion asks again.
+
+One entry per remote rather than one per directory is deliberate: a queue keyed by
+directory asks for a listing per letter typed, answers them in order, and is always
+behind the cursor.
+
 ## skill_names
 
 Computed lazily against `SkillKey` -- the session's directory and the home --

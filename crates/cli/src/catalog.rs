@@ -197,6 +197,17 @@ impl Catalog {
         inner.paths_version += 1;
     }
 
+    /// Records that a remote did not answer one listing.
+    ///
+    /// # Invariant
+    ///
+    /// The question is no longer in flight: a refused or unanswered listing must
+    /// not be remembered as one still being answered, or the same directory is
+    /// never asked for again and its popup stays empty for good.
+    pub fn fail_paths(&self, remote: &str) {
+        self.write().inflight.remove(remote);
+    }
+
     /// How many listings have arrived; a front-end repaints when this changes.
     pub fn paths_version(&self) -> u64 {
         self.read().paths_version

@@ -247,9 +247,9 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 arg(
                     "cwd",
                     "Working directory for the session: where a new one is created, and \
-                     where an existing one is moved to. For a session on a remote this is \
-                     a path on that machine, which the endpoint canonicalises and refuses \
-                     when it does not exist; completion reads that machine's directories.",
+                     where an existing one is moved to. It must be a directory that \
+                     exists on the machine it names -- this one, or the remote's -- or \
+                     the command is refused; completion reads that machine's directories.",
                     false,
                     Some("path"),
                     // The client lists the filesystem it sits on, which is a hint only.
@@ -797,6 +797,15 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             if !remote_moves && !cwd_moves {
                 (session, None)
             } else {
+                if let Some(directory) = wanted_dir.as_deref() {
+                    if let Err(e) = d
+                        .sessions
+                        .check_placement(lands.as_deref(), directory)
+                        .await
+                    {
+                        return Outcome::err(e.to_string());
+                    }
+                }
                 let stated = wanted_dir
                     .as_ref()
                     .map(|dir| dir.to_string_lossy().into_owned());
@@ -813,15 +822,28 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         }
         None => {
             // Naming a session creates it: that is the only way to get one.
-            match d.sessions.ensure_on(
-                &name,
-                stated_cwd,
-                Some(&entry.model),
-                match &asked_remote {
-                    crate::session::RemoteAsk::Keep => None,
-                    crate::session::RemoteAsk::Machine(named) => named.as_deref(),
-                },
-            ) {
+            let lands = match &asked_remote {
+                crate::session::RemoteAsk::Keep => None,
+                crate::session::RemoteAsk::Machine(named) => named.clone(),
+            };
+            if let Some(stated) = stated_cwd {
+                let directory = crate::session::placed_directory(
+                    stated,
+                    lands.as_deref(),
+                    &std::env::current_dir().unwrap_or_default(),
+                );
+                if let Err(e) = d
+                    .sessions
+                    .check_placement(lands.as_deref(), &directory)
+                    .await
+                {
+                    return Outcome::err(e.to_string());
+                }
+            }
+            match d
+                .sessions
+                .ensure_on(&name, stated_cwd, Some(&entry.model), lands.as_deref())
+            {
                 Ok(session) => (session, None),
                 Err(e) => return Outcome::err(e.to_string()),
             }
