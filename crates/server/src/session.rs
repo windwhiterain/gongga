@@ -2,7 +2,7 @@
 //! See `docs/notes/server-session.md`.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -421,6 +421,25 @@ impl SessionHandle {
     }
 }
 
+/// What a stated directory means for a shell on this machine.
+///
+/// # Invariant
+///
+/// Absolute, `~` expanded, and read from `base` when relative: the row is what a
+/// later shell is started in, so a path stored as typed would move with it.
+pub fn stated_directory(stated: &str, base: &Path) -> PathBuf {
+    let trimmed = stated.trim();
+    let expanded = match trimmed.strip_prefix('~') {
+        Some(rest) if rest.is_empty() || rest.starts_with(['/', '\\']) => match dirs::home_dir() {
+            Some(home) => home.join(rest.trim_start_matches(['/', '\\'])),
+            None => PathBuf::from(trimmed),
+        },
+        _ => PathBuf::from(trimmed),
+    };
+    let joined = base.join(expanded);
+    std::path::absolute(&joined).unwrap_or(joined)
+}
+
 /// Whether a message landed for this session since this signal was taken.
 ///
 /// See `docs/notes/server-session.md`.
@@ -655,11 +674,13 @@ impl SessionManager {
         if matches!(endpoint, Endpoint::Local { .. }) && recorded.is_some() {
             anyhow::bail!("`local` is this machine, which is what naming no target means");
         }
-        // A remote session with no directory starts where its endpoint is, not here.
-        let cwd = match cwd {
-            Some(path) => Some(PathBuf::from(path)),
-            None if endpoint.is_remote() => None,
-            None => Some(std::env::current_dir()?),
+        // A remote session with no directory starts where its endpoint is. A
+        // stated one is read where its shell would read it.
+        let cwd = match (cwd, endpoint.is_remote()) {
+            (Some(stated), true) => Some(PathBuf::from(stated.trim())),
+            (Some(stated), false) => Some(stated_directory(stated, &std::env::current_dir()?)),
+            (None, true) => None,
+            (None, false) => Some(std::env::current_dir()?),
         };
         let stored = cwd
             .as_ref()
@@ -826,7 +847,13 @@ impl SessionManager {
         request: &MoveRequest,
     ) -> anyhow::Result<MoveReport> {
         let endpoint = self.endpoint_for(request.target.as_deref())?;
-        let wanted = request.cwd.as_deref().map(PathBuf::from);
+        let wanted = match (request.cwd.as_deref(), endpoint.is_remote()) {
+            // The row is handed to a shell later, and a relative path there would
+            // mean wherever that shell happens to stand.
+            (Some(stated), false) => Some(stated_directory(stated, &session.cwd())),
+            (Some(stated), true) => Some(PathBuf::from(stated.trim())),
+            (None, _) => None,
+        };
         let env = self.session_env(session.name());
         let report = session.relocate(endpoint, wanted.clone(), env).await?;
         // The row is what the next start hands back to the endpoint, so it moves

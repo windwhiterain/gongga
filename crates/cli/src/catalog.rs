@@ -6,8 +6,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
+use crate::commands::installed_skills;
 use crate::complete::{Candidate, Completer, token_bounds};
-use protocol::{ArgSpec, CommandSpec, CommandTarget, CompletionSource, Reference};
+use protocol::{ArgSpec, CommandSpec, CommandTarget, CompletionSource, Reference, SessionInfo};
 
 /// A catalog that can be swapped while the TUI holds a reference to it.
 #[derive(Clone, Default)]
@@ -17,21 +18,32 @@ struct Inner {
     /// Everything the server published, as published: this client keeps no
     /// command list of its own.
     published: Vec<CommandSpec>,
-    sessions: Vec<String>,
-    /// Which machine each session's shells run on, as the server published it.
+    /// The live sessions, as the server published them: the names a value
+    /// completes against, and where each one works.
     ///
     /// # Invariant
     ///
-    /// Kept beside the names, never derived: a value completed for a session belongs
-    /// to that session's machine, and the line does not have to repeat `--target`.
-    session_targets: HashMap<String, String>,
+    /// A value that belongs to a session -- a skill's name, a relative path -- is
+    /// read from *that* session's directory, never from this process's: the server
+    /// resolves it in the session, and a window launched elsewhere would otherwise
+    /// offer a name that cannot be opened.
+    sessions: Vec<SessionInfo>,
+    /// The session a bare message goes to, as the sticky arguments name it.
+    message_session: Option<String>,
+    /// The harness home, whose `skills/` is the second root.
+    home: PathBuf,
+    /// Where a local session starts: the server's own directory, as it published it.
+    ///
+    /// # Invariant
+    ///
+    /// The server's, not this process's: a value completed here is resolved there,
+    /// and two directories that agree only by luck is what this file keeps apart.
+    server_cwd: PathBuf,
     /// The client's sticky argument names, for the sources the server names
     /// but cannot fill in.
     sticky_names: Vec<String>,
-    /// The skills installed on this machine, for an `@skill:` reference.
-    skill_names: Vec<String>,
-    /// Where a relative path value is read from: the client's own directory.
-    cwd: PathBuf,
+    /// The skills one directory offers, and what they were read from.
+    skills: Option<Skills>,
     /// Directories a target answered with, keyed by target and directory, and
     /// when each answer arrived.
     remote_paths: HashMap<(String, String), (Vec<Candidate>, std::time::Instant)>,
@@ -53,15 +65,42 @@ struct Inner {
     paths_version: u64,
 }
 
+/// Where one input line's relative values are read, and how.
+struct Place {
+    /// The directory: the line's session's own, or the one the server runs in.
+    dir: PathBuf,
+    /// The machine that directory is on, when it is not this one.
+    peer: Option<String>,
+}
+
+/// What a cached skill list was read from.
+///
+/// # Invariant
+///
+/// The two things the answer depends on and nothing else, so a session that moves
+/// -- or a line that addresses another one -- is read again.
+#[derive(PartialEq, Eq)]
+struct SkillKey {
+    project: Option<PathBuf>,
+    home: PathBuf,
+}
+
+/// A skill list, and what it was read from.
+struct Skills {
+    key: SkillKey,
+    names: Vec<String>,
+}
+
 impl Default for Inner {
     fn default() -> Self {
         Self {
             published: Vec::new(),
             sessions: Vec::new(),
-            session_targets: HashMap::new(),
+            message_session: None,
+            home: PathBuf::new(),
+            server_cwd: std::env::current_dir().unwrap_or_default(),
             sticky_names: Vec::new(),
-            skill_names: Vec::new(),
-            cwd: std::env::current_dir().unwrap_or_default(),
+            skills: None,
             remote_paths: HashMap::new(),
             targets: HashSet::new(),
             wanted: HashMap::new(),
@@ -93,16 +132,26 @@ impl Catalog {
         self.write().published = commands;
     }
 
-    pub fn set_sessions(&self, sessions: Vec<String>, targets: HashMap<String, String>) {
-        let mut inner = self.write();
-        inner.sessions = sessions;
-        inner.session_targets = targets;
+    pub fn set_sessions(&self, sessions: Vec<SessionInfo>) {
+        self.write().sessions = sessions;
     }
 
-    /// The directory this client reads relative paths from, which is also the
-    /// project whose own `.agents/skills` counts.
-    /// The listings a completion asked for and does not have yet, as
-    /// `(target, directory)`; taking them is what stops a repeat ask.
+    /// The session a bare message goes to, as the sticky arguments name it.
+    pub fn set_message_session(&self, name: Option<&str>) {
+        self.write().message_session = name.map(str::to_string);
+    }
+
+    /// The home whose `skills/` is read, and the directory the server itself runs in.
+    pub fn set_roots(&self, home: &Path, server_cwd: &Path) {
+        let mut inner = self.write();
+        inner.home = home.to_path_buf();
+        if !server_cwd.as_os_str().is_empty() {
+            inner.server_cwd = server_cwd.to_path_buf();
+        }
+    }
+
+    /// The listings a completion wants, as `(target, directory)`; taking them
+    /// is what stops a repeat ask.
     pub fn take_wanted(&self) -> Vec<(String, String)> {
         let mut inner = self.write();
         let asked = std::mem::take(&mut inner.wanted);
@@ -153,18 +202,60 @@ impl Catalog {
         self.read().paths_version
     }
 
-    pub fn cwd(&self) -> PathBuf {
-        self.read().cwd.clone()
-    }
-
     /// The sticky arguments that exist, for the source the server names.
     pub fn set_sticky_names(&self, names: &[String]) {
         self.write().sticky_names = names.to_vec();
     }
 
-    /// The skills installed here, for the source the server names.
-    pub fn set_skill_names(&self, names: &[String]) {
-        self.write().skill_names = names.to_vec();
+    /// Where one input line's values are read, and which machine they are on.
+    ///
+    /// # Invariant
+    ///
+    /// Three answers, in this order: the machine `--target` names, then the machine
+    /// the line's session runs on, then this one. The directory is the session's own
+    /// when the line has one, and the server's otherwise. See
+    /// `docs/notes/cli-catalog.md`.
+    fn place(&self, words: &[String]) -> Place {
+        let inner = self.read();
+        let session = session_on_line(&inner, words);
+        let peer = named_machine(&inner, words).or_else(|| session.and_then(|s| s.target.clone()));
+        let dir = session
+            .map(|s| PathBuf::from(&s.cwd))
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .unwrap_or_else(|| inner.server_cwd.clone());
+        Place { dir, peer }
+    }
+
+    /// The skills a line can open, read where its session reads them.
+    ///
+    /// # Invariant
+    ///
+    /// Keyed by what the answer depends on, so a session that moves is read again
+    /// and no call site has to remember to ask. See `docs/notes/cli-catalog.md`.
+    fn skill_names(&self, place: &Place) -> Vec<String> {
+        // A peer's checkout is not here: the home's and the machine's are, and
+        // the server's own `@skill:` expansion reads those.
+        let key = SkillKey {
+            project: place.peer.is_none().then(|| place.dir.clone()),
+            home: self.read().home.clone(),
+        };
+        let cached = {
+            let inner = self.read();
+            inner
+                .skills
+                .as_ref()
+                .filter(|read| read.key == key)
+                .map(|read| read.names.clone())
+        };
+        if let Some(names) = cached {
+            return names;
+        }
+        let names = installed_skills(&key.home, key.project.as_deref());
+        self.write().skills = Some(Skills {
+            key,
+            names: names.clone(),
+        });
+        names
     }
 
     pub fn commands(&self) -> Vec<CommandSpec> {
@@ -233,13 +324,11 @@ impl Catalog {
 /// What a value may be completed against, snapshotted so no lock is held --
 /// except the listing cache, which is read on the one branch that needs it.
 struct Ctx<'a> {
-    sessions: &'a [String],
+    sessions: &'a [SessionInfo],
     sticky: &'a [String],
-    skills: &'a [String],
-    cwd: &'a Path,
+    /// Where this line reads: its session's directory, and that machine.
+    place: Place,
     all: &'a [CommandSpec],
-    /// The target names a config holds, as the catalog published them.
-    targets: &'a HashSet<String>,
     catalog: &'a Catalog,
 }
 
@@ -250,32 +339,33 @@ impl Completer for Catalog {
 
     fn complete(&self, line: &str, cursor: usize) -> Vec<Candidate> {
         let (_, _, token) = token_bounds(line, cursor);
-        let (all, sessions, sticky, skills, cwd, targets) = {
+        let (all, sessions, sticky) = {
             let inner = self.read();
             (
                 inner.published.clone(),
                 inner.sessions.clone(),
                 inner.sticky_names.clone(),
-                inner.skill_names.clone(),
-                inner.cwd.clone(),
-                inner.targets.clone(),
             )
+        };
+        // `/` starts a command; a message completes only its `@` references.
+        // See `docs/notes/cli-catalog.md`.
+        let brief = !line.trim_start().starts_with('/');
+        // A message is prose, and `--session` inside prose is a word of it.
+        let words: Vec<String> = if brief {
+            Vec::new()
+        } else {
+            shell_words::split(line).unwrap_or_default()
         };
         let ctx = Ctx {
             sessions: &sessions,
             sticky: &sticky,
-            skills: &skills,
-            cwd: &cwd,
+            place: self.place(&words),
             all: &all,
-            targets: &targets,
             catalog: self,
         };
-        // `/` starts a command; a message completes only its `@` references.
-        // See `docs/notes/cli-catalog.md`.
-        if !line.trim_start().starts_with('/') {
+        if brief {
             return reference(&ctx, line, cursor, &token);
         }
-        let words = shell_words::split(line).unwrap_or_default();
         let position = line[..cursor.min(line.len())].split_whitespace().count();
         let cmd = words.first().map(|t| t.trim_start_matches('/'));
         // The word the cursor is in is about to be replaced, so it is not
@@ -385,8 +475,18 @@ fn split_reference(token: &str) -> Option<(Reference, &str)> {
 /// Completes one reference's value.
 fn value(kind: Reference, typed: &str, ctx: &Ctx) -> Vec<Candidate> {
     match kind {
-        Reference::Skill => pick(ctx.skills.iter().map(String::as_str), typed, "skill"),
-        Reference::Image | Reference::File => paths(ctx.cwd, typed),
+        Reference::Skill => pick(
+            ctx.catalog
+                .skill_names(&ctx.place)
+                .iter()
+                .map(String::as_str),
+            typed,
+            "skill",
+        ),
+        Reference::Image | Reference::File => match &ctx.place.peer {
+            Some(target) => remote_paths(ctx, target, typed),
+            None => paths(&ctx.place.dir, typed),
+        },
     }
 }
 
@@ -401,9 +501,11 @@ fn resolve(
 ) -> Vec<Candidate> {
     match source {
         CompletionSource::None => Vec::new(),
-        CompletionSource::Sessions => {
-            pick(ctx.sessions.iter().map(String::as_str), token, "session")
-        }
+        CompletionSource::Sessions => pick(
+            ctx.sessions.iter().map(|s| s.name.as_str()),
+            token,
+            "session",
+        ),
         CompletionSource::Static(values) => pick(values.iter().map(String::as_str), token, "value"),
         CompletionSource::Arguments => {
             let mut names: Vec<&str> = ctx
@@ -415,15 +517,23 @@ fn resolve(
             names.dedup();
             pick(names.into_iter(), token, "argument")
         }
-        CompletionSource::Paths => match named_target(ctx, words) {
-            // The line runs on another machine, so its paths are that machine's.
-            Some(target) => remote_paths(ctx, &target, token),
-            None => paths(ctx.cwd, token),
+        // The line's session decides: its own directory here, a listing from the
+        // peer when its shells run elsewhere.
+        CompletionSource::Paths => match &ctx.place.peer {
+            Some(target) => remote_paths(ctx, target, token),
+            None => paths(&ctx.place.dir, token),
         },
         CompletionSource::StickyArguments => {
             pick(ctx.sticky.iter().map(String::as_str), token, "argument")
         }
-        CompletionSource::Skills => pick(ctx.skills.iter().map(String::as_str), token, "skill"),
+        CompletionSource::Skills => pick(
+            ctx.catalog
+                .skill_names(&ctx.place)
+                .iter()
+                .map(String::as_str),
+            token,
+            "skill",
+        ),
         CompletionSource::OfNamedArgument if depth < 2 => {
             let Some(named) = flag_value(words, "name") else {
                 return Vec::new();
@@ -464,23 +574,19 @@ fn resolve(
 /// turn every refresh into another peer round-trip, and the refresh into a loop.
 const REVALIDATE: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// The target this line belongs to, if it names one the config holds.
-///
-/// # Invariant
-///
-/// Two ways to name a machine, in this order: `--target` on the line, then the
-/// target of the `--session` the line names. The second is what makes a path
-/// complete on the machine it will be read on without the operator repeating
-/// `--target` for a session that already says where it is.
-fn named_target(ctx: &Ctx, words: &[String]) -> Option<String> {
-    if let Some(asked) = flag_value(words, "target") {
-        if ctx.targets.contains(asked) {
-            return Some(asked.to_string());
-        }
-    }
-    let session = flag_value(words, "session")?;
-    let recorded = ctx.catalog.read().session_targets.get(session).cloned()?;
-    ctx.targets.contains(&recorded).then_some(recorded)
+/// The session this line acts on: the one it names, else the one a bare message goes to.
+fn session_on_line<'a>(inner: &'a Inner, words: &[String]) -> Option<&'a SessionInfo> {
+    let name = match flag_value(words, "session") {
+        Some(named) => named,
+        None => inner.message_session.as_deref()?,
+    };
+    inner.sessions.iter().find(|s| s.name == name)
+}
+
+/// The machine `--target` names, when the config holds it.
+fn named_machine(inner: &Inner, words: &[String]) -> Option<String> {
+    let asked = flag_value(words, "target")?;
+    inner.targets.contains(asked).then(|| asked.to_string())
 }
 
 /// Completes `--cwd` against the filesystem of the machine the line names.
@@ -569,11 +675,11 @@ fn flag_value<'a>(words: &'a [String], flag: &str) -> Option<&'a str> {
     None
 }
 
-/// Lists the filesystem under `cwd`, keeping the directory part already typed; a
+/// Lists the filesystem under `base`, keeping the directory part already typed; a
 /// directory keeps its trailing `/`.
-fn paths(cwd: &Path, token: &str) -> Vec<Candidate> {
+fn paths(base: &Path, token: &str) -> Vec<Candidate> {
     let (typed_dir, prefix) = split_path_token(token);
-    let Ok(entries) = std::fs::read_dir(directory(cwd, &typed_dir)) else {
+    let Ok(entries) = std::fs::read_dir(directory(base, &typed_dir)) else {
         return Vec::new();
     };
     let mut out: Vec<Candidate> = entries
@@ -628,8 +734,8 @@ fn split_path_token(token: &str) -> (String, String) {
     }
 }
 
-/// The directory `typed` names, relative to the client's, with `~` expanded.
-fn directory(cwd: &Path, typed: &str) -> PathBuf {
+/// The directory `typed` names, relative to `base`, with `~` expanded.
+fn directory(base: &Path, typed: &str) -> PathBuf {
     let path = match typed.strip_prefix('~') {
         Some(rest) => match dirs::home_dir() {
             Some(home) => home.join(rest.trim_start_matches(['/', '\\'])),
@@ -640,6 +746,6 @@ fn directory(cwd: &Path, typed: &str) -> PathBuf {
     if path.is_absolute() {
         path
     } else {
-        cwd.join(path)
+        base.join(path)
     }
 }

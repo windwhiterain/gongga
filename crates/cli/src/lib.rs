@@ -28,7 +28,7 @@ use protocol::{
 };
 use tokio::net::UdpSocket;
 
-use crate::commands::{installed_skills, parse_args, render_args};
+use crate::commands::{parse_args, render_args};
 
 const DEFAULT_SERVER: &str = "127.0.0.1:9700";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -643,6 +643,9 @@ impl Client {
         let block_size = BlockSize::load(sticky.home());
         let shown = Shown::load(sticky.home());
         catalog.set_sticky_names(&sticky.names());
+        // Where relative values are read until a session says: this process's,
+        // which the greeting replaces with the server's.
+        catalog.set_roots(sticky.home(), &std::env::current_dir().unwrap_or_default());
         Self {
             catalog,
             sticky,
@@ -724,6 +727,10 @@ impl Client {
                 // away leaves the list here too.
                 self.set_sessions(sessions, sink);
                 self.catalog.set_commands(commands);
+                // Where a session with no directory of its own starts, and the
+                // directory a relative value is read from until one says.
+                self.catalog
+                    .set_roots(self.sticky.home(), Path::new(&server.cwd));
                 self.sync_sticky();
                 // A greeting *is* the recovery: it carries the catalog and
                 // sessions, so a redial comes up like a fresh client.
@@ -996,10 +1003,6 @@ impl Client {
         }
     }
 
-    fn session_names(&self) -> Vec<String> {
-        self.sessions.iter().map(|s| s.name.clone()).collect()
-    }
-
     /// Replaces the session list, telling the front-end what left it.
     ///
     /// # Invariant
@@ -1014,25 +1017,17 @@ impl Client {
                 sink.forget(&old.name);
             }
         }
-        // Which machine each one is on, so a value completed for it belongs to
-        // that machine rather than to this one.
-        let targets: std::collections::HashMap<String, String> = sessions
-            .iter()
-            .filter_map(|info| Some((info.name.clone(), info.target.clone()?)))
-            .collect();
+        // As published: a value completed for a session belongs to that
+        // session's directory and machine.
+        self.catalog.set_sessions(sessions.clone());
         self.sessions = sessions;
-        self.catalog.set_sessions(self.session_names(), targets);
     }
 
     /// Keeps the completer's state-backed sources in step: the sticky names, and
-    /// the skills this home can open.
+    /// the session a bare message goes to.
     pub fn sync_sticky(&self) {
         self.catalog.set_sticky_names(&self.sticky.names());
-        // The client's own directory: a project's `.agents/skills` is written
-        // beside the code it applies to.
-        let cwd = self.catalog.cwd();
-        self.catalog
-            .set_skill_names(&installed_skills(self.sticky.home(), &cwd));
+        self.catalog.set_message_session(self.sticky.get("session"));
     }
 
     /// The status line: server facts only, never a "current session".

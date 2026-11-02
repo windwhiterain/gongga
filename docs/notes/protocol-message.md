@@ -66,7 +66,9 @@ This is what a command takes when its value *is* an argument name, such as
 
 ## CompletionSource::Paths
 
-For arguments that take a path rather than a word.
+For arguments that take a path rather than a word. The directory is the addressed
+session's, not the client's: the server resolves the value in that session, and the
+client is one process that may be standing anywhere.
 
 ## CompletionSource::OfNamedArgument
 
@@ -162,7 +164,9 @@ model would say whose account a step draws on but not what answered. `Quota` is 
 the provider stands alone, because an allowance belongs to the account, not to the
 model.
 
-`cwd` was already here; it is part of the same title.
+`cwd` was already here; it is part of the same title. It is where the session's own
+shell says it is, not where the session was placed, because a tool reads that
+directory and a front-end completing a value has to read the same one.
 
 ## Quota
 

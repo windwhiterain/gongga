@@ -51,7 +51,8 @@ panic.
 `--cwd` on a remote session is a path on that machine, so offering this one's
 filesystem is not a hint — it is a wrong answer the operator cannot tell from a
 right one. The source therefore follows the line: a value after `--target` that
-the config holds sends it to the target, and no value keeps it here.
+the config holds sends it to the target, then the machine the line's session runs
+on decides, and only a line with neither reads here.
 
 The split that makes this possible is the one completion already lives by. The
 server publishes the names a config holds as the target argument's `Static`
@@ -60,7 +61,11 @@ the names are never in two places. It also means "which machine?" is answered by
 the same data the popup offers.
 
 A line names its machine in two ways, in this order: `--target`, and then the
-target of the `--session` it names. The second exists because of a measured
+target of the `--session` it names -- or, when it names none, the target of the
+session the sticky arguments send its message to. The directory travels with the
+machine: `--cwd sub` on a session standing in `C:/work` is completed under
+`C:/work`, which is also where the server reads it
+(`session::stated_directory`). The second exists because of a measured
 failure: completing `--cwd` on a session already running on a peer, with no
 `--target` on the line, offered **this** machine's directories -- and typing an
 absolute peer path then looked like "absolute paths are not supported", since

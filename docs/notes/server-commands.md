@@ -66,11 +66,35 @@ the provider alone: the balance row already says whose account is being spent, a
 title that repeated it without saying which model answered would be the narrower fact
 twice.
 
+`cwd` is the live one when the session has a shell, and the row only when it has
+none. The row is where the session was *placed*; the shell's own directory is where
+every tool reads -- `index_skill`, `@skill:`, `@file:` all resolve against it -- so a
+row that said the placement while the shell had `cd`-ed elsewhere would let a
+front-end complete a name from one directory and send it to another. That is exactly
+the bug the client was fixed for: its skills came from the window's launch directory,
+because the published `cwd` was the only directory it had and the row's own answer was
+the placement rather than the truth.
+
 `thinking_effort` is the exception: it is reported as the row has it, because
 `set_session` is where a model's roster default becomes a stored level. Filling it in
 here as well made the title claim a level the request never carried -- the title said
 `thinking high` for every session nobody had given one, while `build_head` sent no
 `reasoning` object at all. See `LEVEL_IN_FORCE` below.
+
+## set_session — a stated directory
+
+`--cwd` is resolved to one path before anything is compared or moved:
+`session::stated_directory` expands a leading `~` and reads a relative path from a
+base. Which base is the whole distinction: a move that keeps the session on this
+machine reads it from the session's own directory (the shell that would resolve it is
+standing there), a move that brings it to this machine from a peer reads it from the
+server's, and a move to a peer leaves it exactly as written -- only the peer can expand
+it, and the endpoint canonicalises it anyway.
+
+Resolving before comparing is what keeps `--cwd sub` from tearing down every shell of
+a session already standing in `<its dir>/sub`. Resolving before storing is what keeps
+the row meaningful later: it is handed to a shell at the next start, and a relative
+path there would mean wherever that shell happened to be.
 
 ## LEVEL_IN_FORCE
 

@@ -459,6 +459,8 @@ pub struct SessionInfo {
     pub created_at: i64,
     pub updated_at: i64,
     pub messages: u64,
+    /// Its own shell's directory: a value completed for it is read from where a
+    /// tool reads. Never the server's.
     pub cwd: String,
     /// The last measurement, so a window attached now draws it without a turn.
     #[serde(default)]
@@ -737,7 +739,7 @@ pub enum CompletionSource {
     /// Complete against every argument name; for values that *are* a name.
     /// See `docs/notes/protocol-message.md`.
     Arguments,
-    /// Complete against the filesystem, relative to the client's cwd.
+    /// Complete against a directory of the session the line names.
     /// See `docs/notes/protocol-message.md`.
     Paths,
     /// Complete this value the way the argument named by `--name` would be.
@@ -750,12 +752,13 @@ pub enum CompletionSource {
     /// Client state stays client-side: the server names the source, the client
     /// fills it in, so publishing a client command needs no knowledge of it.
     StickyArguments,
-    /// Complete against the skills installed on this machine.
+    /// Complete against the skills the line's session can open.
     ///
     /// # Invariant
     ///
-    /// The names are read where the server reads them -- the home's `skills/`
-    /// and the machine's -- so what a reader completes is what can be opened.
+    /// The names are read where the server reads them -- the session's own
+    /// `.agents/skills`, the home's `skills/` and the machine's -- so what a
+    /// reader completes is what can be opened there.
     Skills,
 }
 

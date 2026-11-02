@@ -119,6 +119,23 @@ Staleness is not the cost of a race: the mirror is written by the same statement
 that sets `cwd`, from code that already holds the shell's lock, so a reader sees
 the last *reported* directory -- the newest value that exists.
 
+## stated_directory
+
+What `--cwd` means once resolved: absolute, `~` expanded, and a relative path read
+from `base`. Both ends of it matter.
+
+The row is what a later start hands to a shell, so a path stored as typed would move
+with wherever that shell happened to be; `std::path::absolute` is enough because it is
+lexical -- `canonicalize` would refuse a directory that does not exist yet, and a
+`--cwd` naming one is a move the endpoint is allowed to refuse, not a reason to fail
+earlier here.
+
+`base` is the caller's statement of where the operator was speaking from: the
+session's own directory for a move on this machine, the server's for a session being
+created, and nothing at all for a peer -- its path is expanded by the machine that
+owns it. The completer reads the same base, so a completed `sub/` inserts a word that
+means the same directory at both ends. See `docs/notes/cli-complete.md`.
+
 ## ShellSet::reported
 
 The cell belongs to whichever shell is currently named `default`, which is what

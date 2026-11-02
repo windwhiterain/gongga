@@ -17,10 +17,41 @@ Values complete from whatever the spec says can be enumerated -- the live
 session list, a fixed set, every argument name, the filesystem, client state, or
 another argument's list when the value is a name that chooses one.
 
-## Inner::cwd
+## Inner::sessions, message_session, server_cwd
 
-The client's own directory, because that is the one the user was looking at when
-they typed.
+Three fields, one question: *which directory does this line read?* The answer is
+the addressed session's own, and the other two are the cases where there is no
+session to ask.
+
+`SessionInfo` carries `cwd` and `target`, so the catalog keeps the sessions as
+published rather than as names plus a side map. `message_session` is the sticky
+`session` value: a message is addressed by it, and a message is where an
+`@skill:` reference is typed. `server_cwd` is the directory the server runs in,
+which is where a session with no directory of its own starts.
+
+The client's own process directory is deliberately *not* the fallback any more.
+It used to be, and it is where the bug came from: a window launched from `C:/`
+offered `C:/.agents/skills` for a session working in a checkout, while the
+server's own `index_skill` read the checkout's. Two directories that agree only
+by luck is not a contract. `server_cwd` is the datum that makes them agree, and
+it arrives in the greeting's `ServerInfo`, which already existed.
+
+## place
+
+Resolved once per completion, before the popup looks at any value: the machine
+`--target` names, then the machine the line's session runs on, then this one --
+and the directory, which is the session's when the line has one. A message names
+no session on the line, which is why `words` is empty for one: prose containing
+`--session` is prose, and the session it goes to is the sticky one.
+
+## skill_names
+
+Computed lazily against `SkillKey` -- the session's directory and the home --
+rather than pushed in from a setter. The old shape was a `set_skill_names` call
+from `sync_sticky`, which meant the list was right only at the call sites that
+remembered to run it; a session that moved, or a window that switched its sticky
+session, left a list that no longer described anything. A cache keyed by what the
+answer depends on cannot go stale without being asked again.
 
 ## Ctx
 
@@ -103,8 +134,9 @@ so Tab twice walks down a tree instead of starting a new word.
 
 ## directory
 
-Read relative to the client's directory; `~` is expanded because `--cwd ~/work`
-is how people write it.
+Read relative to the base `place` chose -- the session's own directory, or the
+server's -- never relative to this process; `~` is expanded because
+`--cwd ~/work` is how people write it.
 
 ## client_specs
 
