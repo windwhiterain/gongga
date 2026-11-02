@@ -4,7 +4,7 @@ _Post Modern Agent Harness_
 
 ## Features
 
-- Powerful prefix cache optimization argirithm (tree search). 
+- Powerful prefix cache planning argirithm. 
 - Everything is skill, even compact context, spawn subagent, read_image.
   - Skills give scripts, so agents can nest, chain them arbiarily.
 - Agents can do whatever user can do to the harness even where themself live.

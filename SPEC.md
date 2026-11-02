@@ -28,13 +28,15 @@ standard OpenAI Response API.
 
 ## Tool
 use `which("bash")` as bash.
-- bash{command, name = "default", task = "default", background = false, detached = false}:
+- bash{command, name = "default", description = "", background = false, detached = false}:
   runs in the persistent shell `name`, or starts a detached bash of that name.
   - key = {session_name, bash_name}.
   - background bash ended will notice its session.
 - list_bash{name_regex}: list matched bash with the caller session's name in key.
 - check_bash{name = "default"}: return bash's output that hasn't been read by the caller session.
 - del_bash{name_regex}: delete matched bash with the caller sessions' name in key. 
+- a tool call carries at most one `description`: what the call is for, in the model's words,
+  read right after the tool's name.
 
 ## Server State
 everything in database (sqlite) under a home directory, structured for agentic retrieval/mutation.
@@ -83,7 +85,7 @@ for the first user message to a empty session, find all meta references recursiv
       |abstract{
         symbol (colored), content (gray),
         |reasoning{beginning (line), ending (line)} (vertical)
-        |toolcall{tool_name, {name, task, backgound, detached, timeout} (bash) | ...} (line)
+        |toolcall{tool_name·description, {name, background, detached, timeout} (bash) | ...} (line)
         |tool_result{ok, time (spent)} (line)
       } (horizontal, 点击展开, block_size, scroll if block_size!=0)
       |output (colored markdown): a table is laid out in the events width, its
