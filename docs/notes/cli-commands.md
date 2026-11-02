@@ -63,9 +63,11 @@ where it was.
 
 `--box_edge` is the columns an opened item leaves to its window on each side, and it
 exists because of what the wheel does *not* do any more: a box keeps the wheel wherever
-the pointer lands on it, so a margin is how the window under a box is reached. `0` is a
-box drawn edge to edge, which is right for a narrow pane and wrong for a tall box that
-covers one.
+the pointer lands on it, so a margin is how the window under a box is reached. It starts
+at `protocol::DEFAULT_BOX_EDGE` (2), because a default of `0` left a box with exactly one
+column of the window outside it -- the spare one the log never draws in, on the right --
+so the wheel over an opened item scrolled the window on one side only. `0` is still a
+setting: a box drawn edge to edge is right for a narrow pane.
 
 It is one number, not a mode list. The setting it replaces (`set_event_detail
 --mode all|line`) had to name a *kind* of behaviour per mode, and the two names

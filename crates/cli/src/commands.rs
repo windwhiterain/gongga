@@ -52,9 +52,16 @@ impl BlockSize {
 /// # Invariant
 ///
 /// A width, never a mode: `0` is a box that touches both edges of its window, and
-/// every other number is a column on the left and the same column on the right.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// every other number is that many columns on the left and as many on the right.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BoxEdge(pub usize);
+
+impl Default for BoxEdge {
+    /// SPEC's starting margin: a box drawn edge to edge leaves nothing to grab.
+    fn default() -> Self {
+        Self(protocol::DEFAULT_BOX_EDGE)
+    }
+}
 
 impl BoxEdge {
     /// A width, or the way to name one.
@@ -69,7 +76,7 @@ impl BoxEdge {
         }
     }
 
-    /// Loads `home/cli.toml`; a missing or unreadable file leaves no margin.
+    /// Loads `home/cli.toml`; a missing or unreadable file is the default margin.
     pub fn load(home: &Path) -> Self {
         read_file(&home.join("cli.toml"))
             .box_edge

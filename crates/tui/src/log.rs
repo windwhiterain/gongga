@@ -17,6 +17,7 @@ use ratatui::text::{Line, Span};
 use crate::LineKind;
 use crate::cache::{Cache, Record};
 use crate::markdown;
+use cli::protocol;
 
 /// One block: a line that may still be growing, plus its rows.
 ///
@@ -884,7 +885,7 @@ impl Log {
             views: HashMap::new(),
             open: HashMap::new(),
             block_size: 0,
-            edge: 0,
+            edge: protocol::DEFAULT_BOX_EDGE,
             // Nothing is ever written: a log built with no front-end in mind does
             // not invent a directory.
             cache: Cache::none(),

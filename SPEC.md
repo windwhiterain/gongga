@@ -139,7 +139,7 @@ for the first user message to a empty session, find all meta references recursiv
 - client:
   - `set_sticky --name <name> --value <value>`:
   - `del_sticky --name <name>`
-  - `set_render [--block_size <n>](initial: 8) [--box_edge <n>](initial: 0)`:
+  - `set_render [--block_size <n>](initial: 8) [--box_edge <n>](initial: 2)`:
     - `block_size`: max line count of non-output block, auto scroll.
     - `box_edge`: columns an opened block leaves to the events on each side; those
       columns, like its rules, scroll the events.
@@ -173,6 +173,13 @@ resolved silently.
 one reading of the roots, their order and the frontmatter: `skill`, used by the server's
 table and `@skill:` expansion, by the command layer's completion, and by the entry runner.
 A second walk is a second answer to "which file does this name open".
+
+## Git Managed Config
+### Ship: Reconcile
+remote merge to local, conflict use local change, lefting unsolved.
+### Community: Rebase
+personal change always rebase on official.
+
 
 ## Skill: Self Control
 do whatever user can do to the server.

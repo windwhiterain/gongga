@@ -553,9 +553,12 @@ pub struct CommandSpec {
 /// Any number is accepted; this is the set worth offering, not the set allowed.
 pub const BLOCK_SIZES: &[&str] = &["0", "1", "2", "3", "5"];
 
+/// SPEC's starting margin: the columns a box leaves to its pane on each side.
+pub const DEFAULT_BOX_EDGE: usize = 2;
+
 /// The widths `set_render --box_edge` offers: how much of a window's width each
 /// side of a box gives back to the pane.
-pub const BOX_EDGES: &[&str] = &["0", "1", "2", "3"];
+pub const BOX_EDGES: &[&str] = &["2", "0", "1", "3"];
 
 /// The values `set_render_session --show` takes.
 pub const SHOW_VALUES: &[&str] = &["true", "false"];

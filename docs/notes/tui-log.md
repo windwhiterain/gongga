@@ -378,7 +378,9 @@ item no longer hands the wheel to the pane at the end of its travel, a pointer t
 over a box covering the window has no way to scroll the window at all. A margin is that
 way, and it is a *width the operator sets* rather than a constant in this crate: `0` is
 a box drawn edge to edge, and every other number is a strip on each side of a box whose
-wheel is the pane's.
+wheel is the pane's. Its starting value is `protocol::DEFAULT_BOX_EDGE` (2): at `0` the
+only column of the window outside a box is the spare one the log never draws in, on the
+right, so the wheel appeared to scroll the window on one side only.
 
 It is the same number in two places, which is why it lives in one: the box is laid out
 at the window's width less twice the margin (`Log::inner_width`), and the renderer draws

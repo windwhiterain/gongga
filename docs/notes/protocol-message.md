@@ -268,9 +268,9 @@ to name a behaviour, and its two names differed only by whether a block folded.
 ## BOX_EDGES
 
 `--box_edge` is a width in columns, so this list is what a Tab offers and not what is
-allowed -- the same reasoning as `BLOCK_SIZES`, and the same `0` first: no margin is a
-box drawn edge to edge, which is a shape an operator picks on purpose rather than the
-absence of a setting.
+allowed -- the same reasoning as `BLOCK_SIZES`. The starting value comes first, which is
+`DEFAULT_BOX_EDGE` and not `0`: a box drawn edge to edge leaves a window with nothing to
+grab under it, and `0` is a shape an operator picks rather than the absence of one.
 
 ## `supervisor`
 
