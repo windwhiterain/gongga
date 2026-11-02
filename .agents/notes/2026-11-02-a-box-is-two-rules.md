@@ -120,3 +120,19 @@ opened block never hands its scroll out, and its rules and margin are the events
 announces it in its greeting: the window validates `/set_render --box_edge` against
 what that server said, so an old server answers `set_render has no argument
 --box_edge`. Hence the evolve after this commit.
+
+## The margin's default: 2, not 0
+
+The operator reported that only the right side of an opened block reached the window.
+Both halves were true at once, and they explain each other: `--box_edge` started at `0`,
+and the log is drawn one column short of its pane (so a full-width row cannot wrap), so
+at `0` the only column of the window outside a box was that *spare* column, on the right:
+
+    box_edge 0   body row  BBBBBB…BBBBp        one column of window, right end only
+    box_edge 2   body row  ……ppBBBB…BBBppp     two on each side
+
+So the starting value is now `protocol::DEFAULT_BOX_EDGE` = 2 (SPEC says `initial: 2`),
+used by both the client's `BoxEdge::default` and the log's own default; `BOX_EDGES`
+offers it first. Mapping all 100 columns of a pane to what one notch moves, at the
+default / `0` / an explicit `2`, on a body row and on a rule row, is how the table above
+was produced.
