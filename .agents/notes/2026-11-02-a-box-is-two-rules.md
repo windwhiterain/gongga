@@ -136,3 +136,28 @@ used by both the client's `BoxEdge::default` and the log's own default; `BOX_EDG
 offers it first. Mapping all 100 columns of a pane to what one notch moves, at the
 default / `0` / an explicit `2`, on a body row and on a rule row, is how the table above
 was produced.
+
+## The edge is a region, not a hole
+
+Next correction from the operator, and the sharper one: "I asked you to make the edge
+scroll the outer window, I did not ask you to render nothing on the edge."
+
+`box_edge` had been built as a *layout*: every box laid out `2 * edge` columns narrower,
+its rules stopping short of the window's ends, and the taken columns left blank. That is
+one reading of "leaves to the events", and it is the wrong one. What was asked for is a
+*region*: the box is drawn exactly as wide as the window (rules to both ends, body from
+the left edge), and its outermost `box_edge` columns merely answer the wheel as the
+window's.
+
+So the layout half is deleted again -- `block_width`, `Log::inner_width`, `Ledger::edge`,
+the extra argument through `materialize`/`whole`, and the leading blank span in
+`ruled_row`. `box_margin` has exactly one caller (`log::hit`), and `set_box_edge` lays
+nothing out because nothing about the box changes shape. `Log::box_edge` went too: no
+reader left.
+
+Measured on a 100-column frame: rule to the right end, body at the left edge, at
+`box_edge` 0 / 2 / unset; `box_at` answers the box for columns 2..96 and the window for
+0..1 and 97..99.
+
+The rule worth keeping: **a setting that changes who owns a cell changes no geometry.**
+Three of the last four bugs here came from one number being allowed to mean both.
