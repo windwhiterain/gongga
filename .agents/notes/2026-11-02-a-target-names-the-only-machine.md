@@ -45,9 +45,14 @@ the directory and says which tool is which:
     machine's shell; `bash` is this one's.
 
 Two templates, not one with a clause: `substitute` has no conditionals, and a session on
-this machine must keep the bytes it has already sent (its prefix stays warm). The name
-comes from `Shells::remote_name` -- the same field `target` is answered with, so the
-card cannot describe a machine the shells are not on -- and the prompt row records it
+this machine must keep the bytes it has already sent (its prefix stays warm). A third,
+`dynamic_tail_remote_unstated`, is the peer with no directory named -- and that is the
+documented default (`--cwd` belongs to the peer), so without it a remote session's first
+card would have read "in ``" for its whole life: a first card is the one a session keeps,
+and the shell reporting where it started is not a move.
+
+The name comes from `Shells::remote_name` -- the same field `target` is answered with, so
+the card cannot describe a machine the shells are not on -- and the prompt row records it
 (`Prompt.remote`), because the template *choice* is a fact that has to be compared to
 notice a move: `--remote none` in the directory the session left changes nothing else.
 
@@ -63,10 +68,12 @@ notice a move: `--remote none` in the directory the session left changes nothing
 
 ## How it was verified
 
-- `cargo build --workspace` clean.
-- `scripts/remote_selftest.sh` (real server, real peer, stand-in model): PASS.
-- The card, by hand: a session moved onto the peer, its next request's first input item
-  names the peer; moved home again with the same directory, and the new row says it does
-  not.
-- `remote_bash` with `target` set to its own peer runs; set to another configured name
-  it refuses, and says `set_session --remote`.
+- `cargo build --workspace` clean; `cargo clippy -p gongga-server` adds no warning (the
+  `prompt_in_force` signature takes the session, so it did not grow an argument).
+- `scripts/remote_selftest.sh` (real server, real peer, stand-in model): PASS, 13 checks.
+- The card, from real requests: both remote shapes appear in the stand-in's dump, and a
+  session on this machine keeps `dynamic_tail` byte for byte.
+- `target`, on a real server and the real peer, one turn per call: its own peer ran
+  (`/c/Users/Admin`); a second configured peer named `ghost` was refused in 0ms -- the
+  refusal needs no connection, so an unreachable peer costs nothing to say no to.
+- `.dev/verify/1793c93-remote-target.json` holds the commands and what came back.
