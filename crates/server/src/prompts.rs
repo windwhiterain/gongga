@@ -15,6 +15,18 @@ use std::time::SystemTime;
 /// re-sends as before, rather than refusing to start over prose it may never need.
 pub const REVISION: &str = "reference_revision";
 
+/// The start card: what the session is, where it stands, and when. Stamped once.
+pub const TAIL: &str = "dynamic_tail";
+
+/// The same card when the session's workspace is on a peer.
+///
+/// # Invariant
+///
+/// A second template, not a conditional inside the first: a session on this machine
+/// keeps the bytes it has already sent, and a prompt with two shapes is two templates
+/// named by the code. See `docs/notes/server-prompts.md`.
+pub const TAIL_REMOTE: &str = "dynamic_tail_remote";
+
 /// The system instructions: the prose, with the session's own name in it.
 ///
 /// # Invariant
@@ -42,6 +54,7 @@ pub const REQUIRED: &[&str] = &[
     "image_refusal",
     "reference_index",
     "dynamic_tail",
+    "dynamic_tail_remote",
     "output_cap",
     "output_omitted",
 ];

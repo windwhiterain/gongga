@@ -419,7 +419,10 @@ impl RemoteShell {
         _notify: Option<crate::tools::bash::BackgroundNotifier>,
     ) -> anyhow::Result<u64> {
         anyhow::bail!(
-            "`background` is not available on a remote endpoint in this build: the job's              output and completion are watched this machine's way, and the shell is not on              this machine. Run it in the foreground, or start it with a `&` and a log file              on the endpoint."
+            "`background` is not available on a remote endpoint: the job's output and its \
+             completion are watched this machine's way, and the shell is not on this \
+             machine. Run it in the foreground, or start it with a `&` and a log file on \
+             the endpoint."
         )
     }
 

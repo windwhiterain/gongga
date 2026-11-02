@@ -61,22 +61,33 @@ impl Machine {
 /// own default directory.
 pub struct Shells {
     local: Arc<Mutex<ShellSet>>,
-    remote: Option<Arc<Mutex<ShellSet>>>,
+    /// The peer this session's directory is on, with the name it is known by.
+    ///
+    /// # Invariant
+    ///
+    /// The name travels with the set, never beside it: what the prompt's card says
+    /// and what `remote_bash`'s `target` is answered with are one fact, and a second
+    /// copy of it is a second answer waiting to disagree.
+    remote: Option<Peer>,
+}
+
+/// One peer: its shells, and the name the machine's own file gave it.
+struct Peer {
+    name: String,
+    set: Arc<Mutex<ShellSet>>,
 }
 
 impl Shells {
-    pub fn new(local: ShellSet, remote: Option<ShellSet>) -> Self {
-        Self {
-            local: Arc::new(Mutex::new(local)),
-            remote: remote.map(|set| Arc::new(Mutex::new(set))),
-        }
+    /// The name of the peer this session's directory is on, when it is one.
+    pub fn remote_name(&self) -> Option<&str> {
+        self.remote.as_ref().map(|peer| peer.name.as_str())
     }
 
     /// The set one machine's shells live in, when the session has that machine.
     fn set(&self, machine: Machine) -> Option<&Arc<Mutex<ShellSet>>> {
         match machine {
             Machine::Local => Some(&self.local),
-            Machine::Remote => self.remote.as_ref(),
+            Machine::Remote => self.remote.as_ref().map(|peer| &peer.set),
         }
     }
 
@@ -268,7 +279,7 @@ impl Shells {
     /// in the session's own directory.
     pub fn of(
         local: Endpoint,
-        remote: Option<Endpoint>,
+        remote: Option<crate::remotes::RemoteConfig>,
         cwd: Option<PathBuf>,
         env: Vec<(String, String)>,
     ) -> anyhow::Result<Self> {
@@ -279,26 +290,33 @@ impl Shells {
             (None, None) => local_cwd()?,
         };
         let mut here_set = ShellSet::new(local, here, env.clone());
-        let mut there_set = match remote {
-            Some(endpoint) => Some(ShellSet::new(endpoint, cwd, env)),
+        let there = match remote {
+            Some(peer) => {
+                let set = Arc::new(Mutex::new(ShellSet::new(peer.endpoint, cwd, env)));
+                // `default` is the directory-owning machine's, and exists before any tool.
+                set.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(DEFAULT_BASH)?;
+                Some(Peer {
+                    name: peer.name,
+                    set,
+                })
+            }
             None => None,
         };
-        // `default` is the directory-owning machine's, and exists before any tool.
-        match there_set.as_mut() {
-            Some(set) => {
-                set.get(DEFAULT_BASH)?;
-            }
-            None => {
-                here_set.get(DEFAULT_BASH)?;
-            }
+        if there.is_none() {
+            here_set.get(DEFAULT_BASH)?;
         }
-        Ok(Self::new(here_set, there_set))
+        Ok(Self {
+            local: Arc::new(Mutex::new(here_set)),
+            remote: there,
+        })
     }
 
     /// The other machine, when the session has one.
     fn other(&self, machine: Machine) -> Option<&Arc<Mutex<ShellSet>>> {
         match machine {
-            Machine::Local => self.remote.as_ref(),
+            Machine::Local => self.remote.as_ref().map(|peer| &peer.set),
             Machine::Remote => Some(&self.local),
         }
     }
@@ -529,7 +547,7 @@ impl SessionHandle {
     pub async fn relocate(
         &self,
         local: Endpoint,
-        remote: Option<Endpoint>,
+        remote: Option<crate::remotes::RemoteConfig>,
         cwd: Option<PathBuf>,
         env: Vec<(String, String)>,
     ) -> anyhow::Result<MoveReport> {
@@ -779,6 +797,20 @@ impl SessionHandle {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .owner()
+    }
+
+    /// The peer this session's directory is on, when it is not this machine.
+    ///
+    /// # Invariant
+    ///
+    /// Read from the live shells, not from the row: the row is what a restart hands
+    /// back, and a move swaps the shells under the lock every tool reads them through.
+    pub fn remote_name(&self) -> Option<String> {
+        self.shells()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remote_name()
+            .map(str::to_string)
     }
 
     /// Whether this session's shells run somewhere other than this machine.
@@ -1176,6 +1208,27 @@ impl SessionManager {
     ///
     /// An unknown name is refused here: a session that asked for a peer must never
     /// quietly get a local shell instead. See `docs/notes/server-remote.md`.
+    /// The peer a name identifies, as the machine's own file spelled it.
+    ///
+    /// # Invariant
+    ///
+    /// The name travels with the endpoint: what the card says, what `target` is
+    /// answered with and where the shells run are one fact. A name for this machine
+    /// (`none`, or nothing) is `None` -- never a peer called "none".
+    pub fn peer(
+        &self,
+        remote: Option<&str>,
+    ) -> anyhow::Result<Option<crate::remotes::RemoteConfig>> {
+        let Some(name) = remote.map(str::trim).filter(|n| !n.is_empty()) else {
+            return Ok(None);
+        };
+        let endpoint = self.endpoint_for(Some(name))?;
+        Ok(endpoint.is_remote().then(|| crate::remotes::RemoteConfig {
+            name: name.to_string(),
+            endpoint,
+        }))
+    }
+
     pub fn endpoint_for(&self, remote: Option<&str>) -> anyhow::Result<Endpoint> {
         let Some(name) = remote.map(str::trim).filter(|n| !n.is_empty()) else {
             return Ok(self.local_endpoint()?);
@@ -1286,10 +1339,7 @@ impl SessionManager {
         session: &SessionHandle,
         request: &MoveRequest,
     ) -> anyhow::Result<MoveReport> {
-        let remote = match request.remote.as_deref() {
-            Some(name) => Some(self.endpoint_for(Some(name))?),
-            None => None,
-        };
+        let remote = self.peer(request.remote.as_deref())?;
         let single_cwd = remote.is_none();
         let wanted = match (request.cwd.as_deref(), single_cwd) {
             // The row is handed to a shell later, and a relative path there would
@@ -1357,10 +1407,7 @@ impl SessionManager {
         }
         // The row's own spelling, kept for the placement below: `row.cwd` moves on.
         let row_cwd = row.cwd.clone();
-        let remote = match row.remote.as_deref() {
-            Some(name) => Some(self.endpoint_for(Some(name))?),
-            None => None,
-        };
+        let remote = self.peer(row.remote.as_deref())?;
         let cwd = (!row.cwd.trim().is_empty()).then(|| PathBuf::from(&row.cwd));
         // The endpoint judges its own directory: this filesystem would answer wrongly.
         let cwd = match (&remote, cwd) {

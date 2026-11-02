@@ -421,13 +421,19 @@ impl Agent {
     /// See `docs/notes/server-agent.md`.
     async fn prompt_in_force(
         &self,
+        session: &SessionHandle,
         id: i64,
-        name: &str,
         model: &str,
         cwd: &std::path::Path,
-        placed: Option<&std::path::Path>,
         source: crate::meta::Source<'_>,
     ) -> anyhow::Result<crate::store::Prompt> {
+        // All three "where"s come from the session itself: the name, the placement a
+        // move stated, and the peer whose shells are there now.
+        let name = session.name();
+        let placed = session.placed();
+        let placed = placed.as_deref();
+        let remote = session.remote_name();
+        let remote = remote.as_deref();
         let stored = self.store.prompt(id)?;
         let prompts = crate::prompts::shared();
         // The session's own name is the one value in the prose: a model asked what it
@@ -445,20 +451,28 @@ impl Agent {
             },
         };
         let home = std::path::PathBuf::from(&here);
-        let moved = stored
-            .as_ref()
-            .is_some_and(|kept| kept.cwd != here && !kept.cwd.is_empty());
+        // Where it stands is two facts, and either one moving is a move: a directory
+        // on this machine and the same spelling on a peer are not the same workspace.
+        let moved = stored.as_ref().is_some_and(|kept| {
+            (!kept.cwd.is_empty() && kept.cwd != here) || kept.remote.as_deref() != remote
+        });
         let tail = match &stored {
             // A moved session is a new row, and the card says where it now stands: the
             // old row keeps the old one, which is what "already sent" means.
             Some(kept) if !moved => kept.tail.clone(),
             _ => Some(prompts.render(
-                "dynamic_tail",
+                // Two shapes, two templates: a card that told every session about a
+                // peer would be wrong for every session that has none.
+                match remote {
+                    Some(_) => crate::prompts::TAIL_REMOTE,
+                    None => crate::prompts::TAIL,
+                },
                 &[
                     ("session", name),
                     ("build", protocol::BUILD),
                     ("now", &crate::clock::now()),
                     ("cwd", &here),
+                    ("remote", remote.unwrap_or_default()),
                 ],
             )),
         };
@@ -478,6 +492,7 @@ impl Agent {
             // Where the request said the shell stood, which is the stored row's
             // answer once there is one: a later move is not a rewrite.
             cwd: here.clone(),
+            remote: remote.map(str::to_string),
         };
         // Only the texts that go on the wire are compared; `cwd` is a record.
         if let Some(kept) = stored
@@ -688,14 +703,7 @@ impl Agent {
             (_, crate::session::Machine::Local) => crate::meta::Source::Local,
         };
         let prompt = self
-            .prompt_in_force(
-                id,
-                &name,
-                llm.model(),
-                cwd,
-                session.placed().as_deref(),
-                source,
-            )
+            .prompt_in_force(session, id, llm.model(), cwd, source)
             .await?;
         phases.prompt_ms = phase_started.elapsed().as_millis() as u64;
         // Pinned here, so every retry of this request replays the window that was
@@ -1128,6 +1136,7 @@ impl Agent {
             pythons: session.pythons(),
             reader: session.reader(),
             machine,
+            remote: session.remote_name(),
             detached: self.detached.clone(),
             events: Some(tx),
             cancel: cancel.clone(),

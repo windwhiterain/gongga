@@ -57,6 +57,14 @@ pub struct ToolContext {
     /// this field; this is where the *session* stands, which is what reads a path a
     /// message names. Nothing infers a machine from how a path is spelled.
     pub machine: Machine,
+    /// The peer that machine is, when it is one.
+    ///
+    /// # Invariant
+    ///
+    /// `None` is this machine. A tool that takes a target resolves it against this
+    /// and nothing else: a session's workspace is on one peer, so no other name can
+    /// be where it stands.
+    pub remote: Option<String>,
     /// Detached jobs, keyed by session; they outlive their shell, their session and the server.
     pub detached: DetachedRegistry,
     /// Streaming sink for `tool_answer` events.
@@ -655,11 +663,13 @@ const LOCAL_BASH_DESCRIPTION: &str = "Run a shell command in a persistent Git Ba
 
 /// What `remote_bash` says it is: the same thing, on the session's remote endpoint.
 const REMOTE_BASH_DESCRIPTION: &str = "Run a shell command in a persistent shell on this \
-     session's remote endpoint -- the machine `--remote` named, over SSH. Same `name`, \
-     `description`, `background` and `timeout_ms` as `bash`, and the same name space: `default` \
-     is the remote's when the session's directory is there, and a name the other machine \
-     already holds is refused. `cd`, exports and shell functions survive between calls \
-     because it is one process on that machine. `background` and `detached` are refused \
+     session's remote endpoint -- the machine `set_session --remote` named, over SSH, and \
+     where this session's directory is. Same `name`, `description` and `timeout_ms` as \
+     `bash`, and the same name space: `default` is here when the session's directory is \
+     here, and a name the other machine already holds is refused. `cd`, exports and shell \
+     functions survive between calls because it is one process on that machine. `target` \
+     may be written and names that same machine; it takes no other value, because a \
+     session has one directory on one machine. `background` and `detached` are not offered \
      here: the job's scratch file and its completion are watched on this machine. Use a \
      foreground command, or `&` with a log file on that machine. Paths are that machine's: \
      a path this machine has is not necessarily a path there. Output is capped; a cut is \
@@ -693,39 +703,64 @@ impl Tool for BashTool {
     }
 
     fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "Whichever bash this call is about. Without `detached`: \
-                                     which persistent shell to run in, default `default` -- \
-                                     reusing a name is what carries `cd`, exports and shell \
-                                     functions from one call to the next. With `detached`: \
-                                     the name of the detached bash being created, required, \
-                                     and unique in the session -- it is what `del_bash` uses \
-                                     to end that process later."
-                },
-                "command": {
-                    "type": "string",
-                    "description": "The command line to execute."
-                },
-                "description": {
-                    "type": "string",
-                    "description": "What this call is for, in a few words -- it is read \
-                                     right after the tool's name, so say what the run is \
-                                     for, not what the command is (`check the state`, not \
-                                     `bash`). Optional, and never executed: it also names \
-                                     the file that a too-long output is spilled to, so that \
-                                     later you (and whoever reads the dumps) can tell one \
-                                     run from another. Example: `run the server tests`."
-                },
-                "background": {
+        // One field means two things, because the two machines start in two places:
+        // this one's `default` shell stands where the harness runs, the peer's stands
+        // in the session's own directory.
+        let name_note = match self.machine {
+            Machine::Local => {
+                "Whichever bash this call is about. Without `detached`: which persistent \
+                 shell to run in, default `default` -- reusing a name is what carries \
+                 `cd`, exports and shell functions from one call to the next. With \
+                 `detached`: the name of the detached bash being created, required, and \
+                 unique in the session -- it is what `del_bash` uses to end that process \
+                 later."
+            }
+            Machine::Remote => {
+                "Which shell to run in on the machine this session's directory is on, \
+                 default `default`. Reusing a name is what carries `cd`, exports and \
+                 shell functions from one call to the next; a name `bash` already holds \
+                 is refused rather than becoming a second shell."
+            }
+        };
+        let mut properties = json!({
+            "name": {
+                "type": "string",
+                "description": name_note
+            },
+            "command": {
+                "type": "string",
+                "description": "The command line to execute."
+            },
+            "description": {
+                "type": "string",
+                "description": "What this call is for, in a few words -- it is read \
+                                 right after the tool's name, so say what the run is \
+                                 for, not what the command is (`check the state`, not \
+                                 `bash`). Optional, and never executed: it also names \
+                                 the file that a too-long output is spilled to, so that \
+                                 later you (and whoever reads the dumps) can tell one \
+                                 run from another. Example: `run the server tests`."
+            },
+            "timeout_ms": {
+                "type": "integer",
+                "description": "How long to wait for the command before returning. \
+                                 This is a limit on waiting, not on the command: when \
+                                 it passes, the command keeps running in the background \
+                                 and its output is posted to this session when it \
+                                 finishes. Ignored for background commands."
+            }
+        });
+        // What only one of the two machines can do. `bash` returns at once for two
+        // flags a peer's shell cannot honour, and those are declared where they work:
+        // see `docs/notes/server-tools-mod.md`.
+        match self.machine {
+            Machine::Local => {
+                properties["background"] = json!({
                     "type": "boolean",
                     "description": "Start the command and return immediately instead of \
                                      waiting for it. Defaults to false."
-                },
-                "detached": {
+                });
+                properties["detached"] = json!({
                     "type": "boolean",
                     "description": "Run the command as a process of its own and return at \
                                      once. It keeps running when the shell is discarded, \
@@ -734,16 +769,21 @@ impl Tool for BashTool {
                                      running on. Nothing is collected: its output is written \
                                      to the log file named in the result. Stop it later with \
                                      `del_bash` with its name stops it. Defaults to false."
-                },
-                "timeout_ms": {
-                    "type": "integer",
-                    "description": "How long to wait for the command before returning. \
-                                     This is a limit on waiting, not on the command: when \
-                                     it passes, the command keeps running in the background \
-                                     and its output is posted to this session when it \
-                                     finishes. Ignored for background commands."
-                }
-            },
+                });
+            }
+            Machine::Remote => {
+                properties["target"] = json!({
+                    "type": "string",
+                    "description": "Which machine to run on. Omit it: this session's \
+                                     directory is on one peer, and that peer is where \
+                                     `remote_bash` already runs. The name is accepted so \
+                                     that writing it changes nothing."
+                });
+            }
+        }
+        json!({
+            "type": "object",
+            "properties": properties,
             "required": ["command"],
             "additionalProperties": false
         })
@@ -761,6 +801,33 @@ impl Tool for BashTool {
             };
             if command.trim().is_empty() {
                 return ToolOutcome::err("bash received an empty command");
+            }
+            // `target` names the machine. A session's directory is on one peer, so the
+            // only name that can be answered is that one, and a name that is another
+            // peer's must not quietly run here. Declaring the argument is what makes
+            // this reachable: an undeclared key is passed through and ignored, which is
+            // the rule `argument_error` keeps. See `docs/notes/server-tools-mod.md`.
+            if self.machine == Machine::Remote
+                && let Some(stated) = args
+                    .get("target")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                && ctx.remote.as_deref() != Some(stated)
+            {
+                return ToolOutcome::err(match &ctx.remote {
+                    Some(here) => format!(
+                        "`remote_bash` ran nothing: this session's directory is on remote \
+                         {here:?}, and its shells are there -- {stated:?} is another \
+                         machine, which this session has no directory on. A session works \
+                         on one machine: `set_session --remote {stated}` moves it there, \
+                         and ends these shells first."
+                    ),
+                    None => format!(
+                        "`remote_bash` ran nothing: this session names no remote, so it has \
+                         no peer to run on, and {stated:?} is not one it can reach from here."
+                    ),
+                });
             }
             let name = args
                 .get("name")

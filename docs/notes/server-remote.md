@@ -276,7 +276,51 @@ Still refused, each with a message and never a local fallback:
 - `detached: true` anywhere but this machine — the process would be started here and
   outlive everything asked of the peer;
 - a capped output on a remote is not spilled to a file: the path would name this
-  machine, so the model is told the tail was dropped instead.
+  machine, so the model is told the tail was dropped instead;
+- `remote_bash` with a `target` that is not this session's peer.
+
+## `target`: one machine, written out loud
+
+SPEC spells the tool `remote_bash{command, name, target = session's remote}`, and
+`target` was missing from the schema. Not declaring it was not harmless: a key no
+schema declares is passed through and **ignored** -- that is this codebase's decided
+rule for a stray argument -- so a model writing `target: "other-peer"` ran its command
+on this session's peer and was told nothing. Declaring it is what makes the value
+reachable, and `BashTool::run` refuses any name but the session's own:
+
+    `remote_bash` ran nothing: this session's directory is on remote "a", and its
+     shells are there -- "b" is another machine, which this session has no directory
+     on. A session works on one machine: `set_session --remote b` moves it there, and
+     ends these shells first.
+
+The conservative branch is the SPEC's own: `target` has a defined cwd only when it is
+the session's remote, and a second peer would have no directory to be in -- plus a
+second reader, since `@file:` in that peer's output must be read there. A session per
+peer is the cheaper way to reach two, and `set_session --remote` is the one command
+that moves one.
+
+The schema is also split per machine now. `background` and `detached` are declared
+only on `bash`, where they work, instead of being offered by `remote_bash` and refused
+after the model wrote them; they are still refused at run time if written anyway.
+`target` is declared only on `remote_bash`.
+
+## The card names the peer
+
+The session's start card (`dynamic_tail`) said the directory and not the machine, so a
+model holding `/home/build/project` had no way to know the path was the peer's -- it
+would reach for `bash`, and find out by failing. It is a second template now,
+`dynamic_tail_remote`, chosen by the same fact that picks the shell:
+
+    Session `x`, harness gongga at `...`, ..., in `/home/build/project` -- a directory
+    on remote `build`, not on the machine this server runs on. `remote_bash` is that
+    machine's shell; `bash` is this one's.
+
+Two templates rather than one with a clause: a template has no conditional, and a
+session on this machine must keep the bytes it has already sent. The name comes from
+`Shells::remote_name`, the same field `target` is answered with, so the card cannot
+describe a machine the shells are not on. A prompt row also records the peer it was
+written for (`Prompt.remote`), so `--remote none` in the directory the session left is
+still a move -- the card that says "on remote `x`" does not survive it.
 
 ## Listing a peer's directory
 

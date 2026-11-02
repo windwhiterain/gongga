@@ -16,13 +16,18 @@ if that stops being true the fix is `spawn_blocking`, not a redesign.
 
 One rule decides whether a request needs a new prompt row, and it is the only place
 that decision is made: compare what a request *sends*. `instructions`, `index` and
-`tail` go on the wire; `cwd` is a record of where the turn happened.
+`tail` go on the wire; `cwd` and `remote` are records of where the turn happened.
 
 The distinction is not cosmetic. A live home wrote nine prompt rows in ninety seconds
 with `cwd` the only difference -- the shell had moved, and a move is not prose. Every
 row costs a comparison and, worse, the log line that says the prefix was re-billed. So
 `cwd` is also recorded as what the request said, not where the shell is now: a later
 move cannot rewrite a row that has already been sent.
+
+`remote` is the same kind of record for the other half of "where": the template the
+tail was rendered from is chosen by it, so it has to be compared to notice a move.
+`--remote none` in the directory the session left changes only this field, and a row
+that says "a directory on remote `x`" must not outlive the shells that were there.
 
 ## interrupted_call
 

@@ -297,6 +297,27 @@ machine that owns the placement gets it, and the other side starts in its own de
 directory. `default` is therefore the directory-owning machine's shell -- so a remote
 session's `default` is the peer's, and `bash` there means *name another shell*.
 
+## `remote_bash` (the `target` argument)
+
+SPEC declares `target = session's remote`, and the argument is what a model writes when
+it is following the spec rather than this schema. `argument_error` passes a stray key
+through rather than failing the call (see above), so an undeclared `target` was a key
+that silently did nothing: the command ran on the session's peer while the model
+believed it had chosen a machine. Declared, it is refused unless it names that peer,
+and the refusal names `set_session --remote`.
+
+Only one value can be accepted, because the other machine would have no directory to
+stand in: the session's cwd is the peer's path, and a reference printed by a `bash`
+call on a second peer would be read through the first one's connection.
+
+## the schema is per machine
+
+`BashTool::parameters` builds the two fields only one machine has: `background` and
+`detached` on this machine's `bash`, `target` on the peer's `remote_bash`. A flag a
+machine cannot honour is not a flag the model should be shown -- and both are still
+refused at run time, because the refusal is what explains *why*, and the schema is what
+keeps the model from asking.
+
 ## the machine a spilled cut belongs to
 
 A capped output is spilled to a file this server can name only when the shell that

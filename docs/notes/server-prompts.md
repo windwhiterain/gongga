@@ -119,6 +119,19 @@ writes it as the request's first `input` item, which is where SPEC puts it. See
 buys: a session that is asked "what time is it" or "where are you" answers without a
 tool call, and a transcript replayed later says when it happened and which build said it.
 
+## dynamic_tail_remote
+
+The same card when the directory is on a peer, and it says so: `{{cwd}}` alone does not
+tell a model whether a path is this machine's or the remote's, and the wrong guess is a
+`bash` call that fails on a path that exists -- somewhere else. Two templates rather
+than one with a conditional, for two reasons: `substitute` has no conditionals by
+design, and a session on this machine keeps exactly the bytes it already sent.
+
+Which one is chosen is the machine the shells are on (`Prompt.remote`, read from
+`Shells::remote_name`), and the row records it. That record is why `--remote none` in
+the directory the session left is a move: `Prompt::rewritten_by` compares the texts, but
+the *choice* of template is decided by a value that has to be recorded to be compared.
+
 ## substitute
 
 For the notices, and for the one name in `SYSTEM`. `{{name}}` and nothing else: no

@@ -32,6 +32,16 @@ pub struct Prompt {
     /// The directory the shell stood in, so a move is noticed.
     #[serde(default)]
     pub cwd: String,
+    /// The peer that directory was on, when it was one.
+    ///
+    /// # Invariant
+    ///
+    /// A record, like `cwd`, and read for the same thing: `--remote none` in the
+    /// directory the session left is still a move, and the card that says "on remote
+    /// `x`" must not survive it. A row written before this field existed has `None`,
+    /// which is a session on a peer getting its card rewritten once.
+    #[serde(default)]
+    pub remote: Option<String>,
 }
 
 impl Prompt {

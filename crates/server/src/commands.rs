@@ -290,11 +290,12 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 arg(
                     "remote",
                     "Which machine this session's shells run on, named by a `[remotes.<name>]` \
-                     table in the server's config. Omit for this machine, and name `none` \
-                     to move a session back here. Naming a different one moves an existing \
-                     session: every shell on the old machine is ended first, and the move \
-                     is refused while a turn runs. A session keeping a remote has shells \
-                     on both machines: `bash` here, `remote_bash` there.",
+                     table in this machine's `~/.agents/remotes.toml`. Omit for this \
+                     machine, and name `none` to move a session back here. Naming a \
+                     different one moves an existing session: every shell on the old \
+                     machine is ended first, and a move asked for during a turn waits for \
+                     that turn to end. A session keeping a remote has shells on both \
+                     machines: `bash` here, `remote_bash` there.",
                     false,
                     Some("name"),
                     // Exactly the tables this server was started with: `local` is
