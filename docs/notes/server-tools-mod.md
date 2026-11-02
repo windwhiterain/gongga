@@ -14,8 +14,9 @@ Nothing here drives the harness. There was a `harness` tool that called the
 dispatch in-process, and a tool call cannot be piped, looped or written into a
 script, so the agent's commands are a line it types in `bash` instead -- see
 `server-shell-command.md`. `with_builtins` is the whole registry: the four bash verbs, the skill
-index; `with_python` adds the persistent interpreter described in
-`server-tools-python.md`.
+index; `with_python` adds the persistent interpreter and the three file verbs
+described in `server-tools-python.md`; `check_bash` carries the optional wait,
+so there is no `wait_bash`.
 
 ## ToolContext::detached
 

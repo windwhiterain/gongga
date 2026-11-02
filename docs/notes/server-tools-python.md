@@ -40,3 +40,16 @@ starts a separate process, `list_python` reports the live ones (pid, program,
 cwd) and `del_python` takes names by regex and stops their processes, the same
 verbs `list_bash` and `del_bash` provide. A dropped session drops every process
 (`kill_on_drop`), so two sessions never share a namespace.
+
+## File operations
+
+`read_file`, `write_file` and `replace` are the same driver with a structured
+request: `{"op": "read"|"write"|"replace", ...}`. The path, content, old and new
+text are JSON fields; no shell or Python source parses them. Each call starts a
+fresh driver and stops it afterwards -- file state is the file, so a persistent
+process buys nothing and a long-running interpreter must not block an edit.
+
+Writes go to a temporary file in the target's directory and are moved into place
+with `os.replace`; the existing mode is kept. `replace` is literal and, unless
+`all` is set, requires exactly one occurrence, so a stale `old` is an error rather
+than a silent no-op. `read_file` takes zero-based `offset` and `limit` lines.

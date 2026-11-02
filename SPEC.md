@@ -39,12 +39,20 @@ use `which("bash")` as bash.
   - key = {session_name, bash_name}.
   - background bash ended will notice its session.
 - list_bash{name_regex}: list matched bash with the caller session's name in key.
-- check_bash{name = "default"}: return bash's output that hasn't been read by the caller session.
-- wait_bash{name = "default"}
+- check_bash{name = "default", wait_ms = 0}: return bash's output that hasn't been read by the caller session. With `wait_ms > 0` and background jobs still running, wait until they finish or the wait expires, then return the unread output: a timeout leaves the jobs running.
 - del_bash{name_regex}: delete matched bash with the caller sessions' name in key. 
 - remote_bash{command, name, target = session's remote}:
   cwd is session's cwd if session's remote is target.
   reference the remote skill.
+
+File tools run through the Python tool's interpreter on the session's machine, so
+file content is a JSON field and never a shell command or Python source:
+- read_file{path, offset = 0, limit = 0}: lines `offset..offset+limit`; `limit = 0`
+  reads to the end. Capped like other tool output.
+- write_file{path, content}: create parent directories and replace the file
+  atomically; `content` is written as UTF-8 bytes.
+- replace{path, old, new, all = false}: literal replacement; without `all`,
+  exactly one occurrence must match, and any other count is an error. Atomic.
 
 
 ## Server State
