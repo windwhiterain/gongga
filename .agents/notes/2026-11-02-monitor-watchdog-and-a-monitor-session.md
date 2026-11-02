@@ -198,3 +198,24 @@ supervisor 在「没来得及说」的重启里给子进程 `GONGGA_LAST_EXIT=<c
 4. 重启与 `stop` 的竞赛：`cancel` 与 kill 之间的窗口仍然存在。
 5. 额度读数只能在 step 结束时刷新，所以候选顺序可能是旧的；换模型时跳过「等于当前模型」
    那一项来兜底。
+
+## 追加（同日，实现之后）：静态知识搬进 ship 的 `monitor` skill
+
+实测一次 monitor 回合：112 秒、30 次工具调用，其中大部分在摸「一个 home 长什么样」。那部分
+对每次失败都一样，所以按寿命切开：
+
+| 放哪 | 是什么 | 代价 |
+| --- | --- | --- |
+| `@skill: monitor`（ship `b92d022`），进 prompt 的 index | 地图、分诊表（供应商/配置/harness）、只读 schema、安全规则、交付格式 | 付一次，本会话后续请求复用 |
+| 消息本体 | 这次失败的会话/模型/行范围/build/home/pid/cwd、服务端写下的 `notice`、读回命令 | 付一次，且随 transcript 走 |
+
+**为什么不放目录里的 `AGENTS.md`**：`meta::roots` 会把它当第一个根，但 monitor 的第一份 prompt
+是在它知道自己的 shell 站哪之前建的（服务端创建的会话从服务端的 cwd 开始）。实测那次 index
+恰好 12,017 字符＝只有 `self-control`，因为 cwd（`~/.gongga`）里没有 `AGENTS.md`；在那种目录
+起服务端可复现。skill 走 `<home>/skills`，与 cwd 无关。
+
+selftest 因此加了两条断言：`@skill:monitor` 必须出现在 prompt 行的 `rooted` 里，且报告必须是
+「引用 + 这次的事实」。
+
+顺手修掉的两个测试坑：`free_port` 原来挑的是 UDP 端口，而被 Windows 服务占着的是同名 TCP 端口
+（实测撞上 `svchost`，fake 端点 bind 失败）；现在挑 TCP 并且**先拨号再往下走**。
