@@ -428,8 +428,9 @@ impl Agent {
     ) -> anyhow::Result<crate::store::Prompt> {
         let stored = self.store.prompt(id)?;
         let prompts = crate::prompts::shared();
-        // Read, not rendered, and the one text every turn of every session shares.
-        let instructions = prompts.system();
+        // The session's own name is the one value in the prose: a model asked what it
+        // is called has to be able to answer without a tool call.
+        let instructions = prompts.system(name);
         // Stamped with the first row and replayed verbatim after, including when there
         // is none: a row written before the card existed stays without one, because
         // inserting a message now would rewrite what was already sent.

@@ -336,8 +336,9 @@ sent, each input item is a stored row or the stored note, and each distinct
 
 ## the prompt is prose, an index, and a separate item for this turn
 
-`llm::build_head` composes `instructions` from the prose (`prompts::SYSTEM`, read not
-rendered, identical for every session of a home) and the index (`index_of`). The start
+`llm::build_head` composes `instructions` from the prose (`prompts::SYSTEM`, with the
+session's own name filled -- the one placeholder, see `server-prompts.md`) and the index
+(`index_of`). The start
 card (`dynamic_tail`: session, harness build, the first turn's minute, its cwd) is
 **not** in that value: it is the request's first `input` item, ahead of a fold's note and
 of every row, which is where SPEC puts it and the only place that is both outside the

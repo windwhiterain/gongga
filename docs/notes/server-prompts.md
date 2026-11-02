@@ -13,22 +13,31 @@ the pinned ship content behind it is what answers when the home says nothing; bo
 read from disk. The one list this module does own is `REQUIRED`, because the code is
 the only party that knows which names it asks for.
 
-## SYSTEM: read, never rendered
+## SYSTEM: the prose, with the session's name filled
 
-`instructions` opens every request. A placeholder filled from the session would give
-each session its own first bytes, and a provider's prefix cache is keyed by bytes: the
-whole point of those bytes being first is that every session of a home shares them, so
-the cache still holds the prose and the tool schemas and the start of the transcript
-behind it. So this one name is `text()`, not `render()` -- `system()` is the accessor,
-and a `{{session}}` written into it reaches the model as written.
+`instructions` opens every request, and `{{session}}` in it is the one placeholder
+`system()` fills. It was `text()` rather than `render()` for a year of this design, for
+a reason that turned out not to hold: "a placeholder filled from the session would give
+each session its own first bytes, and the cache is keyed by bytes." The cache is keyed
+per *conversation* -- `prefix_layout` is a row per session, and the note on caching says
+so outright -- so no session's bytes were ever warm for another. Nothing was being
+shared, and the cost of the name was zero.
 
-The session name did not go away: every shell has `$GONGGA_SESSION`, which is where a
-session that needs to know what it answers to looks. The immediate reason for the split
-was that the prompt had grown into a page of procedures -- how to batch reads, how to
-drive `gongga-cli`, which bucket a skill lives in -- and a page of prose in front of
-every request is exactly what a skill is for. The identity, the standing authorisation
-to run commands, and "procedures are skills" are what is left, because none of them is
-a procedure and all of them are true in every turn.
+What it did cost was the name. The prose said "Your session name is `$GONGGA_SESSION`",
+which nothing substitutes, so a model read the literal and reported that its prompt did
+not tell it its name -- measured in a session called `probe`, whose whole first turn was
+that question and the tool call it needed to answer it. The variable is real in every
+shell, and that is exactly the point: knowing the name should not need a shell.
+
+A name is stable for a session, so the bytes stay stable for every request of one, which
+is all a cached prefix needs. The card (`dynamic_tail`) still states it too, with the
+build, the first minute and the directory.
+
+The reason the prose was cut down to a page-or-less still stands: it had grown into
+procedures -- how to batch reads, how to drive `gongga-cli`, which bucket a skill lives
+in -- and a page of prose in front of every request is exactly what a skill is for. What
+is left is identity, the standing authorisation to run commands, and "procedures are
+skills": none of them is a procedure and all of them are true in every turn.
 
 Everything else stays a template: the notices are rendered per event, where the numbers
 and the session and the spill path really are different every time.
@@ -101,7 +110,7 @@ tool call, and a transcript replayed later says when it happened and which build
 
 ## substitute
 
-For the notices only -- never for `SYSTEM`. `{{name}}` and nothing else: no
+For the notices, and for the one name in `SYSTEM`. `{{name}}` and nothing else: no
 conditionals, no loops, no filters. A prompt that needs
 a conditional is a prompt with two shapes, and two shapes are two templates named by the
 code -- which is what `context_notice` does on its own. A real

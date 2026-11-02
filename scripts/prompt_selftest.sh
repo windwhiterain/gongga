@@ -150,6 +150,24 @@ assert any(root.startswith("@file:SPEC.md") for root in only["rooted"]), only["r
 INNER
 ok "a cd in the shell writes no new prompt row" $?
 
+python - "$home" <<'INNER'
+import json, sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
+sid = c.execute("select id from sessions where name='reader'").fetchone()[0]
+prompt = json.loads(c.execute(
+    "select display from messages where session_id=? and kind='system' limit 1", (sid,)).fetchone()[0])
+prose, card = prompt["instructions"], prompt["tail"]
+# The name in the prose, and nowhere a placeholder: a model asked what it is called
+# reads the prose first and answered "no" while this said `$GONGGA_SESSION`.
+assert "`reader`" in prose, prose[:200]
+assert "$GONGGA_SESSION" not in prose, prose[:200]
+assert "{{" not in prose and "}}" not in prose, prose[:200]
+# And the card still carries it, with the build, the first minute and the directory.
+assert "Session `reader`" in card, card
+assert "harness gongga at `" in card and "in `" in card, card
+INNER
+ok "the prose and the card both name the session, with no placeholder left" $?
+
 sha=$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)
 if [[ $fails == 0 ]]; then
   printf 'PASS · prompt · %s\n' "$sha"

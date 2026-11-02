@@ -7,14 +7,15 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
-/// The system instructions: read, never rendered.
+/// The system instructions: the prose, with the session's own name in it.
 ///
 /// # Invariant
 ///
-/// These bytes open every request, so they are the same bytes for every session of
-/// a home. A placeholder filled from the session would give each session its own
-/// prefix and the provider would hold none of it; the name is `$GONGGA_SESSION` in
-/// every shell instead. See `docs/notes/server-prompts.md`.
+/// `{{session}}` is the only placeholder filled here, and it is filled from the
+/// session's name, which never changes for that session -- so the bytes are stable
+/// for every request of one conversation, which is what a cached prefix needs. A name
+/// written as `$GONGGA_SESSION` instead was read by a model as a literal placeholder
+/// it did not have. See `docs/notes/server-prompts.md`.
 pub const SYSTEM: &str = "instructions";
 
 /// Every template the code asks for by name.
@@ -126,8 +127,11 @@ impl Prompts {
     }
 
     /// The system instructions as written: one text, no value is filled in.
-    pub fn system(&self) -> String {
-        self.text(SYSTEM).unwrap_or_default()
+    pub fn system(&self, session: &str) -> String {
+        match self.text(SYSTEM) {
+            Some(text) => substitute(&text, &[("session", session)]),
+            None => String::new(),
+        }
     }
 
     /// One template, with its placeholders filled.
