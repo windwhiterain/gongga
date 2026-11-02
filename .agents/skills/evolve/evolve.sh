@@ -424,81 +424,12 @@ release_lease() {
   LEASE_HELD=0
 }
 
-# Starts the successor outside this shell's job, and waits until it is really its loop.
-#
-# # Invariant
-#
-# The process must ask to leave the job (`CREATE_BREAKAWAY_FROM_JOB`), because
-# `Shell::kill` ends a shell with `TerminateJobObject`: a plain child dies with the
-# shell that started it, which is the whole handover failing. The pid waited for is the
-# one the launcher writes for itself, never `$!`: under Git Bash that is an MSYS number,
-# and every check downstream is a `tasklist` query. No cap on the wait -- a slow start
-# is not a failure.
-launch_successor() { # stamp launcher
-  local stamp="$1" launcher="$2"
-  local log="$RUN/evolve-$stamp-launch.log" err="$RUN/evolve-$stamp-launch.err"
-  local pidfile="$RUN/evolve-$stamp-launch.pid" beat="$RUN/evolve-$stamp-launch.beat"
-  local bash_bin pid launch_pid waited=0
-  bash_bin="$(command -v bash || true)"
-  [ -n "$bash_bin" ] || die "no bash on PATH to run the successor with"
-  # No stdio inheritance: a process meant to outlive the shell must not hold its pipes
-  # open, or the shell's own reader waits for a process that is not coming back.
-  pid="$(powershell -NoProfile -ExecutionPolicy Bypass -Command '
-Add-Type -Namespace K -Name Native -MemberDefinition @"
-[StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
-public struct StartupInfo {
-  public int cb; public string lpReserved; public string lpDesktop; public string lpTitle;
-  public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
-  public short wShowWindow, cbReserved2; public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
-}
-[StructLayout(LayoutKind.Sequential)]
-public struct ProcessInfo { public IntPtr hProcess, hThread; public int dwProcessId, dwThreadId; }
-[DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-public static extern bool CreateProcessW(string appName, System.Text.StringBuilder commandLine, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string dir, ref StartupInfo si, out ProcessInfo pi);
-"@
-$si = New-Object K.Native+StartupInfo
-$si.cb = [System.Runtime.InteropServices.Marshal]::SizeOf([type]"K.Native+StartupInfo")
-$si.dwFlags = 1
-$si.wShowWindow = 0
-$si.hStdInput = [IntPtr]::Zero
-$pi = New-Object K.Native+ProcessInfo
-$cmd = [System.Text.StringBuilder]::new("`"$($env:GONGGA_LAUNCH_EXE)`" `"$($env:GONGGA_LAUNCH_SCRIPT)`"")
-$ok = [K.Native]::CreateProcessW([NullString]::Value, $cmd, [IntPtr]::Zero, [IntPtr]::Zero,
-  $false, 0x01000000, [IntPtr]::Zero, $env:GONGGA_LAUNCH_DIR, [ref]$si, [ref]$pi)
-if ($ok) { $pi.dwProcessId } else { "error $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
-' 2>/dev/null | tr -d '\r\n')"
-  case "$pid" in
-    '' | *[!0-9]*)
-      die "could not start the successor ($pid): the shell's job refuses breakaway. \
-That happens when the running server predates this feature -- run '$0 swap' once \
-without --launch, then try again." ;;
-  esac
-  while :; do
-    launch_pid="$(cat "$pidfile" 2>/dev/null || true)"
-    if [ -n "$launch_pid" ] && alive "$launch_pid" && [ -f "$beat" ] \
-      && [ $(($(date +%s) - $(cat "$beat"))) -le 10 ]; then
-      echo "successor $launch_pid is waiting outside this shell's job"
-      echo "  log: $log"
-      return 0
-    fi
-    if ! alive "$pid"; then
-      echo "--- $log" >&2; tail -n 10 "$log" 2>/dev/null >&2
-      echo "--- $err" >&2; tail -n 10 "$err" 2>/dev/null >&2
-      die "the successor ($pid) exited before it began waiting; nothing is there to take the home"
-    fi
-    waited=$((waited + 1))
-    [ $((waited % 50)) = 0 ] && echo "evolve: waiting for the successor to start ($((waited / 10))s)"
-    sleep 0.1
-  done
-}
-
 cmd_stage() {
-  local clean=0 launch=0
+  local clean=0
   for flag in "$@"; do
     case "$flag" in
       --all) echo "note: --all is the only mode now; every program is staged" ;;
       --clean) clean=1 ;;
-      --launch) launch=1 ;;
     esac
   done
 
@@ -603,18 +534,9 @@ unknown; refusing to stage a handover that would produce a server nobody owns"
   } > "$RUN/evolve-$stamp.txt"
   cat "$RUN/evolve-$stamp.txt"
   echo
-  if [ "$launch" = 1 ]; then
-    export GONGGA_LAUNCH_EXE="$(command -v bash)" GONGGA_LAUNCH_SCRIPT="$launcher" \
-      GONGGA_LAUNCH_DIR="$ROOT"
-    launch_successor "$stamp" "$launcher"
-    unset GONGGA_LAUNCH_EXE GONGGA_LAUNCH_SCRIPT GONGGA_LAUNCH_DIR
-    echo "next: swap -- it cancels this turn, and the successor resumes it"
-    echo "  $PWD/.agents/skills/evolve/evolve.sh swap $stamp"
-  else
-    echo "next: launch detached, then swap"
-    echo "  bash --detached: $launcher   (see SKILL.md on why it must not be a plain child)"
-    echo "  $PWD/.agents/skills/evolve/evolve.sh swap $stamp"
-  fi
+  echo "next: launch detached, then swap"
+  echo "  bash --detached: $launcher   (see SKILL.md on why it must not be a plain child)"
+  echo "  $PWD/.agents/skills/evolve/evolve.sh swap $stamp"
   echo
   if [ "$clean" = 1 ]; then
     echo "armed: the successor runs 'cargo clean' after the old server is gone, before it binds"

@@ -48,15 +48,30 @@ $S clean              # 收掉没人会 swap 的旧继任者（--artifacts 连�
 
 试过，做不通，而失败的样子是"home 空着"——所以记在这里，别再试第二遍。
 
-脚本里能把一个新进程放出去的办法我试了三种（`nohup`、`cmd start`、`Start-Process`），
-它们在**命令结束之后**都还活着，但一到 `cancel` 就全死了：连同我在同一个临时 home 里
-起的旧服务端一起，在同一秒被杀，日志里没有一行优雅退出。
+杀 shell 的是 `Shell::kill`：**有 job 时用 `TerminateJobObject`**，没有 job 才退回
+`taskkill /T`。所以活过 `cancel` 的条件是「不在那个 job 里」，不是「不在进程树里」。
 
-原因在 `crates/server/src/tools/job.rs`：会话的 shell 是一个 job object，标志只有
-`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`，**没有 `BREAKAWAY_OK`**。工具调用里派生的一切都
-在这个 job 里，`cancel` 收掉 shell 时连它一起收。而继任者要活到旧服务端退出之后，所以
-它**必须**是 `bash --detached` 那个 job 本身——那是服务端自己 spawn 的、在 shell job
-之外的东西，脚本产不出来。
+job 现在允许 `BREAKAWAY_OK`（`tools/job.rs`），也就是子进程**显式**传
+`CREATE_BREAKAWAY_FROM_JOB` 就能离开；不传的照旧随 shell 一起收掉——`SILENT_BREAKAWAY_OK`
+是另一个选项，但那会让每个子进程都离开 job，会话连自己起的进程都带不走，不行。
+
+不显式传这个 flag 的启动方式我试了三种（`nohup`、`cmd start`、`Start-Process`）：它们在
+命令结束之后都还活着，一到 `cancel` 就全死了，日志里没有一行优雅退出。
+
+而**脚本里要传这个 flag，比看上去难**，实测踩到两个坑，任何一个都会让继任者起不来：
+
+- 给子进程 `STARTF_USESTDHANDLES` 加三个空句柄 → `cmd`/`timeout` 这类程序**直接起不来**
+  （空句柄不是 NUL 设备）。
+- 让它继承句柄 → 它攥着 shell 的管道，于是工具调用一直等它退出：我量到一次 241 秒。
+
+正确的做法是两件事同时成立：`CREATE_BREAKAWAY_FROM_JOB` + 子进程有自己的句柄（NUL 或文件）。
+服务端的 `tools/detached.rs` 已经把这件事做对了（`Stdio::null()` + `kill_on_drop(false)`），
+所以继任者**应当由服务端去 spawn**，也就是 `bash --detached`。
+
+一个 shell one-liner 做不到这两件事同时正确，这就是为什么 `stage --launch` 不存在：
+要让它成立，需要把「以 detached job 方式跑一个程序」开放给脚本——一条 server cmd，或者一个
+专门的小程序。**那是要改 SPEC 的决定，不是这个脚本能自己解决的**，所以我没有在脚本里留一个
+看起来能跑、实际会静默死掉的分支。
 
 推论：`swap` 的守卫（继任者 pid 活着 + 心跳新鲜）不是形式主义，它是唯一能挡住"取消了却
 没人接班"的东西。手起继任者时别绕过它。
