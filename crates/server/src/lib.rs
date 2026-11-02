@@ -262,7 +262,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         cfg.model.model(),
         detached.clone(),
         shell_env,
-        cfg.targets.clone(),
+        cfg.remotes.clone(),
     );
     let bus = EventBus::new(4096);
 

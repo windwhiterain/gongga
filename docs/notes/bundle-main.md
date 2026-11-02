@@ -37,7 +37,7 @@ Two answers, in this order:
 
 `runner` is the one word a person is not meant to type: it is what a peer's `ssh`
 runs. It is a word here rather than a second installed name because the
-distribution installs one file, and a target's `runner` can still name any other
+distribution installs one file, and a remote's `runner` can still name any other
 spelling the peer has (`.agents/notes/2026-11-01-remote-is-a-shell-endpoint.md`).
 
 Anything else is the command layer, which is what a bare `./gongga` is.

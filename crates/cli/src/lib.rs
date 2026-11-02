@@ -835,7 +835,7 @@ impl Client {
             })
             .collect();
         self.catalog
-            .fill_paths(field("target"), field("path"), rows);
+            .fill_paths(field("remote"), field("path"), rows);
     }
 
     fn handle_event(&mut self, event: Event, sink: &mut dyn Sink) {
@@ -1121,7 +1121,7 @@ impl Client {
         self.catalog.paths_version()
     }
 
-    /// Asks the server what one directory on a target holds, for `--cwd`
+    /// Asks the server what one directory on a remote holds, for `--cwd`
     /// completion. `None` when there is nothing to ask: a client that is offline,
     /// or a server from a build without the command.
     ///
@@ -1129,13 +1129,13 @@ impl Client {
     ///
     /// Never echoes the command: it is the front-end's own question, and the
     /// operator's last line is not replaced by it.
-    pub fn ask_paths(&mut self, target: &str, directory: &str) -> Option<ClientMessage> {
+    pub fn ask_paths(&mut self, remote: &str, directory: &str) -> Option<ClientMessage> {
         if !self.connected || self.catalog.command("list_paths").is_none() {
             return None;
         }
         let id = self.next_id();
         let mut args = protocol::Args::new();
-        args.insert("target".to_string(), target.to_string());
+        args.insert("remote".to_string(), remote.to_string());
         args.insert("path".to_string(), directory.to_string());
         self.quiet.insert(id);
         Some(ClientMessage::Command {
@@ -1235,7 +1235,7 @@ impl Client {
             return Submission::Rejected;
         };
 
-        // One validation, by the published spec: `target` picks the path.
+        // One validation, by the published spec: `remote` picks the path.
         let mut args = match parse_args(&tokens[1..]) {
             Ok(a) => a,
             Err(e) => {

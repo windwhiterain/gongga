@@ -118,9 +118,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- context so a window attached now has the numbers without replaying a turn.
     tps REAL,
     ttft_ms INTEGER,
-    -- The endpoint this session's shells run on, as a named target from the
-    -- server's config. NULL is `local`, and it is fixed once the session has run.
-    target TEXT,
+    -- The endpoint this session's shells run on, as a named remote from the
+    -- server's config. NULL is this machine, and it is fixed once the session has run.
+    remote TEXT,
     -- The last row of this session a monitor turn was given. A turn writes its
     -- user row before it starts, so `seq` only grows: this column is the whole
     -- record of "this failure has been reported", and it survives a restart.
@@ -287,7 +287,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             "ALTER TABLE sessions ADD COLUMN cached_tokens INTEGER",
         ),
         ("tps", "ALTER TABLE sessions ADD COLUMN tps REAL"),
-        ("target", "ALTER TABLE sessions ADD COLUMN target TEXT"),
+        ("remote", "ALTER TABLE sessions ADD COLUMN remote TEXT"),
         ("ttft_ms", "ALTER TABLE sessions ADD COLUMN ttft_ms INTEGER"),
         (
             "monitor_seq",
@@ -401,13 +401,13 @@ impl Store {
     /// its provider. A renamed column keeps its `NOT NULL`, so a row that named
     /// only one of them could not be inserted at all -- and a bare name is right
     /// for a row the roster cannot place.
-    /// Creates a session on `target`, which `None` spells `local`.
+    /// Creates a session on `remote`, which `None` spells this machine.
     pub fn create_session_on(
         &self,
         name: &str,
         model: &str,
         cwd: &str,
-        target: Option<&str>,
+        remote: Option<&str>,
     ) -> anyhow::Result<i64> {
         if name.trim().is_empty() {
             anyhow::bail!("session name must not be empty");
@@ -416,9 +416,9 @@ impl Store {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
         tx.execute(
-            "INSERT INTO sessions (name, status, model, model_name, cwd, created_at, updated_at, target)
+            "INSERT INTO sessions (name, status, model, model_name, cwd, created_at, updated_at, remote)
              VALUES (?1, 'idle', ?2, ?3, ?4, ?5, ?5, ?6)",
-            params![name, model, bare_model(model), cwd, now, target],
+            params![name, model, bare_model(model), cwd, now, remote],
         )
         .map_err(|e| duplicate_session(name, e))?;
         let id = tx.last_insert_rowid();
@@ -442,12 +442,12 @@ impl Store {
         &self,
         name: &str,
         cwd: &str,
-        target: Option<&str>,
+        remote: Option<&str>,
     ) -> anyhow::Result<()> {
         let conn = self.lock();
         conn.execute(
-            "UPDATE sessions SET cwd = ?1, target = ?2 WHERE name = ?3",
-            params![cwd, target, name],
+            "UPDATE sessions SET cwd = ?1, remote = ?2 WHERE name = ?3",
+            params![cwd, remote, name],
         )?;
         Ok(())
     }
@@ -546,7 +546,7 @@ impl Store {
                     s.created_at, s.updated_at,
                     (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS messages,
                     s.context_limit, s.thinking_effort,
-                    s.context_tokens, s.cached_tokens, s.tps, s.ttft_ms, s.target
+                    s.context_tokens, s.cached_tokens, s.tps, s.ttft_ms, s.remote
              FROM sessions s";
 
     /// Every session in `error`, with what a monitor turn still owes it.
@@ -650,7 +650,7 @@ impl Store {
                 tps: r.get(12)?,
                 ttft_ms: r.get::<_, Option<i64>>(13)?.map(|ms| ms.max(0) as u64),
             },
-            target: r.get(14)?,
+            remote: r.get(14)?,
         })
     }
 
@@ -1435,7 +1435,7 @@ pub struct SessionRow {
     /// completed request measured.
     pub usage: protocol::Usage,
     /// The endpoint this session's shells run on, when it is not `local`.
-    pub target: Option<String>,
+    pub remote: Option<String>,
 }
 
 /// One session that stopped with an error, as `Store::failures` reports it.

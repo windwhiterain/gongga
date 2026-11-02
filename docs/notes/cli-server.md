@@ -164,7 +164,7 @@ not.
 A third program follows when the build has one: `gongga-runner`, the peer-side
 program of a remote session (`server-remote.md`). It is installed only when it
 sits beside the command layer, which is what a bundle install does; a build of the
-command layer alone has none, and a target whose `runner` names a path on the peer
+command layer alone has none, and a remote whose `runner` names a path on the peer
 never reads this copy. Nothing starts it here -- it exists so the same file a
 person installed can be carried to a peer.
 

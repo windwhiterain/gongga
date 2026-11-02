@@ -19,7 +19,7 @@ use crate::tools::detached::DetachedRegistry;
 /// The name of the shell every session starts with.
 pub const DEFAULT_BASH: &str = "default";
 
-/// The shell a target keeps only to answer directory listings for completion.
+/// The shell a remote keeps only to answer directory listings for completion.
 ///
 /// # Invariant
 ///
@@ -31,12 +31,12 @@ const LISTING_SHELL: &str = "..completion";
 ///
 /// # Invariant
 ///
-/// A target of `None` is the machine the session already records, resolved when the
+/// A remote of `None` is the machine the session already records, resolved when the
 /// request is made: a request that meant "keep the machine" must not become "stay
 /// wherever this field drifted to" by the time it runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MoveRequest {
-    pub target: Option<String>,
+    pub remote: Option<String>,
     pub cwd: Option<String>,
 }
 
@@ -468,9 +468,9 @@ pub struct SessionManager {
     /// Variables for every session shell, so the model can reach this server via the CLI.
     shell_env: Vec<(String, String)>,
     /// The named peers a session may run on. See `docs/notes/server-remote.md`.
-    targets: Vec<crate::config::TargetConfig>,
+    remotes: Vec<crate::config::RemoteConfig>,
     live: Arc<Mutex<HashMap<String, SessionHandle>>>,
-    /// One shell per target, opened only to list a directory for completion.
+    /// One shell per remote, opened only to list a directory for completion.
     ///
     /// # Invariant
     ///
@@ -487,7 +487,7 @@ impl SessionManager {
         model: String,
         detached: DetachedRegistry,
         shell_env: Vec<(String, String)>,
-        targets: Vec<crate::config::TargetConfig>,
+        remotes: Vec<crate::config::RemoteConfig>,
     ) -> Self {
         Self {
             store,
@@ -495,7 +495,7 @@ impl SessionManager {
             model,
             detached,
             shell_env,
-            targets,
+            remotes,
             live: Arc::new(Mutex::new(HashMap::new())),
             listing_shells: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -510,10 +510,10 @@ impl SessionManager {
     /// so nothing here invents a spelling for a filesystem it cannot see.
     pub async fn list_paths(
         &self,
-        target: Option<&str>,
+        remote: Option<&str>,
         directory: &str,
     ) -> anyhow::Result<Vec<(String, bool)>> {
-        let endpoint = self.endpoint_for(target)?;
+        let endpoint = self.endpoint_for(remote)?;
         if !endpoint.is_remote() {
             let root = match directory.trim() {
                 "" => std::env::current_dir()?,
@@ -531,7 +531,7 @@ impl SessionManager {
             entries.sort();
             return Ok(entries);
         }
-        let name = target.unwrap_or_default().to_string();
+        let name = remote.unwrap_or_default().to_string();
         // The handle is taken and the map released before awaiting: a listing must
         // not hold the map across a peer's answer.
         let shell = {
@@ -546,7 +546,7 @@ impl SessionManager {
         };
         let command = listing_script(directory);
         let mut shell = shell.lock().await;
-        // Measured: 1.7s for the first listing on a fresh target (ssh, the runner and
+        // Measured: 1.7s for the first listing on a fresh remote (ssh, the runner and
         // a shell), 0.17-0.21s for every one after. The deadline is well above that
         // and well below the half minute a stalled link once cost -- and a listing
         // does not follow with `pwd`, because nothing here reads the shell's directory.
@@ -561,13 +561,13 @@ impl SessionManager {
             drop(shell);
             self.forget_listing_shell(&name);
             anyhow::bail!(
-                "target {name:?} did not answer while listing {directory:?}; \
+                "remote {name:?} did not answer while listing {directory:?}; \
                  the connection may have stalled, so the shell was dropped"
             );
         }
         if outcome.exit_code != Some(0) {
             anyhow::bail!(
-                "target {name:?} cannot list {directory:?}: {}",
+                "remote {name:?} cannot list {directory:?}: {}",
                 outcome.stderr.trim()
             );
         }
@@ -584,23 +584,23 @@ impl SessionManager {
         Ok(entries)
     }
 
-    /// Forgets a target's listing shell, so the next question opens a fresh one.
+    /// Forgets a remote's listing shell, so the next question opens a fresh one.
     ///
     /// # Invariant
     ///
     /// Called with nothing in flight: a shell whose command is still running cannot
     /// be replaced without its lock, which is exactly what a stall holds.
-    fn forget_listing_shell(&self, target: &str) {
+    fn forget_listing_shell(&self, remote: &str) {
         let mut shells = self
             .listing_shells
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        shells.remove(target);
+        shells.remove(remote);
     }
 
-    /// The target names a session may name, in the config's order.
-    pub fn target_names(&self) -> Vec<String> {
-        self.targets.iter().map(|t| t.name.clone()).collect()
+    /// The remote names a session may name, in the config's order.
+    pub fn remote_names(&self) -> Vec<String> {
+        self.remotes.iter().map(|r| r.name.clone()).collect()
     }
 
     /// The detached jobs of every session.
@@ -638,13 +638,13 @@ impl SessionManager {
         )
     }
 
-    /// Creates a session or returns the existing one, refusing a target it does not have.
+    /// Creates a session or returns the existing one, refusing a remote it does not have.
     ///
     /// # Invariant
     ///
     /// Never moves an existing session: a move ends shells, and only
     /// [`SessionManager::relocate`] may do that, under the gate. This refuses a
-    /// different target and names the command that does move one, so the two paths
+    /// different remote and names the command that does move one, so the two paths
     /// cannot disagree about what "the same session" means. See
     /// `docs/notes/server-remote.md`.
     pub fn ensure_on(
@@ -652,27 +652,25 @@ impl SessionManager {
         name: &str,
         cwd: Option<&str>,
         model: Option<&str>,
-        target: Option<&str>,
+        remote: Option<&str>,
     ) -> anyhow::Result<SessionHandle> {
         // Resolved before anything is created: an unknown name must not make a session.
-        let endpoint = self.endpoint_for(target)?;
-        let recorded = target
-            .map(str::trim)
-            .filter(|t| !t.is_empty() && *t != "local");
+        let endpoint = self.endpoint_for(remote)?;
+        let recorded = remote.map(str::trim).filter(|t| !t.is_empty());
         // Hold the live lock through the build: competing callers must not each
         // materialise and then overwrite one name.
         let mut live = self.live();
         if let Some(h) = live.get(name) {
-            self.check_same_target(name, recorded)?;
+            self.check_same_remote(name, recorded)?;
             return Ok(h.clone());
         }
         if let Some(row) = self.store.get_session(name)? {
-            self.check_same_target(name, recorded)?;
+            self.check_same_remote(name, recorded)?;
             let _ = endpoint;
             return self.materialise_locked(row, &mut live);
         }
         if matches!(endpoint, Endpoint::Local { .. }) && recorded.is_some() {
-            anyhow::bail!("`local` is this machine, which is what naming no target means");
+            anyhow::bail!("`local` is this machine, which is what naming no remote means");
         }
         // A remote session with no directory starts where its endpoint is. A
         // stated one is read where its shell would read it.
@@ -711,7 +709,7 @@ impl SessionManager {
                 messages: 0,
                 // A session that just came into existence has measured nothing.
                 usage: protocol::Usage::default(),
-                target: recorded.map(str::to_string),
+                remote: recorded.map(str::to_string),
             },
             &mut live,
         )
@@ -735,27 +733,30 @@ impl SessionManager {
         self.materialise_locked(row, &mut live)
     }
 
-    /// The endpoint a session's `target` names; `None` is this machine.
+    /// The endpoint a session's `remote` names; `None` is this machine.
     ///
     /// # Invariant
     ///
     /// An unknown name is refused here: a session that asked for a peer must never
     /// quietly get a local shell instead. See `docs/notes/server-remote.md`.
-    pub fn endpoint_for(&self, target: Option<&str>) -> anyhow::Result<Endpoint> {
-        let Some(name) = target.map(str::trim).filter(|n| !n.is_empty()) else {
+    pub fn endpoint_for(&self, remote: Option<&str>) -> anyhow::Result<Endpoint> {
+        let Some(name) = remote.map(str::trim).filter(|n| !n.is_empty()) else {
             return Ok(self.local_endpoint()?);
         };
         if name == "local" {
-            return Ok(self.local_endpoint()?);
+            anyhow::bail!(
+                "there is no remote called `local`: this machine is what naming no \
+                 `--remote` means"
+            );
         }
-        match self.targets.iter().find(|t| t.name == name) {
-            Some(target) => Ok(target.endpoint.clone()),
+        match self.remotes.iter().find(|r| r.name == name) {
+            Some(remote) => Ok(remote.endpoint.clone()),
             None => anyhow::bail!(
-                "no target named {name:?}; this server knows {}",
-                if self.targets.is_empty() {
-                    "no targets at all".to_string()
+                "no remote named {name:?}; this server knows {}",
+                if self.remotes.is_empty() {
+                    "no remotes at all".to_string()
                 } else {
-                    self.targets
+                    self.remotes
                         .iter()
                         .map(|t| format!("{:?}", t.name))
                         .collect::<Vec<_>>()
@@ -782,7 +783,7 @@ impl SessionManager {
         Ok(Endpoint::local(program))
     }
 
-    /// Puts an existing session's shells on `target`, in `cwd`.
+    /// Puts an existing session's shells on `remote`, in `cwd`.
     ///
     /// # Invariant
     ///
@@ -794,29 +795,28 @@ impl SessionManager {
     pub async fn relocate(
         &self,
         session: &SessionHandle,
-        target: Option<&str>,
+        remote: Option<&str>,
         cwd: Option<&str>,
     ) -> anyhow::Result<MoveOutcome> {
-        // An unstated target is the one it already records: a move of directory
+        // An unstated remote is the one it already records: a move of directory
         // alone must not carry the session to another machine, and the row must not
         // end up naming one place while its shells are on another.
-        let wanted_target = match target.map(str::trim).filter(|name| !name.is_empty()) {
-            None => self.recorded_target(session.name()),
-            Some("local") => None,
+        let wanted_remote = match remote.map(str::trim).filter(|name| !name.is_empty()) {
+            None => self.recorded_remote(session.name()),
             Some(name) => Some(name.to_string()),
         };
         // Resolved before anything is queued or ended: an unknown name must not wait
         // in a slot that would later tear down working shells on its way to failing.
-        self.endpoint_for(wanted_target.as_deref())?;
+        self.endpoint_for(wanted_remote.as_deref())?;
         let request = MoveRequest {
-            target: wanted_target,
+            remote: wanted_remote,
             cwd: cwd.map(str::to_string),
         };
         let Some(_gate) = session.try_claim() else {
             session.queue_move(request.clone());
             tracing::info!(
                 session = %session.name(),
-                target = ?request.target,
+                remote = ?request.remote,
                 "move queued behind the running turn"
             );
             return Ok(MoveOutcome::Queued(request));
@@ -846,7 +846,7 @@ impl SessionManager {
         session: &SessionHandle,
         request: &MoveRequest,
     ) -> anyhow::Result<MoveReport> {
-        let endpoint = self.endpoint_for(request.target.as_deref())?;
+        let endpoint = self.endpoint_for(request.remote.as_deref())?;
         let wanted = match (request.cwd.as_deref(), endpoint.is_remote()) {
             // The row is handed to a shell later, and a relative path there would
             // mean wherever that shell happens to stand.
@@ -864,37 +864,37 @@ impl SessionManager {
             (None, _) => String::new(),
         };
         self.store
-            .set_session_placement(session.name(), &placed, request.target.as_deref())?;
+            .set_session_placement(session.name(), &placed, request.remote.as_deref())?;
         Ok(report)
     }
 
-    /// Refuses a target that differs from the one a session was created with.
-    fn check_same_target(&self, name: &str, asked: Option<&str>) -> anyhow::Result<()> {
+    /// Refuses a remote that differs from the one a session was created with.
+    fn check_same_remote(&self, name: &str, asked: Option<&str>) -> anyhow::Result<()> {
         let Some(asked) = asked else {
             return Ok(());
         };
         let recorded = self
             .store
             .get_session(name)?
-            .and_then(|row| row.target)
-            .unwrap_or_else(|| "local".to_string());
+            .and_then(|row| row.remote)
+            .unwrap_or_else(|| "this machine".to_string());
         if recorded != asked {
             anyhow::bail!(
-                "session {name:?} runs on target {recorded:?}, not {asked:?}; moving it \
+                "session {name:?} runs on remote {recorded:?}, not {asked:?}; moving it \
                  ends the shells on the machine it is leaving, so it is `set_session \
-                 --target` that does that, not creating the session."
+                 --remote` that does that, not creating the session."
             );
         }
         Ok(())
     }
 
     /// What a session's shells run on, as its row records it.
-    pub fn recorded_target(&self, name: &str) -> Option<String> {
+    pub fn recorded_remote(&self, name: &str) -> Option<String> {
         self.store
             .get_session(name)
             .ok()
             .flatten()
-            .and_then(|row| row.target)
+            .and_then(|row| row.remote)
     }
 
     fn materialise_locked(
@@ -905,7 +905,7 @@ impl SessionManager {
         if let Some(h) = live.get(&row.name) {
             return Ok(h.clone());
         }
-        let endpoint = self.endpoint_for(row.target.as_deref())?;
+        let endpoint = self.endpoint_for(row.remote.as_deref())?;
         let cwd = (!row.cwd.trim().is_empty()).then(|| PathBuf::from(&row.cwd));
         // The endpoint judges its own directory: this filesystem would answer wrongly.
         let cwd = match (&endpoint, cwd) {

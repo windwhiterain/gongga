@@ -206,7 +206,7 @@ impl Outcome {
 ///
 /// Not the whole catalog: `Dispatch::catalog` adds the client's commands and
 /// whatever scripts registered. One list, built once per greeting.
-pub fn server_catalog(targets: &[String]) -> Vec<CommandSpec> {
+pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
     vec![
         CommandSpec {
             target: CommandTarget::Server,
@@ -247,7 +247,7 @@ pub fn server_catalog(targets: &[String]) -> Vec<CommandSpec> {
                 arg(
                     "cwd",
                     "Working directory for the session: where a new one is created, and \
-                     where an existing one is moved to. For a session on a target this is \
+                     where an existing one is moved to. For a session on a remote this is \
                      a path on that machine, which the endpoint canonicalises and refuses \
                      when it does not exist; completion reads that machine's directories.",
                     false,
@@ -288,8 +288,8 @@ pub fn server_catalog(targets: &[String]) -> Vec<CommandSpec> {
                     ),
                 ),
                 arg(
-                    "target",
-                    "Which machine this session's shells run on, named by a `[targets.<name>]` \
+                    "remote",
+                    "Which machine this session's shells run on, named by a `[remotes.<name>]` \
                      table in the server's config. Omit for this machine. Naming a \
                      different one moves an existing session: every shell on the old \
                      machine is ended first, and the move is refused while a turn runs.",
@@ -297,7 +297,7 @@ pub fn server_catalog(targets: &[String]) -> Vec<CommandSpec> {
                     Some("name"),
                     // Exactly the tables this server was started with: `local` is
                     // what omitting the flag means, and naming it is refused.
-                    CompletionSource::Static(targets.to_vec()),
+                    CompletionSource::Static(remotes.to_vec()),
                 ),
                 arg(
                     "thinking_effort",
@@ -319,17 +319,17 @@ pub fn server_catalog(targets: &[String]) -> Vec<CommandSpec> {
         CommandSpec {
             target: CommandTarget::Server,
             name: "list_paths".into(),
-            description: "List one directory on a target, for a front-end completing `--cwd`. \
+            description: "List one directory on a remote, for a front-end completing `--cwd`. \
                       Not a tool the model needs: the paths of a session's own shell are \
                       read by running `ls` in it."
                 .into(),
             args: vec![
                 arg(
-                    "target",
-                    "The target whose filesystem to read. Omitted is this machine.",
+                    "remote",
+                    "The remote whose filesystem to read. Omitted is this machine.",
                     false,
                     Some("name"),
-                    CompletionSource::Static(targets.to_vec()),
+                    CompletionSource::Static(remotes.to_vec()),
                 ),
                 arg(
                     "path",
@@ -547,7 +547,7 @@ pub fn resolve(catalog: &[CommandSpec], name: &str, args: &Args) -> Result<Comma
 impl Dispatch {
     /// Every command offered, from all three sources: the only list there is.
     pub async fn catalog(&self) -> Vec<CommandSpec> {
-        let mut all = server_catalog(&self.sessions.target_names());
+        let mut all = server_catalog(&self.sessions.remote_names());
         all.extend(protocol::client_commands());
         all.extend(self.scripts.commands().await);
         all
@@ -555,9 +555,9 @@ impl Dispatch {
 }
 
 async fn list_paths(d: &Dispatch, args: &Args) -> Outcome {
-    let target = args.get("target").map(String::as_str);
+    let remote = args.get("remote").map(String::as_str);
     let path = args.get("path").map(String::as_str).unwrap_or("");
-    match d.sessions.list_paths(target, path).await {
+    match d.sessions.list_paths(remote, path).await {
         Ok(entries) => {
             let rows: Vec<serde_json::Value> = entries
                 .into_iter()
@@ -566,7 +566,7 @@ async fn list_paths(d: &Dispatch, args: &Args) -> Outcome {
             let count = rows.len();
             Outcome::ok_with(
                 format!("{count} entries in {path:?}"),
-                json!({"path": path, "target": target, "entries": rows}),
+                json!({"path": path, "remote": remote, "entries": rows}),
             )
         }
         Err(e) => Outcome::err(e.to_string()),
@@ -599,8 +599,8 @@ async fn expand_message(
 ) -> Result<crate::meta::Expanded, String> {
     let on_endpoint = d
         .sessions
-        .recorded_target(session.name())
-        .is_some_and(|target| target != "local");
+        .recorded_remote(session.name())
+        .is_some_and(|remote| remote != "local");
     // These resolve on the peer, so they are refused here; `@file:` stays literal.
     if on_endpoint {
         let named: Vec<String> = crate::meta::mentions(&message)
@@ -749,7 +749,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     // says. Asking for where it already is costs nothing: no shell is torn down for
     // a `--cwd` that names the directory it is standing in.
     let stated_cwd = args.get("cwd").map(String::as_str);
-    let stated_target = args.get("target").map(String::as_str);
+    let stated_remote = args.get("remote").map(String::as_str);
     let (session, moved) = match d.store.get_session(&name).ok().flatten() {
         Some(row) => {
             let live = d.sessions.peek(&name);
@@ -757,21 +757,18 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
                 .as_ref()
                 .map(|session| session.cwd())
                 .unwrap_or_else(|| std::path::PathBuf::from(&row.cwd));
-            let recorded_target = row.target.clone().unwrap_or_else(|| "local".to_string());
-            let wanted_target = stated_target
+            let recorded_remote = row.remote.clone();
+            let wanted_remote = stated_remote
                 .map(str::trim)
                 .filter(|asked| !asked.is_empty())
                 .map(str::to_string);
-            let target_moves = wanted_target
+            let remote_moves = wanted_remote
                 .as_deref()
-                .is_some_and(|asked| !same_target(asked, &recorded_target));
+                .is_some_and(|asked| !same_remote(asked, recorded_remote.as_deref()));
             // Read from the destination's side: the session's directory here,
             // the server's on arrival, and the peer's when it moves.
-            let to_here = same_target(
-                wanted_target.as_deref().unwrap_or(&recorded_target),
-                "local",
-            );
-            let base = if target_moves {
+            let to_here = wanted_remote.is_none();
+            let base = if remote_moves {
                 std::env::current_dir().unwrap_or_default()
             } else {
                 here.clone()
@@ -790,7 +787,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
                     Err(e) => return Outcome::err(e.to_string()),
                 },
             };
-            if !target_moves && !cwd_moves {
+            if !remote_moves && !cwd_moves {
                 (session, None)
             } else {
                 let stated = wanted_dir
@@ -798,7 +795,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
                     .map(|dir| dir.to_string_lossy().into_owned());
                 let moved = match d
                     .sessions
-                    .relocate(&session, wanted_target.as_deref(), stated.as_deref())
+                    .relocate(&session, wanted_remote.as_deref(), stated.as_deref())
                     .await
                 {
                     Ok(report) => report,
@@ -811,7 +808,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             // Naming a session creates it: that is the only way to get one.
             match d
                 .sessions
-                .ensure_on(&name, stated_cwd, Some(&entry.model), stated_target)
+                .ensure_on(&name, stated_cwd, Some(&entry.model), stated_remote)
             {
                 Ok(session) => (session, None),
                 Err(e) => return Outcome::err(e.to_string()),
@@ -868,7 +865,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         Some(crate::session::MoveOutcome::Queued(request)) => format!(
             "session {name} will move to {} {} when its turn ends",
             request
-                .target
+                .remote
                 .clone()
                 .unwrap_or_else(|| "local".to_string()),
             match &request.cwd {
@@ -893,8 +890,8 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             format!(
                 "session {name} moved to {} {where_now}, {} shell(s) ended{unproved}",
                 d.sessions
-                    .recorded_target(&name)
-                    .unwrap_or_else(|| "local".to_string()),
+                    .recorded_remote(&name)
+                    .unwrap_or_else(|| "this machine".to_string()),
                 report.ended
             )
         }
@@ -908,7 +905,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             "session": name,
             "move_pending": queued,
             "cwd": cwd,
-            "target": d.sessions.recorded_target(&name),
+            "remote": d.sessions.recorded_remote(&name),
             "model": tuning.model,
             "context_limit": tuning.context_limit,
             "thinking_effort": tuning.thinking_effort,
@@ -916,18 +913,12 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     )
 }
 
-/// Whether a target a command names is the one the session already records.
+/// Whether the remote a command names is the one the session already records.
 ///
-/// Names as the config spelled them: `local` and no target at all are one place, and
-/// a row that records nothing is standing on this machine.
-fn same_target(asked: &str, recorded: &str) -> bool {
-    let asked = if asked.is_empty() { "local" } else { asked };
-    let recorded = if recorded.is_empty() {
-        "local"
-    } else {
-        recorded
-    };
-    asked == recorded
+/// A row that records nothing is standing on this machine, and naming no remote is
+/// the only way to ask for that -- there is no remote called `local`.
+fn same_remote(asked: &str, recorded: Option<&str>) -> bool {
+    recorded.is_some_and(|recorded| recorded == asked)
 }
 
 /// Whether two spellings name one directory, so a `--cwd` that agrees is not a move.
@@ -1582,7 +1573,7 @@ pub fn session_info(d: &Dispatch, row: &crate::store::SessionRow) -> protocol::S
         usage: row.usage,
         model,
         thinking_effort,
-        target: row.target.clone(),
+        remote: row.remote.clone(),
         context_limit: tuning
             .context_limit
             .or(Some(crate::agent::DEFAULT_CONTEXT_LIMIT_PERCENT)),

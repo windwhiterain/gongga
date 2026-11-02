@@ -39,7 +39,7 @@ it arrives in the greeting's `ServerInfo`, which already existed.
 ## place
 
 Resolved once per completion, before the popup looks at any value: the machine
-`--target` names, then the machine the line's session runs on, then this one --
+`--remote` names, then the machine the line's session runs on, then this one --
 and the directory, which is the session's when the line has one. A message names
 no session on the line, which is why `words` is empty for one: prose containing
 `--session` is prose, and the session it goes to is the sticky one.

@@ -476,14 +476,14 @@ pub struct SessionInfo {
     /// The share of the window a context notice is sent at, when this session has one.
     #[serde(default)]
     pub context_limit: Option<u8>,
-    /// The target this session's shells run on; `None` is this machine.
+    /// The remote this session's shells run on; `None` is this machine.
     ///
     /// # Invariant
     ///
     /// Published so a front-end can complete a value that belongs to that machine
-    /// without the operator repeating `--target`: the session already says it.
+    /// without the operator repeating `--remote`: the session already says it.
     #[serde(default)]
-    pub target: Option<String>,
+    pub remote: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

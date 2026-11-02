@@ -111,16 +111,16 @@ runs exactly that.
    `gongga-tui` and `gongga-runner`, and it dispatches on its first word, so the
    whole remote side is the one file `ssh` already has to be able to execute.
 
-2. A target in the server's config, and nothing else:
+2. A remote in the server's config, and nothing else:
 
-       [targets.build]
+       [remotes.build]
        host = "peer"
 
    That means `ssh peer -- gongga runner`. `port`, `identity` and `runner` are the
    only other keys; `identity` is an `ssh -i` path on *this* machine, and `runner`
    is the peer's command, spelled in as many words as it takes:
 
-       [targets.build]
+       [remotes.build]
        host = "peer"
        port = 2222
        identity = "C:/keys/build"
@@ -130,7 +130,7 @@ runs exactly that.
 
 3. A session on it:
 
-       gongga-cli set_session --session build --target build --model <provider>/<model>
+       gongga-cli set_session --session build --remote build --model <provider>/<model>
 
    `--cwd` is optional and, when given, is a path **on the peer**: the endpoint
    canonicalises it and refuses one it does not have.
@@ -178,7 +178,7 @@ Three kinds of endpoint, and only one of them can come from a config file:
   prompt from hanging a turn, and a host that is not in `known_hosts` is refused by
   `ssh` itself, which is the answer a caller wants.
 - `Direct { runner }` — a runner process on this machine, which is how a peer is
-  exercised without ssh. **Test-only**: `[targets.<name>]` has `host`, `port`,
+  exercised without ssh. **Test-only**: `[remotes.<name>]` has `host`, `port`,
   `identity` and `runner`, and parsing can only produce `Endpoint::Remote`, so no
   TOML file reaches `Direct`; `local` and hostless entries are refused at load.
 
@@ -281,7 +281,7 @@ belongs to the caller, and only it knows how the operator spelled it.
 The shell it runs in is kept per target and apart from every session's shells,
 because it answers while turns are running and a listing must not queue behind
 one. The map is released before the peer is awaited: holding it across an answer
-would serialise two completions on unrelated targets.
+would serialise two completions on unrelated remotes.
 
 ### What a listing costs, measured
 

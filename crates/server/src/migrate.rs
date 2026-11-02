@@ -19,7 +19,7 @@ use std::process::Command;
 use anyhow::{Context, bail};
 
 /// The version this build reads and writes.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 /// The file that says what version a home is at. Missing means 0: a home this
 /// server has never migrated is the one it was created by.

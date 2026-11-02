@@ -44,21 +44,21 @@ struct Inner {
     sticky_names: Vec<String>,
     /// The skills one directory offers, and what they were read from.
     skills: Option<Skills>,
-    /// Directories a target answered with, keyed by target and directory, and
+    /// Directories a remote answered with, keyed by remote and directory, and
     /// when each answer arrived.
     remote_paths: HashMap<(String, String), (Vec<Candidate>, std::time::Instant)>,
-    /// The names a config holds, for reading `--target` off the line. Taken from
+    /// The names a config holds, for reading `--remote` off the line. Taken from
     /// the published catalog rather than kept here.
-    targets: HashSet<String>,
-    /// The directory each target's line last asked for and has no answer for.
+    remotes: HashSet<String>,
+    /// The directory each remote's line last asked for and has no answer for.
     ///
     /// # Invariant
     ///
-    /// One entry per target, never one per directory: the line is completed on
+    /// One entry per remote, never one per directory: the line is completed on
     /// every keystroke, so a queue keyed by directory asks for a listing per letter
     /// typed, answers them in order, and is always behind the cursor.
     wanted: HashMap<String, String>,
-    /// The directory each target is being asked for right now, so a second
+    /// The directory each remote is being asked for right now, so a second
     /// question never queues behind the first.
     inflight: HashMap<String, String>,
     /// Bumped whenever `remote_paths` changes, so a front-end repaints the popup.
@@ -102,7 +102,7 @@ impl Default for Inner {
             sticky_names: Vec::new(),
             skills: None,
             remote_paths: HashMap::new(),
-            targets: HashSet::new(),
+            remotes: HashSet::new(),
             wanted: HashMap::new(),
             inflight: HashMap::new(),
             paths_version: 0,
@@ -117,18 +117,18 @@ impl Catalog {
 
     /// Replaces the catalog with the one the greeting carried.
     pub fn set_commands(&self, commands: Vec<CommandSpec>) {
-        // Any argument named `target` publishes exactly the names a config holds,
+        // Any argument named `remote` publishes exactly the names a config holds,
         // so the client reads them off the catalog instead of the config file.
         let names: HashSet<String> = commands
             .iter()
             .flat_map(|command| command.args.iter())
-            .filter(|arg| arg.name == "target")
+            .filter(|arg| arg.name == "remote")
             .flat_map(|arg| match &arg.completions {
                 CompletionSource::Static(values) => values.clone(),
                 _ => Vec::new(),
             })
             .collect();
-        self.write().targets = names;
+        self.write().remotes = names;
         self.write().published = commands;
     }
 
@@ -150,25 +150,25 @@ impl Catalog {
         }
     }
 
-    /// The listings a completion wants, as `(target, directory)`; taking them
+    /// The listings a completion wants, as `(remote, directory)`; taking them
     /// is what stops a repeat ask.
     pub fn take_wanted(&self) -> Vec<(String, String)> {
         let mut inner = self.write();
         let asked = std::mem::take(&mut inner.wanted);
         let mut sending = Vec::new();
-        for (target, directory) in asked {
+        for (remote, directory) in asked {
             // Already asked: what is missing is the answer, not the question.
-            if inner.inflight.get(&target) == Some(&directory) {
+            if inner.inflight.get(&remote) == Some(&directory) {
                 continue;
             }
-            inner.inflight.insert(target.clone(), directory.clone());
-            sending.push((target, directory));
+            inner.inflight.insert(remote.clone(), directory.clone());
+            sending.push((remote, directory));
         }
         sending
     }
 
-    /// Records what a target answered, so the next completion offers it.
-    pub fn fill_paths(&self, target: &str, directory: &str, entries: Vec<(String, bool)>) {
+    /// Records what a remote answered, so the next completion offers it.
+    pub fn fill_paths(&self, remote: &str, directory: &str, entries: Vec<(String, bool)>) {
         let typed = directory.to_string();
         let named: Vec<Candidate> = entries
             .into_iter()
@@ -186,12 +186,12 @@ impl Catalog {
             })
             .collect();
         let mut inner = self.write();
-        // This target may be asked again, and the line says what it now wants.
-        if inner.inflight.get(target).map(String::as_str) == Some(directory) {
-            inner.inflight.remove(target);
+        // This remote may be asked again, and the line says what it now wants.
+        if inner.inflight.get(remote).map(String::as_str) == Some(directory) {
+            inner.inflight.remove(remote);
         }
         inner.remote_paths.insert(
-            (target.to_string(), directory.to_string()),
+            (remote.to_string(), directory.to_string()),
             (named, std::time::Instant::now()),
         );
         inner.paths_version += 1;
@@ -211,14 +211,14 @@ impl Catalog {
     ///
     /// # Invariant
     ///
-    /// Three answers, in this order: the machine `--target` names, then the machine
+    /// Three answers, in this order: the machine `--remote` names, then the machine
     /// the line's session runs on, then this one. The directory is the session's own
     /// when the line has one, and the server's otherwise. See
     /// `docs/notes/cli-catalog.md`.
     fn place(&self, words: &[String]) -> Place {
         let inner = self.read();
         let session = session_on_line(&inner, words);
-        let peer = named_machine(&inner, words).or_else(|| session.and_then(|s| s.target.clone()));
+        let peer = named_machine(&inner, words).or_else(|| session.and_then(|s| s.remote.clone()));
         let dir = session
             .map(|s| PathBuf::from(&s.cwd))
             .filter(|dir| !dir.as_os_str().is_empty())
@@ -305,7 +305,7 @@ impl Catalog {
     }
 
     /// Whether the caller runs this one itself. Answered from the published
-    /// target, never from a list here.
+    /// remote, never from a list here.
     pub fn is_client_command(&self, name: &str) -> bool {
         self.command(name)
             .map(|c| c.target == CommandTarget::Client)
@@ -484,7 +484,7 @@ fn value(kind: Reference, typed: &str, ctx: &Ctx) -> Vec<Candidate> {
             "skill",
         ),
         Reference::Image | Reference::File => match &ctx.place.peer {
-            Some(target) => remote_paths(ctx, target, typed),
+            Some(remote) => remote_paths(ctx, remote, typed),
             None => paths(&ctx.place.dir, typed),
         },
     }
@@ -520,7 +520,7 @@ fn resolve(
         // The line's session decides: its own directory here, a listing from the
         // peer when its shells run elsewhere.
         CompletionSource::Paths => match &ctx.place.peer {
-            Some(target) => remote_paths(ctx, target, token),
+            Some(remote) => remote_paths(ctx, remote, token),
             None => paths(&ctx.place.dir, token),
         },
         CompletionSource::StickyArguments => {
@@ -550,7 +550,7 @@ fn resolve(
                         )
                 })
                 .collect();
-            // The required spelling of a name is its target: that is what a
+            // The required spelling of a name is its remote: that is what a
             // mirrored value completes against.
             let found = shaped
                 .iter()
@@ -583,10 +583,10 @@ fn session_on_line<'a>(inner: &'a Inner, words: &[String]) -> Option<&'a Session
     inner.sessions.iter().find(|s| s.name == name)
 }
 
-/// The machine `--target` names, when the config holds it.
+/// The machine `--remote` names, when the config holds it.
 fn named_machine(inner: &Inner, words: &[String]) -> Option<String> {
-    let asked = flag_value(words, "target")?;
-    inner.targets.contains(asked).then(|| asked.to_string())
+    let asked = flag_value(words, "remote")?;
+    inner.remotes.contains(asked).then(|| asked.to_string())
 }
 
 /// Completes `--cwd` against the filesystem of the machine the line names.
@@ -595,13 +595,13 @@ fn named_machine(inner: &Inner, words: &[String]) -> Option<String> {
 ///
 /// Never waits for a peer: what has arrived is offered now, and the rest is asked
 /// for, so a completion never blocks the front-end on a network.
-fn remote_paths(ctx: &Ctx, target: &str, token: &str) -> Vec<Candidate> {
+fn remote_paths(ctx: &Ctx, remote: &str, token: &str) -> Vec<Candidate> {
     let (typed_dir, prefix) = split_path_token(token);
     let (cached, arrival) = {
         let inner = ctx.catalog.read();
         match inner
             .remote_paths
-            .get(&(target.to_string(), typed_dir.clone()))
+            .get(&(remote.to_string(), typed_dir.clone()))
         {
             Some((entries, at)) => (Some(entries.clone()), Some(*at)),
             None => (None, None),
@@ -611,7 +611,7 @@ fn remote_paths(ctx: &Ctx, target: &str, token: &str) -> Vec<Candidate> {
         ctx.catalog
             .write()
             .wanted
-            .insert(target.to_string(), typed_dir.clone());
+            .insert(remote.to_string(), typed_dir.clone());
     }
     let Some(entries) = cached else {
         return Vec::new();
