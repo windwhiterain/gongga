@@ -323,6 +323,20 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                             .collect(),
                     ),
                 ),
+                arg(
+                    "must_create",
+                    "`true` refuses the command unless the session does not exist yet, so a \
+                     caller that means to start its own session cannot join another one's \
+                     transcript by picking a name that was already taken.",
+                    false,
+                    Some("true|false"),
+                    CompletionSource::Static(
+                        protocol::SHOW_VALUES
+                            .iter()
+                            .map(|s| s.to_string())
+                            .collect(),
+                    ),
+                ),
             ],
         },
         CommandSpec {
@@ -701,6 +715,23 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     if let Some(refusal) = crate::session::checked_name(&name) {
         return Outcome::err(refusal);
     }
+    // A caller that means to start its own session says so: selecting another one's
+    // transcript is the one outcome a name collision must never produce.
+    match args.get("must_create") {
+        None => {}
+        Some(raw) => match parse_flag(raw) {
+            Ok(false) => {}
+            Ok(true) => {
+                if d.store.get_session(&name).ok().flatten().is_some() {
+                    return Outcome::err(format!(
+                        "a session named {name} already exists, and --must_create refuses to \
+                         join it; pick a name of your own"
+                    ));
+                }
+            }
+            Err(e) => return Outcome::err(e),
+        },
+    }
     // Resolve `--model` now: a typo should fail the command that made it.
     let stated = match args.get("model") {
         None => None,
@@ -990,6 +1021,18 @@ fn resolve_model(d: &Dispatch, model: &str) -> Result<crate::providers::Entry, S
 }
 
 /// `30%`, `30`, or `0` for "never notice"; anything else is refused, not rounded.
+/// `--must_create` as a value, or what is wrong with it: never a silent default.
+fn parse_flag(raw: &str) -> Result<bool, String> {
+    match raw.trim() {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        other => Err(format!(
+            "--must_create takes {}, not {other:?}",
+            protocol::SHOW_VALUES.join(" or ")
+        )),
+    }
+}
+
 fn parse_percent(raw: &str) -> Result<u8, String> {
     let trimmed = raw.trim().trim_end_matches('%').trim();
     let value: u16 = trimmed

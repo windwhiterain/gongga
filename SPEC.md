@@ -132,8 +132,10 @@ for the first user message to a empty session, find all meta references recursiv
 
 ## Cmd
 - server:
-  - `set_session --session (sticky) <name> --model (sticky) <provider/model> [--thinking_effort <level>](initial: highest in supported or default if unkown) [--context_limit <n%>](initial: "70%") [--cwd <path>](initial: ".") [--remote <none|name>](initial: none)`:
+  - `set_session --session (sticky) <name> --model (sticky) <provider/model> [--thinking_effort <level>](initial: highest in supported or default if unkown) [--context_limit <n%>](initial: "70%") [--cwd <path>](initial: ".") [--remote <none|name>](initial: none) [--must_create <bool>](initial: false)`:
     - plus `set_sticky_cmd_argument --name session --value <session>`
+    - `--must_create true` refuses the command when the session already exists: a caller
+      that starts its own session must not join another one's transcript by reusing a name.
   - `del_session --session <name>`: also delete all bash with the session name in key.
   - `send_message --session <name> --message <string>`: inject message instantly, turn waiting bash to backgound.
   - `interrupt_session --session <name>`

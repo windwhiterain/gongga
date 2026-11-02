@@ -96,6 +96,27 @@ a session already standing in `<its dir>/sub`. Resolving before storing is what 
 the row meaningful later: it is handed to a shell at the next start, and a relative
 path there would mean wherever that shell happened to be.
 
+## set_session — must_create
+
+`--must_create true` refuses the command when the session already exists, and it is
+checked before anything else about the session is resolved: a refusal must not have
+written a model, moved a directory or ended a shell on its way out.
+
+It exists because the command's normal shape is dangerous in exactly one case. A
+`set_session --session <name>` with no session is a creation; with one, it is a
+*selection*, and both answer `session is now <name>`. So a caller that means "start my
+own session" and picks a name someone else already used gets no error -- it gets the
+other session's transcript, and the next `send_message` puts its brief in the middle of
+somebody else's turn. Scripts that fan out work (subagents, archives, per-chat
+bridges) are the callers that make this reachable, and they are also the callers that
+cannot be trusted to probe first: a probe followed by a create leaves a window in which
+the name is taken, and the loser of that race is the one that silently joins.
+
+A boolean spelled `true`/`false` rather than a bare flag, as SPEC writes it: the value
+is what a script passes, and a flag that means the opposite of its absence has no way
+to say "the default" out loud. See `docs/notes/server-session.md` for what a name may
+be at all.
+
 ## LEVEL_IN_FORCE
 
 The level a session runs at is resolved once, when `set_session` writes it, and stored:
