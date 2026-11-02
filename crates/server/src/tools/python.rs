@@ -257,6 +257,11 @@ impl Tool for PythonTool {
                 .map(Duration::from_millis)
                 .unwrap_or(self.timeout);
             let restart = args["restart"].as_bool().unwrap_or(false);
+            let description = args
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
 
             let handle = {
                 let mut pythons = ctx.pythons.lock().await;
@@ -301,7 +306,18 @@ impl Tool for PythonTool {
                     if !reply.ok && !text.contains("Traceback") {
                         text.push_str("\n(the block raised)");
                     }
-                    ToolOutcome::ok(cap(&text, self.max_output_chars))
+                    let text = ctx.cap(
+                        Machine::Local,
+                        name,
+                        description,
+                        text,
+                        self.max_output_chars,
+                    );
+                    ToolOutcome::ok(if text.is_empty() {
+                        "(no output)".to_string()
+                    } else {
+                        text
+                    })
                 }
                 Err(e) => {
                     repl.kill().await;
@@ -346,6 +362,10 @@ impl Tool for DelPythonTool {
                     "type": "string",
                     "description": "Pattern matched against interpreter names, unanchored: \
                                     `qa` also takes `qa2`. Defaults to `^default$`."
+                },
+                "description": {
+                    "type": "string",
+                    "description": "What this call is for, in a few words -- read after the tool name, never executed."
                 }
             },
             "additionalProperties": false
@@ -411,6 +431,10 @@ impl Tool for ListPythonTool {
                     "type": "string",
                     "description": "Only names matching this pattern, unanchored: \
                                     `qa` also takes `qa2`. Defaults to every python."
+                },
+                "description": {
+                    "type": "string",
+                    "description": "What this call is for, in a few words -- read after the tool name, never executed."
                 }
             },
             "additionalProperties": false
@@ -464,26 +488,4 @@ impl Tool for ListPythonTool {
             )
         })
     }
-}
-
-/// Head and tail of an over-long answer, with the cut named.
-fn cap(text: &str, max: usize) -> String {
-    if max == 0 || text.len() <= max {
-        return text.to_string();
-    }
-    let half = max / 2;
-    let mut head_end = half.min(text.len());
-    while !text.is_char_boundary(head_end) {
-        head_end -= 1;
-    }
-    let mut tail_start = text.len().saturating_sub(half);
-    while !text.is_char_boundary(tail_start) {
-        tail_start += 1;
-    }
-    format!(
-        "{}\n\n[... {} chars cut from the middle ...]\n\n{}",
-        &text[..head_end],
-        text.len() - head_end - (text.len() - tail_start),
-        &text[tail_start..]
-    )
 }

@@ -177,7 +177,7 @@ impl ToolContext {
     }
 
     /// Caps one command's output, spilling the rest to a file named after it.
-    fn cap(
+    pub(crate) fn cap(
         &self,
         machine: Machine,
         shell: &str,
