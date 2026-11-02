@@ -21,9 +21,19 @@ column the writer left to the reader, and left is how a table reads.
 
 ## rows
 
-The header first, then the rule, then the body. Every row is the same display width,
-which is what makes the table a table: the frame draws rows, so alignment only
-exists if the rows are padded.
+The header first, then its rule, then the body, with one rule on every boundary
+between two logical rows. Every row is the same display width, which is what makes
+the table a table: the frame draws rows, so alignment only exists if the rows are
+padded.
+
+The body's rules are what a table needs to stay readable: a cell whose text wrapped is
+several drawn rows, so a wrapped `that wraps` and the next row's `bob` sat on adjacent
+lines with nothing between them, and the eye read one record as five. A rule between
+two logical rows is what says where a record ends.
+
+Nothing follows the last row: its own right border closes it, and a rule there would
+be a border the source never wrote. A header with no body keeps its rule, because
+that rule is the header's, not a boundary's.
 
 A cell is a `Line` of runs, not a string: what ink a word was written in is the
 markdown renderer's answer, and it has to survive the column. `fold::rows` does the
@@ -74,7 +84,16 @@ writes in a language this window does not use Latin letters for.
 
 ## rule
 
+One function draws every boundary, and the alignment markers are what its caller says
+it states: the header's rule is given the columns' alignments, a body boundary is
+given none. That is GFM's own accounting -- `|:--|--:|` is written once, under the
+header, and a table does not restate its alignment under every row. A body rule with
+colons in it would also read as a claim about that row.
+
 Dashes fill the column, and the colons are taken out of the dash count rather than
 added to the width: `:---:` is the same width as `---`. Otherwise the rule row would
 be wider than the rows around it and every table would be one column off from its own
 header.
+
+The rule is `|`, dashes and `|`, never box-drawing: `markdown.rs` prints the source's
+markers in the quiet ink, so a table is drawn in the characters it was written in.

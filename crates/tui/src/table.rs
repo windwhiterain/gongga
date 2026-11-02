@@ -29,7 +29,7 @@ const MIN: usize = 3;
 /// The columns one cell spends on its border and its air: `| a ` is three.
 const PADDING: usize = 3;
 
-/// The rows a table is drawn in: its header, the rule, then its body.
+/// The rows a table is drawn in: its header, a rule, then every body row under one.
 pub fn rows(
     header: &[Line<'static>],
     aligns: &[Align],
@@ -52,11 +52,14 @@ pub fn rows(
         })
         .collect();
     let widths = fit(&natural, width);
-    let mut out: Vec<Line<'static>> = Vec::new();
-    for (index, row) in lines(header, body).enumerate() {
-        // The rule sits between what the columns are said to hold and what they do.
-        if index == 1 {
-            out.push(rule(&widths, aligns));
+    let mut out = compose(header, &widths, aligns);
+    // The header's rule is the one boundary that states a column's alignment.
+    out.push(rule(&widths, aligns));
+    for (index, row) in body.iter().enumerate() {
+        // Dashes alone between two body rows, so a wrapped cell cannot read as the
+        // row after it. See `docs/notes/tui-table.md`.
+        if index > 0 {
+            out.push(rule(&widths, &[]));
         }
         out.extend(compose(row, &widths, aligns));
     }
@@ -146,7 +149,14 @@ fn compose(cells: &[Line<'static>], widths: &[usize], aligns: &[Align]) -> Vec<L
         .collect()
 }
 
-/// The row between header and body: dashes, and the `:` markers that align.
+/// The row on a boundary between two logical rows: dashes, and the `:` markers
+/// `aligns` states.
+///
+/// # Invariant
+///
+/// A segment spends `width + 2` columns, the same as a cell's: the colons are taken
+/// out of the dash count rather than added, so a rule is exactly as wide as the rows
+/// around it. An empty `aligns` marks nothing. See `docs/notes/tui-table.md`.
 fn rule(widths: &[usize], aligns: &[Align]) -> Line<'static> {
     let style = markdown::marker_style();
     let mut out = Line::default();
