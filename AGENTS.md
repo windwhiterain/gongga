@@ -103,6 +103,13 @@ git config core.hooksPath scripts/hooks
 `install_at` 曾经对着取不到的 commit 报 `written: 0, fetched: true`，于是 home 里没有
 `config.toml`，几百行之后才以 "no prompt templates" 报出来，指向 home 而不是 pin。
 
+**推之前再挡一次**：`scripts/hooks/pre-push`。它问的是这次要推的**分支尖端**，不是提交的范围——
+merge、squash、rebase、cherry-pick 造出来的提交照样被问，包括只在冲突解决里存在的那个 pin。
+普通推送只多一次本地 `for-each-ref`；只有本机从没见过的 pin 才去问内容仓库。推送本来就要有网，
+所以这里**答不上就不推**（与 pre-commit 的"离线放行"相反）。它挡不住 `--no-verify`、没装 hook 的
+clone、以及任何不是这个 git 发的推送（网页、bot）——那些只有接收侧能挡，靠 `gongga-ship` 的 main
+禁 force-push、禁删分支。
+
 ## 改过服务端代码之后
 
 跑着的进程还是旧二进制，新代码要接管这个 home 才算生效。整套流程在 `evolve` skill 里

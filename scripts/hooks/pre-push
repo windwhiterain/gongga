@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# Refuse to publish a pin that a fresh machine cannot fetch.
+#
+# `crates/server/ship.toml` names the content commit a build installs, and the
+# machine reading it has no content cache yet: a pin that lives only in this
+# working tree installs nothing, and the server then refuses to start with "the
+# shipped content is not installed here and cannot be fetched". What a machine
+# downloads is the tip of a branch, so the question is asked of the tips this
+# push would publish.
+#
+# `scripts/hooks/pre-commit` asks a related question -- but only for the commits
+# git creates interactively. A merge, a squash, a rebase and a cherry-pick all
+# write commits without running it, and those are how work lands on main here;
+# worse, the pin that a merge's conflict resolution leaves behind exists in no
+# other commit, so no per-commit scan can find it. Reading the tip sidesteps both.
+#
+# Invariant
+#
+# A push travels over the network, so "the content repository did not answer" is
+# not the open question it is for a commit: a pin that cannot be verified is not
+# published. (pre-commit lets that case through, because a commit must not depend
+# on a link.) The repository is only dialled when the local answer is "not on any
+# branch I know of", which is also the case right after somebody else published
+# the pin this build names.
+#
+# Nothing is asked when nothing is being published: an up-to-date push hands over
+# no ref at all, and its stdin is empty.
+#
+# What this cannot stop, and where the real guarantee lives
+#
+# `git push --no-verify`, a clone that never ran
+# `git config core.hooksPath scripts/hooks`, and every push that is not this git
+# (the web editor, a bot) skip this file. Only the receiving side speaks for
+# those, so what protects a user's download is protection on the content
+# repository's own main: no force-push, no deletion of a branch carrying pins.
+set -uo pipefail
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+cd "$root" || exit 0
+manifest=crates/server/ship.toml
+[[ -f "$manifest" ]] || exit 0
+# A clone without its submodules carries neither the content nor a copy of the
+# repository to ask what is on its branches.
+[[ -d ship/.git || -f ship/.git ]] || {
+	printf 'ship: no ship/ checkout here, so no pin can be checked; pushing unverified.\n' >&2
+	exit 0
+}
+
+url=$(sed -n 's/^url = "\(.*\)"/\1/p' "$manifest")
+
+# Pins the pushed tips name, one line each and deduplicated: several branches can
+# ride one push, and they usually name the same commit.
+pins=$(
+	while read -r _local_ref local_sha _remote_ref _remote_sha; do
+		[[ "$local_sha" =~ ^0+$ ]] && continue # a deletion publishes no content
+		git show "$local_sha:$manifest" 2>/dev/null |
+			sed -n 's/^commit = "\([0-9a-f]\{40\}\)"/\1/p'
+	done | sort -u
+)
+[[ -z "$pins" ]] && exit 0
+
+# `install` fetches `+refs/heads/*`, so a pin is fetchable when it is on any
+# branch of that repository, not only on main.
+on_a_branch() {
+	local pin=$1 branch
+	for branch in $(git -C ship for-each-ref --format='%(objectname)' refs/remotes/origin/); do
+		if git -C ship merge-base --is-ancestor "$pin" "$branch" 2>/dev/null; then
+			return 0
+		fi
+	done
+	return 1
+}
+
+unknown=""
+for pin in $pins; do
+	on_a_branch "$pin" || unknown="$unknown $pin"
+done
+[[ -z "$unknown" ]] && exit 0
+
+# What this clone knows is not what the repository holds: ask before refusing,
+# because the other reason for "I have never seen it" is that it was published
+# after the last fetch.
+if ! out=$(git -C ship fetch -q origin '+refs/heads/*:refs/remotes/origin/*' 2>&1); then
+	printf 'ship: cannot reach %s, so no pin can be verified.\n' "$url" >&2
+	printf '%s\n' "$out" | sed 's/^/  /' >&2
+	printf 'ship: nothing was pushed; retry when it answers, or --no-verify to publish unverified.\n' >&2
+	exit 1
+fi
+
+for pin in $unknown; do
+	on_a_branch "$pin" && continue
+	cat >&2 <<WHY
+
+ship: $pin is not published; nothing was pushed.
+
+  The tip of what you are pushing names that commit in $manifest, and a
+  machine installing this build asks $url for refs/heads/* -- a commit that is
+  on none of those branches cannot be fetched, so the server refuses to start
+  with "the shipped content is not installed here and cannot be fetched".
+
+  Publish it first, then push:
+
+      scripts/ship.sh -m "what changed"    # commits ship/, pushes, writes the pin
+
+WHY
+	exit 1
+done
+exit 0
