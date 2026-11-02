@@ -155,6 +155,8 @@ struct PaneCell {
     scroll: usize,
     /// The cell's row inside the window.
     row: usize,
+    /// The cell's column inside the window, for the margin a box leaves each side.
+    column: usize,
 }
 
 /// Whose server the window is talking to, which the header says beside the status.
@@ -324,20 +326,32 @@ impl Screen {
     /// fold, so a press on a summary line toggles the item it summarises.
     pub fn item_at(&mut self, width: u16, height: u16, column: u16, row: u16) -> Option<usize> {
         let cell = self.cell_at(width, height, column, row)?;
-        self.panes
-            .block_at(&cell.name, cell.width, cell.height, cell.scroll, cell.row)
+        self.panes.block_at(
+            &cell.name,
+            cell.width,
+            cell.height,
+            cell.scroll,
+            cell.row,
+            cell.column,
+        )
     }
 
     /// The block whose body holds this cell, which is what the wheel scrolls first.
     ///
     /// # Invariant
     ///
-    /// The body, never the box's rules: over a rule the wheel belongs to the pane.
-    /// See [`Log::body_at`].
+    /// The body, never the box's rules or the margin it leaves each side: over those
+    /// the wheel belongs to the pane. See [`Log::body_at`].
     fn body_at(&mut self, width: u16, height: u16, column: u16, row: u16) -> Option<usize> {
         let cell = self.cell_at(width, height, column, row)?;
-        self.panes
-            .body_at(&cell.name, cell.width, cell.height, cell.scroll, cell.row)
+        self.panes.body_at(
+            &cell.name,
+            cell.width,
+            cell.height,
+            cell.scroll,
+            cell.row,
+            cell.column,
+        )
     }
 
     /// One cell of a window, in the terms the log answers in: what a press and a
@@ -364,6 +378,7 @@ impl Screen {
                 .map(|pane| pane.scroll)
                 .unwrap_or(0),
             row: (row - body.y) as usize,
+            column: (column - body.x) as usize,
         })
     }
 
@@ -376,10 +391,11 @@ impl Screen {
     ///
     /// # Invariant
     ///
-    /// One notch, one move: the box of an opened item takes the wheel while it can
-    /// still move in that direction, and the pane takes it otherwise. Nothing else
-    /// decides, so a box is never a cell where the wheel does nothing.
-    /// See `docs/notes/tui-log.md`.
+    /// What is under the pointer decides, never how far it can move: a box takes the
+    /// wheel and keeps it, so opening an item cannot leave the reader scrolled
+    /// somewhere they did not ask for; a box's margin and its rules are the pane's,
+    /// so a pane is still reachable under a box that covers it. See
+    /// `docs/notes/tui-log.md`.
     pub fn scroll_at(&mut self, width: u16, height: u16, column: u16, row: u16, rows: i64) -> bool {
         let Some(hit) = self.session_at_row(width, height, column, row) else {
             return false;
@@ -387,10 +403,9 @@ impl Screen {
         if hit.part == Part::Pane
             && let Some(at) = self.body_at(width, height, column, row)
         {
-            // The box first, and the pane once it has nothing left to move.
-            if self.panes.scroll_block(at, rows) {
-                return true;
-            }
+            // The box and only the box: no handover. Margin and rules are the pane's.
+            self.panes.scroll_block(at, rows);
+            return true;
         }
         // The list is its own scroll -- SPEC gives it one -- and the empty name
         // it is filed under is the pane, not a session.
@@ -584,6 +599,12 @@ impl Tui {
     /// How tall one block may get, as the command layer last said.
     pub fn set_block_size(&mut self, lines: usize) {
         self.screen.panes.set_block_size(lines);
+        self.dirty = true;
+    }
+
+    /// How much of a window each side of a box gives back to the pane.
+    pub fn set_box_edge(&mut self, columns: usize) {
+        self.screen.panes.set_box_edge(columns);
         self.dirty = true;
     }
 

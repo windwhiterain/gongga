@@ -553,6 +553,10 @@ pub struct CommandSpec {
 /// Any number is accepted; this is the set worth offering, not the set allowed.
 pub const BLOCK_SIZES: &[&str] = &["0", "1", "2", "3", "5"];
 
+/// The widths `set_render --box_edge` offers: how much of a window's width each
+/// side of a box gives back to the pane.
+pub const BOX_EDGES: &[&str] = &["0", "1", "2", "3"];
+
 /// The values `set_render_session --show` takes.
 pub const SHOW_VALUES: &[&str] = &["true", "false"];
 
@@ -641,16 +645,27 @@ pub fn client_commands() -> Vec<CommandSpec> {
         ),
         (
             "set_render",
-            "How the events are drawn; with no argument, the setting it has.",
-            vec![spec_arg(
-                "block_size",
-                "`0` caps nothing. Otherwise a non-answer block shows at most this many \
-                 wrapped rows and keeps the newest of them, so a long stream scrolls \
-                 inside its own block instead of pushing other blocks away.",
-                false,
-                Some("lines"),
-                CompletionSource::Static(BLOCK_SIZES.iter().map(|m| m.to_string()).collect()),
-            )],
+            "How the events are drawn; with no argument, the settings it has.",
+            vec![
+                spec_arg(
+                    "block_size",
+                    "`0` caps nothing. Otherwise a non-answer block shows at most this \
+                     many wrapped rows and keeps the newest of them, so a long stream \
+                     scrolls inside its own block instead of pushing other blocks away.",
+                    false,
+                    Some("lines"),
+                    CompletionSource::Static(BLOCK_SIZES.iter().map(|m| m.to_string()).collect()),
+                ),
+                spec_arg(
+                    "box_edge",
+                    "Columns an opened item leaves to its window on the left and on the \
+                     right: a wheel over that margin scrolls the window, and one over the \
+                     box scrolls the box. `0` draws the box edge to edge.",
+                    false,
+                    Some("columns"),
+                    CompletionSource::Static(BOX_EDGES.iter().map(|m| m.to_string()).collect()),
+                ),
+            ],
         ),
         (
             "set_render_session",

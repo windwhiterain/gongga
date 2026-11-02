@@ -8,7 +8,7 @@ pub mod complete;
 pub mod server;
 
 pub use crate::catalog::Catalog;
-pub use crate::commands::{BlockSize, Shown, Sticky};
+pub use crate::commands::{BlockSize, BoxEdge, Shown, Sticky};
 pub use crate::complete::{Candidate, Completer, Completion, SharedCompleter, token_bounds};
 pub use crate::server::{ensure, spawn, starts_here, stop};
 pub use protocol;
@@ -426,6 +426,9 @@ pub trait Sink {
     /// How tall one block may get, in wrapped rows; 0 caps nothing. A front-end
     /// that shows every row ignores it.
     fn block_size(&mut self, _lines: usize) {}
+    /// The columns a box leaves to its pane on each side. A front-end that draws no
+    /// boxes ignores it.
+    fn box_edge(&mut self, _columns: usize) {}
     /// How the window lays itself out. A front-end that ignores it shows one list.
     fn layout(&mut self, _layout: &Layout) {}
     /// Replaces the whole text of a block: a call's structure, once known.
@@ -527,6 +530,8 @@ pub struct Client {
     sticky: Sticky,
     /// How tall one block may get, in wrapped rows.
     block_size: BlockSize,
+    /// The columns a box leaves to its pane on each side.
+    box_edge: BoxEdge,
     /// Which sessions are shown beside the list.
     shown: Shown,
     /// Calls that streamed their arguments, by id: their structure fills that block.
@@ -688,6 +693,7 @@ impl Client {
 
     fn new(catalog: Catalog, sticky: Sticky) -> Self {
         let block_size = BlockSize::load(sticky.home());
+        let box_edge = BoxEdge::load(sticky.home());
         let shown = Shown::load(sticky.home());
         catalog.set_sticky_names(&sticky.names());
         // Where relative values are read until a session says: this process's,
@@ -697,6 +703,7 @@ impl Client {
             catalog,
             sticky,
             block_size,
+            box_edge,
             shown,
             results: HashMap::new(),
             follows: Vec::new(),
@@ -1082,6 +1089,7 @@ impl Client {
     pub fn refresh(&self, sink: &mut dyn Sink) {
         // Told on every refresh, so a front-end attached late still learns it.
         sink.block_size(self.block_size.0);
+        sink.box_edge(self.box_edge.0);
         sink.layout(&self.layout());
         sink.sticky_session(self.sticky.get("session"));
         let mut facts = if self.connected {
@@ -1457,30 +1465,48 @@ impl Client {
     /// A value that does not parse saves nothing, and no argument is a read of
     /// the setting rather than a reset of it.
     fn run_render(&mut self, args: &protocol::Args, sink: &mut dyn Sink) {
-        let Some(raw) = args.get("block_size") else {
-            let report = format!("render block_size = {}", self.block_size.0);
+        let size = args.get("block_size");
+        let edge = args.get("box_edge");
+        if size.is_none() && edge.is_none() {
+            let report = self.render_report();
             self.row(sink, LineKind::Result, &report);
             return;
-        };
-        let parsed = match BlockSize::parse(raw) {
-            Ok(parsed) => parsed,
-            Err(e) => {
-                self.row(sink, LineKind::Error, &e);
-                return;
-            }
-        };
-        match parsed.save(self.sticky.home()) {
-            Ok(()) => {
-                self.block_size = parsed;
-                self.row(
-                    sink,
-                    LineKind::Result,
-                    &format!("render block_size = {}", parsed.0),
-                );
-                self.after_sticky_change(sink);
-            }
-            Err(e) => self.row(sink, LineKind::Error, &format!("could not save: {e}")),
         }
+        // Both parsed before either is saved: half of a setting that does not parse
+        // is a value nobody asked for.
+        let size = match size.map(|raw| BlockSize::parse(raw)).transpose() {
+            Ok(size) => size,
+            Err(e) => return self.row(sink, LineKind::Error, &e),
+        };
+        let edge = match edge.map(|raw| BoxEdge::parse(raw)).transpose() {
+            Ok(edge) => edge,
+            Err(e) => return self.row(sink, LineKind::Error, &e),
+        };
+        let saved = size
+            .map(|size| size.save(self.sticky.home()))
+            .into_iter()
+            .chain(edge.map(|edge| edge.save(self.sticky.home())))
+            .find(|saved| saved.is_err());
+        if let Some(Err(e)) = saved {
+            return self.row(sink, LineKind::Error, &format!("could not save: {e}"));
+        }
+        if let Some(size) = size {
+            self.block_size = size;
+        }
+        if let Some(edge) = edge {
+            self.box_edge = edge;
+        }
+        let report = self.render_report();
+        self.row(sink, LineKind::Result, &report);
+        self.after_sticky_change(sink);
+    }
+
+    /// What `set_render` is set to, in one row: both numbers, in the row's own words.
+    fn render_report(&self) -> String {
+        format!(
+            "render block_size = {}, box_edge = {}",
+            self.block_size.0, self.box_edge.0
+        )
     }
 
     /// Runs `set_render_session`: whether one session is shown beside the list.

@@ -93,7 +93,7 @@ for the first user message to a empty session, find all meta references recursiv
         |reasoning{beginning (line), ending (line)} (vertical)
         |toolcall{tool_name·description, {name, background, detached, timeout} (bash) | ...} (line)
         |tool_result{ok, time (spent)} (line)
-      } (horizontal, 点击展开, block_size, scroll if block_size!=0)
+      } (horizontal, 点击展开, block_size, box_edge, scroll 不溢出到外层)
       |output (colored markdown): a table is laid out in the events width, its
        columns shrinking to fit and its cells wrapping inside them
       |(server cmd/cmd_result that related to this session){symbol (colored), content (gray)}
@@ -103,6 +103,8 @@ for the first user message to a empty session, find all meta references recursiv
 
 - scroll
   - if scrolled from bottom, do not auto scroll, show a go to bottom button.
+  - an opened block never hands its scroll to the events: its rules and its `box_edge`
+    columns are the events'. scrolling where the pointer is decides, once.
 
 - hot-key
   - Shift+Enter: new line in cmd_input.
@@ -126,8 +128,10 @@ for the first user message to a empty session, find all meta references recursiv
 - client:
   - `set_sticky --name <name> --value <value>`:
   - `del_sticky --name <name>`
-  - `set_render [--block_size <n>](initial: 8)`:
+  - `set_render [--block_size <n>](initial: 8) [--box_edge <n>](initial: 0)`:
     - `block_size`: max line count of non-output block, auto scroll.
+    - `box_edge`: columns an opened block leaves to the events on each side; those
+      columns, like its rules, scroll the events.
   - `set_render_session --session <name> [--show <bool>]`
   - `connect_server [--ip <ip>](default: localhost) --port <port>`
   - `serve --port <port> [--home <path>](default: "~/.gongga")`

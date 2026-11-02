@@ -370,6 +370,27 @@ their own blocks; `rebuild` then re-derives both ledgers from what is left. Noth
 removes a block: a cap trims rows from a view, and a hidden window keeps every row it
 had.
 
+## Log::set_box_edge
+
+`set_render --box_edge <columns>`: how much of its window each side of a box gives
+back to the pane. The operator's idea, and a reaction to the wheel: once an opened
+item no longer hands the wheel to the pane at the end of its travel, a pointer that is
+over a box covering the window has no way to scroll the window at all. A margin is that
+way, and it is a *width the operator sets* rather than a constant in this crate: `0` is
+a box drawn edge to edge, and every other number is a strip on each side of a box whose
+wheel is the pane's.
+
+It is the same number in two places, which is why it lives in one: the box is laid out
+at the window's width less twice the margin (`Log::inner_width`), and the renderer draws
+it that far in from each edge. `box_margin` is `pub(crate)` for the second of those, and
+it clamps -- a margin wider than the window would be a box with no rows, which is not a
+shape a frame may draw.
+
+A margin is a shape, like a width, so a ledger remembers the one it was laid out with
+(`Ledger::edge`) and the next frame finds it stale the way it finds a width stale:
+`lay_out` reflows every hot block of that window and reads the cold ones back, then
+re-derives the row index. Setting it costs one layout per window, not one per frame.
+
 ## Log::set_block_size
 
 `set_event_ui --block_size <lines>`: how many rows one block may fill. A display
@@ -442,23 +463,43 @@ A call and its result are two entries, not one body with two sections. The call'
 complete. The result's `t:<call_id>` entry opens on the first output chunk,
 appends visible rows while the tool runs and folds only on the final verdict.
 Their shared id pairs them without sharing expansion, wrapping or lifecycle.
-An opened call shows named fields and indented multi-line values, and only the
-arguments the folded row left out: the tool's name and the fields marked
+An opened call shows named fields, each value starting at the window's left edge,
+and only the arguments the folded row left out: the tool's name and the fields marked
 `summary` are the box's label on its top rule, so repeating them in the body
-would draw one argument twice. An opened result has its own frame and raw
-output. Result titles are the verdict alone -- elapsed time immediately after the
+would draw one argument twice. An opened result has a box and raw output. Result titles are the verdict alone -- elapsed time immediately after the
 status symbol -- because the call's summary is the row above.
 
 ## Entry::boxed — one expanded shape
 
-Every opened folding item has a frame, not only an item taller than its cap. The
-cap limits body rows; the top and bottom rules always surround that body. Text is
-reflowed two columns narrower while expanded, before row offsets and scroll bounds
-are calculated. Structured section text starts immediately inside the left
-border, without reserving the folded row's symbol padding. Soft-wrapped field and
-output rows retain their own indentation. The renderer and index describe the
-same rectangle, so a long row cannot push the right rule off the pane. Toggling an item
-updates those offsets immediately, so click hit-testing follows the frame too.
+Every opened folding item has a box, not only an item taller than its cap. The cap
+limits body rows; the rules above and below always surround that body. The box has
+no sides: a column of `│` on each edge cost every row of the body two columns, which
+on a narrow pane is a word the reader never gets, and the pair of rules already says
+where the box begins and ends. So a body row is as wide as the window and starts at
+the window's own left edge, and a box costs two rows and no columns. Row offsets and
+scroll bounds are computed at that same width, so the rows the log hands back are
+exactly the rows the frame draws, and click hit-testing follows the box.
+
+Two things a box does reserve. On its label: `reflow` cuts a call's summary two
+columns short while the block is open, because the top rule is one column of air and
+one of dash, and a top rule with no dash on it is a box that reads as a folded row. And
+on each side: `Log::set_box_edge`'s margin, which is the window's rather than the box's
+and is what a wheel there scrolls. A box is therefore laid out at the window's width
+less twice that margin, and `Log::inner_width` is the one place that subtraction is
+made -- `reflow` receives a width and never works one out.
+
+## Entry::section_text — the arguments, at the left edge
+
+An opened call's fields are one row per `name` and value, `name: value`, and the
+value's own lines follow it as they were written. Nothing is indented: the row is the
+window's, and an indent is a column the value itself could have used. The older shape
+put a multi-line value under a `name:` line of its own, two columns in and four
+columns for every line of the value; on a long `command` that was seven columns of
+every row, and it was the reason a wrapped command line looked indented into nothing.
+
+Soft wrapping keeps a row's own leading spaces -- a hung continuation is the field's
+indentation, not the box's -- so a value written with its own indentation still reads
+as the script it is.
 
 ## Log::fold — an item is read from its beginning
 
@@ -478,28 +519,36 @@ out of sight.
 `toggle` (a key) and `toggle_at` (the block a press landed on) are one `fold`: two
 ways to name a block, one thing done to it.
 
-## Log::scroll_block — the wheel changes hands
+## Log::scroll_block — the wheel stays where it landed
 
-An opened item's box scrolls its own rows, and the pointer's wheel is the box's for
-as long as it can move in the direction the wheel is turning. At either end it hands
-the event to the pane underneath, so no cell of a pane is a place the wheel does
-nothing.
+An opened item's box scrolls its own rows, and the pointer's wheel is the box's
+wherever it lands on them.
 
-`block_size` is what decides whether there is anything inside to move. `0` caps
-nothing, so the box shows every row it has, its body is its whole text and every
-notch is the pane's -- SPEC's `scroll if block_size != 0` falls out of the geometry
-rather than being tested for. A number caps the body, so the box holds rows it is not
-showing, and those are what it scrolls first.
+It used to hand the event to the pane underneath once the box reached the end of its
+travel, so that no cell of a pane was a place the wheel did nothing. That is gone: a
+scroll gesture that moves whichever box the pointer happens to be over at one moment
+and the whole pane at the next is a gesture whose result the operator cannot predict,
+and opening an item is what *makes* the pane long enough to scroll, so the handover
+fired exactly when it was least expected. `scroll_at` therefore has no fall-through:
+the cell decides, once.
 
-The answer to "did the box take it" is therefore one comparison -- did `inner`
-change -- and nothing else is consulted.
+What an operator reaches the pane with is the geometry instead: the rules of the box
+and, on both sides, the margin the box leaves the window (`Log::set_box_edge`). Both
+are the pane's, so a pane is scrollable under a box without the wheel changing hands
+mid-gesture. With a margin of `0` the rules are what is left, which is why a narrow
+margin is the useful setting rather than a decorative one.
 
-Which row the pointer is on comes from the same walk that answers a press
-(`Log::block_at`): `Log::hit` gives the block and the row's index inside it, so
-`body_at` can say that the box's first and last rows are its rules. A wheel on a rule
-is the pane's, whatever the box could still do -- the rules are the only part of a box
-that is chrome rather than content, and with a body filling the window they are what is
-left to reach the window through.
+`block_size` still decides whether there is anything inside to move: `0` caps
+nothing, so the box shows every row it has and a notch over it moves nothing at all.
+A number caps the body, so the box holds rows it is not showing, and those are what
+it scrolls first. The answer to "did the box move" is one comparison -- did `inner`
+change -- and it is no longer the question anyone asks.
+
+Which cell the pointer is on comes from the same walk that answers a press
+(`Log::block_at`): `Log::hit` gives the block, the row's index inside it, and (since
+the margin arrived) nothing at all for a cell outside the box's own columns. So
+`body_at` says the box's rules and its margin are the pane's, and every other cell of
+a box is the box's.
 
 An earlier rule compared the cap against a constant, and in the direction its own
 comment denied: a cap above that constant, or no cap at all, took the wheel and kept

@@ -193,12 +193,12 @@ directory they came from. Pushing a list in from this function made its correctn
 depend on every caller remembering -- the greeting ran it, a session that moved did
 not.
 
-## Sink::block_size and Sink::layout
+## Sink::block_size, Sink::box_edge and Sink::layout
 
-Both default to a no-op: a front-end that shows every row in one window has to know
-neither setting exists, and the one-shot sink must not start rendering. Both are
-pushed on every `refresh`, which is how a window that attached after the client
-learned it still hears about it.
+All three default to a no-op: a front-end that shows every row in one window, or draws
+its boxes at the window's own edges, has to know none of these settings exist, and the
+one-shot sink must not start rendering. All three are pushed on every `refresh`, which
+is how a window that attached after the client learned them still hears about them.
 
 The layout is announced (`Layout::Merged` or `Layout::Split`) rather than a `split`
 flag, because the front-end has to know the names and their order anyway -- and a flag

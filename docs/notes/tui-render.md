@@ -388,11 +388,13 @@ broken.
 A header costs one row of the body's height, once, however many windows there are.
 
 The sticky window's shape is one variant: its column gets a `frame` and its header and
-rows are laid out one column and one row inside it, so the box is drawn where the window
-is rather than over it. Two columns and two rows of that column are what the box costs;
-a column too small for a border keeps its rows and is marked by `name_style` instead,
-because a border around nothing is worse than a fill. `Slot::frame` is the box, and it
-is also what the hit test reads: a click on the border is a click on the session.
+rows are laid out one row inside it, so the rules are drawn where the window is rather
+than over it. Two rows of that column are what the box costs, and no column of it: the
+frame is a rule above and a rule below, so a sticky window's rows are as wide as any
+other's, and the rules say which window the keys scroll. A column too short for two
+rules keeps its rows and is marked by `name_style` instead, because a border around
+nothing is worse than a fill. `Slot::frame` is the box, and it is also what the hit
+test reads: a click on a rule is a click on the session.
 
 ## pane_at, header_at
 
@@ -445,6 +447,22 @@ came to read, so its rows are drawn as the markdown they print -- `markdown::col
 and `docs/notes/tui-markdown.md` for what a row can say. It carries no mark, so its colours
 are spent on structure and none on the question of what kind of row it is.
 
+## ruled_row
+
+An opened item's box is two rules and the rows between them, and the item's label rides
+on the top rule. The box has no sides to pay for, so its rules are as wide as the window
+less the margin `set_render --box_edge` sets, and every row of it starts at that margin:
+one span of blanks in front of the row, the same number the log took out of the width
+when it wrapped it. The label keeps one column of air and ends in at least one dash,
+which is what tells the top rule from a folded row at the same width. A row of the body
+is drawn like any other row -- the kind's mark, then the quiet gray -- and the log
+already wrapped it, so the renderer pads nothing on the right and cuts nothing.
+
+The margin and the box's width come from `log::box_margin`, which is `pub(crate)` for
+this reason: the renderer and the log must agree on where a box's own columns end, or the
+rules would fall outside the rows they separate and one side would be wider than the
+wheel answers for.
+
 ## shown_row
 
 A row of a pane arrives two ways, and the difference is who decided how it is drawn.
@@ -454,8 +472,8 @@ every other row: the kind's mark in its colour, then the quiet gray.
 
 The split is not a shortcut for the answer. It is what makes a break harmless: the ink
 was decided before the width was, so a row a fold split carries the same runs on both
-sides, and `framed_row` -- which draws a box and a label around text -- never has to
-know a document exists.
+sides, and `ruled_row` -- which draws a box's rules and the label on its top one --
+never has to know a document exists.
 
 Styled rows are cloned per frame, as text rows are: the frame outlives the borrow of
 the log it read, and a screenful of runs is cheap next to a redraw.

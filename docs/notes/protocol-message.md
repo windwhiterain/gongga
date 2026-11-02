@@ -265,6 +265,13 @@ nothing about what the number is for.
 name to remember: the setting that replaced this one (`set_event_detail --mode`) had
 to name a behaviour, and its two names differed only by whether a block folded.
 
+## BOX_EDGES
+
+`--box_edge` is a width in columns, so this list is what a Tab offers and not what is
+allowed -- the same reasoning as `BLOCK_SIZES`, and the same `0` first: no margin is a
+box drawn edge to edge, which is a shape an operator picks on purpose rather than the
+absence of a setting.
+
 ## `supervisor`
 
 `ServerInfo::supervisor` is the watchdog a server runs under, when it runs under

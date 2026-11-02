@@ -55,6 +55,10 @@ impl Sink for TuiSink<'_> {
         self.0.set_block_size(lines);
     }
 
+    fn box_edge(&mut self, columns: usize) {
+        self.0.set_box_edge(columns);
+    }
+
     fn layout(&mut self, layout: &Layout) {
         self.0.set_layout(layout);
     }

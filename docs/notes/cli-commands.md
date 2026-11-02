@@ -52,12 +52,20 @@ screen, `none` was not -- so a `cli.toml` written before SPEC had one flag per s
 keeps meaning what it meant. A word with no meaning is dropped rather than guessed at,
 which shows the session, the same as having no entry.
 
-## BlockSize
+## BlockSize and BoxEdge
 
-`set_event_ui --block_size` is a display preference, so it is client state: the
-server sends the same events either way. It lives in `cli.toml` beside the sticky
-arguments and the filters, through the same read-modify-write, so the writers still
-do not clobber each other.
+`set_render --block_size` (once `set_event_ui --block_size`) and `set_render --box_edge`
+are display preferences, so they are client state: the server sends the same events
+either way. They live in `cli.toml` beside the sticky arguments and the filters, through
+the same read-modify-write, so the writers still do not clobber each other -- each
+structure writes its own key over a file it has just read, which leaves the other's key
+where it was.
+
+`--box_edge` is the columns an opened item leaves to its window on each side, and it
+exists because of what the wheel does *not* do any more: a box keeps the wheel wherever
+the pointer lands on it, so a margin is how the window under a box is reached. `0` is a
+box drawn edge to edge, which is right for a narrow pane and wrong for a tall box that
+covers one.
 
 It is one number, not a mode list. The setting it replaces (`set_event_detail
 --mode all|line`) had to name a *kind* of behaviour per mode, and the two names
@@ -68,10 +76,10 @@ SPEC words the cap as one on a *non-output* block: an answer is never capped, so
 the number carries its own exception and the setting stays one number rather than
 two switches that can disagree.
 
-Without an argument the command is a read: it prints the size, the session filter and
-the split, and changes nothing. Clearing the cap is `--block_size 0`, said on purpose
--- a command that both reads and resets depending on how much you type is the kind of
-thing an operator learns the hard way.
+Without an argument the command is a read: it prints both numbers in one row and
+changes nothing. Clearing the cap is `--block_size 0`, said on purpose -- a command that
+both reads and resets depending on how much you type is the kind of thing an operator
+learns the hard way.
 
 An unparseable value is refused with the way to say one, and an unknown value
 already in the file falls back to `0` -- a hand-edited file is not a reason for a

@@ -332,8 +332,8 @@ impl Panes {
     ///
     /// # Invariant
     ///
-    /// A box's rules are not body, so a wheel on them is the pane's.
-    /// See [`Log::body_at`].
+    /// A box's rules are not body, and neither is its margin, so a wheel there is
+    /// the pane's. See [`Log::body_at`].
     pub fn body_at(
         &mut self,
         window: &str,
@@ -341,16 +341,18 @@ impl Panes {
         height: usize,
         scroll: usize,
         row: usize,
+        column: usize,
     ) -> Option<usize> {
-        self.log.body_at(window, width, height, scroll, row)
+        self.log.body_at(window, width, height, scroll, row, column)
     }
 
     /// Scrolls the box of an opened item, which SPEC makes scrollable.
     ///
     /// # Invariant
     ///
-    /// Answers whether the box took the wheel: `false` is the pane's turn.
-    /// See [`Log::scroll_block`].
+    /// Answers whether the box moved. A box that has nothing left in that direction
+    /// moves nothing and still holds the wheel: what is under the pointer decides,
+    /// never how far the box happens to be scrolled. See [`Log::scroll_block`].
     pub fn scroll_block(&mut self, at: usize, rows: i64) -> bool {
         self.log.scroll_block(at, rows)
     }
@@ -360,7 +362,7 @@ impl Panes {
         self.log.toggle_at(at)
     }
 
-    /// The block under one row of a window, as the key a press carries.
+    /// The block under one cell of a window, as the key a press carries.
     pub fn block_at(
         &mut self,
         window: &str,
@@ -368,8 +370,10 @@ impl Panes {
         height: usize,
         scroll: usize,
         row: usize,
+        column: usize,
     ) -> Option<usize> {
-        self.log.block_at(window, width, height, scroll, row)
+        self.log
+            .block_at(window, width, height, scroll, row, column)
     }
 
     /// Replaces a call's provisional body with its structured head.
@@ -385,6 +389,16 @@ impl Panes {
     /// Caps every view's blocks, and the ones opened later too.
     pub fn set_block_size(&mut self, lines: usize) {
         self.log.set_block_size(lines);
+    }
+
+    /// Columns a box leaves to its pane on each side: the wheel there is the pane's.
+    pub fn set_box_edge(&mut self, columns: usize) {
+        self.log.set_box_edge(columns);
+    }
+
+    /// The columns a box leaves to its pane on each side.
+    pub fn box_edge(&self) -> usize {
+        self.log.box_edge()
     }
 
     pub fn line(&mut self, name: &str, kind: LineKind, text: impl Into<String>) {

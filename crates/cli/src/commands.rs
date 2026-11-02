@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use protocol::{Args, BLOCK_SIZES, CommandSpec};
+use protocol::{Args, BLOCK_SIZES, BOX_EDGES, CommandSpec};
 use serde::{Deserialize, Serialize};
 
 /// How many wrapped rows one block may fill. Client-side only.
@@ -43,6 +43,45 @@ impl BlockSize {
         let path = home.join("cli.toml");
         let mut file = read_file(&path);
         file.block_size = Some(self.0.to_string());
+        write_file(&path, &file)
+    }
+}
+
+/// The columns a box leaves to its pane on each side. Client-side only.
+///
+/// # Invariant
+///
+/// A width, never a mode: `0` is a box that touches both edges of its window, and
+/// every other number is a column on the left and the same column on the right.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BoxEdge(pub usize);
+
+impl BoxEdge {
+    /// A width, or the way to name one.
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim().parse::<usize>() {
+            Ok(columns) => Ok(Self(columns)),
+            Err(_) => Err(format!(
+                "no box edge {raw:?}: the columns a box leaves to its pane on each \
+                 side; widths worth typing are {}",
+                BOX_EDGES.join(", ")
+            )),
+        }
+    }
+
+    /// Loads `home/cli.toml`; a missing or unreadable file leaves no margin.
+    pub fn load(home: &Path) -> Self {
+        read_file(&home.join("cli.toml"))
+            .box_edge
+            .as_deref()
+            .and_then(|raw| BoxEdge::parse(raw).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save(self, home: &Path) -> anyhow::Result<()> {
+        let path = home.join("cli.toml");
+        let mut file = read_file(&path);
+        file.box_edge = Some(self.0.to_string());
         write_file(&path, &file)
     }
 }
@@ -127,6 +166,9 @@ struct File {
     sticky_cmd_arguments: Vec<Entry>,
     #[serde(default)]
     block_size: Option<String>,
+    /// `set_render --box_edge`: the columns a box leaves to its pane on each side.
+    #[serde(default)]
+    box_edge: Option<String>,
     /// `set_render_session`: the mode each named session is drawn in.
     #[serde(default)]
     render_session: Vec<Entry>,

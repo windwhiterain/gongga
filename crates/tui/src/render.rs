@@ -249,13 +249,12 @@ pub fn pane_slots(area: Rect, panes: &Panes, sticky: Option<&str>) -> (Vec<Slot>
 fn slot_of(panes: &Panes, name: &str, column: Rect, sticky: Option<&str>) -> Slot {
     let note = pane_note(panes, name);
     // Framed, not coloured: the box is the mark, and its rows keep their kind.
-    let frame = (Some(name) == sticky && column.width > 2 && column.height > 2).then_some(column);
+    let frame = (Some(name) == sticky && column.width > 0 && column.height > 2).then_some(column);
     let inner = match frame {
         Some(frame) => Rect {
-            x: frame.x + 1,
             y: frame.y + 1,
-            width: frame.width - 2,
             height: frame.height - 2,
+            ..frame
         },
         None => column,
     };
@@ -725,59 +724,70 @@ fn draw_quota(f: &mut Frame, s: &Screen, area: Rect) {
     );
 }
 
-/// One row of an item, inside the box SPEC gives an opened item.
+/// One row of an item: the box's top rule with the item's label, its bottom rule, or
+/// a row of its body.
 ///
 /// # Invariant
 ///
-/// A boxed row loses two columns to its borders and is one row shorter, which is
-/// what its own scroll accounts for: the box is drawn here, so the rows the log
-/// handed back are exactly the rows drawn.
-fn framed_row(kind: LineKind, text: &str, edges: crate::log::Edges, width: u16) -> Line<'static> {
-    if !edges.framed() {
+/// The box is two rules and no sides, so every row of it is the full width of the
+/// window and the label starts at the window's left edge, where the mark of every
+/// folded row starts. The scroll a box keeps is its rows: nothing here moves one.
+fn ruled_row(
+    kind: LineKind,
+    text: &str,
+    rule: crate::log::Rule,
+    width: u16,
+    edge: usize,
+) -> Line<'static> {
+    use crate::log::Rule;
+    if rule == Rule::Free {
         return item_row(kind, text);
     }
-    let inner = width.saturating_sub(2).max(1);
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    if edges.top {
-        // The corners and the left dash are three columns: the label fits the
-        // rest, and clipping cannot take the right border.
-        let available = (inner as usize).saturating_sub(1);
-        let (title, _) = split_at_width(text, available);
-        let body = item_row(kind, &title);
-        let used = UnicodeWidthStr::width(title.as_str());
-        let left = available.saturating_sub(used);
-        spans.push(Span::styled(
-            "\u{250c}\u{2500}",
+    let full = width as usize;
+    // The margin and the box's own width are the log's, so a rule cannot fall
+    // outside the rows it separates.
+    let margin = crate::log::box_margin(full, edge);
+    let inner = full.saturating_sub(2 * margin).max(1);
+    let body = match rule {
+        Rule::Free => Vec::new(),
+        Rule::Inside => item_row(kind, text).spans,
+        Rule::Bottom => vec![Span::styled(
+            "\u{2500}".repeat(inner),
             Style::default().fg(Color::Cyan),
-        ));
-        spans.extend(body.spans);
-        spans.push(Span::styled(
-            format!("{}\u{2510}", "\u{2500}".repeat(left)),
-            Style::default().fg(Color::Cyan),
-        ));
-        return Line::from(spans);
-    }
-    if edges.bottom {
-        spans.push(Span::styled(
-            format!("\u{2514}{}\u{2518}", "\u{2500}".repeat(inner as usize)),
-            Style::default().fg(Color::Cyan),
-        ));
-        return Line::from(spans);
-    }
-    let body = item_row(kind, text);
+        )],
+        Rule::Top => top_rule(kind, text, inner),
+    };
+    // One span of blanks in front: the columns the box gave back to its pane.
+    let mut spans = vec![Span::raw(" ".repeat(margin))];
+    spans.extend(body);
+    Line::from(spans)
+}
+
+/// The box's top rule: the item's label, then air and dashes to the box's width.
+///
+/// # Invariant
+///
+/// At least one dash, whatever the label's length: a top rule with no dash on it
+/// reads like a folded row at the same width.
+fn top_rule(kind: LineKind, text: &str, inner: usize) -> Vec<Span<'static>> {
+    let (title, _) = split_at_width(text, inner);
+    let mut body = item_row(kind, &title);
     let used: usize = body
         .spans
         .iter()
         .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
         .sum();
-    let left = (inner as usize).saturating_sub(used);
-    spans.push(Span::styled("\u{2502}", Style::default().fg(Color::Cyan)));
-    spans.extend(body.spans);
-    if left > 0 {
-        spans.push(Span::raw(" ".repeat(left)));
+    if used < inner {
+        let (air, dash) = match inner - used {
+            1 => (0, 1),
+            fill => (1, fill - 1),
+        };
+        body.spans.push(Span::styled(
+            format!("{}{}", " ".repeat(air), "\u{2500}".repeat(dash)),
+            Style::default().fg(Color::Cyan),
+        ));
     }
-    spans.push(Span::styled("\u{2502}", Style::default().fg(Color::Cyan)));
-    Line::from(spans)
+    body.spans
 }
 
 /// One row of an item: SPEC's coloured `symbol`, then the quiet gray beside it.
@@ -813,13 +823,14 @@ fn item_row(kind: LineKind, text: &str) -> Line<'static> {
 fn shown_row(
     kind: LineKind,
     shown: &Shown<'_>,
-    edges: crate::log::Edges,
+    rule: crate::log::Rule,
     width: u16,
+    edge: usize,
 ) -> Line<'static> {
     match shown {
         // Cloned: the frame outlives the borrow of the log it read.
         Shown::Styled(spans) => Line::from(spans.to_vec()),
-        Shown::Text(text) => framed_row(kind, text.as_ref(), edges, width),
+        Shown::Text(text) => ruled_row(kind, text.as_ref(), rule, width, edge),
     }
 }
 
@@ -829,9 +840,10 @@ fn draw_panes(f: &mut Frame, s: &mut Screen, area: Rect) {
     let (slots, _hidden) = pane_slots(area, &s.panes, sticky.as_deref());
     for slot in &slots {
         if let Some(frame) = slot.frame {
+            // Rules, not a border: a sticky window keeps every column it has.
             f.render_widget(
                 Block::default()
-                    .borders(Borders::ALL)
+                    .borders(Borders::TOP | Borders::BOTTOM)
                     .border_style(Style::default().fg(Color::Cyan)),
                 frame,
             );
@@ -874,13 +886,15 @@ fn draw_rows(f: &mut Frame, s: &mut Screen, name: &str, area: Rect) {
     pane.anchor(area.height as usize, rows);
     let scroll = pane.scroll;
     let name = pane.name.clone();
+    // Read before the window, which borrows the panes for as long as it lives.
+    let edge = s.panes.box_edge();
     let window = s.panes.window(&name, width, area.height as usize, scroll);
     let max_scroll = window.max_scroll;
     // Cloned: the rows a frame draws cannot outlive the log they came from.
     let lines: Vec<Line> = window
         .rows
         .iter()
-        .map(|(kind, shown, edges)| shown_row(*kind, shown, *edges, width as u16))
+        .map(|(kind, shown, rule)| shown_row(*kind, shown, *rule, width as u16, edge))
         .collect();
     drop(window);
     let scroll = scroll.min(max_scroll);

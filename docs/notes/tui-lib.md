@@ -95,19 +95,21 @@ it summarises.
 
 One cell of a window, in the terms the log answers in: the window's log width (one
 column short of the drawn one, as the renderer measures), the rows it shows, its
-scroll, and the row inside it. A press and a wheel therefore ask about the same
-arithmetic the frame was drawn with, and cannot land on a row it drew something else
-on.
+scroll, and the cell's own row **and column** inside it. The column is what tells a
+box's own cells from the margin it leaves each side, so a press and a wheel ask about
+the same rectangle the frame drew and cannot land on a cell it drew something else on.
 
 `item_at` answers the first question -- which block a press names, fold included.
-`body_at` answers the second: the same walk, minus the box's two rules. A rule is the
-box's edge, not content, so a wheel over it belongs to the pane. That is the border an
-operator uses to reach the window while a box is open over most of it.
+`body_at` answers the second: the same walk, minus the box's rules and its margin. Both
+are the window's edge rather than its content, so a wheel there belongs to the pane, and
+that is what an operator reaches the window with while a box covers most of it. See
+`Log::set_box_edge` for the width of that margin and why it is a setting.
 
-`scroll_at` gives one notch to one thing. The box of an opened item takes it while it
-can move in that direction; the pane takes it otherwise. Which of the two is decided
-nowhere else, so a box is never a cell where the wheel does nothing, and the same cell
-behaves the same way whatever `block_size` is. See `Log::scroll_block`.
+`scroll_at` gives one notch to one thing, once. The box of an opened item takes it, and
+keeps it: there is no fall-through to the pane when the box runs out of travel, because
+the same cell would then scroll two different things at different moments. The cell
+decides, and the same cell behaves the same way whatever `block_size` is. See
+`Log::scroll_block`.
 
 ## handle_mouse
 

@@ -166,14 +166,6 @@ impl Entry {
         self.expanded && self.kind.folds()
     }
 
-    /// Columns left for text after this block's own frame is accounted for.
-    fn content_width(&self, width: usize) -> usize {
-        match self.boxed() {
-            true => width.saturating_sub(2).max(1),
-            false => width.max(1),
-        }
-    }
-
     /// The rows this block occupies at `cap`, which is its body plus its box.
     fn visible(&self, cap: usize) -> usize {
         let body = self.rows().min(cap);
@@ -298,17 +290,14 @@ impl Entry {
                 true => "value",
                 false => field.label.as_str(),
             };
+            // A value starts at the left edge: an indent is columns it could have
+            // used. See `docs/notes/tui-log.md`.
             let mut lines = field.value.split('\n');
-            let first = lines.next().unwrap_or_default();
-            if lines.clone().next().is_some() {
-                rows.push(format!("  {name}:"));
-                rows.push(format!("    {first}"));
-                for line in lines {
-                    rows.push(format!("    {line}"));
-                }
-            } else {
-                rows.push(format!("  {name}: {first}"));
-            }
+            rows.push(match lines.next().unwrap_or_default() {
+                "" => format!("{name}:"),
+                first => format!("{name}: {first}"),
+            });
+            rows.extend(lines.map(str::to_string));
         }
         Some(hanging_indent(&rows.join("\n"), width))
     }
@@ -339,13 +328,14 @@ impl Entry {
             self.styled = vec![Line::default()];
             return;
         }
-        let width = self.content_width(width);
-        // A call's label is one row of its fields, cut at the width it is drawn
-        // at. See `docs/notes/tui-log.md`.
+        let width = width.max(1);
+        // A box spends two columns of its label on the top rule's air and dash.
+        // See `docs/notes/tui-log.md`.
         if let Some(call) = &self.call {
+            let rule = 2 * usize::from(self.boxed());
             self.tag = cut(
                 &call.summary(),
-                width.saturating_sub(self.kind.mark().width()),
+                width.saturating_sub(self.kind.mark().width() + rule),
             );
         }
         self.sections = match self.expanded {
@@ -408,7 +398,7 @@ impl Entry {
             self.text.push_str(text);
             return;
         }
-        let width = self.content_width(width);
+        let width = width.max(1);
         let base = self.text.len();
         self.width = width;
         if width > 0 {
@@ -566,9 +556,8 @@ fn cut(text: &str, width: usize) -> String {
     out
 }
 
-/// Soft-wrap section rows without losing the indentation that names their level.
-/// The inserted columns are real text, so row slicing and the right border use
-/// exactly the same display width.
+/// Soft-wraps rows keeping their indentation, in real spaces, so slicing and
+/// drawing measure one width.
 fn hanging_indent(text: &str, width: usize) -> String {
     let mut out = String::with_capacity(text.len());
     let mut column = 0usize;
@@ -702,14 +691,15 @@ impl RowIndex {
     }
 }
 
-/// One row of a frame: what it is, how it is drawn, and the box it sits inside.
+/// One row of a frame: what it is, how it is drawn, and which rule of a box it is.
 ///
 /// # Invariant
 ///
-/// `edges` is empty for a row that is not part of a frame; a block the operator
-/// opened is the only thing SPEC gives a scroll of its own, so it is the only one
-/// that has a box, and the box's sides are what the renderer draws around it.
-pub type Row<'a> = (LineKind, Shown<'a>, Edges);
+/// A block the operator opened is the only thing SPEC gives a scroll of its own, so
+/// it is the only one that has a box, and the box is one rule above its rows and one
+/// below: a row is the top rule, the bottom rule, or neither. See
+/// `docs/notes/tui-log.md`.
+pub type Row<'a> = (LineKind, Shown<'a>, Rule);
 
 /// How one row of a frame is drawn.
 ///
@@ -738,43 +728,25 @@ impl Shown<'_> {
     }
 }
 
-/// Which sides of a frame a row carries.
+/// Which rule of its box a row is drawn as.
+///
+/// # Invariant
+///
+/// A box is a rule above and a rule below and nothing on its sides: the sides cost
+/// every row of the body two columns, and the pair of rules already says where the
+/// box starts and ends. So a body row is as wide as the window, and starts at the
+/// window's own left edge.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Edges {
-    /// The frame's top border.
-    pub top: bool,
-    /// The frame's bottom border.
-    pub bottom: bool,
-    /// The frame's left and right borders.
-    pub sides: bool,
-}
-
-impl Edges {
-    /// A row inside a frame, with its sides only.
-    pub const INSIDE: Self = Self {
-        top: false,
-        bottom: false,
-        sides: true,
-    };
-
-    /// The frame's own top rule, which also carries the item's first row.
-    pub const TOP: Self = Self {
-        top: true,
-        bottom: false,
-        sides: true,
-    };
-
-    /// The frame's bottom rule.
-    pub const BOTTOM: Self = Self {
-        top: false,
-        bottom: true,
-        sides: true,
-    };
-
-    /// Whether this row is drawn inside a box at all.
-    pub fn framed(self) -> bool {
-        self.sides || self.top || self.bottom
-    }
+pub enum Rule {
+    /// A row of the body of a block that has no box.
+    #[default]
+    Free,
+    /// A row of the box's body, inside the margin the box leaves on each side.
+    Inside,
+    /// The box's top rule, which also carries the item's label.
+    Top,
+    /// The box's bottom rule.
+    Bottom,
 }
 
 /// What one frame needs: the rows that fit, borrowed from the log, and the bound.
@@ -801,6 +773,8 @@ struct Ledger {
     cap: usize,
     /// The width `blocks` were last laid out at; 0 until a frame asks.
     width: usize,
+    /// The box margin they were laid out with, so a new margin is a new shape.
+    edge: usize,
 }
 
 /// One cell of a window, as the walk that answers a press and a wheel finds it.
@@ -831,6 +805,9 @@ pub struct Log {
     open: HashMap<String, usize>,
     /// How many rows one block may fill. See [`Log::set_block_size`].
     block_size: usize,
+    /// Columns of a window a box leaves to the pane on each side. See
+    /// [`Log::set_box_edge`].
+    edge: usize,
     /// The journal this log is a view of. See `docs/notes/tui-cache.md`.
     cache: Cache,
     /// The next block id to hand out: monotonic within this window's journal.
@@ -865,6 +842,24 @@ const WALK: usize = 64;
 /// The rows of a block that fills every row it has.
 const NO_CAP: usize = usize::MAX;
 
+/// The columns one box takes out of each side of its window.
+///
+/// # Invariant
+///
+/// Never more than leaves the box one column: an edge wider than the window is a
+/// box with no rows, and a frame is not allowed to draw nothing.
+pub(crate) fn box_margin(width: usize, edge: usize) -> usize {
+    edge.min(width.saturating_sub(1) / 2)
+}
+
+/// The width a block's rows are laid out at: a box gives `edge` columns each side.
+fn block_width(width: usize, edge: usize, boxed: bool) -> usize {
+    match boxed {
+        true => width.saturating_sub(2 * box_margin(width, edge)).max(1),
+        false => width.max(1),
+    }
+}
+
 /// The rows a block of `kind` may fill: the window's `cap`, else the log's.
 fn room(kind: LineKind, cap: usize, block_size: usize) -> usize {
     // SPEC caps streamed abstracts, not commands, results, messages or errors.
@@ -889,6 +884,7 @@ impl Log {
             views: HashMap::new(),
             open: HashMap::new(),
             block_size: 0,
+            edge: 0,
             // Nothing is ever written: a log built with no front-end in mind does
             // not invent a directory.
             cache: Cache::none(),
@@ -952,7 +948,8 @@ impl Log {
             return;
         }
         let width = self.width_of(&entry.window);
-        materialize(&mut self.entries, &self.cache, at, width);
+        let edge = self.edge;
+        materialize(&mut self.entries, &self.cache, at, width, edge);
     }
 
     /// Writes one record about block `at`.
@@ -988,6 +985,23 @@ impl Log {
         }
         self.block_size = lines;
         self.reindex();
+    }
+
+    /// How many columns a box leaves to its pane on each side.
+    ///
+    /// # Invariant
+    ///
+    /// A shape: the next frame lays every window out again. See
+    /// `docs/notes/tui-log.md`.
+    pub fn set_box_edge(&mut self, columns: usize) {
+        // No walk here: a ledger remembers the margin it was laid out with, so the
+        // next frame finds that shape stale the way it finds a width stale.
+        self.edge = columns;
+    }
+
+    /// The columns a box leaves to its pane on each side.
+    pub fn box_edge(&self) -> usize {
+        self.edge
     }
 
     /// Caps one window's blocks whatever the log-wide cap says: the command line's
@@ -1065,6 +1079,15 @@ impl Log {
     /// The cap a window puts on its own blocks, or 0 for the log's.
     fn cap_of(&self, window: &str) -> usize {
         self.views.get(window).map(|ledger| ledger.cap).unwrap_or(0)
+    }
+
+    /// The width the block at `at` is laid out at: its own rows, a box's margin
+    /// taken out of both sides.
+    fn inner_width(&self, at: usize) -> usize {
+        match self.entries.get(at) {
+            Some(entry) => block_width(self.width_of(&entry.window), self.edge, entry.boxed()),
+            None => 0,
+        }
     }
 
     /// The width this window's blocks are laid out at; 0 until a frame asks.
@@ -1190,7 +1213,7 @@ impl Log {
         };
         self.touch(at);
         let before = self.contributions(at);
-        let width = self.width_of(&self.entries[at].window);
+        let width = self.inner_width(at);
         let entry = &mut self.entries[at];
         match &mut entry.source {
             // An answer's text is derived, so what changed is the document.
@@ -1209,7 +1232,7 @@ impl Log {
                 entry.text.push_str(text);
             }
         }
-        entry.reflow(width);
+        self.entries[at].reflow(width);
         let after = self.contributions(at);
         self.shift(at, before, after);
         self.record_seal(at);
@@ -1288,10 +1311,11 @@ impl Log {
         }
         self.touch(at);
         let before = self.contributions(at);
-        let width = self.width_of(&self.entries[at].window);
         let cap = self.room(self.entries[at].kind, self.cap_of(&self.entries[at].window));
+        self.entries[at].expanded = !self.entries[at].expanded;
+        // Read after the flip: whether it is a box is what its own width depends on.
+        let width = self.inner_width(at);
         let entry = &mut self.entries[at];
-        entry.expanded = !entry.expanded;
         entry.reflow(width);
         entry.inner = match entry.expanded {
             true => entry.travel(cap),
@@ -1307,8 +1331,9 @@ impl Log {
     ///
     /// # Invariant
     ///
-    /// It answers with the block *shown* at that row, counting the fold: a click on
-    /// a summary line is a click on the item it summarises.
+    /// It answers with the block *shown* at that cell, counting the fold: a click
+    /// on a summary line is a click on the item it summarises, and a click in a
+    /// box's margin is the pane's. See `docs/notes/tui-log.md`.
     pub fn block_at(
         &mut self,
         window: &str,
@@ -1316,8 +1341,9 @@ impl Log {
         height: usize,
         scroll: usize,
         row: usize,
+        column: usize,
     ) -> Option<usize> {
-        self.hit(window, width, height, scroll, row)
+        self.hit(window, width, height, scroll, row, column)
             .map(|hit| hit.block)
     }
 
@@ -1327,9 +1353,8 @@ impl Log {
     ///
     /// One walk answers both questions a cell asks -- which block a press names, and
     /// whether the wheel is a box's -- so a hit region cannot disagree with the
-    /// frame. A box's first and last rows are its rules, which are not content:
-    /// the wheel over them is the pane's. That is the edge an operator needs to be
-    /// able to reach through.
+    /// frame. A box's rules are its edge and not content, so the wheel over them is
+    /// the pane's, and so is one in the margin the box leaves on either side.
     pub fn body_at(
         &mut self,
         window: &str,
@@ -1337,8 +1362,9 @@ impl Log {
         height: usize,
         scroll: usize,
         row: usize,
+        column: usize,
     ) -> Option<usize> {
-        let hit = self.hit(window, width, height, scroll, row)?;
+        let hit = self.hit(window, width, height, scroll, row, column)?;
         let rule = hit.index == 0 || hit.index + 1 == hit.shown;
         match hit.boxed && rule {
             true => None,
@@ -1351,7 +1377,9 @@ impl Log {
     /// # Invariant
     ///
     /// `shown` is the rows the block occupies in this window, box included, so the
-    /// rows that carry the box's rules are its first and its last.
+    /// rows that carry the box's rules are its first and its last. A cell in a box's
+    /// margin is no block at all: that column is the pane's, which is how an operator
+    /// reaches the window while a box covers it. See `docs/notes/tui-log.md`.
     fn hit(
         &mut self,
         window: &str,
@@ -1359,6 +1387,7 @@ impl Log {
         height: usize,
         scroll: usize,
         row: usize,
+        column: usize,
     ) -> Option<Hit> {
         self.lay_out(window, width);
         let ledger = self.ledger(window)?;
@@ -1377,6 +1406,12 @@ impl Log {
         let block = *ledger.blocks.get(pos)?;
         let entry = self.entries.get(block)?;
         let boxed = entry.boxed();
+        if boxed {
+            let margin = box_margin(width, self.edge);
+            if column < margin || column + margin >= width {
+                return None;
+            }
+        }
         Some(Hit {
             block,
             index: want - ledger.index.prefix(pos),
@@ -1407,15 +1442,17 @@ impl Log {
             }
         };
         self.touch(at);
-        let width = self.width_of(&self.entries[at].window);
         let before = self.contributions(at);
-        let entry = &mut self.entries[at];
-        entry.text = String::new();
-        entry.kind = crate::LineKind::ToolCall;
-        entry.call = Some(head.clone());
-        // A call's structure is complete independently of its result stream.
-        entry.sealed = true;
-        entry.reflow(width);
+        let width = {
+            let entry = &mut self.entries[at];
+            entry.text = String::new();
+            entry.kind = crate::LineKind::ToolCall;
+            entry.call = Some(head.clone());
+            // A call's structure is complete independently of its result stream.
+            entry.sealed = true;
+            self.inner_width(at)
+        };
+        self.entries[at].reflow(width);
         let after = self.contributions(at);
         self.shift(at, before, after);
         self.open.remove(key);
@@ -1443,7 +1480,7 @@ impl Log {
         let before = self.contributions(at);
         self.entries[at].tag = tag.to_string();
         self.entries[at].kind = kind;
-        let width = self.width_of(&self.entries[at].window);
+        let width = self.inner_width(at);
         self.entries[at].reflow(width);
         let after = self.contributions(at);
         self.shift(at, before, after);
@@ -1493,7 +1530,7 @@ impl Log {
             Some(at) => {
                 self.touch(at);
                 let before = self.contributions(at);
-                let width = self.width_of(&self.entries[at].window);
+                let width = self.inner_width(at);
                 self.entries[at].append(text, width);
                 let after = self.contributions(at);
                 self.shift(at, before, after);
@@ -1557,7 +1594,7 @@ impl Log {
     /// text rather than the rows keeps this correct at a width nobody measured
     /// yet: `reflow` derives the rows from the trimmed text afterwards.
     fn trim_tail(&mut self, at: usize) {
-        let width = self.width_of(&self.entries[at].window);
+        let width = self.inner_width(at);
         let before = self.contributions(at);
         let entry = &mut self.entries[at];
         // An answer's text is derived from its document: the document is trimmed.
@@ -1586,7 +1623,7 @@ impl Log {
             return;
         }
         self.touch(at);
-        let width = self.width_of(&self.entries[at].window);
+        let width = self.inner_width(at);
         let before = self.contributions(at);
         self.entries[at].append(text, width);
         let after = self.contributions(at);
@@ -1627,6 +1664,7 @@ impl Log {
             views,
             cache,
             block_size,
+            edge,
             ..
         } = self;
         let Some(ledger) = views.get(window) else {
@@ -1686,8 +1724,9 @@ impl Log {
             }
         }
         // Rows on screen are the one thing a frame may pay a disk read for.
+        let edge = *edge;
         for block in &shown_blocks {
-            materialize(entries, cache, block.block, ledger.width);
+            materialize(entries, cache, block.block, ledger.width, edge);
         }
         let mut rows: Vec<Row<'_>> = Vec::with_capacity(end - start);
         for spot in &shown_blocks {
@@ -1698,11 +1737,11 @@ impl Log {
                 let index = row - spot.first;
                 // SPEC's opened item: a box whose top row carries the label.
                 if spot.boxed && index == 0 {
-                    rows.push((entry.kind, Shown::Text(entry.label()), Edges::TOP));
+                    rows.push((entry.kind, Shown::Text(entry.label()), Rule::Top));
                     continue;
                 }
                 if spot.boxed && index + 1 == spot.shown {
-                    rows.push((entry.kind, Shown::Text(Cow::Borrowed("")), Edges::BOTTOM));
+                    rows.push((entry.kind, Shown::Text(Cow::Borrowed("")), Rule::Bottom));
                     continue;
                 }
                 let body_row = match spot.boxed {
@@ -1711,11 +1750,11 @@ impl Log {
                 };
                 // The label is on the box's top row, so no body row repeats it.
                 let print = spot.labelled && !spot.boxed && index == 0;
-                let edges = match spot.boxed {
-                    true => Edges::INSIDE,
-                    false => Edges::default(),
+                let rule = match spot.boxed {
+                    true => Rule::Inside,
+                    false => Rule::Free,
                 };
-                rows.push((entry.kind, entry.shown(body_row, print), edges));
+                rows.push((entry.kind, entry.shown(body_row, print), rule));
             }
         }
         Viewport { rows, max_scroll }
@@ -1881,7 +1920,7 @@ impl Log {
                 entry.call = call.clone();
                 entry.sealed = true;
                 entry.slot = Some(at);
-                entry.reflow(width);
+                entry.reflow(block_width(width, self.edge, entry.boxed()));
                 match ids.get(id).copied() {
                     Some(place) => {
                         let before = self.contributions(place);
@@ -1911,7 +1950,7 @@ impl Log {
 
     /// Appends to a block during a replay: no journal, because it came from one.
     fn append_quiet(&mut self, at: usize, text: &str) {
-        let width = self.width_of(&self.entries[at].window);
+        let width = self.inner_width(at);
         let before = self.contributions(at);
         self.entries[at].append(text, width);
         let after = self.contributions(at);
@@ -2002,25 +2041,28 @@ impl Log {
     /// laying the log out twice per frame. See `docs/notes/tui-log.md`.
     fn lay_out(&mut self, window: &str, width: usize) {
         let width = width.max(1);
+        let edge = self.edge;
         let blocks = {
             let Some(ledger) = self.views.get_mut(window) else {
                 return;
             };
-            if ledger.width == width {
+            if ledger.width == width && ledger.edge == edge {
                 return;
             }
             ledger.width = width;
+            ledger.edge = edge;
             // Taken out so the blocks can be laid out while the ledger is written.
             std::mem::take(&mut ledger.blocks)
         };
         for at in blocks.iter().copied() {
             if self.entries[at].hot() {
-                self.entries[at].reflow(width);
+                let inner = block_width(width, edge, self.entries[at].boxed());
+                self.entries[at].reflow(inner);
                 continue;
             }
             // Read back, counted at this width, and dropped again: the index
             // needs the rows, and only a resize asks for them.
-            materialize(&mut self.entries, &self.cache, at, width);
+            materialize(&mut self.entries, &self.cache, at, width, edge);
             self.entries[at].drop_body();
         }
         if let Some(ledger) = self.views.get_mut(window) {
@@ -2052,7 +2094,7 @@ struct ShownBlock {
 /// drawing: a body is a function of the text and that width, so what comes back has
 /// the rows the index was already counting. A record that cannot be read leaves the
 /// block as it is rather than inventing an empty one. See `docs/notes/tui-cache.md`.
-fn materialize(entries: &mut [Entry], cache: &Cache, at: usize, width: usize) {
+fn materialize(entries: &mut [Entry], cache: &Cache, at: usize, width: usize, edge: usize) {
     let Some(entry) = entries.get(at) else {
         return;
     };
@@ -2066,7 +2108,7 @@ fn materialize(entries: &mut [Entry], cache: &Cache, at: usize, width: usize) {
     let place = entry.at;
     let Some(mut fresh) = cache
         .read(&window, slot)
-        .and_then(|record| whole(record, &window, width))
+        .and_then(|record| whole(record, &window, width, edge))
     else {
         return;
     };
@@ -2084,7 +2126,7 @@ fn materialize(entries: &mut [Entry], cache: &Cache, at: usize, width: usize) {
 /// eviction dropped. A `Delta` is the tail of a block and stands for nothing: it
 /// answers `None` rather than a block missing its head. See
 /// `docs/notes/tui-cache.md`.
-fn whole(record: Record, window: &str, width: usize) -> Option<Entry> {
+fn whole(record: Record, window: &str, width: usize, edge: usize) -> Option<Entry> {
     let (id, kind, tag, key, text, expanded, call) = match record {
         Record::Seal {
             id,
@@ -2106,6 +2148,6 @@ fn whole(record: Record, window: &str, width: usize) -> Option<Entry> {
     entry.call = call;
     // A line arrives whole and a seal ends a stream: both are scrollback.
     entry.sealed = true;
-    entry.reflow(width);
+    entry.reflow(block_width(width, edge, entry.boxed()));
     Some(entry)
 }
