@@ -381,6 +381,26 @@ pub struct MoveRequest {
     pub cwd: Option<String>,
 }
 
+/// Why `name` may not be a session's, or `None` when it may.
+///
+/// # Invariant
+///
+/// A name is `/`-separated segments with none of them empty, because the list draws
+/// one row per prefix: `a//b` and `a/` have no row to be drawn on, and a name nobody
+/// can see is a name nobody can click. See `docs/notes/server-session.md`.
+pub fn checked_name(name: &str) -> Option<String> {
+    if name.is_empty() {
+        return Some("a session name must not be empty".to_string());
+    }
+    let empty = name.split('/').any(str::is_empty);
+    empty.then(|| {
+        format!(
+            "`{name}` has an empty segment: a name is `/`-separated segments \
+             (`a/b/c`), with none of them empty"
+        )
+    })
+}
+
 /// What asking for a move came to.
 #[derive(Debug)]
 pub enum MoveOutcome {

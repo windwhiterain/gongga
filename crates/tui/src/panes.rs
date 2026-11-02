@@ -7,6 +7,7 @@
 //! `docs/notes/tui-panes.md`.
 
 use crate::log::{Log, Viewport};
+use crate::tree::{self, Row};
 use crate::{Layout, LineKind};
 
 /// One view of the events area: what it shows and where it is scrolled.
@@ -112,8 +113,15 @@ pub struct Panes {
     /// The session list, which is drawn from the command layer's announcement
     /// rather than from the log.
     listed: Vec<crate::Listed>,
-    /// The names that announcement puts in the list: SPEC's session list.
-    list_names: Vec<String>,
+    /// The rows that announcement puts in the list: SPEC's session list, as a tree.
+    list_rows: Vec<Row>,
+    /// The names whose rows are folded away, by their own full name.
+    ///
+    /// # Invariant
+    ///
+    /// A view, never a deletion: folding a name keeps every block under it, and a
+    /// name that is gone leaves its entry here as one string that matches nothing.
+    folded: std::collections::BTreeSet<String>,
     /// SPEC's `active_quota` row, as the command layer spelled it.
     quota: Option<crate::QuotaRow>,
     /// The windows this frame drew, so the rest can let their bodies go.
@@ -126,7 +134,8 @@ impl Panes {
             log: Log::new(),
             panes: Vec::new(),
             listed: Vec::new(),
-            list_names: Vec::new(),
+            list_rows: Vec::new(),
+            folded: std::collections::BTreeSet::new(),
             quota: None,
             drawn: Vec::new(),
         }
@@ -138,7 +147,8 @@ impl Panes {
             log: Log::with_cache(root, endpoint),
             panes: Vec::new(),
             listed: Vec::new(),
-            list_names: Vec::new(),
+            list_rows: Vec::new(),
+            folded: std::collections::BTreeSet::new(),
             quota: None,
             drawn: Vec::new(),
         }
@@ -220,14 +230,39 @@ impl Panes {
         self.quota.as_ref()
     }
 
-    /// The names the session list draws, in its order.
+    /// The rows the session list draws, in its order.
     ///
     /// # Invariant
     ///
-    /// Every session the server knows, shown or not: the list is where a name is
-    /// clicked, so a name missing from it is a session nobody can show again.
-    pub fn list_names(&self) -> &[String] {
-        &self.list_names
+    /// Every session the server knows, shown or not, and one row per prefix of its
+    /// name: the list is where a name is clicked, so a name missing from it is a
+    /// session nobody can show again.
+    pub fn list_rows(&self) -> &[Row] {
+        &self.list_rows
+    }
+
+    /// The row a session's own name draws, when the tree holds one.
+    pub fn row_of(&self, name: &str) -> Option<&Row> {
+        self.list_rows.iter().find(|row| row.name == name)
+    }
+
+    /// Folds this row's children away, or brings them back.
+    ///
+    /// # Invariant
+    ///
+    /// The rows are rebuilt here rather than in the frame: a click is the one thing
+    /// that changes the shape of the list, so the next frame and the next click read
+    /// the same rows. See `docs/notes/tui-panes.md`.
+    pub fn toggle_row(&mut self, name: &str) {
+        if !self.folded.remove(name) {
+            self.folded.insert(name.to_string());
+        }
+        self.rebuild_rows();
+    }
+
+    /// The rows of the list, as the announcement and the folded names make them.
+    fn rebuild_rows(&mut self) {
+        self.list_rows = tree::rows(&self.listed, &self.folded);
     }
 
     /// What the announcement says this session is doing, empty when it is not in it.
@@ -247,7 +282,7 @@ impl Panes {
     /// always last of the panes: it is drawn under everything else.
     pub fn layout(&mut self, layout: &Layout) {
         self.listed = layout.listed.clone();
-        self.list_names = layout.listed.iter().map(|l| l.name.clone()).collect();
+        self.rebuild_rows();
         self.quota = layout.quota.clone();
         let mut panes = vec![Pane::of("", Kind::List)];
         panes.extend(layout.shown.iter().map(|name| Pane::of(name, Kind::Shown)));
@@ -431,7 +466,7 @@ impl Panes {
     /// # Invariant
     ///
     /// Its name is empty because it has no window of the log to read: the rows it
-    /// draws are SPEC's session list, and `list_names` is where they come from.
+    /// draws are SPEC's session list, and `list_rows` is where they come from.
     pub fn list(&self) -> Option<&Pane> {
         self.panes.iter().find(|pane| pane.kind == Kind::List)
     }

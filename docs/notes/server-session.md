@@ -119,6 +119,21 @@ Staleness is not the cost of a race: the mirror is written by the same statement
 that sets `cwd`, from code that already holds the shell's lock, so a reader sees
 the last *reported* directory -- the newest value that exists.
 
+## checked_name
+
+SPEC's grammar for a session's name, in one function, called by the one command that
+creates a session.
+
+It refuses empty segments and nothing else. `/` is what makes a name a path -- the list
+draws one row per prefix, and `a//b` or `a/` has no row to be drawn on -- while every
+other character is the operator's: a space, a `.` and a CJK segment draw as themselves.
+Refusing them would be this function inventing a policy SPEC does not have.
+
+The prefix that matters is the one the harness owns, and that refusal is
+`monitor::reserved`'s, kept separate: it now checks every segment rather than only the
+first, because `work/@monitor` draws a row a reader cannot tell from the harness's own
+session. Two functions, two reasons, both stated where they refuse.
+
 ## stated_directory
 
 What `--cwd` means once resolved: absolute, `~` expanded, and a relative path read

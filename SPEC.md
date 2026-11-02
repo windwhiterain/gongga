@@ -64,6 +64,10 @@ after the system prompt, before the first user message, inject one message with 
 ### Invariant
 transcript that has been sent must not be change.
 
+## Session Name
+a name is `/`-separated segments: `a/b/c`. no segment may be empty or begin with `@`.
+a name is one row of the list, and each prefix of it is a group row.
+
 ## Meta
 preprocess before saving to transcripts.
 - `@image: <path>` , append id to it `@image: <path> (id)`.
@@ -82,7 +86,7 @@ for the first user message to a empty session, find all meta references recursiv
 ## UI
 - main (vertical)
   - horizontal
-    - [session{name (click: toggle show, if show change to true, set sticky session, if false and sticky, del sticky session)}] (vertical scroll)
+    - [session{name (click: toggle show, if show change to true, set sticky session, if false and sticky, del sticky session)}] (vertical scroll, tree: a prefix of a name is a group row, a click on its marker folds it away)
     - [{session(show = true){name, context (in tokens), cached (in n%, latest), tps (latest), ttft (latest), cwd, model, thinking_effort, context_limit}(click: set sticky session), events}] (horizontal split):(vertical)
   - [active_quota{provider, [mouth n%] [week n%] [5h n%] [credit n] [money n¥]}]: update each step end.
   - last cmd | cmd_result (non session related)

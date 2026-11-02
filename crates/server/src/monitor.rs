@@ -25,12 +25,14 @@ pub const SESSION: &str = "@monitor";
 ///
 /// Refused, not renamed: a session under a name the caller did not choose is a
 /// session they will not find again. Deleting one is allowed -- a monitor that
-/// cannot work has to be removable.
+/// cannot work has to be removable. Every segment is checked, not just the whole
+/// name: `work/@monitor` draws a row the harness cannot tell from its own.
 pub fn reserved(name: &str) -> Option<String> {
-    name.starts_with('@').then(|| {
+    let taken = name.split('/').any(|segment| segment.starts_with('@'));
+    taken.then(|| {
         format!(
-            "names beginning with `@` belong to the harness ({SESSION} is one); \
-             pick a name without it"
+            "names beginning with `@` belong to the harness ({SESSION} is one), \
+             whole or by segment; pick a name without it"
         )
     })
 }

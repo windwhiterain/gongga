@@ -16,6 +16,7 @@ pub mod program;
 mod render;
 pub mod run;
 mod table;
+mod tree;
 
 use std::io::{self, Stdout, Write, stdout};
 use std::path::Path;
@@ -128,6 +129,8 @@ pub enum UiEvent {
 pub enum Part {
     /// The session list, which scrolls its own rows.
     List,
+    /// The two columns that fold one row of the list away.
+    Fold,
     /// One session's header: its name and the figures beside it.
     Header,
     /// One session's events.
@@ -299,10 +302,15 @@ impl Screen {
                 part: Part::Bottom,
             });
         }
-        if let Some(name) = render::list_at(list, &self.panes, column, row) {
+        if let Some(hit) = render::list_at(list, &self.panes, column, row) {
+            // The marker folds; the name beside it does what a name does.
+            let part = match hit.marker {
+                true => Part::Fold,
+                false => Part::List,
+            };
             return Some(Hit {
-                name,
-                part: Part::List,
+                name: hit.name,
+                part,
             });
         }
         if let Some(name) = render::header_at(&slots, column, row) {
@@ -410,7 +418,7 @@ impl Screen {
         // The list is its own scroll -- SPEC gives it one -- and the empty name
         // it is filed under is the pane, not a session.
         match hit.part {
-            Part::List => self.panes.scroll_list_by(rows),
+            Part::List | Part::Fold => self.panes.scroll_list_by(rows),
             _ => self.scroll_pane(&hit.name, rows),
         }
         true
@@ -1092,7 +1100,14 @@ impl Tui {
         // the reading at it.
         match hit.part {
             Part::Header => self.clicked = Some(sticky_line(&hit.name)),
+            // A row that names no session is only a group, and the only thing that
+            // can happen to it is folding.
+            Part::Fold => self.screen.panes.toggle_row(&hit.name),
             Part::List => {
+                if !self.is_session_row(&hit.name) {
+                    self.screen.panes.toggle_row(&hit.name);
+                    return;
+                }
                 let shown = self
                     .screen
                     .panes
@@ -1111,6 +1126,14 @@ impl Tui {
             }
             _ => {}
         }
+    }
+
+    /// Whether this row of the list names a session, and not only the ones below it.
+    fn is_session_row(&self, name: &str) -> bool {
+        self.screen
+            .panes
+            .row_of(name)
+            .is_some_and(|row| row.session)
     }
 
     /// The window a line of this front-end's own belongs to.

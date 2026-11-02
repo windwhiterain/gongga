@@ -165,16 +165,22 @@ pub fn body(area: Rect, panes: &Panes) -> (Rect, Rect) {
     (list, panes)
 }
 
-/// Columns the session list needs: the status mark, the brackets, the name and air.
+/// Columns the session list needs: the mark, the indent, the marker, the name, air.
 pub fn list_width(panes: &Panes) -> u16 {
     let longest = panes
-        .list_names()
+        .list_rows()
         .iter()
-        .map(|name| UnicodeWidthStr::width(name.as_str()))
+        .map(|row| {
+            // The status mark and its space are `marker_column`'s own first two.
+            row.marker_column()
+                + UnicodeWidthStr::width(row.marker())
+                + UnicodeWidthStr::width(row.label.as_str())
+                + if row.session { 2 } else { 0 }
+        })
         .max()
         .unwrap_or(0);
-    // The mark and its space, the two brackets, and one column of air.
-    ((longest + 2 + 2 + 1) as u16).max(LIST_MIN)
+    // One column of air after the longest row.
+    ((longest + 1) as u16).max(LIST_MIN)
 }
 
 /// Where one pane is drawn: its header, if it has one, and the rows below it.
@@ -359,21 +365,41 @@ fn split_at_width(text: &str, width: usize) -> (String, &str) {
     (text.to_string(), "")
 }
 
+/// What a click on the list landed on: the row's name, and whether the click hit the
+/// two columns that fold it.
+///
+/// # Invariant
+///
+/// A row's marker folds it and its name does not, so the two gestures arrive as one
+/// hit with this flag rather than as two functions that could disagree about the
+/// columns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListHit {
+    pub name: String,
+    pub marker: bool,
+}
+
 /// The session whose row in the list covers `row`, for a click.
 ///
 /// # Invariant
 ///
 /// It reads the same rows `draw_list` writes -- from the list's own offset -- so a
 /// click lands on the name the operator read. See `docs/notes/tui-render.md`.
-pub fn list_at(area: Rect, panes: &Panes, column: u16, row: u16) -> Option<String> {
+pub fn list_at(area: Rect, panes: &Panes, column: u16, row: u16) -> Option<ListHit> {
     if !covers(&area, column, row) {
         return None;
     }
-    let names = panes.list_names();
+    let rows = panes.list_rows();
     let scroll = panes.list().map(|pane| pane.scroll).unwrap_or(0);
-    let (start, _end) = list_window(names.len(), area.height as usize, scroll);
+    let (start, _end) = list_window(rows.len(), area.height as usize, scroll);
     let index = start + (row - area.y) as usize;
-    names.get(index).cloned()
+    let hit = rows.get(index)?;
+    let cell = (column - area.x) as usize;
+    Some(ListHit {
+        name: hit.name.clone(),
+        // The marker's own two columns, read from the same place the frame draws it.
+        marker: hit.group && (hit.marker_column()..hit.marker_column() + 2).contains(&cell),
+    })
 }
 
 /// The session whose header covers this cell, for a click.
@@ -521,32 +547,40 @@ fn draw_list(f: &mut Frame, s: &mut Screen, area: Rect) {
         return;
     }
     let height = area.height as usize;
-    let total = s.panes.list_names().len();
+    let total = s.panes.list_rows().len();
     let Some(scroll) = s.panes.list_mut().map(|pane| {
         pane.bound(total.saturating_sub(height));
         pane.scroll
     }) else {
         return;
     };
-    let names = s.panes.list_names();
+    let rows = s.panes.list_rows();
     let (start, end) = list_window(total, height, scroll);
-    let rows: Vec<Line> = names
+    let drawn: Vec<Line> = rows
         .get(start..end)
         .unwrap_or_default()
         .iter()
-        .map(|name| {
-            let shown = s
-                .panes
-                .get(name)
-                .is_some_and(|pane| pane.kind == crate::panes::Kind::Shown);
-            let (mark, style) = status_mark(s.panes.status_of(name));
+        .map(|row| {
+            let shown = row.session
+                && s.panes
+                    .get(&row.name)
+                    .is_some_and(|pane| pane.kind == crate::panes::Kind::Shown);
+            let (mark, style) = status_mark(row.mark);
+            // The indent and the marker are structure: cyan, as every rule is.
+            let indent = " ".repeat(row.indent());
+            let name = match row.session {
+                true => bracketed(&row.label),
+                false => row.label.clone(),
+            };
             Line::from(vec![
                 Span::styled(format!("{mark} "), style),
-                Span::styled(bracketed(name), if shown { bright() } else { dim() }),
+                Span::styled(indent, dim()),
+                Span::styled(row.marker(), structure()),
+                Span::styled(name, if shown { bright() } else { dim() }),
             ])
         })
         .collect();
-    f.render_widget(Paragraph::new(rows), area);
+    f.render_widget(Paragraph::new(drawn), area);
     if scroll > 0 {
         draw_bottom(f, area);
     }
@@ -560,14 +594,14 @@ fn draw_list(f: &mut Frame, s: &mut Screen, area: Rect) {
 /// beside it costs the width of the widest word -- `running` is seven columns of a
 /// list that is read at a glance. The shape carries the state as well as the colour
 /// does, so the mark is still legible without it. See `docs/notes/tui-render.md`.
-fn status_mark(status: &str) -> (&'static str, Style) {
-    match status {
-        "running" => ("\u{25cf}", Style::default().fg(Color::Green)),
-        "error" => (
+fn status_mark(mark: crate::tree::Mark) -> (&'static str, Style) {
+    match mark {
+        crate::tree::Mark::Running => ("\u{25cf}", Style::default().fg(Color::Green)),
+        crate::tree::Mark::Error => (
             "\u{2715}",
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         ),
-        _ => ("\u{25cb}", dim()),
+        crate::tree::Mark::Idle => ("\u{25cb}", dim()),
     }
 }
 
@@ -1089,6 +1123,11 @@ fn draw_completion(f: &mut Frame, s: &Screen, input_area: Rect) {
 
 fn dim() -> Style {
     Style::default().fg(Color::DarkGray)
+}
+
+/// The ink of a structure rather than of a fact: a group's indent and its marker.
+fn structure() -> Style {
+    Style::default().fg(Color::Cyan)
 }
 
 /// A list row whose session has a window beside it: the list's own two looks.

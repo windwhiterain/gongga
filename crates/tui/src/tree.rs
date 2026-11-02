@@ -1,0 +1,171 @@
+//! The session list as a tree: every prefix of a name is a row.
+//!
+//! # Invariant
+//!
+//! One projection per layout: [`rows`] is the only place a name is cut into
+//! segments, and the frame, the click and the scroll bound all read what it
+//! returned, so a row cannot be drawn on one line and clicked on another.
+//! See `docs/notes/tui-tree.md`.
+
+use std::collections::{BTreeSet, HashMap};
+
+use crate::Listed;
+
+/// What a session is doing, as the list shows it in one column.
+///
+/// # Invariant
+///
+/// Ordered by how much attention it asks for, so a group row reports the strongest
+/// of what it holds without a second order to keep in step with this one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Mark {
+    /// A session that needs nothing, and a group whose sessions all do.
+    #[default]
+    Idle,
+    /// At least one session under this row is working.
+    Running,
+    /// At least one session under this row stopped with an error.
+    Error,
+}
+
+impl Mark {
+    /// The status word the announcement used, as a mark. An unknown word is idle.
+    pub fn of(word: &str) -> Self {
+        match word {
+            "running" => Mark::Running,
+            "error" => Mark::Error,
+            _ => Mark::Idle,
+        }
+    }
+}
+
+/// One row of the list: a session, a group, or a name that is both.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Row {
+    /// The name this row stands for: a session's own name, or a prefix of one.
+    pub name: String,
+    /// The last segment of `name`, which is what the row draws.
+    pub label: String,
+    /// How many segments precede `label`; the row's indent is two columns each.
+    pub depth: usize,
+    /// Whether a session is named exactly this -- and not only its children.
+    pub session: bool,
+    /// Whether any name goes on below this row.
+    pub group: bool,
+    /// The strongest mark of this row and everything under it.
+    pub mark: Mark,
+    /// Whether this row's children are folded away. Only a group can be.
+    pub collapsed: bool,
+}
+
+impl Row {
+    /// The columns this row's segment is indented by: two for each group above it.
+    pub fn indent(&self) -> usize {
+        2 * self.depth
+    }
+
+    /// The columns before this row's marker, counted from the list's left edge.
+    ///
+    /// # Invariant
+    ///
+    /// The frame and the click both place the marker here: the status column and its
+    /// space come first, then the indent.
+    pub fn marker_column(&self) -> usize {
+        2 + self.indent()
+    }
+
+    /// The two columns that fold this row, or two blanks where nothing folds.
+    ///
+    /// # Invariant
+    ///
+    /// A group is a group whether or not a session has its name too, so the marker
+    /// says what a click on it does and never what the name is.
+    pub fn marker(&self) -> &'static str {
+        match (self.group, self.collapsed) {
+            (false, _) => "  ",
+            (true, true) => "\u{25b8} ",
+            (true, false) => "\u{25be} ",
+        }
+    }
+}
+
+/// One node of the tree being built, before it is a row.
+struct Node {
+    name: String,
+    label: String,
+    depth: usize,
+    children: Vec<usize>,
+    session: bool,
+    mark: Mark,
+}
+
+/// The rows the list draws: every session's name, and every prefix of one.
+///
+/// # Invariant
+///
+/// Siblings stand in the announcement's order, which is the order a name was first
+/// seen: a group therefore appears where its first session is, and never elsewhere.
+/// A folded name keeps its rows, so unfolding it costs no data.
+pub fn rows(listed: &[Listed], folded: &BTreeSet<String>) -> Vec<Row> {
+    let mut nodes: Vec<Node> = Vec::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
+    let mut roots: Vec<usize> = Vec::new();
+    for listed in listed {
+        let mark = Mark::of(&listed.status);
+        let mut prefix = String::new();
+        let mut parent: Option<usize> = None;
+        for (depth, segment) in listed.name.split('/').enumerate() {
+            if depth > 0 {
+                prefix.push('/');
+            }
+            prefix.push_str(segment);
+            let at = match index.get(prefix.as_str()) {
+                Some(&at) => at,
+                None => {
+                    let at = nodes.len();
+                    nodes.push(Node {
+                        name: prefix.clone(),
+                        label: segment.to_string(),
+                        depth,
+                        children: Vec::new(),
+                        session: false,
+                        mark: Mark::Idle,
+                    });
+                    index.insert(prefix.clone(), at);
+                    match parent {
+                        Some(parent) => nodes[parent].children.push(at),
+                        None => roots.push(at),
+                    }
+                    at
+                }
+            };
+            // Every row above this one holds this session too, so it reports it.
+            nodes[at].mark = nodes[at].mark.max(mark);
+            parent = Some(at);
+        }
+        if let Some(last) = parent {
+            nodes[last].session = true;
+        }
+    }
+    // Depth first without recursion: a name is arbitrarily deep and a stack is not.
+    let mut rows = Vec::with_capacity(nodes.len());
+    let mut stack: Vec<usize> = roots.iter().rev().copied().collect();
+    while let Some(at) = stack.pop() {
+        let node = &nodes[at];
+        let collapsed = !node.children.is_empty() && folded.contains(node.name.as_str());
+        rows.push(Row {
+            name: node.name.clone(),
+            label: node.label.clone(),
+            depth: node.depth,
+            session: node.session,
+            group: !node.children.is_empty(),
+            mark: node.mark,
+            collapsed,
+        });
+        if collapsed {
+            continue;
+        }
+        stack.extend(node.children.iter().rev().copied());
+    }
+    rows
+}

@@ -90,6 +90,23 @@ travel too: a session joining the split makes every other pane shorter, and that
 shape change `Pane::anchor` has to see -- a fresh pane with a row count of zero would
 otherwise read as "the whole log is new" and jump to the top of it.
 
+## Panes::list_rows, row_of and toggle_row
+
+The list's rows are the projection in `tui-tree.md`, rebuilt here and nowhere else.
+`layout` rebuilds them because the announcement is what they are a reading of;
+`toggle_row` rebuilds them because a click on a marker is the other thing that changes
+their shape.
+
+Rebuilding on the click rather than in the frame is what keeps the two readers in step:
+the frame draws `list_rows`, and the click is tested against the same rows, so a click
+one frame after a fold lands on what that frame drew. A frame that folded would draw
+one shape and hit-test another -- the click would fold the wrong row, and the report
+would be "the marker does nothing".
+
+`folded` holds full names, and `row_of` is how a caller asks whether a row names a
+session: `session_at_row` answers with a name, and only the row knows whether the name
+is a session or just a group.
+
 ## Panes::forget
 
 The one thing here that empties the log, and it is not a layout change: the command

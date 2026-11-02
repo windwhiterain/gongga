@@ -188,6 +188,18 @@ look like the setting was applied.
 `set_session` doubles as creation: naming a session is the only way to get one,
 and refusing to create it would make the command useless.
 
+Two refusals before anything is created, and both are about the name itself. The first
+is `monitor::reserved`: no segment may begin with `@`, because that namespace is the
+harness's. The second is `session::checked_name`, SPEC's grammar -- `/`-separated
+segments, none empty. Nothing else about the name is refused: a space, a dot and a CJK
+segment are all a person's business.
+
+The grammar is enforced here and only here, because this is the one path that makes a
+session. Every name after it came from a row this command wrote, so a table that holds
+a name is a table whose names have passed -- `monitor::SESSION` never goes through
+`set_session`, and `@monitor` is a legal value of the grammar's character set anyway,
+which is exactly why the reserved check is a separate refusal saying why.
+
 # Invariant
 
 A session's model is the session's. Three sources, in this order: `--model` now,

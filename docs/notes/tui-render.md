@@ -210,7 +210,16 @@ facts, red for an error, green for a result. One colour for all three would make
 
 ## draw_list
 
-SPEC's session list, on the left of the body: every session, one row each.
+SPEC's session list, on the left of the body: a tree, one row per prefix of a name.
+
+The rows themselves are `tui-tree.md`'s; what this function decides is their look. One
+row reads as `○   ▾ [api]`: the status mark and its space, the indent, the marker, the
+label. Indent and marker are painted cyan -- `structure`, the ink a window's rules
+already use -- because they are the shape of the tree and not a fact about a session.
+The label is bracketed only on a row that names a session; a row that is only a group
+is the segment as typed. A header still says the whole name (`[work/api]`), so the two
+areas never disagree about what a session is called: the list cuts a name into its
+segments, the header spells it.
 
 It used to hold only the sessions no other area drew, which made it the list of what
 was hidden rather than the list of what exists -- and a session drawn `full` had its
@@ -222,7 +231,9 @@ Two facts, one column each, and each look means one of them:
 - **the status mark**: `●` running (green), `✕` error (red, bold), `○` anything else
   (chrome) -- `status_mark`. It is what the announcement says the session is doing,
   which used to be announced and dropped, so "is it running?" could only be answered
-  by reading that session's events.
+  by reading that session's events. A group row carries the strongest mark under it
+  (`tree::Mark`, error over running over idle), so a folded group still says whether
+  something inside it needs attention.
 - **the name's brightness**: bright when the session has a window beside the list, dim
   when it does not. The right-hand split states the same fact, said again where it is
   clicked.
@@ -247,8 +258,11 @@ and a fill to the right edge for it; both went when the frame became the sticky 
 
 A name is bracketed -- `● [main]` -- in the list, and `[main]` in the window's header:
 one spelling in both areas, so a name cannot be mistaken for the first word of the
-events beside it. `bracketed` is that spelling, and `list_width` counts the mark, its
-space, the two brackets and one column of air.
+events beside it. `bracketed` is that spelling, and `list_width` adds it up per row:
+`Row::marker_column` (the mark, its space and the indent), the two marker columns, the
+label and, on a session, the two brackets -- then one column of air. Taking the widest
+row rather than the widest name is what makes an indented label fit: the columns before
+it are part of what the row costs.
 
 The frame is also the only place the list's height is known, so `draw_list` writes
 the bound back (`Pane::bound`, the same call a window makes in `draw_rows`) and clamps
@@ -258,6 +272,11 @@ frames, the click -- reads that bound instead of working it out again.
 
 Scrolled away from its newest row, the list shows the way back to it: the same hint,
 on the same condition, as any other view.
+
+`list_at` is the same arithmetic from the other side, and it answers a `ListHit`: the
+row's full name, and whether the cell was inside the marker's two columns. A marker
+folds what is under it, a name does what a name does, and one function answering both
+is what keeps a click from folding the row it did not point at.
 
 ## name_style
 

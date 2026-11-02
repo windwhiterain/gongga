@@ -697,6 +697,10 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     if let Some(refusal) = crate::monitor::reserved(&name) {
         return Outcome::err(refusal);
     }
+    // Then whether the name is a name at all: the list draws one row per prefix.
+    if let Some(refusal) = crate::session::checked_name(&name) {
+        return Outcome::err(refusal);
+    }
     // Resolve `--model` now: a typo should fail the command that made it.
     let stated = match args.get("model") {
         None => None,
