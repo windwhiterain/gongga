@@ -296,10 +296,10 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             model_config: cfg.model.clone(),
             clients: std::sync::Mutex::new(std::collections::HashMap::new()),
             default_context: cfg.model.context,
-            tools: Arc::new(ToolRegistry::with_builtins(
-                cfg.bash.timeout,
-                cfg.bash.max_output_chars,
-            )),
+            tools: Arc::new(
+                ToolRegistry::with_builtins(cfg.bash.timeout, cfg.bash.max_output_chars)
+                    .with_python(cfg.python.clone()),
+            ),
             bus: bus.clone(),
             compress_above_tokens: cfg.agent.compress_above_tokens,
             cache_invalid_rate: cfg.agent.cache_invalid_rate,

@@ -26,6 +26,7 @@ pub mod detached;
 pub mod index_skill;
 #[cfg(windows)]
 pub mod job;
+pub mod python;
 
 /// Everything a tool invocation needs, supplied per call by the agent loop.
 pub struct ToolContext {
@@ -36,6 +37,15 @@ pub struct ToolContext {
     /// The session's named shells, on this machine and -- when it names one --
     /// on its remote. See `crate::session::Shells`.
     pub shells: Arc<StdMutex<Shells>>,
+    /// The session's persistent Python interpreters, named like shells.
+    pub pythons: Arc<
+        tokio::sync::Mutex<
+            std::collections::HashMap<
+                String,
+                Arc<tokio::sync::Mutex<crate::tools::python::PythonRepl>>,
+            >,
+        >,
+    >,
     /// The connection this session's references are read through, when its
     /// directory is on a remote.
     pub reader: Option<Arc<crate::remote::Reader>>,
@@ -163,7 +173,7 @@ impl ToolContext {
     }
 
     /// Caps one command's output, spilling the rest to a file named after it.
-    fn cap(
+    pub(crate) fn cap(
         &self,
         machine: Machine,
         shell: &str,
@@ -247,8 +257,21 @@ impl ToolRegistry {
                 Box::new(DelBashTool),
                 Box::new(ListBashTool),
                 Box::new(index_skill::IndexSkillTool),
+                Box::new(python::DelPythonTool),
+                Box::new(python::ListPythonTool),
             ],
         }
+    }
+
+    /// Adds the persistent Python tool with the configuration the server resolved.
+    pub fn with_python(mut self, python: crate::config::PythonConfig) -> Self {
+        self.tools.push(Box::new(python::PythonTool {
+            program: python.program,
+            args: python.args,
+            timeout: python.timeout,
+            max_output_chars: python.max_output_chars,
+        }));
+        self
     }
 
     pub fn get(&self, name: &str) -> Option<&dyn Tool> {

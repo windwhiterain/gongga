@@ -1125,6 +1125,7 @@ impl Agent {
             call_id: call_id.clone(),
             output_dir: self.output_dir.clone(),
             shells: session.shells(),
+            pythons: session.pythons(),
             reader: session.reader(),
             machine,
             detached: self.detached.clone(),

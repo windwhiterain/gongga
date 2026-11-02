@@ -15,6 +15,8 @@ use crate::remote::endpoint::Endpoint;
 use crate::remote::shell_set::ShellSet;
 use crate::store::{SessionRow, Store};
 use crate::tools::detached::DetachedRegistry;
+use crate::tools::python::PythonRepl;
+use std::collections::HashMap as PythonMap;
 
 /// The name of the shell every session starts with.
 pub const DEFAULT_BASH: &str = "default";
@@ -406,6 +408,8 @@ struct SessionInner {
     store: Store,
     /// This machine's shells, and the remote's when the session names one.
     shells: Arc<Mutex<Shells>>,
+    /// The persistent Python interpreters, named like shells.
+    pythons: Arc<AsyncMutex<PythonMap<String, Arc<AsyncMutex<PythonRepl>>>>>,
     cancel: Mutex<CancellationToken>,
     /// How many times the operator has cancelled; a queued turn compares it across the wait.
     cancels: AtomicU64,
@@ -456,6 +460,10 @@ impl SessionHandle {
 
     pub fn shells(&self) -> Arc<Mutex<Shells>> {
         self.inner.shells.clone()
+    }
+
+    pub fn pythons(&self) -> Arc<AsyncMutex<PythonMap<String, Arc<AsyncMutex<PythonRepl>>>>> {
+        self.inner.pythons.clone()
     }
 
     /// Ends every shell this session owns, retired ones included, and waits for
@@ -1370,6 +1378,7 @@ impl SessionManager {
                 name: row.name.clone(),
                 store: self.store.clone(),
                 shells: Arc::new(Mutex::new(shells)),
+                pythons: Arc::new(AsyncMutex::new(PythonMap::new())),
                 cancel: Mutex::new(CancellationToken::new()),
                 cancels: AtomicU64::new(0),
                 inbox: Arc::new(AtomicU64::new(0)),
