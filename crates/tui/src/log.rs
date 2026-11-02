@@ -2064,25 +2064,48 @@ fn materialize(entries: &mut [Entry], cache: &Cache, at: usize, width: usize) {
     };
     let window = entry.window.clone();
     let place = entry.at;
-    let Some(Record::Seal {
-        id,
-        kind,
-        tag,
-        key,
-        text,
-        expanded,
-        call,
-    }) = cache.read(&window, slot)
+    let Some(mut fresh) = cache
+        .read(&window, slot)
+        .and_then(|record| whole(record, &window, width))
     else {
         return;
     };
-    let mut fresh = Entry::with_tag(id, &window, kind, &tag, text, width);
-    fresh.key = key;
-    fresh.expanded = expanded;
-    fresh.call = call;
-    fresh.sealed = true;
     fresh.slot = Some(slot);
     fresh.at = place;
-    fresh.reflow(width);
     entries[at] = fresh;
+}
+
+/// The block a record stands for on its own, at the width it is drawn at.
+///
+/// # Invariant
+///
+/// A `Line` and a `Seal` both stand for a block alone -- a line was pushed whole,
+/// and a seal is a block's whole current form -- so either one restores a body an
+/// eviction dropped. A `Delta` is the tail of a block and stands for nothing: it
+/// answers `None` rather than a block missing its head. See
+/// `docs/notes/tui-cache.md`.
+fn whole(record: Record, window: &str, width: usize) -> Option<Entry> {
+    let (id, kind, tag, key, text, expanded, call) = match record {
+        Record::Seal {
+            id,
+            kind,
+            tag,
+            key,
+            text,
+            expanded,
+            call,
+        } => (id, kind, tag, key, text, expanded, call),
+        Record::Line { id, kind, text } => {
+            (id, kind, String::new(), String::new(), text, false, None)
+        }
+        Record::Delta { .. } => return None,
+    };
+    let mut entry = Entry::with_tag(id, window, kind, &tag, text, width);
+    entry.key = key;
+    entry.expanded = expanded;
+    entry.call = call;
+    // A line arrives whole and a seal ends a stream: both are scrollback.
+    entry.sealed = true;
+    entry.reflow(width);
+    Some(entry)
 }

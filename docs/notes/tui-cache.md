@@ -182,6 +182,15 @@ the same text at the same width has the same rows.
 A record that cannot be read leaves the block as it is rather than inventing an empty
 one. A journal truncated by hand is then a hole in the picture, not a lie.
 
+Two records stand for a block alone: the `Line` a whole row was pushed as, and the
+`Seal` a stream ends with. Reading back used to accept only the `Seal`, and `drop_body`
+dropped anything with a slot -- so a command line, a user message or a status row that
+scrolled out of the pane, or that belonged to a hidden session, came back as its mark
+and nothing else, then as nothing at all. What the operator saw was a pane full of
+blank rows with the odd `$` in it, which is the shape of a body that is gone: `row()`
+answers `""` from an empty `starts`. A `Delta` is still refused, because it is the tail
+of a block and restoring it alone would invent a block without its head.
+
 ## Log::touch — a mutation reads the body back first
 
 Every mutation (`rewrite`, `relabel`, `describe`, a toggle, an append) calls `touch`
