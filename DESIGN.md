@@ -1575,3 +1575,6 @@ API。排序按最差的额度窗口降序，没报额度的按 roster 顺序排
 4. **pid 复用**：`follows` 与 `GONGGA_SUPERVISOR` 都只验数字，与 §8.1 那条风险同类。
 5. **`taskkill /F` 打 supervisor 会连子进程带走**（Windows `/T` 语义），与「软停保 turn」
    相反。这是既有的「没人能替自己被谋杀做准备」。
+6. **`#` 在命令行里是注释符**：`shell_words::split` 把**以 `#` 开头**的那个词之后整行吃掉，
+   所以手敲 `--session '#monitor'` 要加引号，或写成 `--session=#monitor`。服务端不依赖这条
+   （名字就是字符串），但人在输入行里会踩。要不要为此换一个前缀（比如 `@`）由你定。

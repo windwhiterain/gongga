@@ -418,3 +418,10 @@ not find again.
 
 Deleting one is still allowed: a monitor that cannot work has to be removable, and
 the next failure creates it again.
+
+In a shell or in the input line, a word that *starts* with `#` begins a comment:
+`shell_words::split` -- what the input line and `scripts` use -- drops the rest of
+the line. So a hand-typed `--session '#monitor'` has to be quoted, or written
+`--session=#monitor`, where the `#` is no longer the first character of a word.
+Nothing in the server depends on this: the name is a string like any other, and the
+report the monitor is given never names itself.
