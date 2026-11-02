@@ -296,6 +296,35 @@ Tab would be unusable and this makes the cost local. And a listing does not foll
 its command with `pwd`: `RemoteShell::run` keeps the session's directory in step,
 which a listing never reads, and that `pwd` is a whole extra round trip.
 
+### Why a shell could stall forever, and what ended it
+
+Two defects, both measured rather than reasoned about.
+
+**A dead transport never woke a shell's reader.** `Inner::close` cleared the
+request waiters and stopped there, but a shell's reader does not wait on a request:
+it waits on its own `ShellQueue`. Nothing else called `ShellQueue::end` except a
+deliberate close. So when the connection died, every shell on it waited forever.
+`close` now drains `routes` and ends each queue in one pass.
+
+**And the connection could die without anyone noticing.** The `ssh` we start had
+`BatchMode` and nothing else. A tunnel that drops silently leaves writes going
+into a socket the peer will never answer, and `ssh` blocks on it; the stdout that
+EOF would tell us is stuck behind those writes. It now carries
+`ServerAliveInterval=15`, `ServerAliveCountMax=3` and `TCPKeepAlive=yes`, so an
+unanswered link is ended within about three quarters of a minute and the transport
+reports it.
+
+Measured, killing the `ssh` under a live listing shell and asking for the next one:
+
+| | next listing |
+| --- | --- |
+| before | **361 seconds**, and no error until the socket finally gave up |
+| after | **184 milliseconds**, on a fresh transport |
+
+The flakiness did not disappear -- this machine's tunnel is 750-1030ms per ssh and
+occasionally stalls past the 8s listing deadline -- but a stall is now a bounded,
+recoverable event instead of a connection nothing can detect and nothing can wake.
+
 ### A stalled link is bounded, and the shell is dropped
 
 A listing that has not answered in 8s is reported as a stall, not as a directory

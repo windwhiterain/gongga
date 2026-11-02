@@ -149,6 +149,12 @@ struct Inner {
 
 impl Inner {
     /// Records the end of the connection; every waiter then stops instead of hanging.
+    /// # Invariant
+    ///
+    /// Ends the shell queues as well as the request waiters: a shell's reader waits
+    /// on its own queue, not on a request, so clearing `pending` alone left it
+    /// waiting on a connection that would never speak again. Measured: a listing
+    /// whose transport died hung for over five minutes with no error.
     fn close(&self, reason: impl Into<String>) {
         let reason = reason.into();
         let mut closed = self.closed.lock().unwrap_or_else(|e| e.into_inner());
@@ -161,6 +167,14 @@ impl Inner {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clear();
+        // Every shell reader learns the connection ended, in one pass.
+        let routes: Vec<Arc<ShellQueue>> = {
+            let mut routes = self.routes.lock().unwrap_or_else(|e| e.into_inner());
+            routes.drain().map(|(_, queue)| queue).collect()
+        };
+        for queue in routes {
+            queue.end();
+        }
     }
 
     fn lost(&self) -> anyhow::Error {
