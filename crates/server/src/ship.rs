@@ -305,11 +305,11 @@ fn reconcile(
             .and_then(|pin| blob(cache, pin, &file.source));
         let settled = kept.contains(&file.source);
         let decision = decide(ours.as_deref(), base.as_deref(), &theirs);
-        // The base can fall behind the files a newer pin left (see the Invariant),
-        // and then "both sides moved" is a lie: ours moved because it *is* an
-        // install, of some other pin. Bytes that equal a commit's blob for this
-        // exact path carry no local edit, so merging them against a stale base
-        // invents text -- upstream replaces them.
+        // A stale base can fall behind the files a newer pin left (see the
+        // Invariant), and then "both sides moved" is a lie: ours moved because it
+        // *is* an install. Bytes that equal a commit's blob for this path carry no
+        // local edit, so merging them invents text -- upstream replaces them.
+        // A path the reader already owns is exempt: it is never called an install.
         let reinstalled = !settled
             && matches!(
                 decision,
@@ -345,7 +345,7 @@ fn reconcile(
             Decision::Conflict => {
                 report.conflicts.push(file.source.clone());
             }
-            // A file recorded as the reader's is not offered the merge at all.
+            // A path already recorded as the reader's: reported again, not re-recorded.
             _ if settled => report.kept.push(file.source.clone()),
             Decision::Keep => {
                 report.kept.push(file.source.clone());

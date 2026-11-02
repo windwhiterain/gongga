@@ -133,6 +133,19 @@ Conflict；而**只要还有一个 Conflict，pin 就不前进**。于是 base �
 放弃了什么：读者把某段正文逐字节改回旧版本，而同一文件上游也动过——那次改动会被上游覆盖。
 那些字节除了"这个文件的某个更早版本"之外不携带任何本地信息，而 base 本来会说同一句话。
 
+## 一处更正：kept 名单实际管的是什么
+
+上一轮我说过「记成 kept 的文件，上游以后的改动不会再落地」——**错的**，实测推翻：本轮
+换手时 `config/config.toml` 既在 kept 名单上、又被上游改过，结果是 `merged=1`，上游那一行
+落进了 home（与 pin 的差异只剩行尾一个空行，来自本地那份）。
+
+真正的作用只有一条，而且在 `reinstalled` 那一步：**被记成 kept 的路径，不会被当作
+「别的 pin 装进去的字节」而覆盖**。它照走三方合并，也照样可能冲突（并因此冻住 pin）。
+
+原先那行注释写的是 "A file recorded as the reader's is not offered the merge at all"，与代码
+不符（`_ if settled` 排在 `Merge`/`Conflict` 之后，只接得住 `Keep`）。注释已改成实话，语义
+没动 —— 要不要让 kept 真的"完全不碰"，是另一件事，得单独定。
+
 **验证**：`scripts/install_selftest.sh`（新写的 L3，一个服务端生命周期一个场景，临时 home，
 `trap` 收尾，一行 verdict）。三个场景 + 十条断言，18~30 秒：
 
