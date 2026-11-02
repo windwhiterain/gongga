@@ -14,10 +14,10 @@ use crate::store::Failure;
 ///
 /// # Invariant
 ///
-/// Built-in sessions are named with a leading `#`, and `set_session` refuses that
+/// Built-in sessions are named with a leading `@`, and `set_session` refuses that
 /// prefix: the namespace is reserved, so the harness never has to look at a
 /// person's session and wonder whether it is its own.
-pub const SESSION: &str = "#monitor";
+pub const SESSION: &str = "@monitor";
 
 /// Why `name` may not be a person's session, or `None` when it may.
 ///
@@ -27,9 +27,9 @@ pub const SESSION: &str = "#monitor";
 /// session they will not find again. Deleting one is allowed -- a monitor that
 /// cannot work has to be removable.
 pub fn reserved(name: &str) -> Option<String> {
-    name.starts_with('#').then(|| {
+    name.starts_with('@').then(|| {
         format!(
-            "names beginning with `#` belong to the harness ({SESSION} is one); \
+            "names beginning with `@` belong to the harness ({SESSION} is one); \
              pick a name without it"
         )
     })

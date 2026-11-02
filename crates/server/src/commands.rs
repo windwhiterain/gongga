@@ -667,7 +667,7 @@ pub(crate) async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcom
 
 async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     let name = args["session"].clone();
-    // A leading `#` is the harness's own namespace: SPEC's monitor lives there,
+    // A leading `@` is the harness's own namespace: SPEC's monitor lives there,
     // and a name a person could take is a name the harness cannot trust.
     if let Some(refusal) = crate::monitor::reserved(&name) {
         return Outcome::err(refusal);

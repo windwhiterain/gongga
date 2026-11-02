@@ -408,10 +408,10 @@ document. The alternative is what every adapter did before it: four ad-hoc
 queries against tables whose column names are the server's business, which
 is how a rename (`summary` to `handover`) broke a benchmark mid-run.
 
-## `#` is the harness's namespace
+## `@` is the harness's namespace
 
-`set_session` refuses a name beginning with `#`. Built-in sessions live there --
-SPEC's monitor is `#monitor` -- so the namespace is reserved, and the harness never
+`set_session` refuses a name beginning with `@`. Built-in sessions live there --
+SPEC's monitor is `@monitor` -- so the namespace is reserved, and the harness never
 has to look at a session and decide whether it is its own. Refused rather than
 renamed: a session under a name the caller did not choose is a session they will
 not find again.
@@ -419,9 +419,9 @@ not find again.
 Deleting one is still allowed: a monitor that cannot work has to be removable, and
 the next failure creates it again.
 
-In a shell or in the input line, a word that *starts* with `#` begins a comment:
-`shell_words::split` -- what the input line and `scripts` use -- drops the rest of
-the line. So a hand-typed `--session '#monitor'` has to be quoted, or written
-`--session=#monitor`, where the `#` is no longer the first character of a word.
-Nothing in the server depends on this: the name is a string like any other, and the
-report the monitor is given never names itself.
+`#` was the first choice and lost on a detail: a word that *starts* with `#` opens a
+comment in `shell_words::split`, which is what splits the input line and a script's
+argv, so `--session '#monitor'` had to be quoted or written `--session=#monitor`.
+`@` needs neither. It costs nothing on the reference side either: `@image:`,
+`@skill:` and `@file:` match on a prefix that ends in a colon, so a bare `@monitor`
+is never read as one (`meta::mentions`).

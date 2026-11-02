@@ -125,7 +125,7 @@ cli=("$bin/gongga-cli.exe" --home "$home" --server "127.0.0.1:$port")
 
 # Captured, not piped into `grep -q`: grep exits on the match, the command layer
 # takes SIGPIPE writing the rest, and `pipefail` reports that instead.
-refusal=$("${cli[@]}" set_session --session '#mine' 2>&1)
+refusal=$("${cli[@]}" set_session --session '@mine' 2>&1)
 [[ "$refusal" == *"names beginning with"* ]]
 ok "a person cannot take a name in the harness's namespace" $?
 
@@ -137,19 +137,19 @@ ok "a session whose model is refused ends in error" $?
 
 for _ in $(seq 1 100); do grep -q "handed a failure to the monitor" "$log" && break; sleep 0.5; done
 grep -q 'handed a failure to the monitor session=broken model="dead/flash-dead"' "$log"
-ok "the failure is handed to #monitor, on the first usable flash model" $?
-rows | grep -q "'#monitor'"
-ok "#monitor exists as an ordinary session" $?
+ok "the failure is handed to @monitor, on the first usable flash model" $?
+rows | grep -q "'@monitor'"
+ok "@monitor exists as an ordinary session" $?
 
 for _ in $(seq 1 100); do
   [[ "$(grep -c 'handed a failure to the monitor' "$log")" -ge 2 ]] && break; sleep 0.5
 done
-grep -q 'turn end session=#monitor outcome=Failed' "$log"
+grep -q 'turn end session=@monitor outcome=Failed' "$log"
 ok "the monitor's own turn failed too" $?
-grep -q 'handed a failure to the monitor session=#monitor model="fake/flash-fake" attempt=2' "$log"
+grep -q 'handed a failure to the monitor session=@monitor model="fake/flash-fake" attempt=2' "$log"
 ok "so the next model was tried" $?
-for _ in $(seq 1 100); do grep -q 'turn end session=#monitor outcome=Done' "$log" && break; sleep 0.5; done
-grep -q 'turn end session=#monitor outcome=Done' "$log"
+for _ in $(seq 1 100); do grep -q 'turn end session=@monitor outcome=Done' "$log" && break; sleep 0.5; done
+grep -q 'turn end session=@monitor outcome=Done' "$log"
 ok "and that attempt finished" $?
 
 python - "$home" <<'PY'
@@ -157,7 +157,7 @@ import json, sqlite3, sys
 c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
 texts = [json.loads(d).get("text", "") for (d,) in c.execute(
     """select m.display from messages m join sessions s on s.id = m.session_id
-       where s.name = '#monitor' order by m.seq""")]
+       where s.name = '@monitor' order by m.seq""")]
 reports = [t for t in texts if "stopped with an error" in t]
 assert len(reports) >= 2, reports
 # The retry re-sends the first report unchanged, behind a preface naming the model.

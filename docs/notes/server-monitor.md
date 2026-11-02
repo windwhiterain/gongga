@@ -5,7 +5,7 @@ fix. moniter session will be choosen from usable flash, auto switch if it also
 errored".
 
 Three decisions carry the whole of it: what a failure *is* (data, not an event),
-which session it goes to (`#monitor`, one of them), and how that session is
+which session it goes to (`@monitor`, one of them), and how that session is
 chosen and re-chosen.
 
 ## A failure is a row, not an event
@@ -37,13 +37,19 @@ order loses one.
 
 ## One monitor session, under a name nobody else may take
 
-The session is `#monitor`. Built-in sessions carry a leading `#`, and
+The session is `@monitor`. Built-in sessions carry a leading `@`, and
 `set_session` refuses that prefix with a sentence saying so. This is why the
 reservation is worth having at all: the harness never has to look at a session and
 decide whether it is its own, and a person's session called `monitor` -- which
 2026-11-02 showed is a name people do use -- is simply their session. Deleting
-`#monitor` is allowed, because a monitor that cannot work has to be removable; the
+`@monitor` is allowed, because a monitor that cannot work has to be removable; the
 next failure creates it again.
+
+`@` rather than `#` because a `#` that opens a word is a comment to
+`shell_words::split`, so `--session=@monitor` is what a hand types and nothing needs
+quoting. The references a message carries are `@image:`, `@skill:`, `@file:` --
+prefixes with a colon -- so a bare `@monitor` is not one of them, and the report the
+monitor is given never names itself anyway.
 
 The session is created with no `--cwd`, so `SessionManager` gives it the server's
 own directory, exactly like a session made from a window.
@@ -97,7 +103,7 @@ Two details that are only obvious after getting them wrong:
   transcript whenever a turn ends *not* in error. A session that recovers and
   fails again has a new episode, and the search starts from the best candidate.
 
-When the list is exhausted the sweep writes one `Event::Log` and stops: `#monitor`
+When the list is exhausted the sweep writes one `Event::Log` and stops: `@monitor`
 has failed on every usable flash model, and the session in error is left for a
 reader. No recursion, no invented retry budget -- `AGENTS.md` forbids one, and the
 failure is still visible in the window either way.
@@ -133,9 +139,9 @@ whole chain:
 
 | step | result |
 | --- | --- |
-| `set_session --session '#mine'` | refused: the `#` prefix belongs to the harness |
+| `set_session --session '@mine'` | refused: the `@` prefix belongs to the harness |
 | a session on the refused model | `turn end … outcome=Failed`, `status='error'` |
-| the handover | `handed a failure to the monitor session=broken model="dead/flash-dead"`, `#monitor` created, `monitor_seq` past the transcript |
-| the monitor's own turn | `turn end session=#monitor outcome=Failed`, then `model="fake/flash-fake" attempt=2`, and that turn ends `Done` |
+| the handover | `handed a failure to the monitor session=broken model="dead/flash-dead"`, `@monitor` created, `monitor_seq` past the transcript |
+| the monitor's own turn | `turn end session=@monitor outcome=Failed`, then `model="fake/flash-fake" attempt=2`, and that turn ends `Done` |
 | the retry's transcript | the original report, unchanged, behind a preface naming the failed model |
 | six more seconds of ticks | no second report for the same failure |
