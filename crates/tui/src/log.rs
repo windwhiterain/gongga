@@ -1347,15 +1347,15 @@ impl Log {
             .map(|hit| hit.block)
     }
 
-    /// The block whose body holds this row: the one thing a wheel there scrolls.
+    /// The opened block whose own content holds this cell: what a wheel there scrolls.
     ///
     /// # Invariant
     ///
-    /// One walk answers both questions a cell asks -- which block a press names, and
-    /// whether the wheel is a box's -- so a hit region cannot disagree with the
-    /// frame. A box's rules are its edge and not content, so the wheel over them is
-    /// the pane's, and so is one in the margin the box leaves on either side.
-    pub fn body_at(
+    /// `Some` exactly when the cell is inside a box, because that is the only thing
+    /// a wheel can move. A box's rules are its edge and not content, a box's margin
+    /// is the window's, and a row of any other block has no scroll of its own -- so
+    /// all three answer `None`, and the wheel there is the pane's.
+    pub fn box_at(
         &mut self,
         window: &str,
         width: usize,
@@ -1365,8 +1365,11 @@ impl Log {
         column: usize,
     ) -> Option<usize> {
         let hit = self.hit(window, width, height, scroll, row, column)?;
+        if !hit.boxed {
+            return None;
+        }
         let rule = hit.index == 0 || hit.index + 1 == hit.shown;
-        match hit.boxed && rule {
+        match rule {
             true => None,
             false => Some(hit.block),
         }

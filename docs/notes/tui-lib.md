@@ -91,7 +91,7 @@ row inside the window, and the log answers which block that row belongs to -- th
 same rows the frame drew, fold included, so a press on a summary line opens the item
 it summarises.
 
-## Screen::cell_at, Screen::body_at, Screen::scroll_at
+## Screen::cell_at, Screen::box_at, Screen::scroll_at
 
 One cell of a window, in the terms the log answers in: the window's log width (one
 column short of the drawn one, as the renderer measures), the rows it shows, its
@@ -100,10 +100,13 @@ box's own cells from the margin it leaves each side, so a press and a wheel ask 
 the same rectangle the frame drew and cannot land on a cell it drew something else on.
 
 `item_at` answers the first question -- which block a press names, fold included.
-`body_at` answers the second: the same walk, minus the box's rules and its margin. Both
-are the window's edge rather than its content, so a wheel there belongs to the pane, and
-that is what an operator reaches the window with while a box covers most of it. See
-`Log::set_box_edge` for the width of that margin and why it is a setting.
+`box_at` answers the second: the same walk, and only an opened block's own content
+answers it. A box's rules and its margin are the window's edge rather than its content,
+and no other block has a scroll of its own, so all of them belong to the pane -- which
+is what an operator reaches the window with while a box covers most of it. It answered
+`Some` for every block at first, which made the wheel dead over every row of a window:
+a cell that is not a box's has to say so, or `scroll_at` ends on a block that cannot
+move. See `Log::set_box_edge` for the width of that margin and why it is a setting.
 
 `scroll_at` gives one notch to one thing, once. The box of an opened item takes it, and
 keeps it: there is no fall-through to the pane when the box runs out of travel, because

@@ -545,10 +545,16 @@ it scrolls first. The answer to "did the box move" is one comparison -- did `inn
 change -- and it is no longer the question anyone asks.
 
 Which cell the pointer is on comes from the same walk that answers a press
-(`Log::block_at`): `Log::hit` gives the block, the row's index inside it, and (since
-the margin arrived) nothing at all for a cell outside the box's own columns. So
-`body_at` says the box's rules and its margin are the pane's, and every other cell of
-a box is the box's.
+(`Log::block_at`): `Log::hit` gives the block, the row's index inside it, and nothing at
+all for a cell outside the box's own columns. `box_at` -- the one thing `scroll_at`
+asks -- answers only inside a box's body: its rules and its margin are the pane's, and a
+row of any other block has no scroll of its own, so it is the pane's too.
+
+That last half is the shape the first version of this got wrong: `box_at` answered
+`Some` for every block, and with the fall-through gone the wheel over a plain row
+reached a block that could not move and stopped there. The window was scrollable only
+where no block answered -- the box's rules -- which reads exactly like "the wheel works
+at the top and the bottom of a block and nowhere else".
 
 An earlier rule compared the cap against a constant, and in the direction its own
 comment denied: a cap above that constant, or no cap at all, took the wheel and kept

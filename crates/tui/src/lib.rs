@@ -336,15 +336,15 @@ impl Screen {
         )
     }
 
-    /// The block whose body holds this cell, which is what the wheel scrolls first.
+    /// The opened block holding this cell, which is what a wheel there scrolls.
     ///
     /// # Invariant
     ///
-    /// The body, never the box's rules or the margin it leaves each side: over those
-    /// the wheel belongs to the pane. See [`Log::body_at`].
-    fn body_at(&mut self, width: u16, height: u16, column: u16, row: u16) -> Option<usize> {
+    /// Only a box's own content answers. A box's rules and its margin, and every
+    /// row of any other block, are the pane's. See [`Log::box_at`].
+    fn box_at(&mut self, width: u16, height: u16, column: u16, row: u16) -> Option<usize> {
         let cell = self.cell_at(width, height, column, row)?;
-        self.panes.body_at(
+        self.panes.box_at(
             &cell.name,
             cell.width,
             cell.height,
@@ -401,7 +401,7 @@ impl Screen {
             return false;
         };
         if hit.part == Part::Pane
-            && let Some(at) = self.body_at(width, height, column, row)
+            && let Some(at) = self.box_at(width, height, column, row)
         {
             // The box and only the box: no handover. Margin and rules are the pane's.
             self.panes.scroll_block(at, rows);

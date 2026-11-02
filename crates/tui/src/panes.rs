@@ -328,13 +328,13 @@ impl Panes {
         self.log.toggle(key)
     }
 
-    /// The block whose body holds a cell: what a wheel there scrolls first.
+    /// The opened block whose own content holds a cell: what a wheel there scrolls.
     ///
     /// # Invariant
     ///
-    /// A box's rules are not body, and neither is its margin, so a wheel there is
-    /// the pane's. See [`Log::body_at`].
-    pub fn body_at(
+    /// Only a box answers. Its rules, its margin and every row of any other block
+    /// are the pane's. See [`Log::box_at`].
+    pub fn box_at(
         &mut self,
         window: &str,
         width: usize,
@@ -343,7 +343,7 @@ impl Panes {
         row: usize,
         column: usize,
     ) -> Option<usize> {
-        self.log.body_at(window, width, height, scroll, row, column)
+        self.log.box_at(window, width, height, scroll, row, column)
     }
 
     /// Scrolls the box of an opened item, which SPEC makes scrollable.
