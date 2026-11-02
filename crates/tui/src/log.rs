@@ -183,10 +183,15 @@ impl Entry {
         }
     }
 
+    /// Rows this box holds above what its cap leaves it: how far it can scroll.
+    fn travel(&self, cap: usize) -> usize {
+        let body = self.rows().min(cap);
+        self.rows().saturating_sub(body)
+    }
+
     /// Rows scrolled up inside the box, clamped to what it holds.
     fn inside(&self, cap: usize) -> usize {
-        let body = self.rows().min(cap);
-        self.inner.min(self.rows().saturating_sub(body))
+        self.inner.min(self.travel(cap))
     }
 
     /// Whether this block is drawn as SPEC's `abstract`: one summary line.
@@ -1235,7 +1240,7 @@ impl Log {
             return false;
         }
         let cap = self.room(entry.kind, 0);
-        let bound = entry.rows() - entry.rows().min(cap);
+        let bound = entry.travel(cap);
         let current = entry.inner;
         let next = (current as i64 + rows).clamp(0, bound as i64) as usize;
         self.entries[at].inner = next;
@@ -1250,41 +1255,48 @@ impl Log {
     /// reasoning is `r:<session>:<turn>:Reasoning` again -- so a press has to say
     /// which of them it landed on, or the wrong item opens.
     pub fn toggle_at(&mut self, at: usize) -> bool {
+        self.fold(at)
+    }
+
+    /// Opens or closes the `abstract` the block under `key` is.
+    ///
+    /// # Invariant
+    ///
+    /// The block `entry_by_key` answers -- the live one, else the newest -- so a
+    /// script addressing an item it never clicked flips the same block a lookup
+    /// names. See `Log::fold`.
+    pub fn toggle(&mut self, key: &str) -> bool {
+        match self.entry_by_key(key) {
+            Some(at) => self.fold(at),
+            None => false,
+        }
+    }
+
+    /// Flips the fold of block `at`, answering whether there was one to flip.
+    ///
+    /// # Invariant
+    ///
+    /// An item that opens is read from its first row: the box is left at the end of
+    /// its travel, the one place where none of it is hidden above the window. An
+    /// item that closes forgets where it was, so opening it again is the same
+    /// gesture however it was left. Either way the row count changes, so this is a
+    /// reflow of one block and a shift of its window's sum -- the arithmetic a seal
+    /// does, for the same reason. A block that does not fold is nothing to toggle.
+    fn fold(&mut self, at: usize) -> bool {
         if at >= self.entries.len() || !self.entries[at].kind.folds() {
             return false;
         }
         self.touch(at);
         let before = self.contributions(at);
         let width = self.width_of(&self.entries[at].window);
+        let cap = self.room(self.entries[at].kind, self.cap_of(&self.entries[at].window));
         let entry = &mut self.entries[at];
         entry.expanded = !entry.expanded;
         entry.reflow(width);
-        let after = self.contributions(at);
-        self.shift(at, before, after);
-        self.record_seal(at);
-        true
-    }
-
-    /// Opens or closes the `abstract` `key` names.
-    ///
-    /// # Invariant
-    ///
-    /// The row count changes, so this is a reflow of one block and a shift of its
-    /// window's sum -- the arithmetic a seal does, for the same reason. A key that is
-    /// not a folding block is nothing to toggle.
-    pub fn toggle(&mut self, key: &str) -> bool {
-        let Some(at) = self.entry_by_key(key) else {
-            return false;
+        entry.inner = match entry.expanded {
+            true => entry.travel(cap),
+            false => 0,
         };
-        if !self.entries[at].kind.folds() {
-            return false;
-        }
-        self.touch(at);
-        let before = self.contributions(at);
-        let width = self.width_of(&self.entries[at].window);
-        let entry = &mut self.entries[at];
-        entry.expanded = !entry.expanded;
-        entry.reflow(width);
         let after = self.contributions(at);
         self.shift(at, before, after);
         self.record_seal(at);

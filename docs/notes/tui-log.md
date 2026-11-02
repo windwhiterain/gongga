@@ -62,8 +62,8 @@ fold changes how many rows the block contributes, and a block that folded withou
 telling the indexes would move everything behind it.
 
 `expanded` is the operator's answer to the fold, and it is the only state a fold has.
-`toggle` flips it for one key and shifts both indexes by the difference, which is the
-same arithmetic a seal does. A click finds its block through `block_at`, which reads
+`toggle` flips it for one key -- and `toggle_at` for the block a press found -- shifting
+the index by the difference, which is the same arithmetic a seal does. A click finds its block through `block_at`, which reads
 the rows the frame drew -- so a press on a summary line is a press on the item.
 
 The mark in front of an item (`LineKind::symbol`) is the front-end's, not the wire's:
@@ -459,6 +459,24 @@ border, without reserving the folded row's symbol padding. Soft-wrapped field an
 output rows retain their own indentation. The renderer and index describe the
 same rectangle, so a long row cannot push the right rule off the pane. Toggling an item
 updates those offsets immediately, so click hit-testing follows the frame too.
+
+## Log::fold — an item is read from its beginning
+
+The box's own scroll (`Entry::inner`) starts at the end of its travel, `rows -
+min(rows, cap)`, which is the one place where nothing of the body is hidden above
+the window. It used to start at 0, the *other* end: an item was drawn from its last
+`cap` rows, so opening a long result showed the tail of the command's output and
+reaching the beginning cost one notch per hidden row.
+
+Closing forgets the position, so a second press reads the item from its start again
+rather than from wherever it was left, and the two ends of a box are then reachable
+by one wheel gesture each. An item that is still streaming after it was opened keeps
+the `inner` it was given: with a fixed value the head keeps following the text, so
+the new rows arrive at the bottom of the box instead of pushing what is being read
+out of sight.
+
+`toggle` (a key) and `toggle_at` (the block a press landed on) are one `fold`: two
+ways to name a block, one thing done to it.
 
 ## Log::scroll_block — the wheel changes hands
 
