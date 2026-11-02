@@ -59,8 +59,14 @@ serving_home() {
     2>/dev/null | tr -d '\r' | tr '\n' ' '
 }
 
-# The peer, as the operator's own config spells it.
-peer=$(python - "$HOME/.gongga/config.toml" <<'PY'
+# The peer to prove this against: this machine's own remotes file, or -- for a home
+# that has not been migrated yet -- the tables still sitting in its `config.toml`.
+# Either way the name is copied into a scratch machine root below, so the run never
+# reads the operator's file twice and never writes it.
+machine_remotes="${GONGGA_AGENTS_HOME:-$HOME/.agents}/remotes.toml"
+peer_source=$machine_remotes
+[[ -f "$peer_source" ]] || peer_source="$HOME/.gongga/config.toml"
+peer=$(python - "$peer_source" <<'PY'
 import re, sys
 try:
     text = open(sys.argv[1], encoding="utf-8").read()
@@ -92,7 +98,7 @@ peer_key=$(sed -n 3p <<<"$peer")
 peer_port=$(sed -n 4p <<<"$peer")
 peer_runner=$(sed -n 5p <<<"$peer")
 if [[ -z "${peer_host:-}" ]]; then
-  echo "skip: no [remotes.<name>] in ~/.gongga/config.toml, so there is no peer to prove this against"
+  echo "skip: no [remotes.<name>] in $machine_remotes or ~/.gongga/config.toml, so there is no peer to prove this against"
   exit 0
 fi
 
@@ -118,16 +124,25 @@ if [[ -n "${left// /}" ]]; then
   sleep 2
 fi
 mkdir -p "$home"
-cp -r "$HOME/.gongga/ship.git" "$home/ship.git" 2>/dev/null
-: > "$log"; : > "$dump"
-
+# A machine root of this run's own, so the test never edits the operator's file and
+# the server cannot pick up a peer this run did not write.
+agents="$work/agents"
+mkdir -p "$agents"
 {
   echo "[remotes.$peer_name]"
   echo "host = \"$peer_host\""
   [[ -n "$peer_key" ]] && echo "identity = \"$peer_key\""
   [[ -n "$peer_port" ]] && echo "port = $peer_port"
   [[ -n "$peer_runner" ]] && echo "runner = \"$peer_runner\""
+} > "$agents/remotes.toml"
+export GONGGA_AGENTS_HOME="$agents"
+# A remote in the wrong file, on purpose: startup must name it and refuse it.
+{
+  echo "[remotes.ghost]"
+  echo "host = \"nobody@192.0.2.1\""
 } > "$home/config.toml"
+cp -r "$HOME/.gongga/ship.git" "$home/ship.git" 2>/dev/null
+: > "$log"; : > "$dump"
 
 cat > "$work/remote-roster.toml" <<TOML
 [[provider]]
@@ -195,6 +210,14 @@ ok "naming \`local\` is refused, and the answer names \`none\`" $?
 created=$("${cli[@]}" set_session --session probe --remote "$peer_name" --model fake/flash-fake 2>&1)
 [[ "$created" == *'"ok":true'* ]]
 ok "a session is created on $peer_name" $?
+
+# The boundary: a remote left in the home's `config.toml` is refused, not honoured --
+# it is the merged file, and a host name in it would be published by a pin move.
+probe=$("${cli[@]}" set_session --session probe --remote ghost --model fake/flash-fake 2>&1)
+[[ "$probe" == *'no remote named "ghost"'* ]]
+ok "a remote named only in config.toml does not exist" $?
+grep -q 'these remotes are in config.toml' "$log"
+ok "and startup says so, with the migrator that moves them" $?
 
 "${cli[@]}" send_message --session probe --message "@skill: self-control make the scratch" >/dev/null 2>&1
 wait_turn probe; say_turn probe

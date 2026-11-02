@@ -26,6 +26,7 @@ mod prompts;
 mod providers;
 mod quota;
 pub mod remote;
+pub mod remotes;
 mod script;
 mod session;
 mod shell_command;
@@ -263,7 +264,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         cfg.model.model(),
         detached.clone(),
         shell_env,
-        cfg.remotes.clone(),
+        crate::remotes::load(),
     );
     let bus = EventBus::new(4096);
 

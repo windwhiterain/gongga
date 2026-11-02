@@ -863,7 +863,7 @@ pub struct SessionManager {
     /// Variables for every session shell, so the model can reach this server via the CLI.
     shell_env: Vec<(String, String)>,
     /// The named peers a session may run on. See `docs/notes/server-remote.md`.
-    remotes: Vec<crate::config::RemoteConfig>,
+    remotes: Vec<crate::remotes::RemoteConfig>,
     live: Arc<Mutex<HashMap<String, SessionHandle>>>,
     /// One shell per remote, opened only to list a directory for completion.
     ///
@@ -890,7 +890,7 @@ impl SessionManager {
         model: String,
         detached: DetachedRegistry,
         shell_env: Vec<(String, String)>,
-        remotes: Vec<crate::config::RemoteConfig>,
+        remotes: Vec<crate::remotes::RemoteConfig>,
     ) -> Self {
         Self {
             store,
