@@ -15,6 +15,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::LineKind;
+use crate::cache::{Cache, Record};
 use crate::markdown;
 
 /// One block: a line that may still be growing, plus its rows.
@@ -25,6 +26,8 @@ use crate::markdown;
 /// block whose first row is above the window can repeat it. `window` is the name the
 /// line carried, and `at` is where the block sits inside that window's own rows.
 struct Entry {
+    /// The journal's name for this block: a key can be used twice, an id cannot.
+    id: u64,
     kind: LineKind,
     /// The window this block belongs to, as the line said.
     ///
@@ -69,16 +72,39 @@ struct Entry {
     styled: Vec<Line<'static>>,
     /// Where this block sits among the blocks of its own window.
     at: usize,
+    /// Where the journal holds this block's whole current form, once it has one.
+    ///
+    /// # Invariant
+    ///
+    /// `Some` exactly when the block can be dropped and read back: a block that was
+    /// never sealed has no record that stands for it alone.
+    slot: Option<u64>,
+    /// This block's rows at `width`, held instead of its body.
+    ///
+    /// # Invariant
+    ///
+    /// `Some` exactly when the body is not here, so every reader of `text`, `source`
+    /// or `starts` either holds a body or has not been asked. See
+    /// `docs/notes/tui-cache.md`.
+    cold: Option<usize>,
 }
 
 impl Entry {
-    fn new(window: &str, kind: LineKind, text: String, width: usize) -> Self {
-        Self::with_tag(window, kind, "", text, width)
+    fn new(id: u64, window: &str, kind: LineKind, text: String, width: usize) -> Self {
+        Self::with_tag(id, window, kind, "", text, width)
     }
 
     /// A block that streams under `tag`: the label is not text, so no cut can take it.
-    fn with_tag(window: &str, kind: LineKind, tag: &str, text: String, width: usize) -> Self {
+    fn with_tag(
+        id: u64,
+        window: &str,
+        kind: LineKind,
+        tag: &str,
+        text: String,
+        width: usize,
+    ) -> Self {
         let mut entry = Self {
+            id,
             kind,
             window: Arc::from(window),
             key: String::new(),
@@ -101,6 +127,8 @@ impl Entry {
             sections: String::new(),
             styled: Vec::new(),
             at: 0,
+            slot: None,
+            cold: None,
         };
         // Width 0 means "not measured yet": the first draw reflows at its own width.
         if width > 0 {
@@ -110,6 +138,9 @@ impl Entry {
     }
 
     fn rows(&self) -> usize {
+        if let Some(rows) = self.cold {
+            return rows;
+        }
         if self.folded() {
             return self.folded_rows();
         }
@@ -283,6 +314,10 @@ impl Entry {
     /// are the window's and a run keeps its ink across a break. Every other block is
     /// wrapped from the text it already holds. See `docs/notes/tui-log.md`.
     fn reflow(&mut self, width: usize) {
+        if self.cold.is_some() {
+            // Nothing to lay out: the rows are the ones the drop left behind.
+            return;
+        }
         if width == 0 {
             // Not measured yet: the first draw reflows at its own width.
             self.starts = vec![0];
@@ -449,6 +484,53 @@ impl Entry {
                 row
             )),
         }
+    }
+}
+
+impl Entry {
+    /// The record that stands for this block on its own.
+    fn seal_record(&self) -> Record {
+        Record::Seal {
+            id: self.id,
+            kind: self.kind,
+            tag: self.tag.clone(),
+            key: self.key.clone(),
+            text: self.whole_text(),
+            expanded: self.expanded,
+            call: self.call.clone(),
+        }
+    }
+
+    /// The text this block was written as: an answer's document, else its body.
+    fn whole_text(&self) -> String {
+        match &self.source {
+            Some(source) => source.clone(),
+            None => self.text.clone(),
+        }
+    }
+
+    /// Whether the body is here rather than in the journal.
+    fn hot(&self) -> bool {
+        self.cold.is_none()
+    }
+
+    /// Drops the body and keeps the rows it had, so the index does not move.
+    ///
+    /// # Invariant
+    ///
+    /// Only a block the journal can stand for alone: a block still growing has no
+    /// seal, and dropping its body would drop the text that has not arrived yet.
+    fn drop_body(&mut self) {
+        if self.cold.is_some() || self.slot.is_none() {
+            return;
+        }
+        self.cold = Some(self.rows());
+        self.text = String::new();
+        self.source = None;
+        self.styled = Vec::new();
+        self.sections = String::new();
+        self.starts = Vec::new();
+        self.col = 0;
     }
 }
 
@@ -725,7 +807,6 @@ struct Hit {
 /// A block's position in `entries` is fixed when it opens, so two blocks that
 /// stream at once each keep growing where they are instead of trading places.
 /// See `docs/notes/tui-log.md`.
-#[derive(Default)]
 pub struct Log {
     entries: Vec<Entry>,
     /// One ledger per window name a line has carried, each at its own width.
@@ -734,7 +815,27 @@ pub struct Log {
     open: HashMap<String, usize>,
     /// How many rows one block may fill. See [`Log::set_block_size`].
     block_size: usize,
+    /// The journal this log is a view of. See `docs/notes/tui-cache.md`.
+    cache: Cache,
+    /// The next block id to hand out: monotonic within this window's journal.
+    next_id: u64,
+    /// The blocks whose bodies are here. Eviction walks this, not the log.
+    hot: Vec<usize>,
 }
+
+impl Default for Log {
+    fn default() -> Self {
+        Self::with_home(std::path::Path::new(""))
+    }
+}
+
+/// How many records one walk of the journal reads at a time.
+///
+/// # Invariant
+///
+/// A read granularity, not a limit: a seed keeps walking until the window it is
+/// filling has the rows a pane is about to draw.
+const WALK: usize = 64;
 
 /// The rows of a block that fills every row it has.
 const NO_CAP: usize = usize::MAX;
@@ -754,6 +855,86 @@ fn room(kind: LineKind, cap: usize, block_size: usize) -> usize {
 impl Log {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A scrollback whose blocks are written down under `home`.
+    pub fn with_home(home: &std::path::Path) -> Self {
+        Self {
+            entries: Vec::new(),
+            views: HashMap::new(),
+            open: HashMap::new(),
+            block_size: 0,
+            cache: Cache::new(home),
+            next_id: 0,
+            hot: Vec::new(),
+        }
+    }
+
+    /// Says whether this window may write the journal it reads.
+    pub fn set_writable(&mut self, writable: bool) {
+        self.cache.set_writable(writable);
+    }
+
+    /// Hands out the journal's next block id.
+    fn next_id(&mut self) -> u64 {
+        let id = self.next_id;
+        self.next_id = self.next_id.saturating_add(1);
+        id
+    }
+
+    /// Reads a dropped body back, so a mutation has something to change.
+    ///
+    /// # Invariant
+    ///
+    /// Every mutation of a block calls this first: a record is dumped from the
+    /// entry, and an entry holding only rows would write an empty block over a
+    /// block the operator can see. See `docs/notes/tui-cache.md`.
+    fn touch(&mut self, at: usize) {
+        let Some(entry) = self.entries.get(at) else {
+            return;
+        };
+        if entry.hot() {
+            return;
+        }
+        let width = self.width_of(&entry.window);
+        materialize(&mut self.entries, &self.cache, at, width);
+    }
+
+    /// Writes one record about block `at`.
+    fn write(&mut self, at: usize, record: Record) -> Option<u64> {
+        let window = self.entries.get(at)?.window.clone();
+        self.cache.append(&window, &record)
+    }
+
+    /// Records a block's whole current form, and where it can be read back from.
+    fn record_seal(&mut self, at: usize) {
+        if at >= self.entries.len() {
+            return;
+        }
+        let record = self.entries[at].seal_record();
+        if let Some(slot) = self.write(at, record) {
+            self.entries[at].slot = Some(slot);
+        }
+    }
+
+    /// Records one more piece of a block that is still growing.
+    ///
+    /// # Invariant
+    ///
+    /// A delta is not a seal: it does not stand for the block on its own, so it
+    /// never becomes a `slot` and never makes a block droppable.
+    fn record_delta(&mut self, at: usize, text: &str) {
+        let Some(entry) = self.entries.get(at) else {
+            return;
+        };
+        let record = Record::Delta {
+            id: entry.id,
+            kind: entry.kind,
+            tag: entry.tag.clone(),
+            text: text.to_string(),
+            done: false,
+        };
+        self.write(at, record);
     }
 
     /// Caps how tall a block may get: `0` caps nothing, and a block past its cap
@@ -787,6 +968,12 @@ impl Log {
     /// it -- so a block arriving under a reused name is that session's first and
     /// starts at row zero. See `docs/notes/tui-log.md`.
     pub fn forget(&mut self, window: &str) {
+        self.cache.remove(window);
+        self.drop_window(window);
+    }
+
+    /// Takes a window's blocks out of memory, keeping its journal.
+    fn drop_window(&mut self, window: &str) {
         if self.views.remove(window).is_none() {
             return;
         }
@@ -854,11 +1041,22 @@ impl Log {
 
     /// Adds a finished line to the window `name` names. Costs what the line is worth.
     pub fn push(&mut self, name: &str, kind: LineKind, text: impl Into<String>) {
+        let text = text.into();
+        let id = self.next_id();
+        let slot = self.cache.append(
+            name,
+            &Record::Line {
+                id,
+                kind,
+                text: text.clone(),
+            },
+        );
         let width = self.width_of(name);
-        let mut entry = Entry::new(name, kind, text.into(), width);
+        let mut entry = Entry::new(id, name, kind, text, width);
         // A whole row arrives at once: nothing will stream into it, so a folding
         // kind is an `abstract` from its first frame.
         entry.sealed = true;
+        entry.slot = slot;
         self.entries.push(entry);
         self.attach(self.entries.len() - 1);
     }
@@ -883,6 +1081,7 @@ impl Log {
             pos
         };
         self.entries[at].at = pos;
+        self.hot.push(at);
     }
 
     /// Where the block `key` currently names is: the open one, else the newest.
@@ -907,6 +1106,8 @@ impl Log {
     /// the previous one is dropped rather than kept out of sight -- there is no way
     /// to scroll back to it, and holding it would be holding what cannot be read.
     pub fn clear(&mut self, window: &str) {
+        // The file holds what this window drew; `clear` says it holds nothing.
+        self.cache.reset(window);
         if !self
             .entries
             .iter()
@@ -940,6 +1141,7 @@ impl Log {
         let Some(at) = self.entry_by_key(key) else {
             return;
         };
+        self.touch(at);
         let before = self.contributions(at);
         let width = self.width_of(&self.entries[at].window);
         let entry = &mut self.entries[at];
@@ -963,6 +1165,7 @@ impl Log {
         entry.reflow(width);
         let after = self.contributions(at);
         self.shift(at, before, after);
+        self.record_seal(at);
     }
 
     /// Whether a block under this key exists already.
@@ -1008,6 +1211,7 @@ impl Log {
         if at >= self.entries.len() || !self.entries[at].kind.folds() {
             return false;
         }
+        self.touch(at);
         let before = self.contributions(at);
         let width = self.width_of(&self.entries[at].window);
         let entry = &mut self.entries[at];
@@ -1015,6 +1219,7 @@ impl Log {
         entry.reflow(width);
         let after = self.contributions(at);
         self.shift(at, before, after);
+        self.record_seal(at);
         true
     }
 
@@ -1032,6 +1237,7 @@ impl Log {
         if !self.entries[at].kind.folds() {
             return false;
         }
+        self.touch(at);
         let before = self.contributions(at);
         let width = self.width_of(&self.entries[at].window);
         let entry = &mut self.entries[at];
@@ -1039,6 +1245,7 @@ impl Log {
         entry.reflow(width);
         let after = self.contributions(at);
         self.shift(at, before, after);
+        self.record_seal(at);
         true
     }
 
@@ -1145,6 +1352,7 @@ impl Log {
                 at
             }
         };
+        self.touch(at);
         let width = self.width_of(&self.entries[at].window);
         let before = self.contributions(at);
         let entry = &mut self.entries[at];
@@ -1157,6 +1365,7 @@ impl Log {
         let after = self.contributions(at);
         self.shift(at, before, after);
         self.open.remove(key);
+        self.record_seal(at);
     }
 
     /// Replaces the label of the block `key` names, once its outcome is known.
@@ -1173,6 +1382,7 @@ impl Log {
         let Some(at) = self.entry_by_key(key) else {
             return;
         };
+        self.touch(at);
         if self.entries[at].tag == tag && self.entries[at].kind == kind {
             return;
         }
@@ -1183,6 +1393,7 @@ impl Log {
         self.entries[at].reflow(width);
         let after = self.contributions(at);
         self.shift(at, before, after);
+        self.record_seal(at);
     }
 
     /// Adds to the block `key` names, opening it with `tag` in window `name` on
@@ -1226,11 +1437,13 @@ impl Log {
                 return;
             }
             Some(at) => {
+                self.touch(at);
                 let before = self.contributions(at);
                 let width = self.width_of(&self.entries[at].window);
                 self.entries[at].append(text, width);
                 let after = self.contributions(at);
                 self.shift(at, before, after);
+                self.record_delta(at, text);
                 at
             }
             // A blank chunk opens no block: one precedes every exit sentinel.
@@ -1243,7 +1456,8 @@ impl Log {
             }
             None => {
                 let width = self.width_of(name);
-                let mut entry = Entry::with_tag(name, kind, tag, text.to_string(), width);
+                let id = self.next_id();
+                let mut entry = Entry::with_tag(id, name, kind, tag, text.to_string(), width);
                 // A body-less item's body is its label: a call reads as its
                 // arguments, and opening it must show them.
                 entry.key = key.to_string();
@@ -1251,6 +1465,7 @@ impl Log {
                 let at = self.entries.len() - 1;
                 self.attach(at);
                 self.open.insert(key.to_string(), at);
+                self.record_delta(at, text);
                 at
             }
         };
@@ -1262,6 +1477,12 @@ impl Log {
     /// Ends a block: no later chunk may append to it.
     fn seal(&mut self, key: &str, at: usize) {
         self.open.remove(key);
+        self.seal_quiet(at);
+        self.record_seal(at);
+    }
+
+    /// Sealing without the journal: what a replay does, having read the record.
+    fn seal_quiet(&mut self, at: usize) {
         self.trim_tail(at);
         // Sealing can fold the block, and a fold is a row count: the indexes
         // hear about it, or the blocks behind this one shift.
@@ -1308,11 +1529,13 @@ impl Log {
         if at >= self.entries.len() {
             return;
         }
+        self.touch(at);
         let width = self.width_of(&self.entries[at].window);
         let before = self.contributions(at);
         self.entries[at].append(text, width);
         let after = self.contributions(at);
         self.shift(at, before, after);
+        self.record_delta(at, text);
     }
 
     /// The ledger a window reads, or `None` for a name nobody has written to yet.
@@ -1342,7 +1565,14 @@ impl Log {
         scroll: usize,
     ) -> Viewport<'_> {
         self.lay_out(window, width);
-        let Some(ledger) = self.ledger(window) else {
+        let Log {
+            entries,
+            views,
+            cache,
+            block_size,
+            ..
+        } = self;
+        let Some(ledger) = views.get(window) else {
             return Viewport {
                 rows: Vec::new(),
                 max_scroll: 0,
@@ -1354,17 +1584,22 @@ impl Log {
         let end = total - scroll;
         let start = end.saturating_sub(height);
 
-        let mut rows: Vec<Row<'_>> = Vec::with_capacity(end - start);
+        // Found first, drawn second: reading a body back borrows mutably, and
+        // the rows are borrowed from the same place.
+        let mut shown_blocks: Vec<ShownBlock> = Vec::new();
         if start < end && !ledger.blocks.is_empty() {
             // Jump to the block holding the first visible row: O(log blocks).
             let mut pos = ledger.index.line_at(start).min(ledger.blocks.len() - 1);
             let mut first = ledger.index.prefix(pos);
-            while let Some(entry) = ledger.blocks.get(pos).and_then(|at| self.entries.get(*at)) {
-                let cap = self.room(entry.kind, ledger.cap);
+            while let Some(&block) = ledger.blocks.get(pos) {
+                let Some(entry) = entries.get(block) else {
+                    break;
+                };
+                let cap = room(entry.kind, ledger.cap, *block_size);
                 let body = entry.rows().min(cap);
                 let boxed = entry.boxed();
-                // Rows above the cap are not in this window, so its rows are the
-                // last `body` of them -- pulled further back by the box's scroll.
+                // Above the cap is not in this window: its rows are the last
+                // `body`, pulled back by the box's scroll.
                 let head = entry
                     .rows()
                     .saturating_sub(body)
@@ -1376,30 +1611,16 @@ impl Log {
                 // The label rides on the block's own first row, or on the first row
                 // its cap left it -- never mid-paragraph.
                 let labelled = head > 0 || top == first;
-                for row in top..bottom {
-                    let index = row - first;
-                    // SPEC's opened item: a box whose top row carries the label.
-                    if boxed && index == 0 {
-                        rows.push((entry.kind, Shown::Text(entry.label()), Edges::TOP));
-                        continue;
-                    }
-                    if boxed && index + 1 == shown {
-                        rows.push((entry.kind, Shown::Text(Cow::Borrowed("")), Edges::BOTTOM));
-                        continue;
-                    }
-                    let body_row = match boxed {
-                        true => index - 1 + head,
-                        false => index + head,
-                    };
-                    // The label is on the box's top row, so no body row repeats
-                    // it: that column is the body's.
-                    let print = labelled && !boxed && index == 0;
-                    let edges = match boxed {
-                        true => Edges::INSIDE,
-                        false => Edges::default(),
-                    };
-                    rows.push((entry.kind, entry.shown(body_row, print), edges));
-                }
+                shown_blocks.push(ShownBlock {
+                    block,
+                    first,
+                    top,
+                    bottom,
+                    head,
+                    shown,
+                    boxed,
+                    labelled,
+                });
                 if bottom >= end || pos + 1 >= ledger.blocks.len() {
                     break;
                 }
@@ -1407,7 +1628,206 @@ impl Log {
                 pos += 1;
             }
         }
+        // Rows on screen are the one thing a frame may pay a disk read for.
+        for block in &shown_blocks {
+            materialize(entries, cache, block.block, ledger.width);
+        }
+        let mut rows: Vec<Row<'_>> = Vec::with_capacity(end - start);
+        for spot in &shown_blocks {
+            let Some(entry) = entries.get(spot.block) else {
+                continue;
+            };
+            for row in spot.top..spot.bottom {
+                let index = row - spot.first;
+                // SPEC's opened item: a box whose top row carries the label.
+                if spot.boxed && index == 0 {
+                    rows.push((entry.kind, Shown::Text(entry.label()), Edges::TOP));
+                    continue;
+                }
+                if spot.boxed && index + 1 == spot.shown {
+                    rows.push((entry.kind, Shown::Text(Cow::Borrowed("")), Edges::BOTTOM));
+                    continue;
+                }
+                let body_row = match spot.boxed {
+                    true => index - 1 + spot.head,
+                    false => index + spot.head,
+                };
+                // The label is on the box's top row, so no body row repeats it.
+                let print = spot.labelled && !spot.boxed && index == 0;
+                let edges = match spot.boxed {
+                    true => Edges::INSIDE,
+                    false => Edges::default(),
+                };
+                rows.push((entry.kind, entry.shown(body_row, print), edges));
+            }
+        }
         Viewport { rows, max_scroll }
+    }
+
+    /// Fills an empty window from its journal, newest first, until it covers `rows`.
+    ///
+    /// # Invariant
+    ///
+    /// Only an empty window: a window with blocks has them because this process
+    /// watched them arrive, and replaying on top would draw every row twice. The
+    /// answer is a window that starts where it stopped, which is what a window on a
+    /// session it has never drawn owes the operator. See `docs/notes/tui-cache.md`.
+    pub fn seed(&mut self, window: &str, width: usize, rows: usize) {
+        if self
+            .views
+            .get(window)
+            .is_some_and(|ledger| !ledger.blocks.is_empty())
+        {
+            return;
+        }
+        let end = self.cache.end(window);
+        if end == 0 {
+            return;
+        }
+        let mut start = end;
+        loop {
+            start = self.cache.back(window, start, WALK);
+            self.replay(window, start);
+            self.lay_out(window, width);
+            if start == 0 || self.rows(window, width) >= rows {
+                break;
+            }
+        }
+    }
+
+    /// Rebuilds one window from its journal, from `start` to the end.
+    fn replay(&mut self, window: &str, start: u64) {
+        self.drop_window(window);
+        let mut ids: HashMap<u64, usize> = HashMap::new();
+        for (at, record) in self.cache.forward(window, start) {
+            self.apply(window, at, &record, &mut ids);
+        }
+        // No stream survives a restart: the process writing it is gone.
+        let open: Vec<usize> = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.window.as_ref() == window && !entry.sealed)
+            .map(|(at, _)| at)
+            .collect();
+        for at in open {
+            self.seal_quiet(at);
+        }
+    }
+
+    /// Applies one journal record, as if the call that wrote it had just happened.
+    fn apply(&mut self, window: &str, at: u64, record: &Record, ids: &mut HashMap<u64, usize>) {
+        let width = self.width_of(window);
+        match record {
+            Record::Line { id, kind, text } => {
+                let mut entry = Entry::new(*id, window, *kind, text.clone(), width);
+                entry.sealed = true;
+                entry.slot = Some(at);
+                let place = self.adopt(entry);
+                ids.insert(*id, place);
+            }
+            Record::Delta {
+                id,
+                kind,
+                tag,
+                text,
+                ..
+            } => match ids.get(id).copied() {
+                Some(place) => self.append_quiet(place, text),
+                None => {
+                    let entry = Entry::with_tag(*id, window, *kind, tag, text.clone(), width);
+                    let place = self.adopt(entry);
+                    ids.insert(*id, place);
+                }
+            },
+            Record::Seal {
+                id,
+                kind,
+                tag,
+                key,
+                text,
+                expanded,
+                call,
+            } => {
+                let mut entry = Entry::with_tag(*id, window, *kind, tag, text.clone(), width);
+                entry.key = key.clone();
+                entry.expanded = *expanded;
+                entry.call = call.clone();
+                entry.sealed = true;
+                entry.slot = Some(at);
+                entry.reflow(width);
+                match ids.get(id).copied() {
+                    Some(place) => {
+                        let before = self.contributions(place);
+                        entry.at = self.entries[place].at;
+                        self.entries[place] = entry;
+                        let after = self.contributions(place);
+                        self.shift(place, before, after);
+                    }
+                    None => {
+                        let place = self.adopt(entry);
+                        ids.insert(*id, place);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Adds a block read back from the journal, and says where it landed.
+    fn adopt(&mut self, mut entry: Entry) -> usize {
+        entry.at = 0;
+        self.next_id = self.next_id.max(entry.id.saturating_add(1));
+        self.entries.push(entry);
+        let at = self.entries.len() - 1;
+        self.attach(at);
+        at
+    }
+
+    /// Appends to a block during a replay: no journal, because it came from one.
+    fn append_quiet(&mut self, at: usize, text: &str) {
+        let width = self.width_of(&self.entries[at].window);
+        let before = self.contributions(at);
+        self.entries[at].append(text, width);
+        let after = self.contributions(at);
+        self.shift(at, before, after);
+    }
+
+    /// Drops every body a pane is not showing, keeping their rows.
+    ///
+    /// # Invariant
+    ///
+    /// Only bodies the journal can stand for alone, and only outside the rows the
+    /// pane draws: what is on screen is what memory is for. Nothing is lost -- the
+    /// file holds it -- so this is why a session can run for days.
+    pub fn evict(&mut self, window: &str, keep: std::ops::Range<usize>) {
+        let block_size = self.block_size;
+        let mut drops: Vec<usize> = Vec::new();
+        if let Some(ledger) = self.views.get(window) {
+            let cap = ledger.cap;
+            for &at in &self.hot {
+                let Some(entry) = self.entries.get(at) else {
+                    continue;
+                };
+                if !entry.hot() || entry.window.as_ref() != window {
+                    continue;
+                }
+                let first = ledger.index.prefix(entry.at);
+                let last = first + entry.visible(room(entry.kind, cap, block_size));
+                if last <= keep.start || first >= keep.end {
+                    drops.push(at);
+                }
+            }
+        }
+        for at in drops {
+            self.entries[at].drop_body();
+        }
+        let Log { hot, entries, .. } = self;
+        hot.retain(|at| entries.get(*at).is_some_and(Entry::hot));
+    }
+
+    /// Every window this log holds blocks for.
+    pub fn windows(&self) -> Vec<String> {
+        self.views.keys().map(|name| name.to_string()).collect()
     }
 
     /// Re-numbers the blocks and re-derives every window's row sum.
@@ -1423,6 +1843,7 @@ impl Log {
             ledger.blocks.clear();
             ledger.index = RowIndex::default();
         }
+        self.hot.clear();
         for at in 0..self.entries.len() {
             self.attach(at);
         }
@@ -1467,11 +1888,75 @@ impl Log {
             std::mem::take(&mut ledger.blocks)
         };
         for at in blocks.iter().copied() {
-            self.entries[at].reflow(width);
+            if self.entries[at].hot() {
+                self.entries[at].reflow(width);
+                continue;
+            }
+            // Read back, counted at this width, and dropped again: the index
+            // needs the rows, and only a resize asks for them.
+            materialize(&mut self.entries, &self.cache, at, width);
+            self.entries[at].drop_body();
         }
         if let Some(ledger) = self.views.get_mut(window) {
             ledger.blocks = blocks;
         }
         self.reindex_window(window);
     }
+}
+
+/// One block a window is about to draw, and which of its rows.
+struct ShownBlock {
+    block: usize,
+    /// The block's first row in the view, and the rows of it the view shows.
+    first: usize,
+    top: usize,
+    bottom: usize,
+    /// Rows of the block the view does not show, and how many it does.
+    head: usize,
+    shown: usize,
+    boxed: bool,
+    labelled: bool,
+}
+
+/// Reads one block's body back from the journal, where it was left.
+///
+/// # Invariant
+///
+/// It answers with the block as the journal last saw it, at the width the pane is
+/// drawing: a body is a function of the text and that width, so what comes back has
+/// the rows the index was already counting. A record that cannot be read leaves the
+/// block as it is rather than inventing an empty one. See `docs/notes/tui-cache.md`.
+fn materialize(entries: &mut [Entry], cache: &Cache, at: usize, width: usize) {
+    let Some(entry) = entries.get(at) else {
+        return;
+    };
+    if entry.hot() {
+        return;
+    }
+    let Some(slot) = entry.slot else {
+        return;
+    };
+    let window = entry.window.clone();
+    let place = entry.at;
+    let Some(Record::Seal {
+        id,
+        kind,
+        tag,
+        key,
+        text,
+        expanded,
+        call,
+    }) = cache.read(&window, slot)
+    else {
+        return;
+    };
+    let mut fresh = Entry::with_tag(id, &window, kind, &tag, text, width);
+    fresh.key = key;
+    fresh.expanded = expanded;
+    fresh.call = call;
+    fresh.sealed = true;
+    fresh.slot = Some(slot);
+    fresh.at = place;
+    fresh.reflow(width);
+    entries[at] = fresh;
 }

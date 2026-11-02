@@ -263,7 +263,7 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
     let home = cli::home_of(args);
 
     let mut client = cli::build_client(args);
-    let mut ui = Tui::new(client.completer())?;
+    let mut ui = Tui::new(client.completer(), &home)?;
     client.set_offline(0, &mut TuiSink(&mut ui));
 
     let mut link: Option<cli::Link> = None;

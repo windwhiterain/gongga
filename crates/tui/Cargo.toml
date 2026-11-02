@@ -20,6 +20,10 @@ test = false
 [dependencies]
 cli = { workspace = true }
 anyhow = { workspace = true }
+# The window's own cache on disk: one journal per window, and the versioned
+# record shape a later build has to be able to refuse.
+serde = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true }
 futures-util = "0.3"
 ratatui = "0.30"
