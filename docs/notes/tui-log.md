@@ -503,18 +503,23 @@ as the script it is.
 
 ## Log::fold — an item is read from its beginning
 
-The box's own scroll (`Entry::inner`) starts at the end of its travel, `rows -
-min(rows, cap)`, which is the one place where nothing of the body is hidden above
-the window. It used to start at 0, the *other* end: an item was drawn from its last
-`cap` rows, so opening a long result showed the tail of the command's output and
-reaching the beginning cost one notch per hidden row.
+`Entry::inner` is the box's *first visible row*, counted from the block's own
+beginning, so the state an item opens in is the state that needs no writing: `0`. An
+item is read from its first row, a second press reads it from there again, and a block
+that comes back from the journal expanded reads the same way without a rule about it.
 
-Closing forgets the position, so a second press reads the item from its start again
-rather than from wherever it was left, and the two ends of a box are then reachable
-by one wheel gesture each. An item that is still streaming after it was opened keeps
-the `inner` it was given: with a fixed value the head keeps following the text, so
-the new rows arrive at the bottom of the box instead of pushing what is being read
-out of sight.
+It used to be rows scrolled *up* from the bottom, with the open state at the end of
+the travel, `rows - min(rows, cap)`. Two things followed from that and both were
+wrong: an item opened before its window had ever been laid out computed its travel
+from a placeholder row and opened pinned with no scroll at all, and a block restored
+from a seal had nobody to set the number, so it reopened showing the *tail* of its
+text -- the exact opposite of what the fold promises. Measured both ways after the
+change (`.dev` throwaway, since deleted): a box left expanded and read back from the
+journal now starts at its first row.
+
+An item that is still streaming after it was opened keeps the number it has: a fixed
+first row means the head keeps following the text, so new rows arrive at the bottom of
+the box instead of pushing what is being read out of sight.
 
 `toggle` (a key) and `toggle_at` (the block a press landed on) are one `fold`: two
 ways to name a block, one thing done to it.
@@ -541,8 +546,9 @@ margin is the useful setting rather than a decorative one.
 `block_size` still decides whether there is anything inside to move: `0` caps
 nothing, so the box shows every row it has and a notch over it moves nothing at all.
 A number caps the body, so the box holds rows it is not showing, and those are what
-it scrolls first. The answer to "did the box move" is one comparison -- did `inner`
-change -- and it is no longer the question anyone asks.
+it scrolls first. A notch into the past lowers `Entry::inner`, because that number is
+the first visible row; the answer to "did the box move" is whether it changed, and it
+is no longer the question anyone asks.
 
 Which cell the pointer is on comes from the same walk that answers a press
 (`Log::block_at`): `Log::hit` gives the block, the row's index inside it, and nothing at

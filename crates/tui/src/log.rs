@@ -45,7 +45,7 @@ struct Entry {
     width: usize,
     /// Whether the operator opened it: SPEC's click, and the only state a fold has.
     expanded: bool,
-    /// Rows scrolled up inside an opened item's box: SPEC's `scroll if block_size!=0`.
+    /// The box's first visible row, counted from the block's own beginning.
     inner: usize,
     /// Byte offset of each wrapped row's first character; its length is the row count.
     starts: Vec<usize>,
@@ -181,7 +181,7 @@ impl Entry {
         self.rows().saturating_sub(body)
     }
 
-    /// Rows scrolled up inside the box, clamped to what it holds.
+    /// The box's first visible row, clamped to what its travel allows.
     fn inside(&self, cap: usize) -> usize {
         self.inner.min(self.travel(cap))
     }
@@ -1247,12 +1247,10 @@ impl Log {
     ///
     /// # Invariant
     ///
-    /// Answers whether the box took the wheel: exactly when it moved. A box with
-    /// nothing left in the wheel's direction -- at either end, or under a
-    /// `block_size` of 0, which caps nothing and so leaves nothing inside to
-    /// scroll -- hands the event to the pane, which is all SPEC's
-    /// `scroll if block_size!=0` can mean. No other number is consulted, so one
-    /// cell behaves the same way whatever the cap is.
+    /// Answers whether the box moved. A box with nothing left in the wheel's
+    /// direction -- at either end, or under a `block_size` of 0, which caps nothing
+    /// and so leaves nothing inside to scroll -- moves nothing. No other number is
+    /// consulted, so one cell behaves the same way whatever the cap is.
     pub fn scroll_block(&mut self, at: usize, rows: i64) -> bool {
         // Use the row offsets of the frame the pointer actually landed on.
         // Reflowing a resized window before the next draw would move the hit.
@@ -1264,8 +1262,9 @@ impl Log {
         }
         let cap = self.room(entry.kind, 0);
         let bound = entry.travel(cap);
+        // The stored row is the first one shown, so a notch into the past lowers it.
         let current = entry.inner;
-        let next = (current as i64 + rows).clamp(0, bound as i64) as usize;
+        let next = (current as i64 - rows).clamp(0, bound as i64) as usize;
         self.entries[at].inner = next;
         next != current
     }
@@ -1299,28 +1298,24 @@ impl Log {
     ///
     /// # Invariant
     ///
-    /// An item that opens is read from its first row: the box is left at the end of
-    /// its travel, the one place where none of it is hidden above the window. An
-    /// item that closes forgets where it was, so opening it again is the same
-    /// gesture however it was left. Either way the row count changes, so this is a
-    /// reflow of one block and a shift of its window's sum -- the arithmetic a seal
-    /// does, for the same reason. A block that does not fold is nothing to toggle.
+    /// An item that opens is read from its first row, and one that closes forgets
+    /// where it was, so opening it again is the same gesture however it was left.
+    /// The row count changes, so this is a reflow of one block and a shift of its
+    /// window's sum -- the arithmetic a seal does, for the same reason. A block that
+    /// does not fold is nothing to toggle.
     fn fold(&mut self, at: usize) -> bool {
         if at >= self.entries.len() || !self.entries[at].kind.folds() {
             return false;
         }
         self.touch(at);
         let before = self.contributions(at);
-        let cap = self.room(self.entries[at].kind, self.cap_of(&self.entries[at].window));
         self.entries[at].expanded = !self.entries[at].expanded;
         // Read after the flip: whether it is a box is what its own width depends on.
         let width = self.inner_width(at);
         let entry = &mut self.entries[at];
         entry.reflow(width);
-        entry.inner = match entry.expanded {
-            true => entry.travel(cap),
-            false => 0,
-        };
+        // The beginning is 0, so this is also what a restored block reads as.
+        entry.inner = 0;
         let after = self.contributions(at);
         self.shift(at, before, after);
         self.record_seal(at);
@@ -1696,12 +1691,12 @@ impl Log {
                 let cap = room(entry.kind, ledger.cap, *block_size);
                 let body = entry.rows().min(cap);
                 let boxed = entry.boxed();
-                // Above the cap is not in this window: its rows are the last
-                // `body`, pulled back by the box's scroll.
-                let head = entry
-                    .rows()
-                    .saturating_sub(body)
-                    .saturating_sub(entry.inside(cap));
+                // A box keeps the row the operator left it on; any other capped
+                // block keeps its newest rows. See `docs/notes/tui-log.md`.
+                let head = match boxed {
+                    true => entry.inside(cap),
+                    false => entry.rows().saturating_sub(body),
+                };
                 let shown = entry.visible(cap);
                 let next = first + shown;
                 let top = start.max(first);
