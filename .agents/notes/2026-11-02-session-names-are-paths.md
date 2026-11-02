@@ -194,3 +194,17 @@ marker folds it away」）；不想要的话，替代方案是只给会话+分�
   12/12 PASS —— `main/impl` → `main/impl/2` → `main/impl/3`、`main/impl/review` →
   `main/impl/review/2`、`--must_create` 拒已存在且不改动、`fresh/one` 能建、
   不带 `--must_create` 仍能选中、`a//b` 仍被文法拒、`spawn a/b` 拒多段角色。
+
+### heir 的真进程验证（`.dev/heir-e2e.sh`，跑完即删）
+
+真服务端 + 真 db（用 sqlite 直接写 seed 行，因为验证 turn 需要 provider）：
+
+- `transcript heir --note …`，**不给** `--session` / `--mentor`：`$GONGGA_SESSION=main`，
+  档案落到 `main/mentor`。
+- 第二次 handover：档案落到 `main/mentor/2`，`main/mentor` 一行不多。
+- 两代内容不串：`改服务端` 只出现在 `main/mentor`，`main/mentor/2` 只有第二代。
+- 12 条里 4 条（spawn 那 12 条另算）全 PASS。
+
+踩到的两个小坑，记下来免得下次重付：`messages.content` 是 JSON，��文在里面是 `\uXXXX`，
+按原文子串搜会假失败（要 `json.loads` 再比）；`send_message` 发的第一课会被服务端写回
+learner，所以第二次 handover 的档案行数不等于「我插了几行」。
