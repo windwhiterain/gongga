@@ -238,3 +238,13 @@ selftest 因此加了两条断言：`@skill:monitor` 必须出现在 prompt 行�
 而 monitor 整回合在 `cd`。顺带暴露一个真问题（DESIGN §11.3 第 6 条）：`cd` 一次就重写系统提示词，
 每次都是一个 cache miss，与 `docs/notes/server-agent.md` 那句「只有真的编辑才重新计费」不符。
 三条路（记录 cwd / 活 cwd / 折中）要用户定，我没动。
+
+**已修**：`meta::roots(home, cwd, texts)`——播种的 `AGENTS.md` 及其命名物在会话记录的目录里读
+（`prompt_in_force` 本来就已经把那个目录冻结进行里了，只是 index 没跟着用），消息点名的引用仍在
+`cwd` 里读。回归测试 `scripts/prompt_selftest.sh`：一个回合里让工具 `cd /tmp`，第二条 prompt 行
+**必须不存在**。做过变异检验——把那一行改回 `roots(cwd, cwd, ...)`，测试立刻红，且失败信息正是
+线上那个形状：两行，第二行只剩 `['@skill:self-control']`。
+
+顺带学到的一点：`index_of` 在 walk 结果为空时返回 `None`、于是回放旧行，这个兜底正好把「cd 到
+没有 AGENTS.md 的目录」的回归藏在第一条测试里——第一版测试因此通过。要让它咬住，消息必须点名一个
+引用（monitor 的报告总是点名 `@skill:`），或者 `cd` 到另一个有自己的 `AGENTS.md` 的目录。

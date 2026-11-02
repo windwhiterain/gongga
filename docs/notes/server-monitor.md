@@ -159,6 +159,13 @@ Measured on the failing run, exactly:
 That is why a monitor turn's map disappeared precisely when it started exploring:
 its first useful command was a `cd` into the home.
 
+Fixed on 2026-11-02, when this was traced: `meta::roots` now reads the seeded
+`AGENTS.md` in the session's own directory instead of the shell's, so the map stays
+put (see `server-agent.md`). The skill is still the right carrier for a monitor's
+knowledge, for the reason that outlives the bug: it resolves through
+`<home>/skills`, a monitor turn `cd`s constantly, and a report must not depend on
+where the last tool call left the shell.
+
 So the reason a skill is the right carrier is not "there is no cwd yet" -- there
 is one, and it is right at the first prompt. It is that a skill resolves through
 `<home>/skills` and does not move when the shell does, and a monitor turn moves

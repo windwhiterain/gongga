@@ -2,7 +2,8 @@
 **WRITING TEST IS NOT ALLOWED**
 **CODE THAT WILL PANIC IS NOT ALLOWED**
 
-- SPEC is the only source of truth (agents should not edit without user's permission).
+- @file: SPEC.md is the only source of truth (agents should not edit without user's permission).
+- @skill: whiting-dev is developing standard.
 - when designing new feature, search any existing wheels. 
 - setting any limit/budget is forbidden.
 - session turn end should kill all process it spawns so user won't use a process that tied to a session as a long running process.
@@ -39,7 +40,8 @@
 ### L3 写成脚本，别每次手写 heredoc
 
 参考 `scripts/heir_selftest.sh`、`scripts/ship_selftest.sh`、`scripts/watchdog_selftest.sh`、
-`scripts/monitor_selftest.sh`：它们自带临时 home、自己收尾、一行 verdict。硬性几条：
+`scripts/monitor_selftest.sh`、`scripts/prompt_selftest.sh`：它们自带临时 home、自己收尾、
+一行 verdict。硬性几条：
 
 - **pid 从 greeting 或 `server.lock` 读，永远不要 `$!`**。Git Bash 的 `$$` 是 MSYS 编号，
   Windows 的 pid 是另一套；两者混用会得到「进程还活着」这种假失败。

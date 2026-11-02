@@ -367,6 +367,28 @@ string, and a re-spelling is no longer a reason to re-bill.
 
 ## index_of, rebuilt rather than remembered
 
+Rewritten on 2026-11-02, because rebuilding it from the wrong directory broke SPEC's
+invariant. `prompt_in_force` used to pass the process's live `cwd` -- which is
+`SessionHandle::cwd()`, the shell's reported directory, refreshed with a `pwd` after
+every command. One `cd` inside a tool call therefore rebuilt the index somewhere else
+and appended a new system row: the map vanished exactly when the session started
+exploring (`cd ~/.gongga` → `AGENTS.md` gone, 21,400 → 12,017 characters), and the
+prefix the provider had cached was lost with it.
+
+The index now takes two directories: `home`, which the row itself records and which a
+later move does not change, and the live `cwd`. The seeded `AGENTS.md` -- and whatever
+it names -- is read in `home`, because the rules of a session are the rules of where
+it belongs; a reference a *message* names is read in `cwd`, because that is where the
+message was written and its relative paths mean what they said. `scripts/
+prompt_selftest.sh` holds it: a turn whose tool call `cd`s into `/tmp` must write no
+second prompt row.
+
+One fallback is worth knowing about, because it hid this for a while: when the walk
+finds nothing at all, `index_of` returns `None` and `prompt_in_force` replays the
+stored row. A moved shell whose message named no references therefore looked harmless
+-- the regression only shows when the message names one, which a monitor report always
+does.
+
 The first prompt row's second half: the `AGENTS.md` the session's directory carries,
 the text of every reference its messages name, and everything those name in turn --
 walked recursively, ordered by `prefix_cache::plan`, appended to the instructions as one

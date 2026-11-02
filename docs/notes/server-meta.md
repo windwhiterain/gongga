@@ -44,11 +44,26 @@ be re-sent for the life of the session. Being a spelling also means a message th
 `@file: AGENTS.md` stays literal and keys the same entry, so one file is never carried
 twice.
 
-It is read on every request, like every other root, from the directory the shell reports
-for that turn, so an edit reaches the next turn -- at the price the index always charges
-for an edit: a new prompt row, and the prefix behind it re-billed. The same read is what
-makes the file the *directory's*: a session standing elsewhere reads that directory's
-rules, and one whose directory has none reads none.
+It is read on every request, like every other root, so an edit reaches the next turn --
+at the price the index always charges for an edit: a new prompt row, and the prefix behind
+it re-billed.
+
+Where it is read changed on 2026-11-02, and the reason is the SPEC invariant it broke. It
+used to be read from whatever directory the shell reported for that turn, and that is not
+the session's directory: `SessionHandle::cwd()` is the shell's position, refreshed with a
+`pwd` after every command. A `cd` inside a tool call therefore read another directory --
+or none -- and appended a new system row, so the map disappeared exactly when a session
+began to explore. Measured: 21,400 → 12,017 → 21,400 characters across three rows of one
+turn, all caused by `cd`.
+
+So `roots` now takes the session's directory (the one the prompt row records) separately
+from the live `cwd`: the seeded rules file and what it names are read in the former, and a
+reference a message names in the latter, where that message was written. `scripts/
+prompt_selftest.sh` holds the line.
+
+One consequence is worth stating: a session whose directory has no `AGENTS.md` reads
+none, even if its shell later `cd`s somewhere that has one. To reach another directory's
+rules, name them: `@file: /that/dir/AGENTS.md`.
 
 ## `roots` is the walk
 

@@ -445,8 +445,15 @@ impl Agent {
                 ],
             )),
         };
+        // Where this session belongs: the row's own answer once there is one, so a
+        // later `cd` in its shell is not a rewrite of what was already sent. It is
+        // both what the prompt records and where its rules file is read.
+        let home = stored
+            .as_ref()
+            .map(|kept| std::path::PathBuf::from(&kept.cwd))
+            .unwrap_or_else(|| std::path::PathBuf::from(Self::stated(cwd)));
         // Built from what the references say now, so an edited body reaches the model.
-        let (index, rooted) = match self.index_of(id, name, model, cwd) {
+        let (index, rooted) = match self.index_of(id, name, model, cwd, &home) {
             Some((index, rooted)) => (Some(index), rooted),
             None => match &stored {
                 Some(kept) => (kept.index.clone(), kept.rooted.clone()),
@@ -465,7 +472,7 @@ impl Agent {
             cwd: stored
                 .as_ref()
                 .map(|kept| kept.cwd.clone())
-                .unwrap_or_else(|| Self::stated(cwd)),
+                .unwrap_or_else(|| Self::stated(&home)),
             stamp: crate::store::stamp(note),
         };
         // Only the texts that go on the wire are compared; `cwd` is a record.
@@ -510,20 +517,24 @@ impl Agent {
     /// The order is `prefix_cache`'s, which is a permutation of what it was given: no
     /// entry is invented for a reference that could not be read, and the spellings
     /// returned are exactly the ones the index carries, so `meta::expand` leaves
-    /// those mentions literal. See `docs/notes/server-agent.md`.
+    /// those mentions literal.
+    /// The rules file is read in `home` and a reference a message names in `cwd`, so
+    /// the map does not move when the shell does and a message's own paths still
+    /// mean what they said. See `docs/notes/server-agent.md`.
     fn index_of(
         &self,
         id: i64,
         name: &str,
         model: &str,
         cwd: &std::path::Path,
+        home: &std::path::Path,
     ) -> Option<(String, Vec<String>)> {
         // The queue as well as the transcript: a message delivered before this row
         // was left literal on the promise that the row would carry it.
         let mut texts = self.store.user_texts(id).ok()?;
         texts.extend(self.store.queued_texts(name).unwrap_or_default());
         let borrowed: Vec<&str> = texts.iter().map(String::as_str).collect();
-        let roots = crate::meta::roots(cwd, &borrowed);
+        let roots = crate::meta::roots(home, cwd, &borrowed);
         if roots.is_empty() {
             return None;
         }

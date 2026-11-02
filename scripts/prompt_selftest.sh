@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+# SPEC's prompt invariant, on real processes: what a request has sent is never
+# rewritten. The index carries the rules file of the session's own directory, so a
+# `cd` in its shell must not take that file out of the system prompt.
+#
+# One line of verdict at the end; `-v` prints both prompt rows.
+set -uo pipefail
+
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+bin="$root/target/debug"
+work="$root/.dev/selftest"
+home="$work/prompt-home"
+log="$work/prompt.log"
+verbose=${1:-}
+
+say() { [[ "$verbose" == "-v" ]] && printf '%s\n' "$*"; return 0; }
+fails=0
+ok() { if [[ "$2" == 0 ]]; then printf '  ok   %s\n' "$1"; else printf '  FAIL %s\n' "$1"; fails=$((fails + 1)); fi; }
+
+[[ -x "$bin/gongga-server.exe" || -x "$bin/gongga-server" ]] || {
+  echo "build first: cargo build -p gongga-server -p gongga-cli" >&2; exit 1; }
+
+alive() { [[ -n "${1:-}" ]] && tasklist //FI "PID eq $1" //NH 2>/dev/null | grep -q "$1"; }
+child_pid() { tr -d '\r\n' < "$home/server.lock" 2>/dev/null; }
+# A port nobody holds, asked for over TCP: a UDP answer names a different port space.
+free_port() {
+  python -c 'import socket
+s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.bind(("127.0.0.1",0))
+print(s.getsockname()[1]);s.close()'
+}
+dial_ready() {
+  python -c 'import socket,sys
+s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.settimeout(0.3)
+sys.exit(0 if s.connect_ex(("127.0.0.1",int(sys.argv[1])))==0 else 1)' "$1"
+}
+wait_tcp() { for _ in $(seq 1 100); do dial_ready "$1" && return 0; sleep 0.2; done; return 1; }
+wait_listening() { for _ in $(seq 1 300); do grep -q "listening (UDP) local=127.0.0.1:$port" "$log" && return 0; sleep 0.2; done; return 1; }
+# Every process serving THIS home, whatever the run remembers. The home has several
+# spellings, and matching one of them finds nothing.
+serving_home() {
+  local win; win=$(cygpath -w "$home" 2>/dev/null || echo "$home")
+  local posix; posix=$(cygpath -m "$home" 2>/dev/null || echo "$home")
+  powershell -NoProfile -Command \
+    "Get-CimInstance Win32_Process -Filter \"Name='gongga-server.exe'\" | Where-Object { \$_.CommandLine -like '*--home *$posix*' -or \$_.CommandLine -like '*--home *$win*' -or \$_.CommandLine -like '*--home *$home*' } | ForEach-Object { \$_.ProcessId }" \
+    2>/dev/null | tr -d '\r' | tr '\n' ' '
+}
+
+port=$(free_port)
+fake_port=$(free_port)
+server_pid=""; fake_pid=""
+cleanup() {
+  for pid in $(serving_home) "$server_pid"; do
+    alive "$pid" && taskkill //PID "$pid" //T //F >/dev/null 2>&1
+  done
+  alive "$fake_pid" && taskkill //PID "$fake_pid" //F >/dev/null 2>&1
+  rm -f "$work/fake-prompt.pid"
+  sleep 1
+  rm -rf "$home" || echo "note: $home is still held by a process" >&2
+}
+trap cleanup EXIT
+
+left=$(serving_home)
+if [[ -n "${left// /}" ]]; then
+  echo "a previous run left $(echo $left) serving $home; stopping it" >&2
+  for pid in $left; do taskkill //PID "$pid" //T //F >/dev/null 2>&1; done
+  sleep 2
+fi
+rm -rf "$home"; mkdir -p "$home"
+cp -r "$HOME/.gongga/ship.git" "$home/ship.git" 2>/dev/null
+: > "$log"
+
+export FAKE_LLM_TOOL=bash
+export FAKE_LLM_TOOL_ARGS='{"command":"cd /tmp && pwd","name":"default","task":"move the shell"}'
+
+python -c "import os,runpy,sys;open(sys.argv[1],'w').write(str(os.getpid()));sys.argv=sys.argv[2:];runpy.run_path(sys.argv[0],run_name='__main__')" \
+  "$work/fake-prompt.pid" "$root/scripts/fake_llm.py" "$fake_port" >"$work/fake-prompt.log" 2>&1 &
+for _ in $(seq 1 50); do [[ -s "$work/fake-prompt.pid" ]] && break; sleep 0.2; done
+fake_pid=$(cat "$work/fake-prompt.pid" 2>/dev/null)
+if ! wait_tcp "$fake_port"; then
+  echo "the fake endpoint never answered on 127.0.0.1:$fake_port" >&2
+  sed -n '1,12p' "$work/fake-prompt.log" >&2
+  exit 1
+fi
+
+# One model, the fake, so nothing here depends on the machine's roster.
+cat > "$work/prompt-roster.toml" <<TOML
+[[provider]]
+id = "fake"
+name = "Fake"
+key_env = "FAKE_API_KEY"
+
+  [[provider.endpoint]]
+  id = "openai"
+  api = "openai-responses"
+  base_url = "http://127.0.0.1:$fake_port/v1"
+
+  [[provider.model]]
+  id = "flash-fake"
+  name = "Fake Flash"
+  tier = "flash"
+  context = 100000
+  modalities = ["text"]
+TOML
+export GONGGA_PROVIDERS_CATALOG="$work/prompt-roster.toml"
+export FAKE_API_KEY=sk-fake
+
+"$bin/gongga-server.exe" --home "$home" --bind "127.0.0.1:$port" --log info >>"$log" 2>&1 &
+for _ in $(seq 1 150); do [[ -s "$home/server.lock" ]] && break; sleep 0.2; done
+wait_listening || { echo "the server never listened on 127.0.0.1:$port" >&2; exit 1; }
+server_pid=$(child_pid)
+cli=("$bin/gongga-cli.exe" --home "$home" --server "127.0.0.1:$port")
+
+# A session in the repository, whose rules file names SPEC.md and a skill. The model
+# is named: this home's roster has one provider, and the built-in default is not it.
+created=$("${cli[@]}" set_session --session reader --cwd "$root" --model fake/flash-fake 2>&1)
+[[ "$created" == *'"ok":true'* ]]
+ok "a session is created in the repository" $?
+# The message names a reference, as a monitor report does: that keeps the index from
+# ever being empty, which is what makes a missing rules file show up as a new row.
+sent=$("${cli[@]}" send_message --session reader \
+  --message "@skill: self-control — move the shell, then answer in one word" 2>&1)
+[[ "$sent" == *'"ok":true'* ]]
+ok "its turn is accepted" $?
+for _ in $(seq 1 120); do grep -q 'turn end session=reader' "$log" && break; sleep 0.5; done
+grep -q 'turn end session=reader outcome=Done' "$log"
+ok "a turn that cd's its shell finishes" $?
+
+python - "$home" <<'INNER'
+import json, sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
+sid = c.execute("select id from sessions where name='reader'").fetchone()[0]
+# The shell really did move: the tool the model called ran a `cd`.
+moved = [json.loads(d).get("arguments", "") for (d,) in c.execute(
+    "select display from messages where session_id=? and kind='tool_call'", (sid,))]
+assert any("cd /tmp" in a for a in moved), moved
+rows = [json.loads(d) for (d,) in c.execute(
+    "select display from messages where session_id=? and kind='system' order by seq", (sid,))]
+# The invariant: the shell moved, and the request that was already sent did not
+# change -- so no second prompt row was written at all.
+assert len(rows) == 1, f"a moved shell rewrote the prompt: {len(rows)} rows, {[r['rooted'] for r in rows]}"
+only = rows[0]
+assert "@file:AGENTS.md" in only["rooted"], only["rooted"]
+assert "@skill:self-control" in only["rooted"], only["rooted"]
+# The rules file's own references came with it (AGENTS.md names SPEC.md).
+assert any(root.startswith("@file:SPEC.md") for root in only["rooted"]), only["rooted"]
+INNER
+ok "a cd in the shell writes no new prompt row" $?
+
+sha=$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)
+if [[ $fails == 0 ]]; then
+  printf 'PASS · prompt · %s\n' "$sha"
+else
+  printf 'FAIL · prompt · %d scenario(s) · %s\n' "$fails" "$sha"; exit 1
+fi

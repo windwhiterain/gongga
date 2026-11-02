@@ -1602,13 +1602,11 @@ prompt 行的 `rooted` 里。
 3. **额度读得不够勤**：`quota::publish` 只在 step 结束时刷新，所以候选顺序可能是旧的。现在
    靠「下标 = attempts」兜底（同一个模型不会被挑第二次），够用但不优雅。
 4. **pid 复用**：`follows` 与 `GONGGA_SUPERVISOR` 都只验数字，与 §8.1 那条风险同类。
-6. **index 跟着 shell 的 cwd 走，`cd` 一次就等于重写一次系统提示词**（见 §11.2）：`docs/notes/
-   server-agent.md` 写的是「一次构建与存下的行相同则不写行，所以只有真的编辑才重新计费」，
-   但 shell 移动目录会让 `AGENTS.md` 出现或消失，于是整段前缀作废——实测一次 21,400 → 12,017 →
-   21,400，都是 `cd` 造成的。三个选项：(a) index 改用会话**记录**的 cwd（稳定，但「你脚下的规矩」
-   变成「你被创建时的规矩」）；(b) 保持现在的活 cwd（诚实，每次 `cd` 一次 cache miss）；
-   (c) 折中：`AGENTS.md` 按会话记录的目录播种，消息里点名的引用仍按活 cwd 解析。需要你定。
-5. **`taskkill /F` 打 supervisor 会连子进程带走**（Windows `/T` 语义），与「软停保 turn」
-   相反。这是既有的「没人能替自己被谋杀做准备」。
-6. **前缀选了 `@`（2026-11-02 用户定）**，`#` 被否掉的原因见 §11.2：`#` 起头的词在
-   `shell_words` 里开注释，手敲必须加引号。`@` 与 meta 引用不冲突（匹配带冒号）。
+6. ~~**index 跟着 shell 的 cwd 走**~~ **已修（2026-11-02）**：违反 SPEC 的 Prompt invariant
+   「已发送的 transcript 不得更改」。以前 `index_of` 收的是活的 `cwd`＝`SessionHandle::cwd()`
+   ＝shell 报告的目录（每条命令后 `pwd` 刷新），于是一次 `cd` 就在别的目录重建 index 并追加新的
+   system 行——实测一个回合里 21,400 → 12,017 → 21,400，全是 `cd` 造成的。现在 `meta::roots`
+   把「根属于哪个目录」与「在哪个目录读」分开：播种的 `AGENTS.md` 及其命名物在**会话记录的目录**
+   里读，消息点名的引用仍在 `cwd` 里读（那条消息就是在那里写的）。回归测试
+   `scripts/prompt_selftest.sh`。一个已接受的后果：会话目录没有 `AGENTS.md` 时就是没有，
+   `cd` 到别处也不会读到那儿的——要读就点名 `@file: /别的/AGENTS.md`。
