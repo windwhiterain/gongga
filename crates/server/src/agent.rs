@@ -5,6 +5,7 @@ use std::any::Any;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use futures_util::FutureExt;
 use protocol::{
@@ -1034,9 +1035,13 @@ impl Agent {
         let (tx, mut rx) = mpsc::channel::<ToolAnswerEvent>(256);
         let bus = self.bus.clone();
         let tool_label = tool.clone();
+        // Whether the window heard anything from the tool itself.
+        let sent = Arc::new(AtomicUsize::new(0));
+        let forwarded = Arc::clone(&sent);
         let forwarder = tokio::spawn(async move {
             while let Some(mut e) = rx.recv().await {
                 e.tool = tool_label.clone();
+                forwarded.fetch_add(1, Ordering::Relaxed);
                 bus.publish(Event::ToolAnswer(e));
             }
         });
@@ -1066,6 +1071,11 @@ impl Agent {
         let attach_started = std::time::Instant::now();
         let scanned = self.attach_references(&ctx, &outcome.output, llm).await;
         let attach_ms = attach_started.elapsed().as_millis() as u64;
+        // A tool that streamed nothing owes its output to the final chunk.
+        let tail = match sent.load(Ordering::Relaxed) {
+            0 => outcome.output.clone(),
+            _ => String::new(),
+        };
         // The model is shown no head and no label, so the time ends the text it reads.
         let output = with_time(outcome.output, run_ms);
         drop(ctx);
@@ -1086,7 +1096,7 @@ impl Agent {
             call_id: call_id.clone(),
             tool: tool.clone(),
             stream: ToolStream::Stdout,
-            text: String::new(),
+            text: tail,
             done: true,
             head: Some(result_head(outcome.ok, run_ms)),
         }));

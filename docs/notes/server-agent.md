@@ -231,6 +231,28 @@ inside a pair is the one thing no writer may do. The backstop is in the request
 builder, not the store: a step's buffer has its own calls, so it can tell an
 orphan from a pair and leave the orphan out (`docs/notes/server-body.md`).
 
+## a result's body arrives once
+
+The chunk that ends a call carries the tool's own output only when the tool
+streamed nothing: the forwarder counts what it published, and a count of zero is
+the one case with no other road to the window. Every builtin except `bash`
+returns a `ToolOutcome` and emits no chunk, so `index_skill`'s table, a
+`check_bash` answer, an argument error and an unknown tool's refusal were all a
+block with a verdict and nothing to read -- while the store kept that same output
+and a replay of it showed it. Live and replayed then read differently, which is
+the drift a shared vocabulary exists to prevent (`docs/notes/cli-lib.md`).
+
+The count is the fact and not a declaration, because the question is what the
+client received: a tool that declares itself streaming and sends nothing is the
+same bug as a silent one.
+
+A streaming tool keeps its body as it streamed it. Replacing it with the final
+output would be wrong for the paths whose output is not what they printed:
+`leave_running` answers "still running after 30s ..." while the real output was
+the stream, and bash's capped text would retire rows the window already drew.
+One body per result, and the verdict's time still rides on the head alone, so the
+folded row says exactly what it said before.
+
 ## `step_timing` and `tool_timing`
 
 `step` writes one event whether it finishes, stops, or fails. In addition to its
