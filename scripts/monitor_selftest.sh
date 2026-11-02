@@ -40,11 +40,21 @@ parent_of() {
   powershell -NoProfile -Command \
     "(Get-CimInstance Win32_Process -Filter 'ProcessId=$1').ParentProcessId" 2>/dev/null | tr -d '\r\n'
 }
+# A TCP port nobody holds. UDP would answer a different question, and a port the
+# kernel hands back for UDP can already belong to a service -- measured: one run
+# picked a port `svchost` was listening on, and the fake endpoint died on bind.
 free_port() {
   python -c 'import socket
-s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.bind(("127.0.0.1",0))
+s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.bind(("127.0.0.1",0))
 print(s.getsockname()[1]);s.close()'
 }
+# Ready means it answers, not that a process exists.
+dial_ready() {
+  python -c 'import socket,sys
+s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.settimeout(0.3)
+sys.exit(0 if s.connect_ex(("127.0.0.1",int(sys.argv[1])))==0 else 1)' "$1"
+}
+wait_tcp() { for _ in $(seq 1 100); do dial_ready "$1" && return 0; sleep 0.2; done; return 1; }
 # One row per session, as the monitor and the window both read them.
 rows() {
   python - "$home" <<'PY'
@@ -136,6 +146,11 @@ python -c "import os,runpy,sys;open(sys.argv[1],'w').write(str(os.getpid()));sys
   "$work/fake.pid" "$root/scripts/fake_llm.py" "$fake_port" >"$work/fake.log" 2>&1 &
 for _ in $(seq 1 50); do [[ -s "$work/fake.pid" ]] && break; sleep 0.2; done
 fake_pid=$(cat "$work/fake.pid" 2>/dev/null)
+if ! wait_tcp "$fake_port"; then
+  echo "the fake endpoint never answered on 127.0.0.1:$fake_port" >&2
+  sed -n '1,12p' "$work/fake.log" >&2
+  exit 1
+fi
 
 "$bin/gongga-server.exe" --home "$home" --bind "127.0.0.1:$port" --log info >>"$log" 2>&1 &
 for _ in $(seq 1 150); do [[ -s "$home/server.lock" ]] && break; sleep 0.2; done
@@ -172,7 +187,41 @@ for _ in $(seq 1 100); do grep -q 'turn end session=@monitor outcome=Done' "$log
 grep -q 'turn end session=@monitor outcome=Done' "$log"
 ok "and that attempt finished" $?
 
-python - "$home" <<'PY'
+echo "--- the standing knowledge is an index entry, not a message"
+python - "$home" <<'INNER'
+import json, sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
+row = c.execute("""select m.display from messages m join sessions s on s.id = m.session_id
+                   where s.name = '@monitor' and m.kind = 'system'
+                   order by m.seq desc limit 1""").fetchone()
+assert row, 'the monitor session has no prompt row'
+prompt = json.loads(row[0])
+rooted = prompt.get('rooted') or []
+assert '@skill:monitor' in rooted, f'the skill is not an index root: {rooted}'
+body = prompt.get('index') or ''
+assert 'provider 4xx' in body or 'providers' in body, 'the skill body is not in the index'
+assert 'The text of every reference' in body
+INNER
+ok "the skill body reaches the prompt index, not the transcript" $?
+
+echo "--- the report is the reference plus this failure's facts"
+python - "$home" <<'INNER'
+import json, sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
+first = c.execute("""select m.display from messages m join sessions s on s.id = m.session_id
+                     where s.name = '@monitor' and m.kind = 'text'
+                     order by m.seq limit 1""").fetchone()[0]
+text = json.loads(first).get('text', '')
+assert text.startswith('@skill:monitor'), text[:80]
+assert 'A gongga session stopped with an error' in text
+assert 'session: broken' in text, 'the report names the session that failed'
+assert 'harness build:' in text and 'home:' in text
+# The literal spelling stays in the message: the index carries the body instead.
+assert 'provider 4xx' not in text
+INNER
+ok "the report names this failure and leaves the map to the index" $?
+
+python - "$home" <<'INNER'
 import json, sqlite3, sys
 c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
 texts = [json.loads(d).get("text", "") for (d,) in c.execute(
@@ -183,7 +232,7 @@ assert len(reports) >= 2, reports
 # The retry re-sends the first report unchanged, behind a preface naming the model.
 assert "unchanged" in reports[-1], reports[-1][:200]
 assert reports[-1].rstrip().endswith(reports[0].rstrip()), "the retry lost the original report"
-PY
+INNER
 ok "the retry carries the first report, unchanged" $?
 
 before=$(grep -c 'handed a failure to the monitor' "$log")

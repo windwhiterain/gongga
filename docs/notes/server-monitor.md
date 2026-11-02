@@ -108,18 +108,50 @@ has failed on every usable flash model, and the session in error is left for a
 reader. No recursion, no invented retry budget -- `AGENTS.md` forbids one, and the
 failure is still visible in the window either way.
 
-## What the report says
+## What the report says, and what the skill says
 
-Enough to start work without reading anything first: the session and its model,
-the row range, the harness build (`protocol::version_line`), the home, the server
-pid and cwd, the model this turn runs on, the last `notice` row the server wrote
-for that session (which is where `Agent::error` puts the reason), and the exact
-command that reads the transcript back. Plus the two things worth doing:
-`@skill: self-control` to restart the server after a fix, and `set_session` when
-the cause is a credential or a quota.
+The first version put everything in the message. A measured run then spent 112
+seconds and thirty tool calls finding out what a gongga home looks like -- where
+the database, the log and the lock are, which table holds the transcript, where
+the roster and the keystore live, whether a `400` means the harness built a bad
+request -- and that map is the same for every failure.
 
-Nothing about it is reserved for a skill: the report is built by the server, so
-it is the same whether or not this home has any skills installed.
+So the knowledge is split by how long it lives:
+
+| where | what | what it costs |
+| --- | --- | --- |
+| `@skill:monitor` (ship), in the prompt's index | the map, the triage table, the read-only schema, the safety rules, how a report ends | charged once, reused by every later request of the session |
+| the message | this failure: session, model, row range, build, home, pid, cwd, the `notice` the server wrote, the read-back command | charged once, and it rides the transcript |
+
+The reference is what makes the first row work: a message that names a skill makes
+that skill's body a root, `agent::index_of` appends it to the system prompt's index,
+and the mention itself stays literal in the message (SPEC's meta prefix cache
+optimize). Nothing about the *dynamic* half needs a skill, so a home that installed
+none still gets a report worth acting on; it just gets the map by exploring.
+
+Two things are deliberately still in the message: the read-back command (it names
+the failing session) and `@skill: self-control`, because a monitor that decides to
+change source and restart the server needs the turn-preserving stop, and that is
+the one action it must not improvise.
+
+## Why a skill and not the directory's `AGENTS.md`
+
+`meta::roots` also seeds `@file:AGENTS.md` from the session's own directory, and
+the monitor's first prompt is built before it knows where its shell stands: a
+session the server creates starts at the *server's* cwd, and `adopt_reported_cwd`
+moves it when the first shell reports. Measured: a failed turn's monitor got a
+12,017-character index that was `self-control` alone, because the cwd at that
+moment held no `AGENTS.md` (`C:\Users\17124\.gongga`). Reproduced by starting a
+server there.
+
+A skill is found through `<home>/skills`, which does not depend on the cwd, so it
+is the one carrier that is always there. The selftest asserts it: `@skill:monitor`
+must be in the prompt row's `rooted`, and the skill's own words must be in the
+index.
+
+The index is not free: 38,190 characters in this repository, because `AGENTS.md`
+names `SPEC.md` and `whiting-dev` and the walk is recursive. That is the price of
+having the map in a cached prompt instead of a transcript, and it is paid once.
 
 ## The boundary with `model_pool`
 

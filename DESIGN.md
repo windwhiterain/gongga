@@ -1556,9 +1556,23 @@ API。排序按最差的额度窗口降序，没报额度的按 roster 顺序排
 第一次失败会被当成第 0 次而重挑刚失败的模型；`store::finish_turn` 在 turn **不是**以 error
 收尾时清计数并把 `monitor_seq` 推过整份 transcript，这样恢复之后再次失败是一次新的搜索。
 
-**报告由服务端拼**，不靠 skill：会话与模型、行范围、build、home、pid 与 cwd、这次用的模型、
-最后一条 `notice`（`Agent::error` 把原因写在那里）、读回现场的确切命令，以及两件该做的事
-（修完用 `@skill: self-control` 重启；凭据/额度问题用 `set_session`）。
+**知识按寿命分成两半**（2026-11-02 用户定）：实测一次 monitor 回合花 112 秒、30 次工具调用
+去摸清「一个 gongga home 长什么样」——而那部分对每次失败都一样。
+
+| 放哪 | 是什么 | 代价 |
+| --- | --- | --- |
+| `@skill: monitor`（ship 内容），进 prompt 的 index | 地图（home 里每个文件）、分诊表（供应商/配置/harness 三层，先在 harness 之外复现）、只读 schema、安全规则、交付格式 | 付一次，本会话后续每个请求都复用 |
+| 消息本体 | 这次失败：会话、模型、行范围、build、home、pid、cwd、服务端写下的 `notice`、读回命令 | 付一次，且会随 transcript 走 |
+
+前者能成立靠的就是 SPEC 的 meta prefix cache optimize：消息里提到 skill，该 skill 的正文成为
+index 的根、进系统提示词，而消息里那个引用保持字面形式。
+
+**为什么必须是 skill 而不是目录里的 `AGENTS.md`**：`meta::roots` 会把会话所在目录的
+`AGENTS.md` 作为第一个根，而 monitor 的第一份 prompt 是在它知道自己的 shell 站在哪之前建的
+——服务端创建的会话从**服务端的** cwd 开始，`adopt_reported_cwd` 要等第一个 shell 报告才移动它。
+实测：那次 monitor 拿到的 index 只有 12,017 字符（等于 `self-control` 一份），因为当时的 cwd
+（`~/.gongga`）里没有 `AGENTS.md`；在那种目录里起服务端可以复现。skill 走 `<home>/skills`，
+与 cwd 无关，是唯一一定在的载体，selftest 因此断言 `@skill:monitor` 在 prompt 行的 `rooted` 里。
 
 **与 `model_pool` 的边界**：服务端只读 roster 的 `tier` 与额度读数；`preference.toml` 权重、
 `mark`、entitlement 探测留在 skill 里（那是这台机器的策略，不是 harness 的），而且服务端去

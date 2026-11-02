@@ -38,6 +38,15 @@ pub fn reserved(name: &str) -> Option<String> {
 /// How many rows of the failing transcript a report opens with.
 const CONTEXT_ROWS: i64 = 20;
 
+/// The skill a monitor turn is given its standing knowledge through.
+///
+/// # Invariant
+///
+/// Referenced, not pasted: a reference becomes an index entry in the system
+/// prompt, which every later request of the session reuses, where the same text in
+/// a message would ride the transcript. See `docs/notes/server-monitor.md`.
+pub const SKILL: &str = "monitor";
+
 /// Hands every unreported failure to the monitor session.
 ///
 /// # Invariant
@@ -169,20 +178,15 @@ fn report(
             },
         ));
     }
-    let home = home.display();
-    let cwd = std::env::current_dir()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let mut out = String::new();
-    out.push_str(
-        "A gongga session stopped with an error. Read it, find the harness-side cause, \
-         and fix it. This session is the monitor: work here, with shells and with \
-         `gongga-cli`, exactly as a person would.\n\n",
-    );
-    out.push_str(&format!(
-        "- session: {name}\n\
+    // Only this failure varies; the map and the rules are the skill's, in the index.
+    let mut out = format!(
+        "{skill}\n\n\
+         A gongga session stopped with an error. Find the cause and fix it; the skill \
+         says how to tell a provider's refusal from a harness bug, and where the truth \
+         is on this machine.\n\n\
+         - session: {name}\n\
          - its model: {model}\n\
-         - rows {from}..{to} of its transcript\n\
+         - its rows: {from}..{to} ({rows} rows in the transcript)\n\
          - harness build: {build}\n\
          - home: {home}\n\
          - server: pid {pid}, cwd {cwd}\n\
@@ -191,10 +195,16 @@ fn report(
         model = failure.model,
         from = (failure.last_seq - CONTEXT_ROWS).max(0),
         to = failure.last_seq,
+        rows = failure.last_seq,
         build = protocol::version_line(),
+        home = home.display(),
         pid = std::process::id(),
+        cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default(),
         mine = entry.model,
-    ));
+        skill = format!("{}{}", protocol::Reference::Skill.prefix(), SKILL),
+    );
     if !written.is_empty() {
         out.push_str(&format!(
             "\nThe last thing the server recorded for it:\n\n{written}\n"
@@ -205,10 +215,8 @@ fn report(
         name = failure.name,
     ));
     out.push_str(
-        "\nIf the cause is a harness bug, fix the source and restart the server \
-         (`@skill: self-control`); if it is a credential or a quota, put that session on \
-         a model the roster can serve (`gongga-cli set_session`). Report what you found \
-         and what you changed in one message when you are done.\n",
+        "\nIf it is a harness bug, `@skill: self-control` says how to restart the server \
+         without losing a turn. Report what you found and what you changed in one message.\n",
     );
     Ok(out)
 }
