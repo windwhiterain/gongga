@@ -23,8 +23,10 @@ serves sessions in different checkouts, and a skill in one of them must not appe
 another's table.
 
 `installed_skills` in the command layer walks the same three roots in the same order,
-from the client's own directory, so the names a reader completes are the names the
-server will find.
+from the session's own directory -- the one published in `SessionInfo::cwd`, which is
+where this function reads too -- so the names a reader completes are the names the
+server will find. From the client's own directory they were not: a window launched
+somewhere else offered that somewhere else's project skills.
 
 ## description
 

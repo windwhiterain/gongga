@@ -178,6 +178,21 @@ invariant, "what a frame shows, never what is held". A deleted session differs i
 one way that matters here: the server frees the name, and the name is what the window
 is called.
 
+The whole `SessionInfo` goes to the completer, not just the name: a value completed for
+a session belongs to that session's directory and machine, and the completer has no
+other place to learn them. See `docs/notes/cli-catalog.md`.
+
+## Client::sync_sticky
+
+The sticky arguments, and the session a bare message goes to. The second is what makes
+`@skill:` complete the skills of the session the message will be sent to: a message
+names no session on its own line, so the sticky one is the only address it has.
+
+Where the skills are read moved out of here and into the catalog, keyed by the
+directory they came from. Pushing a list in from this function made its correctness
+depend on every caller remembering -- the greeting ran it, a session that moved did
+not.
+
 ## Sink::block_size and Sink::layout
 
 Both default to a no-op: a front-end that shows every row in one window has to know

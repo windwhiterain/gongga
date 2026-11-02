@@ -765,7 +765,24 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             let target_moves = wanted_target
                 .as_deref()
                 .is_some_and(|asked| !same_target(asked, &recorded_target));
-            let cwd_moves = stated_cwd.is_some_and(|asked| !same_directory(asked, &here));
+            // Read from the destination's side: the session's directory here,
+            // the server's on arrival, and the peer's when it moves.
+            let to_here = same_target(
+                wanted_target.as_deref().unwrap_or(&recorded_target),
+                "local",
+            );
+            let base = if target_moves {
+                std::env::current_dir().unwrap_or_default()
+            } else {
+                here.clone()
+            };
+            let wanted_dir = stated_cwd.map(|asked| match to_here {
+                true => crate::session::stated_directory(asked, &base),
+                false => std::path::PathBuf::from(asked.trim()),
+            });
+            let cwd_moves = wanted_dir
+                .as_deref()
+                .is_some_and(|asked| !same_directory(asked, &here));
             let session = match live {
                 Some(session) => session,
                 None => match d.sessions.get(&name) {
@@ -776,9 +793,12 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             if !target_moves && !cwd_moves {
                 (session, None)
             } else {
+                let stated = wanted_dir
+                    .as_ref()
+                    .map(|dir| dir.to_string_lossy().into_owned());
                 let moved = match d
                     .sessions
-                    .relocate(&session, wanted_target.as_deref(), stated_cwd)
+                    .relocate(&session, wanted_target.as_deref(), stated.as_deref())
                     .await
                 {
                     Ok(report) => report,
@@ -916,8 +936,7 @@ fn same_target(asked: &str, recorded: &str) -> bool {
 ///
 /// Comparing paths as strings would refuse `C:/work` against `C:\\work`, which name
 /// one directory; this compares what the platform compares.
-fn same_directory(written: &str, actual: &std::path::Path) -> bool {
-    let spelled = std::path::Path::new(written.trim());
+fn same_directory(spelled: &std::path::Path, actual: &std::path::Path) -> bool {
     if spelled == actual {
         return true;
     }
@@ -1528,12 +1547,20 @@ fn stated_tuning(
 ///
 /// # Invariant
 ///
-/// The tuning fields are what the session *would send now*: its live handle when it
-/// has one, else its row. One function, because the greeting and the list must not
-/// disagree about a session's model. The level is the one `set_session` stored, so
-/// nothing is added here that the request would not carry.
+/// Every field is what the session *would do now*: its live handle when it has one,
+/// else its row. One function, because the greeting and the list must not disagree.
+/// `cwd` is where the shell says it is, because that is where a tool reads.
 pub fn session_info(d: &Dispatch, row: &crate::store::SessionRow) -> protocol::SessionInfo {
-    let tuning = stated_tuning(d.sessions.peek(&row.name).map(|s| s.tuning()), row);
+    let live = d.sessions.peek(&row.name);
+    let tuning = stated_tuning(live.as_ref().map(|s| s.tuning()), row);
+    // Its own shell's directory, which is what a tool reads: the row is all
+    // there is before a shell exists.
+    let reported = live.map(|s| s.cwd()).unwrap_or_default();
+    let cwd = if reported.as_os_str().is_empty() {
+        row.cwd.clone()
+    } else {
+        reported.to_string_lossy().into_owned()
+    };
     let entry = tuning
         .model
         .as_deref()
@@ -1551,7 +1578,7 @@ pub fn session_info(d: &Dispatch, row: &crate::store::SessionRow) -> protocol::S
         created_at: row.created_at,
         updated_at: row.updated_at,
         messages: row.messages,
-        cwd: row.cwd.clone(),
+        cwd,
         usage: row.usage,
         model,
         thinking_effort,

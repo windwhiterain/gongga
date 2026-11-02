@@ -119,3 +119,18 @@ was `--message=--version`, which nothing advertises.
 The cost is the other direction: a forgotten value swallows the next flag, which
 then fails on whatever follows it -- `--session --message hi` reads `--message`
 as the value of `--session`, and `hi` is what fails.
+
+## installed_skills
+
+The three roots the server walks, in its order: the session's own
+`<cwd>/.agents/skills`, the home's `skills/`, then the machine's. Duplicating the
+walk here is deliberate -- completion runs in a key handler and cannot ask the
+server -- so the two lists have to be kept equal by construction rather than by
+hope, and this is the one function the client reads them from.
+
+`project` is `None` when the session whose skills these are runs on another
+machine. Its checkout is then not on this disk, and reading
+`<that path>/.agents/skills` here would offer the local directory of the same
+name -- a name that cannot be opened, which is the failure this whole area keeps
+producing. The home's and the machine's still count: they are what the server's
+own `@skill:` expansion reads, since that expansion runs on the server.

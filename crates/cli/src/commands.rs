@@ -306,22 +306,22 @@ fn write_file(path: &Path, file: &File) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The skills `cwd` can open: the project's, the home's, then the machine's.
+/// The skills a session can open: the project's own, the home's, then the machine's.
 ///
 /// # Invariant
 ///
-/// The same three roots, in the same order, that the server walks for
-/// `index_skill` and `@skill:` -- so the list a reader completes is the list that
-/// can be opened. See `docs/notes/cli-commands.md`.
-pub fn installed_skills(home: &Path, cwd: &Path) -> Vec<String> {
+/// The same three roots, in the same order, that the server walks for `index_skill`
+/// and `@skill:` -- so a name read here is a name that can be opened. `project` is
+/// the directory the session works in, and `None` when that directory is another
+/// machine's: its checkout is not on this disk. See `docs/notes/cli-commands.md`.
+pub fn installed_skills(home: &Path, project: Option<&Path>) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     for root in [
-        cwd.join(".agents").join("skills"),
-        home.join("skills"),
-        dirs::home_dir()
-            .map(|h| h.join(".agents").join("skills"))
-            .unwrap_or_default(),
+        project.map(|dir| dir.join(".agents").join("skills")),
+        Some(home.join("skills")),
+        dirs::home_dir().map(|h| h.join(".agents").join("skills")),
     ] {
+        let Some(root) = root else { continue };
         let Ok(entries) = std::fs::read_dir(root) else {
             continue;
         };
