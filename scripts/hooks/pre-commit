@@ -32,7 +32,12 @@ if ! git diff --cached --name-only | grep -qxE 'ship|crates/server/ship\.toml'; 
 	exit 0
 fi
 
-out=$(bash scripts/ship.sh --check 2>&1)
+# `git commit` exports the index it is writing (`GIT_INDEX_FILE`, and in some versions
+# more). The check reads the submodule's *own* index, and inheriting this one makes it
+# read the parent's: it reported the parent's HEAD as the content's, and the parent's
+# whole tree as deleted in `ship/`. So the check runs with that environment cleared.
+out=$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
+  -u GIT_PREFIX bash scripts/ship.sh --check 2>&1)
 code=$?
 case $code in
 0) exit 0 ;;
