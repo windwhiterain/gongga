@@ -808,11 +808,11 @@ TUI 布局：头部状态条 / 事件窗口（分屏时是若干面板，每个�
 sticky 参数行 / `cmd` 与回执那一线（只在分屏时占一行，位于 footer 与输入框之间）/
 输入框 / 帮助行，补全弹窗浮在输入框上方。
 帮助行是窗口的**最后几行**，写的是 SPEC 那一串 hot-key（`Shift+Enter` 换行、`PageUp/PageDown`
-翻页、`Shift+Down` 回底部、`Shift+Delete` 删会话、`Ctrl+V` 粘贴、`Shift+Up` 取回上一条命令），
+翻页、`Shift+Down` 回底部、`Shift+Delete` 删会话、`Alt+V` 粘贴、`Shift+Up` 取回上一条命令），
 不写别的：键位表是 SPEC 的，窗口自己另外还认
 哪些键是文档的事，写进提醒里就成了「SPEC 说过的键」——而它并不是。窗口窄到放不下时**换行**，
-不是截断：被切掉的那一条键，恰恰是没人会知道的那条。整个列表 136 列，所以一行放得下就一行
-（≥136 列），80 列两行，20 列一条一行。行数在布局里**先算、先扣**（`help_rows`），
+不是截断：被切掉的那一条键，恰恰是没人会知道的那条。整个列表 124 列，所以一行放得下就一行
+（≥124 列），80 列两行，20 列一条一行。行数在布局里**先算、先扣**（`help_rows`），
 所以矮窗口先让出的是面板的行，不是提醒——约束不够时求解器怎么分是不确定的。
 输入框是**多行**的，高度随内容变：超出行宽自动折行，`Shift+Enter`（或 `Alt+Enter`）插入
 硬换行，行数上限 8 行 —— 到顶就不再长、改为内部滚动跟随光标，因为一个吃掉半屏的输入框
@@ -892,11 +892,18 @@ Ctrl+C 和 Ctrl+X 都删了：一手 `Ctrl+C` 的老习惯在 TUI 里意味着�
 意思：判据是「`Delete` + Shift」，与光标在哪儿无关。行里已经有字时它和 `Delete` 一样删一个
 字符（提示行是编辑器的地盘），只有**空的**输入行才真的删会话，没有 sticky 会话时它什么都不做。
 
-**`Ctrl+V` 是 SPEC 的粘贴，两条路都通。** 自己粘贴的终端（Windows Terminal、VS Code）
-根本不会把这个键送上来，它送的是文本（bracketed paste）；转发 `^V` 的终端则由窗口自己读
+**`Alt+V` 是 SPEC 的粘贴，两条路都通。** 自己粘贴的终端（Windows Terminal、VS Code）
+根本不会把这个键送上来，它送的是文本（bracketed paste）；转发这个键的终端则由窗口自己读
 剪贴板（`clipboard::paste()`），拿到的文本走同一条 `Tui::paste`——所以两边的落点一样，都
 不是「把按键重放一遍」。读不到就只在状态条上说一句，提示行不动：空剪贴板不算错，什么都不说。
-这个键读在「Ctrl+其余字母一律吞掉」那一条**之前**，否则转发 `^V` 的终端里它看着像个死键。
+这个键读在 Alt 分支与「Ctrl+其余字母一律吞掉」那一条**之前**，否则 Alt 分支会给它返回
+`None`、Ctrl 吞键会让它看着像死键。
+
+**为什么不是 Ctrl。** `Ctrl+V` 在 VS Code 的终端里被它自己的 `terminal.paste` 吃掉；
+`Ctrl+Alt+V` 更彻底——xterm.js 在 Windows 上把任何 `Ctrl+Alt` keydown 当成 AltGr，等一个
+US 布局永远合成不出来的字符，**一个字节都不写进 pty**。两条都在同一个 VS Code 窗口里量过
+（控制台探针 + 窗口自己的按键日志），度量表和 `keybindings.json` 的补救方案在
+`docs/notes/tui-paste.md`。`Ctrl+V` 仍然接受，用于转发 `^V` 的终端。
 
 ### 断线与重连
 
@@ -1197,7 +1204,7 @@ Git Bash 自动探测常见安装路径，找不到再退回 PATH 上的 `bash`�
 | `Enter` 发送 / `Shift+Enter`（`Alt+Enter`）换行 | 判定逻辑有单测，**真 TTY 未验证**（见下）|
 | `Shift+Delete` 删 sticky 会话，`Delete`/`Backspace` 只编辑；空行 + 有 sticky 才删 | 通过（`shift_delete_is_the_delete_key`；裸 `Delete`/`Backspace`/`Shift+D` 均不删）|
 | 帮助行是 SPEC 的 hot-key、按宽度换行，且在窗口最后几行；矮窗口先让出面板的行 | 通过（`the_reminder_names_specs_hot_keys_and_nothing_else`、`the_reminder_wraps_to_the_rows_the_window_allows`、`a_short_window_still_ends_on_the_help_row`）|
-| `Ctrl+V` 读剪贴板并走 `Tui::paste`；读不到只在状态条报错，`Ctrl+` 其余字母仍无绑定 | 键位判定有单测（`ctrl_v_is_the_clipboard`），读剪贴板有单测（`a_read_reports_what_the_tool_printed`），**真终端未验证** |
+| `Alt+V` 读剪贴板并走 `Tui::paste`（`Ctrl+V` 同路）；读不到只在状态条报错，`Ctrl+` 其余字母仍无绑定 | 真 VS Code 终端验过：`Alt+V` 写出 `gongga-paste-<pid>-<n>.png` 并插入 `@image: <path>`；见 `docs/notes/tui-paste.md` |
 | 补全：已填的 `--flag` 不再列出；Tab 完 flag 自动接上它的值列表 | 通过（catalog 单测 3 个 + tui 的 `apply_and_continue` 单测）|
 | 长日志的一帧成本与日志长度无关（20k 行 156ns / 旧 8.1ms）| 通过（`examples/frame_cost`）+ 单测 `a_frame_touches_only_a_screenful` |
 | 流式追加 = 整行重排（折行偏移一致）| 通过（单测 `appending_equals_rewrapping_from_the_top`，9 组 × 6 种宽度）|

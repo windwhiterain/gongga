@@ -22,20 +22,20 @@ to see is the answer they are replying to, so the box stops growing.
 SPEC's `hot-key` list, one entry per binding, in SPEC's order: six of them, the
 ones the reminder may name.
 
-`Shift+Delete` is the delete and `Ctrl+V` the paste. Both are SPEC's, so they are
-on the row; `Ctrl+V` also arrives as a bracketed paste from a terminal that
-pastes by itself, and the entry is right either way.
+`Shift+Delete` is the delete and `Alt+V` the paste. Both are SPEC's, so they are
+on the row; the paste also arrives as a bracketed paste from a terminal that
+pastes by itself, and the entry is about the key, which is what the row is for.
 
 `Shift+↑ last cmd` is the newest entry, and the shortest way to say it: one key,
 one thing it brings back. Its two neighbours on the row are about the view
 (`Shift+↓`, `PageUp/PageDown`) and it is not -- the row reads as a list of keys,
 not as a grouping, so the entries stand in SPEC's order rather than by topic.
 
-The paste entry names both spellings SPEC gives it -- `Ctrl+V/Ctrl+Alt+V paste`
--- because they are not interchangeable from where the operator sits: a terminal
-that keeps `Ctrl+V` for its own paste never forwards it, and the spelled-out
-`Ctrl+Alt+V` is then the only one that reaches this window. One entry, one
-binding, two keys, as SPEC writes it.
+The paste entry used to name two spellings, `Ctrl+V/Ctrl+Alt+V`, because SPEC
+named two. Neither reaches a program inside VS Code -- the first is the
+terminal's own paste, and xterm.js writes nothing at all for the second -- so the
+row now says the one key SPEC binds, `Alt+V paste`: one entry, one binding, one
+key. The measurement is in `docs/notes/tui-paste.md`.
 
 Nothing else goes on the row even though this window binds more: the operator
 reads a reminder as the whole keyboard, and SPEC is the source of truth for which

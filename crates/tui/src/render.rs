@@ -24,7 +24,7 @@ pub const HELP: &[&str] = &[
     "PageUp/PageDown scroll",
     "Shift+\u{2193} bottom",
     "Shift+Delete delete session",
-    "Ctrl+V/Ctrl+Alt+V paste",
+    "Alt+V paste",
     "Shift+\u{2191} last cmd",
 ];
 

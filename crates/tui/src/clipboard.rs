@@ -134,7 +134,7 @@ pub enum FromClipboard {
     Failed(String),
 }
 
-/// The clipboard's text, for a Ctrl+V the terminal forwarded instead of pasting.
+/// The clipboard's text, for a paste key the terminal forwarded instead of pasting.
 ///
 /// # Invariant
 ///
