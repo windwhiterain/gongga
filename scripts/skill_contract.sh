@@ -7,8 +7,9 @@
 # A skill's body is read by whatever harness installed it, so a line that runs its own
 # script has to be spelled in the one way every harness resolves: relative to the
 # directory the `SKILL.md` was read from. A path under this harness's home
-# (`$GONGGA_HOME/skills/...`) or under the community clone (`gongga-agents/skills/...`)
-# works here and nowhere else, and it breaks here too when the home moves.
+# (`$GONGGA_HOME/skills/...`), under the community clone (`gongga-agents/skills/...`), or
+# under `~/.agents/skills/<name>/` works here and nowhere else, and it breaks here too when
+# the home moves.
 #
 # The one machine-read field this harness adds lives where the specification allows an
 # extension, `metadata.entry`, and it names a file inside that skill's directory.
@@ -41,7 +42,10 @@ for file in "${files[@]}"; do
     echo "FAIL $file:$line names an installed path; spell it from this skill's directory:" >&2
     echo "     ${hit#*:}" >&2
     failed=1
-  done < <(grep -nE '\$\{?GONGGA_HOME\}?/skills/|gongga-agents/skills/' "$file" || true)
+  # Every spelling of "where this copy happens to be": this harness's home, the community
+  # clone, and the machine's own -- the last one needs two segments, because a body may
+  # *describe* a bucket (`~/.agents/skills/<name>/`) but must not *invoke* by that path.
+  done < <(grep -nE '\$\{?GONGGA_HOME\}?/skills/|gongga-agents/skills/|~/?\.agents/skills/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+|\$HOME[\\/]\.agents[\\/]skills[\\/][A-Za-z0-9._-]+' "$file" || true)
 
   # `metadata:` then an indented `entry:`: the same two lines the server reads.
   entry=$(awk '

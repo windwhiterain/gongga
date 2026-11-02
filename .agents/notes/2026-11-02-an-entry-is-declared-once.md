@@ -46,11 +46,49 @@
    `gongga-agents/skills/`），`metadata.entry` 指不到文件。挂在 `scripts/hooks/pre-commit` 上，
    只在提交动了 `ship` 或 `.agents/skills/` 时跑（`ship` 是 submodule，改动只显示成这一条路径）。
 
+## 三层的落地情况
+
+同一份契约要在三个地方各落一次，因为 skill 分散在三层：
+
+| 层 | 谁改 | 现在 |
+| --- | --- | --- |
+| project（`<cwd>/.agents/skills`） | 这个仓库 | `evolve` 已改 |
+| harness（`<home>/skills`，pin 下来） | 本仓库的 `ship/` 子模块 | `heir`/`image`/`remote`/`subagent`/`self-control` 已改，pin 已发（`a198609`）|
+| general（`~/.agents/skills`，社区 clone） | `windwhiterain/gongga-agents` | 9 个 skill 已改并 push 到 main（`efda7bb`）|
+
+社区那层这次改了 9 个：`web-search` `proxy` `computer_use` `latency` `model_pool` `polity`
+`theme-cli` `clean-disk` `windows-dev`。两处不是"路径替换"而是改写：
+
+- **`clean-disk` / `windows-dev`** 用的是 `powershell -File "$HOME\.agents\gongga-agents\skills\<n>\<n>.ps1"`。
+  改成 `-File "$SKILL_DIR/<n>.ps1"`，并在正文里点明 **`$SKILL_DIR` 是 bash 展开的，不是
+  PowerShell 变量** —— 那一条不写清楚，读者会以为脚本里读不到它。
+- **`model_pool`** 原来写的是 `~/.agents/gongga-agents/skills/model_pool/model_pool`，即 clone
+  的路径，不是 skill 的路径：clone 换个名字、换个 checkout 就断。
+
+## 跨层引用：一个 skill 的名字装在另一个桶里
+
+`ship/skills/subagent` 要调 `model_pool`，而后者在 general 层。**本 skill 算不出它的目录**
+（那正是"别写装在哪"的另一面），所以这里的答案是改用名字：
+
+```bash
+G=gongga-cli
+S="$G skill model_pool"      # gongga 里的快捷方式
+```
+
+正文同时说明没有这个快捷方式的 harness 怎么走：读 `@skill: model_pool`，按它自己正文的
+`SKILL_DIR` 跑它的入口。**跨层调用是"用名字"的正当理由之一**——不是偷懒。
+
+## 门禁补了一种写法
+
+`scripts/skill_contract.sh` 原来只拦 `$GONGGA_HOME/skills/` 和 `gongga-agents/skills/`。
+这一轮真正修掉的一类路径它一个都没拦（`~/.agents/skills/<name>/<file>`），所以补上，并
+要求**两段都是名字形状**（`[A-Za-z0-9._-]+`）：正文可以*描述*一个桶
+（`~/.agents/skills/<name>/`，含 `<` `>`），但不能*按那个路径调用*。`<` 与全角句号因此不匹配，
+而 `~/.agents/skills/model_pool/model_pool` 匹配。
+
 ## 没做的，和为什么
 
-- **社区 skill 的正文**（web-search / proxy / computer_use / model_pool / polity / latency /
-  theme-cli）：那些文件在 `windwhiterain/gongga-agents`，不在本仓库。它们是这条契约最大的受益
-  者（现在写的是 clone 内部路径），但改要发那边的 PR。
+- **社区 skill 的正文**：已在这一轮改完并 push（见上一节），不再列在"没做"里。
 - **`bucket:name` 限定语法**：没有先例，且会把一份优先级解析变成一份优先级解析 + 一份语法。
   做到 `skill which`/`skill ls` 的 shadow 警告为止——名字解析保持裸名 + 优先级。
 - **多源 lockfile**（`skill add <git-url>` / `skill update <源>`）：现在的 pin 结构够用，且
