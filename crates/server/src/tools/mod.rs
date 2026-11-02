@@ -1106,6 +1106,11 @@ pub struct CheckBashTool {
     pub max_output_chars: usize,
 }
 
+/// How often a waiting read asks whether the shell's jobs are done.
+const WAIT_POLL: Duration = Duration::from_millis(100);
+/// A wait is a tool call, not a turn: beyond this it is better to come back later.
+const MAX_WAIT: Duration = Duration::from_secs(600);
+
 impl Tool for CheckBashTool {
     fn name(&self) -> &'static str {
         "check_bash"
@@ -1116,9 +1121,10 @@ impl Tool for CheckBashTool {
          everything printed by commands started with `background`, plus \
          anything the shell emitted while nobody was reading. Reading it \
          clears it, so each chunk is returned exactly once. Empty output means \
-         the job has not printed anything yet -- wait and ask again. A name names \
-         one shell on whichever machine holds it (`bash` or `remote_bash`), and the \
-         answer says which."
+         the job has not printed anything yet -- wait and ask again, or set \
+         `wait_ms` and this call waits for the current background jobs. A name \
+         names one shell on whichever machine holds it (`bash` or `remote_bash`), \
+         and the answer says which."
     }
 
     fn parameters(&self) -> Value {
@@ -1128,6 +1134,14 @@ impl Tool for CheckBashTool {
                 "name": {
                     "type": "string",
                     "description": "Shell to read. Defaults to `default`."
+                },
+                "wait_ms": {
+                    "type": "integer",
+                    "description": "If this shell has background jobs, wait up to this \
+                                    many milliseconds for them to finish before reading. \
+                                    A timeout returns the output so far and leaves the jobs \
+                                    running; it never stops them. Defaults to 0, which \
+                                    reads now."
                 }
             },
             "additionalProperties": false
@@ -1146,6 +1160,34 @@ impl Tool for CheckBashTool {
                     "no live shell named {name}; `list_bash` says which names exist"
                 ));
             };
+            let wait = args
+                .get("wait_ms")
+                .and_then(Value::as_u64)
+                .map(Duration::from_millis)
+                .unwrap_or(Duration::ZERO)
+                .min(MAX_WAIT);
+            if !wait.is_zero() {
+                let deadline = std::time::Instant::now() + wait;
+                loop {
+                    let jobs = handle.lock().await.background_jobs();
+                    if jobs == 0 {
+                        break;
+                    }
+                    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                    if remaining.is_zero() {
+                        break;
+                    }
+                    tokio::select! {
+                        _ = tokio::time::sleep(remaining.min(WAIT_POLL)) => {}
+                        _ = ctx.cancel.cancelled() => {
+                            return ToolOutcome::err(format!(
+                                "check_bash stopped waiting for {name}; its background jobs \
+                                 are still running"
+                            ));
+                        }
+                    }
+                }
+            }
             let mut shell = handle.lock().await;
             let text = ctx.cap(
                 machine,
