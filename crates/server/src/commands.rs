@@ -220,10 +220,10 @@ pub fn server_catalog(targets: &[String]) -> Vec<CommandSpec> {
                 ),
                 arg(
                     "cwd",
-                    "Working directory for a newly created session. For a session on a \
-                     target this is a path on that machine, which the endpoint \
-                     canonicalises and refuses when it does not exist; completion offers \
-                     this machine's paths, which prove nothing about that one.",
+                    "Working directory for the session: where a new one is created, and \
+                     where an existing one is moved to. For a session on a target this is \
+                     a path on that machine, which the endpoint canonicalises and refuses \
+                     when it does not exist; completion reads that machine's directories.",
                     false,
                     Some("path"),
                     // The client lists the filesystem it sits on, which is a hint only.
@@ -264,9 +264,9 @@ pub fn server_catalog(targets: &[String]) -> Vec<CommandSpec> {
                 arg(
                     "target",
                     "Which machine this session's shells run on, named by a `[targets.<name>]` \
-                     table in the server's config. Omit for this machine. Fixed when the \
-                     session is created: naming a different one later is refused, because \
-                     the shells are already on the old machine.",
+                     table in the server's config. Omit for this machine. Naming a \
+                     different one moves an existing session: every shell on the old \
+                     machine is ended first, and the move is refused while a turn runs.",
                     false,
                     Some("name"),
                     // Exactly the tables this server was started with: `local` is
@@ -719,34 +719,58 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             entry.model
         ));
     }
-    // A session that exists is already standing somewhere, and that place is its
-    // shell's: accepting a `--cwd` it will not move to would be a setting that
-    // never takes effect. Creating a session is the one time this names a place.
-    if let Some(cwd) = args.get("cwd") {
-        if let Ok(Some(row)) = d.store.get_session(&name) {
-            let there = d
-                .sessions
-                .peek(&name)
-                .map(|live| live.cwd())
+    // A session that exists can be moved; one that does not is created where it
+    // says. Asking for where it already is costs nothing: no shell is torn down for
+    // a `--cwd` that names the directory it is standing in.
+    let stated_cwd = args.get("cwd").map(String::as_str);
+    let stated_target = args.get("target").map(String::as_str);
+    let (session, moved) = match d.store.get_session(&name).ok().flatten() {
+        Some(row) => {
+            let live = d.sessions.peek(&name);
+            let here = live
+                .as_ref()
+                .map(|session| session.cwd())
                 .unwrap_or_else(|| std::path::PathBuf::from(&row.cwd));
-            if !same_directory(cwd, &there) {
-                return Outcome::err(format!(
-                    "--cwd names where a session is created, not a setting: {name} is in {}, \
-                     and its shell is what moves -- `cd` there in it",
-                    there.display()
-                ));
+            let recorded_target = row.target.clone().unwrap_or_else(|| "local".to_string());
+            let wanted_target = stated_target
+                .map(str::trim)
+                .filter(|asked| !asked.is_empty())
+                .map(str::to_string);
+            let target_moves = wanted_target
+                .as_deref()
+                .is_some_and(|asked| !same_target(asked, &recorded_target));
+            let cwd_moves = stated_cwd.is_some_and(|asked| !same_directory(asked, &here));
+            let session = match live {
+                Some(session) => session,
+                None => match d.sessions.get(&name) {
+                    Ok(session) => session,
+                    Err(e) => return Outcome::err(e.to_string()),
+                },
+            };
+            if !target_moves && !cwd_moves {
+                (session, None)
+            } else {
+                let moved = match d
+                    .sessions
+                    .relocate(&session, wanted_target.as_deref(), stated_cwd)
+                    .await
+                {
+                    Ok(report) => report,
+                    Err(e) => return Outcome::err(e.to_string()),
+                };
+                (session, Some(moved))
             }
         }
-    }
-    // Naming a session creates it: that is the only way to get one.
-    let session = match d.sessions.ensure_on(
-        &name,
-        args.get("cwd").map(String::as_str),
-        Some(&entry.model),
-        args.get("target").map(String::as_str),
-    ) {
-        Ok(session) => session,
-        Err(e) => return Outcome::err(e.to_string()),
+        None => {
+            // Naming a session creates it: that is the only way to get one.
+            match d
+                .sessions
+                .ensure_on(&name, stated_cwd, Some(&entry.model), stated_target)
+            {
+                Ok(session) => (session, None),
+                Err(e) => return Outcome::err(e.to_string()),
+            }
+        }
     };
 
     let mut tuning = session.tuning();
@@ -791,7 +815,31 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
 
     let cwd = session.cwd();
     // Confirms the write and stops: what the session runs on is its pane's title.
-    let message = format!("session is now {name}");
+    let message = match &moved {
+        None => format!("session is now {name}"),
+        Some(report) => {
+            // Silence is not stopped: a shell whose end could not be proved is said
+            // so here, because nothing later will mention it.
+            let unproved = match report.unconfirmed.len() {
+                0 => String::new(),
+                n => format!("; {n} shell(s) may still be running on the machine it left"),
+            };
+            // A moved remote shell has not connected yet, so there is no directory
+            // to name; saying "at" and then nothing would read as a failure.
+            let where_now = if cwd.as_os_str().is_empty() {
+                "where its endpoint starts".to_string()
+            } else {
+                format!("at {}", cwd.display())
+            };
+            format!(
+                "session {name} moved to {} {where_now}, {} shell(s) ended{unproved}",
+                d.sessions
+                    .recorded_target(&name)
+                    .unwrap_or_else(|| "local".to_string()),
+                report.ended
+            )
+        }
+    };
     Outcome::ok_with(
         message,
         json!({
@@ -803,6 +851,20 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             "thinking_effort": tuning.thinking_effort,
         }),
     )
+}
+
+/// Whether a target a command names is the one the session already records.
+///
+/// Names as the config spelled them: `local` and no target at all are one place, and
+/// a row that records nothing is standing on this machine.
+fn same_target(asked: &str, recorded: &str) -> bool {
+    let asked = if asked.is_empty() { "local" } else { asked };
+    let recorded = if recorded.is_empty() {
+        "local"
+    } else {
+        recorded
+    };
+    asked == recorded
 }
 
 /// Whether two spellings name one directory, so a `--cwd` that agrees is not a move.

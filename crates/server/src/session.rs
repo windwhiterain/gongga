@@ -27,6 +27,15 @@ pub const DEFAULT_BASH: &str = "default";
 /// argument naming a shell is the model's own, and this one is not a session's.
 const LISTING_SHELL: &str = "..completion";
 
+/// What ending a session's shells came to, so a move can say it.
+#[derive(Debug, Default)]
+pub struct MoveReport {
+    /// How many shells were ended, retired ones included.
+    pub ended: usize,
+    /// The ones whose end could not be proved; silence is not stopped.
+    pub unconfirmed: Vec<crate::remote::transport::CloseReport>,
+}
+
 /// What a session was told to use, as `set_session` left it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Tuning {
@@ -118,6 +127,60 @@ impl SessionHandle {
                 );
             }
         }
+    }
+
+    /// Ends every shell this session has, without claiming it is gone for good.
+    ///
+    /// # Invariant
+    ///
+    /// Never sets `closing`: that flag tells a tool call its command was stopped by
+    /// the server's own exit, and a move is not an exit. What a shell's end could
+    /// not prove is reported to the caller, which is the one that can say so.
+    async fn end_shells(&self) -> MoveReport {
+        let (drained, retired): (Vec<_>, Vec<_>) = {
+            let mut set = self.inner.shells.lock().unwrap_or_else(|e| e.into_inner());
+            (set.drain(), set.take_retired())
+        };
+        let ended = drained.len() + retired.len();
+        let mut unconfirmed = Vec::new();
+        for discarded in drained.into_iter().chain(retired) {
+            let report = discarded.end().await;
+            if !report.confirmed {
+                unconfirmed.push(report);
+            }
+        }
+        MoveReport { ended, unconfirmed }
+    }
+
+    /// Puts this session's shells on another endpoint, in another directory.
+    ///
+    /// # Invariant
+    ///
+    /// The caller holds the gate: a turn reads the shell set at its start and holds
+    /// it for the turn, so a move must not land between those two facts. Every shell
+    /// is ended before the new set exists, and the swap is one assignment under the
+    /// lock every tool call reads it through.
+    pub async fn relocate(
+        &self,
+        endpoint: Endpoint,
+        cwd: Option<PathBuf>,
+        env: Vec<(String, String)>,
+    ) -> anyhow::Result<MoveReport> {
+        let report = self.end_shells().await;
+        let mut fresh = ShellSet::new(endpoint, cwd, env);
+        // The default shell is part of the identity, as it is on creation.
+        fresh.get(DEFAULT_BASH)?;
+        {
+            let mut set = self.inner.shells.lock().unwrap_or_else(|e| e.into_inner());
+            *set = fresh;
+        }
+        tracing::info!(
+            session = %self.inner.name,
+            ended = report.ended,
+            unconfirmed = report.unconfirmed.len(),
+            "session moved"
+        );
+        Ok(report)
     }
 
     /// What this session was told to use. Read at the start of every turn.
@@ -478,10 +541,10 @@ impl SessionManager {
     ///
     /// # Invariant
     ///
-    /// A session's target is written once, when it is created, and never changed:
-    /// its shells may already exist on that peer, a lazily started remote shell has
-    /// no pid to compare, and retired shells outlive their names -- so "has it
-    /// started" cannot be answered reliably enough to permit a move. See
+    /// Never moves an existing session: a move ends shells, and only
+    /// [`SessionManager::relocate`] may do that, under the gate. This refuses a
+    /// different target and names the command that does move one, so the two paths
+    /// cannot disagree about what "the same session" means. See
     /// `docs/notes/server-remote.md`.
     pub fn ensure_on(
         &self,
@@ -599,6 +662,14 @@ impl SessionManager {
         }
     }
 
+    /// The variables every shell of `name` runs with.
+    fn session_env(&self, name: &str) -> Vec<(String, String)> {
+        let mut env = self.shell_env.clone();
+        // A shell cannot learn its own session's name from the outside.
+        env.push(("GONGGA_SESSION".to_string(), name.to_string()));
+        env
+    }
+
     fn local_endpoint(&self) -> anyhow::Result<Endpoint> {
         let program = self
             .bash
@@ -606,6 +677,52 @@ impl SessionManager {
             .clone()
             .ok_or_else(|| anyhow::anyhow!("no bash available; set [tools.bash] program"))?;
         Ok(Endpoint::local(program))
+    }
+
+    /// Puts an existing session's shells on `target`, in `cwd`.
+    ///
+    /// # Invariant
+    ///
+    /// A move is refused while the session is running a turn: the turn holds the
+    /// gate, read its shell set at the start and keeps it, so a move landing under it
+    /// would end shells a tool call is using. Refused, never queued -- an operator
+    /// waiting minutes on a `set_session` would read it as a hang.
+    pub async fn relocate(
+        &self,
+        session: &SessionHandle,
+        target: Option<&str>,
+        cwd: Option<&str>,
+    ) -> anyhow::Result<MoveReport> {
+        // An unstated target is the one it already records: a move of directory
+        // alone must not carry the session to another machine, and the row must not
+        // end up naming one place while its shells are on another.
+        let wanted_target = match target.map(str::trim).filter(|name| !name.is_empty()) {
+            None => self.recorded_target(session.name()),
+            Some("local") => None,
+            Some(name) => Some(name.to_string()),
+        };
+        // Resolved before anything is ended: an unknown name must not tear down
+        // working shells on its way to being refused.
+        let endpoint = self.endpoint_for(wanted_target.as_deref())?;
+        let wanted = cwd.map(PathBuf::from);
+        let _gate = session.try_claim().ok_or_else(|| {
+            anyhow::anyhow!(
+                "session {:?} is running a turn; cancel it first and then move it",
+                session.name()
+            )
+        })?;
+        let env = self.session_env(session.name());
+        let report = session.relocate(endpoint, wanted.clone(), env).await?;
+        // The row is what the next start hands back to the endpoint, so it moves
+        // with the shells rather than after them.
+        let placed = match (&wanted, session.cwd().to_string_lossy().to_string()) {
+            (Some(path), _) => path.to_string_lossy().into_owned(),
+            (None, reported) if !reported.is_empty() => reported,
+            (None, _) => String::new(),
+        };
+        self.store
+            .set_session_placement(session.name(), &placed, wanted_target.as_deref())?;
+        Ok(report)
     }
 
     /// Refuses a target that differs from the one a session was created with.
@@ -620,9 +737,9 @@ impl SessionManager {
             .unwrap_or_else(|| "local".to_string());
         if recorded != asked {
             anyhow::bail!(
-                "session {name:?} runs on target {recorded:?}, and a target is fixed when the \
-                 session is created: its shells are already on that machine. Create another \
-                 session to run on {asked:?}."
+                "session {name:?} runs on target {recorded:?}, not {asked:?}; moving it \
+                 ends the shells on the machine it is leaving, so it is `set_session \
+                 --target` that does that, not creating the session."
             );
         }
         Ok(())
@@ -653,9 +770,7 @@ impl SessionManager {
             (Endpoint::Local { .. }, _) => Some(std::env::current_dir()?),
             (_, cwd) => cwd,
         };
-        let mut env = self.shell_env.clone();
-        // A shell cannot learn its own session's name from the outside.
-        env.push(("GONGGA_SESSION".to_string(), row.name.clone()));
+        let env = self.session_env(&row.name);
         let mut shells = ShellSet::new(endpoint, cwd.clone(), env);
         // The default shell is part of the session's identity, so it exists
         // before anything asks for it.

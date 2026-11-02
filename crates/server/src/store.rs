@@ -432,6 +432,26 @@ impl Store {
     ///
     /// Only an endpoint session writes this: a local row is the directory the
     /// session was made in. See `docs/notes/server-remote.md`.
+    /// Records where a session's shells now run, after a move.
+    ///
+    /// # Invariant
+    ///
+    /// Both halves in one statement: a row naming the new machine with the old
+    /// machine's directory would hand the next start a path that cannot exist there.
+    pub fn set_session_placement(
+        &self,
+        name: &str,
+        cwd: &str,
+        target: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "UPDATE sessions SET cwd = ?1, target = ?2 WHERE name = ?3",
+            params![cwd, target, name],
+        )?;
+        Ok(())
+    }
+
     pub fn set_session_cwd(&self, name: &str, cwd: &str) -> anyhow::Result<()> {
         let conn = self.lock();
         conn.execute(

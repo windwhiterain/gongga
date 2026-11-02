@@ -194,12 +194,23 @@ session manager's live lock is held, and no connection may be made there.
 
 Two rules a reader should not have to re-derive:
 
-- **a session's target is fixed at creation.** The check compares the stored row
-  rather than the live shells, and that is deliberate: a lazily created remote shell
-  has never connected and so has no pid to compare, retired shells outlive the names
-  they were filed under, and a shell created on the peer cannot be moved off it. The
-  row is written once, by the only call that can create a session, so it *is* the
-  endpoint of every shell that session has or will have.
+- **a session's target moves only by ending every shell.** It was written once at
+  creation and never changed, for a reason that has not gone away: a lazily created
+  remote shell has never connected and has no pid to compare, retired shells outlive
+  the names they were filed under, and a shell created on the peer cannot be carried
+  off it. The maintainer asked for a move anyway (2026-11-02), so the rule is now that
+  a move *is* the teardown: `SessionManager::relocate` ends every shell and its
+  retired ones, reports what could not be proved, and only then swaps in a fresh
+  `ShellSet` on the new endpoint. `ensure_on` still refuses a different target, so
+  creation and moving remain two paths that cannot be confused.
+- **a move is refused while a turn runs, never queued.** The turn holds the session's
+  gate, read the shell set at its start and keeps it through every tool call, so a
+  move landing under it would end shells a call is using. Queueing was rejected: an
+  operator whose `set_session` waits minutes reads it as a hang.
+- **the move and the row land together.** Both halves of the placement are one
+  statement, because a row naming the new machine with the old machine's directory
+  would hand the next start a path that cannot exist there. A move with no `--cwd`
+  keeps no directory at all, which is what makes the endpoint choose.
 - **a remote session's directory is the endpoint's.** `--cwd` is passed to the
   runner and canonicalised there; a path that does not exist on the peer is an
   error. With no `--cwd` the row keeps no directory at all and the endpoint chooses
