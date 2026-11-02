@@ -122,37 +122,58 @@ Nothing is said when the clipboard is empty. When there is no tool to read it, o
 the tool refuses, the status line says so and the prompt is untouched: a paste
 that quietly did nothing is the failure mode this note keeps coming back to.
 
-## Why there is a second spelling, and why it is Ctrl+Alt+V
+## Why there is a second spelling, and why it is Alt+V
 
 VS Code's terminal binds `Ctrl+V` to `workbench.action.terminal.paste`, and that
 command is in the default `commandsToSkipShell` list: the key is taken before the
-terminal sees it, so this window never gets a key event — not even the text, if
+terminal sees it, so this window never gets a key event -- not even the text, if
 the clipboard holds only a picture, because VS Code's own paste reads text. An
-operator inside VS Code then has no key at all that pastes a screenshot. That is
-the report this spelling answers.
+operator inside VS Code then has no key at all that pastes a screenshot.
 
-VS Code binds nothing to `Ctrl+Alt+V` in the terminal, so this half is the
-window's to take. The key arrives as an `ESC` followed by `0x16`, which is
-`KeyCode::Char('v')` carrying `CONTROL | ALT`.
+`Ctrl+Alt+V` was this note's first answer to that, and it does not work in VS
+Code. What reaches a program is measured twice: a console program that prints
+every `ReadKey` record, and a trace inside this window's own key handler. Both
+were fed the same keystrokes in the same VS Code window:
 
-Which half was measured, and which was reasoned: the harness writes those two
-bytes into a real ConPTY, and `alt 0x16` inserts the reference about a second
-later (the PowerShell image read); a bare `0x16` still does, so nothing about
-`Ctrl+V` moved. The read of the VS Code bundle says what is bound there --
-`win:{primary:2100,secondary:[3124]}`, i.e. `Ctrl+V` and `Ctrl+Shift+V` -- and
-that `Ctrl+Alt+V` is not among them. What is *not* measured is the last hop, an
-actual `Ctrl+Alt+V` pressed in an actual VS Code window: xterm.js sends a
-modified key as `ESC` plus the control byte for the terminals this window
-matches, and no observation here contradicts it.
+| keystroke | reaches a console program | arrives as |
+| --- | --- | --- |
+| `Ctrl+V` | no -- VS Code's paste takes it | -- |
+| `Ctrl+Shift+V` | no -- VS Code's paste takes it | -- |
+| `Ctrl+Alt+V` | no | -- |
+| `Ctrl+Alt+C` | no | -- |
+| `Alt+V` | yes | `Char('v')` with `ALT` |
+| `Alt+Y` | yes | `Char('y')` with `ALT` |
+| `Ctrl+Y` | yes | `Char('y')` with `CONTROL` |
 
-A terminal that eats the modified key as well — AltGr handling can turn `Ctrl+Alt`
-plus a letter into the plain letter, which no window can tell from typing — is
-not something this side can fix. The recipe for that case is the terminal's: in
-VS Code, one line in `keybindings.json` sends the byte directly, and a bare `^V`
-is the first spelling again.
+The same probe in Windows Terminal delivers `Ctrl+Alt+V` as `ALT | CONTROL`, so
+the console layer is not what drops it: a ConPTY client of a terminal that sends
+the byte receives the byte. VS Code does not send it. xterm.js reads any
+`Ctrl+Alt` keydown on Windows as a third-level shift -- AltGr -- and waits for a
+character the browser never composes on a US layout, so nothing is written to
+the pty at all.
+
+`Alt+V` is therefore the spelling this window takes, and it takes it *alongside*
+SPEC's two: `clipboard_paste` accepts `CONTROL` or `ALT` with `v`. Alt is not
+disqualifying, and Alt on its own is enough.
+
+Which hop is measured: everything in the table above, and the paste itself --
+in a real VS Code terminal `Alt+V` writes `gongga-paste-<pid>-<n>.png` and
+inserts `@image: <path>` into the prompt. What is reasoned is only why xterm.js
+drops the key, which no line of VS Code's bundle was read to confirm; the
+observation is that nothing arrives, and the fix does not depend on the reason.
+
+### Keeping the Ctrl+Alt+V habit
+
+A keybinding wins over xterm.js's AltGr handling -- measured, same probe -- so one
+line in `keybindings.json` sends the byte directly and the operator keeps pressing
+`Ctrl+Alt+V`:
 
     {"key": "ctrl+alt+v", "command": "workbench.action.terminal.sendSequence",
      "args": {"text": "\u0016"}, "when": "terminalFocus"}
+
+`\u0016` arrives as `Char('v')` with `CONTROL`, which is SPEC's first spelling and
+needs nothing from this window. `\u001bv` also works -- it arrives as `Alt+V` -- but
+it is the spelling that does need this window's `ALT` rule.
 
 `commandsToSkipShell: ["-workbench.action.terminal.paste"]` also works and keeps
 the plain `Ctrl+V`, but it applies to every terminal in the window: `^V` stops
