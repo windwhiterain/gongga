@@ -48,10 +48,12 @@ struct Shell {
     /// Every process of this shell, so ending it needs no walk of this machine's table.
     #[cfg(windows)]
     job: Option<crate::tools::job::ProcessJob>,
-    /// Whether this shell's pipes are being read: the client's flow control.
-    paused: Mutex<bool>,
-    /// Wakes the pumps when the client is ready again.
-    resumed: tokio::sync::Notify,
+    /// Whether this shell's pipes are held: the client is behind.
+    ///
+    /// # Invariant
+    ///
+    /// A level every pump reads, never a wake one of two can miss.
+    paused: tokio::sync::watch::Sender<bool>,
     stdin: Mutex<ChildStdin>,
     /// Continuity for the client: a gap in these numbers is a lost frame.
     stdout_seq: AtomicU64,
@@ -254,8 +256,7 @@ impl Runner {
             pid,
             #[cfg(windows)]
             job: Some(job),
-            paused: Mutex::new(false),
-            resumed: tokio::sync::Notify::new(),
+            paused: tokio::sync::watch::channel(false).0,
             stdin: Mutex::new(stdin),
             stdout_seq: AtomicU64::new(0),
             stderr_seq: AtomicU64::new(0),
@@ -308,14 +309,19 @@ impl Runner {
         let runner = self.clone();
         tokio::spawn(async move {
             let mut pipe = pipe;
+            // This pump's own view of the pause, created before the first read.
+            let mut flow = entry.paused.subscribe();
             let mut buffer = vec![0u8; 64 * 1024];
             loop {
                 match pipe.read(&mut buffer).await {
                     Ok(0) => break,
                     Ok(n) => {
-                        // Paused is a client that is behind: wait, do not drop.
-                        while *entry.paused.lock().await {
-                            entry.resumed.notified().await;
+                        // Wait for the level: a resume that arrives before this pump
+                        // looks is a value it sees.
+                        while *flow.borrow_and_update() {
+                            if flow.changed().await.is_err() {
+                                break;
+                            }
                         }
                         let data = crate::base64::encode(&buffer[..n]);
                         let sent = runner
@@ -378,8 +384,7 @@ impl Runner {
             runner.shells.lock().await.remove(&shell);
             // Ends the flow control: a paused pipe still holds the shell's last
             // bytes, and those are what `End` waits for.
-            *entry.paused.lock().await = false;
-            entry.resumed.notify_waiters();
+            entry.paused.send_replace(false);
             // Ends last: a pipe may still hold the shell's final bytes, and a client
             // told "ended" would stop reading them.
             for drained in drains {
@@ -422,11 +427,8 @@ impl Runner {
     /// Stops or restarts one shell's pipes, which is how a slow client pushes back.
     async fn pause(&self, shell: u64, paused: bool) -> Result<Value, String> {
         let entry = self.shell(shell).await?;
-        *entry.paused.lock().await = paused;
-        if !paused {
-            // A permit, not a broadcast: an early resume must still be seen.
-            entry.resumed.notify_one();
-        }
+        // A level every pump reads, so none can miss it.
+        entry.paused.send_replace(paused);
         Ok(json!({"paused": paused}))
     }
 

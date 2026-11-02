@@ -38,9 +38,9 @@ struct ShellQueue {
     events: StdMutex<ShellQueueState>,
     /// Wakes a reader waiting for the next event.
     ready: tokio::sync::Notify,
-    /// The peer has been told to stop sending; set once per pause.
-    pausing: std::sync::atomic::AtomicBool,
-    shell: u64,
+    /// Wakes the one task that keeps the peer's pause state in step with this
+    /// queue. See `reconcile_flow`.
+    flow: tokio::sync::Notify,
 }
 
 #[derive(Default)]
@@ -51,25 +51,34 @@ struct ShellQueueState {
 }
 
 impl ShellQueue {
-    fn new(shell: u64) -> Arc<Self> {
-        Arc::new(Self {
-            shell,
-            ..Default::default()
-        })
+    fn new() -> Arc<Self> {
+        Arc::new(Self::default())
     }
 
-    /// Adds one frame, saying whether the peer must now be paused.
+    /// Adds one frame.
     ///
     /// # Invariant
     ///
-    /// Nothing is dropped: a frame over the window is kept, and the peer is
-    /// paused, so no producer can add without bound.
-    fn push(&self, event: Event) -> bool {
+    /// Nothing is dropped: a frame over the window is kept, and the peer is paused
+    /// from the one place that sends flow ops.
+    fn push(&self, event: Event) {
         let mut state = self.events.lock().unwrap_or_else(|e| e.into_inner());
         state.frames.push_back(event);
-        let full = state.frames.len() >= WINDOW;
         self.ready.notify_waiters();
-        full && !self.pausing.swap(true, Ordering::SeqCst)
+        self.flow.notify_one();
+    }
+
+    /// Frames held here now.
+    fn len(&self) -> usize {
+        self.events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .frames
+            .len()
+    }
+
+    fn ended(&self) -> bool {
+        self.events.lock().unwrap_or_else(|e| e.into_inner()).ended
     }
 
     /// The next frame, waiting for one if the queue is empty; `None` at the end.
@@ -79,6 +88,8 @@ impl ShellQueue {
             {
                 let mut state = self.events.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(event) = state.frames.pop_front() {
+                    drop(state);
+                    self.flow.notify_one();
                     return Some(event);
                 }
                 if state.ended {
@@ -89,16 +100,59 @@ impl ShellQueue {
         }
     }
 
-    /// Whether the peer is paused on this shell's behalf, taking that decision once.
-    fn take_paused(&self) -> bool {
-        self.pausing.swap(false, Ordering::SeqCst)
-    }
-
     /// Ends the queue: a reader learns the connection is over rather than waiting.
     fn end(&self) {
         self.events.lock().unwrap_or_else(|e| e.into_inner()).ended = true;
         self.ready.notify_waiters();
+        self.flow.notify_one();
     }
+}
+
+/// How long a reconciler waits before trying a flow op the peer did not take.
+const FLOW_RETRY: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// Keeps one shell's pause state on the peer equal to what this side wants.
+///
+/// # Invariant
+///
+/// Exactly one task sends this shell's `Pause` and `Resume`, and it sends what the
+/// queue says *now*, never an edge decided earlier. Two tasks deciding would race:
+/// ops from independent tasks arrive in no fixed order, and the loser's op lands
+/// last and stays in force, leaving the peer paused with nothing left to resume it.
+fn reconcile_flow(inner: std::sync::Weak<Inner>, shell: u64, queue: Arc<ShellQueue>) {
+    tokio::spawn(async move {
+        let mut paused = false;
+        loop {
+            let Some(inner) = inner.upgrade() else {
+                return;
+            };
+            // Hysteresis: paused until drained, paused again only at the window.
+            let want = if paused {
+                queue.len() > 0
+            } else {
+                queue.len() >= WINDOW
+            };
+            if want != paused {
+                let op = if want {
+                    Op::Pause { shell }
+                } else {
+                    Op::Resume { shell }
+                };
+                let runner = Runner { inner };
+                // Answered, not merely written: what the peer holds is what it said.
+                if let Ok(Ok(_)) = tokio::time::timeout(FLOW_RETRY, runner.request(op)).await {
+                    paused = want;
+                }
+            }
+            if queue.ended() {
+                return;
+            }
+            tokio::select! {
+                _ = queue.flow.notified() => {}
+                _ = tokio::time::sleep(FLOW_RETRY) => {}
+            }
+        }
+    });
 }
 
 /// The endpoint answered, and its answer was no: this command did not run there.
@@ -329,12 +383,14 @@ impl Runner {
         program: Option<&str>,
     ) -> anyhow::Result<ShellHandle> {
         let id = self.inner.next_shell.fetch_add(1, Ordering::SeqCst);
-        let output = ShellQueue::new(id);
+        let output = ShellQueue::new();
         self.inner
             .routes
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(id, output.clone());
+        // Weak, so this task never keeps the connection alive; it ends with the route.
+        reconcile_flow(Arc::downgrade(&self.inner), id, output.clone());
         let op = Op::Open {
             shell: id,
             cwd: cwd.map(str::to_string),
@@ -343,11 +399,7 @@ impl Runner {
         let reply = match self.request(op).await {
             Ok(reply) => reply,
             Err(e) => {
-                self.inner
-                    .routes
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .remove(&id);
+                unroute(self, id);
                 return Err(e);
             }
         };
@@ -490,16 +542,8 @@ impl ShellHandle {
     /// Reading never blocks the connection: this shell is paused on the peer when
     /// its window fills, and resumed as soon as this side catches up.
     pub async fn next_event(&mut self) -> Option<Event> {
-        let event = self.output.next().await;
-        if self.output.take_paused() {
-            let runner = self.runner.clone();
-            let shell = self.id;
-            // Resumed off this task: nothing here may wait on the writer.
-            tokio::spawn(async move {
-                let _ = runner.request(Op::Resume { shell }).await;
-            });
-        }
-        event
+        // Popping wakes the flow reconciler; resuming is its decision, not this one.
+        self.output.next().await
     }
 
     /// Bytes for the shell's stdin; the caller owns the command framing.
@@ -684,19 +728,9 @@ async fn read_loop(
                                 .unwrap_or_else(|e| e.into_inner())
                                 .get(&shell)
                                 .cloned();
-                            // A route that is gone means nobody owns that shell any more.
+                            // A route that is gone means nobody owns that shell now.
                             if let Some(route) = route {
-                                if route.push(event) {
-                                    // Its window is full: pause the peer's pump rather
-                                    // than grow here or block every other shell.
-                                    let runner = Runner {
-                                        inner: state.clone(),
-                                    };
-                                    let shell = route.shell;
-                                    tokio::spawn(async move {
-                                        let _ = runner.request(Op::Pause { shell }).await;
-                                    });
-                                }
+                                route.push(event);
                             }
                         }
                         Event::Hello { .. } => {}

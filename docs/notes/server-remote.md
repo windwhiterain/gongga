@@ -83,10 +83,28 @@ small window (`WINDOW` frames). Filling it sends `Op::Pause` for that shell and 
 peer's pump waits instead of reading on; draining it sends `Op::Resume`. Nothing is
 dropped, nothing grows without bound, and every other request keeps its answer.
 
-A resume is a one-permit wake, not a broadcast, because a resume can arrive before
-its pipe's pump starts waiting; a missed permit would stall that pipe for good —
-which the tail test catches as lost bytes. When a shell ends, its pumps are woken
-and unpaused, since the last bytes are exactly what `End` is waiting for.
+**The pause is a level, not a wake.** A shell has two pumps -- stdout and stderr --
+and both must stop and both must start again. Held as a flag plus a `Notify` whose
+resume was `notify_one`, exactly one of the two woke: the other slept through every
+later resume, and since a sleeping pump emits nothing, the shell answered no command
+again -- not slowly, but never. Measured over ssh: 21 good rounds, then every round
+after it returned `still_running` with zero bytes until the process was killed, and
+the peer's own log ended in `WAIT Stdout` and `WAIT Stderr` with no wake between them
+for 388 seconds. The state is a `watch` channel now: each pump keeps its own receiver
+and reads the value, so a resume that arrives before a pump looks is a value it sees,
+not a permit it missed.
+
+**One owner sends the flow ops.** On the client, both the filling window and the
+draining reader used to decide, each spawning its own request. Two tasks deciding
+means two ops whose arrival order is unconstrained: a `Resume` overtaking its own
+`Pause` leaves the peer paused, and nothing later resumes it because the client
+believes it already has. One task per shell now reconciles: it compares what the peer
+was told with what the queue holds *now* and sends only a difference, so what the
+peer holds is a level the client chose. Paused until the queue is empty, paused again
+only at the window -- hysteresis, so one frame in and one out is not a round trip.
+
+When a shell ends, its pumps read an unpaused level, since the last bytes are exactly
+what `End` is waiting for.
 
 On the peer, a write that fails cancels the whole run: shells are stopped rather
 than left running where their output has nowhere to go, and requests that arrive

@@ -473,9 +473,10 @@ impl RemoteShell {
 
     /// Asks the endpoint where the shell is; an endpoint-local path comes back.
     ///
-    /// `-W` is the native spelling Git Bash offers (`C:/x` for what `pwd` calls
-    /// `/c/x`); a shell without it answers the plain one, and `canonical` below is
-    /// what makes the answer storable either way.
+    /// # Invariant
+    ///
+    /// `-W` asks for the native spelling, and `canonical` makes either answer one
+    /// this side can store.
     pub async fn pwd(&mut self) -> anyhow::Result<String> {
         self.write_command(PWD).await?;
         self.pump(None).await;
