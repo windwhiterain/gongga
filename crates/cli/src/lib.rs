@@ -596,12 +596,6 @@ impl Client {
         }
     }
 
-    /// Whether an event's lines are drawn: by its own session's window, or -- for
-    /// an event that names no session -- at all.
-    fn drawn(&self, event: &Event) -> bool {
-        event.session().is_none_or(|name| self.shown.is_shown(name))
-    }
-
     /// Writes the command row, replacing what it held.
     ///
     /// # Invariant
@@ -849,9 +843,16 @@ impl Client {
             .fill_paths(field("remote"), field("path"), rows);
     }
 
+    /// One event from the server, given to the front-end whatever window it names.
+    ///
+    /// # Invariant
+    ///
+    /// Nothing here is dropped for belonging to a hidden session:
+    /// `set_render_session` changes what a frame draws, never what the client is
+    /// told. A front-end that records what it is handed -- the TUI's journal --
+    /// therefore keeps a hidden session's rows, and showing it again draws them.
+    /// See `docs/notes/cli-lib.md`.
     fn handle_event(&mut self, event: Event, sink: &mut dyn Sink) {
-        // A hidden window hides lines, not state: a `Status` still updates the list.
-        let shown = self.drawn(&event);
         match event {
             Event::Cmd { id, name, args } => {
                 // A question the completion asked is not a line of the operator's,
@@ -863,17 +864,15 @@ impl Client {
                 let window = self.command_line(session);
                 // The result carries only the id, so say now where its answer goes.
                 self.results.insert(id, window.clone());
-                if shown {
-                    // No `$`: SPEC's `cmd` item carries a symbol, and the mark
-                    // that says "this is a command" is the front-end's to draw.
-                    let line = format!("{name}{}", render_args(&args));
-                    // SPEC's row is `last cmd | cmd_result`: a command of no
-                    // session replaces the one before.
-                    if session.is_none() {
-                        sink.clear(&window);
-                    }
-                    sink.line(&window, LineKind::Command, &line);
+                // No `$`: SPEC's `cmd` item carries a symbol, and the mark
+                // that says "this is a command" is the front-end's to draw.
+                let line = format!("{name}{}", render_args(&args));
+                // SPEC's row is `last cmd | cmd_result`: a command of no
+                // session replaces the one before.
+                if session.is_none() {
+                    sink.clear(&window);
                 }
+                sink.line(&window, LineKind::Command, &line);
             }
             Event::CmdResult {
                 id,
@@ -891,49 +890,35 @@ impl Client {
                     return;
                 }
                 self.settle_follow(id, ok, sink);
-                if shown {
-                    // The rows a read answered with arrived as events before this;
-                    // what is left to say is the sentence about them.
-                    let window = self.results.remove(&id).unwrap_or_else(|| {
-                        self.command_line(
-                            data.as_ref()
-                                .and_then(|d| d.get("session"))
-                                .and_then(|s| s.as_str()),
-                        )
-                    });
-                    // The session this answer was addressed to may be the one the
-                    // command just deleted, so its window is already gone.
-                    let window = self.answer_window(window);
-                    if !message.is_empty() {
-                        let kind = if ok {
-                            LineKind::Result
-                        } else {
-                            LineKind::Error
-                        };
-                        // The answer replaces the `cmd` line above it: one row is
-                        // the last of the two, not both stacked.
-                        if window == self.command_window() {
-                            sink.clear(&window);
-                        }
-                        sink.line(&window, kind, &message);
+                // The rows a read answered with arrived as events before this;
+                // what is left to say is the sentence about them.
+                let window = self.results.remove(&id).unwrap_or_else(|| {
+                    self.command_line(
+                        data.as_ref()
+                            .and_then(|d| d.get("session"))
+                            .and_then(|s| s.as_str()),
+                    )
+                });
+                // The session this answer was addressed to may be the one the
+                // command just deleted, so its window is already gone.
+                let window = self.answer_window(window);
+                if !message.is_empty() {
+                    let kind = if ok {
+                        LineKind::Result
+                    } else {
+                        LineKind::Error
+                    };
+                    // The answer replaces the `cmd` line above it: one row is
+                    // the last of the two, not both stacked.
+                    if window == self.command_window() {
+                        sink.clear(&window);
                     }
+                    sink.line(&window, kind, &message);
                 }
             }
-            Event::Response(e) => {
-                if shown {
-                    self.handle_response(e, sink);
-                }
-            }
-            Event::ToolCall(e) => {
-                if shown {
-                    self.handle_tool_call(e, sink);
-                }
-            }
-            Event::ToolAnswer(e) => {
-                if shown {
-                    self.handle_tool_answer(e, sink);
-                }
-            }
+            Event::Response(e) => self.handle_response(e, sink),
+            Event::ToolCall(e) => self.handle_tool_call(e, sink),
+            Event::ToolAnswer(e) => self.handle_tool_answer(e, sink),
             Event::Sessions { sessions } => {
                 self.set_sessions(sessions, sink);
                 self.refresh(sink);
@@ -946,21 +931,19 @@ impl Client {
                 if let Some(s) = self.sessions.iter_mut().find(|s| s.name == session) {
                     s.status = status;
                 }
-                if shown {
-                    let label = match status {
-                        SessionStatus::Idle => "idle",
-                        SessionStatus::Running => "running",
-                        SessionStatus::Error => "error",
-                    };
-                    let suffix = detail.map(|d| format!(" ({d})")).unwrap_or_default();
-                    let window = session.clone();
-                    let prefix = self.tag(&session, "");
-                    sink.line(
-                        &window,
-                        LineKind::System,
-                        &format!("{prefix}{label}{suffix}"),
-                    );
-                }
+                let label = match status {
+                    SessionStatus::Idle => "idle",
+                    SessionStatus::Running => "running",
+                    SessionStatus::Error => "error",
+                };
+                let suffix = detail.map(|d| format!(" ({d})")).unwrap_or_default();
+                let window = session.clone();
+                let prefix = self.tag(&session, "");
+                sink.line(
+                    &window,
+                    LineKind::System,
+                    &format!("{prefix}{label}{suffix}"),
+                );
                 self.refresh(sink);
             }
             // SPEC's three numbers for a full pane's title: a delta, so a view
@@ -985,13 +968,11 @@ impl Client {
             // would put `step_timing` next to the model's answer.
             Event::Record { .. } => {}
             Event::Log { level, message } => {
-                if shown {
-                    let kind = match level {
-                        LogLevel::Debug | LogLevel::Info => LineKind::System,
-                        LogLevel::Warn | LogLevel::Error => LineKind::Error,
-                    };
-                    sink.note(kind, &message);
-                }
+                let kind = match level {
+                    LogLevel::Debug | LogLevel::Info => LineKind::System,
+                    LogLevel::Warn | LogLevel::Error => LineKind::Error,
+                };
+                sink.note(kind, &message);
             }
         }
     }

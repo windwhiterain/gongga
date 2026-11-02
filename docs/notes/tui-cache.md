@@ -204,6 +204,11 @@ After a pane has drawn, `Log::evict(window, start..end)` drops the bodies of the
 that are entirely outside those rows: the blocks scrolled past, and the ones below the
 view. `Panes::begin_frame`/`end_frame` complete the rule for a window nobody drew at
 all -- a hidden session holds no bodies, except the one block it is still writing.
+Its *records* are another matter, and the distinction is the whole reason this module
+exists: a hidden window is still recorded, block by block as any other, and only its
+bodies in memory are what a frame pays for. `Client::handle_event` used to drop a
+hidden session's events before the sink saw them, which turned a view setting into a
+hole in the journal; see `docs/notes/cli-lib.md`.
 
 There is no budget and no number to tune. The bound is the render: a window costs the
 rows it is drawing, plus whatever the operator scrolled past without coming back to the

@@ -311,23 +311,26 @@ does. That is the whole reason reconnecting is cheap.
 
 ## Client::handle_event
 
-Filters hide *lines*, not state. A hidden `Status` still updates the session list
-and still calls `refresh`, and a hidden `Sessions` is not hidden at all -- it
-carries no session to filter on and is how the client learns the names it
-filters against.
+Nothing is filtered here. Every event goes to the front-end, whichever session it
+names, and `set_render_session` decides what a *frame* draws -- never what the client
+is told. State and lines take the same path: a `Status` updates the list and writes its
+row, a hidden session's answer streams into its window like any other.
 
-The reason is the one thing a filter must not break: the operator narrows the log
-to one session in order to read it, not to stop the client knowing what is
-happening in the others. A status line that vanished *and* left the session list
-stale would make the harness look dead.
+The first shape of this dropped the events of a hidden session before the sink saw
+them, reading "hide the window" as "hide its lines". It is the window that is hidden,
+and the cost was invisible until it was paid: a front-end that records what it is
+handed -- the TUI's journal -- stopped recording that session's answers and tool
+output, so a session hidden while it worked came back with a gap in the middle instead
+of the rows it had said. Nothing errored, which is what made it look like the session
+had stopped.
 
-The gate sits here rather than in `Sink` because a front-end has no idea which
-events were dropped, and a sink that could drop them would have to re-derive the
-same rules in every implementation.
+The gate was also lopsided, which is how it stayed invisible: it asked
+`Event::session`, and a `cmd` or a `cmd_result` answers `None` there -- its window is
+the session its *arguments* name. So a hidden session kept the operator's command
+lines and every answer to them, and lost exactly the conversation in between.
 
-`run_once` does not filter at all: a script gets the events it asked for, one
-JSON object each, and a filtered `cmd_result` would leave it waiting for an
-acknowledgement that was never printed.
+`run_once` is on this path too, and needs nothing extra: the sink it hands over draws
+nothing, and which events reach a pipe is `prints`, decided after this.
 
 ## Event::Usage
 
@@ -437,12 +440,6 @@ two more areas (`line`, and the modes as words).
 The flag is read off each session rather than off the file's entries, because a
 session nobody set is shown: reading the map would leave a new session with no window
 at all.
-
-## Client::drawn
-
-Which events are drawn, which is not which events are kept. A `Status` for a
-session whose window is hidden still updates the list, or the list would lie about
-what that session is doing.
 
 ## Sink::sticky_session
 
