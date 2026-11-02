@@ -75,16 +75,21 @@ a guess at which pane the operator meant.
 ## Screen::session_at_row
 
 What a pointer landed on, as a `Hit`: the session it names and which part it hit --
-the list, the one column that folds a row, a header, a window's events, or the way back
+the list, the fold of a row in it, a header, a window's events, or the way back
 to a window's newest row. They have different behaviour, so the part is part of the
 answer rather than something the caller re-derives.
 
-`Part::Fold` is the marker, and its own part because the two gestures on one list row
-are different: the marker folds what is under the row, the name shows or hides the
-session's window. A row that names no session has only one thing that can happen to
-it, so a click on its *name* folds it too -- otherwise the widest part of a group row
-would be the part that does nothing. `is_session_row` asks the tree; a name alone
-cannot answer it, because a group and a session can share one.
+`Part::Fold` is the row's fold, and its own part because the two gestures on one list
+row are different: the fold closes what is under the row, the name shows or hides the
+session's window. A row that names no session has only one thing that can happen to it,
+so a click on its *name* folds it too -- otherwise the widest part of a group row would
+be the part that does nothing. `is_session_row` asks the tree; a name alone cannot
+answer it, because a group and a session can share one.
+
+A group row has two fold targets because neither is always there: the `|` when the row
+is folded, and the status mark when it is not -- an expanded row draws no `|`, and its
+name belongs to the other gesture. Both are answered by `render::list_at`'s `fold` flag,
+because the question ("does this click fold?") is one decision, not two.
 
 The order is the drawing order: the list, then the go-to-bottom hint, then the
 headers, then the events. The hint is drawn over the last row of the window it belongs

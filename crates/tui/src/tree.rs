@@ -74,17 +74,18 @@ impl Row {
         2 + self.indent()
     }
 
-    /// The one column that folds this row away: `|`, or a blank where nothing is.
+    /// The column a fold is drawn in: `|` when this row is folded, nothing otherwise.
     ///
     /// # Invariant
     ///
-    /// One column on every row, drawn or not, so a label starts at the same column
-    /// whether its row is folded, unfolded, or not a group at all. It is the only
-    /// column a click can fold by, and the name beside it is not part of it.
+    /// Nothing at all on an expanded row, because a column held open for a gesture is
+    /// a column the names do not get. The label starts in this column instead, so a
+    /// folded row's label sits one column right of its siblings' -- which is what
+    /// `|lab` above `lab` means.
     pub fn marker(&self) -> &'static str {
         match self.group && self.collapsed {
             true => "|",
-            false => " ",
+            false => "",
         }
     }
 }

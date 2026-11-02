@@ -172,7 +172,7 @@ pub fn list_width(panes: &Panes) -> u16 {
         .iter()
         .map(|row| {
             // The status mark and its space are `marker_column`'s own first two, and
-            // the marker is the one column after the indent.
+            // a folded row spends one more on its `|`.
             row.marker_column()
                 + UnicodeWidthStr::width(row.marker())
                 + UnicodeWidthStr::width(row.label.as_str())
@@ -366,18 +366,17 @@ fn split_at_width(text: &str, width: usize) -> (String, &str) {
     (text.to_string(), "")
 }
 
-/// What a click on the list landed on: the row's name, and whether the click hit the
-/// one column that folds it.
+/// What a click on the list landed on: the row's name, and whether it asked to fold.
 ///
 /// # Invariant
 ///
-/// A row's marker folds it and its name does not, so the two gestures arrive as one
-/// hit with this flag rather than as two functions that could disagree about the
-/// columns.
+/// A row's fold is one gesture with two places to start it and its name is neither:
+/// the `|` while folded, and the status mark -- the only column left that is not text
+/// -- while expanded, since an expanded row holds no column for a fold.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListHit {
     pub name: String,
-    pub marker: bool,
+    pub fold: bool,
 }
 
 /// The session whose row in the list covers `row`, for a click.
@@ -398,8 +397,9 @@ pub fn list_at(area: Rect, panes: &Panes, column: u16, row: u16) -> Option<ListH
     let cell = (column - area.x) as usize;
     Some(ListHit {
         name: hit.name.clone(),
-        // The marker's own column, read from the same place the frame draws it.
-        marker: hit.group && cell == hit.marker_column(),
+        // The `|`, or the mark of a row that draws none. Both are the frame's own
+        // columns. See `docs/notes/tui-render.md`.
+        fold: hit.group && (cell == 0 || (hit.collapsed && cell == hit.marker_column())),
     })
 }
 

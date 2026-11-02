@@ -29,29 +29,29 @@ must not.
 
 ## marker, marker_column, indent
 
-The marker is **one** column: `|` when the row is folded, a blank otherwise. A blank,
-not nothing -- the column exists on every row, folded or not, group or not, so a label
-starts at the same column as its siblings' and as the rows above it. Without it, `|lab`
-would push `lab` one column right of `[work]` beside it, and the tree would read as
-misaligned for whichever row happened to be folded.
+The marker is **one** column and it exists only while the row is folded: `|lab` folded,
+`lab` expanded. The column is not held open in the expanded case -- a column reserved
+for a gesture is a column the names never get, and the list is the narrowest part of the
+window that already spends two columns per level on indent.
 
-It was two columns of twisty (`▾ ` and `▸ `) before that, and the width was the
-complaint: two columns per row, on the part of the window that is narrowest and whose
-names are already cut into segments. One column of `|` says the same thing -- a fold is
-the one state a blank column cannot show by itself -- and the indent already says whose
-child a row is, so a twisty was restating the indent.
+That cost one thing the reserved column had: the `|` of a folded row is also the only
+place that could unfold it, so an expanded group has nothing to click. The name is not
+free either -- on a row that names a session it toggles the window -- which leaves the
+status mark, the one column on the row that is not text. `list_at` therefore answers
+`fold` for the `|` of a folded row *and* for column zero of any group row, and the two
+targets are the same decision: whether this click folds the row.
 
-A folded row is therefore `|lab` and an expanded one is ` lab`, with the label in the
-same column either way: the glyph sits in the column the name would otherwise start in,
-which is what makes a fold visible without moving the text.
+The consequence is a one-column shift: a folded row's label sits one column right of the
+row below it. That is what `|lab` over `lab` reads as, and it is where the space was
+saved -- the alternative, a blank in every expanded row, keeps the labels in one column
+by paying a column on every row of the list.
+
+The indent is what says whose child a row is: two columns per enclosing group, spaces,
+painted as structure. It is not a marker and no click reads it.
 
 The column is not `2 + 2 * depth` by accident -- it is the status column and its space
 (two, counted from the list's left edge), then the indent, which is two columns per
 enclosing group.
-
-The frame and the click read `marker_column` from this side, so a click cannot land on
-the marker of one row and fold another one: `render::list_at` answers `ListHit` with
-`marker` set or not, and the frame draws the marker at exactly that column.
 
 ## rows
 

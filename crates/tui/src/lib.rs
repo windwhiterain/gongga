@@ -303,8 +303,8 @@ impl Screen {
             });
         }
         if let Some(hit) = render::list_at(list, &self.panes, column, row) {
-            // The marker folds; the name beside it does what a name does.
-            let part = match hit.marker {
+            // The fold target folds; the name beside it does what a name does.
+            let part = match hit.fold {
                 true => Part::Fold,
                 false => Part::List,
             };

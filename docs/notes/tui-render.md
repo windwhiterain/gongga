@@ -214,7 +214,7 @@ SPEC's session list, on the left of the body: a tree, one row per prefix of a na
 
 The rows themselves are `tui-tree.md`'s; what this function decides is their look. One
 row reads as `○  [api]` expanded and `○ |[work]` folded: the status mark and its space,
-the indent, the one marker column, the label. Indent and marker are painted cyan -- `structure`, the ink a window's rules
+the indent, the `|` a fold draws (and nothing when it draws none), the label. Indent and marker are painted cyan -- `structure`, the ink a window's rules
 already use -- because they are the shape of the tree and not a fact about a session.
 The label is bracketed only on a row that names a session; a row that is only a group
 is the segment as typed. A header still says the whole name (`[work/api]`), so the two
@@ -262,7 +262,8 @@ events beside it. `bracketed` is that spelling, and `list_width` adds it up per 
 `Row::marker_column` (the mark, its space and the indent), the two marker columns, the
 label and, on a session, the two brackets -- then one column of air. Taking the widest
 row rather than the widest name is what makes an indented label fit: the columns before
-it are part of what the row costs.
+it are part of what the row costs. A folded row costs one column more, so a list whose
+widest row is folded is one column wider than the same list unfolded.
 
 The frame is also the only place the list's height is known, so `draw_list` writes
 the bound back (`Pane::bound`, the same call a window makes in `draw_rows`) and clamps
@@ -274,7 +275,8 @@ Scrolled away from its newest row, the list shows the way back to it: the same h
 on the same condition, as any other view.
 
 `list_at` is the same arithmetic from the other side, and it answers a `ListHit`: the
-row's full name, and whether the cell was the marker's one column. A marker
+row's full name, and whether the click asked to fold -- the `|` of a folded row, or the
+status mark of a group row, which is the only column left that is not text. A marker
 folds what is under it, a name does what a name does, and one function answering both
 is what keeps a click from folding the row it did not point at.
 
