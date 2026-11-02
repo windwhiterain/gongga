@@ -49,6 +49,7 @@ note is a bug.
 | [`server-meta.md`](server-meta.md) | `crates/server/src/meta.rs` |
 | [`server-net.md`](server-net.md) | `crates/server/src/net.rs` |
 | [`server-prefix-cache.md`](server-prefix-cache.md) | `crates/server/src/prefix_cache.rs` |
+| [`server-process.md`](server-process.md) | `crates/server/src/process.rs` |
 | [`server-prompts.md`](server-prompts.md) | `crates/server/src/prompts.rs` |
 | [`server-providers.md`](server-providers.md) | `crates/server/src/providers.rs` |
 | [`server-quota.md`](server-quota.md) | `crates/server/src/quota.rs` |

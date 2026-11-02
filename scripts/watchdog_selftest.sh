@@ -41,16 +41,40 @@ print(s.getsockname()[1]);s.close()'
 # before the home is migrated and the last content fetched.
 wait_listening() { for _ in $(seq 1 300); do grep -q "listening (UDP) local=127.0.0.1:$port" "$log" && return 0; sleep 0.2; done; return 1; }
 
+# Every process serving THIS home, whatever the run managed to remember: a
+# scenario that fails before its pid is recorded would otherwise leave a server
+# behind, and the next run would mistake it for its own. Identity is the home in
+# the command line, never the image name -- other servers share that.
+serving_home() {
+  # The home has more than one spelling: bash says `/c/...`, and the command line
+  # Windows reports says `C:/...` or `C:\...`. Matching one of them finds nothing
+  # and leaves a server behind, so every spelling is tried.
+  local win; win=$(cygpath -w "$home" 2>/dev/null || echo "$home")
+  local posix; posix=$(cygpath -m "$home" 2>/dev/null || echo "$home")
+  powershell -NoProfile -Command \
+    "Get-CimInstance Win32_Process -Filter \"Name='gongga-server.exe'\" | Where-Object { \$_.CommandLine -like '*--home *$posix*' -or \$_.CommandLine -like '*--home *$win*' -or \$_.CommandLine -like '*--home *$home*' } | ForEach-Object { \$_.ProcessId }" \
+    2>/dev/null | tr -d '\r' | tr '\n' ' '
+}
+
 port=$(free_port)
 server_pid=""
 sup=""
 cleanup() {
-  alive "$server_pid" && taskkill //PID "$server_pid" //T //F >/dev/null 2>&1
-  alive "$sup" && taskkill //PID "$sup" //T //F >/dev/null 2>&1
-  sleep 1; rm -rf "$home"
+  for pid in $(serving_home) "$server_pid" "$sup"; do
+    alive "$pid" && taskkill //PID "$pid" //T //F >/dev/null 2>&1
+  done
+  sleep 1
+  # Busy files mean a process still holds the home; say so instead of hiding it.
+  rm -rf "$home" || echo "note: $home is still held by a process" >&2
 }
 trap cleanup EXIT
 
+left=$(serving_home)
+if [[ -n "${left// /}" ]]; then
+  echo "a previous run left $(echo $left) serving $home; stopping it" >&2
+  for pid in $left; do taskkill //PID "$pid" //T //F >/dev/null 2>&1; done
+  sleep 2
+fi
 rm -rf "$home"; mkdir -p "$home"
 # The pinned content from this machine's real cache: this check must not fetch.
 cp -r "$HOME/.gongga/ship.git" "$home/ship.git" 2>/dev/null

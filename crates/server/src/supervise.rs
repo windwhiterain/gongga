@@ -39,14 +39,39 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// server killed once an hour is restarted at once every hour.
 const HEALTHY: Duration = Duration::from_secs(60);
 
+/// What this process was told about itself before the environment was scrubbed.
+static REMEMBERED: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+
 /// Whether this process is the child, which serves.
+///
+/// # Invariant
+///
+/// The variable is not proof: a shell inherits the environment, so a server
+/// started from one would read its grandparent's supervisor and skip a watchdog
+/// of its own. The claim is checked against the process the OS names as this
+/// one's parent, which a shell cannot fake.
 pub fn is_child() -> bool {
-    std::env::var_os(SUPERVISED).is_some()
+    let Some(claimed) = parse_supervisor() else {
+        return false;
+    };
+    match crate::process::parent_of(std::process::id()) {
+        Some(parent) => parent == claimed,
+        // Unverified: an extra supervisor is harmless, its child verifies.
+        None => false,
+    }
 }
 
 /// The supervisor's pid, when this process was started by one.
+///
+/// # Invariant
+///
+/// Read once, because [`remember`] takes the variables out of this process's
+/// environment. A greeting built later must still answer what this process was.
 pub fn supervisor() -> Option<u32> {
-    std::env::var(SUPERVISOR).ok()?.trim().parse().ok()
+    match REMEMBERED.get() {
+        Some(pid) => *pid,
+        None => parse_supervisor(),
+    }
 }
 
 /// The exit an earlier server left behind, as `<code>@<unix millis>`.
@@ -54,6 +79,31 @@ pub fn previous_exit() -> Option<String> {
     std::env::var(LAST_EXIT)
         .ok()
         .filter(|s| !s.trim().is_empty())
+}
+
+/// Takes what the supervisor said about this process, and stops passing it on.
+///
+/// # Invariant
+///
+/// These three variables describe *this* process, not the ones it starts. A shell
+/// a session runs inherits the environment, so leaving them set made every server
+/// started from an agent's shell believe it was already a child -- no watchdog of
+/// its own, and a greeting naming the outer server's supervisor. Nothing this
+/// process starts may read them, and no child of a child either.
+pub fn remember() -> Option<u32> {
+    let pid = parse_supervisor();
+    let _ = REMEMBERED.set(pid);
+    // SAFETY: called before anything reads the environment on another thread.
+    unsafe {
+        for name in [SUPERVISED, SUPERVISOR, LAST_EXIT] {
+            std::env::remove_var(name);
+        }
+    }
+    pid
+}
+
+fn parse_supervisor() -> Option<u32> {
+    std::env::var(SUPERVISOR).ok()?.trim().parse().ok()
 }
 
 /// What the supervisor does with the child that just ended.

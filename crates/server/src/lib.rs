@@ -20,6 +20,7 @@ mod monitor;
 mod net;
 mod prefix_cache;
 mod probe;
+mod process;
 mod prompts;
 mod providers;
 mod quota;
@@ -155,6 +156,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         }
     }
 
+    // Before anything is spawned: what the supervisor said about *this* process
+    // must not travel into the shells and scripts this process starts.
+    supervise::remember();
     let cfg = config_from(&args)?;
     // Claim the home before opening the database: one server per home.
     let _instance = instance::InstanceLock::acquire(&cfg.home)?;

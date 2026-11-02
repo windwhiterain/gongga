@@ -12,6 +12,7 @@ use serde_json::json;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex as AsyncMutex;
 
+use crate::process::parent_of;
 use crate::store::{DetachedRow, Store};
 
 /// TERM is a request, not proof of termination. KILL follows only after this grace.
@@ -973,56 +974,6 @@ fn is_self_or_ancestor(pid: u32) -> bool {
         }
     }
     false
-}
-
-/// The process that started `pid`, as the OS sees it.
-#[cfg(windows)]
-fn parent_of(pid: u32) -> Option<u32> {
-    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
-    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
-        TH32CS_SNAPPROCESS,
-    };
-
-    // One snapshot per hop, not per walk: this runs on the startup path.
-    unsafe {
-        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if snapshot == INVALID_HANDLE_VALUE {
-            return None;
-        }
-        let mut entry = PROCESSENTRY32W {
-            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
-            ..Default::default()
-        };
-        let mut found = None;
-        let mut more = Process32FirstW(snapshot, &mut entry) != 0;
-        while more {
-            if entry.th32ProcessID == pid {
-                found = Some(entry.th32ParentProcessID);
-                break;
-            }
-            more = Process32NextW(snapshot, &mut entry) != 0;
-        }
-        CloseHandle(snapshot);
-        found
-    }
-}
-
-/// The process that started `pid`, as the OS sees it.
-#[cfg(unix)]
-fn parent_of(pid: u32) -> Option<u32> {
-    // One field, no header, and present wherever the shell is; `/proc` would be
-    // faster but is not shaped the same on macOS.
-    let out = std::process::Command::new("ps")
-        .args(["-o", "ppid=", "-p", &pid.to_string()])
-        .output()
-        .ok()?;
-    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
-}
-
-#[cfg(not(any(windows, unix)))]
-fn parent_of(_pid: u32) -> Option<u32> {
-    None
 }
 
 /// `alive_pids` off the runtime's worker threads.

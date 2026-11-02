@@ -79,6 +79,35 @@ Each decision writes one line to the same log, prefixed `watchdog:`, so
 - **The child is not detached from it.** Same console, same process group; only
   the supervisor is detached from whatever started it.
 
+## The environment is inherited, so the claim is checked
+
+The first version asked only whether `GONGGA_SUPERVISED` was set. It is set for the
+child -- and the child passes its environment to every shell a session starts, so an
+agent's shell holds both variables, and a server started from one believed it was
+already a child:
+
+- it forked no supervisor of its own, so nothing restarted it;
+- its greeting named the **outer** server's supervisor, which is what a window
+  compares against the pid it spawned.
+
+Found by running `scripts/watchdog_selftest.sh` from an agent's shell: every restart
+scenario failed while the same script passed from a plain terminal. The log said
+`supervisor=49408` for a server whose parent was a bash.
+
+Two changes, both needed:
+
+1. **`is_child` verifies the claim.** `GONGGA_SUPERVISOR` must name the process the
+   OS reports as this one's parent (`process::parent_of`). A shell cannot make that
+   true, so an inherited variable proves nothing.
+2. **`supervise::remember` scrubs all three variables** out of this process's
+   environment before anything is spawned, and keeps the supervisor's pid in a
+   `OnceLock` so the greeting still answers. Otherwise the leak repeats: every
+   shell, script and nested server would carry a stale claim.
+
+An OS that will not answer `parent_of` leaves the claim unverified, and then the
+process forks a supervisor anyway. That costs one extra layer, and it terminates:
+the supervisor sets `GONGGA_SUPERVISOR` to its own pid, so its child verifies.
+
 ## The two pid semantics this changed
 
 "Did this process start the server I am talking to" used to be pid equality, and
