@@ -14,7 +14,7 @@ $S stage              # 跑测试 + 构建 + 暂存 + 生成 launcher（会先�
 $S stage --clean      # 同上，并让继任者在旧服务端退出后、绑定端口前跑 cargo clean
 # 用 bash --detached 启动它打印的 launcher
 $S swap <stamp>       # 确认继任者真在等，再发 cancel
-$S status             # 当前 stamp、谁在等、端口与锁；`successors:` 为空才算干净
+$S status             # 当前 stamp、谁在等、端口与锁、租约在谁手里；`successors:` 为空才算干净
 $S clean              # 收掉没人会 swap 的旧继任者（--artifacts 连旧暂存件）
 ```
 
@@ -26,15 +26,20 @@ $S clean              # 收掉没人会 swap 的旧继任者（--artifacts 连�
 1. **一个改动只 `stage` 一次。** 你改完代码、跑完测试、`stage`、`launch`、`swap`——结束。
    想再验一个东西，改完再走一遍，**不要**在同一轮里连续 `stage` 三次。用户看到的是
    服务器反复死掉，且每次重放都把两个会话的上下文一起拉起来。
-2. **`stage` 之前先看 `status`。** 有 `successors:` 在等，说明上一次换手没走完；先把
-   它处理掉（`swap` 或 `clean`），别叠加新的。
-3. **`stage` 会写 `evolve-current`。** 之前等待中的继任者发现自己被取代就会退出并接管
-   home——也就是说**连续 stage 等于连续重启**，哪怕你一次 `swap` 都没发。
+2. **并发这件事现在由脚本挡，不再靠记性。** `stage` 取一个租约（`.dev/evolve-lease/`，
+   `mkdir` 原子），它一路活到继任者绑端口；期间第二个 `stage` 直接拒绝并说出持有者，
+   `swap` 也只认租约上的那个 stamp。持有者都死了（stage 的 shell 没了、也没有 launcher）
+   才算废弃，由下一个 `stage` 接管或 `clean` 释放。**被拒绝不是要你绕过，是要你先处理
+   那一次换手**：`swap` 它，或者 `clean` 掉。
+3. **`stage` 会写 `evolve-current`，并持有租约。** 已经 staged、还没 launch 的那一段也算
+   持有——那是 `stage` 退出、操作者还没起继任者的窗口，正是最容易被第二个 agent 踩掉的
+   时候。真正被取代（另一个 stage 把指针挪走）时，等待中的 launcher 自己退出并接管 home，
+   所以**连续 stage 等于连续重启**，哪怕你一次 `swap` 都没发。
 4. **验证脚本不许碰 9700。** 临时 home + 随机端口 + 跑完 `trap` 清理。碰了在跑的服务端，
    你测的就是"我有没有把自己的服务端弄死"，不是被测的东西。
 5. **`swap` 之后不要马上再 `swap`。** 继任者在重放你的回合，写完一句话再决定下一步。
-6. **`swap` 失败就停下看。** 拒绝的理由（stamp 不是 current、心跳过期、没有继任者在等）
-   都指向一个具体问题；绕过守卫手动 `cancel` 只会让 home 空着。
+6. **`swap` 失败就停下看。** 拒绝的理由（stamp 不是 current、租约在别人手里、心跳过期、
+   没有继任者在等）都指向一个具体问题；绕过守卫手动 `cancel` 只会让 home 空着。
 
 一句话：**换手是交付动作，不是调试手段。** 调试用 `cargo test`、用临时 home 起一个
 临时服务端，别拿正在跑你的那个当试验台。
@@ -125,11 +130,15 @@ pid，这是**正常**的，不是换手失败。`status` 用父进程关系识�
 副作用：`del_bash` 打到一个"是服务器父进程"的 detached 行时，会拒绝执行（`adopt()` 的
 祖先守卫）——否则删一个 detached bash 就能把自己杀掉。
 
-**2. `.dev/target`，不是 `target/`。** Windows 锁住运行中的 `.exe`，而被替换的往往就是
-`target\debug\gongga-server.exe`。私有 target 目录让构建不受 target/ 在干什么影响。
+**2. `.dev/target` 是旧设计留下的空壳，别再用它。** `$BUILD` 现在只剩一行定义：`stage`
+和 launcher 都构建在默认的 `target/`，而继任者拿到的是 `cp` 出来的 bundle 副本，所以
+"正在跑的 exe 锁住构建目录"不再是问题——被替换的从来不是 `target/debug/gongga-server.exe`。
+这个目录只会一路长到十几 GB（本机量到 14 GB，磁盘 97%）；`rm -rf .dev/target` 不影响
+任何一次换手。
 
-**3. `stage` 默认只构建 server。** 协议没变时旧客户端照样能连；`--all` 会连客户端一起换，
-而用户正在用的 TUI / CLI 锁着 `gongga-tui.exe`、`gongga-cli.exe`（会 `拒绝访问 (os error 5)`）。
+**3. `stage` 构建整个发行版，不是一个程序。** bundle 把 server、cli、tui 装进一个文件，
+换手一次就换掉三个程序；`--all` 是唯一模式（旧旗标只留一句 note）。构建产物是 `cp` 出去
+的副本，所以用户正在用的 TUI / CLI 锁着 `gongga-tui.exe`、`gongga-cli.exe` 也不挡构建。
 
 **4. 只有最新的 stage 能接管。** `stage` 写 `.dev/evolve-current`；被取代的 launcher 自己
 退出等待循环，`swap` 拒绝非当前 stamp。重复 `stage` 安全，但**别指望用旧 stamp 回滚**

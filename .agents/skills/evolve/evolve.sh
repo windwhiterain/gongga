@@ -47,15 +47,16 @@ RUN="$ROOT/.dev"
 # Which stage is allowed to take the home. Written by `stage`, read by every
 # launcher and by `swap`.
 CURRENT="$RUN/evolve-current"
+# Who is evolving at all. `$CURRENT` decides which stage may take the home, but it
+# cannot keep two agents apart: it takes whoever writes it last, and the earlier
+# launcher then leaves the queue, so one agent's handover is silently replaced by
+# another's. AGENTS says agents must not evolve at once -- so the claim lives in a
+# directory, made by an atomic `mkdir`, and it lasts as long as the handover does:
+# stage, launch, and the successor that binds.
+LEASE="$RUN/evolve-lease"
 HOME_DIR="${GONGGA_HOME:-$HOME/.gongga}"
 BIND="${GONGGA_SERVER:-127.0.0.1:9700}"
 PORT="${BIND##*:}"
-# The successor is built here, not in target/. A server started from
-# target/debug/gongga-server.exe cannot be relinked while it runs (Windows
-# locks a running .exe: `os error 5`), and that server may be the very process
-# this script exists to replace. A private target dir makes the build
-# independent of what target/ is doing.
-BUILD="$RUN/target"
 mkdir -p "$RUN"
 
 # The CLI has to be reachable from a plain bash call, exactly as the model
@@ -146,6 +147,7 @@ write_launcher() {
     -e "s|@@BIND@@|$(fill "$BIND")|g" \
     -e "s|@@CURRENT@@|$(fill "$CURRENT")|g" \
     -e "s|@@CLEAN@@|$(fill "$clean")|g" \
+    -e "s|@@LEASE@@|$(fill "$LEASE")|g" \
     -e "s|@@BUNDLE@@|$(fill "$bundle")|g" \
     > "$path" <<'LAUNCH'
 #!/usr/bin/env bash
@@ -165,6 +167,12 @@ if [ -r /proc/$$/winpid ]; then
 else
   echo $$ > '@@PIDFILE@@'
 fi
+# The lease names whoever is alive for this handover, and the shell that staged it
+# has exited by now: from here on it is this loop.
+if [ -d '@@LEASE@@' ]; then
+  cat '@@PIDFILE@@' > '@@LEASE@@/pid' 2>/dev/null
+fi
+CLEAN='@@CLEAN@@'
 date +%s > '@@BEATFILE@@'
 NEW='@@EXE@@'
 OLD_PID='@@OLD_PID@@'
@@ -228,9 +236,10 @@ while :; do
   listening=$(netstat -ano 2>/dev/null | grep -c ":$PORT" || true)
   if [ "$alive" = 0 ] && [ "$listening" = 0 ]; then
     cd '@@ROOT@@'
-    # Only now is the build tree unlocked: on Windows the old server *is*
-    # target/debug/gongga-server.exe, so a clean before this point would fail.
-    if [ '@@CLEAN@@' = "1" ]; then
+    # `--clean` wipes the build tree, and the old server is still holding pieces
+    # of it: a copy of its head is what runs, but the tree it was built from is
+    # busy until it exits. This is the one moment when it is not.
+    if [ "$CLEAN" = 1 ]; then
       echo "evolve: cargo clean before taking the home"
       CARGO_TARGET_DIR= cargo clean || echo "evolve: cargo clean failed; carrying on"
     fi
@@ -247,6 +256,9 @@ while :; do
     # what makes a handover replace the whole distribution -- payload for all
     # three programs, and the `bin` pair the next shell will type (the server
     # refreshes it from its own build at startup).
+    # The home is this process's now: a claim left behind would block the next
+    # handover until somebody noticed it was stale.
+    rm -rf '@@LEASE@@'
     if [ '@@BUNDLE@@' = "1" ]; then
       GONGGA_HOME="$NEW_HOME" exec "$NEW" server "${ARGS[@]}"
     fi
@@ -344,6 +356,74 @@ running_pid() {
   echo "$pid"
 }
 
+# This shell's pid in the numbering every check downstream uses.
+win_pid() {
+  if [ -r "/proc/$$/winpid" ]; then cat "/proc/$$/winpid"; else echo $$; fi
+}
+
+alive() { # windows pid
+  [ -n "${1:-}" ] || return 1
+  tasklist //FI "PID eq $1" //NH 2>/dev/null | grep -q "$1"
+}
+
+lease_stamp() { cat "$LEASE/stamp" 2>/dev/null || true; }
+
+# Whether a lease is still somebody's: a process alive for it, or -- before a
+# successor exists -- a stage that finished and is waiting to be launched. That
+# window is the one worth guarding: `stage` writes the claim and exits, and the
+# operator launches a moment later. Reading only pids would call it abandoned and
+# let the next agent take it, which is exactly the supersede this forbids.
+lease_live() {
+  local stamp pid launcher
+  stamp="$(lease_stamp)"
+  pid="$(cat "$LEASE/pid" 2>/dev/null || true)"
+  launcher="$(cat "$RUN/evolve-$stamp-launch.pid" 2>/dev/null || true)"
+  if alive "$pid" || alive "$launcher"; then
+    return 0
+  fi
+  [ -n "$stamp" ] && [ "$stamp" = "$(cat "$CURRENT" 2>/dev/null || true)" ] \
+    && [ -f "$RUN/evolve-$stamp.txt" ]
+}
+
+# Takes the lease for `stamp`, or stops and says who holds it.
+#
+# # Invariant
+#
+# One handover at a time. A holder is whoever is alive for it -- the staging shell,
+# or the successor it left waiting -- and a lease whose holders are all gone is
+# taken over with a word rather than blocking a later agent forever.
+take_lease() { # stamp
+  local stamp="$1"
+  if mkdir "$LEASE" 2>/dev/null; then
+    printf '%s\n' "$stamp" > "$LEASE/stamp"
+    win_pid > "$LEASE/pid"
+    LEASE_HELD=1
+    return 0
+  fi
+  local holder pid who
+  holder="$(lease_stamp)"
+  pid="$(cat "$LEASE/pid" 2>/dev/null || true)"
+  who="stage ${holder:-unknown}"
+  if lease_live; then
+    if alive "$pid"; then who="$who (pid $pid)"; else who="$who (staged, not launched yet)"; fi
+    die "another handover is in flight: $who. \
+Two agents must not evolve at once -- run '$0 status' to see it, '$0 swap ${holder:-<stamp>}' \
+if it is staged and yours, or '$0 clean' if it is abandoned."
+  fi
+  echo "note: stage ${holder:-unknown} left its lease behind and is gone; taking it over"
+  rm -rf "$LEASE"
+  mkdir "$LEASE" || die "cannot take $LEASE"
+  printf '%s\n' "$stamp" > "$LEASE/stamp"
+  win_pid > "$LEASE/pid"
+  LEASE_HELD=1
+}
+
+# Drops the lease unless the handover has been handed to a successor.
+release_lease() {
+  [ "${LEASE_HELD:-0}" = 1 ] && rm -rf "$LEASE"
+  LEASE_HELD=0
+}
+
 cmd_stage() {
   local clean=0
   for flag in "$@"; do
@@ -352,6 +432,16 @@ cmd_stage() {
       --clean) clean=1 ;;
     esac
   done
+
+  # Taken before the build: two agents waiting for a compile that only one of them
+  # may finish is the cost this avoids, and the claim is what tells the second one
+  # to stop rather than to supersede.
+  local stamp
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  take_lease "$stamp"
+  # A stage that dies must not leave the claim behind. It survives this line only by
+  # reaching the end, where the successor takes it over.
+  trap 'release_lease' EXIT INT TERM
 
   disk_line "disk:"
 
@@ -363,17 +453,17 @@ cmd_stage() {
   echo "== build =="
   # The whole distribution, as one file: the bundle carries server, cli and tui,
   # so a handover replaces all three rather than only the process this machine
-  # happens to be running. It builds its payload into `target/bundle-payload`,
-  # never into `$BUILD`, because the crate asks cargo for those three programs by
-  # name and cargo resolves that against the tree it is told to use.
+  # happens to be running. Its payload goes to `target/bundle-payload` -- the
+  # crate asks cargo for those three programs by name, and cargo resolves that
+  # against the tree it is told to use. The successor gets a copy of the head,
+  # which is what keeps a running .exe from blocking the build (see SKILL.md).
   ( cd "$ROOT" && cargo build -p gongga-bundle ) || die "building the bundle failed"
   # The head is `gongga` (see crates/bundle/Cargo.toml), not the package name.
   local head="$ROOT/target/debug/gongga"
   [ -f "$head" ] || head="$head.exe"
   [ -f "$head" ] || die "no bundle head at $ROOT/target/debug/gongga"
 
-  local stamp exe old_pid launcher
-  stamp="$(date +%Y%m%d-%H%M%S)"
+  local exe old_pid launcher
   exe="$RUN/evolve-$stamp-gongga.exe"
   cp "$head" "$exe" || die "copying the bundle failed"
   old_pid="$(running_pid || true)"
@@ -434,6 +524,9 @@ unknown; refusing to stage a handover that would produce a server nobody owns"
   if [ "$clean" = 1 ]; then
     echo "armed: the successor runs 'cargo clean' after the old server is gone, before it binds"
   fi
+  # From here the lease belongs to the successor: this shell is about to exit, and
+  # the wait for the home may last minutes.
+  LEASE_HELD=0
   echo "an earlier attempt still waiting will leave on its own; 'clean' says who is left"
 }
 
@@ -452,6 +545,15 @@ cmd_swap() {
   elif [ "$stamp" != "$current" ]; then
     die "stage $stamp is not the current handover target (current: $current); \
 its launcher has already left the queue -- run stage again if you meant the newest build"
+  fi
+
+  # Two agents racing is what the lease is for: `$CURRENT` has already moved to the
+  # later stage by then, so this is the check that names the real holder.
+  local holder
+  holder="$(lease_stamp)"
+  if [ -n "$holder" ] && [ "$holder" != "$stamp" ]; then
+    die "stage $holder holds the handover lease, not $stamp; run '$0 status' \
+(two agents evolving at once is what AGENTS forbids, and what this refuses)"
   fi
 
   # A successor that is not actually waiting must stop the handover: cancelling
@@ -494,8 +596,20 @@ cmd_status() {
   echo "current: $(cat "$CURRENT" 2>/dev/null || echo none)"
   local armed_launcher
   armed_launcher="$RUN/evolve-$(cat "$CURRENT" 2>/dev/null)-launch.sh"
-  if grep -q 'cargo clean' "$armed_launcher" 2>/dev/null; then
+  if grep -q "^CLEAN='1'$" "$armed_launcher" 2>/dev/null; then
     echo "armed: the current successor runs 'cargo clean' before it binds"
+  fi
+  local holder holder_pid holder_launcher
+  holder="$(lease_stamp)"
+  if [ -d "$LEASE" ]; then
+    holder_pid="$(cat "$LEASE/pid" 2>/dev/null || true)"
+    if ! lease_live; then
+      echo "lease: stage ${holder:-unknown} (holder gone; the next stage takes it over)"
+    elif [ -f "$RUN/evolve-$holder-launch.pid" ]; then
+      echo "lease: stage ${holder:-unknown} (pid ${holder_pid:-?}) is waiting to take the home"
+    else
+      echo "lease: stage ${holder:-unknown} is staged; launch it, then swap"
+    fi
   fi
   local server_pid
   server_pid="$(cat "$HOME_DIR/server.lock" 2>/dev/null || echo none)"
@@ -582,6 +696,20 @@ cmd_clean() {
     fi
   done
   echo "waiters: $killed killed, $alive left running"
+
+  local ls lp llauncher
+  ls="$(lease_stamp)"
+  if [ -d "$LEASE" ]; then
+    lp="$(cat "$LEASE/pid" 2>/dev/null || true)"
+    llauncher="$(cat "$RUN/evolve-$ls-launch.pid" 2>/dev/null || true)"
+    # Not `lease_live`: a stage that is only staged is exactly what clean is for.
+    if alive "$lp" || alive "$llauncher"; then
+      echo "  lease   stage ${ls:-unknown} (pid ${lp:-?}) is still evolving; kept"
+    else
+      rm -rf "$LEASE"
+      echo "  lease   stage ${ls:-unknown} was abandoned; released"
+    fi
+  fi
 
   if [ "$artifacts" = 0 ]; then
     echo "(pass --artifacts to delete the staged files of every stamp but the current one)"
