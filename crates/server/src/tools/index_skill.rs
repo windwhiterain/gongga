@@ -78,15 +78,7 @@ impl Tool for IndexSkillTool {
                 }
                 return ToolOutcome::ok(message);
             }
-            let rows = ordered(
-                skills,
-                &ctx.store,
-                &ctx.session,
-                &ctx.model,
-                ctx.price,
-                ctx.cache_invalid_rate,
-                ctx.cache_ttl_ms,
-            );
+            let rows = ordered(skills, &ctx.store, &ctx.session, &ctx.model, ctx.rates);
             let mut payload = json!({"skills": rows});
             if let Some(elsewhere) = elsewhere {
                 payload["elsewhere"] = json!(elsewhere);
@@ -174,9 +166,7 @@ fn ordered(
     store: &crate::store::Store,
     session: &str,
     model: &str,
-    price: Option<crate::providers::Price>,
-    invalid: f64,
-    ttl_ms: u64,
+    rates: crate::prefix_cache::Rates,
 ) -> Vec<Value> {
     let rows: Vec<(String, String, Value)> = skills
         .into_iter()
@@ -195,11 +185,6 @@ fn ordered(
         .collect();
     // The tokens: what sending this row costs, from what the provider counted.
     let ratio = store.token_ratio(model);
-    let rates = crate::prefix_cache::Rates {
-        price,
-        invalid,
-        ttl_ms,
-    };
     let wanted: Vec<crate::prefix_cache::Wanted> = rows
         .iter()
         .map(|(key, text, _)| crate::prefix_cache::Wanted {

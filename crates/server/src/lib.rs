@@ -303,9 +303,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             bus: bus.clone(),
             compress_above_tokens: cfg.agent.compress_above_tokens,
             cache_invalid_rate: cfg.agent.cache_invalid_rate,
-            cache_ttl_ms: cfg.agent.cache_ttl_secs.saturating_mul(1_000),
+            cache_ttl_ms: (cfg.agent.cache_ttl_secs > 0)
+                .then(|| cfg.agent.cache_ttl_secs.saturating_mul(1_000)),
             index_change_tolerance: cfg.agent.index_change_tolerance,
-            price: cfg.model.price,
             output_dir: output_dir.clone(),
             detached: detached.clone(),
         }),

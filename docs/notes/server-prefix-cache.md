@@ -105,9 +105,18 @@ subtree with it, because a provider's cache is a prefix -- if the front of a cha
 gone, the rest of it cannot be served from cache either, and keeping it would let a plan
 choose a chain whose first half is a miss.
 
-`ttl_ms == 0` never expires, and that is the default: a lifetime the provider does not
-state is not one to invent. Setting it is a claim about the provider, and it is the only
-place this module believes something it was told rather than measured.
+`ttl_ms` is the roster's number for the model in use: `[[provider]] cache_ttl_secs` is a
+fact about that provider, so a session on a five-minute cache stops planning for warmth
+five minutes after it was last sent, while the session beside it on a three-day cache
+does not. It used to be one number for the whole machine, which meant either believing
+nothing (the shipped `0`, every provider planned for as warm forever) or believing one
+provider's lifetime about all of them.
+
+`ttl_ms == 0` never expires, and that is what a provider stating no lifetime leaves it
+at: a lifetime nobody stated is not one to invent, and prose in the roster ("约 5 分钟")
+is not parsed into one. `[agent] cache_ttl_secs` / `GONGGA_CACHE_TTL_SECS` is the
+machine's own answer and wins when it is not zero -- one lifetime for every provider, for
+a machine that knows better than the roster.
 
 ## priced from the roster: Rates
 
@@ -117,11 +126,11 @@ and `Price::miss_ratio()` turns `input / cache_read` into the factor one cached 
 is worth. Only that ratio is used -- a currency is never converted and a unit is never
 assumed, so `1.00/0.10 CNY per million` and `0.15/0.015 USD` are the same 10.
 
-`cache_invalid_rate` is another input, from `[agent]` or
-`GONGGA_CACHE_INVALID_RATE`, and `cache_ttl_secs` / `GONGGA_CACHE_TTL_SECS` is the
-last: a probability and a lifetime, both claims rather than measurements. It is the chance the provider no longer holds a prefix it
-once did, and it is folded in as an expectation: a cache correct `(1 - p)` of the time
-is worth `(1 - p)` of its discount, so
+`Rates` also carries `cache_invalid_rate`, from `[agent]` or
+`GONGGA_CACHE_INVALID_RATE`, and the lifetime above. The probability is the machine's
+hyperparameter -- it is a claim about how often any provider drops a prefix, not a
+measurement -- and it is folded in as an expectation: a cache correct `(1 - p)` of the
+time is worth `(1 - p)` of its discount, so
 
     scale = ratio / ((1 - p) + p * ratio)
 

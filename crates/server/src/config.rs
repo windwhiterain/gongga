@@ -43,8 +43,8 @@ pub const DEFAULT_COMPRESS_ABOVE_TOKENS: u64 = 40_000;
 /// item is *expected* to be worth. See `docs/notes/server-prefix-cache.md`.
 pub const DEFAULT_CACHE_INVALID_RATE: f64 = 0.0;
 
-/// How long a cached prefix is assumed to survive, in seconds. `0` is "as long as
-/// the layout remembers", because a lifetime nobody stated is not one to invent.
+/// The lifetime a cached prefix gets when this machine states none; `0` means the
+/// roster decides, and a provider it says nothing about is left never expiring.
 pub const DEFAULT_CACHE_TTL_SECS: u64 = 0;
 
 /// The share of an indexed entry's lines that may change before it is re-sent.
@@ -219,7 +219,8 @@ pub struct AgentConfig {
     pub compress_above_tokens: u64,
     /// The chance a cached prefix is gone by the next request, `0.0..=1.0`.
     pub cache_invalid_rate: f64,
-    /// How long a cached prefix survives, in seconds; `0` never expires.
+    /// A lifetime for a cached prefix, in seconds, for every provider at once; `0`
+    /// keeps the roster's own numbers.
     pub cache_ttl_secs: u64,
     /// The share of an indexed entry's lines that may change and still be patched.
     pub index_change_tolerance: f64,

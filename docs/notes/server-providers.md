@@ -34,6 +34,18 @@ defaults; a broken one is the same, plus a line saying why. Refusing to start
 because a file we merely *prefer* is malformed would make the roster a worse
 dependency than not having it.
 
+## cache_ttl_secs
+
+How long a provider holds a cached prefix is that provider's fact, so the roster states
+it per `[[provider]]`, in seconds, and `Entry` carries it to the plan: a chain whose front
+is older than that is dropped before the next plan chooses. The roster writes it in two
+layers on purpose -- `cache_ttl` and `cache_ttl_estimate` are prose for a person ("5
+分钟，命中即续期", "约 5 分钟"), and `cache_ttl_secs` is the number a program reads.
+Nothing here parses prose, so a provider that states no number keeps `None`, and the plan
+treats it as holding its cache forever.
+
+See `docs/notes/server-prefix-cache.md` for what the plan does with it.
+
 ## roster_paths
 
 One file: `~/.agents/gongga-agents/providers.toml`, the community repository's

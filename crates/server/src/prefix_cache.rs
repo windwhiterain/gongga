@@ -110,7 +110,8 @@ pub struct Rates {
     pub price: Option<crate::providers::Price>,
     /// The chance a prefix the provider once held is gone by the next request.
     pub invalid: f64,
-    /// How long a prefix survives, in millis. `0` never expires.
+    /// How long a prefix survives, in millis; `0` never expires. Where it comes from
+    /// is `docs/notes/server-prefix-cache.md`.
     pub ttl_ms: u64,
 }
 
@@ -577,9 +578,17 @@ impl Layout {
                 .is_some_and(|parent| doomed[parent.0]);
             doomed[node] = above || self.nodes[node].touched < cutoff;
         }
-        if doomed.contains(&true) {
-            self.sweep(doomed);
+        if !doomed.contains(&true) {
+            return;
         }
+        let held = self.nodes.len();
+        self.sweep(doomed);
+        tracing::debug!(
+            ttl_ms,
+            dropped = held - self.nodes.len(),
+            held,
+            "prefix cache expired"
+        );
     }
 
     fn order(&self, tail: Option<NodeId>) -> Vec<(String, String)> {

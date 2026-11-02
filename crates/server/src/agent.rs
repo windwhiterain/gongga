@@ -47,12 +47,11 @@ pub struct Agent {
     pub bus: EventBus,
     /// How often a cached prefix is assumed to be gone: the plan's hyperparameter.
     pub cache_invalid_rate: f64,
-    /// How long a cached prefix survives, in millis; `0` never expires.
-    pub cache_ttl_ms: u64,
+    /// This machine's own lifetime for a cached prefix, in millis; `None` leaves the
+    /// provider's number in force.
+    pub cache_ttl_ms: Option<u64>,
     /// The share of an indexed entry's lines that may change and still be patched.
     pub index_change_tolerance: f64,
-    /// What the session's model charges, from the roster.
-    pub price: Option<crate::providers::Price>,
     /// Compress once a request would carry more than this many input tokens.
     /// 0 disables it.
     pub compress_above_tokens: u64,
@@ -532,6 +531,27 @@ impl Agent {
         (text.len() as f64 * ratio).round().max(1.0) as usize
     }
 
+    /// What a plan for `model` is priced at.
+    ///
+    /// # Invariant
+    ///
+    /// The roster answers for everything it states: the price and the lifetime are
+    /// the model's provider's, never another model's. This machine's own lifetime
+    /// applies only when its config states one, and a provider that states neither
+    /// leaves it at zero, which the plan reads as "never expires".
+    fn rates(&self, model: &str) -> crate::prefix_cache::Rates {
+        let entry = self.providers.place(model);
+        let stated = entry
+            .as_ref()
+            .and_then(|entry| entry.cache_ttl_secs)
+            .map(|secs| secs.saturating_mul(1_000));
+        crate::prefix_cache::Rates {
+            price: entry.as_ref().and_then(|entry| entry.price),
+            invalid: self.cache_invalid_rate,
+            ttl_ms: self.cache_ttl_ms.or(stated).unwrap_or(0),
+        }
+    }
+
     /// The index this request carries: the text every reference its messages name
     /// says now, in the order the cache pays least for.
     ///
@@ -560,11 +580,7 @@ impl Agent {
         if roots.is_empty() {
             return None;
         }
-        let rates = crate::prefix_cache::Rates {
-            price: self.price,
-            invalid: self.cache_invalid_rate,
-            ttl_ms: self.cache_ttl_ms,
-        };
+        let rates = self.rates(model);
         let wanted: Vec<crate::prefix_cache::Wanted> = roots
             .iter()
             .map(|root| crate::prefix_cache::Wanted {
@@ -1083,6 +1099,7 @@ impl Agent {
         if cancel.is_cancelled() {
             return true;
         }
+        let model = llm.model().to_string();
         let arguments: serde_json::Value =
             serde_json::from_str(&arguments_given).unwrap_or_else(|_| json!({}));
 
@@ -1117,10 +1134,8 @@ impl Agent {
             cwd: session.cwd(),
             vision: llm.vision(crate::prompts::shared()),
             inbox: session.inbox_signal(),
-            model: llm.model().to_string(),
-            price: self.price,
-            cache_invalid_rate: self.cache_invalid_rate,
-            cache_ttl_ms: self.cache_ttl_ms,
+            rates: self.rates(&model),
+            model,
             closing: session.closing_signal(),
         };
         let run_started = std::time::Instant::now();

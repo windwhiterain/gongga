@@ -60,14 +60,10 @@ pub struct ToolContext {
     pub vision: crate::llm::Vision,
     /// Whether a message arrived for this session that its turn cannot read yet.
     pub inbox: crate::session::InboxSignal,
-    /// The model this turn runs on, for the price and the token ratio.
+    /// The model this turn runs on, for the token ratio.
     pub model: String,
-    /// What that model charges, from the roster.
-    pub price: Option<crate::providers::Price>,
-    /// How often a cached prefix is assumed to be gone: the plan's hyperparameter.
-    pub cache_invalid_rate: f64,
-    /// How long a cached prefix survives, in millis; `0` never expires.
-    pub cache_ttl_ms: u64,
+    /// What a plan for that model is priced at, from the roster and this machine.
+    pub rates: crate::prefix_cache::Rates,
     /// Set when the shells are being ended because the server is going: nothing
     /// that stops then "finished", so nothing about it is worth a row.
     pub closing: Arc<std::sync::atomic::AtomicBool>,

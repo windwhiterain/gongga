@@ -15,6 +15,15 @@ pub struct Provider {
     pub name: String,
     pub endpoints: Vec<Endpoint>,
     pub models: Vec<Model>,
+    /// How long this provider holds a cached prefix, in seconds, when the roster
+    /// states it.
+    ///
+    /// # Invariant
+    ///
+    /// `None` is "not stated" and means the plan assumes a prefix held forever: a
+    /// lifetime nobody stated is not one to invent. See
+    /// `docs/notes/server-prefix-cache.md`.
+    pub cache_ttl_secs: Option<u64>,
     // No `key` here on purpose: a roster is a git checkout, and a key in one is a
     // key in git. Keys come from `~/.agents/keys.toml` (see `credential`).
     /// The variable that should hold the key instead, if one is named.
@@ -167,6 +176,8 @@ pub struct Entry {
     pub builtin_tools: Vec<String>,
     /// What the roster says this model charges, for the prefix cache's arithmetic.
     pub price: Option<Price>,
+    /// How long this model's provider holds a cached prefix, when it states it.
+    pub cache_ttl_secs: Option<u64>,
     /// The roster's tier for this model, as written.
     pub tier: Option<String>,
 }
@@ -527,6 +538,7 @@ impl Catalog {
             modalities: found.modalities.clone(),
             builtin_tools: found.builtin_tools.clone(),
             price: found.price,
+            cache_ttl_secs: provider.cache_ttl_secs,
             tier: found.tier.clone(),
         })
     }
@@ -628,6 +640,9 @@ struct FileProvider {
     model: Vec<FileModel>,
     #[serde(default)]
     quota_query: Vec<FileQuota>,
+    /// How long a cached prefix survives at this provider, in seconds.
+    #[serde(default)]
+    cache_ttl_secs: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -739,6 +754,7 @@ fn parse_value(value: toml::Value) -> Result<Vec<Provider>, toml::de::Error> {
                     .collect(),
                 id: p.id,
                 name,
+                cache_ttl_secs: p.cache_ttl_secs,
                 key_env: p.key_env,
             }
         })
