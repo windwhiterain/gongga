@@ -2,38 +2,56 @@
 
 ## cache.rs
 
-The window's own copy of what it drew, on disk. A session outlives a terminal: the
-server has the transcript, but the *rendered* events -- the folded outline, the
-verdicts, the row breaks -- existed only in the client's memory, so a window that
-restarted came back empty.
+The window's own record of the rows it was given, on disk.
 
-This is the client's answer to that, and it is also how a conversation can run for
-days: a block's body is written before it is drawn, and memory keeps only the rows a
-pane is drawing.
+A client does not have the server's transcript, and does not want it: what it has is
+the events it was told about, in the order it was told, with the folds and the row
+breaks the operator was reading. That is a client fact, so it lives in a client
+directory and nothing here asks a server where it should go.
 
-## One file per window, one writer
+Two things follow. A window that restarts comes back with what it had been reading.
+And a session can run for days: a block's body is written before it is drawn, and
+memory keeps only the rows a pane is drawing.
 
-`<home>/cache/<window>.journal`, append-only. The window's name is escaped byte by
-byte into a file name (`escaped`): it is not a file name -- `cmd ` ends in a space,
-and a session may be called anything -- and two names that differ in one character
-must not share a journal.
+## The client's own directory
 
-Only one window writes a journal, and the thing it agrees with is the server's
-`owner`: a server has exactly one, so a window that is `Ours` or `Adopted` writes and
-every other window on that home reads (and never writes). That is why two windows on
-one home cannot interleave their records -- the failure would be the same line drawn
-twice, and there is no id in the sink vocabulary to deduplicate it by.
+`--client-home`, then `GONGGA_CLIENT_HOME`, then `~/.gongga-client`
+(`cli::client_home_of`). Never `--home`: that one is the server's, it holds
+`config.toml`, `gongga.db` and the blobs, and on the machine the operator is sitting
+at it may not exist at all.
 
-The alternative was an OS file lock, and it cost raising the declared MSRV to 1.89
-(`File::try_lock`), which is a decision for the whole workspace rather than for this
-crate.
+Under it, `events/<endpoint>/<window>.<pid>.journal`. The endpoint is
+`cli::endpoint_name` -- the address this client would dial, from its own configuration
+-- so two servers are two sets of records, and the answer is known before any server
+speaks. Nothing here is derived from a greeting: a greeting arrives after the window
+has already decided where its rows go.
+
+## One writer, and the writer is a process
+
+The pid is in the file name. Consequence: two windows on one machine never append to
+the same file, because they are two pids; and a restart takes over the file the dead
+process left, because `cli::server::alive` says it is dead.
+
+`Cache::claim` runs once, at construction, over the directory: for each window, keep
+the file if it is already mine; otherwise, if the newest file's writer is gone, rename
+it to me (which keeps a session at one file however often the window was opened);
+otherwise start a file of my own -- another window is writing this session, and its
+records are its own. Files left by pids that are gone and were not chosen are deleted.
+
+A lost rename is not an error. Rename is atomic, so of two windows starting at the
+same moment exactly one takes the file over and the other starts fresh: losing some
+history, never interleaving two writers.
+
+This is the client-local answer to "who may write": it asks the machine, and the
+machine is what both windows are already standing on. It replaced a rule that asked
+the *server* who owned it -- which meant the window that had not started the server
+wrote nothing at all, and that is exactly the case of a server on another machine.
 
 ## Record — a sealed block stands on its own
 
 `Seal` carries the whole block: id, kind, tag, key, text, whether it is opened, and
-the structured call head if it has one. Reading one record is therefore enough to
-draw that block, with no earlier record needed, which is what makes a random read
-possible at all.
+the structured call head if it has one. Reading one record is enough to draw that
+block, with no earlier record needed, which is what makes a random read possible.
 
 `Delta` is one more piece of a block that is still growing. It is *not* self-sufficient
 -- that is the whole difference -- so a block with deltas and no seal can never be
@@ -61,15 +79,17 @@ offset. `back` walks backwards over record boundaries and answers where the `cou
 previous record begins, and `forward` reads from there to the end -- the two together
 are what a seed is built from.
 
-`reset` truncates a journal, which is what `Log::clear` means: the command line holds
-the last command and no more, so its file should hold that too. `remove` deletes it,
-which is what `Log::forget` means: the session it belonged to is gone.
+`reset` truncates this process's file, which is what `Log::clear` means: the command
+line holds the last command and no more, so its file should hold that too. It also
+deletes every abandoned file of that window; a file another live client is writing is
+left alone, because it is that client's record. `remove` is the same statement for a
+deleted session.
 
-## Cache::set_writable
+## Cache::none
 
-Until the greeting says whose server this is, nothing is written. The flag is set from
-`Tui::set_server`, and it follows ownership across a reconnect: a window that loses
-ownership stops writing rather than fighting the window that has it.
+A `Log` built with no front-end in mind keeps nothing, and derives no path from an
+empty root: `Cache { dir: None }` answers "no record" rather than creating a directory
+in whatever directory the process happens to stand in.
 
 ## log.rs — Entry::slot and Entry::cold
 
@@ -125,6 +145,13 @@ rows it is drawing, plus whatever the operator scrolled past without coming back
 bottom. `hot` is the list eviction walks, so the pass costs what is *loaded*, not what
 the session has ever said.
 
+## Log::repoint — another endpoint is another record
+
+`connect_server` moves the address, so `Tui::repoint` builds a cache for the new one
+and drops every window's blocks: the rows on screen belonged to the server that is no
+longer being dialled, and the next frame seeds each pane from the new endpoint's
+records. Nothing is deleted -- switching back finds the old ones.
+
 ## A resize is the one thing that reads everything back
 
 Every cached row offset was measured at a width, so a resize invalidates all of them,
@@ -133,12 +160,15 @@ back, counts its rows at the new width and drops it again.
 
 That is the same full pass a resize already paid -- `rebuild` re-laid-out every block
 before this existed -- and the only new cost is reading the bytes back. It is the one
-place where a very large session can be felt: a shape change on a journal of hundreds
-of megabytes reads hundreds of megabytes.
+place where a very large journal can be felt: a shape change reads all of it.
 
-## What this does not do
+## What this is not
 
-It does not replace the server's transcript, and it is not a second source of truth:
-the rows are what this window was told, and a window that has never been told anything
-starts empty however much the server remembers. Showing a session on a *second*
-machine is still `get_messages`.
+It is not a mirror of the transcript, and it does not try to be one. A window records
+what it was told; if it was closed while the server kept working, the rows from that
+time are simply not in it, and nothing invents them. The protocol has no "send me what
+I missed" that would not make a front-end into a second reader of the transcript, and
+`get_messages` is the command for an operator who wants that.
+
+Showing a session on another machine is therefore also `get_messages`: the records of
+one client are that client's, and a second machine keeps its own.

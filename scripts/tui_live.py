@@ -1861,7 +1861,7 @@ class Stack:
     def start_server(self, fake_port):
         os.makedirs(self.options.home, exist_ok=True)
         self.report("content cache: %s" % seed_ship_cache(self.options.home))
-        port = free_port("udp")
+        port = self.options.server_port or free_port("udp")
         environment = _child_environment(
             {
                 "GONGGA_BASE_URL": "http://127.0.0.1:%d/v1" % fake_port,
@@ -1904,7 +1904,14 @@ class Stack:
         self.conpty = ConPty(cols, rows, bridge, self.options.python, os.path.join(self.run_dir, "client.status"))
         command = self.conpty.spawn(
             self.options.client_exe,
-            ["--home", self.options.home, "--server", "127.0.0.1:%d" % self.server_port],
+            [
+                "--home",
+                self.options.home,
+                "--client-home",
+                self.options.client_home,
+                "--server",
+                "127.0.0.1:%d" % self.server_port,
+            ],
             ROOT,
             environment,
         )
@@ -1994,7 +2001,7 @@ def run_live(options, script):
         say("fake endpoint: port %d" % stack.start_fake())
         if options.no_server:
             # Left free on purpose: what is being watched is the client starting one.
-            stack.server_port = free_port("udp")
+            stack.server_port = options.server_port or free_port("udp")
             say("server: none, port %d left free, home %s" % (stack.server_port, options.home))
         else:
             say("server: 127.0.0.1:%d, home %s" % (stack.start_server(stack.fake_port), options.home))
@@ -2120,6 +2127,23 @@ def build_parser():
         help="start no server: the port is left free so the client can start one itself",
     )
     parser.add_argument("--keep-home", action="store_true", help="reuse the home instead of wiping it")
+    parser.add_argument(
+        "--client-home",
+        default=os.path.join(DEV, "live-client"),
+        help="the client's own directory (its events and scrollback), inside the worktree",
+    )
+    parser.add_argument(
+        "--server-port",
+        type=int,
+        default=0,
+        help="pin the server's UDP port, so two runs of one client directory are "
+        "the same endpoint; 0 lets the kernel pick and the address changes",
+    )
+    parser.add_argument(
+        "--keep-client",
+        action="store_true",
+        help="reuse the client directory instead of wiping it, which is how a restart is tested",
+    )
     parser.add_argument("--python", default=sys.executable, help="interpreter for the fake endpoint")
     parser.add_argument("--fake", choices=("plain", "stream"), default="stream")
     parser.add_argument("--stream-chunks", type=int, default=24)
@@ -2210,6 +2234,12 @@ def main(argv=None):
         if not os.path.isfile(path):
             print("missing %s binary: %s (build it; this harness never runs cargo)" % (name, path), file=sys.stderr)
             return 2
+
+    if os.path.isdir(options.client_home) and not options.keep_client:
+        shutil.rmtree(options.client_home, ignore_errors=True)
+    os.makedirs(options.client_home, exist_ok=True)
+    if options.keep_client:
+        print("reusing the client directory at %s" % options.client_home)
 
     if os.path.isdir(options.home) and not options.keep_home:
         shutil.rmtree(options.home, ignore_errors=True)

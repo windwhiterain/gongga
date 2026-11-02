@@ -825,7 +825,7 @@ pub struct Log {
 
 impl Default for Log {
     fn default() -> Self {
-        Self::with_home(std::path::Path::new(""))
+        Self::without_cache()
     }
 }
 
@@ -857,22 +857,49 @@ impl Log {
         Self::default()
     }
 
-    /// A scrollback whose blocks are written down under `home`.
-    pub fn with_home(home: &std::path::Path) -> Self {
+    /// A scrollback that keeps nothing on disk.
+    fn without_cache() -> Self {
         Self {
             entries: Vec::new(),
             views: HashMap::new(),
             open: HashMap::new(),
             block_size: 0,
-            cache: Cache::new(home),
+            // Nothing is ever written: a log built with no front-end in mind does
+            // not invent a directory.
+            cache: Cache::none(),
             next_id: 0,
             hot: Vec::new(),
         }
     }
 
-    /// Says whether this window may write the journal it reads.
-    pub fn set_writable(&mut self, writable: bool) {
-        self.cache.set_writable(writable);
+    /// A scrollback whose blocks are written down for one endpoint.
+    ///
+    /// # Invariant
+    ///
+    /// `root` is this client's own directory and `endpoint` is where it dials, both
+    /// known before any server speaks. See `docs/notes/tui-cache.md`.
+    pub fn with_cache(root: &std::path::Path, endpoint: &str) -> Self {
+        Self {
+            cache: Cache::new(root, endpoint),
+            ..Self::without_cache()
+        }
+    }
+
+    /// Points this scrollback at another client root or endpoint, keeping nothing.
+    ///
+    /// # Invariant
+    ///
+    /// The windows lose their blocks, so the next frame seeds each from the new
+    /// place: what is on screen is the rows of the endpoint being dialled now, and
+    /// a `connect_server` that moved the window must not leave the last server's
+    /// lines behind. The old journals are not deleted -- they are that server's
+    /// record, and switching back finds them again.
+    pub fn repoint(&mut self, root: &std::path::Path, endpoint: &str) {
+        self.cache = Cache::new(root, endpoint);
+        let windows: Vec<String> = self.views.keys().map(|name| name.to_string()).collect();
+        for window in windows {
+            self.drop_window(&window);
+        }
     }
 
     /// Hands out the journal's next block id.

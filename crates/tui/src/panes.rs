@@ -122,13 +122,8 @@ pub struct Panes {
 
 impl Panes {
     pub fn new() -> Self {
-        Self::with_home(std::path::Path::new(""))
-    }
-
-    /// The views over a log whose blocks are written down under `home`.
-    pub fn with_home(home: &std::path::Path) -> Self {
         Self {
-            log: Log::with_home(home),
+            log: Log::new(),
             panes: Vec::new(),
             listed: Vec::new(),
             list_names: Vec::new(),
@@ -137,15 +132,21 @@ impl Panes {
         }
     }
 
-    /// Says whether this window may write the journal it reads.
-    ///
-    /// # Invariant
-    ///
-    /// The window that owns the server, and no other: two windows on one home see
-    /// the same events, and one file may only be written by one of them.
-    /// See `docs/notes/tui-cache.md`.
-    pub fn set_writable(&mut self, writable: bool) {
-        self.log.set_writable(writable);
+    /// The views over a log whose blocks are written down for one endpoint.
+    pub fn with_cache(root: &std::path::Path, endpoint: &str) -> Self {
+        Self {
+            log: Log::with_cache(root, endpoint),
+            panes: Vec::new(),
+            listed: Vec::new(),
+            list_names: Vec::new(),
+            quota: None,
+            drawn: Vec::new(),
+        }
+    }
+
+    /// Points the scrollback at another client root or endpoint, keeping nothing.
+    pub fn repoint(&mut self, root: &std::path::Path, endpoint: &str) {
+        self.log.repoint(root, endpoint);
     }
 
     /// Fills an empty window from its journal, until it covers `rows`.

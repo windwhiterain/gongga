@@ -42,6 +42,10 @@ pub struct Connection {
     /// Harness home holding config.toml and cli.toml. Defaults to `~/.gongga`.
     #[arg(long, global = true)]
     pub home: Option<PathBuf>,
+    /// This client's own directory: its events and its scrollback, never the
+    /// server's. Defaults to `~/.gongga-client`.
+    #[arg(long, global = true)]
+    pub client_home: Option<PathBuf>,
     /// Connection key. Defaults to `[server] key` in ~/.gongga/config.toml.
     #[arg(long, global = true)]
     pub key: Option<String>,
@@ -96,7 +100,13 @@ impl Args {
         let mut i = 1;
         while i < command.len() {
             let token = &command[i];
-            let ordered = ["--server", "--home", "--key", "--client-only"];
+            let ordered = [
+                "--server",
+                "--home",
+                "--client-home",
+                "--key",
+                "--client-only",
+            ];
             if let Some(flag) = ordered
                 .iter()
                 .find(|flag| token.as_str() == **flag || token.starts_with(&format!("{flag}=")))
@@ -202,6 +212,36 @@ pub const ABOUT: &str = "Gongga harness commands: one command in, its events out
 /// The home this process works on: `--home`, then `GONGGA_HOME`, then `~/.gongga`.
 pub fn home_of(args: &Args) -> std::path::PathBuf {
     home_dir(args.conn.home.as_deref())
+}
+
+/// Where this client keeps what it drew: `--client-home`, then the variable, then
+/// `~/.gongga-client`.
+///
+/// # Invariant
+///
+/// Never the server's home and never derived from the greeting: a window's events
+/// are this process's own record, so the place they live is this process's choice.
+/// See `docs/notes/tui-cache.md`.
+pub fn client_home_of(args: &Args) -> std::path::PathBuf {
+    args.conn
+        .client_home
+        .clone()
+        .or_else(|| std::env::var_os("GONGGA_CLIENT_HOME").map(std::path::PathBuf::from))
+        .or_else(|| dirs::home_dir().map(|home| home.join(".gongga-client")))
+        .unwrap_or_else(|| std::path::PathBuf::from(".gongga-client"))
+}
+
+/// The address this client would dial, as a name for the records about it.
+///
+/// # Invariant
+///
+/// From the client's own configuration, not from a greeting: two servers are two
+/// records, and which one a window is talking to is known before it connects.
+pub fn endpoint_name(conn: &Connection) -> String {
+    match resolve_server(conn) {
+        Ok(addr) => addr.to_string(),
+        Err(_) => "unresolved".to_string(),
+    }
 }
 
 // Where rendered output goes

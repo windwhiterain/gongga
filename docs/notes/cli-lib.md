@@ -647,6 +647,19 @@ each, so the window, the link the server places and this paragraph cannot disagr
 `home_of` is `--home`, then `GONGGA_HOME`, then `~/.gongga`: the home a front-end
 needs for the server it may start, and nothing else.
 
+## client_home_of, endpoint_name
+
+`client_home_of` is `--client-home`, then `GONGGA_CLIENT_HOME`, then
+`~/.gongga-client`: the directory a *client* owns -- the rows it was given, and
+nothing a server reads. It is separate from `home_of` on purpose: a server on another
+machine has a home of its own, and even on one machine the two have different
+lifetimes and different sizes. `docs/notes/tui-cache.md` is what lives there.
+
+`endpoint_name` is the address this client would dial, resolved from its own
+configuration (`--server`, the variable, what `connect_server` remembered, the config's
+`bind`). It names a set of records, so two servers are two sets -- and it is known
+before any server speaks, which is why nothing a window keeps depends on a greeting.
+
 ## run
 
 Runs one command against the server, prints the events, exits.

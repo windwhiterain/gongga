@@ -261,9 +261,12 @@ async fn dial_now(conn: cli::Connection) -> Result<(Link, Greeting), DialFailure
 pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
     // The command an agent's shell types, installed before any shell exists.
     let home = cli::home_of(args);
+    // Both are this process's own: where a row lives never depends on a greeting.
+    let client_home = cli::client_home_of(args);
+    let mut endpoint = cli::endpoint_name(&args.conn);
 
     let mut client = cli::build_client(args);
-    let mut ui = Tui::new(client.completer(), &home)?;
+    let mut ui = Tui::new(client.completer(), &client_home, &endpoint)?;
     client.set_offline(0, &mut TuiSink(&mut ui));
 
     let mut link: Option<cli::Link> = None;
@@ -330,6 +333,10 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                 // A `connect_server` moved the address: drop the link and let
                 // the next dial find the new one.
                 if client.take_server_change() {
+                    // The rows on screen are the old endpoint's: they go, and the
+                    // next frame reads this one's records instead.
+                    endpoint = cli::endpoint_name(&args.conn);
+                    ui.repoint(&client_home, &endpoint);
                     link = None;
                     ui.set_server(None);
                     backoff = RECONNECT_MIN;

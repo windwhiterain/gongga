@@ -170,7 +170,7 @@ async fn waits_out(pid: u32, grace: Duration) -> bool {
 /// stale server's place forever. Asking the machine is the only honest answer, so
 /// a failure to ask counts as alive -- the kill below is what resolves it.
 #[cfg(windows)]
-fn alive(pid: u32) -> bool {
+pub fn alive(pid: u32) -> bool {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     std::process::Command::new("tasklist")
@@ -182,7 +182,7 @@ fn alive(pid: u32) -> bool {
 }
 
 #[cfg(not(windows))]
-fn alive(pid: u32) -> bool {
+pub fn alive(pid: u32) -> bool {
     std::process::Command::new("kill")
         .args(["-0", &pid.to_string()])
         .status()

@@ -1,10 +1,10 @@
-//! The window's own copy of what it drew, on disk.
+//! The window's own record of the rows it was given, on disk.
 //!
 //! # Invariant
 //!
-//! The journal is the truth and the scrollback is a view of it: a block is written
-//! before it is drawn, and what memory drops can be read back. See
-//! `docs/notes/tui-cache.md`.
+//! A client's events are the client's: this module never asks the server where they
+//! live or whether it may keep them, and nothing here is derived from a greeting.
+//! See `docs/notes/tui-cache.md`.
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -53,17 +53,6 @@ pub enum Record {
     },
 }
 
-impl Record {
-    /// The block this record is about, when it is about one.
-    pub fn id(&self) -> Option<u64> {
-        match self {
-            Record::Line { id, .. } | Record::Delta { id, .. } | Record::Seal { id, .. } => {
-                Some(*id)
-            }
-        }
-    }
-}
-
 /// How many bytes frame a record: a length in front, and the same length behind.
 ///
 /// # Invariant
@@ -73,47 +62,131 @@ impl Record {
 /// would mean walking the whole file forwards.
 const FRAME: u64 = 4;
 
-/// The journal of every window this process has written or read.
-///
-/// # Invariant
-///
-/// One file per window, and one writer: a window that does not own the server it
-/// reads from keeps its blocks in memory and writes nothing, so two windows on one
-/// home cannot interleave their records. See `docs/notes/tui-cache.md`.
-pub struct Cache {
-    dir: PathBuf,
-    /// Whether this window may write. A reader still reads.
-    writable: bool,
-    /// The version this build writes and the only one it reads.
-    version: u32,
-}
-
 /// The framing a journal is written in. Bumped when `Record` changes shape.
 const VERSION: u32 = 1;
 
-impl Cache {
-    /// The cache under this home; one that cannot be written leaves the window
-    /// as it was before there was a cache.
-    pub fn new(home: &Path) -> Self {
-        Self {
-            dir: home.join("cache"),
-            writable: false,
-            version: VERSION,
-        }
-    }
+/// The journals of one client, over one server address.
+///
+/// # Invariant
+///
+/// One writer per window, and the writer is a *process*: a journal is named after
+/// the pid that writes it, so two windows on one machine never append to the same
+/// file, and a restart takes over the file the dead process left. See
+/// `docs/notes/tui-cache.md`.
+pub struct Cache {
+    /// Where this client keeps them, or `None` for a log that keeps nothing.
+    dir: Option<PathBuf>,
+    /// Window -> the journal this process uses for it. Decided once, by `new`.
+    journals: std::sync::Mutex<std::collections::HashMap<String, PathBuf>>,
+}
 
-    /// Says whether this window owns the server it draws, and so may write.
+impl Cache {
+    /// The journals for one endpoint, under a root this client owns.
     ///
     /// # Invariant
     ///
-    /// Only the owning window writes: the server has one owner, so ownership is the
-    /// only thing two windows on one home already agree about.
-    pub fn set_writable(&mut self, writable: bool) {
-        self.writable = writable;
+    /// The root is the client's, and the endpoint comes from this client's own
+    /// configuration: a greeting would make the place a block lives depend on the
+    /// server it came from. See `docs/notes/tui-cache.md`.
+    pub fn new(root: &Path, endpoint: &str) -> Self {
+        let dir = root.join("events").join(escaped(endpoint));
+        let journals = Self::claim(&dir);
+        Self {
+            dir: Some(dir),
+            journals: std::sync::Mutex::new(journals),
+        }
     }
 
-    fn path(&self, window: &str) -> PathBuf {
-        self.dir.join(format!("{}.journal", escaped(window)))
+    /// A cache that keeps nothing: a log built with no front-end in mind.
+    ///
+    /// # Invariant
+    ///
+    /// No directory is derived from an empty root, so nothing is ever created in
+    /// whatever directory the process happens to stand in.
+    pub fn none() -> Self {
+        Self {
+            dir: None,
+            journals: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+
+    /// Decides which file each window uses: an old one if its writer is gone.
+    ///
+    /// # Invariant
+    ///
+    /// A journal whose writer is alive is never taken over -- that is the whole
+    /// reason the pid is in the name -- and the newest abandoned one is renamed to
+    /// this process, which keeps a session at one file however often the window was
+    /// opened. A rename that loses a race is no error: the loser writes a file of
+    /// its own and the winner's records stand. See `docs/notes/tui-cache.md`.
+    fn claim(dir: &Path) -> std::collections::HashMap<String, PathBuf> {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return std::collections::HashMap::new();
+        };
+        let mut found: std::collections::HashMap<String, Vec<One>> =
+            std::collections::HashMap::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some((window, pid)) = split_name(&path) else {
+                continue;
+            };
+            let written = entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .ok()
+                .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|age| age.as_nanos())
+                .unwrap_or(0);
+            found
+                .entry(window)
+                .or_default()
+                .push(One { pid, written, path });
+        }
+        let me = std::process::id() as u64;
+        let mut journals = std::collections::HashMap::new();
+        for (window, mut files) in found {
+            files.sort_by_key(|one| one.written);
+            if let Some(mine) = files.iter().find(|one| one.pid == me) {
+                journals.insert(window.clone(), mine.path.clone());
+            } else if let Some(newest) = files.last()
+                && !cli::server::alive(newest.pid as u32)
+            {
+                let mine = mine_path(&newest.path, me);
+                if std::fs::rename(&newest.path, &mine).is_ok() {
+                    journals.insert(window.clone(), mine);
+                }
+            }
+            let chosen = journals.get(&window).cloned();
+            // What is left over belongs to nobody: a pid says a process that ran.
+            for one in &files {
+                if Some(&one.path) == chosen.as_ref() || cli::server::alive(one.pid as u32) {
+                    continue;
+                }
+                let _ = std::fs::remove_file(&one.path);
+            }
+        }
+        journals
+    }
+
+    /// The file for this window, made a decision about on first use.
+    fn journal(&self, window: &str) -> Option<PathBuf> {
+        let dir = self.dir.as_ref()?;
+        let mut journals = self
+            .journals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Some(
+            journals
+                .entry(window.to_string())
+                .or_insert_with(|| {
+                    dir.join(format!(
+                        "{}.{}.journal",
+                        escaped(window),
+                        std::process::id()
+                    ))
+                })
+                .clone(),
+        )
     }
 
     /// Appends one record, and answers where it was written.
@@ -123,18 +196,11 @@ impl Cache {
     /// The offset is what a `Seal` is found by later, so it is the record's own
     /// start: a caller that keeps it can read that block back without its neighbours.
     pub fn append(&self, window: &str, record: &Record) -> Option<u64> {
-        if !self.writable {
-            return None;
-        }
+        self.dir.as_ref()?;
         let mut body = Vec::new();
-        body.extend_from_slice(&self.version.to_le_bytes());
-        match serde_json::to_vec(record) {
-            Ok(json) => body.extend_from_slice(&json),
-            Err(_) => return None,
-        }
-        let Ok(mut file) = self.open_for_append(window) else {
-            return None;
-        };
+        body.extend_from_slice(&VERSION.to_le_bytes());
+        body.extend_from_slice(&serde_json::to_vec(record).ok()?);
+        let mut file = self.open_for_append(window).ok()?;
         let at = file.seek(SeekFrom::End(0)).ok()?;
         let len = (body.len() as u32).to_le_bytes();
         let mut framed = Vec::with_capacity(body.len() + 8);
@@ -146,32 +212,38 @@ impl Cache {
     }
 
     fn open_for_append(&self, window: &str) -> std::io::Result<File> {
-        std::fs::create_dir_all(&self.dir)?;
+        let dir = self.dir.as_ref().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::Unsupported, "no cache directory")
+        })?;
+        std::fs::create_dir_all(dir)?;
+        let path = self.journal(window).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::Unsupported, "no cache directory")
+        })?;
         OpenOptions::new()
             .create(true)
             .append(true)
             .read(true)
-            .open(self.path(window))
+            .open(path)
     }
 
     /// Where this window's journal ends: the offset a later record starts at.
     pub fn end(&self, window: &str) -> u64 {
-        File::open(self.path(window))
-            .and_then(|file| file.metadata())
+        self.journal(window)
+            .and_then(|path| std::fs::metadata(path).ok())
             .map(|meta| meta.len())
             .unwrap_or(0)
     }
 
     /// The record written at `at`, if one is there and this build can read it.
     pub fn read(&self, window: &str, at: u64) -> Option<Record> {
-        let mut file = File::open(self.path(window)).ok()?;
+        let mut file = File::open(self.journal(window)?).ok()?;
         file.seek(SeekFrom::Start(at)).ok()?;
         self.record_at(&mut file).map(|(_, record)| record)
     }
 
     /// Where the `count` records before `from` begin, or 0 when the file starts first.
     pub fn back(&self, window: &str, from: u64, count: usize) -> u64 {
-        let Ok(mut file) = File::open(self.path(window)) else {
+        let Some(mut file) = self.journal(window).and_then(|path| File::open(path).ok()) else {
             return 0;
         };
         let mut at = from.min(self.end(window));
@@ -204,7 +276,7 @@ impl Cache {
 
     /// Every record from `from` to the end, oldest first.
     pub fn forward(&self, window: &str, from: u64) -> Vec<(u64, Record)> {
-        let Ok(mut file) = File::open(self.path(window)) else {
+        let Some(mut file) = self.journal(window).and_then(|path| File::open(path).ok()) else {
             return Vec::new();
         };
         let end = self.end(window);
@@ -245,35 +317,61 @@ impl Cache {
     /// One framed body as a record: the version first, so a foreign one is refused.
     fn decode(&self, body: &[u8]) -> Option<Record> {
         let (version, json) = body.split_first_chunk::<4>()?;
-        if u32::from_le_bytes(*version) != self.version {
+        if u32::from_le_bytes(*version) != VERSION {
             return None;
         }
         serde_json::from_slice(json).ok()
     }
 
-    /// Forgets everything a window drew, keeping the file for what comes next.
+    /// Forgets everything this window drew.
     ///
     /// # Invariant
     ///
-    /// A truncation rather than a `Clear` record: the window's history *is* the
-    /// file, so emptying it is the same statement and keeps it from growing.
+    /// This process's file, and every abandoned one: the window's history *is* the
+    /// file, so emptying it is the statement `clear` makes. A file another live
+    /// client is writing is left alone -- it is that client's record.
     pub fn reset(&self, window: &str) {
-        if !self.writable {
+        let Some(mine) = self.journal(window) else {
             return;
-        }
+        };
         let _ = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
-            .open(self.path(window));
+            .open(&mine);
+        self.forget_abandoned(window, &mine);
     }
 
-    /// Drops a window's journal: the session it belonged to is gone.
+    /// Drops a window's journals: the session it belonged to is gone.
     pub fn remove(&self, window: &str) {
-        if !self.writable {
+        let Some(mine) = self.journal(window) else {
             return;
+        };
+        let _ = std::fs::remove_file(&mine);
+        self.forget_abandoned(window, Path::new(""));
+    }
+
+    /// Deletes the files of `window` whose writer is gone, keeping `keep`.
+    fn forget_abandoned(&self, window: &str, keep: &Path) {
+        let Some(dir) = self.dir.as_ref() else {
+            return;
+        };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some((name, pid)) = split_name(&path) else {
+                continue;
+            };
+            if name != window || path == keep {
+                continue;
+            }
+            let live = cli::server::alive(pid as u32);
+            if !live {
+                let _ = std::fs::remove_file(&path);
+            }
         }
-        let _ = std::fs::remove_file(self.path(window));
     }
 }
 
@@ -293,4 +391,60 @@ fn escaped(window: &str) -> String {
         }
     }
     out
+}
+
+/// One journal found in the directory: whose it is, and how recent it is.
+struct One {
+    pid: u64,
+    written: u128,
+    path: PathBuf,
+}
+
+/// `<window>.<pid>.journal` split back into its two parts.
+fn split_name(path: &Path) -> Option<(String, u64)> {
+    let name = path.file_name()?.to_str()?;
+    let stem = name.strip_suffix(".journal")?;
+    let (window, pid) = stem.rsplit_once('.')?;
+    let pid = pid.parse::<u64>().ok()?;
+    Some((unescaped(window), pid))
+}
+
+/// The reverse of [`escaped`], so a file name is read back as the session's name.
+fn unescaped(name: &str) -> String {
+    let bytes = name.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'%' if at + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[at + 1..at + 3]).ok();
+                match hex.and_then(|hex| u8::from_str_radix(hex, 16).ok()) {
+                    Some(byte) => {
+                        out.push(byte);
+                        at += 3;
+                    }
+                    None => {
+                        out.push(bytes[at]);
+                        at += 1;
+                    }
+                }
+            }
+            byte => {
+                out.push(byte);
+                at += 1;
+            }
+        }
+    }
+    String::from_utf8(out).unwrap_or_else(|_| name.to_string())
+}
+
+/// The same journal under this process's pid.
+fn mine_path(path: &Path, pid: u64) -> PathBuf {
+    let stem = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_suffix(".journal"))
+        .and_then(|stem| stem.rsplit_once('.').map(|(window, _)| window))
+        .unwrap_or_default();
+    path.with_file_name(format!("{stem}.{pid}.journal"))
 }

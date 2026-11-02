@@ -38,7 +38,6 @@ use ratatui::backend::ClearType;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 
-pub use crate::cache::Record;
 pub use crate::input::{InputLine, apply_completion};
 pub use crate::log::Log;
 pub use crate::panes::Panes;
@@ -481,8 +480,12 @@ pub struct Tui {
 }
 
 impl Tui {
-    /// The window, whose blocks are written down under `home`.
-    pub fn new(completer: SharedCompleter, home: &Path) -> anyhow::Result<Self> {
+    /// The window, whose rows are written down under this client's own root.
+    pub fn new(
+        completer: SharedCompleter,
+        client_home: &Path,
+        endpoint: &str,
+    ) -> anyhow::Result<Self> {
         enable_raw_mode().context("enabling raw mode")?;
         let initialized = (|| {
             let mut out = stdout();
@@ -510,7 +513,7 @@ impl Tui {
         Ok(Self {
             terminal,
             screen: Screen {
-                panes: Panes::with_home(home),
+                panes: Panes::with_cache(client_home, endpoint),
                 completion: None,
                 input: InputLine::default(),
                 status: "connecting".to_string(),
@@ -552,12 +555,22 @@ impl Tui {
     pub fn set_server(&mut self, server: Option<Server>) {
         if self.screen.server != server {
             self.screen.server = server;
-            // One writer per journal: the server's owner. See
-            // `docs/notes/tui-cache.md`.
-            let writable = matches!(server, Some(Server::Ours { .. } | Server::Adopted { .. }));
-            self.screen.panes.set_writable(writable);
             self.dirty = true;
         }
+    }
+
+    /// A `connect_server` moved the address: the rows on screen are the old
+    /// endpoint's, so they go.
+    ///
+    /// # Invariant
+    ///
+    /// Nothing is deleted. The other endpoint's records are still under this client
+    /// root, and switching back finds them; what this drops is the blocks in memory,
+    /// which the next frame refuses to draw as the new server's. See
+    /// `docs/notes/tui-cache.md`.
+    pub fn repoint(&mut self, client_home: &Path, endpoint: &str) {
+        self.screen.panes.repoint(client_home, endpoint);
+        self.dirty = true;
     }
 
     /// What kind of thing the status line says, for its colour.
