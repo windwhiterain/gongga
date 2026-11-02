@@ -78,12 +78,38 @@ fn spawn_turn(d: &Dispatch, work: TurnWork) {
         return;
     }
     let agent = d.agent.clone();
+    let sessions = d.sessions.clone();
+    let bus = d.bus.clone();
     let active: ActiveGuard = ActiveGuard::new(d.active.clone());
     tokio::spawn(async move {
         let _active = active;
+        let session = work.session.clone();
         agent
             .run_turn(&work.session, work.tasks, work.epoch, work.gate)
             .await;
+        // What the turn queued behind itself is this turn's to finish, and this is
+        // the one moment the gate is free without being taken: `set_session` from
+        // the agent's own shell lands here.
+        if session.has_move() {
+            if let Some(gate) = session.try_claim() {
+                match sessions.apply_queued_move(&session).await {
+                    Some(Ok(report)) => bus.publish(Event::Log {
+                        level: LogLevel::Info,
+                        message: format!(
+                            "{}: moved at the end of its turn, {} shell(s) ended",
+                            session.name(),
+                            report.ended
+                        ),
+                    }),
+                    Some(Err(e)) => bus.publish(Event::Log {
+                        level: LogLevel::Error,
+                        message: format!("{}: the queued move failed: {e}", session.name()),
+                    }),
+                    None => {}
+                }
+                drop(gate);
+            }
+        }
     });
 }
 
@@ -817,7 +843,20 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     // Confirms the write and stops: what the session runs on is its pane's title.
     let message = match &moved {
         None => format!("session is now {name}"),
-        Some(report) => {
+        // Waiting for the turn is the normal answer for the one caller that wants a
+        // move at all -- the agent, inside the turn it is moving out of.
+        Some(crate::session::MoveOutcome::Queued(request)) => format!(
+            "session {name} will move to {} {} when its turn ends",
+            request
+                .target
+                .clone()
+                .unwrap_or_else(|| "local".to_string()),
+            match &request.cwd {
+                Some(path) => format!("at {path}"),
+                None => "where that endpoint starts".to_string(),
+            }
+        ),
+        Some(crate::session::MoveOutcome::Applied(report)) => {
             // Silence is not stopped: a shell whose end could not be proved is said
             // so here, because nothing later will mention it.
             let unproved = match report.unconfirmed.len() {
@@ -840,10 +879,14 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             )
         }
     };
+    // A queued move has not happened, so the answer carries where the session is,
+    // not where it was asked to go.
+    let queued = matches!(moved, Some(crate::session::MoveOutcome::Queued(_)));
     Outcome::ok_with(
         message,
         json!({
             "session": name,
+            "move_pending": queued,
             "cwd": cwd,
             "target": d.sessions.recorded_target(&name),
             "model": tuning.model,

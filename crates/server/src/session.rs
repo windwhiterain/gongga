@@ -27,6 +27,28 @@ pub const DEFAULT_BASH: &str = "default";
 /// argument naming a shell is the model's own, and this one is not a session's.
 const LISTING_SHELL: &str = "..completion";
 
+/// Where a session was asked to move to, as `set_session` named it.
+///
+/// # Invariant
+///
+/// A target of `None` is the machine the session already records, resolved when the
+/// request is made: a request that meant "keep the machine" must not become "stay
+/// wherever this field drifted to" by the time it runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MoveRequest {
+    pub target: Option<String>,
+    pub cwd: Option<String>,
+}
+
+/// What asking for a move came to.
+#[derive(Debug)]
+pub enum MoveOutcome {
+    /// It was made now, and this is what it cost.
+    Applied(MoveReport),
+    /// A turn held the session, so it waits for that turn to end.
+    Queued(MoveRequest),
+}
+
 /// What ending a session's shells came to, so a move can say it.
 #[derive(Debug, Default)]
 pub struct MoveReport {
@@ -81,6 +103,13 @@ struct SessionInner {
     /// Set before the shells are ended: a command that stops now was stopped, and
     /// a notice about it would be news about the server's own exit.
     closing: Arc<AtomicBool>,
+    /// A move asked for while a turn held the session, waiting for that turn to end.
+    ///
+    /// # Invariant
+    ///
+    /// Only the holder of the gate may take it: applying a move ends shells, and the
+    /// turn that held the gate read the shell set at its start.
+    pending_move: Mutex<Option<MoveRequest>>,
 }
 
 impl SessionHandle {
@@ -319,6 +348,33 @@ impl SessionHandle {
     pub fn cancel_and_preserve(&self) {
         self.inner.resumable.store(true, Ordering::SeqCst);
         self.cancel();
+    }
+
+    /// Remembers a move for whoever holds this session next.
+    pub fn queue_move(&self, request: MoveRequest) {
+        *self
+            .inner
+            .pending_move
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(request);
+    }
+
+    /// Takes the queued move, if there is one.
+    pub fn take_move(&self) -> Option<MoveRequest> {
+        self.inner
+            .pending_move
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+    }
+
+    /// Whether a move is waiting; read by a turn that ends, before it lets go.
+    pub fn has_move(&self) -> bool {
+        self.inner
+            .pending_move
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
     }
 
     /// Whether a `cancel` asked this turn to survive the shutdown; clears it, for one turn.
@@ -683,16 +739,17 @@ impl SessionManager {
     ///
     /// # Invariant
     ///
-    /// A move is refused while the session is running a turn: the turn holds the
-    /// gate, read its shell set at the start and keeps it, so a move landing under it
-    /// would end shells a tool call is using. Refused, never queued -- an operator
-    /// waiting minutes on a `set_session` would read it as a hang.
+    /// Never applied under a running turn, always remembered instead. The turn holds
+    /// the gate, read the shell set at its start and keeps it, so a move landing
+    /// under it would end shells a tool call is using. Queueing rather than refusing
+    /// is what makes the feature reachable at all: the one caller that wants to move
+    /// a session is the agent working inside it, which is always mid-turn.
     pub async fn relocate(
         &self,
         session: &SessionHandle,
         target: Option<&str>,
         cwd: Option<&str>,
-    ) -> anyhow::Result<MoveReport> {
+    ) -> anyhow::Result<MoveOutcome> {
         // An unstated target is the one it already records: a move of directory
         // alone must not carry the session to another machine, and the row must not
         // end up naming one place while its shells are on another.
@@ -701,16 +758,49 @@ impl SessionManager {
             Some("local") => None,
             Some(name) => Some(name.to_string()),
         };
-        // Resolved before anything is ended: an unknown name must not tear down
-        // working shells on its way to being refused.
-        let endpoint = self.endpoint_for(wanted_target.as_deref())?;
-        let wanted = cwd.map(PathBuf::from);
-        let _gate = session.try_claim().ok_or_else(|| {
-            anyhow::anyhow!(
-                "session {:?} is running a turn; cancel it first and then move it",
-                session.name()
-            )
-        })?;
+        // Resolved before anything is queued or ended: an unknown name must not wait
+        // in a slot that would later tear down working shells on its way to failing.
+        self.endpoint_for(wanted_target.as_deref())?;
+        let request = MoveRequest {
+            target: wanted_target,
+            cwd: cwd.map(str::to_string),
+        };
+        let Some(_gate) = session.try_claim() else {
+            session.queue_move(request.clone());
+            tracing::info!(
+                session = %session.name(),
+                target = ?request.target,
+                "move queued behind the running turn"
+            );
+            return Ok(MoveOutcome::Queued(request));
+        };
+        let report = self.apply_move(session, &request).await?;
+        Ok(MoveOutcome::Applied(report))
+    }
+
+    /// Makes a queued move real, for whoever is holding the session.
+    ///
+    /// # Invariant
+    ///
+    /// The caller holds the gate. Returns the report when there was something to do,
+    /// and `None` when nothing was waiting -- so the same call at the end of every
+    /// turn costs a lock and nothing else.
+    pub async fn apply_queued_move(
+        &self,
+        session: &SessionHandle,
+    ) -> Option<anyhow::Result<MoveReport>> {
+        let request = session.take_move()?;
+        Some(self.apply_move(session, &request).await)
+    }
+
+    /// Ends the shells and records the new placement. The caller holds the gate.
+    async fn apply_move(
+        &self,
+        session: &SessionHandle,
+        request: &MoveRequest,
+    ) -> anyhow::Result<MoveReport> {
+        let endpoint = self.endpoint_for(request.target.as_deref())?;
+        let wanted = request.cwd.as_deref().map(PathBuf::from);
         let env = self.session_env(session.name());
         let report = session.relocate(endpoint, wanted.clone(), env).await?;
         // The row is what the next start hands back to the endpoint, so it moves
@@ -721,7 +811,7 @@ impl SessionManager {
             (None, _) => String::new(),
         };
         self.store
-            .set_session_placement(session.name(), &placed, wanted_target.as_deref())?;
+            .set_session_placement(session.name(), &placed, request.target.as_deref())?;
         Ok(report)
     }
 
@@ -803,6 +893,7 @@ impl SessionManager {
                 deleted: AtomicBool::new(false),
                 resumable: AtomicBool::new(false),
                 closing: Arc::new(AtomicBool::new(false)),
+                pending_move: Mutex::new(None),
             }),
         };
         live.insert(row.name, handle.clone());

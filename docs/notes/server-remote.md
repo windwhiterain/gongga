@@ -203,10 +203,15 @@ Two rules a reader should not have to re-derive:
   retired ones, reports what could not be proved, and only then swaps in a fresh
   `ShellSet` on the new endpoint. `ensure_on` still refuses a different target, so
   creation and moving remain two paths that cannot be confused.
-- **a move is refused while a turn runs, never queued.** The turn holds the session's
-  gate, read the shell set at its start and keeps it through every tool call, so a
-  move landing under it would end shells a call is using. Queueing was rejected: an
-  operator whose `set_session` waits minutes reads it as a hang.
+- **a move asked for during a turn waits for that turn to end.** The turn holds the
+  session's gate, read the shell set at its start and keeps it through every tool
+  call, so a move landing under it would end shells a call is using. It is queued
+  rather than refused, and the maintainer gave the reason: **the one caller that wants
+  to move a session is the agent working inside it, which is always mid-turn**. A
+  refusal would make the feature unreachable by the only party that reaches for it.
+  The command therefore answers "will move when its turn ends" and returns at once,
+  so nothing waits minutes on a lock; `spawn_turn` applies the queue after the turn,
+  holding the gate, and says so in the log.
 - **the move and the row land together.** Both halves of the placement are one
   statement, because a row naming the new machine with the old machine's directory
   would hand the next start a path that cannot exist there. A move with no `--cwd`
