@@ -15,6 +15,7 @@ _Post Modern Agent Harness_
 - Git managed configuration.
 - Streaming LLM reqwest optimized for minimal allocation.
 - Large too_result save to file for agents to grep instead of directly return.
+- Minimal server client traffic for cloud agent.
 
 ### Quality of Life
 
