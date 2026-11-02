@@ -36,7 +36,7 @@ use `which("bash")` as bash.
 - check_bash{name = "default"}: return bash's output that hasn't been read by the caller session.
 - del_bash{name_regex}: delete matched bash with the caller sessions' name in key. 
 
-## State
+## Server State
 everything in database (sqlite) under a home directory, structured for agentic retrieval/mutation.
 
 ## Prompt
