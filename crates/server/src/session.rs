@@ -408,8 +408,11 @@ impl SessionManager {
         };
         let command = listing_script(directory);
         let mut shell = shell.lock().await;
+        // Generous on purpose: a peer behind a tunnel measured 11.7s for a warm
+        // shell's first listing, and nothing here is on a keystroke -- the
+        // front-end shows what has arrived and asks again on the next key.
         let outcome = shell
-            .run(&command, std::time::Duration::from_secs(10), None)
+            .run(&command, std::time::Duration::from_secs(30), None)
             .await?;
         if outcome.exit_code != Some(0) {
             anyhow::bail!(

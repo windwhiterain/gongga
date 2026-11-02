@@ -55,6 +55,18 @@ impl Completion {
 /// offer nothing.
 pub trait Completer: Send + Sync {
     fn complete(&self, line: &str, cursor: usize) -> Vec<Candidate>;
+
+    /// Whether the last completion asked for something only the connection can
+    /// answer.
+    ///
+    /// # Invariant
+    ///
+    /// `complete` stays synchronous, so a value it cannot answer now is asked for
+    /// later and reported here. A front-end reads this after a key it handled and
+    /// goes round its loop, which is the one place an ask can be sent from.
+    fn wants(&self) -> bool {
+        false
+    }
 }
 
 /// A completer the front-end shares; the command layer swaps the catalog in it.

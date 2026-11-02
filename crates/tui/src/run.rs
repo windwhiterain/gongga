@@ -303,6 +303,9 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
 
         match step {
             Step::Input(None) => break Ok(()),
+            // Not input: the key changed nothing to submit. The drain below is
+            // what the completion was waiting for.
+            Step::Input(Some(UiEvent::Recomplete)) => {}
             Step::Input(Some(UiEvent::Quit)) => break Ok(()),
             Step::Input(Some(UiEvent::Submit(line))) => {
                 let outcome = submission(&mut client, &line, &mut TuiSink(&mut ui));

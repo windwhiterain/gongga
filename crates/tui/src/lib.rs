@@ -112,6 +112,14 @@ pub enum UiEvent {
     Submit(String),
     /// Alt+Q: leave.
     Quit,
+    /// Nothing to submit: the completion asked for something only the
+    /// connection can answer, so the loop has to go round to send it.
+    ///
+    /// # Invariant
+    ///
+    /// A keystroke whose ask is never returned leaves it unsent: the loop owns the
+    /// connection and runs only when `next_event` returns.
+    Recomplete,
 }
 
 /// Which part of the window a pointer landed on.
@@ -793,7 +801,9 @@ impl Tui {
             }
         };
         self.dirty = true;
-        action
+        // A completion that asked for a peer's directory has to reach the loop,
+        // which owns the connection; the ask is taken there.
+        action.or_else(|| self.completer.wants().then_some(UiEvent::Recomplete))
     }
 
     /// The one key that is not editing: leaving, on Alt+Q. See `docs/notes/tui-lib.md`.
@@ -1210,8 +1220,15 @@ impl Tui {
     }
 
     /// Re-asks what the line wants, after something the answer depends on changed.
+    ///
+    /// # Invariant
+    ///
+    /// Marks the window dirty: an answer arriving while nothing is being typed is
+    /// the only thing that changes the popup then, and nothing else would ask for
+    /// the frame that shows it.
     pub fn refresh_completion(&mut self) {
         self.screen.completion = next_completion(&self.screen.input, &self.completer);
+        self.dirty = true;
     }
 
     fn close_completion(&mut self) {

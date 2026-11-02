@@ -31,8 +31,17 @@ struct Inner {
     /// The names a config holds, for reading `--target` off the line. Taken from
     /// the published catalog rather than kept here.
     targets: HashSet<String>,
-    /// Listings asked for and not yet answered, as the front-end sends them.
-    wanted: Vec<(String, String)>,
+    /// The directory each target's line last asked for and has no answer for.
+    ///
+    /// # Invariant
+    ///
+    /// One entry per target, never one per directory: the line is completed on
+    /// every keystroke, so a queue keyed by directory asks for a listing per letter
+    /// typed, answers them in order, and is always behind the cursor.
+    wanted: HashMap<String, String>,
+    /// The directory each target is being asked for right now, so a second
+    /// question never queues behind the first.
+    inflight: HashMap<String, String>,
     /// Bumped whenever `remote_paths` changes, so a front-end repaints the popup.
     paths_version: u64,
 }
@@ -47,7 +56,8 @@ impl Default for Inner {
             cwd: std::env::current_dir().unwrap_or_default(),
             remote_paths: HashMap::new(),
             targets: HashSet::new(),
-            wanted: Vec::new(),
+            wanted: HashMap::new(),
+            inflight: HashMap::new(),
             paths_version: 0,
         }
     }
@@ -84,7 +94,18 @@ impl Catalog {
     /// The listings a completion asked for and does not have yet, as
     /// `(target, directory)`; taking them is what stops a repeat ask.
     pub fn take_wanted(&self) -> Vec<(String, String)> {
-        std::mem::take(&mut self.write().wanted)
+        let mut inner = self.write();
+        let asked = std::mem::take(&mut inner.wanted);
+        let mut sending = Vec::new();
+        for (target, directory) in asked {
+            // Already asked: what is missing is the answer, not the question.
+            if inner.inflight.get(&target) == Some(&directory) {
+                continue;
+            }
+            inner.inflight.insert(target.clone(), directory.clone());
+            sending.push((target, directory));
+        }
+        sending
     }
 
     /// Records what a target answered, so the next completion offers it.
@@ -106,6 +127,10 @@ impl Catalog {
             })
             .collect();
         let mut inner = self.write();
+        // This target may be asked again, and the line says what it now wants.
+        if inner.inflight.get(target).map(String::as_str) == Some(directory) {
+            inner.inflight.remove(target);
+        }
         inner.remote_paths.insert(
             (target.to_string(), directory.to_string()),
             (named, std::time::Instant::now()),
@@ -209,6 +234,10 @@ struct Ctx<'a> {
 }
 
 impl Completer for Catalog {
+    fn wants(&self) -> bool {
+        !self.read().wanted.is_empty()
+    }
+
     fn complete(&self, line: &str, cursor: usize) -> Vec<Candidate> {
         let (_, _, token) = token_bounds(line, cursor);
         let (all, sessions, sticky, skills, cwd, targets) = {
@@ -456,7 +485,7 @@ fn remote_paths(ctx: &Ctx, target: &str, token: &str) -> Vec<Candidate> {
         ctx.catalog
             .write()
             .wanted
-            .push((target.to_string(), typed_dir.to_string()));
+            .insert(target.to_string(), typed_dir.to_string());
     }
     let Some(entries) = cached else {
         return Vec::new();
