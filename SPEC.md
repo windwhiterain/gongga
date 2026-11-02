@@ -27,16 +27,22 @@ standard OpenAI Response API.
 - everything in message must store and send.
 
 ## Tool
+all tool has optional `description` argument.
+
 use `which("bash")` as bash.
-- bash{command, name = "default", description = "", background = false, detached = false}:
+- bash{command, name = "default", background = false, detached = false}:
+  cwd is session's cwd if session has no remote.
   runs in the persistent shell `name`, or starts a detached bash of that name.
   - key = {session_name, bash_name}.
   - background bash ended will notice its session.
 - list_bash{name_regex}: list matched bash with the caller session's name in key.
 - check_bash{name = "default"}: return bash's output that hasn't been read by the caller session.
+- wait_bash{name = "default"}
 - del_bash{name_regex}: delete matched bash with the caller sessions' name in key. 
-- a tool call carries at most one `description`: what the call is for, in the model's words,
-  read right after the tool's name.
+- remote_bash{command, name, target = session's remote}:
+  cwd is session's cwd if session's remote is target.
+  reference the remote skill.
+
 
 ## Server State
 everything in database (sqlite) under a home directory, structured for agentic retrieval/mutation.
@@ -109,7 +115,7 @@ for the first user message to a empty session, find all meta references recursiv
 
 ## Cmd
 - server:
-  - `set_session --session (sticky) <name> --model (sticky) <provider/model> [--thinking_effort <level>](initial: highest in supported or default if unkown) [--context_limit <n%>](initial: "70%") [--cwd <path>](initial: ".")`:
+  - `set_session --session (sticky) <name> --model (sticky) <provider/model> [--thinking_effort <level>](initial: highest in supported or default if unkown) [--context_limit <n%>](initial: "70%") [--cwd <path>](initial: ".") [--remote <none|name>](initial: none)`:
     - plus `set_sticky_cmd_argument --name session --value <session>`
   - `del_session --session <name>`: also delete all bash with the session name in key.
   - `send_message --session <name> --message <string>`: inject message instantly, turn waiting bash to backgound.
