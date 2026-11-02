@@ -347,9 +347,10 @@ Both halves were measured, and the second one cost a live session a turn. Inside
 `instructions`: 1.2% cached when the minute changed. As its own item after the
 transcript: 98.2% -- but read as a new message on every step, which that session spent 45
 steps answering. As the *first* item, stamped once: 99.7%, and nothing to read as an
-injection. A provider's cache is taken item by item, so the first unit that differs
-takes everything behind it -- and a message that follows the transcript is a new message,
-however identical its bytes.
+injection. What the move bought is not cache -- a change inside `instructions` keeps the
+bytes before it (`server-prefix-cache.md`) -- but the transcript's own reading: a message
+that follows it is a new message, however identical its bytes, and that cost a live
+session a turn.
 
 The stronger rule sits above the cache one: **what a request has sent is never
 rewritten.** That is why the card is stamped rather than refreshed -- a prompt row is
@@ -368,9 +369,9 @@ string, and a re-spelling is no longer a reason to re-bill.
 
 The first prompt row's second half: the text of every reference the session's messages
 name, walked recursively, ordered by `prefix_cache::plan`, appended to the instructions
-as one string. It is one string rather than a second input item on purpose -- a value
-`instructions` holds is cached with the prose, where an item would have to match on its
-own.
+as one string. One string rather than an item per entry: the entries are one thing to
+plan, a chain in `prefix_cache`, and measured, an item per node re-uses slightly less at
+steady state (94.5% against 97.7%), not more.
 
 It runs on **every** request, not once at the first row. An index frozen at the first
 turn would keep answering with the bytes a file had then, so an edited `SKILL.md` would

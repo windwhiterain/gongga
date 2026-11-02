@@ -220,29 +220,38 @@ prose + a 355-line `self-control` body + `AGENTS.md` + tool schemas):
 | same session, next turn | 10371 | 10240 | 98.7% |
 | same session, turn after the minute ticked | 10481 | 128 | 1.2% |
 
-Two readings. The good one: the index is worth its bytes, because a turn that follows
-in the same minute is billed almost entirely at the cache rate (¥0.10/1M against
-¥1.00/1M on this roster) -- the whole index, the prose and the schemas are re-used
-rather than re-sent.
+The good reading: the index is worth its bytes, because a turn that follows a warm one
+is billed almost entirely at the cache rate (¥0.10/1M against ¥1.00/1M on this roster)
+-- the index, the prose and the schemas are re-used rather than re-sent.
 
-The expensive one, and the fix: **the clock in the system prompt cost the whole prefix.**
-`dynamic_tail` carries the minute, and while it was appended to `instructions` a turn that
-crossed a minute boundary answered with 1.2% cached instead of 98.7% -- measured above.
+### the 1.2% was a miss, not the price of the change
 
-That is what says a provider's cache is taken item by item rather than within one string:
-the first unit that differs takes everything after it. So the tail is now its own item,
-written after the transcript (`RequestBody::own_facts`), and the same turns measure:
+That third row was read as "the minute in the prompt took the whole prefix", and two
+designs were made to follow from it. A later probe, one variable at a time and repeated,
+says otherwise:
 
-| | cold | next turn, minute changed |
-| --- | --- | --- |
-| tail appended to `instructions` | 1.8% | 1.2% |
-| tail as the last input item | 1.8% | 98.2%, then 99.3% |
+- **A prompt the provider has not seen answers with 128-189 cached**, whatever changed and
+  wherever: 5 of 13 first-time prompts in one run. So the first reading after an edit
+  measures the lookup, not the edit. The reading that means something is the same request
+  sent again -- and an unchanged prompt was served from cache 20 times out of 20.
+- **A change inside the `instructions` string keeps everything before it.** Inserting a
+  node between two others kept 5120-5504 cached of ~10.6k input: the prose and the node
+  before the insertion, and nothing after it. One line appended at its end kept 98.6%.
+- **The reused amount is always a multiple of 128 tokens**: the cache is a token prefix of
+  the request, quantized to the provider's own block.
+- **The same content in two shapes, three repeats each**: one `instructions` string 97.7%,
+  one input item per node 94.5%. Splitting into items costs about 280 tokens at steady
+  state and saves nothing.
 
-Then the sharper fix, and the one the transcript wanted anyway: the card is stamped once,
-with the session's first prompt row, and never re-rendered. What a request sent is never
-rewritten, so the minute in the prompt is the session's start time -- one prompt row for
-the life of the session, and the second turn now measures **99.7%**. See
-`docs/notes/server-body.md`.
+So the cache is a prefix of the whole request, not a sequence of units: where a change
+sits decides how much follows it, never which item it is in. The rule to carry is the one
+about position -- **what changes every turn goes as late as the stable part allows** --
+and the first reading after any edit is not evidence about what the edit cost.
+
+What the tail's move out of `instructions` was therefore worth is not cache: a value at
+the end of the string keeps 98.6% either way, measured. Its reasons are elsewhere and they
+stand -- a message that follows the transcript is read as a fresh injection, and a stamped
+card is not re-rendered at all. See `docs/notes/server-body.md`.
 
 ## the index is derived, not stored
 

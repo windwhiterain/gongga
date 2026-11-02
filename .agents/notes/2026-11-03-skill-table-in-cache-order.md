@@ -72,7 +72,7 @@ User：「还没有 load skill 呢，你就接线了。先把 system prompt 的�
   缓存算法管的那条路（正文进 transcript 才是贵的部分），`index_skill` 的表格只是它之前的
   廉价一步。
 
-## 第三轮：真正的接线——首轮 index + 可��列化的 layout
+## 第三轮：真正的接线——首轮 index + 可序列化的 layout
 
 User：「现在做真正的 prefix cache opt 接线：给空 session 发的首轮提示词，递归地搜索出全部的
 @...，然后使用 opt find 找到最佳顺序，把他们的内容和 `@...` 原文作为索引 append 到 system
@@ -116,7 +116,7 @@ User：「再对照 SPEC 检查一下有无遗漏」然后「如果 @... 引用�
 ### 对照 SPEC 第 44-46 行（`### Meta Prefix Cache Opt`）发现的三个遗漏，全已修
 
 1. **图片会丢**。原文「find all meta references」包括 `@image:`，但图片没有「content」，我把
-   它排除在 index 外，就顺手把消息里的 mention 也留成字面了——结果首轮的���片不再上传。
+   它排除在 index 外，就顺手把消息里的 mention 也留成字面了——结果首轮的图片不再上传。
    现在由 `meta::literal(cwd, text, rooted)` 决定哪些 mention 保持字面：只有「index 真的收录了
    文本」的那些，其余照旧展开。图片、未知 skill 因此恢复原行为。变异测试：
    `a_message_leaves_literal_only_what_the_index_carries`。
@@ -150,7 +150,7 @@ User：「判断是否相等除了内容还有 path，因为 path 在充当 inde
 「给每个 session 分别建立 cache」；「在 system prompt 的最后，插入有用的动态相关信息
 （session 名字，harness 名字+commit id，当前时间，cwd）」。
 
-- **身份 = (raw meta, 内容)**：`Item` 的 key 就是 index 里印出来的那个 raw 拼��
+- **身份 = (raw meta, 内容)**：`Item` 的 key 就是 index 里印出来的那个 raw 拼写
   （`@skill:helper`），content 是正文的 digest。两者都相等才算同一个东西。path 不是
   特权字段——调用方印什么当名字，那个就是 key（skill 表格用 `SKILL.md` 的 path，因为那
   张表里 path 就是键）。
@@ -186,7 +186,7 @@ message 里注入」——判断正确，实测证实。
   `scripts/replay_audit.py` 按「等于某行 tail」接受这条 item，与 handover note 同一套待遇。
 - 单测：`body::the_last_item_is_written_after_the_transcript`（变异：把尾巴挪到 head 之后
   → 变红）；`llm::this_turns_facts_are_one_item_after_the_transcript`。
-- 数据：`.dev/verify/ea40c7f-prefix-cache-tail-item.json`。��次测量里有一次第二请求只有
+- 数据：`.dev/verify/ea40c7f-prefix-cache-tail-item.json`。三次测量里有一次第二请求只有
   1.8%，另两次 98.2–99.2%，判为 provider 侧冷读；场景与 sha 一变就要重测。
 
 ## 第七轮：首轮时间落盘，发过的内容永不改写
@@ -205,3 +205,23 @@ User：「时间是首轮 prompt 的时间，直接落盘不可以改的啊，�
 - 仍未做：`cwd` 现在固定在首轮，所以会话换目录后 prompt 里不会体现（行里的 `cwd` 字段
   仍记录当前值，只是不发）。要「当前目录」就得每回合变一条 item，这与本条规则冲突，
   留给 user 定。
+
+## 第八轮（2026-11-02）：第六轮的结论是错的 —— 缓存在 instruction 内部就能切
+
+User：「用minimax m3.1 测试一下 prefix cache能否在 instruction 内分割缓存，如果不能，需要把每一个记忆节点做成单个message注入而不是合并为一个instruction」——能，所以不改代码。
+
+- **测法**：真 provider、本机 key，`instructions` = 系统散文 + self-control + AGENTS.md
+  （约 10.6k token），input 里两轮短对话 + 一个问题，`store=false` + 一个 tool，读
+  `usage.input_tokens_details.cached_tokens`。同一件事重复读，单次读数不算数。
+- **结论**：缓存是**整条请求的 token 前缀**，按 128 token 区块量化，不是「unit 序列」。
+  节点插在 `instructions` **中间**：留下插入点之前的 5120–5504 / 约 10.6k；一行追加在
+  **末尾**：98.6%。同样内容「合并成一个 instruction」稳态 97.7%，「每节点一条 message」
+  94.5% —— 拆成 message 不省，反而贵约 280 token。
+- **1.2% 是什么**：provider 没见过这条 prompt 时，无论改了什么、改在哪，第一次都只报
+  128–189（一轮 13 次首见 prompt 里 5 次如此）。同一条 prompt 重复 20 次全部命中。
+  第六轮把「第一次」当成了「改动之后」，于是推出「按 item 逐项比对」——错的。
+- **保留下来的**：卡片只盖一次、发过的内容不改写（第七轮）——它的价值不在缓存，在可重放
+  与「transcript 后面那条 message 会被读成新注入」这个实测过的代价。
+- **文档**：`docs/notes/server-prefix-cache.md`、`server-body.md`、`server-agent.md` 里
+  「按 item 切分、第一个不同的 unit 之后全废」的断言已改，换成按位置的说法。
+- **数据**：`.dev/verify/48ea8e3-prefix-cache-intra-instruction.json`。

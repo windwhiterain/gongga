@@ -400,9 +400,9 @@ impl LlmClient {
             "stream": true,
             "store": self.store,
         });
-        // The index joins the prose because it changes only when a file does, and one
-        // value costs one item either way. The start card does not join it: it is the
-        // item after this one, so a change there cannot disturb what precedes it.
+        // The index joins the prose because it changes only when a file does. The card does
+        // not: the prose follows an edited template and the card is stamped once, so the
+        // two lifetimes cannot share one value.
         let mut instructions = instructions.to_string();
         if let Some(index) = index.filter(|index| !index.is_empty()) {
             if !instructions.is_empty() {

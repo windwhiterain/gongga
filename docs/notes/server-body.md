@@ -22,10 +22,15 @@ Both halves of where it goes are load-bearing, and I got the second one wrong fi
 - **Before the transcript, not after.** A value written after the rows is a *new
   message on every step*. A live session read that as "the harness keeps injecting" and
   spent a 45-step turn answering it, and each step re-billed the whole prefix behind it.
-- **After the system prompt, not in it.** A provider's cache is taken item by item —
-  measured: with the same prose and only the minute changed inside `instructions`, a
-  turn answered with 1.2% cached; as its own item, 98.2%. So the volatile part cannot
-  live in the `instructions` value.
+- **After the system prompt, not in it.** SPEC puts it there, and the two halves have
+  different lifetimes: the prose follows an edited template, the card is stamped once and
+  replayed. A value that must never be re-derived does not belong inside a value that is
+  composed again on every turn.
+
+  The cache is *not* the reason, though this section said it was. A change inside
+  `instructions` keeps everything before it and costs only what follows (measured, see
+  `server-prefix-cache.md`); the 1.2% that was read as "the whole prefix is gone" is what
+  a prompt the provider has not seen answers with, whatever changed.
 
 The card itself is stamped once, with the session's first prompt row, and replayed
 verbatim from the store after that: the minute it says is the session's start, not the
