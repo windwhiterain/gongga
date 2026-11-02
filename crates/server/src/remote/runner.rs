@@ -628,7 +628,7 @@ fn stat(path: &str) -> Result<Value, String> {
     let given = Path::new(path);
     match std::fs::metadata(given) {
         Ok(meta) => Ok(json!({
-            "path": path,
+            "path": spelling(given),
             "exists": true,
             "is_file": meta.is_file(),
             "is_dir": meta.is_dir(),
@@ -643,6 +643,21 @@ fn stat(path: &str) -> Result<Value, String> {
         })),
         Err(e) => Err(format!("could not inspect {path:?} on the endpoint: {e}")),
     }
+}
+
+/// The endpoint's own spelling of a path: absolute, and with `/` throughout.
+///
+/// # Invariant
+///
+/// What this answers is what the server stores, hands back to `open`, and puts in a
+/// shell word, so the three cannot disagree. Git Bash reports `/c/...` for a
+/// directory it opened as `C:/...`, and a drive-less path is not one this machine
+/// can open again; the verbatim prefix `canonicalize` adds is not one a shell reads.
+fn spelling(path: &Path) -> String {
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let text = canonical.to_string_lossy().into_owned();
+    let text = text.strip_prefix(r"\\?\").unwrap_or(&text).to_string();
+    text.replace('\\', "/")
 }
 
 /// One chunk of a file, base64, with the offset the next read continues from.

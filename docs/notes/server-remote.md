@@ -230,6 +230,14 @@ Two rules a reader should not have to re-derive:
   question, so a local `--cwd` no longer falls back to the server's directory and
   reports `ok`; a session whose row already names a removed directory still starts,
   because the check is on what a caller states, not on what a row records.
+- **a path kept or handed to a shell is the endpoint's spelling.** The peer answers
+  it -- `Op::Stat` canonicalises, drops the verbatim `\\?\` prefix and uses `/`
+  throughout -- and that is what is stored in the row, what `open` is given back, and
+  what a listing command puts in a shell word. Git Bash's `pwd` answers `/c/x` for a
+  directory opened as `C:/x`, and a drive-less path is not one the peer can open
+  again: adopted as said, it made one working session fail every later shell with
+  `no such directory on the endpoint`. `pwd -W` asks for the native spelling first
+  and plain `pwd` remains the fallback for a POSIX peer.
 - **a listing shell the peer has lost is replaced.** The shell `list_paths` keeps is
   reused across completions, and a peer that has dropped its end answers every later
   run with `no shell 1 is open`; one failed run forgets the shell and dials a fresh

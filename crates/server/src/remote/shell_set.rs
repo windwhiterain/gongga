@@ -103,6 +103,15 @@ impl Shell {
         }
     }
 
+    /// The spelling the machine that owns `path` uses for it.
+    pub async fn canonical(&mut self, path: &str) -> anyhow::Result<String> {
+        match self {
+            // This machine's own filesystem answers as it is asked.
+            Shell::Local(_) => Ok(path.to_string()),
+            Shell::Remote(shell) => shell.canonical(path).await,
+        }
+    }
+
     /// Runs one command without following it with a `pwd`, for a caller that does
     /// not read the directory afterwards.
     pub async fn run_without_cwd(

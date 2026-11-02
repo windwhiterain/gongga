@@ -1012,8 +1012,8 @@ impl SessionManager {
         let name = remote.unwrap_or_default().to_string();
         let outcome = match self.listing_run(&name, endpoint, directory).await {
             Ok(outcome) => outcome,
-            // A shell the peer no longer has is not a directory it refused, and the
-            // handle would never be usable again, so one fresh one is dialled.
+            // A dead handle never works again, and a shell the peer lost is not a
+            // directory it refused.
             Err(_) => {
                 self.listing_run(&name, self.endpoint_for(remote)?, directory)
                     .await?
@@ -1074,8 +1074,15 @@ impl SessionManager {
                 .or_insert_with(|| ShellSet::new(endpoint, None, self.shell_env.clone()));
             set.get(LISTING_SHELL)?
         };
-        let command = listing_script(directory);
         let mut shell = shell.lock().await;
+        // A path typed for this machine is not always one its shell reads.
+        let directory = match shell.canonical(directory).await {
+            Ok(canonical) => canonical,
+            // A directory the peer cannot name is one its listing will refuse, with
+            // a message about the path the caller wrote.
+            Err(_) => directory.to_string(),
+        };
+        let command = listing_script(&directory);
         // Measured: 1.7s for the first listing on a fresh remote (ssh, the runner and
         // a shell), 0.17-0.21s for every one after. The deadline is well above that
         // and well below the half minute a stalled link once cost -- and a listing

@@ -14,6 +14,9 @@ use crate::remote::protocol::Event;
 use crate::remote::transport::{CloseReport, Runner, ShellControl, ShellHandle};
 use crate::tools::bash::{BashChunk, BashOutcome, BashStream};
 
+/// The one command that says where a peer's shell is, in its own machine's spelling.
+const PWD: &str = "command pwd -W 2>/dev/null || command pwd";
+
 /// How long a caller waits for another one's close to report its outcome.
 const CLOSE_WAIT: Duration = Duration::from_secs(30);
 
@@ -448,9 +451,33 @@ impl RemoteShell {
         report
     }
 
+    /// The endpoint's own spelling of `path`, asked of the peer that owns it.
+    ///
+    /// # Invariant
+    ///
+    /// Every path this side keeps comes back through here: a shell's `pwd` answers a
+    /// spelling of its own (`/c/...` under Git Bash), which is not one this machine
+    /// can open again, so a reported directory that were stored as said would break
+    /// the next `open` on a session whose shell has since been replaced.
+    pub async fn canonical(&mut self, path: &str) -> anyhow::Result<String> {
+        self.connect().await?;
+        let Some((runner, _)) = &self.connection else {
+            anyhow::bail!("the endpoint's connection went away");
+        };
+        let file = runner.stat(path).await?;
+        if file.path.trim().is_empty() {
+            anyhow::bail!("the endpoint named no path for {path:?}");
+        }
+        Ok(file.path)
+    }
+
     /// Asks the endpoint where the shell is; an endpoint-local path comes back.
+    ///
+    /// `-W` is the native spelling Git Bash offers (`C:/x` for what `pwd` calls
+    /// `/c/x`); a shell without it answers the plain one, and `canonical` below is
+    /// what makes the answer storable either way.
     pub async fn pwd(&mut self) -> anyhow::Result<String> {
-        self.write_command("command pwd").await?;
+        self.write_command(PWD).await?;
         self.pump(None).await;
         if !self.stdout_state.settled || !self.stderr_state.settled {
             self.out_of_sync = true;
@@ -463,6 +490,8 @@ impl RemoteShell {
         if line.is_empty() {
             anyhow::bail!("could not read the shell's working directory on the endpoint");
         }
+        // The shell's answer is its own spelling; the endpoint's is the one kept.
+        let line = self.canonical(&line).await.unwrap_or(line);
         self.set_cwd(PathBuf::from(&line));
         Ok(line)
     }
