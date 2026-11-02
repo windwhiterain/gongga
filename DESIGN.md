@@ -1475,3 +1475,103 @@ home 就空着，没有进程去 resume 这个回合 —— 一次失败的进�
 3. **`swap` 之后本回合的叙事会被打断**：`cancel` 让当前 turn 以 `Cancelled` 收尾，新服务端
    是**再发一次请求继续**，不是无缝续写。用户会看到一段输出缺口，且这一次续写要重新付一次
    上下文费用。要不要把「进化」做成只在两个 turn 之间发生（比如排队到 idle 再换）？
+
+## 11. Monitor
+
+SPEC §Monitor 是两句话、两个机制，失败层级不同：
+
+| SPEC 原话 | 崩塌的是 | 落点 |
+| --- | --- | --- |
+| `server is wrappered by a watchdog process that auto restart if it crashed` | **进程** | §11.1 服务端二进制自己监督自己 |
+| `once a session stopped with error, auto spawn a moniter session told to fix` | **会话** | §11.2 服务端读 store，把报告交给 `#monitor` |
+
+同一份 SPEC 的 diff 删掉了 Polity 的 `HR (flash)` 一行：看住别的工作、修 quota 与 harness
+故障，从「一个 agent 扮演角色」变成「服务端自己的机制」。所以 `#monitor` 不是角色，是一个
+普通会话；它的模型从 roster 里挑，它的工作方式与任何会话一样（shell + `gongga-cli`）。
+`~/.agents/skills/polity/SKILL.md` 里 HR 仍在，退役那一段不在本仓库。
+
+### 11.1 watchdog：`gongga-server` 二进制里的一层
+
+```
+gongga-server …            <- supervisor：不建 runtime、不拿 server.lock、不懂协议
+  └─ gongga-server …       <- 子进程：GONGGA_SUPERVISED=1，真正的服务端
+```
+
+**为什么是二进制自己，而不是新 crate / cli / bundle 的一层。** 三个入口都直接跑服务端
+二进制：`cli::server::start`（窗口与一次性命令）、bundle 的 payload、以及 **evolve 的继任者**
+（launcher 抄旧服务端的 argv 再 `exec` 新文件）。第四种程序或命令层的一个模式，恰好会在最
+需要它的地方缺席——换手之后。所以「被监督」是二进制的固有性质；开关用环境变量，因为 evolve
+抄 argv 不抄 env：写成 flag 会被抄进继任者的 argv，继任者于是成了自己的 supervisor。
+
+**子进程拿到同一份 argv，`--parent` 不动。** 窗口死 → 现有 `signal::follows` 软停 → turn
+存成 pending → 退出 0 → supervisor 看到的是「被叫停」而不是崩溃。`signal::adopt` 同理。
+supervisor 因此不需要懂协议、不需要发信号、不需要第二条生命周期。
+
+**退出码是它唯一要懂的语言。** 0 被叫停、130 第二次坚持、**2 说出了理由**（启动拒绝、
+迁移失败、`net::serve` 返回 Err），其余（101 panic / 被 kill / 信号）重启。`2` 是唯一要永久
+维护的约定，它换来的性质是：一个**不可能成功**的启动不是崩溃，于是「锁被活进程占着」不会被
+每 200ms 重试到写满磁盘。改动只有 `gongga_server::main` 的错误路径。
+
+退避 200ms 起、×2、上限 30s，子进程活过 60s 复位；**不设次数上限**（AGENTS 禁 budget）。
+
+**两处 pid 语义跟着改。** 窗口 spawn 到的是 supervisor 的 pid，greeting 里是服务端的 pid：
+`ServerInfo::supervisor` 让 `tui::run::whose_server` / `stops_a_server` 两个 pid 都认；
+`cli::server::stop` 的 kill 兜底**先杀 supervisor**——否则刚被杀的服务端立刻被重新拉起，
+「停掉这个 home 的服务端」就不成立。
+
+**不动的部分**：`server.lock` 仍归服务端（`evolve` 的 `running_pid` / `status` / 陈旧锁接管
+全不变）、`--parent`、`bin/` 的两个名字、bundle 的 payload、`serve` 的控制台与退出码契约、
+evolve launcher 的等待与 supersede 守卫。
+
+细节与实测见 `docs/notes/server-supervise.md`。
+
+### 11.2 monitor 会话：一次失败只交付一次
+
+**触发是数据，不是事件。** `sessions.status = 'error'` 且
+`monitor_seq < 该会话最新的 message seq`。订阅 bus 会更即时也更不正确：广播会 `Lagged`，
+而这个进程不在时结束的 turn 什么都没发布。两列在 `sessions` 上：`monitor_seq`（上一次交给
+monitor 的那一行）与 `monitor_attempts`（这次失败换过几个模型）。turn 在开始前就写入用户行
+（`store::begin_turn`），所以 `seq` 只增，一个比较就够。入口是同一个 `monitor::sweep`：
+启动时一次（端口绑定之前）、已有的 2 秒 tick 一次。
+
+**一个会话，名字是 `#monitor`。** 内置会话带 `#` 前缀，`set_session` 拒绝这个前缀并说明
+理由——2026-11-02 证明「monitor」是用户真的会用的名字。下发走 `commands::deliver`：空闲就起
+turn，忙就进 inbox，排队门 / `@skill:` 展开 / shell / 工具 / 事件 / 窗口渲染全部复用。
+`del_session #monitor` 允许（不能工作的 monitor 得能删），下一次失败会重建它。
+
+**选模型：usable flash。** roster 的 `tier = "flash"` × credential 能解析 × 能走 Responses
+API。排序按最差的额度窗口降序，没报额度的按 roster 顺序排在后面（没报不是拒绝，与
+`model_pool` 的 `fail_open` 一致）。这也是 `quota` 要多存一份「按 provider」的原因：
+`last()` 仍然服务 SPEC 的 `active_quota` 行，而**在 provider 之间做选择**是另一件事。
+
+**monitor 自己失败。** 它也是普通会话，`status = 'error'` 一样会被看到。`monitor_attempts`
+既是「试过几个」也是**下一个候选的下标**，于是取下一个模型、把**上一次给它的那份报告**原样
+再投一次（重新推导会丢掉第一次被告知的内容），前面加一句「上次用的是这个模型，失败原因是
+这些」。列表走完就写一条 `Event::Log` 停下——不递归、不自造重试预算。
+
+两个只有踩过才知道的细节：交接过程中新建的 `#monitor` 要继承 `monitor_attempts`，否则它
+第一次失败会被当成第 0 次而重挑刚失败的模型；`store::finish_turn` 在 turn **不是**以 error
+收尾时清计数并把 `monitor_seq` 推过整份 transcript，这样恢复之后再次失败是一次新的搜索。
+
+**报告由服务端拼**，不靠 skill：会话与模型、行范围、build、home、pid 与 cwd、这次用的模型、
+最后一条 `notice`（`Agent::error` 把原因写在那里）、读回现场的确切命令，以及两件该做的事
+（修完用 `@skill: self-control` 重启；凭据/额度问题用 `set_session`）。
+
+**与 `model_pool` 的边界**：服务端只读 roster 的 `tier` 与额度读数；`preference.toml` 权重、
+`mark`、entitlement 探测留在 skill 里（那是这台机器的策略，不是 harness 的），而且服务端去
+跑 skill 的 python 会在没装它时有第二个实现。
+
+细节与实测见 `docs/notes/server-monitor.md`。
+
+### 11.3 还没做，需要你定
+
+1. **服务端自己崩了没人修**：supervisor 会把「没来得及说」的重启记下来（退出码），但
+   `GONGGA_LAST_EXIT` 这条交接（让下一个子进程把「上次我崩了」当作一份报告交给 `#monitor`）
+   不在本轮。要不要加？它只多一个环境变量，且只活一次——正是需要的那一次。
+2. **`#monitor` 有完整 shell 权力**：SPEC 说 told to fix，所以它会自己改代码、重启服务端。
+   要不要「只准提案不准改」的开关？我倾向不给：多一条代码路径，而报告里已经写了它做了什么。
+3. **额度读得不够勤**：`quota::publish` 只在 step 结束时刷新，所以候选顺序可能是旧的。现在
+   靠「下标 = attempts」兜底（同一个模型不会被挑第二次），够用但不优雅。
+4. **pid 复用**：`follows` 与 `GONGGA_SUPERVISOR` 都只验数字，与 §8.1 那条风险同类。
+5. **`taskkill /F` 打 supervisor 会连子进程带走**（Windows `/T` 语义），与「软停保 turn」
+   相反。这是既有的「没人能替自己被谋杀做准备」。

@@ -22,6 +22,10 @@ Knobs, all environment variables:
 - `FAKE_LLM_IMAGE_GEN=1`: emit an `image_generation_call` carrying a base64
   `result`, which is what a provider-side image generation looks like -- and the
   one kind of item whose payload must not reach the transcript.
+- `FAKE_LLM_FAIL_MODEL=<model id>`: answer `400` to any request whose `model`
+  names it, and serve everything else. A 4xx is what a provider says about a
+  request rather than a minute, so the harness does not retry it -- which makes
+  this the way to reach a failed turn in one step instead of after a backoff.
 
 State is per-process and keyed on how many requests have arrived, so "first
 request calls a tool, the second answers" works without any real logic.
@@ -37,6 +41,8 @@ DUMP = os.environ.get("FAKE_LLM_DUMP")
 TOOL_NAME = os.environ.get("FAKE_LLM_TOOL")
 TOOL_ARGS = os.environ.get("FAKE_LLM_TOOL_ARGS") or '{"command":"echo hi-from-fake"}'
 WEB = os.environ.get("FAKE_LLM_WEB") == "1"
+# A model id this endpoint refuses, which is how a failed turn is produced fast.
+FAIL_MODEL = os.environ.get("FAKE_LLM_FAIL_MODEL") or ""
 # What the fake claims the request cost, so a threshold can be crossed on purpose.
 INPUT_TOKENS = int(os.environ.get("FAKE_LLM_INPUT_TOKENS") or 0)
 # What the previous request was made of, so "cached" can mean something.
@@ -208,6 +214,30 @@ class Handler(BaseHTTPRequestHandler):
                     }
                 ).encode()
             )
+            return
+        # The `model` field, never the body: a transcript may name the model that
+        # is being refused, and a match on the text would refuse the wrong request.
+        def names_failing_model():
+            try:
+                return json.loads(raw.decode("utf-8", "replace")).get("model") == FAIL_MODEL
+            except ValueError:
+                return False
+
+        if FAIL_MODEL and names_failing_model():
+            body = json.dumps(
+                {
+                    "error": {
+                        "message": f"this endpoint does not serve {FAIL_MODEL}",
+                        "type": "invalid_request_error",
+                        "code": "model_not_served",
+                    }
+                }
+            ).encode()
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
             return
         if DUMP:
             with _lock:

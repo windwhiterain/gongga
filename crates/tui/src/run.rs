@@ -188,11 +188,26 @@ fn starts_a_server(client_only: bool) -> bool {
 ///
 /// Only the *process* this window spawned: a home somebody else already serves
 /// refuses the lock, so this window's child exits at once and the pid answering
-/// the dial is somebody else's. Comparing pids is what makes that answerable --
+/// the dial is somebody else's. Comparing pids is what makes that answerable —
 /// an address would say the wrong thing, because a `connect_server` can move the
-/// window onto a server it did not start. See `docs/notes/tui-run.md`.
-fn stops_a_server(spawned: Option<u32>, answering: Option<u32>) -> bool {
-    matches!((spawned, answering), (Some(ours), Some(theirs)) if ours != 0 && ours == theirs)
+/// window onto a server it did not start.
+/// `spawned` is what `spawn` answered, which is the watchdog's pid when the
+/// server runs under one, so either pid matching means this window started it.
+/// See `docs/notes/tui-run.md`.
+fn stops_a_server(spawned: Option<u32>, answering: Answering) -> bool {
+    let Some(ours) = spawned else {
+        return false;
+    };
+    ours != 0 && (Some(ours) == answering.pid || Some(ours) == answering.supervisor)
+}
+
+/// What the greeting said about the server that answered.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Answering {
+    /// The pid in the greeting, which is the server process itself.
+    pid: Option<u32>,
+    /// The watchdog that server runs under, when it runs under one.
+    supervisor: Option<u32>,
 }
 
 /// Whose server answered, from what this window knows about it.
@@ -203,14 +218,17 @@ fn stops_a_server(spawned: Option<u32>, answering: Option<u32>) -> bool {
 /// greeting's `owner` decides, and this process's pid is what makes it ours. A
 /// server with no owner at all is nobody's, which is worth saying because nothing
 /// will stop it. See `docs/notes/tui-run.md`.
-fn whose_server(spawned: Option<u32>, answering: u32, owner: Option<u32>, me: u32) -> Server {
-    if answering != 0 && spawned == Some(answering) {
-        return Server::Ours { pid: answering };
+fn whose_server(spawned: Option<u32>, answering: Answering, owner: Option<u32>, me: u32) -> Server {
+    let pid = answering.pid.unwrap_or(0);
+    if pid != 0 && (spawned == Some(pid) || answering.supervisor == spawned) {
+        return Server::Ours { pid };
     }
     match owner {
-        Some(pid) if pid == me => Server::Adopted { pid: answering },
-        Some(_) => Server::Another { pid: answering },
-        None => Server::Unowned { pid: answering },
+        Some(pid) if pid == me => Server::Adopted {
+            pid: answering.pid.unwrap_or(0),
+        },
+        Some(_) => Server::Another { pid },
+        None => Server::Unowned { pid },
     }
 }
 
@@ -276,9 +294,9 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
         },
         false => None,
     };
-    // The pid that answers the dial, which is not `spawned` when the home was
+    // The server that answers the dial, which is not `spawned` when the home was
     // already served by somebody else.
-    let mut answering: Option<u32> = None;
+    let mut answering = Answering::default();
 
     // The version of the listings already drawn, so a landed answer repaints once.
     let mut drawn_listings: u64 = 0;
@@ -393,10 +411,13 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                 drop(dialing.take());
                 match outcome {
                     Ok((open, greeting)) => {
-                        answering = Some(greeting.pid());
+                        answering = Answering {
+                            pid: Some(greeting.pid()),
+                            supervisor: greeting.supervisor(),
+                        };
                         ui.set_server(Some(whose_server(
                             spawned,
-                            greeting.pid(),
+                            answering,
                             greeting.owner(),
                             std::process::id(),
                         )));

@@ -253,3 +253,13 @@ nothing about what the number is for.
 `0` is in the list first because it is the only word for "no cap". There is no mode
 name to remember: the setting that replaced this one (`set_event_detail --mode`) had
 to name a behaviour, and its two names differed only by whether a block folded.
+
+## `supervisor`
+
+`ServerInfo::supervisor` is the watchdog a server runs under, when it runs under
+one. It is `Option` and `serde(default)`, so a greeting from a server with no
+watchdog reads exactly as it did before.
+
+The field exists because the process a front-end spawned is no longer the process
+answering: without it, "did I start this server" is not answerable, and a stop that
+kills only the answering process is undone by a restart.

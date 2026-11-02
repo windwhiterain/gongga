@@ -167,3 +167,11 @@ with, so the way out stops nothing.
 
 Best-effort goodbye: the server drops this connection now instead of waiting out
 its idle timeout. Worth nothing if it fails -- the window is already closing.
+
+## Two pids, one server
+
+The pid `spawn` answers is the watchdog's and the pid in the greeting is the
+server's, so `whose_server` and `stops_a_server` accept either match. With only the
+greeting's pid, a window would print its own server as `adopted #…`, and the way
+out would cancel a server it believed it had not started. See
+`server-supervise.md`.

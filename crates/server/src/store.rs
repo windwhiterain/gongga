@@ -120,8 +120,17 @@ CREATE TABLE IF NOT EXISTS sessions (
     ttft_ms INTEGER,
     -- The endpoint this session's shells run on, as a named target from the
     -- server's config. NULL is `local`, and it is fixed once the session has run.
-    target TEXT
+    target TEXT,
+    -- The last row of this session a monitor turn was given. A turn writes its
+    -- user row before it starts, so `seq` only grows: this column is the whole
+    -- record of "this failure has been reported", and it survives a restart.
+    monitor_seq INTEGER NOT NULL DEFAULT 0,
+    -- How many models a monitor turn has been switched through for the failure
+    -- this session is in. Reset when the session stops being in error, so a new
+    -- failure starts the search again.
+    monitor_attempts INTEGER NOT NULL DEFAULT 0
 );
+CREATE INDEX IF NOT EXISTS sessions_by_status ON sessions(status);
 
 CREATE TABLE IF NOT EXISTS messages (
     id         INTEGER PRIMARY KEY,
@@ -280,6 +289,14 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         ("tps", "ALTER TABLE sessions ADD COLUMN tps REAL"),
         ("target", "ALTER TABLE sessions ADD COLUMN target TEXT"),
         ("ttft_ms", "ALTER TABLE sessions ADD COLUMN ttft_ms INTEGER"),
+        (
+            "monitor_seq",
+            "ALTER TABLE sessions ADD COLUMN monitor_seq INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "monitor_attempts",
+            "ALTER TABLE sessions ADD COLUMN monitor_attempts INTEGER NOT NULL DEFAULT 0",
+        ),
     ] {
         add_column_if_missing(conn, "sessions", column, ddl)?;
     }
@@ -511,6 +528,73 @@ impl Store {
                     s.context_limit, s.thinking_effort,
                     s.context_tokens, s.cached_tokens, s.tps, s.ttft_ms, s.target
              FROM sessions s";
+
+    /// Every session in `error`, with what a monitor turn still owes it.
+    ///
+    /// # Invariant
+    ///
+    /// The status is the trigger and the column is the memory, so a failure is
+    /// reported once and once only, across restarts: `monitor_seq` is the last
+    /// row a monitor turn was given, and a turn writes its user row before it
+    /// starts, so a later `last_seq` is a failure nobody has been told about.
+    /// See `docs/notes/server-monitor.md`.
+    pub fn failures(&self) -> anyhow::Result<Vec<Failure>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT s.id, s.name, COALESCE(s.model, s.model_name),
+                    s.monitor_seq, s.monitor_attempts,
+                    COALESCE((SELECT MAX(m.seq) FROM messages m WHERE m.session_id = s.id), 0)
+             FROM sessions s WHERE s.status = 'error' ORDER BY s.id",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(Failure {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    model: r.get(2)?,
+                    monitor_seq: r.get(3)?,
+                    monitor_attempts: r.get::<_, i64>(4)?.max(0) as u32,
+                    last_seq: r.get(5)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Records that a monitor turn has had this session's transcript, up to `seq`.
+    ///
+    /// # Invariant
+    ///
+    /// Written after the turn is handed over, never before: a crash between the
+    /// two repeats a report, which is recoverable, where the other order loses one.
+    pub fn mark_monitored(&self, session_id: i64, seq: i64, attempts: u32) -> anyhow::Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "UPDATE sessions SET monitor_seq = ?2, monitor_attempts = ?3 WHERE id = ?1",
+            params![session_id, seq, i64::from(attempts)],
+        )?;
+        Ok(())
+    }
+
+    /// How many models this session has been through for its current failure.
+    pub fn set_monitor_attempts(&self, session_id: i64, attempts: u32) -> anyhow::Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "UPDATE sessions SET monitor_attempts = ?2 WHERE id = ?1",
+            params![session_id, i64::from(attempts)],
+        )?;
+        Ok(())
+    }
+
+    /// The newest row of `session_id`, as the database has it.
+    pub fn last_message_seq(&self, session_id: i64) -> anyhow::Result<i64> {
+        let conn = self.lock();
+        Ok(conn.query_row(
+            "SELECT COALESCE((SELECT MAX(seq) FROM messages WHERE session_id = ?1), 0)",
+            params![session_id],
+            |r| r.get(0),
+        )?)
+    }
 
     /// One session, in the same shape the list returns, by name rather than by scan.
     /// A session's name, by its row id: what a log row carries so a reader does
@@ -1165,6 +1249,20 @@ impl Store {
             "UPDATE sessions SET status = ?1, updated_at = ?2 WHERE id = ?3",
             params![status_name(status), now_millis(), session_id],
         )?;
+        if status != SessionStatus::Error {
+            // Owed nothing here, and the next failure is a new episode.
+            tx.execute(
+                "UPDATE sessions SET monitor_seq = ?2, monitor_attempts = 0 WHERE id = ?1",
+                params![session_id, now_millis()],
+            )?;
+            tx.execute(
+                "UPDATE sessions
+                    SET monitor_seq = COALESCE((SELECT MAX(m.seq) FROM messages m
+                                                 WHERE m.session_id = sessions.id), 0)
+                  WHERE id = ?1",
+                params![session_id],
+            )?;
+        }
         if !preserve {
             for id in tasks {
                 tx.execute(
@@ -1318,6 +1416,21 @@ pub struct SessionRow {
     pub usage: protocol::Usage,
     /// The endpoint this session's shells run on, when it is not `local`.
     pub target: Option<String>,
+}
+
+/// One session that stopped with an error, as `Store::failures` reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Failure {
+    pub id: i64,
+    pub name: String,
+    /// The model the failed turn ran on, `provider/model_name`.
+    pub model: String,
+    /// The last row a monitor turn was given, and how many models that turn was
+    /// switched through.
+    pub monitor_seq: i64,
+    pub monitor_attempts: u32,
+    /// The session's newest row: this is what a monitor turn has not seen yet.
+    pub last_seq: i64,
 }
 
 /// A window of the transcript plus where it ends, as `get_messages` reports it.

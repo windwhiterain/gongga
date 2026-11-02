@@ -383,3 +383,16 @@ replying to the harness instead of the user.
 as zero: nothing is estimated, and a renamed column is a change here rather
 than in every tool that reads a home.
 
+
+## A failure, and what a monitor turn has already been told
+
+Two columns on `sessions` carry SPEC's monitor: `monitor_seq` is the last row a
+monitor turn was handed, and `monitor_attempts` is how many attempts that search
+has made for the current failure.
+
+They are columns rather than a table because a turn writes its user row before it
+starts, so `seq` only grows: `monitor_seq < last_seq` is exactly "a failure nobody
+has been told about", and it survives a restart that a broadcast subscriber would
+not. `finish_turn` clears the counter and pushes the marker past the transcript
+whenever a turn ends *not* in error, which is what makes a later failure a new
+episode. See `server-monitor.md`.

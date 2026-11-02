@@ -84,7 +84,8 @@ pub async fn ensure(home: &Path, addr: SocketAddr) -> anyhow::Result<bool> {
 /// The pid is what makes "did this window start the server it is talking to"
 /// answerable: a home already served refuses the lock, so the process started
 /// here exits at once and its pid never answers a dial. A caller compares it
-/// with the pid the greeting carried. `owner` is the process whose death stops
+/// with the pid the greeting carried — and with the watchdog's, when the server
+/// runs under one: this answers the watchdog, the greeting the server. `owner` is the process whose death stops
 /// it; `None` is a one-shot caller. See `docs/notes/cli-server.md`.
 /// `key` is what this process will dial with, when it was given one explicitly:
 /// a server that minted a key of its own would refuse every dial from the window
@@ -137,6 +138,11 @@ pub async fn stop(conn: &Connection, home: &Path, addr: SocketAddr) -> Option<u3
     if waits_out(pid, CANCEL_GRACE).await {
         return Some(pid);
     }
+    // The watchdog first: a server killed under a live one is started again.
+    let supervisor = greeting.supervisor();
+    if let Some(supervisor) = supervisor {
+        kill(supervisor);
+    }
     kill(pid);
     waits_out(pid, CANCEL_GRACE).await;
     Some(pid)
@@ -184,6 +190,11 @@ fn alive(pid: u32) -> bool {
 }
 
 /// Ends `pid` and everything it started.
+///
+/// # Invariant
+///
+/// The tree, not the process: a server's shells are its children, and one left
+/// behind holds the console it came from.
 #[cfg(windows)]
 fn kill(pid: u32) {
     use std::os::windows::process::CommandExt;

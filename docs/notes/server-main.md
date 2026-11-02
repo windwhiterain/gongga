@@ -18,3 +18,16 @@ The command layer's `Command` is clap's, the library's `Args` is not: keeping cl
 out of the library is what lets a test build an `Args` without a command line, and
 keeping the two structs apart is what lets the binary's flags move without the
 library noticing.
+
+## The supervisor, and the one exit code it needs
+
+`main` forks before clap: with `GONGGA_SUPERVISED` absent it is the supervisor and
+runs `supervise::watch`, which starts this same program with this same argv and
+restarts it when it dies without saying why. `--help` and `--version` are answered
+by the child path, so a question never pays for a process it does not use.
+See `server-supervise.md`.
+
+The one thing that had to change here is the error path: `gongga_server::main`
+returning an error is now exit code 2 instead of anyhow's 1, which is the whole of
+the vocabulary the supervisor needs to tell "refused to run, and said why" from
+"died without saying anything".

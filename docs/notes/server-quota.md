@@ -126,3 +126,15 @@ tightest of its own windows, which the shares already say.
 The roster's `unit` is what says whether a number is a share or a currency, so it
 is also what says which symbol the money is in. `cny-left` is `¥`, `usd-left` is
 `$`; anything else is not money at all.
+
+## Every provider, not only the last one
+
+`last()` is the newest reading of any provider, which is what SPEC's `active_quota`
+row is about. `of(provider)` is the same reading kept by roster id, and it exists
+because choosing between providers is a comparison: SPEC's monitor picks a flash
+model by what each provider still allows (`server-monitor.md`), and a single
+"newest" reading says nothing about the others.
+
+The table is in memory only. A reading is a measurement of a moment, not a fact
+about a home, so it is not written anywhere and a restarted server learns them
+again at the next step end.

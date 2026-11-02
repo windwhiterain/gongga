@@ -315,3 +315,15 @@ does not change providers mid-sentence.
 
 One file, one read: the command catalog asks for it to build completions on
 every connect, and the agent asks for it on every turn that names a provider.
+
+## tier
+
+`tier` is carried as written -- `flash`, `pro`, `sota`, `test`, whatever a roster
+author typed -- and never mapped onto a ranking of the server's. It is a judgement
+about where a model belongs, so a server that re-derived it would disagree with the
+file it just read. Nothing but SPEC's monitor reads it today (see
+`server-monitor.md`); the rest of the roster still ignores it.
+
+`Catalog::speaks_responses` is the same test `default_entry` applies, asked about
+one named model. A caller choosing between models needs it: the roster knowing a
+model is not the same as this server being able to drive it.

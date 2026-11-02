@@ -78,3 +78,11 @@ the port and the home lock go with the process.
 A window that leaves normally has already cancelled over the protocol, so the
 parent watcher's ask finds `shutting_down` set and returns: one stop, whichever
 source reaches it first.
+
+## A second process, and the same pids
+
+The server normally runs under a supervisor (`server-supervise.md`), and this path
+is unchanged by it: `--parent` still names the window, because the child gets the
+same argv, so the watcher below watches the window and not the supervisor. `cancel`
+and an adopted owner still end in exit code 0, which is what tells the supervisor
+not to start the server again.

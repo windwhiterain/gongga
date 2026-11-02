@@ -52,10 +52,12 @@ note is a bug.
 | [`server-prompts.md`](server-prompts.md) | `crates/server/src/prompts.rs` |
 | [`server-providers.md`](server-providers.md) | `crates/server/src/providers.rs` |
 | [`server-quota.md`](server-quota.md) | `crates/server/src/quota.rs` |
+| [`server-monitor.md`](server-monitor.md) | `crates/server/src/monitor.rs` |
 | [`server-session.md`](server-session.md) | `crates/server/src/session.rs` |
 | [`server-shell-command.md`](server-shell-command.md) | `crates/server/src/shell_command.rs` |
 | [`server-ship.md`](server-ship.md) | `crates/server/src/ship.rs` |
 | [`server-store.md`](server-store.md) | `crates/server/src/store.rs` |
+| [`server-supervise.md`](server-supervise.md) | `crates/server/src/supervise.rs` |
 | [`server-tools-mod.md`](server-tools-mod.md) | `crates/server/src/tools/mod.rs` |
 | [`server-base64.md`](server-base64.md) | `crates/server/src/base64.rs` |
 | [`server-remote.md`](server-remote.md) | `crates/server/src/remote/` |

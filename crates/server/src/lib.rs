@@ -16,6 +16,7 @@ mod instance;
 mod llm;
 mod meta;
 mod migrate;
+mod monitor;
 mod net;
 mod prefix_cache;
 mod probe;
@@ -29,6 +30,7 @@ mod shell_command;
 mod ship;
 mod signal;
 mod store;
+pub mod supervise;
 mod tools;
 mod transcript;
 mod transport;
@@ -316,6 +318,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     if resumed > 0 {
         tracing::info!(resumed, "resuming turns left pending by the last run");
     }
+    // Failures the last run left behind, before a client can ask about them.
+    monitor::sweep(&dispatch, &cfg.home).await;
     // Whatever the last run detached is still out there; adopt its pids now.
     let adoption_started = std::time::Instant::now();
     let adopted = detached.adopt().await;
@@ -326,8 +330,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         "detached jobs adopted from the previous run"
     );
 
-    // A session holding an undelivered message gets a turn started for it.
+    // Undelivered messages get a turn, and unseen failures get handed over.
     let wake = dispatch.clone();
+    let watch_home = cfg.home.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
         loop {
@@ -336,6 +341,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             if started > 0 {
                 tracing::info!(started, "woke sessions holding an undelivered message");
             }
+            monitor::sweep(&wake, &watch_home).await;
         }
     });
 
@@ -354,6 +360,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     );
     tracing::info!(
         home = %cfg.home.display(),
+        // Who restarts this process when it dies. See `server-supervise.md`.
+        supervisor = crate::supervise::supervisor(),
         db = %cfg.db_path.display(),
         provider = ?cfg.model.provider,
         model = %cfg.model.model_name,

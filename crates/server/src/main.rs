@@ -72,10 +72,11 @@ fn command() -> clap::Command {
 }
 
 fn main() -> anyhow::Result<()> {
-    // Built here rather than by `#[command(version)]`: the answer has to carry
-    // the build, which is not known to clap. See `protocol-lib.md`.
-    // `--version` before anything else: it must answer without a home, a config
-    // or a log line.
+    // SPEC's watchdog is this binary watching this binary; a question skips it.
+    if !gongga_server::supervise::is_child() && !gongga_server::supervise::answers_alone() {
+        std::process::exit(gongga_server::supervise::watch());
+    }
+    // Carries the build, which clap cannot know, and answers before any home.
     if std::env::args_os().any(|arg| arg == "--version" || arg == "-V") {
         // The same line the other two print: crate, version, build.
         println!("gongga-server {}", protocol::version_line());
@@ -84,5 +85,12 @@ fn main() -> anyhow::Result<()> {
     let matches = command().get_matches();
     let command =
         Command::from_arg_matches(&matches).expect("clap already rejected what it could not parse");
-    gongga_server::main(command.into())
+    // A failure here is an explanation, not a crash: exit 2, which is not retried.
+    match gongga_server::main(command.into()) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            eprintln!("Error: {e:#}");
+            std::process::exit(gongga_server::supervise::REFUSED);
+        }
+    }
 }

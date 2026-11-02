@@ -79,6 +79,15 @@ pub struct Model {
     /// What this model charges, when the roster says. See [`Price`].
     #[serde(default)]
     pub price: Option<Price>,
+    /// How the roster rates this model: `flash`, `pro`, `sota`, ...
+    ///
+    /// # Invariant
+    ///
+    /// Kept as written, never mapped to a ranking of this server's: which tier a
+    /// model belongs to is the roster author's judgement, and a server that
+    /// re-derived it would disagree with the file it read.
+    #[serde(default)]
+    pub tier: Option<String>,
 }
 
 /// A model's prices, in whatever currency and unit the roster records them.
@@ -117,7 +126,12 @@ impl Price {
 impl Model {
     /// Whether this model can be driven through the Responses API, which is the
     /// only shape this server speaks.
-    fn speaks_responses(&self) -> bool {
+    ///
+    /// # Invariant
+    ///
+    /// An empty list is unstated, and unstated admits everything: the roster
+    /// having no opinion is not the roster saying no.
+    pub(crate) fn speaks_responses(&self) -> bool {
         self.endpoints.is_empty() || self.endpoints.iter().any(|e| e.contains("responses"))
     }
 }
@@ -153,6 +167,8 @@ pub struct Entry {
     pub builtin_tools: Vec<String>,
     /// What the roster says this model charges, for the prefix cache's arithmetic.
     pub price: Option<Price>,
+    /// The roster's tier for this model, as written.
+    pub tier: Option<String>,
 }
 
 impl Entry {
@@ -357,6 +373,25 @@ impl Catalog {
         self.entry(model).ok().or_else(|| self.entry_by_name(model))
     }
 
+    /// Whether a request for `model` is one this server could make.
+    ///
+    /// # Invariant
+    ///
+    /// The same test [`Self::default_entry`] applies, asked about one named model:
+    /// the roster places it and it takes the Responses API. A model the roster
+    /// knows and this shape cannot drive would be offered and then fail.
+    pub fn speaks_responses(&self, model: &str) -> bool {
+        let Some((provider_id, model_name)) = model.split_once('/') else {
+            return false;
+        };
+        self.providers
+            .iter()
+            .filter(|p| p.id == provider_id)
+            .flat_map(|p| p.models.iter())
+            .find(|m| m.id == model_name)
+            .is_some_and(Model::speaks_responses)
+    }
+
     /// A bare model name, looked for in every provider in file order.
     pub fn resolve_by_name(&self, model_name: &str) -> Option<Choice> {
         self.entry_by_name(model_name)
@@ -492,6 +527,7 @@ impl Catalog {
             modalities: found.modalities.clone(),
             builtin_tools: found.builtin_tools.clone(),
             price: found.price,
+            tier: found.tier.clone(),
         })
     }
 }
@@ -641,6 +677,9 @@ struct FileModel {
     /// The price table the roster records for this model, in its own currency.
     #[serde(default)]
     price: Option<Price>,
+    /// The roster's own rating of this model, `flash` / `pro` / `sota` / `test`.
+    #[serde(default)]
+    tier: Option<String>,
 }
 
 /// The providers a merged roster describes, first claim on an id winning.
@@ -685,6 +724,7 @@ fn parse_value(value: toml::Value) -> Result<Vec<Provider>, toml::de::Error> {
                         modalities: m.modalities,
                         builtin_tools: m.builtin_tools,
                         price: m.price,
+                        tier: m.tier,
                     })
                     .collect(),
                 quota: p

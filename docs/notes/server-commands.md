@@ -407,3 +407,14 @@ A tool that wants to know what a run cost asks `report` and reads one
 document. The alternative is what every adapter did before it: four ad-hoc
 queries against tables whose column names are the server's business, which
 is how a rename (`summary` to `handover`) broke a benchmark mid-run.
+
+## `#` is the harness's namespace
+
+`set_session` refuses a name beginning with `#`. Built-in sessions live there --
+SPEC's monitor is `#monitor` -- so the namespace is reserved, and the harness never
+has to look at a session and decide whether it is its own. Refused rather than
+renamed: a session under a name the caller did not choose is a session they will
+not find again.
+
+Deleting one is still allowed: a monitor that cannot work has to be removable, and
+the next failure creates it again.

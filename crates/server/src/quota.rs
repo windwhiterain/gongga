@@ -20,9 +20,19 @@ use crate::bus::EventBus;
 /// keep a child process alive for the life of the server.
 const READER_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The reading a window that attaches now should see, and whether one is being read.
+/// The newest reading, per provider, and whether one is being read.
 struct Last {
+    /// The newest reading of any provider: SPEC's `active_quota` row.
     reading: Option<Quota>,
+    /// Every provider's newest reading, by roster id.
+    ///
+    /// # Invariant
+    ///
+    /// Kept per provider because a choice between providers -- which flash model a
+    /// monitor turn runs on -- is a comparison, and the single newest reading says
+    /// nothing about the others. In memory only: a reading is a measurement of a
+    /// moment, not a fact about a home.
+    by_provider: std::collections::HashMap<String, Quota>,
     /// One read at a time: a step end inside a slow read starts no second child.
     reading_now: AtomicBool,
 }
@@ -32,6 +42,7 @@ fn state() -> &'static Mutex<Last> {
     LAST.get_or_init(|| {
         Mutex::new(Last {
             reading: None,
+            by_provider: std::collections::HashMap::new(),
             reading_now: AtomicBool::new(false),
         })
     })
@@ -40,6 +51,11 @@ fn state() -> &'static Mutex<Last> {
 /// The newest reading, for a window that has just attached.
 pub fn last() -> Option<Quota> {
     state().lock().ok()?.reading.clone()
+}
+
+/// What a provider last reported, if it was ever read in this run.
+pub fn of(provider: &str) -> Option<Quota> {
+    state().lock().ok()?.by_provider.get(provider).cloned()
 }
 
 /// Reads `provider`'s allowance and publishes it, at a step's end.
@@ -66,6 +82,9 @@ pub fn publish(bus: EventBus, provider: Option<String>) {
             state.reading_now.store(false, Ordering::SeqCst);
             if let Some(reading) = &reading {
                 state.reading = Some(reading.clone());
+                state
+                    .by_provider
+                    .insert(reading.provider.clone(), reading.clone());
             }
         }
         if let Some(reading) = reading {

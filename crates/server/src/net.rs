@@ -214,6 +214,7 @@ async fn handle_connection(
                 // Already decided by now: `--parent` at startup, or this very
                 // handshake. A client says whether it is the window in charge.
                 owner: crate::signal::owner(),
+                supervisor: crate::supervise::supervisor(),
             },
             // The one list: built-ins, client commands, and a script's.
             commands: d.catalog().await,

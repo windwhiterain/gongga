@@ -208,3 +208,15 @@ for the shipped content, `python` for a migration step, `bash` for every shell a
 session runs. `DETACHED_PROCESS` was tried first and the screen filled with
 flashing windows. `CREATE_NO_WINDOW` gives the server a console that exists and is
 never shown, and every child inherits that one instead.
+
+## A watchdog in between
+
+`spawn` answers the pid of the process it started, which is the watchdog when the
+server runs under one; the greeting answers the server's own pid and the watchdog's
+too (`ServerInfo::supervisor`). A caller comparing pids has to accept either --
+`tui::run` does, and so does `stop` below.
+
+`stop` asks first (`cancel`), and kills only when the server has not gone within
+five seconds. It kills the *watchdog* first: a server killed under a live watchdog
+is started again, which would make "stop what serves this home" false. See
+`server-supervise.md`.

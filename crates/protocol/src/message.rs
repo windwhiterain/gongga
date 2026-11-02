@@ -99,6 +99,16 @@ pub struct ServerInfo {
     /// whether it is the window in charge. See `docs/notes/protocol-message.md`.
     #[serde(default)]
     pub owner: Option<u32>,
+    /// The watchdog this server runs under, when it runs under one.
+    ///
+    /// # Invariant
+    ///
+    /// A front-end that starts a server is told the pid of the process it
+    /// spawned, which is the watchdog and not the pid answering here. Without
+    /// this, a window would read its own server as somebody else's, and a stop
+    /// that kills the answering process alone would be undone by a restart.
+    #[serde(default)]
+    pub supervisor: Option<u32>,
 }
 
 /// The `events[]` stream from the SPEC.

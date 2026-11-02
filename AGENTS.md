@@ -38,8 +38,8 @@
 
 ### L3 写成脚本，别每次手写 heredoc
 
-参考 `scripts/heir_selftest.sh`、`scripts/ship_selftest.sh`：它们自带临时 home、自己收尾、
-一行 verdict。硬性几条：
+参考 `scripts/heir_selftest.sh`、`scripts/ship_selftest.sh`、`scripts/watchdog_selftest.sh`、
+`scripts/monitor_selftest.sh`：它们自带临时 home、自己收尾、一行 verdict。硬性几条：
 
 - **pid 从 greeting 或 `server.lock` 读，永远不要 `$!`**。Git Bash 的 `$$` 是 MSYS 编号，
   Windows 的 pid 是另一套；两者混用会得到「进程还活着」这种假失败。
@@ -62,6 +62,32 @@
   历次 `*-home/` 各带一个 `ship.git`。验证脚本自带清理，或别在这里攒。
 - **不要并发跑 `evolve`**：它靠 `.dev/evolve-current` 单指针决定谁接管 home，两个 agent
   同时 stage 会互相判成被 supersede。
+
+### 绝不按镜像名杀进程
+
+**`tasklist | grep gongga-server` 然后 `taskkill` 那一批，等于杀用户正在跑的服务端。**
+2026-11-02 就这么干过一次：排除用的 pid 是几秒前读的，期间服务端被重新拉起、pid 变了，
+于是它落进「其余全部」，把用户那一回合连同服务端一起打死。同时跑着的服务端在名字上
+**没有任何区别**——同机多 worktree、同机多构建，`gongga-server.exe` 是同一个字符串。
+
+只认 pid，且只认这三种来源：
+
+| 要杀的 | pid 从哪来 |
+| --- | --- |
+| 测试服务端 | 该测试 home 的 `server.lock`（**不是 `$!`**，也**不是**镜像名） |
+| 它的 watchdog | `Get-CimInstance Win32_Process -Filter 'ProcessId=<上面的 pid>'` 的 `ParentProcessId` |
+| 测试用的 python（fake LLM 等） | 让它自己写文件：`open(pidfile,'w').write(str(os.getpid()))`。Git Bash 的 `$!` 是 MSYS 号，`taskkill` 杀掉的是另一个进程 |
+
+补充几条，都是上面那条的推论：
+
+- **判「是不是我的」用 home / 端口，不用名字**：`server.lock` 里的 pid 与
+  `--home` / `--bind` 才是身份。清理前先确认那个 pid 的 `CommandLine` 里是**你的**临时 home。
+- **`taskkill /T` 会带走整棵树**：服务端的 shell 是它的子进程，杀之前想清楚这一棵里有没有
+  你不该动的东西（用户的 detached job 就挂在服务端下面）。
+- **宁可留一个测试进程，也不扫一片**：清理失败就报出来，交给下一个 agent 或用户；不要
+  「顺手都清了」。
+- **`rm` 掉不掉 `.db` 是信号**：`Device or resource busy` 说明还有进程握着那个 home。
+  这时去杀进程，不要去 `rm -f`。
 
 ### 结果落成数据，不是笔记
 

@@ -2087,6 +2087,20 @@ impl Greeting {
         }
     }
 
+    /// The watchdog the answering server runs under, when one started it.
+    ///
+    /// # Invariant
+    ///
+    /// A front-end that spawned a server holds the watchdog's pid, so "is this
+    /// mine" is answered by either pid -- and a stop that kills only the one
+    /// answering is undone by the watchdog.
+    pub fn supervisor(&self) -> Option<u32> {
+        match &self.0 {
+            ServerMessage::Hello { server, .. } => server.supervisor,
+            _ => None,
+        }
+    }
+
     /// The window that server follows, when one does: this client compares it
     /// with its own pid to learn whether it is the window in charge.
     pub fn owner(&self) -> Option<u32> {

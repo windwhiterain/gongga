@@ -611,7 +611,7 @@ async fn expand_message(
 ///
 /// The gate is claimed before the durable write, so a second sender can only
 /// inject, never spawn a competing turn.
-async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcome {
+pub(crate) async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcome {
     let session = match d.sessions.get(name) {
         Ok(s) => s,
         Err(e) => return Outcome::err(e.to_string()),
@@ -667,6 +667,11 @@ async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcome {
 
 async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     let name = args["session"].clone();
+    // A leading `#` is the harness's own namespace: SPEC's monitor lives there,
+    // and a name a person could take is a name the harness cannot trust.
+    if let Some(refusal) = crate::monitor::reserved(&name) {
+        return Outcome::err(refusal);
+    }
     // Resolve `--model` now: a typo should fail the command that made it.
     let stated = match args.get("model") {
         None => None,
