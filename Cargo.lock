@@ -803,6 +803,8 @@ dependencies = [
  "gongga-cli",
  "pulldown-cmark",
  "ratatui",
+ "serde",
+ "serde_json",
  "shell-words",
  "tokio",
  "unicode-width",

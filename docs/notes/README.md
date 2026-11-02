@@ -82,6 +82,7 @@ note is a bug.
 
 | note | source |
 | --- | --- |
+| [`tui-cache.md`](tui-cache.md) | `crates/tui/src/cache.rs` |
 | [`tui-main.md`](tui-main.md) | `crates/tui/src/main.rs` |
 | [`tui-program.md`](tui-program.md) | `crates/tui/src/program.rs` |
 | [`tui-lib.md`](tui-lib.md) | `crates/tui/src/lib.rs` |

@@ -136,6 +136,14 @@ megabytes of the same thirteen characters.
 already known, so an entry made from a `&str` -- a line arriving -- is the only place
 one is ever allocated, and it is dropped again at once.
 
+## Entry::slot, Entry::cold — a body that is not here
+
+A block whose rows are far from every pane keeps its place in the index and loses its
+text: `cold` holds the rows it had, `slot` holds where the journal can hand it back.
+`rows()` answers from `cold` first and `reflow` refuses a body that is not here, so the
+rest of the file either holds a body or has not been asked. `docs/notes/tui-cache.md`
+is the whole of it.
+
 ## Entry::starts
 
 Byte offset of the first character of each wrapped row. The length of this list

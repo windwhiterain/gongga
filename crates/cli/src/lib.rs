@@ -288,7 +288,14 @@ impl LineKind {
 }
 
 /// What a rendered line is; the front-end only colours it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// # Invariant
+///
+/// A closed set, so it may be written down: a window's own cache stores the kind a
+/// block was drawn as, and a build that meets a kind it cannot name refuses the
+/// record rather than guessing a colour. See `docs/notes/tui-cache.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LineKind {
     /// The harness talking about itself: connected, offline, a status word.
     System,

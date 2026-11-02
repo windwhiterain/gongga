@@ -116,16 +116,72 @@ pub struct Panes {
     list_names: Vec<String>,
     /// SPEC's `active_quota` row, as the command layer spelled it.
     quota: Option<crate::QuotaRow>,
+    /// The windows this frame drew, so the rest can let their bodies go.
+    drawn: Vec<String>,
 }
 
 impl Panes {
     pub fn new() -> Self {
+        Self::with_home(std::path::Path::new(""))
+    }
+
+    /// The views over a log whose blocks are written down under `home`.
+    pub fn with_home(home: &std::path::Path) -> Self {
         Self {
-            log: Log::new(),
+            log: Log::with_home(home),
             panes: Vec::new(),
             listed: Vec::new(),
             list_names: Vec::new(),
             quota: None,
+            drawn: Vec::new(),
+        }
+    }
+
+    /// Says whether this window may write the journal it reads.
+    ///
+    /// # Invariant
+    ///
+    /// The window that owns the server, and no other: two windows on one home see
+    /// the same events, and one file may only be written by one of them.
+    /// See `docs/notes/tui-cache.md`.
+    pub fn set_writable(&mut self, writable: bool) {
+        self.log.set_writable(writable);
+    }
+
+    /// Fills an empty window from its journal, until it covers `rows`.
+    pub fn seed(&mut self, window: &str, width: usize, rows: usize) {
+        self.log.seed(window, width, rows);
+    }
+
+    /// Drops the bodies this pane is not showing.
+    pub fn evict(&mut self, window: &str, keep: std::ops::Range<usize>) {
+        self.log.evict(window, keep);
+    }
+
+    /// Says this window's rows were drawn this frame.
+    pub fn mark_drawn(&mut self, window: &str) {
+        if !self.drawn.iter().any(|name| name == window) {
+            self.drawn.push(window.to_string());
+        }
+    }
+
+    /// Starts a frame: nothing has been drawn yet.
+    pub fn begin_frame(&mut self) {
+        self.drawn.clear();
+    }
+
+    /// Ends a frame: a window nobody drew holds no bodies.
+    ///
+    /// # Invariant
+    ///
+    /// What a frame does not draw is what memory stops paying for -- a hidden
+    /// session's blocks and the rows above and below every pane.
+    /// See `docs/notes/tui-cache.md`.
+    pub fn end_frame(&mut self) {
+        for window in self.log.windows() {
+            if !self.drawn.iter().any(|name| *name == window) {
+                self.log.evict(&window, 0..0);
+            }
         }
     }
 
@@ -144,7 +200,11 @@ impl Panes {
     pub fn chrome(&mut self, width: usize) -> crate::render::Chrome {
         let command = self.command().map(|pane| pane.name.clone());
         let command_rows = match &command {
-            Some(name) => self.log.rows(name, width).max(1) as u16,
+            // Read back before it is measured: this is the area's height.
+            Some(name) => {
+                self.log.seed(name, width, 1);
+                self.log.rows(name, width).max(1) as u16
+            }
             None => 0,
         };
         crate::render::Chrome {

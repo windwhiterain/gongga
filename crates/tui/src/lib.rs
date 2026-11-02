@@ -5,6 +5,7 @@
 //! `tui` depends on `cli`, never the reverse, so the command layer stays usable
 //! from a script and a new command never changes this crate.
 
+mod cache;
 mod clipboard;
 mod fold;
 mod input;
@@ -37,6 +38,7 @@ use ratatui::backend::ClearType;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 
+pub use crate::cache::Record;
 pub use crate::input::{InputLine, apply_completion};
 pub use crate::log::Log;
 pub use crate::panes::Panes;
@@ -479,7 +481,8 @@ pub struct Tui {
 }
 
 impl Tui {
-    pub fn new(completer: SharedCompleter) -> anyhow::Result<Self> {
+    /// The window, whose blocks are written down under `home`.
+    pub fn new(completer: SharedCompleter, home: &Path) -> anyhow::Result<Self> {
         enable_raw_mode().context("enabling raw mode")?;
         let initialized = (|| {
             let mut out = stdout();
@@ -507,7 +510,7 @@ impl Tui {
         Ok(Self {
             terminal,
             screen: Screen {
-                panes: Panes::new(),
+                panes: Panes::with_home(home),
                 completion: None,
                 input: InputLine::default(),
                 status: "connecting".to_string(),
@@ -549,6 +552,10 @@ impl Tui {
     pub fn set_server(&mut self, server: Option<Server>) {
         if self.screen.server != server {
             self.screen.server = server;
+            // One writer per journal: the server's owner. See
+            // `docs/notes/tui-cache.md`.
+            let writable = matches!(server, Some(Server::Ours { .. } | Server::Adopted { .. }));
+            self.screen.panes.set_writable(writable);
             self.dirty = true;
         }
     }

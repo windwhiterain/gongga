@@ -39,6 +39,16 @@ piece of text once the view changes shape: `last_height` and `last_rows` are wha
 last frame drew, and `Pane::anchor` needs both to know which row the operator was
 actually reading.
 
+## Panes::begin_frame, end_frame, evict
+
+A frame says which windows it drew, and a window nobody drew holds no bodies: its
+blocks stay in the index with their rows and go back to the journal. `draw_rows` also
+hands its own visible row range to `Log::evict`, so the answer is per pane -- the rows
+above and below what is on screen are what memory stops paying for.
+
+Nothing is lost and nothing is a budget: the bound is the render itself, and a window
+that comes back into view reads its page again.
+
 ## Pane::anchor
 
 `scroll` is a distance from the bottom, which is what makes "stay at the newest row"
