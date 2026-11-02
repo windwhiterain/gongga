@@ -19,6 +19,305 @@ use crate::tools::detached::DetachedRegistry;
 /// The name of the shell every session starts with.
 pub const DEFAULT_BASH: &str = "default";
 
+/// Which machine a shell runs on.
+///
+/// # Invariant
+///
+/// The two are the whole of it: a session has this machine's shells always, and
+/// its remote's only while it names a remote. See `docs/notes/server-remote.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Machine {
+    Local,
+    Remote,
+}
+
+impl Machine {
+    /// How this machine is named in a sentence a reader acts on.
+    pub fn named(self) -> &'static str {
+        match self {
+            Machine::Local => "this machine",
+            Machine::Remote => "its remote",
+        }
+    }
+
+    /// The label a listing carries, which is the word the tool is called by.
+    pub fn label(self) -> &'static str {
+        match self {
+            Machine::Local => "local",
+            Machine::Remote => "remote",
+        }
+    }
+}
+
+/// The shells one session owns: this machine's, and its remote's when it has one.
+///
+/// # Invariant
+///
+/// A name is one shell. `bash` and `remote_bash` are two tools over one name space,
+/// so a name the model already used on one machine is refused on the other rather
+/// than quietly becoming a second process with the same handle. And the session's
+/// directory belongs to one machine: its remote's when it has one, this machine's
+/// otherwise -- the other side's shells start wherever that side starts by default.
+pub struct Shells {
+    local: Arc<Mutex<ShellSet>>,
+    remote: Option<Arc<Mutex<ShellSet>>>,
+}
+
+impl Shells {
+    pub fn new(local: ShellSet, remote: Option<ShellSet>) -> Self {
+        Self {
+            local: Arc::new(Mutex::new(local)),
+            remote: remote.map(|set| Arc::new(Mutex::new(set))),
+        }
+    }
+
+    /// The set one machine's shells live in, when the session has that machine.
+    fn set(&self, machine: Machine) -> Option<&Arc<Mutex<ShellSet>>> {
+        match machine {
+            Machine::Local => Some(&self.local),
+            Machine::Remote => self.remote.as_ref(),
+        }
+    }
+
+    /// The machine this session's directory belongs to.
+    ///
+    /// # Invariant
+    ///
+    /// One directory, one machine: it is the remote's when the session names one,
+    /// and this machine's otherwise. Everything that reads a path -- the prompt's
+    /// index, `@file:`, `@image:`, `@skill:` -- asks this, and nothing infers it
+    /// from how a path is spelled.
+    pub fn owner(&self) -> Machine {
+        match self.remote {
+            Some(_) => Machine::Remote,
+            None => Machine::Local,
+        }
+    }
+
+    pub fn has_remote(&self) -> bool {
+        self.remote.is_some()
+    }
+
+    /// Every machine this session has shells on, `local` first.
+    pub fn machines(&self) -> Vec<Machine> {
+        match self.remote {
+            Some(_) => vec![Machine::Local, Machine::Remote],
+            None => vec![Machine::Local],
+        }
+    }
+
+    /// Where `machine`'s own `default` shell last said it was.
+    pub fn reported_cwd(&self, machine: Machine) -> PathBuf {
+        self.set(machine)
+            .and_then(|set| set.lock().map(|set| set.reported_cwd()).ok())
+            .unwrap_or_default()
+    }
+
+    /// Where this session stands: its own directory, on the machine that owns it.
+    pub fn cwd(&self) -> PathBuf {
+        self.reported_cwd(self.owner())
+    }
+
+    /// Whether `machine`'s shells are not this machine's.
+    pub fn is_remote(&self, machine: Machine) -> bool {
+        match machine {
+            Machine::Local => false,
+            Machine::Remote => self.remote.is_some(),
+        }
+    }
+
+    /// The handle for `name` on `machine`, spawning it if this is its first use.
+    pub fn get(
+        &self,
+        machine: Machine,
+        name: &str,
+    ) -> anyhow::Result<Arc<AsyncMutex<crate::remote::shell_set::Shell>>> {
+        let Some(set) = self.set(machine) else {
+            anyhow::bail!(
+                "this session has no shells on {}: it names no remote",
+                machine.named()
+            );
+        };
+        // A name is one shell, whichever tool asked for it.
+        if let Some(other) = self.other(machine)
+            && let Ok(other) = other.lock()
+            && other.peek(name).is_some()
+        {
+            anyhow::bail!(
+                "`{name}` is already a shell on {}: a name is one shell, and `bash` and \
+                 `remote_bash` share the names. Name this one otherwise, or \
+                 `del_bash name_regex: \"^{name}$\"` first.",
+                other_machine(machine).named()
+            );
+        }
+        set.lock().unwrap_or_else(|e| e.into_inner()).get(name)
+    }
+
+    /// The handle without spawning.
+    pub fn peek(
+        &self,
+        machine: Machine,
+        name: &str,
+    ) -> Option<Arc<AsyncMutex<crate::remote::shell_set::Shell>>> {
+        self.set(machine)?
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .peek(name)
+    }
+
+    /// Where `name` lives, whichever machine holds it: `del_bash` and `check_bash`
+    /// are asked for a shell, not for a machine.
+    pub fn find(
+        &self,
+        name: &str,
+    ) -> Option<(Machine, Arc<AsyncMutex<crate::remote::shell_set::Shell>>)> {
+        for machine in self.machines() {
+            if let Some(handle) = self.peek(machine, name) {
+                return Some((machine, handle));
+            }
+        }
+        None
+    }
+
+    /// Every shell this session has, as `(machine, name)`, sorted by both.
+    pub fn names(&self) -> Vec<(Machine, String)> {
+        let mut rows: Vec<(Machine, String)> = Vec::new();
+        for machine in self.machines() {
+            if let Some(set) = self.set(machine) {
+                for name in set.lock().unwrap_or_else(|e| e.into_inner()).names() {
+                    rows.push((machine, name));
+                }
+            }
+        }
+        rows
+    }
+
+    /// Puts a fresh shell under `name` in place of `handle`; false means another took it.
+    pub fn replace(
+        &self,
+        machine: Machine,
+        name: &str,
+        handle: &Arc<AsyncMutex<crate::remote::shell_set::Shell>>,
+    ) -> bool {
+        let Some(set) = self.set(machine) else {
+            return false;
+        };
+        match set
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .replace(name, handle)
+        {
+            Ok(replaced) => replaced,
+            Err(e) => {
+                tracing::warn!(shell = %name, error = %e, "could not put a fresh shell in place");
+                false
+            }
+        }
+    }
+
+    /// Takes a shell and everything it left running, by name.
+    pub fn discard(&self, name: &str) -> Vec<crate::remote::shell_set::Discarded> {
+        let mut all = Vec::new();
+        for machine in self.machines() {
+            if let Some(set) = self.set(machine) {
+                all.extend(
+                    set.lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .discard_all(name),
+                );
+            }
+        }
+        all
+    }
+
+    /// Every shell, retired ones included, leaving the sets empty.
+    pub fn drain(&self) -> Vec<crate::remote::shell_set::Discarded> {
+        let mut all = Vec::new();
+        for machine in self.machines() {
+            if let Some(set) = self.set(machine) {
+                let mut set = set.lock().unwrap_or_else(|e| e.into_inner());
+                let drained = set.drain();
+                let retired = set.take_retired();
+                all.extend(drained);
+                all.extend(retired);
+            }
+        }
+        all
+    }
+
+    /// Drops `handle` from the retired list once its reader has finished.
+    pub fn forget_retired(&self, handle: &Arc<AsyncMutex<crate::remote::shell_set::Shell>>) {
+        for machine in self.machines() {
+            if let Some(set) = self.set(machine) {
+                set.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .forget_retired(handle);
+            }
+        }
+    }
+
+    /// The arrangement a session is born with, and the one a move installs.
+    ///
+    /// # Invariant
+    ///
+    /// `cwd` belongs to the machine the session names: a remote session's directory
+    /// is a path on that remote, and this machine's shells start wherever this
+    /// machine starts by default. `default` is the directory-owning machine's, so
+    /// the shell the model reaches for without a name is the one that is standing
+    /// in the session's own directory.
+    pub fn of(
+        local: Endpoint,
+        remote: Option<Endpoint>,
+        cwd: Option<PathBuf>,
+        env: Vec<(String, String)>,
+    ) -> anyhow::Result<Self> {
+        // `cwd` is the directory of the machine the session names; this machine's
+        // shells start where this machine starts when the directory is not theirs.
+        let here = match (&remote, &cwd) {
+            (Some(_), _) => local_cwd()?,
+            (None, Some(path)) => Some(path.clone()),
+            (None, None) => local_cwd()?,
+        };
+        let mut here_set = ShellSet::new(local, here, env.clone());
+        let mut there_set = match remote {
+            Some(endpoint) => Some(ShellSet::new(endpoint, cwd, env)),
+            None => None,
+        };
+        // The default shell is part of the session's identity, so the machine that
+        // owns the directory has one before anything asks for it.
+        match there_set.as_mut() {
+            Some(set) => {
+                set.get(DEFAULT_BASH)?;
+            }
+            None => {
+                here_set.get(DEFAULT_BASH)?;
+            }
+        }
+        Ok(Self::new(here_set, there_set))
+    }
+
+    /// The other machine, when the session has one.
+    fn other(&self, machine: Machine) -> Option<&Arc<Mutex<ShellSet>>> {
+        match machine {
+            Machine::Local => self.remote.as_ref(),
+            Machine::Remote => Some(&self.local),
+        }
+    }
+}
+
+/// Where this machine's shells start when the session's directory is elsewhere.
+fn local_cwd() -> anyhow::Result<Option<PathBuf>> {
+    Ok(Some(std::env::current_dir()?))
+}
+
+/// The machine on the other side of `machine`.
+fn other_machine(machine: Machine) -> Machine {
+    match machine {
+        Machine::Local => Machine::Remote,
+        Machine::Remote => Machine::Local,
+    }
+}
+
 /// The shell a remote keeps only to answer directory listings for completion.
 ///
 /// # Invariant
@@ -26,6 +325,31 @@ pub const DEFAULT_BASH: &str = "default";
 /// Named so it can never collide with a shell the model asks for: every tool
 /// argument naming a shell is the model's own, and this one is not a session's.
 const LISTING_SHELL: &str = "..completion";
+
+/// What a `--remote` on the wire asked for.
+///
+/// # Invariant
+///
+/// `Keep` and `Machine(None)` are different instructions, and both are reachable
+/// without a third spelling: omitting the flag keeps the machine, and `none` names
+/// this one. A value that meant "nothing was said" must never be read as "come home".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteAsk {
+    /// The flag was not given: stay where the row says.
+    Keep,
+    /// The flag was given: on this machine when it says `none`.
+    Machine(Option<String>),
+}
+
+/// A `--remote` value as the machine it names: `none` is this machine.
+pub fn remote_request(stated: &str) -> Option<String> {
+    let name = stated.trim();
+    if name.is_empty() || name.eq_ignore_ascii_case("none") {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
 
 /// Where a session was asked to move to, as `set_session` named it.
 ///
@@ -83,7 +407,8 @@ struct SessionInner {
     name: String,
     /// The rows, for the directory an endpoint shell reports.
     store: Store,
-    shells: Arc<Mutex<ShellSet>>,
+    /// This machine's shells, and the remote's when the session names one.
+    shells: Arc<Mutex<Shells>>,
     cancel: Mutex<CancellationToken>,
     /// How many times the operator has cancelled; a queued turn compares it across the wait.
     cancels: AtomicU64,
@@ -121,7 +446,7 @@ impl SessionHandle {
         &self.inner.name
     }
 
-    pub fn shells(&self) -> Arc<Mutex<ShellSet>> {
+    pub fn shells(&self) -> Arc<Mutex<Shells>> {
         self.inner.shells.clone()
     }
 
@@ -135,16 +460,12 @@ impl SessionHandle {
     pub async fn close_shells(&self) {
         // Before the first shell goes: whatever ends from here was ended by us.
         self.inner.closing.store(true, Ordering::SeqCst);
-        let (drained, retired): (Vec<_>, Vec<_>) = {
-            let mut set = self.inner.shells.lock().unwrap_or_else(|e| e.into_inner());
-            (set.drain(), set.take_retired())
+        let discarded = {
+            let shells = self.inner.shells.lock().unwrap_or_else(|e| e.into_inner());
+            shells.drain()
         };
-        tracing::info!(
-            count = drained.len(),
-            retired = retired.len(),
-            "closing shells"
-        );
-        for discarded in drained.into_iter().chain(retired) {
+        tracing::info!(count = discarded.len(), "closing shells");
+        for discarded in discarded {
             // A retired shell is held by the task reading it, so its end goes
             // through its own control rather than through its lock.
             let report = discarded.end().await;
@@ -166,13 +487,13 @@ impl SessionHandle {
     /// the server's own exit, and a move is not an exit. What a shell's end could
     /// not prove is reported to the caller, which is the one that can say so.
     async fn end_shells(&self) -> MoveReport {
-        let (drained, retired): (Vec<_>, Vec<_>) = {
-            let mut set = self.inner.shells.lock().unwrap_or_else(|e| e.into_inner());
-            (set.drain(), set.take_retired())
+        let discarded = {
+            let shells = self.inner.shells.lock().unwrap_or_else(|e| e.into_inner());
+            shells.drain()
         };
-        let ended = drained.len() + retired.len();
+        let ended = discarded.len();
         let mut unconfirmed = Vec::new();
-        for discarded in drained.into_iter().chain(retired) {
+        for discarded in discarded {
             let report = discarded.end().await;
             if !report.confirmed {
                 unconfirmed.push(report);
@@ -191,17 +512,16 @@ impl SessionHandle {
     /// lock every tool call reads it through.
     pub async fn relocate(
         &self,
-        endpoint: Endpoint,
+        local: Endpoint,
+        remote: Option<Endpoint>,
         cwd: Option<PathBuf>,
         env: Vec<(String, String)>,
     ) -> anyhow::Result<MoveReport> {
         let report = self.end_shells().await;
-        let mut fresh = ShellSet::new(endpoint, cwd, env);
-        // The default shell is part of the identity, as it is on creation.
-        fresh.get(DEFAULT_BASH)?;
+        let fresh = Shells::of(local, remote, cwd, env)?;
         {
-            let mut set = self.inner.shells.lock().unwrap_or_else(|e| e.into_inner());
-            *set = fresh;
+            let mut shells = self.inner.shells.lock().unwrap_or_else(|e| e.into_inner());
+            *shells = fresh;
         }
         tracing::info!(
             session = %self.inner.name,
@@ -389,7 +709,23 @@ impl SessionHandle {
         self.shells()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .reported_cwd()
+            .cwd()
+    }
+
+    /// The machine this session's directory belongs to.
+    pub fn owner(&self) -> Machine {
+        self.shells()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .owner()
+    }
+
+    /// Whether this session's shells run somewhere other than this machine.
+    pub fn on_remote(&self) -> bool {
+        self.shells()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .has_remote()
     }
 
     /// Keeps the row's directory equal to where an endpoint put this session's shell.
@@ -401,11 +737,16 @@ impl SessionHandle {
     /// A local row stays the directory the session was made in. See
     /// `docs/notes/server-remote.md`.
     pub fn adopt_reported_cwd(&self) {
-        let (endpoint_is_remote, cwd) = {
+        // The directory belongs to the remote, so only the remote's own report is a
+        // fact about the row; this machine's shell says where it happens to stand.
+        let cwd = {
             let shells = self.inner.shells.lock().unwrap_or_else(|e| e.into_inner());
-            (shells.endpoint().is_remote(), shells.reported_cwd())
+            if shells.owner() != Machine::Remote {
+                return;
+            }
+            shells.reported_cwd(Machine::Remote)
         };
-        if !endpoint_is_remote || cwd.as_os_str().is_empty() {
+        if cwd.as_os_str().is_empty() {
             return;
         }
         if let Err(e) = self
@@ -655,22 +996,19 @@ impl SessionManager {
         remote: Option<&str>,
     ) -> anyhow::Result<SessionHandle> {
         // Resolved before anything is created: an unknown name must not make a session.
-        let endpoint = self.endpoint_for(remote)?;
-        let recorded = remote.map(str::trim).filter(|t| !t.is_empty());
+        let recorded = remote.and_then(remote_request);
+        let endpoint = self.endpoint_for(recorded.as_deref())?;
         // Hold the live lock through the build: competing callers must not each
         // materialise and then overwrite one name.
         let mut live = self.live();
         if let Some(h) = live.get(name) {
-            self.check_same_remote(name, recorded)?;
+            self.check_same_remote(name, recorded.as_deref())?;
             return Ok(h.clone());
         }
         if let Some(row) = self.store.get_session(name)? {
-            self.check_same_remote(name, recorded)?;
+            self.check_same_remote(name, recorded.as_deref())?;
             let _ = endpoint;
             return self.materialise_locked(row, &mut live);
-        }
-        if matches!(endpoint, Endpoint::Local { .. }) && recorded.is_some() {
-            anyhow::bail!("`local` is this machine, which is what naming no remote means");
         }
         // A remote session with no directory starts where its endpoint is. A
         // stated one is read where its shell would read it.
@@ -687,7 +1025,7 @@ impl SessionManager {
         let source = model.unwrap_or(&self.model);
         let id = self
             .store
-            .create_session_on(name, source, &stored, recorded)?;
+            .create_session_on(name, source, &stored, recorded.as_deref())?;
         // Pin the model itself: reasoning blobs replay only where they were produced.
         let pinned = crate::providers::roster().place(source).map(|e| e.model);
         if let Some(pinned) = &pinned {
@@ -709,7 +1047,7 @@ impl SessionManager {
                 messages: 0,
                 // A session that just came into existence has measured nothing.
                 usage: protocol::Usage::default(),
-                remote: recorded.map(str::to_string),
+                remote: recorded.clone(),
             },
             &mut live,
         )
@@ -743,10 +1081,13 @@ impl SessionManager {
         let Some(name) = remote.map(str::trim).filter(|n| !n.is_empty()) else {
             return Ok(self.local_endpoint()?);
         };
+        if name.eq_ignore_ascii_case("none") {
+            return Ok(self.local_endpoint()?);
+        }
         if name == "local" {
             anyhow::bail!(
-                "there is no remote called `local`: this machine is what naming no \
-                 `--remote` means"
+                "there is no remote called `local`: name `none`, or leave `--remote` out, \
+                 for this machine"
             );
         }
         match self.remotes.iter().find(|r| r.name == name) {
@@ -795,15 +1136,15 @@ impl SessionManager {
     pub async fn relocate(
         &self,
         session: &SessionHandle,
-        remote: Option<&str>,
+        ask: RemoteAsk,
         cwd: Option<&str>,
     ) -> anyhow::Result<MoveOutcome> {
         // An unstated remote is the one it already records: a move of directory
         // alone must not carry the session to another machine, and the row must not
         // end up naming one place while its shells are on another.
-        let wanted_remote = match remote.map(str::trim).filter(|name| !name.is_empty()) {
-            None => self.recorded_remote(session.name()),
-            Some(name) => Some(name.to_string()),
+        let wanted_remote = match ask {
+            RemoteAsk::Keep => self.recorded_remote(session.name()),
+            RemoteAsk::Machine(remote) => remote,
         };
         // Resolved before anything is queued or ended: an unknown name must not wait
         // in a slot that would later tear down working shells on its way to failing.
@@ -846,16 +1187,22 @@ impl SessionManager {
         session: &SessionHandle,
         request: &MoveRequest,
     ) -> anyhow::Result<MoveReport> {
-        let endpoint = self.endpoint_for(request.remote.as_deref())?;
-        let wanted = match (request.cwd.as_deref(), endpoint.is_remote()) {
+        let remote = match request.remote.as_deref() {
+            Some(name) => Some(self.endpoint_for(Some(name))?),
+            None => None,
+        };
+        let single_cwd = remote.is_none();
+        let wanted = match (request.cwd.as_deref(), single_cwd) {
             // The row is handed to a shell later, and a relative path there would
             // mean wherever that shell happens to stand.
-            (Some(stated), false) => Some(stated_directory(stated, &session.cwd())),
-            (Some(stated), true) => Some(PathBuf::from(stated.trim())),
+            (Some(stated), true) => Some(stated_directory(stated, &session.cwd())),
+            (Some(stated), false) => Some(PathBuf::from(stated.trim())),
             (None, _) => None,
         };
         let env = self.session_env(session.name());
-        let report = session.relocate(endpoint, wanted.clone(), env).await?;
+        let report = session
+            .relocate(self.local_endpoint()?, remote, wanted.clone(), env)
+            .await?;
         // The row is what the next start hands back to the endpoint, so it moves
         // with the shells rather than after them.
         let placed = match (&wanted, session.cwd().to_string_lossy().to_string()) {
@@ -905,19 +1252,19 @@ impl SessionManager {
         if let Some(h) = live.get(&row.name) {
             return Ok(h.clone());
         }
-        let endpoint = self.endpoint_for(row.remote.as_deref())?;
+        let remote = match row.remote.as_deref() {
+            Some(name) => Some(self.endpoint_for(Some(name))?),
+            None => None,
+        };
         let cwd = (!row.cwd.trim().is_empty()).then(|| PathBuf::from(&row.cwd));
         // The endpoint judges its own directory: this filesystem would answer wrongly.
-        let cwd = match (&endpoint, cwd) {
-            (Endpoint::Local { .. }, Some(cwd)) if cwd.exists() => Some(cwd),
-            (Endpoint::Local { .. }, _) => Some(std::env::current_dir()?),
-            (_, cwd) => cwd,
+        let cwd = match (&remote, cwd) {
+            (None, Some(cwd)) if cwd.exists() => Some(cwd),
+            (None, _) => Some(std::env::current_dir()?),
+            (Some(_), cwd) => cwd,
         };
         let env = self.session_env(&row.name);
-        let mut shells = ShellSet::new(endpoint, cwd.clone(), env);
-        // The default shell is part of the session's identity, so it exists
-        // before anything asks for it.
-        shells.get(DEFAULT_BASH)?;
+        let shells = Shells::of(self.local_endpoint()?, remote, cwd.clone(), env)?;
         tracing::debug!(session = %row.name, model = %row.model, cwd = ?cwd, "session shells ready");
         let handle = SessionHandle {
             inner: Arc::new(SessionInner {

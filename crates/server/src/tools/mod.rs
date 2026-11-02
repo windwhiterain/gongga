@@ -14,8 +14,9 @@ use serde_json::{Value, json};
 use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use crate::remote::shell_set::{Shell, ShellSet};
+use crate::remote::shell_set::Shell;
 use crate::session::DEFAULT_BASH;
+use crate::session::{Machine, Shells};
 use crate::store::Store;
 use crate::tools::bash::{BashChunk, BashStream};
 use crate::tools::detached::DetachedRegistry;
@@ -32,8 +33,17 @@ pub struct ToolContext {
     pub call_id: String,
     /// Where capped tool output is spilled, so nothing is lost by capping.
     pub output_dir: PathBuf,
-    /// The session's named shells.
-    pub shells: Arc<StdMutex<ShellSet>>,
+    /// The session's named shells, on this machine and -- when it names one --
+    /// on its remote. See `crate::session::Shells`.
+    pub shells: Arc<StdMutex<Shells>>,
+    /// The machine this session's directory belongs to.
+    ///
+    /// # Invariant
+    ///
+    /// A tool that runs on a named machine carries that machine itself and ignores
+    /// this field; this is where the *session* stands, which is what reads a path a
+    /// message names. Nothing infers a machine from how a path is spelled.
+    pub machine: Machine,
     /// Detached jobs, keyed by session; they outlive their shell, their session and the server.
     pub detached: DetachedRegistry,
     /// Streaming sink for `tool_answer` events.
@@ -83,73 +93,84 @@ impl ToolContext {
         }
     }
 
-    /// The handle for `name`, spawning the shell if this is its first use.
-    fn shell(&self, name: &str) -> anyhow::Result<Arc<Mutex<Shell>>> {
+    /// The handle for `name` on `machine`, spawning the shell if this is its first use.
+    fn shell(&self, machine: Machine, name: &str) -> anyhow::Result<Arc<Mutex<Shell>>> {
         self.shells
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get(name)
+            .get(machine, name)
     }
 
     /// The handle without spawning, for tools that must not create one
     /// (`check_bash`, `list_bash`).
-    fn peek(&self, name: &str) -> Option<Arc<Mutex<Shell>>> {
+    fn peek(&self, machine: Machine, name: &str) -> Option<Arc<Mutex<Shell>>> {
         self.shells
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .peek(name)
+            .peek(machine, name)
     }
 
-    /// The shells that exist right now.
-    fn shell_names(&self) -> Vec<String> {
+    /// Where `name` lives, whichever machine holds it.
+    fn find(&self, name: &str) -> Option<(Machine, Arc<Mutex<Shell>>)> {
+        self.shells
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .find(name)
+    }
+
+    /// Every shell that exists right now, as `(machine, name)`.
+    fn shell_names(&self) -> Vec<(Machine, String)> {
         self.shells
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .names()
     }
 
+    /// Takes every shell filed under `name`, on any machine.
     fn discard(&self, name: &str) -> Vec<crate::remote::shell_set::Discarded> {
         self.shells
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .discard_all(name)
+            .discard(name)
     }
 
     /// Retires `handle` and puts a fresh shell under `name`; false means another shell took it.
-    fn replace_shell(&self, name: &str, handle: &Arc<Mutex<Shell>>) -> bool {
-        match self
-            .shells
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .replace(name, handle)
-        {
-            Ok(replaced) => replaced,
-            Err(e) => {
-                tracing::warn!(
-                    session = %self.session,
-                    shell = %name,
-                    "could not put a fresh shell in place: {e}"
-                );
-                false
-            }
-        }
-    }
-
-    /// Whether this session's shells are on a peer.
-    pub(crate) fn on_endpoint(&self) -> bool {
+    fn replace_shell(&self, machine: Machine, name: &str, handle: &Arc<Mutex<Shell>>) -> bool {
         self.shells
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .endpoint()
-            .is_remote()
+            .replace(machine, name, handle)
+    }
+
+    /// Whether the session's shells on `machine` are somewhere else.
+    pub(crate) fn on_endpoint(&self, machine: Machine) -> bool {
+        self.shells
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_remote(machine)
+    }
+
+    /// Where `machine`'s shells stand, read without their locks.
+    pub(crate) fn dir(&self, machine: Machine) -> PathBuf {
+        self.shells
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .reported_cwd(machine)
     }
 
     /// Caps one command's output, spilling the rest to a file named after it.
-    fn cap(&self, shell: &str, task: Option<&str>, text: String, max: usize) -> String {
+    fn cap(
+        &self,
+        machine: Machine,
+        shell: &str,
+        task: Option<&str>,
+        text: String,
+        max: usize,
+    ) -> String {
         let label = spill_label(&self.session, shell, task, &self.call_id);
         // A cut on an endpoint session is not spilled here: a path on this machine
         // is not a path the reader can open.
-        let dir = (!self.on_endpoint()).then_some(self.output_dir.as_path());
+        let dir = (!self.on_endpoint(machine)).then_some(self.output_dir.as_path());
         crate::tools::bash::cap_output(crate::prompts::shared(), &text, max, dir, &label)
     }
 }
@@ -183,6 +204,16 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> &'static str;
     fn parameters(&self) -> Value;
 
+    /// Which machine this call's paths belong to.
+    ///
+    /// # Invariant
+    ///
+    /// A shell tool answers for the machine it drives; every other tool answers for
+    /// where the session stands. That is the whole of "whose file is this".
+    fn machine(&self, ctx: &ToolContext) -> Machine {
+        ctx.machine
+    }
+
     fn run<'a>(
         &'a self,
         args: Value,
@@ -199,6 +230,12 @@ impl ToolRegistry {
         Self {
             tools: vec![
                 Box::new(BashTool {
+                    machine: Machine::Local,
+                    timeout: bash_timeout,
+                    max_output_chars,
+                }),
+                Box::new(BashTool {
+                    machine: Machine::Remote,
                     timeout: bash_timeout,
                     max_output_chars,
                 }),
@@ -217,10 +254,24 @@ impl ToolRegistry {
             .map(|t| t.as_ref())
     }
 
+    /// Which machine a named tool's paths belong to.
+    pub fn machine_of(&self, name: &str, ctx: &ToolContext) -> Machine {
+        match self.get(name) {
+            Some(tool) => tool.machine(ctx),
+            None => ctx.machine,
+        }
+    }
+
     /// Tool schemas in the shape the Responses API expects.
-    pub fn definitions(&self) -> Vec<crate::llm::ToolDefinition> {
+    ///
+    /// # Invariant
+    ///
+    /// `remote_bash` is offered only to a session that has a remote: a tool the model
+    /// can call but that can never answer is a wrong turn nobody can undo.
+    pub fn definitions(&self, has_remote: bool) -> Vec<crate::llm::ToolDefinition> {
         self.tools
             .iter()
+            .filter(|t| has_remote || t.name() != REMOTE_BASH)
             .map(|t| crate::llm::ToolDefinition {
                 name: t.name().to_string(),
                 description: t.description().to_string(),
@@ -409,6 +460,7 @@ fn background_notifier(ctx: &ToolContext, shell: &str) -> bash::BackgroundNotifi
 /// See `docs/notes/server-tools-mod.md`.
 async fn leave_running(
     ctx: &ToolContext,
+    machine: Machine,
     name: &str,
     handle: &Arc<Mutex<Shell>>,
     task: Option<&str>,
@@ -416,7 +468,7 @@ async fn leave_running(
     started: std::time::Instant,
     because: &str,
 ) -> ToolOutcome {
-    let retired = ctx.replace_shell(name, handle);
+    let retired = ctx.replace_shell(machine, name, handle);
     if !retired {
         tracing::warn!(
             session = %ctx.session,
@@ -427,7 +479,8 @@ async fn leave_running(
     let store = ctx.store.clone();
     let session = ctx.session.clone();
     let shells = ctx.shells.clone();
-    let output_dir = ctx.output_dir.clone();
+    // A cut on an endpoint is not spilled here: the file would be on this machine.
+    let output_dir = (!ctx.on_endpoint(machine)).then(|| ctx.output_dir.clone());
     let closing = ctx.closing.clone();
     // Same naming rule, with `late` where the call id goes: that call has already returned.
     let label = spill_label(&session, name, task, "late");
@@ -452,7 +505,7 @@ async fn leave_running(
             crate::prompts::shared(),
             &text,
             cap,
-            Some(&output_dir),
+            output_dir.as_deref(),
             &label,
         );
         let text = if text.is_empty() {
@@ -481,12 +534,14 @@ async fn leave_running(
         if let Err(e) = store.add_pending_task(
             &session,
             "inject",
-            &json!({"message": message, "notice": "finished"}),
+            // The machine names the side its references are read on: a notice about a
+            // command is that command's shell's, not wherever the session stands now.
+            &json!({"message": message, "notice": "finished", "machine": machine.label()}),
         ) {
             tracing::warn!(session = %session, "could not queue a finished command: {e}");
         }
         // Read to the end: no teardown has this shell's command left to stop.
-        if let Ok(mut set) = shells.lock() {
+        if let Ok(set) = shells.lock() {
             set.forget_retired(&handle);
         }
     });
@@ -553,7 +608,39 @@ const INBOX_POLL: Duration = Duration::from_millis(250);
 
 // ---------------------------------- bash ----------------------------------
 
+/// The name the tool on the session's remote is called by.
+const REMOTE_BASH: &str = "remote_bash";
+
+/// What `bash` says it is: one shell per name, on this machine.
+const LOCAL_BASH_DESCRIPTION: &str = "Run a shell command in a persistent Git Bash on this \
+     machine -- the one the server runs on. Each `name` is a separate shell that keeps \
+     its own working directory, exports and shell functions between calls, and stays \
+     alive until you `del_bash` it; omit `name` to use `default`. So reusing one name is \
+     how state accumulates -- inventing a name per command leaves one idle process behind \
+     per command. A name is one shell: `remote_bash` shares this name space, so a name \
+     the other machine already holds is refused rather than quietly becoming a second \
+     process. Output is streamed as it is produced. Use `cd` to move around instead of \
+     passing absolute paths every time. Very long output is capped: you get the beginning \
+     and the end, and the full text is written to a file named in the result -- read that \
+     file with `sed -n` or `grep`, do not cat it. With `background`, the command is \
+     started and the call returns immediately; collect what it printed later with \
+     `check_bash`.";
+
+/// What `remote_bash` says it is: the same thing, on the session's remote endpoint.
+const REMOTE_BASH_DESCRIPTION: &str = "Run a shell command in a persistent shell on this \
+     session's remote endpoint -- the machine `--remote` named, over SSH. Same `name`, \
+     `task`, `background` and `timeout_ms` as `bash`, and the same name space: `default` \
+     is the remote's when the session's directory is there, and a name the other machine \
+     already holds is refused. `cd`, exports and shell functions survive between calls \
+     because it is one process on that machine. `background` and `detached` are refused \
+     here: the job's scratch file and its completion are watched on this machine. Use a \
+     foreground command, or `&` with a log file on that machine. Paths are that machine's: \
+     a path this machine has is not necessarily a path there. Output is capped; a cut is \
+     not spilled to a file, because the file would be here and the reader is there.";
+
 pub struct BashTool {
+    /// Which machine this tool drives. One implementation, two names.
+    pub machine: Machine,
     pub timeout: Duration,
     /// 0 disables the cap.
     pub max_output_chars: usize,
@@ -561,21 +648,21 @@ pub struct BashTool {
 
 impl Tool for BashTool {
     fn name(&self) -> &'static str {
-        "bash"
+        match self.machine {
+            Machine::Local => "bash",
+            Machine::Remote => REMOTE_BASH,
+        }
     }
 
     fn description(&self) -> &'static str {
-        "Run a shell command in a persistent Git Bash. Each `name` is a \
-         separate shell that keeps its own working directory, exports and shell \
-         functions between calls, and stays alive until you `del_bash` it; omit \
-         `name` to use `default`. So reusing one name is how state accumulates -- \
-         inventing a name per command leaves one idle process behind per command. \
-         Output is streamed as it is produced. Use `cd` to move around instead of \
-         passing absolute paths every time. Very long output is capped: you get \
-         the beginning and the end, and the full text is written to a file named \
-         in the result -- read that file with `sed -n` or `grep`, do not cat it. \
-         With `background`, the command is started and the call returns \
-         immediately; collect what it printed later with `check_bash`."
+        match self.machine {
+            Machine::Local => LOCAL_BASH_DESCRIPTION,
+            Machine::Remote => REMOTE_BASH_DESCRIPTION,
+        }
+    }
+
+    fn machine(&self, _ctx: &ToolContext) -> Machine {
+        self.machine
     }
 
     fn parameters(&self) -> Value {
@@ -673,14 +760,13 @@ impl Tool for BashTool {
             }
             // `detached` names the process itself; `background` is a job of a shell.
             if detached {
-                // The job would be started here, while the session's shell is elsewhere.
-                // See `docs/notes/server-remote.md`.
-                if ctx.on_endpoint() {
+                // A detached process runs here, on the machine that holds the registry.
+                if self.machine == Machine::Remote {
                     return ToolOutcome::err(
-                        "this session's shells run on a remote endpoint, so `detached: true` \
-                         is not available: the job would be started on this machine and \
-                         outlive everything you asked for on that one. Start it in the \
-                         foreground, or with `&` and a log file on the endpoint.",
+                        "`remote_bash` has no `detached`: the process would be started on \
+                         this machine and outlive everything you asked for on that one. \
+                         Start it in the foreground, or with `&` and a log file on the \
+                         remote.",
                     );
                 }
                 // Defaulting to `default` would collide with the persistent shell.
@@ -696,8 +782,8 @@ impl Tool for BashTool {
                          persistent shell called `default`",
                     );
                 };
-                let cwd = ctx.cwd.clone();
-                if ctx.peek(name).is_some() {
+                let cwd = ctx.dir(Machine::Local);
+                if ctx.find(name).is_some() {
                     return ToolOutcome::err(format!(
                         "this session already has a persistent shell named {name:?}; \
                          `del_bash name_regex: \"^{name}$\"` discards it first"
@@ -712,7 +798,7 @@ impl Tool for BashTool {
                          is not collected -- read it at: {}",
                         job.name,
                         job.pid,
-                        ctx.cwd.display(),
+                        cwd.display(),
                         job.name,
                         job.log
                     )),
@@ -727,7 +813,7 @@ impl Tool for BashTool {
                 ));
             }
             if background {
-                let shell = match ctx.shell(name) {
+                let shell = match ctx.shell(self.machine, name) {
                     Ok(s) => s,
                     Err(e) => return ToolOutcome::err(format!("{e}")),
                 };
@@ -750,7 +836,7 @@ impl Tool for BashTool {
                 .unwrap_or(self.timeout)
                 .max(Duration::from_millis(100));
 
-            let handle = match ctx.shell(name) {
+            let handle = match ctx.shell(self.machine, name) {
                 Ok(s) => s,
                 Err(e) => return ToolOutcome::err(format!("{e}")),
             };
@@ -816,6 +902,7 @@ impl Tool for BashTool {
                 Ok(o) if o.still_running => {
                     leave_running(
                         ctx,
+                        self.machine,
                         name,
                         &handle,
                         task,
@@ -828,6 +915,7 @@ impl Tool for BashTool {
                 Err(e) if e.is::<WaitingMessage>() => {
                     leave_running(
                         ctx,
+                        self.machine,
                         name,
                         &handle,
                         task,
@@ -850,7 +938,7 @@ impl Tool for BashTool {
                     }
                     if !healthy {
                         // Replace it now, not on the next call, so no command reads the previous one's text.
-                        let replaced = ctx.replace_shell(name, &handle);
+                        let replaced = ctx.replace_shell(self.machine, name, &handle);
                         if !text.is_empty() {
                             text.push('\n');
                         }
@@ -869,7 +957,7 @@ impl Tool for BashTool {
                         ));
                     }
                     // Capped before it is stored: the transcript is replayed on every later step.
-                    let text = ctx.cap(name, task, text, self.max_output_chars);
+                    let text = ctx.cap(self.machine, name, task, text, self.max_output_chars);
                     let text = if text.is_empty() {
                         "(no output)".to_string()
                     } else {
@@ -883,7 +971,7 @@ impl Tool for BashTool {
                 }
                 Err(e) if e.is::<Cancelled>() => {
                     // Same as lost output: a shell stopped mid-flight is never handed another command.
-                    let replaced = ctx.replace_shell(name, &handle);
+                    let replaced = ctx.replace_shell(self.machine, name, &handle);
                     ToolOutcome::err(format!(
                         "cancelled: the turn was interrupted and this command was stopped. \
                          What it printed above (if anything) is all there is, and its exit \
@@ -905,7 +993,7 @@ impl Tool for BashTool {
                 Err(e) => {
                     // The write failed, so stdin may hold half a line; `healthy` is what says so.
                     if !healthy {
-                        ctx.replace_shell(name, &handle);
+                        ctx.replace_shell(self.machine, name, &handle);
                     }
                     ToolOutcome::err(format!("{e}"))
                 }
@@ -930,7 +1018,9 @@ impl Tool for CheckBashTool {
          everything printed by commands started with `background`, plus \
          anything the shell emitted while nobody was reading. Reading it \
          clears it, so each chunk is returned exactly once. Empty output means \
-         the job has not printed anything yet -- wait and ask again."
+         the job has not printed anything yet -- wait and ask again. A name names \
+         one shell on whichever machine holds it (`bash` or `remote_bash`), and the \
+         answer says which."
     }
 
     fn parameters(&self) -> Value {
@@ -953,20 +1043,32 @@ impl Tool for CheckBashTool {
     ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
             let name = shell_name(&args);
-            let Some(handle) = ctx.peek(name) else {
-                return ToolOutcome::err(format!("no live shell named {name}"));
+            let Some((machine, handle)) = ctx.find(name) else {
+                return ToolOutcome::err(format!(
+                    "no live shell named {name}; `list_bash` says which names exist"
+                ));
             };
             let mut shell = handle.lock().await;
-            let text = ctx.cap(name, None, shell.take_pending(), self.max_output_chars);
+            let text = ctx.cap(
+                machine,
+                name,
+                None,
+                shell.take_pending(),
+                self.max_output_chars,
+            );
             let jobs = shell.background_jobs();
+            let where_it_is = format!("{name} on {}", machine.label());
             if text.is_empty() {
                 return ToolOutcome::ok(if jobs == 0 {
-                    format!("{name}: no unread output")
+                    format!("{where_it_is}: no unread output")
                 } else {
-                    format!("{name}: {jobs} job(s) still running, no output yet")
+                    format!("{where_it_is}: {jobs} job(s) still running, no output yet")
                 });
             }
-            ToolOutcome::ok(format!("{text}\n[{name}: {} job(s) still running]", jobs))
+            ToolOutcome::ok(format!(
+                "{text}\n[{where_it_is}: {} job(s) still running]",
+                jobs
+            ))
         })
     }
 }
@@ -981,11 +1083,11 @@ impl Tool for ListBashTool {
     }
 
     fn description(&self) -> &'static str {
-        "List the bash of this session: their names, working directories, how much \
-         unread output they are holding, and how many background jobs are still \
-         running. Also lists the session's detached bashes, which are not any shell's \
-         and survive them all. `name_regex` narrows the answer to the names that \
-         match, which is how one name's state is asked about."
+        "List the bash of this session: their names, the machine each runs on, their \
+         working directories, how much unread output they are holding, and how many \
+         background jobs are still running. Also lists the session's detached bashes, \
+         which are not any shell's and survive them all. `name_regex` narrows the \
+         answer to the names that match, which is how one name's state is asked about."
     }
 
     fn parameters(&self) -> Value {
@@ -1024,16 +1126,17 @@ impl Tool for ListBashTool {
             let keep = |name: &str| matches.as_ref().is_none_or(|re| re.is_match(name));
 
             let mut rows = Vec::new();
-            for name in ctx.shell_names() {
+            for (machine, name) in ctx.shell_names() {
                 if !keep(&name) {
                     continue;
                 }
-                let Some(handle) = ctx.peek(&name) else {
+                let Some(handle) = ctx.peek(machine, &name) else {
                     continue;
                 };
                 let shell = handle.lock().await;
                 rows.push(json!({
                     "name": name,
+                    "machine": machine.label(),
                     "cwd": shell.cwd().display().to_string(),
                     "unread_bytes": shell.pending_len(),
                     "background_jobs": shell.background_jobs(),
@@ -1074,11 +1177,12 @@ impl Tool for DelBashTool {
     fn description(&self) -> &'static str {
         "Delete bash whose name matches a regex, either kind. A persistent shell \
          is discarded: its working directories, exports and shell functions are \
-         lost, and naming it again in `bash` starts a fresh shell in the session's \
-         directory; the background jobs it was running go with it. A detached bash \
-         is stopped, which is the only thing that can -- its log file stays where \
-         it is. Use this when a shell is wedged or polluted, and to clean up the \
-         names a long session invented."
+         lost, and naming it again starts a fresh shell in its own machine's session \
+         directory; the background jobs it was running go with it. A name is one shell, \
+         so this ends it wherever it lives -- this machine or the session's remote. A \
+         detached bash is stopped, which is the only thing that can -- its log file \
+         stays where it is. Use this when a shell is wedged or polluted, and to clean \
+         up the names a long session invented."
     }
 
     fn parameters(&self) -> Value {
@@ -1112,6 +1216,7 @@ impl Tool for DelBashTool {
             let names: Vec<String> = ctx
                 .shell_names()
                 .into_iter()
+                .map(|(_, name)| name)
                 .filter(|name| regex.is_match(name))
                 .collect();
             // One word for both kinds: nothing else ends a detached process.

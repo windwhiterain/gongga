@@ -632,7 +632,7 @@ impl Agent {
         let note = self.store.handover(id)?;
         let generation = self.store.context_generation(id)?;
         let phase_started = std::time::Instant::now();
-        let definitions = self.tools.definitions();
+        let definitions = self.tools.definitions(session.on_remote());
         let prompt = self.prompt_in_force(id, &name, llm.model(), cwd, note.as_deref())?;
         phases.prompt_ms = phase_started.elapsed().as_millis() as u64;
         // Pinned here, so every retry of this request replays the window that was
@@ -954,12 +954,14 @@ impl Agent {
     async fn attach_references(
         &self,
         ctx: &ToolContext,
+        printed_on: crate::session::Machine,
         output: &str,
         llm: &LlmClient,
     ) -> Vec<crate::image::ImageRef> {
         let mut out = Vec::new();
-        // The bytes are here; the picture is on the peer, so a name is not a file.
-        let on_endpoint = ctx.on_endpoint();
+        // The bytes are on the machine that printed the name, which is not always
+        // the one this server reads. See `docs/notes/server-meta.md`.
+        let on_endpoint = ctx.on_endpoint(printed_on);
         let named = crate::meta::mentions(output)
             .into_iter()
             .filter(|m| m.kind == protocol::Reference::Image)
@@ -1056,11 +1058,13 @@ impl Agent {
             }
         });
 
+        let machine = session.owner();
         let ctx = ToolContext {
             session: name.to_string(),
             call_id: call_id.clone(),
             output_dir: self.output_dir.clone(),
             shells: session.shells(),
+            machine,
             detached: self.detached.clone(),
             events: Some(tx),
             cancel: cancel.clone(),
@@ -1079,7 +1083,12 @@ impl Agent {
         let outcome = self.tools.run(&tool, arguments, &ctx).await;
         let run_ms = run_started.elapsed().as_millis() as u64;
         let attach_started = std::time::Instant::now();
-        let scanned = self.attach_references(&ctx, &outcome.output, llm).await;
+        // Whose pictures these are: the shell that printed them, not where the
+        // session happens to stand. See `docs/notes/server-remote.md`.
+        let printed_on = self.tools.machine_of(&tool, &ctx);
+        let scanned = self
+            .attach_references(&ctx, printed_on, &outcome.output, llm)
+            .await;
         let attach_ms = attach_started.elapsed().as_millis() as u64;
         // A tool that streamed nothing owes its output to the final chunk.
         let tail = match sent.load(Ordering::Relaxed) {

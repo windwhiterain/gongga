@@ -252,25 +252,28 @@ closed with the outcome.
   recorded, and only a local shell is ever given to `kill_tree`; a peer's pid names
   an unrelated process here.
 
-## What a remote session may not do yet
+## A session with a remote has shells on two machines
 
-Stated here so a reader is not surprised by a refusal, and so this section shrinks
-as the milestone lands. Each of these is a refusal with a message, never a local
-fallback:
+What a remote session may not do is now a short list, because the answer to most of
+it is the other tool rather than a refusal. `bash` runs on this machine and
+`remote_bash` on the session's remote; `check_bash`, `del_bash` and `list_bash` take
+a name and find it on whichever machine holds it, and say which one that was.
 
-- `bash` with `background: true` — the job's scratch file and completion watcher
-  are this machine's; a foreground command, or `&` with a log on the peer, is the
-  way today.
-- `bash` with `detached: true` — the process would be started *here* and outlive
-  the peer everything else was asked of, so it is refused with the same advice.
-- `index_skill` — the table would list this machine's project skills for a session
-  whose checkout is elsewhere, so it is refused rather than answered wrongly.
-- `@skill:` and `@image:` in a message — they are resolved on this machine before
-  the session is reached, so a remote session's message is refused when it names
-  one. `@file:` stays literal on purpose: it is a path for the endpoint to read.
-- pictures a tool output refers to are left as text, for the same reason.
-- a capped output is not spilled to a file, so no path is named: the file would be
-  on this machine and the reader is on the other one.
+The session's directory belongs to one machine: the remote's when it names one, and
+this machine's otherwise. That single fact answers "whose file is this" for the
+prompt's index, for `@file:`, and for `@image:` -- nothing infers a machine from how
+a path is spelled. A reference in a tool's output is read on the machine that ran the
+tool; a reference in a user's message, on the machine the session stands on.
+See `.agents/notes/2026-11-02-a-session-has-two-machines.md`.
+
+Still refused, each with a message and never a local fallback:
+
+- `bash` or `remote_bash` with `background: true` on the remote — the job's scratch
+  file and completion watcher are this machine's;
+- `detached: true` anywhere but this machine — the process would be started here and
+  outlive everything asked of the peer;
+- a capped output on a remote is not spilled to a file: the path would name this
+  machine, so the model is told the tail was dropped instead.
 
 ## Listing a peer's directory
 

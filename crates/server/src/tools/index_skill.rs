@@ -7,6 +7,7 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 
+use crate::session::Machine;
 use crate::tools::{Tool, ToolContext, ToolOutcome};
 
 /// Which root a skill came from, in the words a reader already knows.
@@ -29,12 +30,15 @@ impl Tool for IndexSkillTool {
     fn description(&self) -> &'static str {
         "List every skill this server can offer: its name, the one line saying \
          what it is for, the path of its SKILL.md, and which root it came from \
-         (`harness` for the skills that speak about this server, installed under \
-         the home, or `general` for the machine's own). Call it before deciding \
-         a task has no skill, and read a body only when its line matches the \
-         task -- reading every skill is the cost this table exists to avoid. \
-         Rows come in whatever order keeps this session's request prefix warm; \
-         that order ranks nothing. Takes no arguments."
+         (`project` for the checkout this session works in, `harness` for the \
+         skills that speak about this server, installed under the home, or \
+         `general` for the machine's own). Call it before deciding a task has no \
+         skill, and read a body only when its line matches the task -- reading \
+         every skill is the cost this table exists to avoid. A session whose \
+         directory is on a remote endpoint gets this machine's rows and is told \
+         where that checkout's own skills are. Rows come in whatever order keeps \
+         this session's request prefix warm; that order ranks nothing. Takes no \
+         arguments."
     }
 
     fn parameters(&self) -> Value {
@@ -51,23 +55,29 @@ impl Tool for IndexSkillTool {
         ctx: &'a ToolContext,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
-            // These would be this machine's project skills, not the peer's.
-            if ctx.on_endpoint() {
-                return ToolOutcome::err(
-                    "this session's shells run on a remote endpoint, so its project \
-                     skills live on that machine and this build cannot list them. The \
-                     home's and the machine's own skills are here, but a name from \
-                     this table would not be the endpoint's: say what you need instead \
-                     of naming a skill you cannot open.",
-                );
-            }
-            let skills = installed(&ctx.cwd);
+            let skills = installed_for(&ctx.cwd, ctx.machine);
+            // Where a session's directory is elsewhere, that checkout's own skills are
+            // that machine's files: named here, read with the tool that runs there.
+            let elsewhere = (ctx.machine == Machine::Remote).then(|| {
+                format!(
+                    "this session's directory is on its remote endpoint ({}), so the \
+                     skills of that checkout are that machine's files, under \
+                     `.agents/skills`. List and read them with `remote_bash` (`ls`, \
+                     `cat`). The rows above are this machine's -- the home's and the \
+                     machine's own -- and they are the ones `@skill:` opens.",
+                    ctx.cwd.display()
+                )
+            });
             if skills.is_empty() {
-                return ToolOutcome::ok(
+                let mut message = String::from(
                     "no skill is installed: nothing under the home's `skills/` or the \
-                     machine's. Say so rather than inventing one."
-                        .to_string(),
+                     machine's. Say so rather than inventing one.",
                 );
+                if let Some(elsewhere) = elsewhere {
+                    message.push('\n');
+                    message.push_str(&elsewhere);
+                }
+                return ToolOutcome::ok(message);
             }
             let rows = ordered(
                 skills,
@@ -78,9 +88,12 @@ impl Tool for IndexSkillTool {
                 ctx.cache_invalid_rate,
                 ctx.cache_ttl_ms,
             );
+            let mut payload = json!({"skills": rows});
+            if let Some(elsewhere) = elsewhere {
+                payload["elsewhere"] = json!(elsewhere);
+            }
             ToolOutcome::ok(
-                serde_json::to_string_pretty(&json!({"skills": rows}))
-                    .unwrap_or_else(|_| "[]".to_string()),
+                serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "[]".to_string()),
             )
         })
     }
@@ -104,11 +117,25 @@ pub struct Installed {
 /// for the command line, so a name read off the table is a name that can be
 /// opened. See `docs/notes/server-tools-index-skill.md`.
 pub fn installed(cwd: &Path) -> Vec<Installed> {
+    installed_for(cwd, Machine::Local)
+}
+
+/// Every skill a session standing on `machine` in `cwd` can actually open.
+///
+/// # Invariant
+///
+/// Only a row whose file this server can read is listed. The project layer is the
+/// checkout's, so it is read where that checkout is: a session whose directory is on
+/// a remote endpoint gets the home's and the machine's rows, and is told where its
+/// own checkout's skills are instead of being handed paths that do not exist here.
+pub fn installed_for(cwd: &Path, machine: Machine) -> Vec<Installed> {
     let roots = crate::ship::roots();
     let mut all = Vec::new();
-    for (bucket, root) in [
+    if machine == Machine::Local {
         // The checkout the session is in: the most specific holder of a skill.
-        (PROJECT, cwd.join(".agents").join("skills")),
+        all.extend(in_dir(PROJECT, &cwd.join(".agents").join("skills")));
+    }
+    for (bucket, root) in [
         (HARNESS, roots.home.join("skills")),
         (GENERAL, roots.machine.join("skills")),
     ] {

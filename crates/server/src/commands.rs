@@ -290,14 +290,22 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 arg(
                     "remote",
                     "Which machine this session's shells run on, named by a `[remotes.<name>]` \
-                     table in the server's config. Omit for this machine. Naming a \
-                     different one moves an existing session: every shell on the old \
-                     machine is ended first, and the move is refused while a turn runs.",
+                     table in the server's config. Omit for this machine, and name `none` \
+                     to move a session back here. Naming a different one moves an existing \
+                     session: every shell on the old machine is ended first, and the move \
+                     is refused while a turn runs. A session keeping a remote has shells \
+                     on both machines: `bash` here, `remote_bash` there.",
                     false,
                     Some("name"),
                     // Exactly the tables this server was started with: `local` is
                     // what omitting the flag means, and naming it is refused.
-                    CompletionSource::Static(remotes.to_vec()),
+                    CompletionSource::Static({
+                        // `none` first: it is the value that comes home, and the only one
+                        // that is not a table in the config.
+                        let mut names = vec!["none".to_string()];
+                        names.extend(remotes.to_vec());
+                        names
+                    }),
                 ),
                 arg(
                     "thinking_effort",
@@ -749,7 +757,12 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     // says. Asking for where it already is costs nothing: no shell is torn down for
     // a `--cwd` that names the directory it is standing in.
     let stated_cwd = args.get("cwd").map(String::as_str);
-    let stated_remote = args.get("remote").map(String::as_str);
+    // Three answers, not two: the flag was left out, it names this machine, or it
+    // names a remote. See `session::RemoteAsk`.
+    let asked_remote = match args.get("remote").map(String::as_str) {
+        None => crate::session::RemoteAsk::Keep,
+        Some(stated) => crate::session::RemoteAsk::Machine(crate::session::remote_request(stated)),
+    };
     let (session, moved) = match d.store.get_session(&name).ok().flatten() {
         Some(row) => {
             let live = d.sessions.peek(&name);
@@ -758,16 +771,15 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
                 .map(|session| session.cwd())
                 .unwrap_or_else(|| std::path::PathBuf::from(&row.cwd));
             let recorded_remote = row.remote.clone();
-            let wanted_remote = stated_remote
-                .map(str::trim)
-                .filter(|asked| !asked.is_empty())
-                .map(str::to_string);
-            let remote_moves = wanted_remote
-                .as_deref()
-                .is_some_and(|asked| !same_remote(asked, recorded_remote.as_deref()));
+            let (remote_moves, lands) = match &asked_remote {
+                crate::session::RemoteAsk::Keep => (false, recorded_remote.clone()),
+                crate::session::RemoteAsk::Machine(named) => {
+                    (named != &recorded_remote, named.clone())
+                }
+            };
             // Read from the destination's side: the session's directory here,
             // the server's on arrival, and the peer's when it moves.
-            let to_here = wanted_remote.is_none();
+            let to_here = lands.is_none();
             let base = if remote_moves {
                 std::env::current_dir().unwrap_or_default()
             } else {
@@ -795,7 +807,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
                     .map(|dir| dir.to_string_lossy().into_owned());
                 let moved = match d
                     .sessions
-                    .relocate(&session, wanted_remote.as_deref(), stated.as_deref())
+                    .relocate(&session, asked_remote.clone(), stated.as_deref())
                     .await
                 {
                     Ok(report) => report,
@@ -806,10 +818,15 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         }
         None => {
             // Naming a session creates it: that is the only way to get one.
-            match d
-                .sessions
-                .ensure_on(&name, stated_cwd, Some(&entry.model), stated_remote)
-            {
+            match d.sessions.ensure_on(
+                &name,
+                stated_cwd,
+                Some(&entry.model),
+                match &asked_remote {
+                    crate::session::RemoteAsk::Keep => None,
+                    crate::session::RemoteAsk::Machine(named) => named.as_deref(),
+                },
+            ) {
                 Ok(session) => (session, None),
                 Err(e) => return Outcome::err(e.to_string()),
             }
@@ -867,7 +884,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             request
                 .remote
                 .clone()
-                .unwrap_or_else(|| "local".to_string()),
+                .unwrap_or_else(|| "this machine".to_string()),
             match &request.cwd {
                 Some(path) => format!("at {path}"),
                 None => "where that endpoint starts".to_string(),
@@ -911,14 +928,6 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             "thinking_effort": tuning.thinking_effort,
         }),
     )
-}
-
-/// Whether the remote a command names is the one the session already records.
-///
-/// A row that records nothing is standing on this machine, and naming no remote is
-/// the only way to ask for that -- there is no remote called `local`.
-fn same_remote(asked: &str, recorded: Option<&str>) -> bool {
-    recorded.is_some_and(|recorded| recorded == asked)
 }
 
 /// Whether two spellings name one directory, so a `--cwd` that agrees is not a move.
