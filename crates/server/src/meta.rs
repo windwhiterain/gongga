@@ -113,16 +113,15 @@ pub const RULES: &str = "AGENTS.md";
 ///
 /// # Invariant
 ///
-/// The rules file is a root whether or not a message names it, read in `home`, not in
-/// `cwd` where the shell stands: a request already sent is never rewritten, so its map
-/// must not follow a `cd`. A reference a message names is read in `cwd`. Breadth-first
-/// by first-seen order, bounded by what has been seen; what cannot be read is left out.
+/// Everything is read in `home`, the session's own directory, never in the directory
+/// its shell happens to stand in: a request already sent is never rewritten, so its map
+/// must not follow a `cd`. The rules file is a root whether or not a message names it.
+/// Breadth-first by first-seen order; what cannot be read is left out.
 /// See `docs/notes/server-meta.md`.
-pub fn roots(home: &Path, cwd: &Path, texts: &[&str]) -> Vec<Root> {
+pub fn roots(home: &Path, texts: &[&str]) -> Vec<Root> {
     // Seeded here rather than named by a message: the index holds it behind the prose.
     let first = format!("{}{}", Reference::File.prefix(), RULES);
-    // The seed and what it names read in `home`; a message's references in `cwd`.
-    let mut queue: Vec<(String, bool)> = vec![(first.clone(), true)];
+    let mut queue: Vec<String> = vec![first.clone()];
     let mut seen: Vec<String> = vec![first];
     let mut out: Vec<Root> = Vec::new();
     for text in texts {
@@ -130,23 +129,22 @@ pub fn roots(home: &Path, cwd: &Path, texts: &[&str]) -> Vec<Root> {
             let spelling = spelling(&mention);
             if !seen.contains(&spelling) {
                 seen.push(spelling.clone());
-                queue.push((spelling, false));
+                queue.push(spelling);
             }
         }
     }
     let mut index = 0;
     while index < queue.len() {
-        let (named, from_home) = queue[index].clone();
+        let named = queue[index].clone();
         index += 1;
-        let base = if from_home { home } else { cwd };
-        let Some(content) = content(base, &named) else {
+        let Some(content) = content(home, &named) else {
             continue;
         };
         for mention in mentions(&content) {
             let spelling = spelling(&mention);
             if !seen.contains(&spelling) {
                 seen.push(spelling.clone());
-                queue.push((spelling, from_home));
+                queue.push(spelling);
             }
         }
         out.push(Root {
@@ -235,7 +233,7 @@ impl Expanded {
 pub fn literal(cwd: &Path, text: &str, rooted: Option<&[String]>) -> Vec<String> {
     match rooted {
         Some(rooted) => rooted.to_vec(),
-        None => roots(cwd, cwd, &[text])
+        None => roots(cwd, &[text])
             .into_iter()
             .map(|root| root.spelling)
             .collect(),

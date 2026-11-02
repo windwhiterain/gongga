@@ -115,10 +115,11 @@ cli=("$bin/gongga-cli.exe" --home "$home" --server "127.0.0.1:$port")
 created=$("${cli[@]}" set_session --session reader --cwd "$root" --model fake/flash-fake 2>&1)
 [[ "$created" == *'"ok":true'* ]]
 ok "a session is created in the repository" $?
-# The message names a reference, as a monitor report does: that keeps the index from
-# ever being empty, which is what makes a missing rules file show up as a new row.
+# The message names two references: a skill (resolved through the home) and a file by
+# a *relative* path, whose meaning is the thing a `cd` used to change. A report always
+# names one, which is also what keeps the index from being empty.
 sent=$("${cli[@]}" send_message --session reader \
-  --message "@skill: self-control — move the shell, then answer in one word" 2>&1)
+  --message "@skill: self-control @file: docs/notes/tui-main.md — move the shell, then answer" 2>&1)
 [[ "$sent" == *'"ok":true'* ]]
 ok "its turn is accepted" $?
 for _ in $(seq 1 120); do grep -q 'turn end session=reader' "$log" && break; sleep 0.5; done
@@ -141,6 +142,9 @@ assert len(rows) == 1, f"a moved shell rewrote the prompt: {len(rows)} rows, {[r
 only = rows[0]
 assert "@file:AGENTS.md" in only["rooted"], only["rooted"]
 assert "@skill:self-control" in only["rooted"], only["rooted"]
+# A relative path means the same file after the shell moved: it is resolved in the
+# session's directory, not where the last command left the shell.
+assert "@file:docs/notes/tui-main.md" in only["rooted"], only["rooted"]
 # The rules file's own references came with it (AGENTS.md names SPEC.md).
 assert any(root.startswith("@file:SPEC.md") for root in only["rooted"]), only["rooted"]
 INNER

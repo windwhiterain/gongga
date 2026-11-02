@@ -56,14 +56,22 @@ or none -- and appended a new system row, so the map disappeared exactly when a 
 began to explore. Measured: 21,400 → 12,017 → 21,400 characters across three rows of one
 turn, all caused by `cd`.
 
-So `roots` now takes the session's directory (the one the prompt row records) separately
-from the live `cwd`: the seeded rules file and what it names are read in the former, and a
-reference a message names in the latter, where that message was written. `scripts/
-prompt_selftest.sh` holds the line.
+So `roots` now reads everything in one directory: the session's, the one the prompt row
+records. Not a hybrid -- the first attempt kept the shell's directory for references a
+*message* names, and a message naming `@file: docs/notes/tui-main.md` lost that root the
+moment the shell `cd`d away. A relative path in a sent message means one file for the
+life of the session; that is what "already sent" has to mean for a map carried in the
+prompt. `scripts/prompt_selftest.sh` holds the line.
 
-One consequence is worth stating: a session whose directory has no `AGENTS.md` reads
-none, even if its shell later `cd`s somewhere that has one. To reach another directory's
-rules, name them: `@file: /that/dir/AGENTS.md`.
+Two consequences, both accepted:
+
+- a session whose directory has no `AGENTS.md` reads none, even if its shell later `cd`s
+  somewhere that has one. To reach another directory's rules, name them:
+  `@file: /that/dir/AGENTS.md`.
+- a reference in a message is relative to the session's directory, not to wherever the
+  shell stood when the message was typed. Absolute paths and references written before a
+  `cd` are unaffected; a model that `cd`s and then names `src/x.rs` means `home/src/x.rs`,
+  so it should write the full path.
 
 ## `roots` is the walk
 

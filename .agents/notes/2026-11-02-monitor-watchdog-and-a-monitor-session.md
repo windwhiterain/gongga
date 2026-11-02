@@ -248,3 +248,18 @@ selftest 因此加了两条断言：`@skill:monitor` 必须出现在 prompt 行�
 顺带学到的一点：`index_of` 在 walk 结果为空时返回 `None`、于是回放旧行，这个兜底正好把「cd 到
 没有 AGENTS.md 的目录」的回归藏在第一条测试里——第一版测试因此通过。要让它咬住，消息必须点名一个
 引用（monitor 的报告总是点名 `@skill:`），或者 `cd` 到另一个有自己的 `AGENTS.md` 的目录。
+
+**再改一次（同日，用户指出）**：第一版修复保留了「消息点名的引用按活 cwd 读」，理由是"那条消息
+就是在那儿写的"。用户否掉：「消息的 replace 不应该是发送的时候就 replace 了吗？只要 replace 了就算
+solve 了，就不管了。探针证实他是对的——消息里写 `@file: docs/notes/tui-main.md`，工具一
+`cd /tmp`，那一根就整根消失（2 行，第二行只剩 `['@skill:self-control']`）。同一条 invariant，
+只是走了更窄的一扇门。
+
+所以现在 `roots(home, texts)` 一律在**会话记录的目录**里读。两个已接受的后果写进 note：会话目录
+没有 `AGENTS.md` 就没有，`cd` 到别处不会读到那儿的；消息里的相对路径相对会话目录，而不是打字时
+shell 站的地方——要指别处就写全路径。
+
+变异检验这次做对了：把「base 用行里记的目录」改成「base 用 shell 的目录」，测试立刻红，且失败信息
+正是线上形状（两行，第二行只剩 `@skill:self-control`）。前两次变异无效，因为变异点选在
+`index_of` 内部（`current_dir()` 根本不随 shell 动），而不是选在决定 base 的那一行——记一笔：
+**变异要打在真正做决定的那行上**。

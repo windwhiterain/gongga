@@ -453,7 +453,7 @@ impl Agent {
             .map(|kept| std::path::PathBuf::from(&kept.cwd))
             .unwrap_or_else(|| std::path::PathBuf::from(Self::stated(cwd)));
         // Built from what the references say now, so an edited body reaches the model.
-        let (index, rooted) = match self.index_of(id, name, model, cwd, &home) {
+        let (index, rooted) = match self.index_of(id, name, model, &home) {
             Some((index, rooted)) => (Some(index), rooted),
             None => match &stored {
                 Some(kept) => (kept.index.clone(), kept.rooted.clone()),
@@ -518,15 +518,13 @@ impl Agent {
     /// entry is invented for a reference that could not be read, and the spellings
     /// returned are exactly the ones the index carries, so `meta::expand` leaves
     /// those mentions literal.
-    /// The rules file is read in `home` and a reference a message names in `cwd`, so
-    /// the map does not move when the shell does and a message's own paths still
-    /// mean what they said. See `docs/notes/server-agent.md`.
+    /// Everything is read in `home`, the session's own directory: a `cd` in its shell
+    /// must not rewrite what was already sent. See `docs/notes/server-agent.md`.
     fn index_of(
         &self,
         id: i64,
         name: &str,
         model: &str,
-        cwd: &std::path::Path,
         home: &std::path::Path,
     ) -> Option<(String, Vec<String>)> {
         // The queue as well as the transcript: a message delivered before this row
@@ -534,7 +532,7 @@ impl Agent {
         let mut texts = self.store.user_texts(id).ok()?;
         texts.extend(self.store.queued_texts(name).unwrap_or_default());
         let borrowed: Vec<&str> = texts.iter().map(String::as_str).collect();
-        let roots = crate::meta::roots(home, cwd, &borrowed);
+        let roots = crate::meta::roots(home, &borrowed);
         if roots.is_empty() {
             return None;
         }

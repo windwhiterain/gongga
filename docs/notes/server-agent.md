@@ -375,13 +375,18 @@ and appended a new system row: the map vanished exactly when the session started
 exploring (`cd ~/.gongga` → `AGENTS.md` gone, 21,400 → 12,017 characters), and the
 prefix the provider had cached was lost with it.
 
-The index now takes two directories: `home`, which the row itself records and which a
-later move does not change, and the live `cwd`. The seeded `AGENTS.md` -- and whatever
-it names -- is read in `home`, because the rules of a session are the rules of where
-it belongs; a reference a *message* names is read in `cwd`, because that is where the
-message was written and its relative paths mean what they said. `scripts/
-prompt_selftest.sh` holds it: a turn whose tool call `cd`s into `/tmp` must write no
-second prompt row.
+The index now reads everything in one directory: `home`, the one the prompt row itself
+records, which a later move does not change. That covers the seeded `AGENTS.md`, whatever
+it names, and the references a *message* names -- a relative path in a message means the
+same file for the life of the session, which is what "already sent" has to mean for a map
+that is part of what was sent. `scripts/prompt_selftest.sh` holds it: a turn whose tool
+call `cd`s into `/tmp` must write no second prompt row, with both a skill and a relative
+`@file:` in the message.
+
+The first attempt at this fix kept the live `cwd` for message-named references, on the
+theory that a message should be read where it was written. It failed its own probe: a
+message naming `@file: docs/notes/tui-main.md` lost that root as soon as the shell `cd`d
+away, which is the same rewrite through a narrower door.
 
 One fallback is worth knowing about, because it hid this for a while: when the walk
 finds nothing at all, `index_of` returns `None` and `prompt_in_force` replays the
