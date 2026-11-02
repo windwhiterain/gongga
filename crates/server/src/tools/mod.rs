@@ -374,9 +374,11 @@ fn background_notifier(ctx: &ToolContext, shell: &str) -> bash::BackgroundNotifi
             None => "finished, though its exit status could not be read".to_string(),
         };
         let job = end.job;
+        // How long it ran is the one thing the call that started it could not say.
+        let ran = crate::agent::spent(end.ran.as_millis() as u64);
         let message = format!(
-            "The background job {job} you started in shell `{shell}` has {status}. \
-             What it printed is in that shell's unread buffer: `check_bash` with \
+            "The background job {job} you started in shell `{shell}` has {status} after \
+             {ran}. What it printed is in that shell's unread buffer: `check_bash` with \
              name `{shell}` collects it."
         );
         // A deleted session owes nothing, and its rows would be stranded.
@@ -411,7 +413,7 @@ async fn leave_running(
     handle: &Arc<Mutex<Shell>>,
     task: Option<&str>,
     cap: usize,
-    waited: Duration,
+    started: std::time::Instant,
     because: &str,
 ) -> ToolOutcome {
     let retired = ctx.replace_shell(name, handle);
@@ -430,7 +432,8 @@ async fn leave_running(
     // Same naming rule, with `late` where the call id goes: that call has already returned.
     let label = spill_label(&session, name, task, "late");
     let owned = name.to_string();
-    let secs = waited.as_secs();
+    // One measurement, spelled twice: the call that returned, and the notice later.
+    let waited = started.elapsed().as_millis() as u64;
     let handle = handle.clone();
     tokio::spawn(async move {
         // Nobody holds this shell now, so the lock is free: the call that waited has returned.
@@ -462,9 +465,12 @@ async fn leave_running(
             Some(c) => format!("finished with exit status {c}"),
             None => "finished, though the exit status could not be read".to_string(),
         };
+        // The total, not the wait: only now is there a number to give.
+        let total = crate::agent::spent(started.elapsed().as_millis() as u64);
         let message = format!(
-            "The command you started in shell `{owned}`, which outlived its \
-             {secs}s wait and was left running, has now {status}.\n\n{text}"
+            "The command you started in shell `{owned}`, which outlived its {} wait \
+             and was left running, has now {status} after {total}.\n\n{text}",
+            crate::agent::spent(waited)
         );
         // Marked like any other notice: the server speaking, not the operator.
         // The server's own exit stops this command; it did not finish. See
@@ -485,11 +491,12 @@ async fn leave_running(
         }
     });
     ToolOutcome::ok(format!(
-        "still running after {secs}s: {because}, so the wait ended and it was handed to the \
+        "still running after {}: {because}, so the wait ended and it was handed to the \
          background. The command itself was not stopped -- it continues in the old shell \
          `{name}`, which is now detached from this session, and its output will be posted \
          to this session when it finishes. `{name}` is a fresh shell now, in the session's \
          working directory.{}",
+        crate::agent::spent(waited),
         if retired {
             ""
         } else {
@@ -813,20 +820,19 @@ impl Tool for BashTool {
                         &handle,
                         task,
                         self.max_output_chars,
-                        timeout,
+                        started,
                         "its deadline passed",
                     )
                     .await
                 }
                 Err(e) if e.is::<WaitingMessage>() => {
-                    let waited = started.elapsed();
                     leave_running(
                         ctx,
                         name,
                         &handle,
                         task,
                         self.max_output_chars,
-                        waited,
+                        started,
                         "a message arrived for this session",
                     )
                     .await

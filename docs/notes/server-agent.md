@@ -248,7 +248,7 @@ same bug as a silent one.
 
 A streaming tool keeps its body as it streamed it. Replacing it with the final
 output would be wrong for the paths whose output is not what they printed:
-`leave_running` answers "still running after 30s ..." while the real output was
+`leave_running` answers "still running after 30.0s ..." while the real output was
 the stream, and bash's capped text would retire rows the window already drew.
 One body per result, and the verdict's time still rides on the head alone, so the
 folded row says exactly what it said before.

@@ -197,6 +197,15 @@ A job that ends tells its session, which is what SPEC's "background bash ended
 will notice its session" asks for. The count is decremented *before* the notice
 is sent, so a reader woken by it never sees the job still listed as running.
 
+`BackgroundEnd::ran` is measured here, from this task starting -- the write that
+launched the job was the statement before it -- to the read that saw the sentinel.
+That is up to one `POLL` (150ms) longer than the job, and it is the only clock
+available: the wrapper is a line of shell text handed to a shell we do not own, so
+the job cannot report a timestamp we could trust more. A job worth backgrounding
+runs for seconds or minutes, where 150ms is not a number anyone acts on -- and the
+alternative, no duration at all, is what left a model unable to tell a job that
+finished in a second from one that took an hour.
+
 `ended` is not "the tail stopped": a scratch file that never appears breaks the
 loop too, and that is a shell problem rather than a finished job. Silence is the
 honest answer there, because a status nobody measured is worse than no status.

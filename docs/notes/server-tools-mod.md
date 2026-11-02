@@ -184,6 +184,11 @@ that reaches both states a session can be in -- busy reads it at the next step
 boundary, idle is woken for it by `commands::nudge_inboxes`. Posting a tool result
 instead would only ever reach a turn that had already moved on.
 
+The notice carries how long the job ran, because nothing else in the session can:
+`check_bash` returns output and a count, `list_bash` a number of jobs, and the call
+that started it returned before the job had a duration to report. `spent` spells it,
+so a notice and a tool result write a duration the same way.
+
 A deleted session is skipped rather than written to: nothing would ever read that
 row, and its name may be reused by a different session later.
 
@@ -204,6 +209,18 @@ meaning "a shell you can use", and an old one whose output arrives later. Having
 them share one path is what keeps those two promises from drifting apart, and
 the messages differ only in `because`, since that is the only thing the model
 needs to know that the two paths do not share.
+
+It takes the clock rather than a duration, so both callers measure the same thing
+and neither can hand it a number that is not the wait: the deadline arm used to
+pass its `timeout_ms`, which is the ceiling it asked for rather than the time it
+spent. The result says `still running after 1.0s`, and the notice later says how
+long the command ran in all -- two numbers, because a model deciding what to do
+next needs the second one, and reporting only the wait would let a command that
+ran for a minute read as one that ran for five seconds.
+
+Both are `spent`'s spelling, and the notice is the only place the total exists:
+the row that carried `[elapsed ...]` for the call was written when the call
+returned, an hour before the command did.
 
 ## BashTool::run (the late spill label)
 

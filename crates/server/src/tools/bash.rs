@@ -48,6 +48,8 @@ pub struct BackgroundEnd {
     pub job: u64,
     /// The status the wrapper's sentinel carried; `None` when the job died without one.
     pub code: Option<i32>,
+    /// How long it ran: at most one [`POLL`] longer than the job itself.
+    pub ran: Duration,
 }
 
 /// Where a finished background job reports.
@@ -513,6 +515,8 @@ async fn tail_background(
     jobs: Arc<AtomicUsize>,
     notify: Option<BackgroundNotifier>,
 ) {
+    // The script that launched this job was written just before this task started.
+    let started = std::time::Instant::now();
     let mut offset = 0usize;
     let mut missing = 0u32;
     let mut carry = Vec::new();
@@ -558,7 +562,11 @@ async fn tail_background(
     if ended {
         if let Some(notify) = notify {
             let code = if settled { exit_code(&carry) } else { None };
-            notify(BackgroundEnd { job, code });
+            notify(BackgroundEnd {
+                job,
+                code,
+                ran: started.elapsed(),
+            });
         }
     }
     let _ = tokio::fs::remove_file(&path).await;
