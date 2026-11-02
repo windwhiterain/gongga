@@ -7,6 +7,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -26,7 +27,12 @@ use crate::markdown;
 struct Entry {
     kind: LineKind,
     /// The window this block belongs to, as the line said.
-    window: String,
+    ///
+    /// # Invariant
+    ///
+    /// Shared with its window's ledger, so a session holds its own name once
+    /// however many blocks it writes. See `docs/notes/tui-log.md`.
+    window: Arc<str>,
     /// The caller's name for this block, so a click can find it again.
     key: String,
     /// The label this block was opened with, printed on its top visible row.
@@ -74,7 +80,7 @@ impl Entry {
     fn with_tag(window: &str, kind: LineKind, tag: &str, text: String, width: usize) -> Self {
         let mut entry = Self {
             kind,
-            window: window.to_string(),
+            window: Arc::from(window),
             key: String::new(),
             tag: tag.to_string(),
             source: match kind {
@@ -210,9 +216,15 @@ impl Entry {
             // A result says how it went, never what it printed: SPEC's
             // `tool_result{ok, time (spent)}` is the whole of its summary.
             (LineKind::ToolOutput | LineKind::ToolError, _) => self.summary(),
-            // A call's summary is its name and flags; with no label the body is
-            // the call itself, which is what its first row says.
-            (LineKind::ToolCall, _) if !self.tag.is_empty() => self.tag.trim_end().to_string(),
+            // A call's label, or its summary composed from the fields: they are
+            // the only copy kept.
+            (LineKind::ToolCall, _) => match self.tag.trim_end() {
+                "" => match &self.call {
+                    Some(call) => call.summary(),
+                    None => self.row(0).to_string(),
+                },
+                label => label.to_string(),
+            },
             // An item whose body is its own label: the folded row is its first row.
             _ => self.row(0).to_string(),
         };
@@ -278,6 +290,14 @@ impl Entry {
             return;
         }
         let width = self.content_width(width);
+        // A call's label is one row of its fields, cut at the width it is drawn
+        // at. See `docs/notes/tui-log.md`.
+        if let Some(call) = &self.call {
+            self.tag = cut(
+                &call.summary(),
+                width.saturating_sub(self.kind.mark().width()),
+            );
+        }
         self.sections = match self.expanded {
             true => self.section_text(width).unwrap_or_default(),
             false => String::new(),
@@ -709,7 +729,7 @@ struct Hit {
 pub struct Log {
     entries: Vec<Entry>,
     /// One ledger per window name a line has carried, each at its own width.
-    views: HashMap<String, Ledger>,
+    views: HashMap<Arc<str>, Ledger>,
     /// Open stream key -> its block. Its identity, not its position.
     open: HashMap<String, usize>,
     /// How many rows one block may fill. See [`Log::set_block_size`].
@@ -775,8 +795,9 @@ impl Log {
         let mut moved = Vec::with_capacity(self.entries.len());
         let mut kept = Vec::with_capacity(self.entries.len());
         for entry in std::mem::take(&mut self.entries) {
-            moved.push((entry.window != window).then(|| kept.len()));
-            if entry.window != window {
+            let mine = entry.window.as_ref() != window;
+            moved.push(mine.then(|| kept.len()));
+            if mine {
                 kept.push(entry);
             }
         }
@@ -845,6 +866,14 @@ impl Log {
     /// Records block `at` in its own window's ledger.
     fn attach(&mut self, at: usize) {
         let rows = self.contributions(at);
+        // The name is the ledger's key: the block takes that copy, not its own.
+        let shared = self
+            .views
+            .get_key_value(self.entries[at].window.as_ref())
+            .map(|(name, _)| name.clone());
+        if let Some(shared) = shared {
+            self.entries[at].window = shared;
+        }
         let window = self.entries[at].window.clone();
         let pos = {
             let ledger = self.views.entry(window).or_default();
@@ -878,10 +907,14 @@ impl Log {
     /// the previous one is dropped rather than kept out of sight -- there is no way
     /// to scroll back to it, and holding it would be holding what cannot be read.
     pub fn clear(&mut self, window: &str) {
-        if !self.entries.iter().any(|entry| entry.window == window) {
+        if !self
+            .entries
+            .iter()
+            .any(|entry| entry.window.as_ref() == window)
+        {
             return;
         }
-        self.entries.retain(|entry| entry.window != window);
+        self.entries.retain(|entry| entry.window.as_ref() != window);
         // The open map points at indexes that have moved: re-derive it from the
         // blocks that are still streaming.
         let open: Vec<(String, usize)> = self
@@ -1092,19 +1125,20 @@ impl Log {
     }
 
     /// Replaces a call's provisional body with its structured name and fields.
-    /// Output already received stays in the result section.
+    ///
+    /// # Invariant
+    ///
+    /// The fields are the body: what the block streamed before this -- the
+    /// arguments spelled out -- is dropped rather than kept beside them, because a
+    /// described call is drawn either folded (its label) or opened (its fields).
+    /// Holding both was the same arguments twice. The buffer goes with the text:
+    /// clearing a `String` keeps the allocation that text needed.
+    /// See `docs/notes/tui-log.md`.
     pub fn describe(&mut self, name: &str, key: &str, head: &cli::protocol::Head) {
         let at = match self.entry_by_key(key) {
             Some(at) => at,
             None => {
-                self.stream(
-                    name,
-                    key,
-                    crate::LineKind::ToolCall,
-                    &format!("{} ", head.summary()),
-                    &head.detail(),
-                    true,
-                );
+                self.stream(name, key, crate::LineKind::ToolCall, &head.name, "", true);
                 let Some(at) = self.entry_by_key(key) else {
                     return;
                 };
@@ -1114,8 +1148,7 @@ impl Log {
         let width = self.width_of(&self.entries[at].window);
         let before = self.contributions(at);
         let entry = &mut self.entries[at];
-        entry.tag = format!("{} ", head.summary());
-        entry.text = head.detail();
+        entry.text = String::new();
         entry.kind = crate::LineKind::ToolCall;
         entry.call = Some(head.clone());
         // A call's structure is complete independently of its result stream.

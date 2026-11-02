@@ -106,9 +106,9 @@ A label that arrives after its block opened, because the outcome of a call is on
 known when it ends: `ok · 1.2s ` in front of the output the block already holds.
 
 The label is not text -- that is the whole point of `Entry::tag` -- so setting it is a
-reflow, not a prefix: the title is clipped independently of the body and never
-block's own text down. The row count can change, so both indexes are corrected around
-it (`contributions` before and after) or every block behind it would be off by the
+reflow, not a prefix: the title is clipped independently of the body and never eats
+into the block's own text. The row count can change, so the sum is corrected around it
+(`contributions` before and after) or every block behind it would be off by the
 difference.
 
 A key nobody opened is nothing, and a label already in place is left alone: the caller
@@ -124,6 +124,17 @@ put back at draw time (see `Entry::view_row`).
 
 It used to be glued onto the first chunk (`format!("{tag}{text}")`), which is how
 a block whose label had scrolled off the top ended up unnamed on screen.
+
+## Entry::window — one name, one allocation
+
+The window a block belongs to is an `Arc<str>` shared with that window's ledger,
+which is keyed by it. A session's name is then held once however many blocks it
+writes, instead of once per block: at a hundred thousand blocks the copies were
+megabytes of the same thirteen characters.
+
+`Log::attach` does the sharing by taking the ledger's own copy when the name is
+already known, so an entry made from a `&str` -- a line arriving -- is the only place
+one is ever allocated, and it is dropped again at once.
 
 ## Entry::starts
 
@@ -266,10 +277,15 @@ log can be scrolled.
 `max_scroll` is the rows hidden above the window when it is pinned to the newest
 line. The key handler clamps against it, and only the renderer can work it out.
 
-## Log::width
+## Ledger::width
 
-The width the cached row offsets were measured at. 0 until a frame has been
-drawn, because until then nobody knows how wide the terminal is.
+The width that window's cached row offsets were measured at; 0 until a frame has
+drawn it, because until then nobody knows how wide the pane is.
+
+It began as one `Log::width`, and that one number was wrong twice: a block is drawn
+in one pane, so the width a block is laid out at is that pane's, and a log-wide width
+meant every frame laid every block out again as it alternated between the command
+area's width and a session pane's. See `Log::lay_out`.
 
 ## Log::stream
 
@@ -384,6 +400,32 @@ into the code, and this repository forbids limits an operator cannot lift. It
 existed because the head-fixed row could only ever show the front of the text.
 A capped block keeps its whole text like any other block and simply counts fewer
 of its rows, so there is nothing to discard and no budget to set.
+
+## Log::describe — the fields are the body
+
+`describe` replaces a call's provisional body with its structured name and fields, and
+what it does *not* keep is what the block streamed before it. A described call is drawn
+either folded -- its label, one row -- or opened -- its fields, indented under their
+names -- so the arguments spelled as one string were a second copy of the same bytes
+that nothing ever drew.
+
+That measurement is why it is gone: a call holding a 96 KiB command kept 402 KiB
+(`text`, the field's value, and the label composed from it) and needs 100 KiB, which is
+the arguments once. The label was the third copy, so it is now derived at `reflow` and
+cut to the width it will be drawn at, exactly like `sections`: one row of a summary is
+a display derivative, not a fact worth holding whole.
+
+What is still kept beside the fields is the name and the `summary` fields, because the
+folded row is the label and it is drawn on every frame; composing it per frame would
+trade the memory back for an allocation on each draw.
+
+## Entry::tag — derived for a described call
+
+`Entry::tag` is the label the block opened with, and for a call it is the head's
+summary cut to the width the block is drawn at. `Log::relabel` still writes a label
+outright for every other block, because a result's verdict arrives on the wire and no
+field of the block implies it. A call's label is never relabelled after `describe`, so
+the two writers do not meet.
 
 ## Paired call and result streams
 
