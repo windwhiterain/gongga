@@ -445,10 +445,27 @@ cmd_stage() {
 
   disk_line "disk:"
 
-  echo "== tests =="
-  # Test binaries are named after the crate, not after the shipped exe, so this
-  # does not need to relink a running server or client.
-  cargo test --workspace 2>&1 | tail -n 25
+  # Every target, test cfg included: a workspace that does not compile is the one
+  # thing a handover must not install, and `--all-targets` answers exactly that
+  # without linking a test binary per crate -- measured here at 7 s against 14 s, for
+  # no tests to run. `set -e` is on, so the failure path has to be an `if`.
+  echo "== check =="
+  if ! cargo check --workspace --all-targets > "$RUN/.check.log" 2>&1; then
+    tail -n 25 "$RUN/.check.log"; rm -f "$RUN/.check.log"
+    die "the workspace does not compile; not staging a handover to it"
+  fi
+  tail -n 3 "$RUN/.check.log"; rm -f "$RUN/.check.log"
+  # A workspace that does have tests still runs them: a handover is the wrong moment
+  # to discover one is red, and one grep is cheaper than linking a test binary to
+  # find out there is nothing to run.
+  if grep -rqsE --include=*.rs '#\[(tokio::)?test\]' "$ROOT/crates"; then
+    echo "== tests =="
+    if ! cargo test --workspace > "$RUN/.test.log" 2>&1; then
+      tail -n 25 "$RUN/.test.log"; rm -f "$RUN/.test.log"
+      die "the workspace's tests fail; not staging a handover to it"
+    fi
+    tail -n 3 "$RUN/.test.log"; rm -f "$RUN/.test.log"
+  fi
 
   echo "== build =="
   # The whole distribution, as one file: the bundle carries server, cli and tui,
@@ -518,7 +535,7 @@ unknown; refusing to stage a handover that would produce a server nobody owns"
   cat "$RUN/evolve-$stamp.txt"
   echo
   echo "next: launch detached, then swap"
-  echo "  bash --detached: $launcher"
+  echo "  bash --detached: $launcher   (it must be a detached job: see SKILL.md)"
   echo "  $PWD/.agents/skills/evolve/evolve.sh swap $stamp"
   echo
   if [ "$clean" = 1 ]; then

@@ -10,7 +10,7 @@ description: 替换掉正在跑自己的那个服务端——改完 server 代�
 ```bash
 S=$PWD/.agents/skills/evolve/evolve.sh
 
-$S stage              # 跑测试 + 构建 + 暂存 + 生成 launcher（会先报磁盘余量）
+$S stage              # 编译检查 + 构建 + 暂存 + 生成 launcher（会先报磁盘余量）
 $S stage --clean      # 同上，并让继任者在旧服务端退出后、绑定端口前跑 cargo clean
 # 用 bash --detached 启动它打印的 launcher
 $S swap <stamp>       # 确认继任者真在等，再发 cancel
@@ -43,6 +43,27 @@ $S clean              # 收掉没人会 swap 的旧继任者（--artifacts 连�
 
 一句话：**换手是交付动作，不是调试手段。** 调试用 `cargo test`、用临时 home 起一个
 临时服务端，别拿正在跑你的那个当试验台。
+
+## 为什么没有 `stage --launch`
+
+试过，做不通，而失败的样子是"home 空着"——所以记在这里，别再试第二遍。
+
+脚本里能把一个新进程放出去的办法我试了三种（`nohup`、`cmd start`、`Start-Process`），
+它们在**命令结束之后**都还活着，但一到 `cancel` 就全死了：连同我在同一个临时 home 里
+起的旧服务端一起，在同一秒被杀，日志里没有一行优雅退出。
+
+原因在 `crates/server/src/tools/job.rs`：会话的 shell 是一个 job object，标志只有
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`，**没有 `BREAKAWAY_OK`**。工具调用里派生的一切都
+在这个 job 里，`cancel` 收掉 shell 时连它一起收。而继任者要活到旧服务端退出之后，所以
+它**必须**是 `bash --detached` 那个 job 本身——那是服务端自己 spawn 的、在 shell job
+之外的东西，脚本产不出来。
+
+推论：`swap` 的守卫（继任者 pid 活着 + 心跳新鲜）不是形式主义，它是唯一能挡住"取消了却
+没人接班"的东西。手起继任者时别绕过它。
+
+真要让 `stage --launch` 成立，得让服务端提供一个"以 detached job 方式跑一个程序"的命令
+（脚本能调的那种），也就是改 SPEC 里 server cmd 的清单——那是另一个决定，不是这个脚本
+能自己解决的。
 
 ## 为什么顺序不能反
 
