@@ -46,11 +46,16 @@ after the system prompt, before the first user message, inject one message with 
 transcript that has been sent must not be change.
 
 ## Meta
-replace in messages.
-- `@image: <path>` replaced as file id, referencing image will be upload via File API in advance.
+preprocess before saving to transcripts.
+- `@image: <path>` , append id to it `@image: <path> (id)`.
+  - copy the image to transcript, dedup by path.
 - `@skill: <name>` append path metadata to it `@skill: <name> (path)`.
 - `@file: <path>` no replace.
 in cmd_input, those three should be auto complete.
+
+upload referencing image to provider in advance to get id => OpenAI API File ID mapping. 
+
+replace `id` with mapped File ID before sending for request.
 
 ### Meta Prefix Cache Optimize
 for the first user message to a empty session, find all meta references recursively with the prompt as the root, find the optimized meta trajectory, append the meta's content with its raw form (without replacement) as index to the system prompt, then the user message with no replacement.
