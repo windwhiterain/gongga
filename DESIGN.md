@@ -560,7 +560,7 @@ Shell **按 `session_name/bash_name` 建键**，所以一个会话持有的是�
    ```
    `bash` did not run: `command` is required.
      unexpected: `cmd` (did you mean `command`?)
-     `bash` takes: background: boolean (optional), command: string (required), detached: boolean (optional), name: string (optional), task: string (optional), timeout_ms: integer (optional)
+     `bash` takes: background: boolean (optional), command: string (required), description: string (optional), detached: boolean (optional), name: string (optional), timeout_ms: integer (optional)
    ```
 
    "did you mean" 不是同义词表，是一条规则：两个名字是否一个"按序拼在"另一个里

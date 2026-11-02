@@ -1368,7 +1368,23 @@ fn notice_budget(configured: u64, context: Option<u64>, percent: Option<u8>) -> 
 /// is; how that looks belongs to the front-end, so restyling is a change to one
 /// crate and nothing on the wire moves. See `docs/notes/protocol-message.md`.
 pub(crate) fn call_head(tool: &str, arguments: &str) -> protocol::Head {
-    protocol::Head::call(tool, call_fields(tool, arguments))
+    let value: serde_json::Value = serde_json::from_str(arguments).unwrap_or_default();
+    protocol::Head::call(tool, description_of(&value), call_fields(tool, &value))
+}
+
+/// What the call is for, in the model's own words: the one argument read as a title.
+///
+/// # Invariant
+///
+/// It is never a [`protocol::Field`]: an argument with no label of its own would be
+/// spelled a second time under a name the row already said. Only ever a title -- a
+/// missing or nonsensical one costs an untitled row, not a failed call.
+fn description_of(value: &serde_json::Value) -> &str {
+    value
+        .get("description")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .unwrap_or_default()
 }
 
 /// A call's arguments, each marked with whether SPEC's `abstract` shows it.
@@ -1376,12 +1392,11 @@ pub(crate) fn call_head(tool: &str, arguments: &str) -> protocol::Head {
 /// # Invariant
 ///
 /// The per-tool list is this crate's: it owns the tools, so it knows a `bash`
-/// call is summarised by `{name, task, background, detached, timeout}` and that
+/// call is summarised by `{name, background, detached, timeout}` and that
 /// `command` is the detail's. The wire carries the verdict per field, so adding a
 /// tool touches nothing a front-end reads. Every argument is sent once: what the
 /// summary leaves out is here, so opening needs no request.
-fn call_fields(tool: &str, arguments: &str) -> Vec<protocol::Field> {
-    let value: serde_json::Value = serde_json::from_str(arguments).unwrap_or_default();
+fn call_fields(tool: &str, value: &serde_json::Value) -> Vec<protocol::Field> {
     let summary = summary_keys(tool);
     // SPEC's `toolcall{tool_name, ...}`: the name rides on the head, where it is
     // the one part of the summary that is always there.
@@ -1406,7 +1421,7 @@ fn call_fields(tool: &str, arguments: &str) -> Vec<protocol::Field> {
         .collect();
     if let Some(map) = value.as_object() {
         for key in map.keys() {
-            if key != "command" && !ordered.contains(key) {
+            if !owns_row(key) && !ordered.contains(key) {
                 ordered.push(key.clone());
             }
         }
@@ -1430,9 +1445,20 @@ fn summary_keys(tool: &str) -> &'static [&'static str] {
     match tool {
         // SPEC lists bash's own set; another tool is summarised by nothing yet,
         // which still reads better than a wall of JSON.
-        "bash" => &["name", "task", "background", "detached", "timeout"],
+        "bash" => &["name", "background", "detached", "timeout"],
         _ => &[],
     }
+}
+
+/// Whether an argument already has a row of its own, so it is not listed again.
+///
+/// # Invariant
+///
+/// `command` is the detail's first row, and `description` is the head's title; an
+/// argument written twice is a row that says the same thing twice, and the second
+/// copy would be the one the model's words were escaped into.
+fn owns_row(key: &str) -> bool {
+    matches!(key, "command" | "description")
 }
 
 /// The name the tool's own schema uses, where SPEC spells it otherwise.

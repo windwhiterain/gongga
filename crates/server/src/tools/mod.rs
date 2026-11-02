@@ -171,11 +171,11 @@ impl ToolContext {
         &self,
         machine: Machine,
         shell: &str,
-        task: Option<&str>,
+        description: Option<&str>,
         text: String,
         max: usize,
     ) -> String {
-        let label = spill_label(&self.session, shell, task, &self.call_id);
+        let label = spill_label(&self.session, shell, description, &self.call_id);
         // A cut on an endpoint session is not spilled here: a path on this machine
         // is not a path the reader can open.
         let dir = (!self.on_endpoint(machine)).then_some(self.output_dir.as_path());
@@ -471,7 +471,7 @@ async fn leave_running(
     machine: Machine,
     name: &str,
     handle: &Arc<Mutex<Shell>>,
-    task: Option<&str>,
+    description: Option<&str>,
     cap: usize,
     started: std::time::Instant,
     because: &str,
@@ -491,7 +491,7 @@ async fn leave_running(
     let output_dir = (!ctx.on_endpoint(machine)).then(|| ctx.output_dir.clone());
     let closing = ctx.closing.clone();
     // Same naming rule, with `late` where the call id goes: that call has already returned.
-    let label = spill_label(&session, name, task, "late");
+    let label = spill_label(&session, name, description, "late");
     let owned = name.to_string();
     // One measurement, spelled twice: the call that returned, and the notice later.
     let waited = started.elapsed().as_millis() as u64;
@@ -637,7 +637,7 @@ const LOCAL_BASH_DESCRIPTION: &str = "Run a shell command in a persistent Git Ba
 /// What `remote_bash` says it is: the same thing, on the session's remote endpoint.
 const REMOTE_BASH_DESCRIPTION: &str = "Run a shell command in a persistent shell on this \
      session's remote endpoint -- the machine `--remote` named, over SSH. Same `name`, \
-     `task`, `background` and `timeout_ms` as `bash`, and the same name space: `default` \
+     `description`, `background` and `timeout_ms` as `bash`, and the same name space: `default` \
      is the remote's when the session's directory is there, and a name the other machine \
      already holds is refused. `cd`, exports and shell functions survive between calls \
      because it is one process on that machine. `background` and `detached` are refused \
@@ -691,13 +691,15 @@ impl Tool for BashTool {
                     "type": "string",
                     "description": "The command line to execute."
                 },
-                "task": {
+                "description": {
                     "type": "string",
-                    "description": "What this call is for, in a few words. Optional, and \
-                                     never executed: it only names the file that a too-long \
-                                     output is spilled to, so that later you (and whoever \
-                                     reads the dumps) can tell one run from another. \
-                                     Example: `run the server tests`."
+                    "description": "What this call is for, in a few words -- it is read \
+                                     right after the tool's name, so say what the run is \
+                                     for, not what the command is (`check the state`, not \
+                                     `bash`). Optional, and never executed: it also names \
+                                     the file that a too-long output is spilled to, so that \
+                                     later you (and whoever reads the dumps) can tell one \
+                                     run from another. Example: `run the server tests`."
                 },
                 "background": {
                     "type": "boolean",
@@ -746,9 +748,10 @@ impl Tool for BashTool {
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .unwrap_or(DEFAULT_BASH);
-            // Only ever a label: a missing or odd one costs a less informative path, not a failed call.
-            let task = args
-                .get("task")
+            // Only ever a title: a missing or odd one costs an untitled row and a less
+            // informative path, not a failed call.
+            let description = args
+                .get("description")
                 .and_then(|v| v.as_str())
                 .map(str::trim)
                 .filter(|s| !s.is_empty());
@@ -913,7 +916,7 @@ impl Tool for BashTool {
                         self.machine,
                         name,
                         &handle,
-                        task,
+                        description,
                         self.max_output_chars,
                         started,
                         "its deadline passed",
@@ -926,7 +929,7 @@ impl Tool for BashTool {
                         self.machine,
                         name,
                         &handle,
-                        task,
+                        description,
                         self.max_output_chars,
                         started,
                         "a message arrived for this session",
@@ -965,7 +968,8 @@ impl Tool for BashTool {
                         ));
                     }
                     // Capped before it is stored: the transcript is replayed on every later step.
-                    let text = ctx.cap(self.machine, name, task, text, self.max_output_chars);
+                    let text =
+                        ctx.cap(self.machine, name, description, text, self.max_output_chars);
                     let text = if text.is_empty() {
                         "(no output)".to_string()
                     } else {
@@ -1277,10 +1281,10 @@ impl Tool for DelBashTool {
     }
 }
 
-/// How a spill file is named: `session-shell-task-callid`, the same for both paths.
-fn spill_label(session: &str, shell: &str, task: Option<&str>, call_id: &str) -> String {
-    match task {
-        Some(task) => format!("{session}-{shell}-{task}-{call_id}"),
+/// How a spill file is named: `session-shell-description-callid`, the same for both paths.
+fn spill_label(session: &str, shell: &str, description: Option<&str>, call_id: &str) -> String {
+    match description {
+        Some(description) => format!("{session}-{shell}-{description}-{call_id}"),
         None => format!("{session}-{shell}-{call_id}"),
     }
 }

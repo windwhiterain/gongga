@@ -41,9 +41,9 @@ different shell.
 ## ToolContext::cap
 
 Cap one command's output, spilling the rest to a file named after where it
-came from: session, shell, `task`, call id.
+came from: session, shell, `description`, call id.
 
-The `task` is in there because a dump is read later, out of context -- a dozen
+The `description` is in there because a dump is read later, out of context -- a dozen
 `...-default-call_00_abc.out` files say nothing, and the whole point of
 keeping the full output is being able to find the right one again. `slug()` in
 `bash.rs` is what makes it safe for a path.
@@ -111,10 +111,12 @@ knows is right far more often than it is wrong, and the schema should be the
 thing that bends. A missing one is rejected by `argument_error` first, in the
 schema's own words; what is left here is a `command` that is not a string.
 
-## BashTool::run (the `task` argument)
+## BashTool::run (the `description` argument)
 
-Only ever a label: it names the spill file and nothing else, so a missing or
-nonsensical one costs a less informative path rather than a failed call.
+Two readers, one string: the call's row (SPEC's `toolcall{tool_name·description}`)
+and the spill file's name. Only ever a label either way, so a missing or
+nonsensical one costs an untitled row and a less informative path rather than a
+failed call -- which is why it is read here and not validated.
 
 ## BashTool::run (background and detached)
 

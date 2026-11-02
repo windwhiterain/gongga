@@ -271,7 +271,7 @@ the model can feed it straight back to `sed` or `grep`.
 ## slug
 
 ASCII alphanumerics survive, and so does every non-ASCII alphanumeric: a model
-writes its `task` in whichever language it is thinking in, and replacing `中文`
+writes its `description` in whichever language it is thinking in, and replacing `中文`
 with `---` would throw away the only part of the name a human could have read.
 Everything else -- spaces, slashes, colons -- becomes `-`, because those are
 what make a path either unreadable or plain wrong.
@@ -283,5 +283,5 @@ components over 255 characters. A shorter slug is not a smaller budget.
 ## slug (`is_alphanumeric`)
 
 `is_alphanumeric` is Unicode-aware, which is the whole point: it keeps the CJK
-and accented text a task is likely written in, while still rejecting `/`, `:`
+and accented text a description is likely written in, while still rejecting `/`, `:`
 and spaces.

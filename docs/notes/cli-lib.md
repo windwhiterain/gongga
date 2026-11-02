@@ -234,7 +234,7 @@ a tool error rather than an error of the harness.
 ## Client::handle_tool_call
 
 One block per call, keyed `c:<call_id>` and labelled with the words the server sent
-(`bash{"command":"ls"} `). The key is the call and not the turn: SPEC's `abstract`
+(`bash·check the state, name=default `). The key is the call and not the turn: SPEC's `abstract`
 holds a call and its result together, and the id is the only thing they share -- two
 calls in one turn are two items, not one block that keeps growing.
 

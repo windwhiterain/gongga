@@ -307,6 +307,17 @@ pub struct Head {
     /// The item's own name -- a tool's, for a call -- or empty when it has none.
     #[serde(default)]
     pub name: String,
+    /// What the item is for, in the words it was asked in; empty when it says nothing.
+    ///
+    /// # Invariant
+    ///
+    /// A call carries at most one, and it is the model's own sentence: it is read
+    /// on the name's row, right after the name, which is the only place a folded
+    /// item can afford one line of prose. It is not a [`Field`]: an argument with
+    /// no label of its own would be spelled a second time under a name the row
+    /// already said.
+    #[serde(default)]
+    pub description: String,
     /// The item's arguments, each with the label it is read under.
     ///
     /// # Invariant
@@ -338,6 +349,7 @@ impl Head {
         Self {
             kind,
             name: String::new(),
+            description: String::new(),
             fields: vec![Field {
                 label: String::new(),
                 value: text.into(),
@@ -346,30 +358,49 @@ impl Head {
         }
     }
 
-    /// A tool call: its name, then the arguments the model gave it.
-    pub fn call(name: impl Into<String>, fields: Vec<Field>) -> Self {
+    /// A tool call: its name, what it is for, then the arguments the model gave it.
+    pub fn call(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        fields: Vec<Field>,
+    ) -> Self {
         Self {
             kind: HeadKind::Call,
             name: name.into(),
+            description: description.into(),
             fields,
         }
     }
 
-    /// The folded row: SPEC's `abstract`, from the name and the marked fields.
+    /// The name and, after it, what the item is for: one row's first words.
+    ///
+    /// # Invariant
+    ///
+    /// The separator is spelled once, here, because both rows of an item open with
+    /// this and a front-end that had to join them would be a second place to change.
+    /// An item with no description is its name alone -- never a trailing mark.
+    fn title(&self) -> String {
+        match self.description.is_empty() {
+            true => self.name.clone(),
+            false => format!("{}\u{b7}{}", self.name, self.description),
+        }
+    }
+
+    /// The folded row: SPEC's `abstract`, from the title and the marked fields.
     pub fn summary(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
         if !self.name.is_empty() {
-            parts.push(self.name.clone());
+            parts.push(self.title());
         }
         parts.extend(self.fields.iter().filter(|f| f.summary).map(spelled));
         parts.join(", ")
     }
 
-    /// The open item: one row per argument, the unnamed value first.
+    /// The open item: the title, then one row per argument.
     pub fn detail(&self) -> String {
         let mut rows: Vec<String> = Vec::new();
         if !self.name.is_empty() {
-            rows.push(self.name.clone());
+            rows.push(self.title());
         }
         rows.extend(self.fields.iter().map(spelled));
         rows.join("\n")

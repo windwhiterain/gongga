@@ -190,11 +190,18 @@ A block's introduction: what kind of thing it is, and the arguments it was given
 each with a label and a `summary` flag.
 
 The split is one the protocol can make and the server must not. **The schema is
-SPEC's**: `toolcall{tool_name, {name, task, background, detached, timeout} (bash)}`
+SPEC's**: `toolcall{tool_name·description, {name, background, detached, timeout} (bash)}`
 says which arguments summarise a bash call, so that list is the protocol's own
 vocabulary, not a rendering choice. What the server adds is the *verdict per field* --
 this call set `name`, and `command` is detail -- because only it knows what the model
 actually passed.
+
+`description` is the one argument that is not a `Field`. It is what the call is *for*,
+in the model's own words: the folded row can afford exactly one line of prose and this
+is it, read on the name's row -- `bash·check the state`. As a field it would need a
+label the title already said, and a field is one argument among several while this is
+the row's subject. `Head::title` spells the `·` once, so the folded row and the open
+item cannot disagree about where the name ends.
 
 So the wire carries `Field { label, value, summary }` and never a table of names. A
 front-end composes two rows from one list: the folded `abstract` is the fields marked
