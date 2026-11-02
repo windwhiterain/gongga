@@ -79,17 +79,33 @@ Conflict；而**只要还有一个 Conflict，pin 就不前进**。于是 base �
 工作树的字节——工作树是 CRLF，装进去的是 LF，差一个字节就再冲突一次。写回之后四个入口
 都在，`skill heir/remote/image/subagent --help` 四条都跑通。
 
-**没有动 `reconcile`。** 它的 Invariant（"A file is never overwritten while it differs from
-the content that installed it"）不该我一个人改，两个候选方向留给用户：
+**用户选了 B，已实现。** 判据是"磁盘上的字节是不是某个 commit 的同名 blob"：是 → 这是
+别的 pin 装进去的，不是编辑 → 上游覆盖它。落地时比原提案多做了半步：
 
-- **A 冲突也记账**：Conflict 时把路径写进 `kept` 并让 pin 前进，base 立刻变新鲜，这个文件
-  从此按"当前字节"参与下一次合并。代价：真冲突之后用户不再被提醒，而现在这条 halting
-  就是"提醒"的实现。
-- **B 认出身世**：冲突分支里也走 `is_a_past_install`（磁盘字节等于缓存里某个 commit 的同名
-  blob → 安装产物而不是人改的 → 更新）。代价是每个冲突文件一次历史遍历，与"O(1)，至少
-  O(log n)"的品味冲突，除非换成一次 hash 索引。
+- 光在 Conflict 分支里加判断不够。同一个陈旧 base 也能让三方合并**成功**——把两个不同 pin
+  的内容拼成一段谁都没写过的正文，然后一声不响地写下去。所以那道判据放在 `decide` **之前**，
+  三个"两边都动过"的分支一起管：`Keep | Merge(_) | Conflict`，命中就改成 `Update`。
+- 只在 `!settled` 时问：已经被记成"读者的"文件不再重判。
+- 三个分支之外不问，所以一次什么都不改的启动**不多花一次** `git rev-list`。
+- `Report` 多一个 `rebased: Vec<String>`，日志里跟着 `conflicts=` 一起打印：修好一个 home
+  这件事要让人读到一句话，而不是从一个计数里推出来。
+- 原 `Decision::Keep if old.is_none() && is_a_past_install(...)` 那条特例被吸收了：同一个问题
+  现在只有一个地方问。
 
-两者都要单独验证。这一轮已经换过一次手，不适合在同一轮再 stage 一次。
+放弃了什么：读者把某段正文逐字节改回旧版本，而同一文件上游也动过——那次改动会被上游覆盖。
+那些字节除了"这个文件的某个更早版本"之外不携带任何本地信息，而 base 本来会说同一句话。
+
+**验证**：`scripts/install_selftest.sh`（新写的 L3，一个服务端生命周期一个场景，临时 home，
+`trap` 收尾，一行 verdict）。三个场景 + 十条断言，18~30 秒：
+
+| 场景 | 修前 | 修后 |
+| --- | --- | --- |
+| 陈旧 base + 磁盘是别的 pin 装的文件（合并本会成功） | 合并成立、文件被拼成两版正文 | `rebased=[…] conflicts=[]`，文件等于 pin，pin 前进 |
+| 同一状态，第二次启动 | — | `written=0 updated=0 … rebased=[]`，pin 不动 |
+| 读者真的改了一行 | 冲突、pin 不动 | 一样：`conflicts=[…]`、pin 不动、那行还在 |
+
+把修复撤掉重跑（L2）：4 条断言变红，其中一条是"文件等于 pin"——它抓的正是那个不声不响的
+拼接。恢复后 10 条全绿。
 
 ## 验证
 

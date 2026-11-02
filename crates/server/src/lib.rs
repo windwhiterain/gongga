@@ -192,6 +192,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         updated = installed.updated,
         merged = installed.merged,
         removed = installed.removed,
+        rebased = ?installed.rebased,
         conflicts = ?installed.conflicts,
         fetched = installed.fetched,
         "shipped content"

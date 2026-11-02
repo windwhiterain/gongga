@@ -117,6 +117,8 @@ pub struct Report {
     pub written: usize,
     /// Files upstream moved and nobody locally had touched.
     pub updated: usize,
+    /// Files their own copy of another pin had installed, so upstream replaced them.
+    pub rebased: Vec<String>,
     /// Files whose local edits and upstream changes merged cleanly.
     pub merged: usize,
     /// Files already identical to the pinned content.
@@ -258,10 +260,10 @@ fn plans(roots: &Roots, ship: &Ship) -> Vec<(PathBuf, Vec<Mapping>, Vec<Mapping>
 /// # Invariant
 ///
 /// A file is never overwritten while it differs from the content that installed
-/// it: the last reconciled pin is the merge base, the disk is our side, the new
-/// pin is theirs, and a conflict leaves the reader's file untouched and says so.
-/// A root with a conflict keeps its old pin too, so the next start repeats the
-/// same merge instead of treating an unmerged file as settled.
+/// it: the last reconciled pin is the merge base, the disk is our side, and a
+/// conflict leaves the reader's file and the old pin alone, so the next start
+/// repeats that merge. Bytes that equal a commit's blob for their own path are
+/// an install of another pin, not an edit, so upstream replaces them.
 fn reconcile(
     cache: &Path,
     root: &Path,
@@ -302,18 +304,28 @@ fn reconcile(
             .as_deref()
             .and_then(|pin| blob(cache, pin, &file.source));
         let settled = kept.contains(&file.source);
-        match decide(ours.as_deref(), base.as_deref(), &theirs) {
-            // No base, but these bytes are an install of some older pin: it is
-            // not the reader's, so it is replaced rather than kept.
-            Decision::Keep
-                if old.is_none()
-                    && ours.as_deref().is_some_and(|ours| {
-                        is_a_past_install(cache, &ship.commit, &file.source, ours)
-                    }) =>
-            {
-                put(&file.dest, &theirs, file.exec)?;
-                report.updated += 1;
+        let decision = decide(ours.as_deref(), base.as_deref(), &theirs);
+        // The base can fall behind the files a newer pin left (see the Invariant),
+        // and then "both sides moved" is a lie: ours moved because it *is* an
+        // install, of some other pin. Bytes that equal a commit's blob for this
+        // exact path carry no local edit, so merging them against a stale base
+        // invents text -- upstream replaces them.
+        let reinstalled = !settled
+            && matches!(
+                decision,
+                Decision::Keep | Decision::Merge(_) | Decision::Conflict
+            )
+            && ours
+                .as_deref()
+                .is_some_and(|ours| is_a_past_install(cache, &ship.commit, &file.source, ours));
+        let decision = match decision {
+            _ if reinstalled => {
+                report.rebased.push(file.source.clone());
+                Decision::Update
             }
+            other => other,
+        };
+        match decision {
             Decision::Place => {
                 put(&file.dest, &theirs, file.exec)?;
                 report.written += 1;

@@ -85,10 +85,33 @@ A conflict or a kept file leaves the pin where it was, so the next start repeats
 same three-way merge against the same base. Advancing the pin past an unresolved file
 would silently adopt the unmerged result as the new truth.
 
+That rule has a failure mode of its own, and it is not theoretical: a base can fall
+*behind* the files a newer pin left, because the pin is written only when nothing
+conflicted. One transient conflict then makes every file the newer pin touched look like
+"both sides moved", so it conflicts too, so the pin never advances -- and the home stops
+receiving content while every start reports the same list of conflicts, which reads like
+"the reader edited these". Observed on this machine on 2026-11-02: five files whose bytes
+each matched a different pin, and a `.ship-pin` several publishes behind all of them.
+
+So before believing "both sides moved", `reconcile` asks whether ours moved at all: bytes
+that equal a commit's blob for their own path are an install of another pin, not an edit,
+and upstream replaces them (`reinstalled`). It is the question the `old.is_none()` case
+already asked with `is_a_past_install`, asked for one more reason -- and asked only for the
+three decisions that mean both sides moved, so a start that changes nothing spawns no
+`git rev-list`.
+
+The one thing it gives up: a reader whose edit restores an earlier version byte-for-byte,
+while upstream also moved that file, loses the edit. Those bytes carry no local
+information beyond "some earlier version of this file", which is exactly what the base
+would have said.
+
 ## Decision
 
 Six outcomes, and the sixth is the reason the tool exists: `Keep` is a file the reader
-authored where upstream also has one. It is not a merge failure -- nothing was
+authored where upstream also has one. What `decide` sees is ours, base and theirs; the
+reinstall question is asked *around* it, because "these bytes are an install of some other
+pin" is a fact about provenance rather than about a three-way merge, and folding it into the
+base would have meant a `git` call per editable file per start. It is not a merge failure -- nothing was
 refused -- it is the answer to "should the harness overwrite the config I wrote?",
 which is no.
 
@@ -129,6 +152,10 @@ failed fetch is damage or merely offline.
 
 ## Report
 
-The counters exist for the log line; the two lists exist because they name files a
-human has to open. `written` and `updated` on a start that should have changed nothing
-is the signal that the pin moved under a home.
+The counters exist for the log line; the lists exist because they name files a human has
+to open. `written` and `updated` on a start that should have changed nothing is the signal
+that the pin moved under a home.
+
+`rebased` is separate from `updated` for that reason: both write the pinned bytes over what
+was on disk, but only one of them means "this home had fallen behind and the harness fixed
+it" -- a sentence a reader should meet in the log rather than deduce from a count.

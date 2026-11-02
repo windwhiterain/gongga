@@ -4,6 +4,9 @@
 ## Crate Structure
 all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, live inside directory "crates/xxx". 
 - protocol
+- skill: where a skill is on disk -- the three roots, their precedence, the frontmatter,
+  and the entry a body runs. No dependency, because the server and the command layer
+  both read it and neither may link the other.
 - server: binary (the backend program; also a library for its own tests).
 - cli: binary.
   - cmd fully documented and diagnosed, transparent server cmd wrapper, do not know server cmd.
@@ -135,9 +138,33 @@ for the first user message to a empty session, find all meta references recursiv
   - `set_render_session --session <name> [--show <bool>]`
   - `connect_server [--ip <ip>](default: localhost) --port <port>`
   - `serve --port <port> [--home <path>](default: "~/.gongga")`
+  - `skill <name> [args...]` | `skill ls` | `skill which <name>` | `skill run <name>`:
+    run the entry a skill declares, resolved by the roots above. argv is passed through
+    unparsed, the entry's exit code is this command's, and neither needs a server nor a
+    runtime -- an entry is a file on this disk. `run` reaches a skill whose own name is
+    `ls` or `which`.
 
 ## Skill
+a skill is a directory holding `SKILL.md`: `name`, `description`, and what its body needs.
 use python cripts read/write gongga home, calling server cmd.
+
+three roots, and the first one to hold a name wins: the session's checkout
+(`<cwd>/.agents/skills`), the home (`<home>/skills`, installed from the pin), the machine
+(`~/.agents/skills`). A name found in more than one is reported as shadowed, never
+resolved silently.
+
+- `metadata.entry: <file>` in the frontmatter names the program the body runs, relative to
+  that skill's directory. It sits under `metadata`, which the Agent Skills specification
+  defines as an arbitrary mapping, so a skill carrying it stays valid elsewhere.
+- a body runs its entry from **its own directory** -- `SKILL_DIR=<dir of SKILL.md>` then
+  `"$SKILL_DIR/<entry>"` -- never from an install path. The anchor costs nothing here:
+  `@skill:` expansion and `index_skill` both hand out the `SKILL.md` path.
+- a skill with no entry is a body and nothing to run.
+
+### Invariant
+one reading of the roots, their order and the frontmatter: `skill`, used by the server's
+table and `@skill:` expansion, by the command layer's completion, and by the entry runner.
+A second walk is a second answer to "which file does this name open".
 
 ## Skill: Self Control
 do whatever user can do to the server.
