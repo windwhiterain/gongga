@@ -19,6 +19,14 @@ use crate::tools::detached::DetachedRegistry;
 /// The name of the shell every session starts with.
 pub const DEFAULT_BASH: &str = "default";
 
+/// The shell a target keeps only to answer directory listings for completion.
+///
+/// # Invariant
+///
+/// Named so it can never collide with a shell the model asks for: every tool
+/// argument naming a shell is the model's own, and this one is not a session's.
+const LISTING_SHELL: &str = "..completion";
+
 /// What a session was told to use, as `set_session` left it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Tuning {
@@ -324,6 +332,14 @@ pub struct SessionManager {
     /// The named peers a session may run on. See `docs/notes/server-remote.md`.
     targets: Vec<crate::config::TargetConfig>,
     live: Arc<Mutex<HashMap<String, SessionHandle>>>,
+    /// One shell per target, opened only to list a directory for completion.
+    ///
+    /// # Invariant
+    ///
+    /// Kept apart from every session's shells and never locked while `live` is:
+    /// a directory listing is answered while a turn is running, and a Tab must not
+    /// queue behind one. See `docs/notes/server-remote.md`.
+    listing_shells: Arc<Mutex<HashMap<String, ShellSet>>>,
 }
 
 impl SessionManager {
@@ -343,7 +359,81 @@ impl SessionManager {
             shell_env,
             targets,
             live: Arc::new(Mutex::new(HashMap::new())),
+            listing_shells: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// The entries of one directory, as a `--cwd` completion would offer them.
+    ///
+    /// # Invariant
+    ///
+    /// Answers bare names and whether each is a directory, never a path: the
+    /// caller keeps the part of the path already typed and formats the candidate,
+    /// so nothing here invents a spelling for a filesystem it cannot see.
+    pub async fn list_paths(
+        &self,
+        target: Option<&str>,
+        directory: &str,
+    ) -> anyhow::Result<Vec<(String, bool)>> {
+        let endpoint = self.endpoint_for(target)?;
+        if !endpoint.is_remote() {
+            let root = match directory.trim() {
+                "" => std::env::current_dir()?,
+                path => PathBuf::from(path),
+            };
+            let mut entries: Vec<(String, bool)> = std::fs::read_dir(root)?
+                .flatten()
+                .map(|entry| {
+                    (
+                        entry.file_name().to_string_lossy().into_owned(),
+                        entry.file_type().map(|t| t.is_dir()).unwrap_or(false),
+                    )
+                })
+                .collect();
+            entries.sort();
+            return Ok(entries);
+        }
+        let name = target.unwrap_or_default().to_string();
+        // The handle is taken and the map released before awaiting: a listing must
+        // not hold the map across a peer's answer.
+        let shell = {
+            let mut shells = self
+                .listing_shells
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let set = shells
+                .entry(name.clone())
+                .or_insert_with(|| ShellSet::new(endpoint, None, self.shell_env.clone()));
+            set.get(LISTING_SHELL)?
+        };
+        let command = listing_script(directory);
+        let mut shell = shell.lock().await;
+        let outcome = shell
+            .run(&command, std::time::Duration::from_secs(10), None)
+            .await?;
+        if outcome.exit_code != Some(0) {
+            anyhow::bail!(
+                "{} does not list {directory:?} on target {name:?}: {}",
+                LISTING_SHELL,
+                outcome.stderr.trim()
+            );
+        }
+        let mut entries: Vec<(String, bool)> = outcome
+            .stdout
+            .lines()
+            .filter_map(|line| match line.split_at_checked(2) {
+                Some(("d ", rest)) if !rest.is_empty() => Some((rest.to_string(), true)),
+                Some(("f ", rest)) if !rest.is_empty() => Some((rest.to_string(), false)),
+                _ => None,
+            })
+            .collect();
+        entries.sort();
+        Ok(entries)
+    }
+
+    /// The target names a session may name, in the config's order.
+    pub fn target_names(&self) -> Vec<String> {
+        self.targets.iter().map(|t| t.name.clone()).collect()
     }
 
     /// The detached jobs of every session.
@@ -624,4 +714,31 @@ impl SessionManager {
     pub fn live_sessions(&self) -> Vec<SessionHandle> {
         self.live().values().cloned().collect()
     }
+}
+
+/// The shell command that names each entry of `directory`, one per line.
+///
+/// # Invariant
+///
+/// `.[!.]*` is what keeps `.` and `..` out without a name test, and a name is
+/// printed from `printf '%s'`, so a name with a space or a quote survives.
+fn listing_script(directory: &str) -> String {
+    let where_to = if directory.trim().is_empty() {
+        ".".to_string()
+    } else {
+        quote_word(directory)
+    };
+    format!(
+        "cd -- {where_to} 2>/dev/null || exit 3\n\
+         for entry in .[!.]* *; do\n\
+         \x20 [ -e \"$entry\" ] || continue\n\
+         \x20 if [ -d \"$entry\" ]; then printf 'd %s\\n' \"$entry\"; \
+         else printf 'f %s\\n' \"$entry\"; fi\n\
+         done\n"
+    )
+}
+
+/// One word for a POSIX shell: single-quoted, with an embedded quote escaped.
+fn quote_word(word: &str) -> String {
+    format!("'{}'", word.replace('\'', "'\\''"))
 }

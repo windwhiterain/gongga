@@ -180,7 +180,7 @@ impl Outcome {
 ///
 /// Not the whole catalog: `Dispatch::catalog` adds the client's commands and
 /// whatever scripts registered. One list, built once per greeting.
-pub fn server_catalog() -> Vec<CommandSpec> {
+pub fn server_catalog(targets: &[String]) -> Vec<CommandSpec> {
     vec![
         CommandSpec {
             target: CommandTarget::Server,
@@ -269,7 +269,9 @@ pub fn server_catalog() -> Vec<CommandSpec> {
                      the shells are already on the old machine.",
                     false,
                     Some("name"),
-                    CompletionSource::None,
+                    // Exactly the tables this server was started with: `local` is
+                    // what omitting the flag means, and naming it is refused.
+                    CompletionSource::Static(targets.to_vec()),
                 ),
                 arg(
                     "thinking_effort",
@@ -285,6 +287,32 @@ pub fn server_catalog() -> Vec<CommandSpec> {
                             .map(|s| s.to_string())
                             .collect(),
                     ),
+                ),
+            ],
+        },
+        CommandSpec {
+            target: CommandTarget::Server,
+            name: "list_paths".into(),
+            description: "List one directory on a target, for a front-end completing `--cwd`. \
+                      Not a tool the model needs: the paths of a session's own shell are \
+                      read by running `ls` in it."
+                .into(),
+            args: vec![
+                arg(
+                    "target",
+                    "The target whose filesystem to read. Omitted is this machine.",
+                    false,
+                    Some("name"),
+                    CompletionSource::Static(targets.to_vec()),
+                ),
+                arg(
+                    "path",
+                    "The directory to list, as the peer spells a path. Empty is where \
+                     the target's shell starts.",
+                    false,
+                    Some("path"),
+                    // What this command answers is exactly what it would list.
+                    CompletionSource::None,
                 ),
             ],
         },
@@ -441,6 +469,7 @@ pub async fn dispatch(d: &Dispatch, name: &str, args: &Args) -> Outcome {
         "send_message" => send_message(d, args).await,
         "set_session" => set_session(d, args).await,
         "del_session" => del_session(d, args).await,
+        "list_paths" => list_paths(d, args).await,
         "interrupt_session" => interrupt_session(d, args).await,
         "cancel" => cancel(d).await,
         "get_messages" => get_messages(d, args).await,
@@ -492,10 +521,29 @@ pub fn resolve(catalog: &[CommandSpec], name: &str, args: &Args) -> Result<Comma
 impl Dispatch {
     /// Every command offered, from all three sources: the only list there is.
     pub async fn catalog(&self) -> Vec<CommandSpec> {
-        let mut all = server_catalog();
+        let mut all = server_catalog(&self.sessions.target_names());
         all.extend(protocol::client_commands());
         all.extend(self.scripts.commands().await);
         all
+    }
+}
+
+async fn list_paths(d: &Dispatch, args: &Args) -> Outcome {
+    let target = args.get("target").map(String::as_str);
+    let path = args.get("path").map(String::as_str).unwrap_or("");
+    match d.sessions.list_paths(target, path).await {
+        Ok(entries) => {
+            let rows: Vec<serde_json::Value> = entries
+                .into_iter()
+                .map(|(name, directory)| json!({"name": name, "dir": directory}))
+                .collect();
+            let count = rows.len();
+            Outcome::ok_with(
+                format!("{count} entries in {path:?}"),
+                json!({"path": path, "target": target, "entries": rows}),
+            )
+        }
+        Err(e) => Outcome::err(e.to_string()),
     }
 }
 

@@ -109,6 +109,37 @@ fn classified(line: &str) -> Option<Result<Vec<String>, String>> {
 }
 
 /// One input line, handed to the command layer or sent as a message.
+/// Sends what the completion asked for, and reports whether the popup is now out
+/// of date.
+///
+/// # Invariant
+///
+/// Outside the key handler, because a completion is answered synchronously and a
+/// peer's directory cannot be: the popup shows what has arrived, and this is what
+/// goes and gets the rest. See `docs/notes/tui-run.md`.
+async fn answer_completion(
+    client: &mut cli::Client,
+    link: Option<&cli::Link>,
+    ui: &mut Tui,
+    seen: &mut u64,
+) {
+    if let Some(open) = link {
+        for (target, directory) in client.take_wanted_paths() {
+            let Some(message) = client.ask_paths(&target, &directory) else {
+                continue;
+            };
+            if open.send(message).await.is_err() {
+                break;
+            }
+        }
+    }
+    let version = client.paths_version();
+    if version != *seen {
+        *seen = version;
+        ui.refresh_completion();
+    }
+}
+
 fn submission(client: &mut cli::Client, line: &str, sink: &mut TuiSink) -> cli::Submission {
     let trimmed = line.trim();
     if trimmed.is_empty() {
@@ -249,6 +280,8 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
     // already served by somebody else.
     let mut answering: Option<u32> = None;
 
+    // The version of the listings already drawn, so a landed answer repaints once.
+    let mut drawn_listings: u64 = 0;
     let result = loop {
         // Every arm keeps the keyboard branch, so no state stops it answering keys.
         let step = if let Some(open) = link.as_mut() {
@@ -390,6 +423,9 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                 }
             }
         }
+        // After the step, never during it: a key handler answers completion
+        // synchronously, and a peer's directory is not synchronous.
+        answer_completion(&mut client, link.as_ref(), &mut ui, &mut drawn_listings).await;
     };
 
     // Nothing this window started is left behind: `cancel` is SPEC's stop, and

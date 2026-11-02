@@ -492,6 +492,9 @@ pub struct Client {
     sessions: Vec<SessionInfo>,
     model: String,
     next_id: u64,
+    /// Commands sent for the completion's own bookkeeping: their answers fill a
+    /// popup rather than a line, so neither echo nor result is drawn.
+    quiet: std::collections::HashSet<u64>,
     /// Whether a link is open right now; while false, all server knowledge is
     /// stale.
     connected: bool,
@@ -651,6 +654,7 @@ impl Client {
             sessions: Vec::new(),
             model: "-".to_string(),
             next_id: Self::seed_command_id(),
+            quiet: std::collections::HashSet::new(),
             connected: false,
             attempts: 0,
             server_changed: false,
@@ -761,11 +765,35 @@ impl Client {
         }
     }
 
+    /// Records a `list_paths` answer, so the popup offers it on the next ask.
+    fn fill_listing(&mut self, data: &serde_json::Value) {
+        let field = |name: &str| data.get(name).and_then(|v| v.as_str()).unwrap_or_default();
+        let Some(entries) = data.get("entries").and_then(|v| v.as_array()) else {
+            return;
+        };
+        let rows: Vec<(String, bool)> = entries
+            .iter()
+            .filter_map(|entry| {
+                Some((
+                    entry.get("name")?.as_str()?.to_string(),
+                    entry.get("dir")?.as_bool()?,
+                ))
+            })
+            .collect();
+        self.catalog
+            .fill_paths(field("target"), field("path"), rows);
+    }
+
     fn handle_event(&mut self, event: Event, sink: &mut dyn Sink) {
         // A hidden window hides lines, not state: a `Status` still updates the list.
         let shown = self.drawn(&event);
         match event {
             Event::Cmd { id, name, args } => {
+                // A question the completion asked is not a line of the operator's,
+                // so it is not shown, and its answer is not either.
+                if self.quiet.contains(&id) {
+                    return;
+                }
                 let session = args.get("session").map(String::as_str);
                 let window = self.command_line(session);
                 // The result carries only the id, so say now where its answer goes.
@@ -789,6 +817,14 @@ impl Client {
                 data,
                 ..
             } => {
+                if self.quiet.remove(&id) {
+                    if ok {
+                        if let Some(named) = data.as_ref() {
+                            self.fill_listing(named);
+                        }
+                    }
+                    return;
+                }
                 self.settle_follow(id, ok, sink);
                 if shown {
                     // The rows a read answered with arrived as events before this;
@@ -1025,6 +1061,40 @@ impl Client {
     /// Runs one command from argv already split into tokens; no grammar here.
     pub fn command(&mut self, tokens: Vec<String>, sink: &mut dyn Sink) -> Submission {
         self.submit_tokens(tokens, sink, Echo::Command)
+    }
+
+    /// The listings the completion asked for and has no answer for yet.
+    pub fn take_wanted_paths(&self) -> Vec<(String, String)> {
+        self.catalog.take_wanted()
+    }
+
+    /// How many listings have landed; a front-end repaints when this changes.
+    pub fn paths_version(&self) -> u64 {
+        self.catalog.paths_version()
+    }
+
+    /// Asks the server what one directory on a target holds, for `--cwd`
+    /// completion. `None` when there is nothing to ask: a client that is offline,
+    /// or a server from a build without the command.
+    ///
+    /// # Invariant
+    ///
+    /// Never echoes the command: it is the front-end's own question, and the
+    /// operator's last line is not replaced by it.
+    pub fn ask_paths(&mut self, target: &str, directory: &str) -> Option<ClientMessage> {
+        if !self.connected || self.catalog.command("list_paths").is_none() {
+            return None;
+        }
+        let id = self.next_id();
+        let mut args = protocol::Args::new();
+        args.insert("target".to_string(), target.to_string());
+        args.insert("path".to_string(), directory.to_string());
+        self.quiet.insert(id);
+        Some(ClientMessage::Command {
+            id,
+            name: "list_paths".to_string(),
+            args,
+        })
     }
 
     /// Sends one line of prose as one argument of `send_message`.

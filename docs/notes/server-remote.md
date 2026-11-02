@@ -255,3 +255,19 @@ fallback:
 - pictures a tool output refers to are left as text, for the same reason.
 - a capped output is not spilled to a file, so no path is named: the file would be
   on this machine and the reader is on the other one.
+
+## Listing a peer's directory
+
+`list_paths` exists for one caller: a front-end completing `--cwd`. It answers
+names and whether each is a directory, never a path — the part already typed
+belongs to the caller, and only it knows how the operator spelled it.
+
+The shell it runs in is kept per target and apart from every session's shells,
+because it answers while turns are running and a listing must not queue behind
+one. The map is released before the peer is awaited: holding it across an answer
+would serialise two completions on unrelated targets.
+
+Measured on this machine's peer: the first listing costs the connection and the
+greeting (about 3s), every later one 80-110ms. That is the number that decided
+the design — an SSH round-trip per keystroke would be unusable, and a shell kept
+open makes the cost per Tab a local one.

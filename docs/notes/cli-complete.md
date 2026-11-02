@@ -45,3 +45,29 @@ the drift would show up as text inserted in the wrong place.
 A cursor past the end is clamped rather than rejected, so a stale cursor coming
 from a front-end that redrew in the same tick yields the last token instead of a
 panic.
+
+## A path on the machine the line names
+
+`--cwd` on a remote session is a path on that machine, so offering this one's
+filesystem is not a hint — it is a wrong answer the operator cannot tell from a
+right one. The source therefore follows the line: a value after `--target` that
+the config holds sends it to the target, and no value keeps it here.
+
+The split that makes this possible is the one completion already lives by. The
+server publishes the names a config holds as the target argument's `Static`
+list; the client reads that list off the catalog instead of the config file, so
+the names are never in two places. It also means "which machine?" is answered by
+the same data the popup offers.
+
+The ask cannot happen inside the completer: `Completer::complete` is synchronous
+and runs in a key handler, while a peer's directory is a network away. So the
+completer answers from what has arrived, records what it wanted, and the front-end
+sends that after the step — `answer_completion` in `tui/run.rs`. An answer bumps a
+version the window compares; that is the whole repaint signal, so the contract
+between the two stays one integer.
+
+Two consequences worth naming. First, the first Tab on a directory shows nothing
+and the popup fills when the answer lands: a listing is never a reason to block a
+keystroke. Second, an answer stands for `REVALIDATE` before it is asked for again,
+because the repaint re-asks — an answer that were always stale would turn every
+repaint into another round-trip, and the refresh into a loop.

@@ -1209,7 +1209,8 @@ impl Tui {
         self.screen.completion = None;
     }
 
-    fn refresh_completion(&mut self) {
+    /// Re-asks what the line wants, after something the answer depends on changed.
+    pub fn refresh_completion(&mut self) {
         self.screen.completion = next_completion(&self.screen.input, &self.completer);
     }
 

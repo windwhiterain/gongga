@@ -2,6 +2,7 @@
 //!
 //! See `docs/notes/cli-catalog.md`.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
@@ -24,6 +25,16 @@ struct Inner {
     skill_names: Vec<String>,
     /// Where a relative path value is read from: the client's own directory.
     cwd: PathBuf,
+    /// Directories a target answered with, keyed by target and directory, and
+    /// when each answer arrived.
+    remote_paths: HashMap<(String, String), (Vec<Candidate>, std::time::Instant)>,
+    /// The names a config holds, for reading `--target` off the line. Taken from
+    /// the published catalog rather than kept here.
+    targets: HashSet<String>,
+    /// Listings asked for and not yet answered, as the front-end sends them.
+    wanted: Vec<(String, String)>,
+    /// Bumped whenever `remote_paths` changes, so a front-end repaints the popup.
+    paths_version: u64,
 }
 
 impl Default for Inner {
@@ -34,6 +45,10 @@ impl Default for Inner {
             sticky_names: Vec::new(),
             skill_names: Vec::new(),
             cwd: std::env::current_dir().unwrap_or_default(),
+            remote_paths: HashMap::new(),
+            targets: HashSet::new(),
+            wanted: Vec::new(),
+            paths_version: 0,
         }
     }
 }
@@ -45,6 +60,18 @@ impl Catalog {
 
     /// Replaces the catalog with the one the greeting carried.
     pub fn set_commands(&self, commands: Vec<CommandSpec>) {
+        // Any argument named `target` publishes exactly the names a config holds,
+        // so the client reads them off the catalog instead of the config file.
+        let names: HashSet<String> = commands
+            .iter()
+            .flat_map(|command| command.args.iter())
+            .filter(|arg| arg.name == "target")
+            .flat_map(|arg| match &arg.completions {
+                CompletionSource::Static(values) => values.clone(),
+                _ => Vec::new(),
+            })
+            .collect();
+        self.write().targets = names;
         self.write().published = commands;
     }
 
@@ -54,6 +81,43 @@ impl Catalog {
 
     /// The directory this client reads relative paths from, which is also the
     /// project whose own `.agents/skills` counts.
+    /// The listings a completion asked for and does not have yet, as
+    /// `(target, directory)`; taking them is what stops a repeat ask.
+    pub fn take_wanted(&self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.write().wanted)
+    }
+
+    /// Records what a target answered, so the next completion offers it.
+    pub fn fill_paths(&self, target: &str, directory: &str, entries: Vec<(String, bool)>) {
+        let typed = directory.to_string();
+        let named: Vec<Candidate> = entries
+            .into_iter()
+            .map(|(name, is_dir)| {
+                if is_dir {
+                    // Descending is what a directory is for, so no space follows.
+                    Candidate {
+                        insert: format!("{typed}{name}/"),
+                        detail: "dir".into(),
+                        space: false,
+                    }
+                } else {
+                    Candidate::word(format!("{typed}{name}"), "file")
+                }
+            })
+            .collect();
+        let mut inner = self.write();
+        inner.remote_paths.insert(
+            (target.to_string(), directory.to_string()),
+            (named, std::time::Instant::now()),
+        );
+        inner.paths_version += 1;
+    }
+
+    /// How many listings have arrived; a front-end repaints when this changes.
+    pub fn paths_version(&self) -> u64 {
+        self.read().paths_version
+    }
+
     pub fn cwd(&self) -> PathBuf {
         self.read().cwd.clone()
     }
@@ -131,19 +195,23 @@ impl Catalog {
     }
 }
 
-/// What a value may be completed against, snapshotted so no lock is held.
+/// What a value may be completed against, snapshotted so no lock is held --
+/// except the listing cache, which is read on the one branch that needs it.
 struct Ctx<'a> {
     sessions: &'a [String],
     sticky: &'a [String],
     skills: &'a [String],
     cwd: &'a Path,
     all: &'a [CommandSpec],
+    /// The target names a config holds, as the catalog published them.
+    targets: &'a HashSet<String>,
+    catalog: &'a Catalog,
 }
 
 impl Completer for Catalog {
     fn complete(&self, line: &str, cursor: usize) -> Vec<Candidate> {
         let (_, _, token) = token_bounds(line, cursor);
-        let (all, sessions, sticky, skills, cwd) = {
+        let (all, sessions, sticky, skills, cwd, targets) = {
             let inner = self.read();
             (
                 inner.published.clone(),
@@ -151,6 +219,7 @@ impl Completer for Catalog {
                 inner.sticky_names.clone(),
                 inner.skill_names.clone(),
                 inner.cwd.clone(),
+                inner.targets.clone(),
             )
         };
         let ctx = Ctx {
@@ -159,6 +228,8 @@ impl Completer for Catalog {
             skills: &skills,
             cwd: &cwd,
             all: &all,
+            targets: &targets,
+            catalog: self,
         };
         // `/` starts a command; a message completes only its `@` references.
         // See `docs/notes/cli-catalog.md`.
@@ -305,7 +376,11 @@ fn resolve(
             names.dedup();
             pick(names.into_iter(), token, "argument")
         }
-        CompletionSource::Paths => paths(ctx.cwd, token),
+        CompletionSource::Paths => match named_target(ctx, words) {
+            // The line runs on another machine, so its paths are that machine's.
+            Some(target) => remote_paths(ctx, &target, token),
+            None => paths(ctx.cwd, token),
+        },
         CompletionSource::StickyArguments => {
             pick(ctx.sticky.iter().map(String::as_str), token, "argument")
         }
@@ -340,6 +415,66 @@ fn resolve(
         }
         CompletionSource::OfNamedArgument => Vec::new(),
     }
+}
+
+/// How long an answer stands before the same directory is asked for again.
+///
+/// # Invariant
+///
+/// Above zero, because a repaint re-asks: an answer that were always stale would
+/// turn every refresh into another peer round-trip, and the refresh into a loop.
+const REVALIDATE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The target this line names, if it names one the config holds.
+fn named_target(ctx: &Ctx, words: &[String]) -> Option<String> {
+    let asked = flag_value(words, "target")?;
+    ctx.targets.contains(asked).then(|| asked.to_string())
+}
+
+/// Completes `--cwd` against the filesystem of the machine the line names.
+///
+/// # Invariant
+///
+/// Never waits for a peer: what has arrived is offered now, and the rest is asked
+/// for, so a completion never blocks the front-end on a network.
+fn remote_paths(ctx: &Ctx, target: &str, token: &str) -> Vec<Candidate> {
+    let (typed_dir, prefix) = match token.rfind(['/', '\\']) {
+        Some(at) => token.split_at(at + 1),
+        None => ("", token),
+    };
+    let (cached, arrival) = {
+        let inner = ctx.catalog.read();
+        match inner
+            .remote_paths
+            .get(&(target.to_string(), typed_dir.to_string()))
+        {
+            Some((entries, at)) => (Some(entries.clone()), Some(*at)),
+            None => (None, None),
+        }
+    };
+    if arrival.is_none_or(|at| at.elapsed() >= REVALIDATE) {
+        ctx.catalog
+            .write()
+            .wanted
+            .push((target.to_string(), typed_dir.to_string()));
+    }
+    let Some(entries) = cached else {
+        return Vec::new();
+    };
+    entries
+        .into_iter()
+        .filter(|candidate| {
+            let Some(name) = candidate.insert.get(typed_dir.len()..) else {
+                return false;
+            };
+            let name = name.trim_end_matches('/');
+            // A dotfile stays out of the way until asked for, as it does locally.
+            if name.starts_with('.') && !prefix.starts_with('.') {
+                return false;
+            }
+            name.starts_with(prefix)
+        })
+        .collect()
 }
 
 /// The candidates that carry `token` anywhere, not only at the front.
