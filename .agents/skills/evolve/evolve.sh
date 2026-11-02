@@ -43,7 +43,11 @@ while [ "$ROOT" != "/" ] && [ ! -f "$ROOT/Cargo.toml" ]; do
   ROOT="$(dirname "$ROOT")"
 done
 [ -f "$ROOT/Cargo.toml" ] || { echo "evolve: no Cargo.toml above $0" >&2; exit 1; }
-RUN="$ROOT/.dev"
+# The handover's own scratch: staged bundles, launchers, the pointer at who may take
+# the home. `GONGGA_EVOLVE_RUN` exists for the self-test, which has to drive `clean`
+# against a directory of its own -- and for two worktrees on one machine, which must
+# not share a pointer (`AGENTS.md`: each worktree keeps its own home).
+RUN="${GONGGA_EVOLVE_RUN:-$ROOT/.dev}"
 # Which stage is allowed to take the home. Written by `stage`, read by every
 # launcher and by `swap`.
 CURRENT="$RUN/evolve-current"
@@ -290,6 +294,28 @@ parent_of() {
   powershell -NoProfile -Command \
     "(Get-CimInstance Win32_Process -Filter 'ProcessId=$1').ParentProcessId" \
     2>/dev/null | tr -d '\r' | grep -E '^[0-9]+$' || true
+}
+
+# Whether `candidate` is the server, or the process it hangs from.
+#
+# # Invariant
+#
+# A `taskkill /T` aimed at either of these takes the server with it, so no verb here
+# may choose one.
+#
+# Measured on Windows 2026-11-02, and it shrinks what this can honestly be: `exec` of
+# a native exe leaves the launcher bash **dead**, and the pids MSYS records as
+# `ParentProcessId` are not the Windows pids of the visible bash processes (a
+# three-level chain reported ppids belonging to processes already gone). So a walk up
+# the tree is not answerable here, and a stale pid could even be reused by something
+# unrelated. Two facts are answerable, and they cover the shapes that exist: the
+# launcher kept the pid (unix `exec`), or the launcher survived as the server's
+# parent. Everything else is a dead pid the loop never reaches.
+same_as_server() { # candidate server_pid
+  local candidate="$1" server_pid="$2"
+  [ -n "$server_pid" ] || return 1
+  [ "$candidate" = "$server_pid" ] && return 0
+  [ "$(parent_of "$server_pid")" = "$candidate" ]
 }
 
 # The command line of a running process, as one string; failure when it cannot
@@ -644,10 +670,10 @@ cmd_status() {
     stamp="${stamp#evolve-}"
     stamp="${stamp%-launch.pid}"
     tasklist //FI "PID eq $p" //NH 2>/dev/null | grep -q "$p" || continue
-    # Two shapes, because Windows does not honour `exec` for a native exe: either
-    # the pid was kept (unix) or the launcher became the server's parent.
-    if [ "$p" = "$server_pid" ] || parent_of "$server_pid" | grep -qx "$p"; then
-      echo "  $stamp: pid $p is running the server"
+    # One rule for both verbs: neither the server nor the process it hangs from is a
+    # waiter -- `taskkill /T` on either takes the server down.
+    if same_as_server "$p" "$server_pid"; then
+      echo "  $stamp: pid $p is the server or the process it hangs from"
       continue
     fi
     mark=""
@@ -671,7 +697,7 @@ cmd_clean() {
   local artifacts=0
   [ "${1:-}" = "--artifacts" ] && artifacts=1
   local current f p stamp server_pid live_stamp removed
-  local killed=0 alive=0
+  local killed=0 alive=0 kept=0
   local -a keep=()
   current="$(cat "$CURRENT" 2>/dev/null || true)"
   # The pid file of the stage that `exec`ed into the server holds the *server's*
@@ -696,12 +722,17 @@ cmd_clean() {
     stamp="${stamp%-launch.pid}"
     [ -n "$p" ] || continue
     tasklist //FI "PID eq $p" //NH 2>/dev/null | grep -q "$p" || continue
-    if [ -n "$server_pid" ] && [ "$p" = "$server_pid" ]; then
-      echo "  keep    $stamp (pid $p is the running server)"
+    # `same_as_server` first, and not the stamp test: the stamp only says who may take
+    # the home *next*, so a later `stage` moves it away from the launcher a server is
+    # actually hanging from. See the 实测坑 in this skill's SKILL.md.
+    if same_as_server "$p" "$server_pid"; then
+      echo "  keep    $stamp (pid $p is the server or the process it hangs from)"
+      kept=$((kept + 1))
       continue
     fi
     if [ "$stamp" = "$current" ]; then
       echo "  keep    $stamp (pid $p, current)"
+      kept=$((kept + 1))
       continue
     fi
     if taskkill //PID "$p" //T //F >/dev/null 2>&1; then
@@ -712,7 +743,7 @@ cmd_clean() {
       alive=$((alive + 1))
     fi
   done
-  echo "waiters: $killed killed, $alive left running"
+  echo "waiters: $killed killed, $alive left running, $kept kept"
 
   local ls lp llauncher
   ls="$(lease_stamp)"

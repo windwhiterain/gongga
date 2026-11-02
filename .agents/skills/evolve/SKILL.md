@@ -16,6 +16,7 @@ $S stage --clean      # 同上，并让继任者在旧服务端退出后、绑�
 $S swap <stamp>       # 确认继任者真在等，再发 cancel
 $S status             # 当前 stamp、谁在等、端口与锁、租约在谁手里；`successors:` 为空才算干净
 $S clean              # 收掉没人会 swap 的旧继任者（--artifacts 连旧暂存件）
+                      # 输出 "N killed, M left, K kept"：kept 那几行要说清为什么留
 ```
 
 ## 规范：一次改动，一次换手
@@ -159,12 +160,25 @@ python -c "import sqlite3,os;c=sqlite3.connect(f'file:{os.path.expanduser(\"~/.g
 
 ## 实测踩到的坑
 
-**1. Windows 上 `exec` 不保留 pid。** launcher 是 bash，`exec` 一个原生 `.exe` 只是
-spawn 一个子进程并留下 bash 当父进程。所以 `server.lock` 的 pid ≠ `launch.pid` 里记的
-pid，这是**正常**的，不是换手失败。`status` 用父进程关系识别这种情况。
+**1. Windows 上 `exec` 不保留 pid —— 而且 launcher 会死。** launcher 是 bash，`exec` 一个
+原生 `.exe` 之后：新进程拿到新 pid，bash 自己**退出**，只在 `server.lock` 那个进程的
+`ParentProcessId` 里留下一个已经消失的 pid。（2026-11-02 实测；"bash 留下当父进程"的旧说法
+是错的。）
 
-副作用：`del_bash` 打到一个"是服务器父进程"的 detached 行时，会拒绝执行（`adopt()` 的
-祖先守卫）——否则删一个 detached bash 就能把自己杀掉。
+由此两条：
+
+- `server.lock` 的 pid ≠ `launch.pid` 里记的 pid，这是**正常**的，不是换手失败；
+- 一个已经 exec 过的 launcher，`tasklist` 里根本查不到，所以 `clean` 永远选不到它 —— 但
+  **手动 `taskkill /T` 选得到它上面的那棵**。换手期间不要杀任何 launcher 相关进程；要收
+  就交给 `clean`，要停就 `swap` 完再停手。
+
+MSYS 记的 `ParentProcessId` 不是可见 bash 进程的 Windows pid（三层链条实测报出的是已退出
+进程的号），所以**不要**沿父进程链往上找"服务端在谁的子树里"：这条路上没有可靠答案。
+`status`/`clean` 只断言两件查得实的事：pid 相等（unix `exec`），或它是服务端的直接父进程。
+
+这还有一个后果：**启动 launcher 的那个 `bash --detached` 是换手树的一部分**。用
+`del_bash` 收它时，harness 的祖先守卫会拒绝（它就挂在服务端的父链上）；绕过守卫去
+`taskkill /T` 就是 2026-11-02 那次把服务端一起带走的原因。换手结束前不要收它。
 
 **2. `.dev/target` 是旧设计留下的空壳，别再用它。** `$BUILD` 现在只剩一行定义：`stage`
 和 launcher 都构建在默认的 `target/`，而继任者拿到的是 `cp` 出来的 bundle 副本，所以
