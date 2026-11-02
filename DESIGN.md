@@ -1567,12 +1567,24 @@ API。排序按最差的额度窗口降序，没报额度的按 roster 顺序排
 前者能成立靠的就是 SPEC 的 meta prefix cache optimize：消息里提到 skill，该 skill 的正文成为
 index 的根、进系统提示词，而消息里那个引用保持字面形式。
 
-**为什么必须是 skill 而不是目录里的 `AGENTS.md`**：`meta::roots` 会把会话所在目录的
-`AGENTS.md` 作为第一个根，而 monitor 的第一份 prompt 是在它知道自己的 shell 站在哪之前建的
-——服务端创建的会话从**服务端的** cwd 开始，`adopt_reported_cwd` 要等第一个 shell 报告才移动它。
-实测：那次 monitor 拿到的 index 只有 12,017 字符（等于 `self-control` 一份），因为当时的 cwd
-（`~/.gongga`）里没有 `AGENTS.md`；在那种目录里起服务端可以复现。skill 走 `<home>/skills`，
-与 cwd 无关，是唯一一定在的载体，selftest 因此断言 `@skill:monitor` 在 prompt 行的 `rooted` 里。
+**为什么必须是 skill 而不是目录里的 `AGENTS.md`**：index 的根里确实有
+`@file:AGENTS.md`（`meta::roots` 按会话目录播种），那次失败的第一份 prompt **也**带着它
+（21,400 字符）。丢的是**后面的行**，原因是 index 跟着一个行里看不见的东西走：
+
+`SessionHandle::cwd()` = `ShellSet::reported_cwd()`，即会话**shell** 的当前目录，`Shell` 每条
+命令后用 `pwd` 刷新它；而 index 每步都从这个活值重建，`prompt.cwd` 却冻结在第一次存下的值
+（`prompt_in_force`：「the stored row's answer once there is one」）。所以每一行都声称同一个目录，
+而它背后那份 index 是在上一条工具调用把 shell 留在了哪就按哪建的。实测那次：
+
+| 行 | shell 刚做了什么 | index |
+| --- | --- | --- |
+| 2 | 还没跑过命令 | `AGENTS.md` + `self-control`，21,400 |
+| 11 → 13 | `cd /c/Users/17124/.gongga && ls -la` | 只剩 `self-control`，12,017 |
+| 45、63 | `cd /c/resource/gongga && …` | `AGENTS.md` 回来，21,400 |
+
+所以 skill 的价值不是「那时还没有 cwd」（有，而且是对的），而是它经 `<home>/skills` 解析、
+**shell 移动它也不动**——monitor 恰恰整回合在 `cd`。selftest 因此断言 `@skill:monitor` 在
+prompt 行的 `rooted` 里。
 
 **与 `model_pool` 的边界**：服务端只读 roster 的 `tier` 与额度读数；`preference.toml` 权重、
 `mark`、entitlement 探测留在 skill 里（那是这台机器的策略，不是 harness 的），而且服务端去
@@ -1590,6 +1602,12 @@ index 的根、进系统提示词，而消息里那个引用保持字面形式�
 3. **额度读得不够勤**：`quota::publish` 只在 step 结束时刷新，所以候选顺序可能是旧的。现在
    靠「下标 = attempts」兜底（同一个模型不会被挑第二次），够用但不优雅。
 4. **pid 复用**：`follows` 与 `GONGGA_SUPERVISOR` 都只验数字，与 §8.1 那条风险同类。
+6. **index 跟着 shell 的 cwd 走，`cd` 一次就等于重写一次系统提示词**（见 §11.2）：`docs/notes/
+   server-agent.md` 写的是「一次构建与存下的行相同则不写行，所以只有真的编辑才重新计费」，
+   但 shell 移动目录会让 `AGENTS.md` 出现或消失，于是整段前缀作废——实测一次 21,400 → 12,017 →
+   21,400，都是 `cd` 造成的。三个选项：(a) index 改用会话**记录**的 cwd（稳定，但「你脚下的规矩」
+   变成「你被创建时的规矩」）；(b) 保持现在的活 cwd（诚实，每次 `cd` 一次 cache miss）；
+   (c) 折中：`AGENTS.md` 按会话记录的目录播种，消息里点名的引用仍按活 cwd 解析。需要你定。
 5. **`taskkill /F` 打 supervisor 会连子进程带走**（Windows `/T` 语义），与「软停保 turn」
    相反。这是既有的「没人能替自己被谋杀做准备」。
 6. **前缀选了 `@`（2026-11-02 用户定）**，`#` 被否掉的原因见 §11.2：`#` 起头的词在

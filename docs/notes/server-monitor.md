@@ -136,18 +136,36 @@ the one action it must not improvise.
 
 ## Why a skill and not the directory's `AGENTS.md`
 
-`meta::roots` also seeds `@file:AGENTS.md` from the session's own directory, and
-the monitor's first prompt is built before it knows where its shell stands: a
-session the server creates starts at the *server's* cwd, and `adopt_reported_cwd`
-moves it when the first shell reports. Measured: a failed turn's monitor got a
-12,017-character index that was `self-control` alone, because the cwd at that
-moment held no `AGENTS.md` (`C:\Users\17124\.gongga`). Reproduced by starting a
-server there.
+`meta::roots` also seeds `@file:AGENTS.md` from the session's own directory. That
+works, and it worked in the failing run: the first prompt's index carried
+`AGENTS.md` (21,400 characters). The rows that did not were **later** rows, and
+the reason is the one thing the index follows that the row does not show.
 
-A skill is found through `<home>/skills`, which does not depend on the cwd, so it
-is the one carrier that is always there. The selftest asserts it: `@skill:monitor`
-must be in the prompt row's `rooted`, and the skill's own words must be in the
-index.
+`SessionHandle::cwd()` is `ShellSet::reported_cwd()` -- the directory the session's
+*shell* is in, which `remote::Shell` refreshes with a `pwd` after every command.
+The index is rebuilt from that live value at every step; `prompt.cwd` in the row is
+frozen at the first stored value (`prompt_in_force`: "the stored row's answer once
+there is one"). So every row claims one directory while the index behind it was
+built in whatever directory the last tool call left the shell in.
+
+Measured on the failing run, exactly:
+
+| row | what the shell had just done | index |
+| --- | --- | --- |
+| 2 | nothing yet | `AGENTS.md` + `self-control`, 21,400 |
+| 11 → 13 | `cd /c/Users/17124/.gongga && ls -la` | `self-control` alone, 12,017 |
+| 45, 63 | `cd /c/resource/gongga && …` | `AGENTS.md` back, 21,400 |
+
+That is why a monitor turn's map disappeared precisely when it started exploring:
+its first useful command was a `cd` into the home.
+
+So the reason a skill is the right carrier is not "there is no cwd yet" -- there
+is one, and it is right at the first prompt. It is that a skill resolves through
+`<home>/skills` and does not move when the shell does, and a monitor turn moves
+its shell constantly. It also means the map cannot silently vanish mid-turn.
+
+The selftest asserts the property directly: `@skill:monitor` must be in the prompt
+row's `rooted`, and the skill's own words must be in the index.
 
 The index is not free: 38,190 characters in this repository, because `AGENTS.md`
 names `SPEC.md` and `whiting-dev` and the walk is recursive. That is the price of

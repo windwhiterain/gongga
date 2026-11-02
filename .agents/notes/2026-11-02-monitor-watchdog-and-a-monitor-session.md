@@ -219,3 +219,22 @@ selftest 因此加了两条断言：`@skill:monitor` 必须出现在 prompt 行�
 
 顺手修掉的两个测试坑：`free_port` 原来挑的是 UDP 端口，而被 Windows 服务占着的是同名 TCP 端口
 （实测撞上 `svchost`，fake 端点 bind 失败）；现在挑 TCP 并且**先拨号再往下走**。
+
+### 更正：不是「服务端的 cwd」，是 shell 的 cwd 会动
+
+第一版把原因写成「monitor 的第一份 prompt 在建的时候还不知道 shell 站哪」。**错了**——用户指出
+「会话已经建立了，cwd 就是会话的 cwd」，这话对，数据也对：
+
+- 那次失败**第一份** prompt（seq 2）的 index 是 21,400 字符，`@file:AGENTS.md` **在**；
+- 丢的是后面的行。
+
+真正的机制：`SessionHandle::cwd()` = `ShellSet::reported_cwd()`，即**会话 shell 的当前目录**，
+`Shell` 每条命令后用 `pwd` 刷新；index 每步从这个活值重建，而 `prompt.cwd` 冻结在第一次存下的
+值。于是行与行看起来同一个目录，背后却是 shell 当时所在。实测：seq 11 `cd /c/Users/17124/.gongga`
+→ seq 13 剩 12,017（只有 `self-control`）；seq 45、63 `cd /c/resource/gongga` → seq 65 回到
+21,400。
+
+结论不变（skill 仍然是对的载体），但理由换了：skill 经 `<home>/skills` 解析，**shell 移动它也不动**，
+而 monitor 整回合在 `cd`。顺带暴露一个真问题（DESIGN §11.3 第 6 条）：`cd` 一次就重写系统提示词，
+每次都是一个 cache miss，与 `docs/notes/server-agent.md` 那句「只有真的编辑才重新计费」不符。
+三条路（记录 cwd / 活 cwd / 折中）要用户定，我没动。
