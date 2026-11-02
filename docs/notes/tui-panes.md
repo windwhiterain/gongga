@@ -2,7 +2,7 @@
 
 ## panes.rs
 
-The events area is a list of *views* over one scrollback. The names come from the
+The events area is a list of *windows* over one scrollback. The names come from the
 command layer -- a session's name, or the name of the line the operator's own commands
 live on -- and this file turns that list into rows.
 
@@ -10,22 +10,24 @@ The division is here because a view is a drawing fact once the lines are named: 
 line belongs to which window is the command layer's decision (see
 `docs/notes/cli-lib.md`), how tall a view is and what it scrolls is nobody else's.
 
-## One log, many views
+## One log, many windows
 
-A line is held once and read by every view that can show it. That is what makes
-switching `--split` a *view* change rather than a data loss: the merged view and the
-per-session views are two readings of the same blocks, so what arrived while one was
-on screen is already in the other.
+A line is held once and read by the window it belongs to. That is what makes showing a
+session a *pane* change rather than a data loss: the blocks are already in the log, so
+what arrived while it was hidden is on screen the moment it has a pane.
 
-The alternative that looks cheaper -- one `Log` per pane, and the merged view only
-when unsplit -- was built first and measured on a real terminal: splitting the area
-mid-conversation left every pane showing one row that started mid-sentence, because a
-pane only ever held what arrived after it was created. The frames are in
-`.dev/live/`, and the rule they bought is this section.
+The alternative that looks cheaper -- one `Log` per pane -- was built first and
+measured on a real terminal: splitting the area mid-conversation left every pane
+showing one row that started mid-sentence, because a pane only ever held what arrived
+after it was created. The frames are in `.dev/live/`, and the rule they bought is this
+section.
 
-The cost is that a block is counted twice -- once in the merged ledger, once in its
-window's -- so an append updates two row sums. Both are O(log blocks), and a frame
-still reads only the rows it draws.
+Holding the blocks once means holding them at one width, and the width of a block is
+the width of the pane that draws it. So the log keeps a ledger *per window*, each with
+its own laid-out width (`docs/notes/tui-log.md`), and a frame that asks two panes at two
+widths lays each block out once and then reads rows. The merged view that used to be a
+third reading is gone: no frame drew it, and it is what made one width look like a fact
+about the log.
 
 ## Pane
 
@@ -107,9 +109,9 @@ because it never held anything -- the log does. Re-announcing the same list is n
 no-op: the order comes from the list, and one path for "changed" and "unchanged" is
 what keeps the order truthful.
 
-The merged announcement carries the sessions it leaves out, and this is where the
-log is told: split, a hidden session has no pane; merged, it has no lines. Both are
-the same set from the same command, so the two cannot disagree.
+The announcement carries the sessions it leaves out as well, and a session that is
+not in the shown set has no pane -- which is the whole of "not drawn", since a pane is
+the only thing that reads a window.
 
 ## Panes::quota, Panes::chrome
 

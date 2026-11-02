@@ -28,9 +28,18 @@ true:
   O(log lines) instead of walking. Scrolling to the top of a long log therefore
   costs the same as scrolling one notch at the bottom.
 
-The one operation that has to touch everything is a width change, because every
-cached offset was measured for the old width. That happens when the window
-changes shape and nowhere else.
+The one operation that has to touch every block is a width change, because every
+cached offset was measured for the old width. That happens when the window changes
+shape and nowhere else -- and it is per window, because a block belongs to one window
+and is laid out at the width of the pane that draws it.
+
+One width for the whole log was the shape this had, and it broke the claim above
+without breaking any test: a frame asks two widths, the command area's (the whole
+window) and a session pane's (a share of it), so every frame laid the entire log out
+twice -- and an answer's layout is a markdown parse, so the cost of one keystroke grew
+with how much the session had ever said. Measured on 120x40 with 80 answers and 500
+result lines: 46ms per frame, against 75µs with the width owned by the window.
+`docs/notes/tui-frame_cost.md` is the check that keeps it.
 
 ## Entry
 
@@ -285,16 +294,28 @@ append-safe and a table needs the whole table before it has a width. The cost is
 layout per delta for the block that streams; it is the same cost `Answer::feed` paid
 in the front end before the document moved here.
 
-## View and Ledger
+At width 0 -- a window no pane has drawn yet, which is what a hidden session is while
+it streams -- the text is taken and nothing is wrapped. The old width-per-log model
+made this rare, because any pane's frame measured every block; a width per window makes
+it ordinary, and wrapping at the placeholder width would open one row per character.
+The rows are the placeholder row until `Log::lay_out` runs, which is exactly what a
+block that is not drawn is worth.
 
-One `Log` holds the blocks; a `Ledger` is one way of reading them -- the merged one,
-which holds every block in arrival order, or one window's own. A ledger is a list of
-block indices plus a row index over them, so "which block holds row N" is answered
-per view in O(log blocks) and a frame never walks the log for anybody's benefit.
+## Ledger
 
-The same block is counted twice, once per ledger that holds it, and the two counts can
-differ: a window may cap its folding blocks apart from the rest, so
-`contributions` returns both and every mutation moves both sums.
+One `Log` holds the blocks; a `Ledger` is one window's way of reading them, keyed by
+the window's name. A ledger is a list of block indices plus a row index over them, so
+"which block holds row N" is answered per window in O(log blocks) and a frame never
+walks the log for anybody's benefit.
+
+A ledger also owns the *width* its blocks were laid out at, which is the whole reason
+it is the unit rather than the log: a block is drawn in one pane, and the pane's width
+is the width that block is laid out at. Loading that into the log made the width a
+fact about the log, so two panes of two widths re-laid out all of it twice per frame.
+The merged view a ledger used to be -- every block in arrival order, drawn when the
+events area was undivided -- is gone with it: no frame ever drew it (`render` only
+ever reads a session's window and the command line), so it cost a second row sum on
+every mutation and bought nothing. A block is now counted once.
 
 ## Log::headlines (gone)
 
@@ -303,16 +324,15 @@ SPEC no longer has. `Log::headline` went with the mode: a session is either a wi
 with its wrapped rows or a name in the list, so nothing asks for a block flattened to
 one row.
 
-## Log::set_hidden
+## Log::set_hidden (gone)
 
-`hide_session` is a view: the merged ledger does not hold the hidden window's
-blocks, so no frame draws them -- the ones drawn before the command included. The
-blocks stay in `entries` and in their own window's ledger, so `show_session` is a
-rebuild and not a re-send.
-
-A block whose window is hidden therefore has a position in its own ledger and none
-in the merged one (`Entry::merged_at`), and `shift` moves a row sum only where a
-sum exists. That is the one place a block is in fewer than two ledgers.
+`show_session`/`hide_session` were a log-side set of hidden windows, which subtracted a
+window's blocks from the merged view. With the merged view gone there is nothing left
+for it to subtract from: a session that is not shown has no pane, and a pane is the
+only thing that reads a window. The command layer announces the shown set
+(`Layout::shown`), `Panes::layout` builds a pane per name in it, and a name that leaves
+the set stops being drawn -- its blocks stay in `entries`, so showing it again is a
+pane and not a re-send.
 
 ## Log::forget
 
@@ -464,7 +484,6 @@ is not a tail of text but a tail of *blocks* -- which is what makes two sessions
 streaming at once readable side by side.
 
 ## Log::stream — a blank chunk opens nothing
-## Log::stream — a blank chunk opens nothing
 
 The shell writes one empty line before every exit sentinel, on both streams. The
 drain loop reads it as a content line, so every single command used to hand the
@@ -489,10 +508,19 @@ the sentinel's newline leaves one gap after every command. Trimming the text
 rather than the rows keeps it correct at a width nobody measured yet: `reflow`
 derives the rows from the trimmed text afterwards.
 
-## Log::reflow
+## Log::lay_out
 
-Recomputes every row offset when the width changed. The only whole-log walk left:
-a resize is a shape change, not something a frame does.
+Lays one window's blocks out at `width` and re-derives that window's row sums. The
+only place a width costs a layout, and it returns at once when the width is the one the
+window already has -- so a frame, which asks the same widths every time, pays nothing.
+
+The other whole-log walk is not a layout but a re-count. `reindex` is what `clear`,
+`forget` and `set_block_size` need: a ledger names its blocks by their position in
+`entries`, so taking a block away makes every name stale and every block has to land
+again -- which is a walk over the blocks, not over their text. A cap is the same
+arithmetic in the other direction: it changes how many of a block's rows a window
+shows, not the rows the block has, so `set_cap` re-counts one window
+(`reindex_window`) and lays nothing out.
 
 ## appending_equals_rewrapping_from_the_top
 

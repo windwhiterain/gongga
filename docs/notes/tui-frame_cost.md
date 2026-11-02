@@ -11,6 +11,24 @@ The number that matters is that the "new" columns do not move when the log gets
 longer. The "old" column is the pre-rewrite renderer kept here on purpose: it
 wrapped every line and allocated a string per row, every frame.
 
+## frame_of_two_panes
+
+The first block of columns measures one window asked at one width, which a frame is
+not: a frame asks the command area at the window's width and a session's pane at a
+share of it. That second number is what caught the regression this file exists for,
+in its second form -- with one width for the whole log, every frame laid the entire
+log out twice, and the cost of a keystroke grew with the conversation:
+
+```
+            columns above    46ms/frame with 80 answers, 120x40
+after lay_out per window    75us/frame
+```
+
+So the last line builds a log with two windows at two widths and times what a frame
+asks of the log -- the session's rows, then the command line's. It must stay flat as
+the log grows; if it starts tracking the line count, a width has found its way back
+into the log.
+
 ## old_frame
 
 The original measured a char by formatting it into a `String`, which is one

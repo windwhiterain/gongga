@@ -100,7 +100,9 @@ the sealed one.
 
 The cost is one layout per delta, and one per block per resize. A few kilobytes
 through the parser is microseconds against a frame that is redrawn on the same delta
-anyway, and `Log::reflow` only walks the whole log when the width actually moved.
+anyway, and `Log::lay_out` only lays a window out when that window's width actually
+moved -- so the parse is paid per delta of the block that streams, never per pane and
+never per frame.
 
 ## Tables
 

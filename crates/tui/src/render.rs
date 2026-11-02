@@ -8,7 +8,6 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::log::Shown;
-use crate::log::View;
 use crate::panes::{Pane, Panes};
 use crate::{LineKind, Screen};
 
@@ -860,7 +859,7 @@ fn draw_rows(f: &mut Frame, s: &mut Screen, name: &str, area: Rect) {
     // One column short: a full-width row would otherwise be wrapped again.
     let width = area.width.saturating_sub(1).max(1) as usize;
     // The pane's row count: an offset cannot say a line arrived under it.
-    let rows = s.panes.rows(View::Window(name), width);
+    let rows = s.panes.rows(name, width);
     let Some(pane) = s.panes.get_mut(name) else {
         return;
     };
@@ -868,8 +867,7 @@ fn draw_rows(f: &mut Frame, s: &mut Screen, name: &str, area: Rect) {
     pane.anchor(area.height as usize, rows);
     let scroll = pane.scroll;
     let name = pane.name.clone();
-    let view = View::Window(&name);
-    let window = s.panes.window(view, width, area.height as usize, scroll);
+    let window = s.panes.window(&name, width, area.height as usize, scroll);
     let max_scroll = window.max_scroll;
     // Cloned: the rows a frame draws cannot outlive the log they came from.
     let lines: Vec<Line> = window

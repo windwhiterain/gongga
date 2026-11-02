@@ -2,7 +2,7 @@
 
 use std::time::Instant;
 
-use gongga_tui::{LineKind, Log, View};
+use gongga_tui::{LineKind, Log};
 
 /// The renderer as it was: wrap everything, allocate every row, then slice.
 fn old_frame(lines: &[String], width: usize, height: usize) -> usize {
@@ -54,7 +54,7 @@ fn main() {
         for text in &texts {
             log.push("w", LineKind::Assistant, text.clone());
         }
-        log.rows(View::All, width);
+        log.rows("w", width);
 
         let time = |f: &mut dyn FnMut()| {
             let start = Instant::now();
@@ -68,15 +68,54 @@ fn main() {
             std::hint::black_box(old_frame(&texts, width, height));
         });
         let pinned = time(&mut || {
-            std::hint::black_box(log.window(View::All, width, height, 0));
+            std::hint::black_box(log.window("w", width, height, 0));
         });
-        let total = log.rows(View::All, width);
+        let total = log.rows("w", width);
         let scrolled = time(&mut || {
-            std::hint::black_box(log.window(View::All, width, height, total / 2));
+            std::hint::black_box(log.window("w", width, height, total / 2));
         });
 
         println!(
             "{count:>6} lines: old {old:>12?}   new {pinned:>9?}   new, scrolled {scrolled:>9?}"
+        );
+    }
+    frame_of_two_panes(width, height);
+}
+
+/// One frame as the window draws it: the sessions' panes, then the command line.
+///
+/// The columns above are one window read at one width, which a frame is not: the
+/// command area is as wide as the window and a session's pane is not, so a log with
+/// one width for all of them lays itself out once per pane and per frame. This is
+/// the measurement that keeps that from coming back.
+fn frame_of_two_panes(width: usize, height: usize) {
+    let frames = 100;
+    for count in [100usize, 1_000, 5_000, 20_000] {
+        let mut log = Log::new();
+        for i in 0..count {
+            log.push(
+                "s",
+                LineKind::Assistant,
+                format!("line {i}: a plausible amount of text, long enough to wrap sometimes"),
+            );
+        }
+        log.push(
+            "cmd",
+            LineKind::Assistant,
+            "set_session --name a".to_string(),
+        );
+        // Both panes measured once, as they are when the operator types.
+        log.rows("s", width / 2);
+        log.rows("cmd", width);
+
+        let start = Instant::now();
+        for _ in 0..frames {
+            std::hint::black_box(log.window("s", width / 2, height, 0));
+            std::hint::black_box(log.window("cmd", width, height, 0));
+        }
+        println!(
+            "{count:>6} lines: one frame, two widths {:>9?}",
+            start.elapsed() / frames
         );
     }
 }

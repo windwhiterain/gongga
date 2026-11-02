@@ -51,7 +51,6 @@ pub fn main(args: cli::Args) -> anyhow::Result<()> {
 }
 
 // The vocabulary is the command layer's, re-exported so this crate can name it.
-pub use crate::log::View;
 pub use cli::{
     Candidate, Completer, Completion, Layout, LineKind, Listed, QuotaRow, SharedCompleter,
     token_bounds,
@@ -316,13 +315,8 @@ impl Screen {
     /// fold, so a press on a summary line toggles the item it summarises.
     pub fn item_at(&mut self, width: u16, height: u16, column: u16, row: u16) -> Option<usize> {
         let cell = self.cell_at(width, height, column, row)?;
-        self.panes.block_at(
-            View::Window(&cell.name),
-            cell.width,
-            cell.height,
-            cell.scroll,
-            cell.row,
-        )
+        self.panes
+            .block_at(&cell.name, cell.width, cell.height, cell.scroll, cell.row)
     }
 
     /// The block whose body holds this cell, which is what the wheel scrolls first.
@@ -333,13 +327,8 @@ impl Screen {
     /// See [`Log::body_at`].
     fn body_at(&mut self, width: u16, height: u16, column: u16, row: u16) -> Option<usize> {
         let cell = self.cell_at(width, height, column, row)?;
-        self.panes.body_at(
-            View::Window(&cell.name),
-            cell.width,
-            cell.height,
-            cell.scroll,
-            cell.row,
-        )
+        self.panes
+            .body_at(&cell.name, cell.width, cell.height, cell.scroll, cell.row)
     }
 
     /// One cell of a window, in the terms the log answers in: what a press and a
@@ -434,9 +423,7 @@ impl Screen {
         let Some((name, scroll)) = self.pane_at(name) else {
             return Vec::new();
         };
-        let window = self
-            .panes
-            .window(View::Window(&name), width, height, scroll);
+        let window = self.panes.window(&name, width, height, scroll);
         window
             .rows
             .iter()

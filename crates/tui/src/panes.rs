@@ -7,7 +7,7 @@
 //! `docs/notes/tui-panes.md`.
 
 use crate::log::{Log, Viewport};
-use crate::{Layout, LineKind, View};
+use crate::{Layout, LineKind};
 
 /// One view of the events area: what it shows and where it is scrolled.
 pub struct Pane {
@@ -81,11 +81,6 @@ impl Pane {
         self.last_rows = rows;
     }
 
-    /// Which rows this pane reads.
-    pub fn view(&self) -> View<'_> {
-        View::Window(&self.name)
-    }
-
     /// Moves this view `rows` rows, positive into its past, within its bound.
     ///
     /// # Invariant
@@ -149,7 +144,7 @@ impl Panes {
     pub fn chrome(&mut self, width: usize) -> crate::render::Chrome {
         let command = self.command().map(|pane| pane.name.clone());
         let command_rows = match &command {
-            Some(name) => self.log.rows(View::Window(name), width).max(1) as u16,
+            Some(name) => self.log.rows(name, width).max(1) as u16,
             None => 0,
         };
         crate::render::Chrome {
@@ -280,13 +275,13 @@ impl Panes {
     /// See [`Log::body_at`].
     pub fn body_at(
         &mut self,
-        view: View<'_>,
+        window: &str,
         width: usize,
         height: usize,
         scroll: usize,
         row: usize,
     ) -> Option<usize> {
-        self.log.body_at(view, width, height, scroll, row)
+        self.log.body_at(window, width, height, scroll, row)
     }
 
     /// Scrolls the box of an opened item, which SPEC makes scrollable.
@@ -304,16 +299,16 @@ impl Panes {
         self.log.toggle_at(at)
     }
 
-    /// The block under one row of a view, as the key a press carries.
+    /// The block under one row of a window, as the key a press carries.
     pub fn block_at(
         &mut self,
-        view: View<'_>,
+        window: &str,
         width: usize,
         height: usize,
         scroll: usize,
         row: usize,
     ) -> Option<usize> {
-        self.log.block_at(view, width, height, scroll, row)
+        self.log.block_at(window, width, height, scroll, row)
     }
 
     /// Replaces a call's provisional body with its structured head.
@@ -406,19 +401,19 @@ impl Panes {
         }
     }
 
-    /// Rows this view holds at `width`.
-    pub fn rows(&mut self, view: View<'_>, width: usize) -> usize {
-        self.log.rows(view, width)
+    /// Rows this window holds at `width`.
+    pub fn rows(&mut self, window: &str, width: usize) -> usize {
+        self.log.rows(window, width)
     }
 
-    /// The rows one frame of one view shows.
+    /// The rows one frame of one window shows.
     pub fn window(
         &mut self,
-        view: View<'_>,
+        window: &str,
         width: usize,
         height: usize,
         scroll: usize,
     ) -> Viewport<'_> {
-        self.log.window(view, width, height, scroll)
+        self.log.window(window, width, height, scroll)
     }
 }

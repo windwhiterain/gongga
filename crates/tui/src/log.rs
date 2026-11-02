@@ -63,8 +63,6 @@ struct Entry {
     styled: Vec<Line<'static>>,
     /// Where this block sits among the blocks of its own window.
     at: usize,
-    /// Where it sits in the merged view, or `None` when a hidden window holds it.
-    merged_at: Option<usize>,
 }
 
 impl Entry {
@@ -97,7 +95,6 @@ impl Entry {
             sections: String::new(),
             styled: Vec::new(),
             at: 0,
-            merged_at: None,
         };
         // Width 0 means "not measured yet": the first draw reflows at its own width.
         if width > 0 {
@@ -322,17 +319,23 @@ impl Entry {
         self.col = wrap.col;
     }
 
-    /// Appends to the body the current view reads.
+    /// Appends to the body the block is drawn from.
     ///
     /// # Invariant
     ///
     /// An answer appends to its *document*, and the rows are laid out again: markdown
-    /// is not append-safe, so a delta can change a row above the one arriving.
-    /// See `docs/notes/tui-log.md`.
+    /// is not append-safe, so a delta can change a row above the one arriving. At
+    /// width 0 nothing is measured, and nothing may pretend to be. See
+    /// `docs/notes/tui-log.md`.
     fn append(&mut self, text: &str, width: usize) {
         if let Some(source) = &mut self.source {
             source.push_str(text);
             self.reflow(width);
+            return;
+        }
+        if width == 0 {
+            // A window no pane has drawn yet: one placeholder row until it does.
+            self.text.push_str(text);
             return;
         }
         let width = self.content_width(width);
@@ -663,31 +666,26 @@ pub struct Viewport<'a> {
     pub max_scroll: usize,
 }
 
-/// Which view of the log a frame is asking about.
+/// One window's row bookkeeping over the shared blocks.
 ///
 /// # Invariant
 ///
-/// A view is a way of reading the same blocks, never a second copy of them: a line
-/// arrives once, and every view that can show it already does.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum View<'a> {
-    /// Every block in arrival order: the events area undivided.
-    All,
-    /// One window's own blocks, in the order they arrived there.
-    Window(&'a str),
-}
-
-/// One view's row bookkeeping over the shared blocks.
+/// One ledger, one width. A block belongs to exactly one window and is laid out
+/// once, at the width of the pane that draws that window -- so a frame that asks
+/// two panes for two widths pays for each block at most once, and only a change of
+/// shape pays again. See `docs/notes/tui-log.md`.
 #[derive(Default)]
 struct Ledger {
-    /// Global index of this view's k-th block, in arrival order.
+    /// Global index of this window's k-th block, in arrival order.
     blocks: Vec<usize>,
     index: RowIndex,
-    /// Rows one block may fill in this view; 0 defers to the log's `block_size`.
+    /// Rows one block may fill in this window; 0 defers to the log's `block_size`.
     cap: usize,
+    /// The width `blocks` were last laid out at; 0 until a frame asks.
+    width: usize,
 }
 
-/// One cell of a view, as the walk that answers a press and a wheel finds it.
+/// One cell of a window, as the walk that answers a press and a wheel finds it.
 struct Hit {
     /// The block shown there.
     block: usize,
@@ -700,7 +698,7 @@ struct Hit {
 }
 
 /// The scrollback: blocks in arrival order, sealed and still-growing, plus one
-/// ledger per view over them.
+/// ledger per window over them.
 ///
 /// # Invariant
 ///
@@ -710,22 +708,28 @@ struct Hit {
 #[derive(Default)]
 pub struct Log {
     entries: Vec<Entry>,
-    /// The merged view: every block whose window is not hidden, in arrival order.
-    all: Ledger,
-    /// One ledger per window name a line has carried.
+    /// One ledger per window name a line has carried, each at its own width.
     views: HashMap<String, Ledger>,
     /// Open stream key -> its block. Its identity, not its position.
     open: HashMap<String, usize>,
-    /// The width the cached row offsets were measured at; 0 until a frame is drawn.
-    width: usize,
     /// How many rows one block may fill. See [`Log::set_block_size`].
     block_size: usize,
-    /// Windows the merged view does not read. See [`Log::set_hidden`].
-    hidden: Vec<String>,
 }
 
 /// The rows of a block that fills every row it has.
 const NO_CAP: usize = usize::MAX;
+
+/// The rows a block of `kind` may fill: the window's `cap`, else the log's.
+fn room(kind: LineKind, cap: usize, block_size: usize) -> usize {
+    // SPEC caps streamed abstracts, not commands, results, messages or errors.
+    if !kind.folds() {
+        return NO_CAP;
+    }
+    if cap > 0 {
+        return cap;
+    }
+    if block_size > 0 { block_size } else { NO_CAP }
+}
 
 impl Log {
     pub fn new() -> Self {
@@ -739,7 +743,7 @@ impl Log {
             return;
         }
         self.block_size = lines;
-        self.rebuild();
+        self.reindex();
     }
 
     /// Caps one window's blocks whatever the log-wide cap says: the command line's
@@ -752,7 +756,7 @@ impl Log {
             return;
         }
         ledger.cap = lines;
-        self.rebuild();
+        self.reindex_window(window);
     }
 
     /// Drops every block the window `window` holds: the session that wrote it is gone.
@@ -782,21 +786,7 @@ impl Log {
             .drain()
             .filter_map(|(key, at)| moved[at].map(|at| (key, at)))
             .collect();
-        self.rebuild();
-    }
-
-    /// Leaves these windows out of the merged view; an empty list shows every one.
-    ///
-    /// # Invariant
-    ///
-    /// Nothing is dropped: a hidden window's blocks stay in the log, so showing it
-    /// again is a rebuild rather than a re-read of the server.
-    pub fn set_hidden(&mut self, hidden: &[String]) {
-        if self.hidden == hidden {
-            return;
-        }
-        self.hidden = hidden.to_vec();
-        self.rebuild();
+        self.reindex();
     }
 
     pub fn len(&self) -> usize {
@@ -809,58 +799,42 @@ impl Log {
 
     /// The rows one block of `kind` may fill under `cap`: the answer keeps its own.
     fn room(&self, kind: LineKind, cap: usize) -> usize {
-        // SPEC caps streamed abstracts, not commands, results, messages or errors.
-        if !kind.folds() {
-            return NO_CAP;
-        }
-        if cap > 0 {
-            return cap;
-        }
-        if self.block_size > 0 {
-            self.block_size
-        } else {
-            NO_CAP
-        }
+        room(kind, cap, self.block_size)
     }
 
-    /// The rows block `at` contributes to the two views that hold it: the merged one
-    /// and its own window.
-    fn contributions(&self, at: usize) -> (usize, usize) {
+    /// The rows block `at` occupies in its own window's ledger.
+    fn contributions(&self, at: usize) -> usize {
         let entry = &self.entries[at];
-        // The box is two rows the block occupies, so both indexes count them.
-        (
-            entry.visible(self.room(entry.kind, self.all.cap)),
-            entry.visible(self.room(entry.kind, self.view_cap(entry))),
-        )
+        // The box is two rows the block occupies, so the index counts them.
+        entry.visible(self.room(entry.kind, self.cap_of(&entry.window)))
     }
 
-    /// The cap one window puts on its own blocks, or 0 for the log's.
-    fn view_cap(&self, entry: &Entry) -> usize {
+    /// The cap a window puts on its own blocks, or 0 for the log's.
+    fn cap_of(&self, window: &str) -> usize {
+        self.views.get(window).map(|ledger| ledger.cap).unwrap_or(0)
+    }
+
+    /// The width this window's blocks are laid out at; 0 until a frame asks.
+    fn width_of(&self, window: &str) -> usize {
         self.views
-            .get(&entry.window)
-            .map(|ledger| ledger.cap)
+            .get(window)
+            .map(|ledger| ledger.width)
             .unwrap_or(0)
     }
 
-    /// Moves both views' sums by what a change to one block did to them.
-    fn shift(&mut self, at: usize, before: (usize, usize), after: (usize, usize)) {
-        if let Some(pos) = self.entries[at].merged_at {
-            self.all
-                .index
-                .shift(pos, after.0 as isize - before.0 as isize);
-        }
+    /// Moves one window's row sum by what a change to one block did to it.
+    fn shift(&mut self, at: usize, before: usize, after: usize) {
         let window = self.entries[at].window.clone();
         let pos = self.entries[at].at;
         if let Some(ledger) = self.views.get_mut(&window) {
-            ledger
-                .index
-                .shift(pos, after.1 as isize - before.1 as isize);
+            ledger.index.shift(pos, after as isize - before as isize);
         }
     }
 
     /// Adds a finished line to the window `name` names. Costs what the line is worth.
     pub fn push(&mut self, name: &str, kind: LineKind, text: impl Into<String>) {
-        let mut entry = Entry::new(name, kind, text.into(), self.width);
+        let width = self.width_of(name);
+        let mut entry = Entry::new(name, kind, text.into(), width);
         // A whole row arrives at once: nothing will stream into it, so a folding
         // kind is an `abstract` from its first frame.
         entry.sealed = true;
@@ -868,29 +842,15 @@ impl Log {
         self.attach(self.entries.len() - 1);
     }
 
-    /// Records block `at` in the merged view and in its own window's view.
+    /// Records block `at` in its own window's ledger.
     fn attach(&mut self, at: usize) {
-        let (merged, own) = self.contributions(at);
+        let rows = self.contributions(at);
         let window = self.entries[at].window.clone();
-        let shown = !self.hidden.contains(&window);
-        let merged_at = if shown {
-            let pos = self.all.blocks.len();
-            self.all.blocks.push(at);
-            self.all.index.push(merged);
-            Some(pos)
-        } else {
-            None
-        };
-        self.entries[at].merged_at = merged_at;
-        self.views.entry(window.clone()).or_default();
         let pos = {
-            let ledger = self
-                .views
-                .get_mut(&window)
-                .expect("the view was just made sure of");
+            let ledger = self.views.entry(window).or_default();
             let pos = ledger.blocks.len();
             ledger.blocks.push(at);
-            ledger.index.push(own);
+            ledger.index.push(rows);
             pos
         };
         self.entries[at].at = pos;
@@ -922,8 +882,6 @@ impl Log {
             return;
         }
         self.entries.retain(|entry| entry.window != window);
-        let kept: Vec<&Entry> = self.entries.iter().collect();
-        let _ = kept;
         // The open map points at indexes that have moved: re-derive it from the
         // blocks that are still streaming.
         let open: Vec<(String, usize)> = self
@@ -934,7 +892,7 @@ impl Log {
             .map(|(at, entry)| (entry.key.clone(), at))
             .collect();
         self.open = open.into_iter().collect();
-        self.rebuild();
+        self.reindex();
     }
 
     /// Replaces the whole text of the block `key` names and re-wraps it.
@@ -943,14 +901,14 @@ impl Log {
     ///
     /// For a block whose text is *derived* from what arrived -- an answer drawn as
     /// markdown, where one more delta can change a row above the last one -- so an
-    /// append would be wrong and a rewrite is the only honest thing. Both indexes
-    /// move by the difference in rows, as they do for a fold.
+    /// append would be wrong and a rewrite is the only honest thing. Its window's
+    /// row sum moves by the difference in rows, as it does for a fold.
     pub fn rewrite(&mut self, key: &str, text: &str) {
         let Some(at) = self.entry_by_key(key) else {
             return;
         };
         let before = self.contributions(at);
-        let width = self.width;
+        let width = self.width_of(&self.entries[at].window);
         let entry = &mut self.entries[at];
         match &mut entry.source {
             // An answer's text is derived, so what changed is the document.
@@ -1018,7 +976,7 @@ impl Log {
             return false;
         }
         let before = self.contributions(at);
-        let width = self.width;
+        let width = self.width_of(&self.entries[at].window);
         let entry = &mut self.entries[at];
         entry.expanded = !entry.expanded;
         entry.reflow(width);
@@ -1031,9 +989,9 @@ impl Log {
     ///
     /// # Invariant
     ///
-    /// The row count changes, so this is a reflow of one block and a shift of both
-    /// indexes -- the arithmetic a seal does, for the same reason. A key that is not
-    /// a folding block is nothing to toggle.
+    /// The row count changes, so this is a reflow of one block and a shift of its
+    /// window's sum -- the arithmetic a seal does, for the same reason. A key that is
+    /// not a folding block is nothing to toggle.
     pub fn toggle(&mut self, key: &str) -> bool {
         let Some(at) = self.entry_by_key(key) else {
             return false;
@@ -1042,7 +1000,7 @@ impl Log {
             return false;
         }
         let before = self.contributions(at);
-        let width = self.width;
+        let width = self.width_of(&self.entries[at].window);
         let entry = &mut self.entries[at];
         entry.expanded = !entry.expanded;
         entry.reflow(width);
@@ -1051,7 +1009,7 @@ impl Log {
         true
     }
 
-    /// The block under one row of a view, as the key a click carries.
+    /// The block under one row of a window, as the key a click carries.
     ///
     /// # Invariant
     ///
@@ -1059,13 +1017,13 @@ impl Log {
     /// a summary line is a click on the item it summarises.
     pub fn block_at(
         &mut self,
-        view: View<'_>,
+        window: &str,
         width: usize,
         height: usize,
         scroll: usize,
         row: usize,
     ) -> Option<usize> {
-        self.hit(view, width, height, scroll, row)
+        self.hit(window, width, height, scroll, row)
             .map(|hit| hit.block)
     }
 
@@ -1080,13 +1038,13 @@ impl Log {
     /// able to reach through.
     pub fn body_at(
         &mut self,
-        view: View<'_>,
+        window: &str,
         width: usize,
         height: usize,
         scroll: usize,
         row: usize,
     ) -> Option<usize> {
-        let hit = self.hit(view, width, height, scroll, row)?;
+        let hit = self.hit(window, width, height, scroll, row)?;
         let rule = hit.index == 0 || hit.index + 1 == hit.shown;
         match hit.boxed && rule {
             true => None,
@@ -1098,18 +1056,18 @@ impl Log {
     ///
     /// # Invariant
     ///
-    /// `shown` is the rows the block occupies in this view, box included, so the
+    /// `shown` is the rows the block occupies in this window, box included, so the
     /// rows that carry the box's rules are its first and its last.
     fn hit(
         &mut self,
-        view: View<'_>,
+        window: &str,
         width: usize,
         height: usize,
         scroll: usize,
         row: usize,
     ) -> Option<Hit> {
-        self.reflow(width);
-        let ledger = self.ledger(view)?;
+        self.lay_out(window, width);
+        let ledger = self.ledger(window)?;
         let total = ledger.index.total();
         let scroll = scroll.min(total.saturating_sub(height));
         let end = total - scroll;
@@ -1153,7 +1111,7 @@ impl Log {
                 at
             }
         };
-        let width = self.width;
+        let width = self.width_of(&self.entries[at].window);
         let before = self.contributions(at);
         let entry = &mut self.entries[at];
         entry.tag = format!("{} ", head.summary());
@@ -1173,8 +1131,8 @@ impl Log {
     /// # Invariant
     ///
     /// The row count can change: the label is not text, so a longer one eats the
-    /// first row's columns and wraps it further. The block is reflowed and both
-    /// indexes are corrected, which is what keeps a retro-set label from silently
+    /// first row's columns and wraps it further. The block is reflowed and its
+    /// window's sum corrected, which is what keeps a retro-set label from silently
     /// shifting every block after it. A key nobody opened is nothing to label.
     pub fn relabel(&mut self, key: &str, tag: &str, kind: LineKind) {
         // By key, not only through `open`: a verdict arrives on the chunk that
@@ -1188,7 +1146,7 @@ impl Log {
         let before = self.contributions(at);
         self.entries[at].tag = tag.to_string();
         self.entries[at].kind = kind;
-        let width = self.width;
+        let width = self.width_of(&self.entries[at].window);
         self.entries[at].reflow(width);
         let after = self.contributions(at);
         self.shift(at, before, after);
@@ -1213,7 +1171,6 @@ impl Log {
         text: &str,
         done: bool,
     ) {
-        let width = self.width;
         if let Some(at) = self.open.get(key).copied()
             && self.entries[at].tag != tag
         {
@@ -1237,6 +1194,7 @@ impl Log {
             }
             Some(at) => {
                 let before = self.contributions(at);
+                let width = self.width_of(&self.entries[at].window);
                 self.entries[at].append(text, width);
                 let after = self.contributions(at);
                 self.shift(at, before, after);
@@ -1251,6 +1209,7 @@ impl Log {
                 return;
             }
             None => {
+                let width = self.width_of(name);
                 let mut entry = Entry::with_tag(name, kind, tag, text.to_string(), width);
                 // A body-less item's body is its label: a call reads as its
                 // arguments, and opening it must show them.
@@ -1288,7 +1247,7 @@ impl Log {
     /// text rather than the rows keeps this correct at a width nobody measured
     /// yet: `reflow` derives the rows from the trimmed text afterwards.
     fn trim_tail(&mut self, at: usize) {
-        let width = self.width;
+        let width = self.width_of(&self.entries[at].window);
         let before = self.contributions(at);
         let entry = &mut self.entries[at];
         // An answer's text is derived from its document: the document is trimmed.
@@ -1316,44 +1275,41 @@ impl Log {
         if at >= self.entries.len() {
             return;
         }
-        let width = self.width;
+        let width = self.width_of(&self.entries[at].window);
         let before = self.contributions(at);
         self.entries[at].append(text, width);
         let after = self.contributions(at);
         self.shift(at, before, after);
     }
 
-    /// The ledger a view reads, or `None` for a window nobody has written to yet.
-    fn ledger(&self, view: View<'_>) -> Option<&Ledger> {
-        match view {
-            View::All => Some(&self.all),
-            View::Window(name) => self.views.get(name),
-        }
+    /// The ledger a window reads, or `None` for a name nobody has written to yet.
+    fn ledger(&self, window: &str) -> Option<&Ledger> {
+        self.views.get(window)
     }
 
-    /// How many rows this view holds at `width`, reflowing first if the width moved.
-    pub fn rows(&mut self, view: View<'_>, width: usize) -> usize {
-        self.reflow(width);
-        self.ledger(view)
+    /// How many rows this window holds at `width`, laying it out first if needed.
+    pub fn rows(&mut self, window: &str, width: usize) -> usize {
+        self.lay_out(window, width);
+        self.ledger(window)
             .map(|ledger| ledger.index.total())
             .unwrap_or(0)
     }
 
-    /// The rows for one frame of one view: the last `height` rows, in order.
+    /// The rows for one frame of one window: the last `height` rows, in order.
     ///
     /// # Invariant
     ///
-    /// The view is the tail of its own ledger, and a block contributes only the rows
-    /// its cap allows: no block is reserved space, and none is cut out mid-pass.
+    /// The window is the tail of its own ledger, and a block contributes only the
+    /// rows its cap allows: no block is reserved space, and none is cut out mid-pass.
     pub fn window(
         &mut self,
-        view: View<'_>,
+        window: &str,
         width: usize,
         height: usize,
         scroll: usize,
     ) -> Viewport<'_> {
-        self.reflow(width);
-        let Some(ledger) = self.ledger(view) else {
+        self.lay_out(window, width);
+        let Some(ledger) = self.ledger(window) else {
             return Viewport {
                 rows: Vec::new(),
                 max_scroll: 0,
@@ -1374,7 +1330,7 @@ impl Log {
                 let cap = self.room(entry.kind, ledger.cap);
                 let body = entry.rows().min(cap);
                 let boxed = entry.boxed();
-                // Rows above the cap are not in this view, so its rows are the
+                // Rows above the cap are not in this window, so its rows are the
                 // last `body` of them -- pulled further back by the box's scroll.
                 let head = entry
                     .rows()
@@ -1421,15 +1377,17 @@ impl Log {
         Viewport { rows, max_scroll }
     }
 
-    /// Re-derives every block's rows and every view's sums: the only whole-log walk.
-    fn rebuild(&mut self) {
-        let width = self.width;
-        for entry in &mut self.entries {
-            entry.reflow(width);
-        }
-        self.all = Ledger::default();
+    /// Re-numbers the blocks and re-derives every window's row sum.
+    ///
+    /// # Invariant
+    ///
+    /// A ledger names its blocks by their position in `entries`, so anything that
+    /// takes a block away -- `clear`, `forget` -- makes every name stale and every
+    /// block lands again. Rows, not layouts: a block keeps the rows it was laid out
+    /// with, because nothing here moves a width. See `docs/notes/tui-log.md`.
+    fn reindex(&mut self) {
         for ledger in self.views.values_mut() {
-            ledger.blocks = Vec::new();
+            ledger.blocks.clear();
             ledger.index = RowIndex::default();
         }
         for at in 0..self.entries.len() {
@@ -1437,13 +1395,50 @@ impl Log {
         }
     }
 
-    /// Recomputes everything when the width changed.
-    fn reflow(&mut self, width: usize) {
-        let width = width.max(1);
-        if width == self.width {
+    /// Re-derives one window's row sums, laying no block out again.
+    fn reindex_window(&mut self, window: &str) {
+        let block_size = self.block_size;
+        let entries = &self.entries;
+        let Some(ledger) = self.views.get_mut(window) else {
             return;
+        };
+        let cap = ledger.cap;
+        let mut index = RowIndex::default();
+        for &at in &ledger.blocks {
+            let entry = &entries[at];
+            index.push(entry.visible(room(entry.kind, cap, block_size)));
         }
-        self.width = width;
-        self.rebuild();
+        ledger.index = index;
+    }
+
+    /// Lays this window's blocks out at `width`, and no other window's.
+    ///
+    /// # Invariant
+    ///
+    /// A block belongs to exactly one window, so this is the only place a width
+    /// costs a layout -- and a width is a shape change, not something a frame does.
+    /// Two panes of different widths therefore never pay for each other's blocks:
+    /// which is what a single width for the whole log could not do, at the price of
+    /// laying the log out twice per frame. See `docs/notes/tui-log.md`.
+    fn lay_out(&mut self, window: &str, width: usize) {
+        let width = width.max(1);
+        let blocks = {
+            let Some(ledger) = self.views.get_mut(window) else {
+                return;
+            };
+            if ledger.width == width {
+                return;
+            }
+            ledger.width = width;
+            // Taken out so the blocks can be laid out while the ledger is written.
+            std::mem::take(&mut ledger.blocks)
+        };
+        for at in blocks.iter().copied() {
+            self.entries[at].reflow(width);
+        }
+        if let Some(ledger) = self.views.get_mut(window) {
+            ledger.blocks = blocks;
+        }
+        self.reindex_window(window);
     }
 }
