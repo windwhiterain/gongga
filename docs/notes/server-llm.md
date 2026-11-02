@@ -34,9 +34,8 @@ its own id back.
 
 ## LlmClient::stream
 
-`handover`, when present, stands in for the part of the transcript that has
-been folded out; it is sent as the first item so the model reads it
-before anything else.
+The request's own items are the transcript's rows; the start card, when there is
+one, is the only item built here rather than read from a row.
 
 A request that fails, times out, or completes with nothing in it is retried
 with a doubling delay, because all three look identical from here and all

@@ -85,21 +85,16 @@ def main():
         # A prose edit between turns: it must land as a new row, not rewrite the old.
         cfg = os.path.join(HOME, "config.toml")
         raw = io.open(cfg, "rb").read()
-        anchor = b"Do not ask for confirmation; the user has already authorised bash execution."
+        anchor = b"do not ask for confirmation, and leave nothing behind."
         assert raw.count(anchor) == 1
         io.open(cfg + ".tmp", "wb").write(raw.replace(anchor, anchor + b" Edited between turns."))
         os.replace(cfg + ".tmp", cfg)
         command("send_message", "--session", "audit", "--message", "第二回合，改过的散文")
         time.sleep(8)
 
-        # A handover: new content entering the store mid-conversation.
-        db = sqlite3.connect(os.path.join(HOME, "gongga.db"), timeout=5)
-        db.row_factory = sqlite3.Row
-        sid = db.execute("select id from sessions where name='audit'").fetchone()["id"]
-        db.execute("update sessions set handover='一份交接笔记' where id=?", (sid,))
-        db.commit()
-        db.close()
-        command("send_message", "--session", "audit", "--message", "第三回合，笔记之后")
+        # New content entering the store mid-conversation, the way an heir's first
+        # lesson does: a message that names a reference of its own.
+        command("send_message", "--session", "audit", "--message", "第三回合，带一个 @file: Cargo.toml 的引用")
         time.sleep(8)
 
         # Deleting a session has to take the payload with it -- and it has to be
@@ -137,10 +132,9 @@ def main():
           len(stored_texts) == len(sent_texts) and len(prompts) >= 2,
           f"{len(prompts)} rows")
 
-    notes = {p.get("handover") for p in prompts if p.get("handover")}
-    # The turn's own facts are a prompt row's `tail`, sent as its own last item, so
-    # they are stored -- just not as a transcript row.
-    notes |= {p.get("tail") for p in prompts if p.get("tail")}
+    # The turn's own facts are a prompt row's `tail`, sent as its own item, so they
+    # are stored -- just not as a transcript row.
+    notes = {p.get("tail") for p in prompts if p.get("tail")}
 
     def flat(item):
         c = item.get("content")

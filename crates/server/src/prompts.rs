@@ -28,7 +28,6 @@ pub const SYSTEM: &str = "instructions";
 /// empty system prompt and look healthy. Startup asks for this list instead.
 pub const REQUIRED: &[&str] = &[
     SYSTEM,
-    "handover_preamble",
     "context_notice",
     "interrupted_call",
     "size_hint",
