@@ -18,6 +18,7 @@ _Post Modern Agent Harness_
 - Streaming LLM reqwest optimized for minimal allocation.
 - Large too_result save to file for agents to grep instead of directly return.
 - Minimal server client traffic for cloud agent.
+- Model pool with iter "flash/pro/sota/test", auto sample model based on quota remain, so agents spawn agents without need to care about quota.
 
 ### Quality of Life
 
