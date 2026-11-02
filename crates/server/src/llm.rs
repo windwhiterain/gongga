@@ -163,10 +163,18 @@ impl LlmClient {
     ///
     /// The id is kept on the [`crate::image::ImageRef`], so a replayed transcript
     /// reuses it instead of uploading again.
-    pub async fn upload_image(&self, path: &str, media_type: &str) -> anyhow::Result<String> {
-        let bytes = tokio::fs::read(path)
-            .await
-            .map_err(|e| anyhow::anyhow!("reading {path}: {e}"))?;
+    /// One upload, for bytes read by whoever could read them -- a peer's disk included.
+    ///
+    /// # Invariant
+    ///
+    /// `path` only names the file the provider will see: what is sent is `bytes`, so a
+    /// picture on a machine this server cannot read is uploaded exactly once.
+    pub async fn upload_bytes(
+        &self,
+        path: &str,
+        media_type: &str,
+        bytes: Vec<u8>,
+    ) -> anyhow::Result<String> {
         let name = std::path::Path::new(path)
             .file_name()
             .and_then(|n| n.to_str())

@@ -67,19 +67,20 @@ impl Endpoint {
         }
     }
 
-    /// One shell on the endpoint, rooted at `cwd`.
+    /// The command that starts a runner for this endpoint.
     ///
     /// # Invariant
     ///
-    /// A remote `cwd` is the endpoint's to accept: a directory it does not have is
-    /// an error here, never a quiet substitution of this machine's.
-    pub async fn connect(&self, cwd: Option<&str>) -> anyhow::Result<ShellHandle> {
-        let command = match self {
+    /// One spelling of it: a shell and a file read reach the same peer the same way,
+    /// so a target that works for one works for the other. See
+    /// `docs/notes/server-remote.md`.
+    pub fn runner_command(&self) -> anyhow::Result<Command> {
+        match self {
             Self::Local { .. } => anyhow::bail!("the local endpoint has no runner"),
             Self::Direct { runner } => {
                 let mut command = Command::new(runner);
                 command.kill_on_drop(true);
-                command
+                Ok(command)
             }
             Self::Remote {
                 transport:
@@ -122,9 +123,19 @@ impl Endpoint {
                 }
                 command.args(&words);
                 command.kill_on_drop(true);
-                command
+                Ok(command)
             }
-        };
+        }
+    }
+
+    /// One shell on the endpoint, rooted at `cwd`.
+    ///
+    /// # Invariant
+    ///
+    /// A remote `cwd` is the endpoint's to accept: a directory it does not have is
+    /// an error here, never a quiet substitution of this machine's.
+    pub async fn connect(&self, cwd: Option<&str>) -> anyhow::Result<ShellHandle> {
+        let command = self.runner_command()?;
         let runner = Runner::spawn(command)
             .await
             .map_err(|e| anyhow::anyhow!("{}: {e}", self.describe()))?;

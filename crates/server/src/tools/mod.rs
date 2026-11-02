@@ -36,6 +36,9 @@ pub struct ToolContext {
     /// The session's named shells, on this machine and -- when it names one --
     /// on its remote. See `crate::session::Shells`.
     pub shells: Arc<StdMutex<Shells>>,
+    /// The connection this session's references are read through, when its
+    /// directory is on a remote.
+    pub reader: Option<Arc<crate::remote::Reader>>,
     /// The machine this session's directory belongs to.
     ///
     /// # Invariant
@@ -148,6 +151,11 @@ impl ToolContext {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .is_remote(machine)
+    }
+
+    /// The connection this session's references are read through, if any.
+    pub(crate) fn reader(&self) -> Option<Arc<crate::remote::Reader>> {
+        self.reader.clone()
     }
 
     /// Where `machine`'s shells stand, read without their locks.
@@ -1238,8 +1246,7 @@ impl Tool for DelBashTool {
             let mut discarded = Vec::new();
             let mut unconfirmed = Vec::new();
             for name in &names {
-                // A timeout replaced the handle but kept the old command. Deleting
-                // the name must end both, not only the idle replacement.
+                // A timeout left the old command under the name: end both.
                 for shell in ctx.discard(name) {
                     let report = shell.end().await;
                     if !report.confirmed {

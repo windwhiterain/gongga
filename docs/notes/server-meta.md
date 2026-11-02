@@ -131,6 +131,27 @@ reader completes is what the parser reads. A path with a space cannot be named;
 Trailing punctuation belongs to the sentence: `(@image: shot.png).` names
 `shot.png`. A prefix with nothing after it is prose, and stays prose.
 
+## which machine a reference is read on
+
+One session may have shells on two machines, and a reference is read on the machine
+that produced the text it is written in: a tool's output on the machine that ran the
+tool (`Tool::machine`), a user's message on the machine the session stands on. Never
+on whichever machine happens to have a file with a similar name -- that is how a
+Windows spelling of a peer's path once made this server read a *different* checkout's
+`AGENTS.md` into the prompt.
+
+The session's directory belongs to one machine, and it is the *placement* -- what
+`set_session --cwd` last said -- not where its shell happens to stand: a `cd` moves a
+shell and not a session, so it is not a rewrite of what was already sent, while a move
+is, and a move therefore writes a new prompt row. The old row keeps the old directory,
+which is what "already sent" means.
+
+A path is joined the way the reading machine joins paths, so a peer's `C:\Users\...`
+and a Linux `/home/...` each stay what they are. A reference that cannot be read is
+read on no other machine: it stays literal.
+
+See `.agents/notes/2026-11-02-a-session-has-two-machines.md`.
+
 ## expanded once, at delivery
 
 `expand` runs in `commands::deliver`, before the row is written. The stored row

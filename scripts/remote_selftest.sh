@@ -1,0 +1,330 @@
+#!/usr/bin/env bash
+# A session with a remote has two machines: `remote_bash` there, `bash` here, one
+# name space, and every reference read where it was printed. None of that can be
+# seen without real processes -- the arrangement, the prompt's index and the tool
+# table are all built from what the peer answers -- so this runs a real server
+# against the peer named in the operator's own config, with a stand-in model.
+#
+# One line of verdict at the end; `-v` keeps the scratch and prints each turn.
+# The peer is the first `[remotes.<name>]` (or its old `[targets.<name>]` spelling)
+# in `~/.gongga/config.toml`, which is also what proves the old spelling still reads.
+# Nothing is copied to the peer but one scratch directory, created and removed
+# through the session's own `remote_bash`.
+set -uo pipefail
+
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+bin="${GONGGA_BIN:-$root/target/debug}"
+work="$root/.dev/selftest"
+home="$work/remote-home"
+log="$work/remote.log"
+dump="$work/remote-requests.jsonl"
+verbose=${1:-}
+started=$(date +%s)
+tag="gongga-selftest-$$"
+marker="remote-selftest-$$"
+
+say() { [[ "$verbose" == "-v" ]] && printf '%s\n' "$*"; return 0; }
+fails=0
+ok() { if [[ "$2" == 0 ]]; then printf '  ok   %s\n' "$1"; else printf '  FAIL %s\n' "$1"; fails=$((fails + 1)); fi; }
+
+[[ -x "$bin/gongga-server.exe" || -x "$bin/gongga-server" ]] || {
+  echo "build first: cargo build -p gongga-server -p gongga-cli (or set GONGGA_BIN)" >&2
+  exit 1; }
+exe() { [[ -x "$1.exe" ]] && echo "$1.exe" || echo "$1"; }
+server_bin=$(exe "$bin/gongga-server")
+cli_bin=$(exe "$bin/gongga-cli")
+
+alive() { [[ -n "${1:-}" ]] && tasklist //FI "PID eq $1" //NH 2>/dev/null | grep -q "$1"; }
+child_pid() { tr -d '\r\n' < "$home/server.lock" 2>/dev/null; }
+free_port() {
+  python -c 'import socket
+s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.bind(("127.0.0.1",0))
+print(s.getsockname()[1]);s.close()'
+}
+dial_ready() {
+  python -c 'import socket,sys
+s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.settimeout(0.3)
+sys.exit(0 if s.connect_ex(("127.0.0.1",int(sys.argv[1])))==0 else 1)' "$1"
+}
+wait_tcp() { for _ in $(seq 1 150); do dial_ready "$1" && return 0; sleep 0.2; done; return 1; }
+wait_free() { for _ in $(seq 1 100); do dial_ready "$1" || return 0; sleep 0.2; done; return 1; }
+wait_listening() { for _ in $(seq 1 300); do grep -q "listening (UDP) local=127.0.0.1:$port" "$log" && return 0; sleep 0.2; done; return 1; }
+# Every process serving THIS home: the home has several spellings, and matching one
+# of them finds nothing.
+serving_home() {
+  local win; win=$(cygpath -w "$home" 2>/dev/null || echo "$home")
+  local posix; posix=$(cygpath -m "$home" 2>/dev/null || echo "$home")
+  powershell -NoProfile -Command \
+    "Get-CimInstance Win32_Process -Filter \"Name='gongga-server.exe'\" | Where-Object { \$_.CommandLine -like '*--home *$posix*' -or \$_.CommandLine -like '*--home *$win*' -or \$_.CommandLine -like '*--home *$home*' } | ForEach-Object { \$_.ProcessId }" \
+    2>/dev/null | tr -d '\r' | tr '\n' ' '
+}
+
+# The peer, as the operator's own config spells it.
+peer=$(python - "$HOME/.gongga/config.toml" <<'PY'
+import re, sys
+try:
+    text = open(sys.argv[1], encoding="utf-8").read()
+except OSError:
+    sys.exit(2)
+heads = [(m.start(), m.group(1)) for m in re.finditer(r"^\[(?:remotes|targets)\.([^\]]+)\]", text, re.M)]
+if not heads:
+    sys.exit(2)
+start, name = heads[0]
+body = []
+for line in text[start:].splitlines()[1:]:
+    if line.startswith("["):
+        break
+    body.append(line)
+fields = dict(
+    (k.strip(), v.strip().strip('"'))
+    for k, v in (line.split("=", 1) for line in body if "=" in line and not line.strip().startswith("#"))
+)
+print(name)
+print(fields.get("host", ""))
+print(fields.get("identity", ""))
+print(fields.get("port", ""))
+print(fields.get("runner", ""))
+PY
+)
+peer_name=$(sed -n 1p <<<"$peer")
+peer_host=$(sed -n 2p <<<"$peer")
+peer_key=$(sed -n 3p <<<"$peer")
+peer_port=$(sed -n 4p <<<"$peer")
+peer_runner=$(sed -n 5p <<<"$peer")
+if [[ -z "${peer_host:-}" ]]; then
+  echo "skip: no [remotes.<name>] in ~/.gongga/config.toml, so there is no peer to prove this against"
+  exit 0
+fi
+
+port=$(free_port)
+fake_port=$(free_port)
+server_pid=""; fake_pid=""
+cleanup() {
+  for pid in $(serving_home) "$server_pid"; do
+    alive "$pid" && taskkill //PID "$pid" //T //F >/dev/null 2>&1
+  done
+  alive "$fake_pid" && taskkill //PID "$fake_pid" //F >/dev/null 2>&1
+  rm -f "$work"/remote-*.pid
+  sleep 1
+  rm -rf "$home" || echo "note: $home is still held by a process" >&2
+  [[ "$verbose" == "-v" ]] || rm -rf "$work"
+}
+trap cleanup EXIT
+
+left=$(serving_home)
+if [[ -n "${left// /}" ]]; then
+  echo "a previous run left $(echo $left) serving $home; stopping it" >&2
+  for pid in $left; do taskkill //PID "$pid" //T //F >/dev/null 2>&1; done
+  sleep 2
+fi
+mkdir -p "$home"
+cp -r "$HOME/.gongga/ship.git" "$home/ship.git" 2>/dev/null
+: > "$log"; : > "$dump"
+
+{
+  echo "[remotes.$peer_name]"
+  echo "host = \"$peer_host\""
+  [[ -n "$peer_key" ]] && echo "identity = \"$peer_key\""
+  [[ -n "$peer_port" ]] && echo "port = $peer_port"
+  [[ -n "$peer_runner" ]] && echo "runner = \"$peer_runner\""
+} > "$home/config.toml"
+
+cat > "$work/remote-roster.toml" <<TOML
+[[provider]]
+id = "fake"
+name = "Fake"
+key_env = "FAKE_API_KEY"
+
+  [[provider.endpoint]]
+  id = "openai"
+  api = "openai-responses"
+  base_url = "http://127.0.0.1:$fake_port/v1"
+
+  [[provider.model]]
+  id = "flash-fake"
+  name = "Fake Flash"
+  tier = "flash"
+  context = 100000
+  modalities = ["text"]
+TOML
+export GONGGA_PROVIDERS_CATALOG="$work/remote-roster.toml"
+export FAKE_API_KEY=sk-fake
+export FAKE_LLM_DUMP="$dump"
+
+# The stand-in is restarted on the same port between turns: `FAKE_LLM_TOOL` is its
+# environment, and a turn is the unit that needs a different tool.
+fake_up() {
+  if [[ -n "$fake_pid" ]]; then
+    alive "$fake_pid" && taskkill //PID "$fake_pid" //F >/dev/null 2>&1
+    wait_free "$fake_port"
+  fi
+  rm -f "$work/remote-fake.pid"
+  env FAKE_LLM_TOOL="$1" FAKE_LLM_TOOL_ARGS="$2" \
+    python -c "import os,runpy,sys;open(sys.argv[1],'w').write(str(os.getpid()));sys.argv=sys.argv[2:];runpy.run_path(sys.argv[0],run_name='__main__')" \
+    "$work/remote-fake.pid" "$root/scripts/fake_llm.py" "$fake_port" >"$work/fake-remote.log" 2>&1 &
+  for _ in $(seq 1 50); do [[ -s "$work/remote-fake.pid" ]] && break; sleep 0.2; done
+  fake_pid=$(cat "$work/remote-fake.pid" 2>/dev/null)
+  wait_tcp "$fake_port"
+}
+
+turns=0
+wait_turn() {
+  turns=$((turns + 1))
+  for _ in $(seq 1 240); do
+    [[ "$(grep -c "turn end session=$1" "$log" 2>/dev/null)" -ge "$turns" ]] && return 0
+    sleep 0.5
+  done
+  return 1
+}
+say_turn() { say "  -- turn $turns: $(grep "turn end session=$1" "$log" | tail -1)"; }
+
+fake_up remote_bash "{\"command\":\"mkdir -p \\\"\$HOME/$tag\\\" && printf '# $marker\\n' > \\\"\$HOME/$tag/AGENTS.md\\\" && cygpath -w \\\"\$HOME/$tag\\\" && cygpath -w \\\"\$HOME\\\"\",\"name\":\"peer\",\"task\":\"make the peer scratch\"}" || {
+  echo "the stand-in never answered on 127.0.0.1:$fake_port" >&2; exit 1; }
+
+"$server_bin" --home "$home" --bind "127.0.0.1:$port" --log info >>"$log" 2>&1 &
+for _ in $(seq 1 150); do [[ -s "$home/server.lock" ]] && break; sleep 0.2; done
+wait_listening || { echo "the server never listened on 127.0.0.1:$port" >&2; exit 1; }
+server_pid=$(child_pid)
+cli=("$cli_bin" --home "$home" --server "127.0.0.1:$port")
+
+# `local` is not a remote name: naming it is refused, and the refusal says `none`.
+refused=$("${cli[@]}" set_session --session probe --remote local --model fake/flash-fake 2>&1)
+[[ "$refused" == *"no remote called \`local\`"* && "$refused" == *"none"* ]]
+ok "naming \`local\` is refused, and the answer names \`none\`" $?
+
+created=$("${cli[@]}" set_session --session probe --remote "$peer_name" --model fake/flash-fake 2>&1)
+[[ "$created" == *'"ok":true'* ]]
+ok "a session is created on $peer_name" $?
+
+"${cli[@]}" send_message --session probe --message "@skill: self-control make the scratch" >/dev/null 2>&1
+wait_turn probe; say_turn probe
+
+# The peer's own path, in the spelling its own shell gave, and the file it wrote.
+printed_paths=$(python - "$home" <<'INNER'
+import json, sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
+sid = c.execute("select id from sessions where name='probe'").fetchone()[0]
+for (d,) in c.execute("select display from messages where session_id=? and kind='tool_result' order by seq", (sid,)):
+    for line in json.loads(d).get("output", "").splitlines():
+        line = line.strip()
+        if len(line) > 3 and line[1] == ":" and line[2] in "\\/":
+            print(line)
+INNER
+)
+peer_scratch=$(sed -n 1p <<<"$printed_paths")
+peer_home=$(sed -n 2p <<<"$printed_paths")
+[[ -n "$peer_scratch" && -n "$peer_home" ]]
+ok "remote_bash made the peer's scratch and named it in Windows spelling ($peer_scratch)" $?
+
+# The session moves to that directory: what its references are read against.
+moved=$("${cli[@]}" set_session --session probe --cwd "$peer_scratch" 2>&1)
+[[ "$moved" == *'"ok":true'* ]]
+ok "the session moves to $peer_scratch" $?
+
+fake_up "" "{}"
+"${cli[@]}" send_message --session probe --message "now say which machine you are on" >/dev/null 2>&1
+wait_turn probe; say_turn probe
+
+python - "$home" "$marker" <<'INNER'
+import json, sqlite3, sys
+home, marker = sys.argv[1], sys.argv[2]
+c = sqlite3.connect(f"file:{home}/gongga.db?mode=ro", uri=True)
+sid = c.execute("select id from sessions where name='probe'").fetchone()[0]
+assert c.execute("select remote from sessions where id=?", (sid,)).fetchone()[0], "no remote recorded"
+last = [json.loads(d) for (d,) in c.execute(
+    "select display from messages where session_id=? and kind='system' order by seq desc limit 1", (sid,))][0]
+# The rules file was read on the peer. This machine has no such directory, so a
+# local read would have left both the spelling and the marker out.
+assert "@file:AGENTS.md" in last["rooted"], last["rooted"]
+assert marker in (last["index"] or ""), (last["index"] or "")[:300]
+INNER
+ok "the prompt's index carries the peer's own AGENTS.md" $?
+
+fake_up bash "{\"command\":\"pwd\",\"name\":\"here\",\"task\":\"prove this machine\"}"
+"${cli[@]}" send_message --session probe --message "and a shell here" >/dev/null 2>&1
+wait_turn probe; say_turn probe
+
+fake_up list_bash "{}"
+"${cli[@]}" send_message --session probe --message "which shells do you have" >/dev/null 2>&1
+wait_turn probe; say_turn probe
+
+python - "$home" "$peer_scratch" <<'INNER'
+import json, sqlite3, sys
+home, peer_scratch = sys.argv[1], sys.argv[2]
+c = sqlite3.connect(f"file:{home}/gongga.db?mode=ro", uri=True)
+sid = c.execute("select id from sessions where name='probe'").fetchone()[0]
+results = [json.loads(d).get("output", "") for (d,) in c.execute(
+    "select display from messages where session_id=? and kind='tool_result' order by seq", (sid,))]
+
+
+def payload(text):
+    """The JSON a listing answered with; a result also ends with its elapsed time."""
+    start = text.find("{")
+    if start < 0:
+        return None
+    value, _ = json.JSONDecoder().raw_decode(text[start:])
+    return value if isinstance(value, dict) and "bash" in value else None
+
+
+machines = {}
+for text in results:
+    for row in (payload(text) or {}).get("bash") or []:
+        machines[row["name"]] = row["machine"]
+# `here` is the shell `bash` made on this machine; `default` is the one that exists
+# without being asked for, so it is the directory-owning machine's -- the remote's.
+assert machines.get("here") == "local", machines
+assert machines.get("default") == "remote", machines
+# `bash` ran here, so its `pwd` is not the peer's directory.
+printed = [r.strip().splitlines()[0].strip() for r in results if r.strip()]
+here = [p for p in printed if p.startswith("/") and "/c/" in p.lower()]
+assert here, printed
+assert not any(p.lower().startswith(peer_scratch.lower().replace("\\", "/")) for p in here), here
+INNER
+ok "one name space, each name reporting the machine that holds it" $?
+
+python - "$dump" <<'INNER'
+import json, sys
+seen = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+names = {t["name"] for t in seen[0].get("tools") or []}
+assert {"bash", "remote_bash"} <= names, names
+INNER
+ok "a session with a remote is offered both tools" $?
+
+# Out of the scratch before it goes: a move ends every shell, so nothing on the peer
+# is standing in the directory the next command removes.
+back=$("${cli[@]}" set_session --session probe --cwd "$peer_home" 2>&1)
+[[ "$back" == *'"ok":true'* ]]
+ok "the session moves out of its scratch" $?
+
+fake_up remote_bash "{\"command\":\"rm -rf \\\"\$HOME/$tag\\\" && echo peer-clean\",\"name\":\"cleanup\",\"task\":\"remove the peer scratch\"}"
+"${cli[@]}" send_message --session probe --message "clean up the peer" >/dev/null 2>&1
+wait_turn probe; say_turn probe
+python - "$home" <<'INNER'
+import json, sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
+sid = c.execute("select id from sessions where name='probe'").fetchone()[0]
+last = [json.loads(d).get("output", "") for (d,) in c.execute(
+    "select display from messages where session_id=? and kind='tool_result' order by seq desc limit 1", (sid,))][0]
+assert "peer-clean" in last, last
+INNER
+ok "the peer's scratch is removed" $?
+
+# A remote session comes home by naming `none`: no shells remain on the peer at all.
+back=$("${cli[@]}" set_session --session probe --remote none 2>&1)
+[[ "$back" == *'"ok":true'* ]]
+ok "a session comes home by naming \`none\`" $?
+python - "$home" <<'INNER'
+import sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
+assert c.execute("select remote from sessions where name='probe'").fetchone()[0] is None
+INNER
+ok "and the row no longer names a machine" $?
+
+elapsed=$(( $(date +%s) - started ))
+sha=$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)
+if [[ $fails == 0 ]]; then
+  printf 'PASS · %ss · %s\n' "$elapsed" "$sha"
+else
+  printf 'FAIL · %s check(s) red · %ss · %s\n' "$fails" "$elapsed" "$sha"
+fi
+[[ $fails == 0 ]]

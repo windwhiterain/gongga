@@ -45,3 +45,22 @@ local fallback.
 the old table); `sessions.target` is `sessions.remote`, renamed by `migrate/2-to-3.py`.
 `local` is not a remote name: naming none is how a session says "this machine", and
 `none` is how a remote session comes home.
+
+## What landed, beyond the arrangement
+
+- **The prompt's index follows the placement, not the shell.** `SessionInner.placed`
+  is what `set_session --cwd` last said (and, for a session whose remote shell has not
+  connected yet, what that shell first reported). A move writes a new prompt row --
+  the old row keeps the old directory -- while a `cd` still writes nothing, which is
+  the invariant `scripts/prompt_selftest.sh` holds.
+- **A peer's files are read through one connection per remote** (`remote::Reader`),
+  never through a session's shell: a message is expanded when it is delivered, which
+  may be while that session is inside a long command. A dead connection costs one
+  re-dial, and the read then goes on.
+- **`index_skill` lists what this server can open** and names where a peer checkout's
+  own skills are; `@skill:` resolves against the same rows, so a completed name is a
+  name that expands.
+
+Verified on real processes: `scripts/remote_selftest.sh` (one verdict line, a
+temporary home, the peer from the operator's config) -- 12 checks, 27s, and it goes
+red when a remote reference is read from this machine's disk instead.

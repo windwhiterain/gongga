@@ -605,38 +605,28 @@ async fn expand_message(
     session: &crate::session::SessionHandle,
     message: String,
 ) -> Result<crate::meta::Expanded, String> {
-    let on_endpoint = d
-        .sessions
-        .recorded_remote(session.name())
-        .is_some_and(|remote| remote != "local");
-    // These resolve on the peer, so they are refused here; `@file:` stays literal.
-    if on_endpoint {
-        let named: Vec<String> = crate::meta::mentions(&message)
-            .into_iter()
-            .filter(|m| m.kind != protocol::Reference::File)
-            .map(|m| m.value)
-            .collect();
-        if !named.is_empty() {
-            return Err(format!(
-                "this session runs on a remote endpoint, and {} cannot be resolved here:                  the file it names is on that machine. Send the text without the reference,                  or name the path for the endpoint to read itself.",
-                named.join(", ")
-            ));
-        }
-        return Ok(crate::meta::Expanded {
-            text: message,
-            images: Vec::new(),
-        });
-    }
+    // Where this message's references are read: the machine the session stands on.
+    // A session with a remote and no connection yet says so, rather than answering
+    // from this machine's disk with a path that means something else there.
+    let reader = session.reader();
+    let source = match (&reader, session.owner()) {
+        (Some(reader), crate::session::Machine::Remote) => crate::meta::Source::Remote(reader),
+        (None, crate::session::Machine::Remote) => crate::meta::Source::Unreachable,
+        (_, crate::session::Machine::Local) => crate::meta::Source::Local,
+    };
     let llm = d.agent.route(session.name(), &session.tuning()).ok();
     let llm = llm.as_ref().map(|(client, _)| client.as_ref());
     let prompt = d.store.prompt(session.id()).ok().flatten();
+    let home = session.cwd();
     let indexed = crate::meta::literal(
-        &session.cwd(),
+        source,
+        &home,
         &message,
         prompt.as_ref().map(|prompt| prompt.rooted.as_slice()),
-    );
+    )
+    .await;
     let borrowed: Vec<&str> = indexed.iter().map(String::as_str).collect();
-    Ok(crate::meta::expand(&session.cwd(), &message, llm, &borrowed).await)
+    Ok(crate::meta::expand(source, &home, &message, llm, &borrowed).await)
 }
 
 /// Puts `message` into `name`'s hands: a turn when it is free, an inbox row when not.

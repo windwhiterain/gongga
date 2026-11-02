@@ -418,12 +418,14 @@ impl Agent {
     /// and replayed from the store after that. So the prose can follow an edited
     /// template, and the timestamp cannot follow the clock.
     /// See `docs/notes/server-agent.md`.
-    fn prompt_in_force(
+    async fn prompt_in_force(
         &self,
         id: i64,
         name: &str,
         model: &str,
         cwd: &std::path::Path,
+        placed: Option<&std::path::Path>,
+        source: crate::meta::Source<'_>,
         note: Option<&str>,
     ) -> anyhow::Result<crate::store::Prompt> {
         let stored = self.store.prompt(id)?;
@@ -431,30 +433,37 @@ impl Agent {
         // The session's own name is the one value in the prose: a model asked what it
         // is called has to be able to answer without a tool call.
         let instructions = prompts.system(name);
-        // Stamped with the first row and replayed verbatim after, including when there
-        // is none: a row written before the card existed stays without one, because
-        // inserting a message now would rewrite what was already sent.
+        // Where this session belongs: the placement, which only a move changes. A
+        // `cd` moves a shell and not a session, so it is not a rewrite of what was
+        // already sent; a move is, because the map in the prompt would otherwise keep
+        // pointing at a directory the session has left.
+        let here = match placed {
+            Some(path) => Self::stated(path),
+            None => match &stored {
+                Some(kept) if !kept.cwd.is_empty() => kept.cwd.clone(),
+                _ => Self::stated(cwd),
+            },
+        };
+        let home = std::path::PathBuf::from(&here);
+        let moved = stored
+            .as_ref()
+            .is_some_and(|kept| kept.cwd != here && !kept.cwd.is_empty());
         let tail = match &stored {
-            Some(kept) => kept.tail.clone(),
-            None => Some(prompts.render(
+            // A moved session is a new row, and the card says where it now stands: the
+            // old row keeps the old one, which is what "already sent" means.
+            Some(kept) if !moved => kept.tail.clone(),
+            _ => Some(prompts.render(
                 "dynamic_tail",
                 &[
                     ("session", name),
                     ("build", protocol::BUILD),
                     ("now", &crate::clock::now()),
-                    ("cwd", &Self::stated(cwd)),
+                    ("cwd", &here),
                 ],
             )),
         };
-        // Where this session belongs: the row's own answer once there is one, so a
-        // later `cd` in its shell is not a rewrite of what was already sent. It is
-        // both what the prompt records and where its rules file is read.
-        let home = stored
-            .as_ref()
-            .map(|kept| std::path::PathBuf::from(&kept.cwd))
-            .unwrap_or_else(|| std::path::PathBuf::from(Self::stated(cwd)));
         // Built from what the references say now, so an edited body reaches the model.
-        let (index, rooted) = match self.index_of(id, name, model, &home) {
+        let (index, rooted) = match self.index_of(id, name, model, &home, source).await {
             Some((index, rooted)) => (Some(index), rooted),
             None => match &stored {
                 Some(kept) => (kept.index.clone(), kept.rooted.clone()),
@@ -470,14 +479,14 @@ impl Agent {
             handover,
             // Where the request said the shell stood, which is the stored row's
             // answer once there is one: a later move is not a rewrite.
-            cwd: stored
-                .as_ref()
-                .map(|kept| kept.cwd.clone())
-                .unwrap_or_else(|| Self::stated(&home)),
+            cwd: here.clone(),
             stamp: crate::store::stamp(note),
         };
         // Only the texts that go on the wire are compared; `cwd` is a record.
-        if let Some(kept) = stored.clone().filter(|kept| !kept.rewritten_by(&prompt)) {
+        if let Some(kept) = stored
+            .clone()
+            .filter(|kept| !kept.rewritten_by(&prompt) && !moved)
+        {
             return Ok(kept);
         }
         // Rewritten prose is a real event: the prefix the provider cached is gone
@@ -521,19 +530,20 @@ impl Agent {
     /// those mentions literal.
     /// Everything is read in `home`, the session's own directory: a `cd` in its shell
     /// must not rewrite what was already sent. See `docs/notes/server-agent.md`.
-    fn index_of(
+    async fn index_of(
         &self,
         id: i64,
         name: &str,
         model: &str,
         home: &std::path::Path,
+        source: crate::meta::Source<'_>,
     ) -> Option<(String, Vec<String>)> {
         // The queue as well as the transcript: a message delivered before this row
         // was left literal on the promise that the row would carry it.
         let mut texts = self.store.user_texts(id).ok()?;
         texts.extend(self.store.queued_texts(name).unwrap_or_default());
         let borrowed: Vec<&str> = texts.iter().map(String::as_str).collect();
-        let roots = crate::meta::roots(home, &borrowed);
+        let roots = crate::meta::roots(source, home, &borrowed).await;
         if roots.is_empty() {
             return None;
         }
@@ -633,7 +643,23 @@ impl Agent {
         let generation = self.store.context_generation(id)?;
         let phase_started = std::time::Instant::now();
         let definitions = self.tools.definitions(session.on_remote());
-        let prompt = self.prompt_in_force(id, &name, llm.model(), cwd, note.as_deref())?;
+        let reader = session.reader();
+        let source = match (&reader, session.owner()) {
+            (Some(reader), crate::session::Machine::Remote) => crate::meta::Source::Remote(reader),
+            (None, crate::session::Machine::Remote) => crate::meta::Source::Unreachable,
+            (_, crate::session::Machine::Local) => crate::meta::Source::Local,
+        };
+        let prompt = self
+            .prompt_in_force(
+                id,
+                &name,
+                llm.model(),
+                cwd,
+                session.placed().as_deref(),
+                source,
+                note.as_deref(),
+            )
+            .await?;
         phases.prompt_ms = phase_started.elapsed().as_millis() as u64;
         // Pinned here, so every retry of this request replays the window that was
         // current when it started.
@@ -961,31 +987,26 @@ impl Agent {
         let mut out = Vec::new();
         // The bytes are on the machine that printed the name, which is not always
         // the one this server reads. See `docs/notes/server-meta.md`.
-        let on_endpoint = ctx.on_endpoint(printed_on);
         let named = crate::meta::mentions(output)
             .into_iter()
             .filter(|m| m.kind == protocol::Reference::Image)
             .map(|m| m.value);
+        let reader = ctx.reader();
+        let source = match (&reader, printed_on) {
+            (Some(reader), crate::session::Machine::Remote) => crate::meta::Source::Remote(reader),
+            (None, crate::session::Machine::Remote) => crate::meta::Source::Unreachable,
+            (_, crate::session::Machine::Local) => crate::meta::Source::Local,
+        };
         for given in named {
-            if on_endpoint {
-                self.bus.publish(Event::Log {
-                    level: LogLevel::Warn,
-                    message: format!(
-                        "{}: {given} stays a reference in the text -- this session's pictures \
-                         are on its remote endpoint, and reading them into this machine is \
-                         not available in this build",
-                        ctx.session
-                    ),
-                });
-                continue;
-            }
-            let path = crate::image::resolve(&ctx.cwd, &given);
-            let bytes = match std::fs::read(&path) {
-                Ok(b) => b,
+            // The name is read on the machine that printed it: a picture a `bash` call
+            // shows is here, and one a `remote_bash` call shows is there.
+            let path = source.spelling(&ctx.dir(printed_on), &given);
+            let bytes = match source.read(&ctx.dir(printed_on), &given).await {
+                Some(b) => b,
                 // Not a picture this harness can read: leave the text alone.
-                Err(_) => continue,
+                None => continue,
             };
-            let Some(media) = crate::image::media_type(&path, &bytes) else {
+            let Some(media) = crate::image::media_type(std::path::Path::new(&path), &bytes) else {
                 continue;
             };
             if !ctx.vision.accepts_image {
@@ -998,9 +1019,12 @@ impl Agent {
                 });
                 continue;
             }
-            let mut image = crate::image::ImageRef::new(path.to_string_lossy().to_string(), media);
+            let mut image = crate::image::ImageRef::new(path, media);
             // One id per file per session: a replay reuses it instead of the bytes.
-            match llm.upload_image(&image.path, &image.media_type).await {
+            match llm
+                .upload_bytes(&image.path, &image.media_type, bytes)
+                .await
+            {
                 Ok(id) => image.file_id = Some(id),
                 Err(e) => {
                     // Attaching is an improvement, not a requirement: the turn goes
@@ -1064,6 +1088,7 @@ impl Agent {
             call_id: call_id.clone(),
             output_dir: self.output_dir.clone(),
             shells: session.shells(),
+            reader: session.reader(),
             machine,
             detached: self.detached.clone(),
             events: Some(tx),

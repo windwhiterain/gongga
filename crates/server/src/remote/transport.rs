@@ -476,6 +476,13 @@ impl ShellHandle {
         self.id
     }
 
+    /// One chunk of a file on this shell's own endpoint, read by its runner.
+    ///
+    /// See `docs/notes/server-remote.md`.
+    pub async fn read(&self, path: &str, offset: u64) -> anyhow::Result<FileChunk> {
+        self.runner.read(path, offset).await
+    }
+
     /// The next thing the peer said about this shell: its output, or its end.
     ///
     /// # Invariant

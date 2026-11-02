@@ -101,6 +101,66 @@ impl Root {
     }
 }
 
+/// Where a message's references are read: this machine, or a session's remote.
+///
+/// # Invariant
+///
+/// One answer for one message: a reference is read on the machine that produced the
+/// text it is written in, and never on whichever machine has a file of that name.
+#[derive(Clone, Copy)]
+pub enum Source<'a> {
+    Local,
+    Remote(&'a crate::remote::Reader),
+    /// A remote session with no connection: every read fails.
+    Unreachable,
+}
+
+impl Source<'_> {
+    pub fn machine(&self) -> crate::session::Machine {
+        match self {
+            Source::Local => crate::session::Machine::Local,
+            Source::Remote(_) | Source::Unreachable => crate::session::Machine::Remote,
+        }
+    }
+
+    /// The bytes of `named`, resolved against `home` as that machine spells paths.
+    pub async fn read(&self, home: &Path, named: &str) -> Option<Vec<u8>> {
+        let path = self.spelling(home, named);
+        match self {
+            Source::Local => std::fs::read(path).ok(),
+            Source::Remote(reader) => reader.read(&path).await.ok(),
+            Source::Unreachable => None,
+        }
+    }
+
+    /// The one path a name means on this machine.
+    ///
+    /// # Invariant
+    ///
+    /// A peer's path is joined the way its own shell joins it, not this platform's.
+    pub fn spelling(&self, home: &Path, named: &str) -> String {
+        match self {
+            Source::Local => crate::image::resolve(home, named)
+                .to_string_lossy()
+                .into_owned(),
+            Source::Remote(_) | Source::Unreachable => peer_path(&home.to_string_lossy(), named),
+        }
+    }
+}
+
+/// `named` as a peer spells it, resolved against the peer's `home`.
+fn peer_path(home: &str, named: &str) -> String {
+    let named = named.replace('\\', "/");
+    let absolute = named.starts_with('/')
+        || named.char_indices().nth(1).is_some_and(|(at, c)| {
+            c == ':' && named.as_bytes()[0].is_ascii_alphabetic() && at == 1
+        });
+    if absolute || home.is_empty() {
+        return named;
+    }
+    format!("{}/{}", home.trim_end_matches('/'), named)
+}
+
 /// The file a directory keeps its standing rules in.
 ///
 /// # Invariant
@@ -118,7 +178,7 @@ pub const RULES: &str = "AGENTS.md";
 /// must not follow a `cd`. The rules file is a root whether or not a message names it.
 /// Breadth-first by first-seen order; what cannot be read is left out.
 /// See `docs/notes/server-meta.md`.
-pub fn roots(home: &Path, texts: &[&str]) -> Vec<Root> {
+pub async fn roots(source: Source<'_>, home: &Path, texts: &[&str]) -> Vec<Root> {
     // Seeded here rather than named by a message: the index holds it behind the prose.
     let first = format!("{}{}", Reference::File.prefix(), RULES);
     let mut queue: Vec<String> = vec![first.clone()];
@@ -137,7 +197,7 @@ pub fn roots(home: &Path, texts: &[&str]) -> Vec<Root> {
     while index < queue.len() {
         let named = queue[index].clone();
         index += 1;
-        let Some(content) = content(home, &named) else {
+        let Some(content) = content(source, home, &named).await else {
             continue;
         };
         for mention in mentions(&content) {
@@ -173,22 +233,20 @@ pub fn spelling(mention: &Mention) -> String {
 ///
 /// A picture is not text and an unknown skill has no body: neither is invented, and
 /// both leave the mention literal in the prompt.
-fn content(cwd: &Path, spelling: &str) -> Option<String> {
+async fn content(source: Source<'_>, home: &Path, spelling: &str) -> Option<String> {
     let kind = Reference::of_prefix(spelling)?;
     let value = spelling.strip_prefix(kind.prefix())?;
     match kind {
         Reference::Image => None,
-        Reference::File => {
-            let bytes = std::fs::read(crate::image::resolve(cwd, value)).ok()?;
-            String::from_utf8(bytes).ok()
-        }
-        Reference::Skill => skill_body(cwd, value),
+        Reference::File => String::from_utf8(source.read(home, value).await?).ok(),
+        Reference::Skill => skill_body(home, source.machine(), value),
     }
 }
 
 /// A skill's `SKILL.md` as written, frontmatter included.
-fn skill_body(cwd: &Path, name: &str) -> Option<String> {
-    let found = crate::tools::index_skill::installed(cwd)
+fn skill_body(home: &Path, machine: crate::session::Machine, name: &str) -> Option<String> {
+    // Only a row this server holds: a peer's checkout skill is not.
+    let found = crate::tools::index_skill::installed_for(home, machine)
         .into_iter()
         .find(|skill| skill.name == name)?;
     std::fs::read_to_string(found.path).ok()
@@ -230,10 +288,16 @@ impl Expanded {
 }
 
 /// The spellings `text` leaves literal. See `docs/notes/server-meta.md`.
-pub fn literal(cwd: &Path, text: &str, rooted: Option<&[String]>) -> Vec<String> {
+pub async fn literal(
+    source: Source<'_>,
+    home: &Path,
+    text: &str,
+    rooted: Option<&[String]>,
+) -> Vec<String> {
     match rooted {
         Some(rooted) => rooted.to_vec(),
-        None => roots(cwd, &[text])
+        None => roots(source, home, &[text])
+            .await
             .into_iter()
             .map(|root| root.spelling)
             .collect(),
@@ -251,7 +315,13 @@ pub fn literal(cwd: &Path, text: &str, rooted: Option<&[String]>) -> Vec<String>
 /// An unresolvable reference stays in the text verbatim: an unreadable picture or
 /// an unknown skill must still be a message. `llm` is `None` when no client
 /// resolved, and then only skill references are expanded.
-pub async fn expand(cwd: &Path, text: &str, llm: Option<&LlmClient>, indexed: &[&str]) -> Expanded {
+pub async fn expand(
+    source: Source<'_>,
+    home: &Path,
+    text: &str,
+    llm: Option<&LlmClient>,
+    indexed: &[&str],
+) -> Expanded {
     let mut out = Expanded::default();
     let mut cursor = 0;
     for mention in mentions(text) {
@@ -260,11 +330,11 @@ pub async fn expand(cwd: &Path, text: &str, llm: Option<&LlmClient>, indexed: &[
         }
         let (replacement, image) = match mention.kind {
             Reference::File => continue,
-            Reference::Skill => match skill_metadata(cwd, &mention.value) {
+            Reference::Skill => match skill_metadata(home, source.machine(), &mention.value) {
                 Some(metadata) => (metadata, None),
                 None => continue,
             },
-            Reference::Image => match picture(cwd, &mention.value, llm).await {
+            Reference::Image => match picture(source, home, &mention.value, llm).await {
                 Some(image) => (String::new(), Some(image)),
                 None => continue,
             },
@@ -291,8 +361,8 @@ pub async fn expand(cwd: &Path, text: &str, llm: Option<&LlmClient>, indexed: &[
 }
 
 /// What `@skill: <name>` stands for: one row of `index_skill`'s table.
-fn skill_metadata(cwd: &Path, name: &str) -> Option<String> {
-    let found = crate::tools::index_skill::installed(cwd)
+fn skill_metadata(home: &Path, machine: crate::session::Machine, name: &str) -> Option<String> {
+    let found = crate::tools::index_skill::installed_for(home, machine)
         .into_iter()
         .find(|skill| skill.name == name)?;
     Some(format!(
@@ -311,26 +381,34 @@ fn skill_metadata(cwd: &Path, name: &str) -> Option<String> {
 /// An upload that fails still attaches the picture: `image::content_part` inlines
 /// the bytes when there is no file id, so an unreachable File API costs a bigger
 /// request and never the message.
-async fn picture(cwd: &Path, given: &str, llm: Option<&LlmClient>) -> Option<ImageRef> {
-    let path = image::resolve(cwd, given);
-    let bytes = std::fs::read(&path).ok()?;
-    let media = image::media_type(&path, &bytes)?;
-    let mut reference = ImageRef::new(path.to_string_lossy().to_string(), media);
-    if let Some(llm) = llm {
-        if !llm.accepts_image() {
-            tracing::warn!(path = %reference.path, "a picture was named for a model that cannot see one");
-            return None;
-        }
-        match llm
-            .upload_image(&reference.path, &reference.media_type)
-            .await
-        {
-            Ok(id) => reference.file_id = Some(id),
-            Err(e) => tracing::warn!(
+async fn picture(
+    source: Source<'_>,
+    home: &Path,
+    given: &str,
+    llm: Option<&LlmClient>,
+) -> Option<ImageRef> {
+    let path = source.spelling(home, given);
+    let bytes = source.read(home, given).await?;
+    let media = image::media_type(std::path::Path::new(&path), &bytes)?;
+    let mut reference = ImageRef::new(path, media);
+    let llm = llm?;
+    if !llm.accepts_image() {
+        tracing::warn!(path = %reference.path, "a picture was named for a model that cannot see one");
+        return None;
+    }
+    match llm
+        .upload_bytes(&reference.path, &reference.media_type, bytes)
+        .await
+    {
+        Ok(id) => reference.file_id = Some(id),
+        Err(e) => {
+            // A row keeps a path, never bytes: an upload that failed stays text.
+            tracing::warn!(
                 path = %reference.path,
                 error = %e,
-                "could not upload a named picture; the request carries its bytes"
-            ),
+                "could not upload a named picture; it stays a reference in the text"
+            );
+            return None;
         }
     }
     Some(reference)

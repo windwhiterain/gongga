@@ -277,6 +277,29 @@ session's leftovers guesswork.
 Detached jobs are not the shells', so they keep running; say so, or the model
 would assume discarding the shells stopped them.
 
+## a name is one shell, on one machine
+
+`bash` and `remote_bash` are one implementation driven twice: `BashTool { machine }`.
+A session with a remote is offered both; a session without one is not offered the
+second, because a tool that can only refuse is a wrong turn nobody can undo.
+
+`check_bash`, `del_bash` and `list_bash` carry no machine: a name is one shell, and
+whichever machine holds it is the one that answers. `list_bash` reports it per row and
+`check_bash` in its closing bracket, so a reader can tell `peer` from `here` without
+asking. A name already taken on the other machine is refused, naming the machine that
+has it.
+
+The directory a shell starts in follows the same rule as the session's own: the
+machine that owns the placement gets it, and the other side starts in its own default
+directory. `default` is therefore the directory-owning machine's shell -- so a remote
+session's `default` is the peer's, and `bash` there means *name another shell*.
+
+## the machine a spilled cut belongs to
+
+A capped output is spilled to a file this server can name only when the shell that
+printed it runs here; over a remote the path would name a file the reader cannot
+open, so the cut is reported without one.
+
 ## spill_label
 
 One function rather than two `format!`s because the two paths that spill -- a

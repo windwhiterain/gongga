@@ -56,8 +56,7 @@ impl Tool for IndexSkillTool {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
             let skills = installed_for(&ctx.cwd, ctx.machine);
-            // Where a session's directory is elsewhere, that checkout's own skills are
-            // that machine's files: named here, read with the tool that runs there.
+            // A checkout on a peer keeps its skills there: named, not read.
             let elsewhere = (ctx.machine == Machine::Remote).then(|| {
                 format!(
                     "this session's directory is on its remote endpoint ({}), so the \
@@ -116,18 +115,13 @@ pub struct Installed {
 /// The order is the precedence, and it is the same order `installed_skills` walks
 /// for the command line, so a name read off the table is a name that can be
 /// opened. See `docs/notes/server-tools-index-skill.md`.
-pub fn installed(cwd: &Path) -> Vec<Installed> {
-    installed_for(cwd, Machine::Local)
-}
-
-/// Every skill a session standing on `machine` in `cwd` can actually open.
+/// Every skill a session standing on `machine` in `cwd` can open.
 ///
 /// # Invariant
 ///
-/// Only a row whose file this server can read is listed. The project layer is the
-/// checkout's, so it is read where that checkout is: a session whose directory is on
-/// a remote endpoint gets the home's and the machine's rows, and is told where its
-/// own checkout's skills are instead of being handed paths that do not exist here.
+/// Only a row whose file this server can read: the project layer is the checkout's,
+/// so a session whose directory is on a remote is handed the home's and the
+/// machine's rows and told where its own checkout's skills are.
 pub fn installed_for(cwd: &Path, machine: Machine) -> Vec<Installed> {
     let roots = crate::ship::roots();
     let mut all = Vec::new();

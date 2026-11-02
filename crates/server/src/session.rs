@@ -53,11 +53,10 @@ impl Machine {
 ///
 /// # Invariant
 ///
-/// A name is one shell. `bash` and `remote_bash` are two tools over one name space,
-/// so a name the model already used on one machine is refused on the other rather
-/// than quietly becoming a second process with the same handle. And the session's
-/// directory belongs to one machine: its remote's when it has one, this machine's
-/// otherwise -- the other side's shells start wherever that side starts by default.
+/// A name is one shell: a name used on one machine is refused on the other, never
+/// quietly becoming a second process with the same handle. The directory belongs to
+/// one machine -- the remote's when there is one -- and the other side starts in its
+/// own default directory.
 pub struct Shells {
     local: Arc<Mutex<ShellSet>>,
     remote: Option<Arc<Mutex<ShellSet>>>,
@@ -271,8 +270,7 @@ impl Shells {
         cwd: Option<PathBuf>,
         env: Vec<(String, String)>,
     ) -> anyhow::Result<Self> {
-        // `cwd` is the directory of the machine the session names; this machine's
-        // shells start where this machine starts when the directory is not theirs.
+        // `cwd` belongs to the named machine; the other side starts where it starts.
         let here = match (&remote, &cwd) {
             (Some(_), _) => local_cwd()?,
             (None, Some(path)) => Some(path.clone()),
@@ -283,8 +281,7 @@ impl Shells {
             Some(endpoint) => Some(ShellSet::new(endpoint, cwd, env)),
             None => None,
         };
-        // The default shell is part of the session's identity, so the machine that
-        // owns the directory has one before anything asks for it.
+        // `default` is the directory-owning machine's, and exists before any tool.
         match there_set.as_mut() {
             Some(set) => {
                 set.get(DEFAULT_BASH)?;
@@ -428,6 +425,17 @@ struct SessionInner {
     /// Set before the shells are ended: a command that stops now was stopped, and
     /// a notice about it would be news about the server's own exit.
     closing: Arc<AtomicBool>,
+    /// The connection this session's references are read through, if any.
+    reader: Mutex<Option<Arc<crate::remote::Reader>>>,
+    /// The directory this session was placed at, as `set_session` last said.
+    ///
+    /// # Invariant
+    ///
+    /// Not where its shell stands: a `cd` moves a shell and not a session, so this is
+    /// what the prompt's index is read against. Only a move changes it, and a session
+    /// on a remote it has not reached yet has none -- the first connection fills it.
+    /// See `docs/notes/server-meta.md`.
+    placed: Mutex<Option<PathBuf>>,
     /// A move asked for while a turn held the session, waiting for that turn to end.
     ///
     /// # Invariant
@@ -712,6 +720,51 @@ impl SessionHandle {
             .cwd()
     }
 
+    /// The connection this session's references are read through, when its
+    /// directory is on a remote.
+    pub fn reader(&self) -> Option<Arc<crate::remote::Reader>> {
+        self.inner
+            .reader
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Points the reading side at the machine the session now stands on.
+    pub fn set_reader(&self, reader: Option<Arc<crate::remote::Reader>>) {
+        *self.inner.reader.lock().unwrap_or_else(|e| e.into_inner()) = reader;
+    }
+
+    /// The directory this session was placed at, when one has been named.
+    pub fn placed(&self) -> Option<PathBuf> {
+        self.inner
+            .placed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Records the directory a move put this session in.
+    pub fn set_placed(&self, placed: Option<PathBuf>) {
+        *self.inner.placed.lock().unwrap_or_else(|e| e.into_inner()) = placed;
+    }
+
+    /// Fills the placement once, when the endpoint's first shell reports it.
+    ///
+    /// # Invariant
+    ///
+    /// Never overwrites: a placement is a statement and a report is where a shell
+    /// happens to stand, so only the absence of one is filled.
+    pub fn place_if_unstated(&self, directory: &std::path::Path) {
+        if directory.as_os_str().is_empty() {
+            return;
+        }
+        let mut placed = self.inner.placed.lock().unwrap_or_else(|e| e.into_inner());
+        if placed.is_none() {
+            *placed = Some(directory.to_path_buf());
+        }
+    }
+
     /// The machine this session's directory belongs to.
     pub fn owner(&self) -> Machine {
         self.shells()
@@ -737,8 +790,7 @@ impl SessionHandle {
     /// A local row stays the directory the session was made in. See
     /// `docs/notes/server-remote.md`.
     pub fn adopt_reported_cwd(&self) {
-        // The directory belongs to the remote, so only the remote's own report is a
-        // fact about the row; this machine's shell says where it happens to stand.
+        // Only the remote's report is a fact about the row.
         let cwd = {
             let shells = self.inner.shells.lock().unwrap_or_else(|e| e.into_inner());
             if shells.owner() != Machine::Remote {
@@ -749,6 +801,8 @@ impl SessionHandle {
         if cwd.as_os_str().is_empty() {
             return;
         }
+        // The first report is where this session was put; a later `cd` is not.
+        self.place_if_unstated(&cwd);
         if let Err(e) = self
             .inner
             .store
@@ -819,6 +873,14 @@ pub struct SessionManager {
     /// a directory listing is answered while a turn is running, and a Tab must not
     /// queue behind one. See `docs/notes/server-remote.md`.
     listing_shells: Arc<Mutex<HashMap<String, ShellSet>>>,
+    /// One file-reading connection per remote, and nobody's shell.
+    ///
+    /// # Invariant
+    ///
+    /// Not a session's shell: a message is delivered while that session's command may
+    /// be running, and waiting for its lock would make an instant inject wait for a
+    /// build. Keyed by remote, so two sessions on one peer share one connection.
+    readers: Arc<Mutex<HashMap<String, Arc<crate::remote::Reader>>>>,
 }
 
 impl SessionManager {
@@ -839,6 +901,7 @@ impl SessionManager {
             remotes,
             live: Arc::new(Mutex::new(HashMap::new())),
             listing_shells: Arc::new(Mutex::new(HashMap::new())),
+            readers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -923,6 +986,34 @@ impl SessionManager {
             .collect();
         entries.sort();
         Ok(entries)
+    }
+
+    /// The connection a session on `remote` reads its files through.
+    ///
+    /// # Invariant
+    ///
+    /// One per remote, and `None` when the session stands on this machine: a local
+    /// file is read by the process that is already able to.
+    fn reader_for(&self, remote: Option<&str>) -> Option<Arc<crate::remote::Reader>> {
+        let name = remote.map(str::trim).filter(|n| !n.is_empty())?;
+        if let Some(reader) = self
+            .readers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+        {
+            return Some(reader.clone());
+        }
+        let endpoint = self.endpoint_for(Some(name)).ok()?;
+        if !endpoint.is_remote() {
+            return None;
+        }
+        let reader = Arc::new(crate::remote::Reader::new(endpoint));
+        self.readers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(name.to_string(), reader.clone());
+        Some(reader)
     }
 
     /// Forgets a remote's listing shell, so the next question opens a fresh one.
@@ -1203,6 +1294,10 @@ impl SessionManager {
         let report = session
             .relocate(self.local_endpoint()?, remote, wanted.clone(), env)
             .await?;
+        // The reading side moves with the shells.
+        session.set_reader(self.reader_for(request.remote.as_deref()));
+        // A move states the placement; a shell's report does not.
+        session.set_placed(wanted.clone());
         // The row is what the next start hands back to the endpoint, so it moves
         // with the shells rather than after them.
         let placed = match (&wanted, session.cwd().to_string_lossy().to_string()) {
@@ -1252,6 +1347,8 @@ impl SessionManager {
         if let Some(h) = live.get(&row.name) {
             return Ok(h.clone());
         }
+        // The row's own spelling, kept for the placement below: `row.cwd` moves on.
+        let row_cwd = row.cwd.clone();
         let remote = match row.remote.as_deref() {
             Some(name) => Some(self.endpoint_for(Some(name))?),
             None => None,
@@ -1265,6 +1362,7 @@ impl SessionManager {
         };
         let env = self.session_env(&row.name);
         let shells = Shells::of(self.local_endpoint()?, remote, cwd.clone(), env)?;
+        let reader = self.reader_for(row.remote.as_deref());
         tracing::debug!(session = %row.name, model = %row.model, cwd = ?cwd, "session shells ready");
         let handle = SessionHandle {
             inner: Arc::new(SessionInner {
@@ -1293,6 +1391,8 @@ impl SessionManager {
                 deleted: AtomicBool::new(false),
                 resumable: AtomicBool::new(false),
                 closing: Arc::new(AtomicBool::new(false)),
+                reader: Mutex::new(reader),
+                placed: Mutex::new((!row_cwd.trim().is_empty()).then(|| PathBuf::from(&row_cwd))),
                 pending_move: Mutex::new(None),
             }),
         };
