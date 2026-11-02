@@ -273,11 +273,30 @@ impl ToolRegistry {
 
     /// Adds the persistent Python tool with the configuration the server resolved.
     pub fn with_python(mut self, python: crate::config::PythonConfig) -> Self {
+        let files = python.clone();
         self.tools.push(Box::new(python::PythonTool {
             program: python.program,
             args: python.args,
             timeout: python.timeout,
             max_output_chars: python.max_output_chars,
+        }));
+        self.tools.push(Box::new(python::ReadFileTool {
+            program: files.program.clone(),
+            args: files.args.clone(),
+            timeout: files.timeout,
+            max_output_chars: files.max_output_chars,
+        }));
+        self.tools.push(Box::new(python::WriteFileTool {
+            program: files.program.clone(),
+            args: files.args.clone(),
+            timeout: files.timeout,
+            max_output_chars: files.max_output_chars,
+        }));
+        self.tools.push(Box::new(python::ReplaceTool {
+            program: files.program,
+            args: files.args,
+            timeout: files.timeout,
+            max_output_chars: files.max_output_chars,
         }));
         self
     }
