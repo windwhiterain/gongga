@@ -171,7 +171,8 @@ pub fn list_width(panes: &Panes) -> u16 {
         .list_rows()
         .iter()
         .map(|row| {
-            // The status mark and its space are `marker_column`'s own first two.
+            // The status mark and its space are `marker_column`'s own first two, and
+            // the marker is the one column after the indent.
             row.marker_column()
                 + UnicodeWidthStr::width(row.marker())
                 + UnicodeWidthStr::width(row.label.as_str())
@@ -366,7 +367,7 @@ fn split_at_width(text: &str, width: usize) -> (String, &str) {
 }
 
 /// What a click on the list landed on: the row's name, and whether the click hit the
-/// two columns that fold it.
+/// one column that folds it.
 ///
 /// # Invariant
 ///
@@ -397,8 +398,8 @@ pub fn list_at(area: Rect, panes: &Panes, column: u16, row: u16) -> Option<ListH
     let cell = (column - area.x) as usize;
     Some(ListHit {
         name: hit.name.clone(),
-        // The marker's own two columns, read from the same place the frame draws it.
-        marker: hit.group && (hit.marker_column()..hit.marker_column() + 2).contains(&cell),
+        // The marker's own column, read from the same place the frame draws it.
+        marker: hit.group && cell == hit.marker_column(),
     })
 }
 

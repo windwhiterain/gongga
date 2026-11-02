@@ -75,7 +75,7 @@ a guess at which pane the operator meant.
 ## Screen::session_at_row
 
 What a pointer landed on, as a `Hit`: the session it names and which part it hit --
-the list, the two columns that fold a row, a header, a window's events, or the way back
+the list, the one column that folds a row, a header, a window's events, or the way back
 to a window's newest row. They have different behaviour, so the part is part of the
 answer rather than something the caller re-derives.
 

@@ -74,17 +74,17 @@ impl Row {
         2 + self.indent()
     }
 
-    /// The two columns that fold this row, or two blanks where nothing folds.
+    /// The one column that folds this row away: `|`, or a blank where nothing is.
     ///
     /// # Invariant
     ///
-    /// A group is a group whether or not a session has its name too, so the marker
-    /// says what a click on it does and never what the name is.
+    /// One column on every row, drawn or not, so a label starts at the same column
+    /// whether its row is folded, unfolded, or not a group at all. It is the only
+    /// column a click can fold by, and the name beside it is not part of it.
     pub fn marker(&self) -> &'static str {
-        match (self.group, self.collapsed) {
-            (false, _) => "  ",
-            (true, true) => "\u{25b8} ",
-            (true, false) => "\u{25be} ",
+        match self.group && self.collapsed {
+            true => "|",
+            false => " ",
         }
     }
 }

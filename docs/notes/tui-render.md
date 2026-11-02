@@ -213,8 +213,8 @@ facts, red for an error, green for a result. One colour for all three would make
 SPEC's session list, on the left of the body: a tree, one row per prefix of a name.
 
 The rows themselves are `tui-tree.md`'s; what this function decides is their look. One
-row reads as `○   ▾ [api]`: the status mark and its space, the indent, the marker, the
-label. Indent and marker are painted cyan -- `structure`, the ink a window's rules
+row reads as `○  [api]` expanded and `○ |[work]` folded: the status mark and its space,
+the indent, the one marker column, the label. Indent and marker are painted cyan -- `structure`, the ink a window's rules
 already use -- because they are the shape of the tree and not a fact about a session.
 The label is bracketed only on a row that names a session; a row that is only a group
 is the segment as typed. A header still says the whole name (`[work/api]`), so the two
@@ -274,7 +274,7 @@ Scrolled away from its newest row, the list shows the way back to it: the same h
 on the same condition, as any other view.
 
 `list_at` is the same arithmetic from the other side, and it answers a `ListHit`: the
-row's full name, and whether the cell was inside the marker's two columns. A marker
+row's full name, and whether the cell was the marker's one column. A marker
 folds what is under it, a name does what a name does, and one function answering both
 is what keeps a click from folding the row it did not point at.
 
