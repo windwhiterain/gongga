@@ -533,10 +533,19 @@ impl SessionManager {
         let outcome = shell
             .run(&command, std::time::Duration::from_secs(30), None)
             .await?;
+        // A listing the peer did not answer in time is not a directory it refused:
+        // saying so would send a reader looking for a path that is there. The
+        // outstanding command is drained, or every later listing reads its tail.
+        if outcome.still_running {
+            let _ = shell.finish_outstanding().await;
+            anyhow::bail!(
+                "target {name:?} did not answer while listing {directory:?}; \
+                 the connection may have stalled"
+            );
+        }
         if outcome.exit_code != Some(0) {
             anyhow::bail!(
-                "{} does not list {directory:?} on target {name:?}: {}",
-                LISTING_SHELL,
+                "target {name:?} cannot list {directory:?}: {}",
                 outcome.stderr.trim()
             );
         }

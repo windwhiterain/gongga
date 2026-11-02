@@ -1555,6 +1555,7 @@ pub fn session_info(d: &Dispatch, row: &crate::store::SessionRow) -> protocol::S
         usage: row.usage,
         model,
         thinking_effort,
+        target: row.target.clone(),
         context_limit: tuning
             .context_limit
             .or(Some(crate::agent::DEFAULT_CONTEXT_LIMIT_PERCENT)),

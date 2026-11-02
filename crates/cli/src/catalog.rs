@@ -18,6 +18,13 @@ struct Inner {
     /// command list of its own.
     published: Vec<CommandSpec>,
     sessions: Vec<String>,
+    /// Which machine each session's shells run on, as the server published it.
+    ///
+    /// # Invariant
+    ///
+    /// Kept beside the names, never derived: a value completed for a session belongs
+    /// to that session's machine, and the line does not have to repeat `--target`.
+    session_targets: HashMap<String, String>,
     /// The client's sticky argument names, for the sources the server names
     /// but cannot fill in.
     sticky_names: Vec<String>,
@@ -51,6 +58,7 @@ impl Default for Inner {
         Self {
             published: Vec::new(),
             sessions: Vec::new(),
+            session_targets: HashMap::new(),
             sticky_names: Vec::new(),
             skill_names: Vec::new(),
             cwd: std::env::current_dir().unwrap_or_default(),
@@ -85,8 +93,10 @@ impl Catalog {
         self.write().published = commands;
     }
 
-    pub fn set_sessions(&self, sessions: Vec<String>) {
-        self.write().sessions = sessions;
+    pub fn set_sessions(&self, sessions: Vec<String>, targets: HashMap<String, String>) {
+        let mut inner = self.write();
+        inner.sessions = sessions;
+        inner.session_targets = targets;
     }
 
     /// The directory this client reads relative paths from, which is also the
@@ -454,10 +464,23 @@ fn resolve(
 /// turn every refresh into another peer round-trip, and the refresh into a loop.
 const REVALIDATE: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// The target this line names, if it names one the config holds.
+/// The target this line belongs to, if it names one the config holds.
+///
+/// # Invariant
+///
+/// Two ways to name a machine, in this order: `--target` on the line, then the
+/// target of the `--session` the line names. The second is what makes a path
+/// complete on the machine it will be read on without the operator repeating
+/// `--target` for a session that already says where it is.
 fn named_target(ctx: &Ctx, words: &[String]) -> Option<String> {
-    let asked = flag_value(words, "target")?;
-    ctx.targets.contains(asked).then(|| asked.to_string())
+    if let Some(asked) = flag_value(words, "target") {
+        if ctx.targets.contains(asked) {
+            return Some(asked.to_string());
+        }
+    }
+    let session = flag_value(words, "session")?;
+    let recorded = ctx.catalog.read().session_targets.get(session).cloned()?;
+    ctx.targets.contains(&recorded).then_some(recorded)
 }
 
 /// Completes `--cwd` against the filesystem of the machine the line names.

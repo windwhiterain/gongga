@@ -1014,8 +1014,14 @@ impl Client {
                 sink.forget(&old.name);
             }
         }
+        // Which machine each one is on, so a value completed for it belongs to
+        // that machine rather than to this one.
+        let targets: std::collections::HashMap<String, String> = sessions
+            .iter()
+            .filter_map(|info| Some((info.name.clone(), info.target.clone()?)))
+            .collect();
         self.sessions = sessions;
-        self.catalog.set_sessions(self.session_names());
+        self.catalog.set_sessions(self.session_names(), targets);
     }
 
     /// Keeps the completer's state-backed sources in step: the sticky names, and

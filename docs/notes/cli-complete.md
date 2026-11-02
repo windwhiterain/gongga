@@ -59,6 +59,15 @@ list; the client reads that list off the catalog instead of the config file, so
 the names are never in two places. It also means "which machine?" is answered by
 the same data the popup offers.
 
+A line names its machine in two ways, in this order: `--target`, and then the
+target of the `--session` it names. The second exists because of a measured
+failure: completing `--cwd` on a session already running on a peer, with no
+`--target` on the line, offered **this** machine's directories -- and typing an
+absolute peer path then looked like "absolute paths are not supported", since
+`C:/` is absolute on both machines and the entries were merely the wrong ones.
+`SessionInfo` now carries `target`, so the client knows where a session is
+without being told twice.
+
 The ask cannot happen inside the completer: `Completer::complete` is synchronous
 and runs in a key handler, while a peer's directory is a network away. So the
 completer answers from what has arrived, records what it wanted, and the front-end
