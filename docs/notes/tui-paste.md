@@ -109,20 +109,20 @@ window is the *modifier*: a pasted newline arrives as `Enter` with `CONTROL`, wh
 is the subject of the first section. Both rules are kept, because the terminals
 differ: one for a paste replayed as fast keystrokes, one for a paste that says so.
 
-## Ctrl+V, for the terminals that forward it
+## Alt+V, for the terminals that forward it
 
-SPEC makes `Ctrl+V` and `Ctrl+Alt+V` the paste. Bracketed paste is the other half
-of the same feature: a terminal that pastes by itself (Windows Terminal, VS Code)
-never sends the key at all, it sends the text. A terminal that forwards `^V` gets
-the clipboard read here instead — `clipboard::paste()` — and the answer goes in
+SPEC makes `Alt+V` the paste. Bracketed paste is the other half of the same
+feature: a terminal that pastes by itself (Windows Terminal, VS Code) never sends
+the key at all, it sends the text. A terminal that forwards the key gets the
+clipboard read here instead — `clipboard::paste()` — and the answer goes in
 through `Tui::paste`, so both roads end in the same place and neither replays
-keystrokes.
+keystrokes. `Ctrl+V` is read the same way, for the terminals that forward `^V`.
 
 Nothing is said when the clipboard is empty. When there is no tool to read it, or
 the tool refuses, the status line says so and the prompt is untouched: a paste
 that quietly did nothing is the failure mode this note keeps coming back to.
 
-## Why there is a second spelling, and why it is Alt+V
+## Why the spelling is Alt+V and not a Ctrl one
 
 VS Code's terminal binds `Ctrl+V` to `workbench.action.terminal.paste`, and that
 command is in the default `commandsToSkipShell` list: the key is taken before the
@@ -131,9 +131,9 @@ the clipboard holds only a picture, because VS Code's own paste reads text. An
 operator inside VS Code then has no key at all that pastes a screenshot.
 
 `Ctrl+Alt+V` was this note's first answer to that, and it does not work in VS
-Code. What reaches a program is measured twice: a console program that prints
-every `ReadKey` record, and a trace inside this window's own key handler. Both
-were fed the same keystrokes in the same VS Code window:
+Code either. What reaches a program is measured twice: a console program that
+prints every `ReadKey` record, and a trace inside this window's own key handler.
+Both were fed the same keystrokes in the same VS Code window:
 
 | keystroke | reaches a console program | arrives as |
 | --- | --- | --- |
@@ -152,9 +152,10 @@ the byte receives the byte. VS Code does not send it. xterm.js reads any
 character the browser never composes on a US layout, so nothing is written to
 the pty at all.
 
-`Alt+V` is therefore the spelling this window takes, and it takes it *alongside*
-SPEC's two: `clipboard_paste` accepts `CONTROL` or `ALT` with `v`. Alt is not
-disqualifying, and Alt on its own is enough.
+`Alt+V` is therefore SPEC's binding: `clipboard_paste` accepts `ALT` with `v`,
+and `CONTROL` too, for a terminal that forwards `^V`. Alt alone is the binding,
+not Alt as a tolerated extra -- a Ctrl spelling leaves an operator in VS Code
+with no key that pastes anything.
 
 Which hop is measured: everything in the table above, and the paste itself --
 in a real VS Code terminal `Alt+V` writes `gongga-paste-<pid>-<n>.png` and
@@ -171,16 +172,16 @@ line in `keybindings.json` sends the byte directly and the operator keeps pressi
     {"key": "ctrl+alt+v", "command": "workbench.action.terminal.sendSequence",
      "args": {"text": "\u0016"}, "when": "terminalFocus"}
 
-`\u0016` arrives as `Char('v')` with `CONTROL`, which is SPEC's first spelling and
-needs nothing from this window. `\u001bv` also works -- it arrives as `Alt+V` -- but
-it is the spelling that does need this window's `ALT` rule.
+`\u0016` arrives as `Char('v')` with `CONTROL`, which is the forwarded-`Ctrl+V`
+path and needs nothing new from this window. `\u001bv` also works -- it arrives as
+SPEC's `Alt+V` and is the plainest to write.
 
 `commandsToSkipShell: ["-workbench.action.terminal.paste"]` also works and keeps
 the plain `Ctrl+V`, but it applies to every terminal in the window: `^V` stops
 being readline's quoted-insert in ordinary shells too. The keybinding is scoped
 to the terminal and is the one this note recommends.
 
-## Ctrl+V, and a picture
+## Alt+V, and a picture
 
 The same key pastes a picture, and the picture is tried first.
 

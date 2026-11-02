@@ -835,15 +835,15 @@ impl Tui {
         }
     }
 
-    /// Whether this key asks for the clipboard: Ctrl+V, Ctrl+Alt+V, or Alt+V
-    /// alone, case either way.
+    /// Whether this key asks for the clipboard: SPEC's `Alt+V`, and `Ctrl+V`
+    /// where a terminal forwards it, case either way.
     ///
     /// # Invariant
     ///
-    /// Alt is not disqualifying, and Alt on its own is enough. A terminal that
+    /// Alt alone is the binding, not Alt as a tolerated extra. A terminal that
     /// keeps Ctrl+V for its own paste -- VS Code does -- never forwards the bare
     /// key, and the keystroke it sends for Ctrl+Alt+V reaches no console app at
-    /// all, so Alt+V is the spelling an operator there can actually press. See
+    /// all, so a Ctrl spelling would leave an operator there with no key. See
     /// `docs/notes/tui-paste.md`.
     fn clipboard_paste(key: &KeyEvent) -> bool {
         key.modifiers
@@ -1121,7 +1121,7 @@ impl Tui {
         self.dirty = true;
     }
 
-    /// Ctrl+V or Alt+V: the clipboard, when the terminal did not paste it for us.
+    /// Alt+V: the clipboard, when the terminal did not paste it for us.
     ///
     /// # Invariant
     ///

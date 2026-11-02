@@ -41,7 +41,8 @@ The same idea in the other direction: `Get-Clipboard` on Windows, `pbpaste` on
 macOS, `wl-paste` / `xclip -o` / `xsel -o` on Linux. They print the clipboard on
 stdout, which is what a paste needs.
 
-Only reached when a terminal forwards Ctrl+V instead of pasting the text itself:
+Only reached when a terminal forwards the paste key instead of pasting the text
+itself:
 Windows Terminal and VS Code both paste on their own, so this path is for the
 others, and a `powershell` startup is why it is not the one everybody takes.
 
@@ -63,7 +64,7 @@ else is touched: tabs and trailing spaces are the operator's text.
 
 ## The image, and the tools that read it
 
-A clipboard can hold a picture as well as text, and the same Ctrl+V that reads
+A clipboard can hold a picture as well as text, and the same Alt+V that reads
 the text reads the picture. The picture is read first, because a screenshot
 copied out of an image tool usually carries both formats and the picture is what
 the operator meant; the text read is the fallback and is unchanged.
