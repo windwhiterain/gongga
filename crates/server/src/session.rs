@@ -527,20 +527,23 @@ impl SessionManager {
         };
         let command = listing_script(directory);
         let mut shell = shell.lock().await;
-        // Generous on purpose: a peer behind a tunnel measured 11.7s for a warm
-        // shell's first listing, and nothing here is on a keystroke -- the
-        // front-end shows what has arrived and asks again on the next key.
+        // Measured: 1.7s for the first listing on a fresh target (ssh, the runner and
+        // a shell), 0.17-0.21s for every one after. The deadline is well above that
+        // and well below the half minute a stalled link once cost -- and a listing
+        // does not follow with `pwd`, because nothing here reads the shell's directory.
         let outcome = shell
-            .run(&command, std::time::Duration::from_secs(30), None)
+            .run_without_cwd(&command, std::time::Duration::from_secs(8))
             .await?;
         // A listing the peer did not answer in time is not a directory it refused:
-        // saying so would send a reader looking for a path that is there. The
-        // outstanding command is drained, or every later listing reads its tail.
+        // saying so would send a reader looking for a path that is there. The shell is
+        // dropped rather than drained, because a stalled link is what this is, and a
+        // shell kept for the next question would hold it behind the same stall.
         if outcome.still_running {
-            let _ = shell.finish_outstanding().await;
+            drop(shell);
+            self.forget_listing_shell(&name);
             anyhow::bail!(
                 "target {name:?} did not answer while listing {directory:?}; \
-                 the connection may have stalled"
+                 the connection may have stalled, so the shell was dropped"
             );
         }
         if outcome.exit_code != Some(0) {
@@ -560,6 +563,20 @@ impl SessionManager {
             .collect();
         entries.sort();
         Ok(entries)
+    }
+
+    /// Forgets a target's listing shell, so the next question opens a fresh one.
+    ///
+    /// # Invariant
+    ///
+    /// Called with nothing in flight: a shell whose command is still running cannot
+    /// be replaced without its lock, which is exactly what a stall holds.
+    fn forget_listing_shell(&self, target: &str) {
+        let mut shells = self
+            .listing_shells
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        shells.remove(target);
     }
 
     /// The target names a session may name, in the config's order.

@@ -345,6 +345,31 @@ impl RemoteShell {
         timeout: Duration,
         sink: Option<&mpsc::Sender<BashChunk>>,
     ) -> anyhow::Result<BashOutcome> {
+        self.run_tracking_cwd(command, timeout, sink, true).await
+    }
+
+    /// Runs one command without the `pwd` that keeps the directory in step.
+    ///
+    /// # Invariant
+    ///
+    /// Only for a caller that reads nothing about the shell's directory afterwards:
+    /// the `pwd` is a whole extra round trip, and a directory listing costs half its
+    /// wall time paying for an answer nobody reads. See `docs/notes/server-remote.md`.
+    pub async fn run_without_cwd(
+        &mut self,
+        command: &str,
+        timeout: Duration,
+    ) -> anyhow::Result<BashOutcome> {
+        self.run_tracking_cwd(command, timeout, None, false).await
+    }
+
+    async fn run_tracking_cwd(
+        &mut self,
+        command: &str,
+        timeout: Duration,
+        sink: Option<&mpsc::Sender<BashChunk>>,
+        track_cwd: bool,
+    ) -> anyhow::Result<BashOutcome> {
         self.write_command(command).await?;
         let pumped = tokio::time::timeout(timeout, self.pump(sink)).await;
         match pumped {
@@ -355,7 +380,7 @@ impl RemoteShell {
                 let code = self.stdout_state.code.or(self.stderr_state.code);
                 self.stdout_state = DrainState::default();
                 self.stderr_state = DrainState::default();
-                if self.usable() {
+                if track_cwd && self.usable() {
                     match tokio::time::timeout(timeout, self.pwd()).await {
                         Ok(Ok(pwd)) => self.set_cwd(PathBuf::from(pwd)),
                         Ok(Err(_)) => {}

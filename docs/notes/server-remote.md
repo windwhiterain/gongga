@@ -283,7 +283,24 @@ because it answers while turns are running and a listing must not queue behind
 one. The map is released before the peer is awaited: holding it across an answer
 would serialise two completions on unrelated targets.
 
-Measured on this machine's peer: the first listing costs the connection and the
-greeting (about 3s), every later one 80-110ms. That is the number that decided
-the design — an SSH round-trip per keystroke would be unusable, and a shell kept
-open makes the cost per Tab a local one.
+### What a listing costs, measured
+
+| moment | wall time |
+| --- | --- |
+| first listing on a fresh target (ssh, runner, shell) | 1.7-2.5s |
+| every later listing | 120-160ms |
+| the same loop run directly on the peer | 820ms |
+
+Two things follow. A shell is kept open per target, because an SSH round trip per
+Tab would be unusable and this makes the cost local. And a listing does not follow
+its command with `pwd`: `RemoteShell::run` keeps the session's directory in step,
+which a listing never reads, and that `pwd` is a whole extra round trip.
+
+### A stalled link is bounded, and the shell is dropped
+
+A listing that has not answered in 8s is reported as a stall, not as a directory
+the peer refused. The shell is then **dropped** rather than drained: the stall is
+the link, and a shell kept for the next question would hold every later listing
+behind the same stall. Measured before this: one unlucky call took **394 seconds**
+and the calls after it queued behind it. Measured after: that call costs its 8s
+deadline, the next one dials again (1.6s), and the ones after are back to 120ms.

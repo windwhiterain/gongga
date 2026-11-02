@@ -490,15 +490,12 @@ fn named_target(ctx: &Ctx, words: &[String]) -> Option<String> {
 /// Never waits for a peer: what has arrived is offered now, and the rest is asked
 /// for, so a completion never blocks the front-end on a network.
 fn remote_paths(ctx: &Ctx, target: &str, token: &str) -> Vec<Candidate> {
-    let (typed_dir, prefix) = match token.rfind(['/', '\\']) {
-        Some(at) => token.split_at(at + 1),
-        None => ("", token),
-    };
+    let (typed_dir, prefix) = split_path_token(token);
     let (cached, arrival) = {
         let inner = ctx.catalog.read();
         match inner
             .remote_paths
-            .get(&(target.to_string(), typed_dir.to_string()))
+            .get(&(target.to_string(), typed_dir.clone()))
         {
             Some((entries, at)) => (Some(entries.clone()), Some(*at)),
             None => (None, None),
@@ -508,7 +505,7 @@ fn remote_paths(ctx: &Ctx, target: &str, token: &str) -> Vec<Candidate> {
         ctx.catalog
             .write()
             .wanted
-            .insert(target.to_string(), typed_dir.to_string());
+            .insert(target.to_string(), typed_dir.clone());
     }
     let Some(entries) = cached else {
         return Vec::new();
@@ -524,7 +521,7 @@ fn remote_paths(ctx: &Ctx, target: &str, token: &str) -> Vec<Candidate> {
             if name.starts_with('.') && !prefix.starts_with('.') {
                 return false;
             }
-            name.starts_with(prefix)
+            name.starts_with(&prefix)
         })
         .collect()
 }
@@ -575,11 +572,8 @@ fn flag_value<'a>(words: &'a [String], flag: &str) -> Option<&'a str> {
 /// Lists the filesystem under `cwd`, keeping the directory part already typed; a
 /// directory keeps its trailing `/`.
 fn paths(cwd: &Path, token: &str) -> Vec<Candidate> {
-    let (typed_dir, prefix) = match token.rfind(['/', '\\']) {
-        Some(at) => token.split_at(at + 1),
-        None => ("", token),
-    };
-    let Ok(entries) = std::fs::read_dir(directory(cwd, typed_dir)) else {
+    let (typed_dir, prefix) = split_path_token(token);
+    let Ok(entries) = std::fs::read_dir(directory(cwd, &typed_dir)) else {
         return Vec::new();
     };
     let mut out: Vec<Candidate> = entries
@@ -591,7 +585,7 @@ fn paths(cwd: &Path, token: &str) -> Vec<Candidate> {
             if name.starts_with('.') && !prefix.starts_with('.') {
                 return None;
             }
-            if !name.starts_with(prefix) {
+            if !name.starts_with(&prefix) {
                 return None;
             }
             if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
@@ -607,6 +601,31 @@ fn paths(cwd: &Path, token: &str) -> Vec<Candidate> {
         .collect();
     out.sort_by(|a, b| a.insert.cmp(&b.insert));
     out
+}
+
+/// The directory part of a path token and the name prefix inside it.
+///
+/// # Invariant
+///
+/// A bare drive letter names the drive root, not a name starting with that letter:
+/// on Windows `C` and `C:` both mean `C:/`. Read as a prefix it listed the start
+/// directory's entries and inserted one of them over the letter the operator typed,
+/// which measured as `--cwd C` becoming `--cwd Contacts/`.
+fn split_path_token(token: &str) -> (String, String) {
+    if cfg!(windows) && !token.is_empty() && token.as_bytes()[0].is_ascii_alphabetic() {
+        let bare_drive = match token.len() {
+            1 => true,
+            2 => token.as_bytes()[1] == b':',
+            _ => false,
+        };
+        if bare_drive {
+            return (format!("{}:/", &token[..1]), String::new());
+        }
+    }
+    match token.rfind(['/', '\\']) {
+        Some(at) => (token[..at + 1].to_string(), token[at + 1..].to_string()),
+        None => (String::new(), token.to_string()),
+    }
 }
 
 /// The directory `typed` names, relative to the client's, with `~` expanded.

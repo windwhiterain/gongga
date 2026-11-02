@@ -103,6 +103,19 @@ impl Shell {
         }
     }
 
+    /// Runs one command without following it with a `pwd`, for a caller that does
+    /// not read the directory afterwards.
+    pub async fn run_without_cwd(
+        &mut self,
+        command: &str,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<BashOutcome> {
+        match self {
+            Shell::Local(shell) => shell.run(command, timeout, None).await,
+            Shell::Remote(shell) => shell.run_without_cwd(command, timeout).await,
+        }
+    }
+
     /// Reads what a command that outlived its deadline still had to say.
     pub async fn finish_outstanding(&mut self) -> (String, String, Option<i32>) {
         match self {
