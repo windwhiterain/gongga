@@ -107,18 +107,6 @@ fn collect(pending: &StdMutex<String>, text: &str) {
     }
 }
 
-/// Renders a native path the way Git Bash spells it: `C:\Temp` -> `/c/Temp`.
-pub(crate) fn msys_path(path: &Path) -> String {
-    let text = path.to_string_lossy().replace('\\', "/");
-    let mut chars = text.chars();
-    match (chars.next(), chars.next()) {
-        (Some(drive), Some(':')) if drive.is_ascii_alphabetic() => {
-            format!("/{}{}", drive.to_ascii_lowercase(), &text[2..])
-        }
-        _ => text.to_string(),
-    }
-}
-
 /// Quotes one word for the shell, including embedded single quotes.
 fn shell_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
@@ -301,8 +289,8 @@ impl BashShell {
         let pid_file = scratch.with_extension("pid");
         let _ = std::fs::remove_file(&scratch);
         let _ = std::fs::remove_file(&pid_file);
-        let path = shell_quote(&msys_path(&scratch));
-        let pid_path = shell_quote(&msys_path(&pid_file));
+        let path = shell_quote(&skill::shell_path(&scratch));
+        let pid_path = shell_quote(&skill::shell_path(&pid_file));
         // Git Bash's `$!` is an MSYS pid; Windows process APIs need its winpid.
         let pid = if cfg!(windows) {
             "$(</proc/$!/winpid)"
@@ -727,7 +715,7 @@ fn spill(dir: &Path, label: &str, text: &str) -> Option<String> {
     if std::fs::write(&path, text).is_err() {
         return None;
     }
-    Some(msys_path(&path))
+    Some(skill::shell_path(&path))
 }
 
 /// Turns a label into one path component, keeping Unicode alphanumerics.

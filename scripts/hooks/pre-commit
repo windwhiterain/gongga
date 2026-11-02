@@ -27,6 +27,37 @@ cd "$root" || exit 0
 [[ -d ship/.git || -f ship/.git ]] || exit 0
 [[ -f scripts/ship.sh ]] || exit 0
 
+# A skill's body is read by whatever harness installed it, so a line that runs its own
+# script has to be spelled in the one way every harness resolves -- from the directory the
+# `SKILL.md` was read from. The install paths this harness happens to use
+# (`$GONGGA_HOME/skills/...`, `.../gongga-agents/skills/...`) work here and nowhere else,
+# and they break here too when the home moves. The content lives in a submodule, so any
+# commit that moves it shows up as one path: `ship`.
+if git diff --cached --name-only | grep -qE '^ship$|(^|/)\.agents/skills/'; then
+  if ! out=$(bash scripts/skill_contract.sh 2>&1); then
+    printf '%s\n' "$out" | sed 's/^/  /' >&2
+    cat >&2 <<'WHY'
+
+pre-commit: a skill names this harness's own install path, or its `metadata.entry`
+points at nothing.
+
+  Another harness reads the same body: it has no `<home>/skills`, no clone, and no
+  `$GONGGA_HOME`. Spell the entry from the skill's own directory instead --
+
+      SKILL_DIR=<the directory this SKILL.md is in>
+      "$SKILL_DIR/scripts/thing" ...
+
+  and declare it once where the specification allows an extension:
+
+      metadata:
+        entry: scripts/thing
+
+  In gongga the shorter spelling is `gongga-cli skill <name> [args...]`.
+WHY
+    exit 1
+  fi
+fi
+
 # Nothing about the pin is being committed: no round trip, no opinion.
 if ! git diff --cached --name-only | grep -qxE 'ship|crates/server/ship\.toml'; then
 	exit 0

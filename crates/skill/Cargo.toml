@@ -1,0 +1,12 @@
+[package]
+name = "gongga-skill"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "What a skill is on disk: the roots a session reads, the frontmatter, the entry"
+
+# No dependency at all: the skill contract is directories and one header block, and
+# the server, the command layer and the bundle all read the same three roots.
+[dependencies]

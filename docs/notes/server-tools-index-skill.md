@@ -8,25 +8,22 @@ the prompt to `grep` the skill directories -- makes each session re-implement th
 discovery, and gets it wrong in whichever way the repository layout moved since the
 prompt was written.
 
-## PROJECT, HARNESS, GENERAL
+## the walk
 
-The bucket is reported in the reader's own words rather than as a boolean, because the
-useful question after "does this task have a skill" is "whose skill is it": a harness
-skill describes this server and is reinstalled from the pinned content, while a general
-skill belongs to the machine and may have been edited by whoever sits at it.
+The bucket words and the walk itself moved out of this file and into `crates/skill`, which
+is now the one reading of "where a skill is" for the table, for `@skill:`, for the command
+layer's completion, and for `gongga-cli skill`. The reason is in that note: three callers
+with a comment saying they walk the same roots in the same order is three chances for the
+comment to become false.
 
-The project bucket is the checkout the session is working in, `<cwd>/.agents/skills`.
-It is the third and it comes first, because it is the most specific thing that can
-hold a procedure: a repository that says "here, do it this way" outranks the home it
-sits in. Reading the cwd is the whole reason `installed` takes one: the same server
-serves sessions in different checkouts, and a skill in one of them must not appear in
-another's table.
+What stays here is what is the *tool's* business: the table, its order, and the sentence a
+remote session is handed instead of a project layer.
 
-`installed_skills` in the command layer walks the same three roots in the same order,
-from the session's own directory -- the one published in `SessionInfo::cwd`, which is
-where this function reads too -- so the names a reader completes are the names the
-server will find. From the client's own directory they were not: a window launched
-somewhere else offered that somewhere else's project skills.
+The project bucket is the checkout the session is working in, `<cwd>/.agents/skills`, and
+it comes first because it is the most specific thing that can hold a procedure: a
+repository that says "here, do it this way" outranks the home it sits in. Reading the cwd
+is the whole reason `installed_for` takes one: the same server serves sessions in different
+checkouts, and a skill in one of them must not appear in another's table.
 
 ## description
 
@@ -68,24 +65,16 @@ This caller passes no tolerance instead: a row here is one line of json, where a
 saves a handful of characters and costs a reader a parse. See
 `docs/notes/server-prefix-cache.md`.
 
-## frontmatter
-
-`---`, then `name:` and `description:` lines, then `---`: the same rule every skill
-file already followed for the other harnesses, and read here as two lines rather than
-as a YAML parser. A body without frontmatter still appears in the table with an empty
-description and its path, because a skill nobody described is a real file the reader
-may still want -- and the missing line is the bug worth seeing.
-
-A folded or quoted description on one line is read as written; multi-line YAML values
-are not attempted. That is a documented shape of the input, not a limitation of the
-reader: a description that needs several lines is a body.
-
 ## both roots, and the path each row carries
 
-Rows point at `$GONGGA_HOME/skills/<name>/SKILL.md` or `~/.agents/skills/<name>` --
-the paths the skill's own prose tells the reader to run. Emitting a path relative to a
-repository root would be a lie here: the session's cwd is whatever the user was working
-in, and the skills no longer live in it.
+Rows point at the `SKILL.md` the table was read from -- `<home>/skills/<name>/SKILL.md`,
+`<cwd>/.agents/skills/<name>/SKILL.md`, `~/.agents/skills/<name>/SKILL.md`. Emitting a path
+relative to a repository root would be a lie here: the session's cwd is whatever the user
+was working in, and the skills no longer live in it.
+
+It is also the anchor a body's `SKILL_DIR` stands for, which is why the row carries the
+whole path rather than the directory: a reader that has the table has the one absolute
+fact a portable invocation needs.
 
 ## empty roots
 

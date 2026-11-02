@@ -25,6 +25,12 @@ note is a bug.
 | [`protocol-reference.md`](protocol-reference.md) | `crates/protocol/src/reference.rs` |
 | [`protocol-channel.md`](protocol-channel.md) | `crates/protocol/src/channel.rs` |
 
+### skill
+
+| note | source |
+| --- | --- |
+| [`skill-lib.md`](skill-lib.md) | `crates/skill/src/lib.rs` |
+
 ### build
 
 | note | source |
@@ -78,6 +84,7 @@ note is a bug.
 | [`cli-catalog.md`](cli-catalog.md) | `crates/cli/src/catalog.rs` |
 | [`cli-complete.md`](cli-complete.md) | `crates/cli/src/complete.rs` |
 | [`cli-commands.md`](cli-commands.md) | `crates/cli/src/commands.rs` |
+| [`cli-skill-command.md`](cli-skill-command.md) | `crates/cli/src/skill_command.rs` |
 
 ### tui
 

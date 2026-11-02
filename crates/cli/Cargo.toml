@@ -23,6 +23,7 @@ test = false
 
 [dependencies]
 protocol = { workspace = true }
+skill = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -31,6 +32,7 @@ anyhow = { workspace = true }
 clap = { version = "4", features = ["derive", "wrap_help"] }
 dirs = "6"
 toml = "0.8"
+which = { workspace = true }
 # Completion splits the line being typed (`catalog.rs`), which is the input
 # line's business -- a command that already arrived as argv is never re-split.
 shell-words = "1"

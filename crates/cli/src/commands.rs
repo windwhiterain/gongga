@@ -352,50 +352,25 @@ fn write_file(path: &Path, file: &File) -> anyhow::Result<()> {
 ///
 /// # Invariant
 ///
-/// The same three roots, in the same order, that the server walks for `index_skill`
-/// and `@skill:` -- so a name read here is a name that can be opened. `project` is
-/// the directory the session works in, and `None` when that directory is another
-/// machine's: its checkout is not on this disk. See `docs/notes/cli-commands.md`.
+/// One walk, shared with the server's `index_skill` and with `skill <name>` -- so a
+/// name read here is a name that can be opened. `project` is the directory the session
+/// works in, and `None` when that directory is another machine's: its checkout is not
+/// on this disk. See `docs/notes/cli-commands.md`.
 pub fn installed_skills(home: &Path, project: Option<&Path>) -> Vec<String> {
-    let mut names: Vec<String> = Vec::new();
-    for root in [
-        project.map(|dir| dir.join(".agents").join("skills")),
-        Some(home.join("skills")),
-        dirs::home_dir().map(|h| h.join(".agents").join("skills")),
-    ] {
-        let Some(root) = root else { continue };
-        let Ok(entries) = std::fs::read_dir(root) else {
-            continue;
-        };
-        let mut here: Vec<String> = entries
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|dir| dir.join("SKILL.md").is_file())
-            .filter_map(|dir| {
-                // The skill's own name wins, as it does in the server's table.
-                let text = std::fs::read_to_string(dir.join("SKILL.md")).ok();
-                text.as_deref()
-                    .and_then(name_in_frontmatter)
-                    .or_else(|| dir.file_name().map(|n| n.to_string_lossy().into_owned()))
-            })
-            .collect();
-        here.sort();
-        names.extend(here);
-    }
-    names
+    roots(home, project)
+        .all()
+        .into_iter()
+        .map(|skill| skill.name)
+        .collect()
 }
 
-/// The `name:` a skill's frontmatter declares, when it declares one.
-fn name_in_frontmatter(text: &str) -> Option<String> {
-    let mut lines = text.lines();
-    if lines.next()?.trim() != "---" {
-        return None;
-    }
-    lines
-        .take_while(|line| line.trim() != "---")
-        .find_map(|line| line.strip_prefix("name:"))
-        .map(|rest| rest.trim().trim_matches('"').to_string())
-        .filter(|name| !name.is_empty())
+/// The three roots one session reads a skill from, as this machine can see them.
+pub fn roots(home: &Path, project: Option<&Path>) -> skill::Roots {
+    skill::Roots::new(
+        project.map(|dir| dir.join(".agents").join("skills")),
+        home.join("skills"),
+        dirs::home_dir().map(|home| home.join(".agents").join("skills")),
+    )
 }
 
 /// `--flag value` or `--flag=value`; nothing positional, and a value may

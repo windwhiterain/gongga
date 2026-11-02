@@ -9,16 +9,7 @@ use serde_json::{Value, json};
 
 use crate::session::Machine;
 use crate::tools::{Tool, ToolContext, ToolOutcome};
-
-/// Which root a skill came from, in the words a reader already knows.
-///
-/// # Invariant
-///
-/// The order is the precedence: a name in more than one root is the first one
-/// read, so a project's own skill beats the home's, which beats the machine's.
-const PROJECT: &str = "project";
-const HARNESS: &str = "harness";
-const GENERAL: &str = "general";
+use skill::Skill;
 
 pub struct IndexSkillTool;
 
@@ -90,69 +81,21 @@ impl Tool for IndexSkillTool {
     }
 }
 
-/// One installed skill: the table's row, and what `@skill:` opens.
-#[derive(Debug)]
-pub struct Installed {
-    pub name: String,
-    pub description: String,
-    pub path: std::path::PathBuf,
-    pub bucket: &'static str,
-}
-
-/// Every skill a session in `cwd` can be offered: the project's, the home's,
-/// then the machine's.
-///
-/// # Invariant
-///
-/// The order is the precedence, and it is the same order `installed_skills` walks
-/// for the command line, so a name read off the table is a name that can be
-/// opened. See `docs/notes/server-tools-index-skill.md`.
 /// Every skill a session standing on `machine` in `cwd` can open.
 ///
 /// # Invariant
 ///
-/// Only a row whose file this server can read: the project layer is the checkout's,
-/// so a session whose directory is on a remote is handed the home's and the
-/// machine's rows and told where its own checkout's skills are.
-pub fn installed_for(cwd: &Path, machine: Machine) -> Vec<Installed> {
+/// One walk, shared with the command layer and with `skill <name>`: the project layer
+/// is the checkout's, so a session whose directory is on a remote is handed the home's
+/// and the machine's rows. See `docs/notes/server-tools-index-skill.md`.
+pub fn installed_for(cwd: &Path, machine: Machine) -> Vec<Skill> {
     let roots = crate::ship::roots();
-    let mut all = Vec::new();
-    if machine == Machine::Local {
-        // The checkout the session is in: the most specific holder of a skill.
-        all.extend(in_dir(PROJECT, &cwd.join(".agents").join("skills")));
-    }
-    for (bucket, root) in [
-        (HARNESS, roots.home.join("skills")),
-        (GENERAL, roots.machine.join("skills")),
-    ] {
-        all.extend(in_dir(bucket, &root));
-    }
-    all
-}
-
-/// One directory's skills, in name order so two calls read the same.
-fn in_dir(bucket: &'static str, root: &Path) -> Vec<Installed> {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return Vec::new();
-    };
-    let mut dirs: Vec<_> = entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.is_dir() && p.join("SKILL.md").is_file())
-        .collect();
-    dirs.sort();
-    dirs.iter()
-        .map(|dir| {
-            let path = dir.join("SKILL.md");
-            let (name, description) = frontmatter(&path);
-            Installed {
-                name: name.unwrap_or_else(|| dir_name(dir)),
-                description,
-                path,
-                bucket,
-            }
-        })
-        .collect()
+    skill::Roots::new(
+        (machine == Machine::Local).then(|| cwd.join(".agents").join("skills")),
+        roots.home.join("skills"),
+        Some(roots.machine.join("skills")),
+    )
+    .all()
 }
 
 /// The table's rows, in the order this session pays least to send again.
@@ -162,7 +105,7 @@ fn in_dir(bucket: &'static str, root: &Path) -> Vec<Installed> {
 /// A permutation of `skills`: the layout reorders the table and never revives a row
 /// for a skill that is not installed now. See `docs/notes/server-prefix-cache.md`.
 fn ordered(
-    skills: Vec<Installed>,
+    skills: Vec<Skill>,
     store: &crate::store::Store,
     session: &str,
     model: &str,
@@ -177,7 +120,7 @@ fn ordered(
                 "name": skill.name,
                 "description": skill.description,
                 "path": skill.path.display().to_string(),
-                "bucket": skill.bucket,
+                "bucket": skill.bucket.as_str(),
             });
             let text = row.to_string();
             (key, text, row)
@@ -202,31 +145,4 @@ fn ordered(
         .into_iter()
         .filter_map(|(key, _)| by_key.remove(&key))
         .collect()
-}
-
-fn dir_name(dir: &Path) -> String {
-    dir.file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default()
-}
-
-/// The `name` and `description` of a skill's frontmatter; either may be absent.
-fn frontmatter(file: &Path) -> (Option<String>, String) {
-    let Ok(text) = std::fs::read_to_string(file) else {
-        return (None, String::new());
-    };
-    let mut lines = text.lines();
-    if lines.next().map(str::trim) != Some("---") {
-        return (None, String::new());
-    }
-    let mut name = None;
-    let mut description = String::new();
-    for line in lines.by_ref().take_while(|l| l.trim() != "---") {
-        if let Some(rest) = line.strip_prefix("name:") {
-            name = Some(rest.trim().trim_matches('"').to_string());
-        } else if let Some(rest) = line.strip_prefix("description:") {
-            description = rest.trim().trim_matches('"').to_string();
-        }
-    }
-    (name.filter(|n| !n.is_empty()), description)
 }

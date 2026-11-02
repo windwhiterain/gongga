@@ -130,11 +130,11 @@ as the value of `--session`, and `hi` is what fails.
 
 ## installed_skills
 
-The three roots the server walks, in its order: the session's own
-`<cwd>/.agents/skills`, the home's `skills/`, then the machine's. Duplicating the
-walk here is deliberate -- completion runs in a key handler and cannot ask the
-server -- so the two lists have to be kept equal by construction rather than by
-hope, and this is the one function the client reads them from.
+The three roots the server walks, in its order, from the one reading of them:
+`skill::Roots` in `crates/skill`. Completion still runs in a key handler and cannot ask
+the server, so both sides read the same directory walk rather than two walks that are
+kept equal by hope -- which is what this used to be, and what a third caller
+(`gongga-cli skill`) would have broken.
 
 `project` is `None` when the session whose skills these are runs on another
 machine. Its checkout is then not on this disk, and reading

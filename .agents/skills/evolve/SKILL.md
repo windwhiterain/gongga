@@ -1,6 +1,9 @@
 ---
 name: evolve
-description: 替换掉正在跑自己的那个服务端——改完 server 代码之后，让新二进制接管 home 并继续当前回合。用 $PWD/.agents/skills/evolve/evolve.sh（stage / launch / swap / status / clean）。只在改过服务端代码后用它；改 skill 脚本、文档、TUI 不需要。换手会 cancel 本回合，靠 resume 接回来。
+description: 替换掉正在跑自己的那个服务端——改完 server 代码之后，让新二进制接管 home 并继续当前回合。用本 skill 目录下的 `evolve.sh`（stage / launch / swap / status / clean）。只在改过服务端代码后用它；改 skill 脚本、文档、TUI 不需要。换手会 cancel 本回合，靠 resume 接回来。
+compatibility: 需要 bash 与 cargo，并在本仓库的 checkout 里运行
+metadata:
+  entry: evolve.sh
 ---
 
 # 换掉自己
@@ -8,7 +11,8 @@ description: 替换掉正在跑自己的那个服务端——改完 server 代�
 改完服务端代码，跑着的进程还是旧的二进制。这个 skill 把它换成新的，而且让**当前回合不死**。
 
 ```bash
-S=$PWD/.agents/skills/evolve/evolve.sh
+SKILL_DIR=<本 SKILL.md 所在目录>      # `@skill: evolve` 展开里的 `SKILL.md: <path>` 的父目录；gongga 里也可以是 `gongga-cli skill evolve`
+S="$SKILL_DIR/evolve.sh"
 
 $S stage              # 编译检查 + 构建 + 暂存 + 生成 launcher（会先报磁盘余量）
 $S stage --clean      # 同上，并让继任者在旧服务端退出后、绑定端口前跑 cargo clean

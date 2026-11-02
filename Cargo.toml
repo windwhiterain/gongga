@@ -1,10 +1,18 @@
 [workspace]
 resolver = "3"
-members = ["crates/protocol", "crates/server", "crates/cli", "crates/tui", "crates/bridge", "crates/bundle"]
+members = [
+    "crates/protocol",
+    "crates/skill",
+    "crates/server",
+    "crates/cli",
+    "crates/tui",
+    "crates/bridge",
+    "crates/bundle",
+]
 # `crates/bundle` is the distribution, not a library anybody links: a plain
 # `cargo build`/`check`/`test` must not compile a second copy of the whole
 # dependency graph into its payload. Named here so `--workspace` still reaches it.
-default-members = ["crates/protocol", "crates/server", "crates/cli", "crates/tui", "crates/bridge"]
+default-members = ["crates/protocol", "crates/skill", "crates/server", "crates/cli", "crates/tui", "crates/bridge"]
 
 [workspace.package]
 version = "0.2.0"
@@ -16,6 +24,7 @@ authors = ["gongga contributors"]
 # In-workspace names are the un-prefixed crate names; the publish name is prefixed.
 [workspace.dependencies]
 protocol = { path = "crates/protocol", package = "gongga-protocol" }
+skill = { path = "crates/skill", package = "gongga-skill" }
 server = { path = "crates/server", package = "gongga-server" }
 cli = { path = "crates/cli", package = "gongga-cli" }
 tui = { path = "crates/tui", package = "gongga-tui" }
@@ -29,6 +38,9 @@ anyhow = "1"
 bytes = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+# One lookup for "is this program on PATH": the server starts a shell with it, the
+# command layer runs a skill entry with it, and neither should spell Windows twice.
+which = "8"
 
 [profile.release]
 opt-level = 3

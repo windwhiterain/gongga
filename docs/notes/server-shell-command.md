@@ -42,7 +42,7 @@ module's `PATH` is for.
 A value named `PATH` handed to Git Bash in the native shape (`C:\a;C:\b`) is
 rewritten at the child's startup and comes out mangled -- measured here as
 `C:/c/a` for a perfectly ordinary drive-qualified entry. So every entry is
-translated with `msys_path`, joined with `:` the way a shell splits it, and
+translated with `skill::shell_path`, joined with `:` the way a shell splits it, and
 `bin` is put first. Empty entries are dropped: `PATH` treats one as the current
 directory, and a shell that resolves commands out of whatever directory it happens
 to be in is an accident waiting for a file named `gongga-cli`.

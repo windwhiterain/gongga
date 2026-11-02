@@ -361,7 +361,7 @@ fn skill_metadata(home: &Path, machine: crate::session::Machine, name: &str) -> 
     Some(format!(
         "skill `{}` ({}) {}; SKILL.md: {}",
         found.name,
-        found.bucket,
+        found.bucket.as_str(),
         found.description,
         found.path.display()
     ))

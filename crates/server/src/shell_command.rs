@@ -134,9 +134,14 @@ fn copy(from: &Path, to: &Path) -> std::io::Result<()> {
 pub fn path(home: &Path) -> String {
     let inherited = entries(home);
     // This home's `bin` stays first: nothing here may shadow the command layer.
-    let mut parts = vec![shell_path(&inherited[0])];
+    let mut parts = vec![skill::shell_path(&inherited[0])];
     parts.extend(SHELL_TOOLS.iter().map(|tool| tool.to_string()));
-    parts.extend(inherited.iter().skip(1).map(|entry| shell_path(entry)));
+    parts.extend(
+        inherited
+            .iter()
+            .skip(1)
+            .map(|entry| skill::shell_path(entry)),
+    );
     // A shell hands its own `PATH` to the next server, which would add these
     // entries again on every handover: kept once, the first name still wins.
     unique(parts).join(":")
@@ -211,13 +216,4 @@ fn entries(home: &Path) -> Vec<PathBuf> {
             .filter(|entry| !entry.as_os_str().is_empty()),
     );
     parts
-}
-
-/// One path the way a shell reads it: Git Bash spells a drive as `/c/...`.
-fn shell_path(path: &Path) -> String {
-    if cfg!(windows) {
-        crate::tools::bash::msys_path(path)
-    } else {
-        path.to_string_lossy().into_owned()
-    }
 }

@@ -25,6 +25,7 @@ test = false
 
 [dependencies]
 protocol = { workspace = true }
+skill = { workspace = true }
 
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -41,7 +42,7 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 toml = "0.8"
 dirs = "6"
 uuid = { version = "1", features = ["v4"] }
-which = "8"
+which = { workspace = true }
 shell-words = "1"
 futures-util = "0.3"
 # `del_bash` takes a pattern rather than a name: a long session invents shell

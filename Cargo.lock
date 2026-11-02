@@ -746,11 +746,13 @@ dependencies = [
  "clap",
  "dirs",
  "gongga-protocol",
+ "gongga-skill",
  "serde",
  "serde_json",
  "shell-words",
  "tokio",
  "toml",
+ "which",
 ]
 
 [[package]]
@@ -775,6 +777,7 @@ dependencies = [
  "dirs",
  "futures-util",
  "gongga-protocol",
+ "gongga-skill",
  "libc",
  "regex",
  "reqwest",
@@ -792,6 +795,10 @@ dependencies = [
  "which",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "gongga-skill"
+version = "0.2.0"
 
 [[package]]
 name = "gongga-tui"

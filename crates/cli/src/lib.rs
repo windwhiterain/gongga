@@ -6,6 +6,7 @@ pub mod catalog;
 pub mod commands;
 pub mod complete;
 pub mod server;
+pub mod skill_command;
 
 pub use crate::catalog::Catalog;
 pub use crate::commands::{BlockSize, BoxEdge, Shown, Sticky};
@@ -95,6 +96,10 @@ impl Args {
             return Ok(());
         };
         let serves = command.first().map(String::as_str) == Some("serve");
+        // A skill's argv is the entry's: `skill remote add --home x` is the script's flag.
+        if command.first().map(String::as_str) == Some("skill") {
+            return Ok(());
+        }
         // Every command flag takes one value, which may itself look like a flag:
         // walk pairs rather than match every token.
         let mut i = 1;
@@ -1719,8 +1724,13 @@ impl Link {
 /// behind, and the server builds the runtime it wants to be stopped in.
 pub fn main(args: Args) -> anyhow::Result<()> {
     if let Some(Sub::Cmd(tokens)) = &args.command {
-        if tokens.first().map(String::as_str) == Some("serve") {
-            return crate::server::serve(&args, &tokens[1..]);
+        match tokens.first().map(String::as_str) {
+            Some("serve") => return crate::server::serve(&args, &tokens[1..]),
+            // Nothing here needs a runtime or a link: an entry is a file on this disk.
+            Some("skill") => {
+                return crate::skill_command::dispatch(&home_of(&args), &tokens[1..]);
+            }
+            _ => {}
         }
     }
     let runtime = tokio::runtime::Builder::new_multi_thread()
