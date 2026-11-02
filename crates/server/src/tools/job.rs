@@ -8,10 +8,10 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
 };
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
-    QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectBasicAccountingInformation,
+    JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+    TerminateJobObject,
 };
 use windows_sys::Win32::System::Threading::{
     OpenProcess, OpenThread, PROCESS_SET_QUOTA, PROCESS_TERMINATE, ResumeThread,

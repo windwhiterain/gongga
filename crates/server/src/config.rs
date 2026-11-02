@@ -63,6 +63,8 @@ pub struct Config {
     /// The model the server runs on when a session names none.
     pub model: ModelConfig,
     pub bash: BashConfig,
+    /// The persistent Python interpreter a `python` call runs in.
+    pub python: PythonConfig,
     /// The machines a session may name as its `--remote`, by the name it uses.
     pub remotes: Vec<RemoteConfig>,
     pub scripts: ScriptConfig,
@@ -154,6 +156,18 @@ pub struct BashConfig {
     /// running and posts its output when it finishes.
     pub timeout: Duration,
     /// Tool output longer than this is capped: head and tail only, all of it on disk.
+    pub max_output_chars: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct PythonConfig {
+    /// Explicit interpreter. `None` means `python3`, then `python`, on PATH.
+    pub program: Option<PathBuf>,
+    /// Arguments before the driver: `uv run python` uses `["run", "python"]`.
+    pub args: Vec<String>,
+    /// How long a `python` call waits before the interpreter is stopped.
+    pub timeout: Duration,
+    /// Tool output longer than this is capped: head and tail only.
     pub max_output_chars: usize,
 }
 
@@ -266,9 +280,10 @@ struct FileModel {
     retry_base_ms: Option<u64>,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 struct FileTools {
     bash: Option<FileBash>,
+    python: Option<FilePython>,
 }
 
 /// One `[remotes.<name>]` table.
@@ -280,9 +295,17 @@ struct FileRemote {
     runner: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 struct FileBash {
     program: Option<PathBuf>,
+    timeout_ms: Option<u64>,
+    max_output_chars: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+struct FilePython {
+    program: Option<PathBuf>,
+    args: Option<Vec<String>>,
     timeout_ms: Option<u64>,
     max_output_chars: Option<usize>,
 }
@@ -452,7 +475,8 @@ impl Config {
                 .unwrap_or_default(),
         };
 
-        let bash_file = file.tools.and_then(|t| t.bash).unwrap_or_default();
+        let tools_file = file.tools.clone().unwrap_or_default();
+        let bash_file = tools_file.bash.clone().unwrap_or_default();
         let bash = BashConfig {
             program: env_path("GONGGA_BASH")
                 .or(bash_file.program)
@@ -467,6 +491,24 @@ impl Config {
             max_output_chars: bash_file
                 .max_output_chars
                 .or_else(|| env_or("GONGGA_BASH_MAX_OUTPUT_CHARS").and_then(|v| v.parse().ok()))
+                .unwrap_or(DEFAULT_MAX_OUTPUT_CHARS),
+        };
+
+        let python_file = tools_file.python.unwrap_or_default();
+        let python = PythonConfig {
+            program: env_path("GONGGA_PYTHON")
+                .or(python_file.program)
+                .or_else(detect_python),
+            args: python_file.args.unwrap_or_default(),
+            timeout: Duration::from_millis(
+                python_file
+                    .timeout_ms
+                    .or_else(|| env_or("GONGGA_PYTHON_TIMEOUT_MS").and_then(|v| v.parse().ok()))
+                    .unwrap_or(120_000),
+            ),
+            max_output_chars: python_file
+                .max_output_chars
+                .or_else(|| env_or("GONGGA_PYTHON_MAX_OUTPUT_CHARS").and_then(|v| v.parse().ok()))
                 .unwrap_or(DEFAULT_MAX_OUTPUT_CHARS),
         };
 
@@ -568,6 +610,7 @@ impl Config {
             key,
             model,
             bash,
+            python,
             remotes,
             scripts,
             agent,
@@ -704,7 +747,6 @@ pub(crate) fn expand(path: PathBuf) -> PathBuf {
     path
 }
 
-/// Locates Git Bash on Windows, falling back to whatever `bash` is on PATH.
 pub(crate) fn detect_git_bash() -> Option<PathBuf> {
     if cfg!(windows) {
         let candidates = [
