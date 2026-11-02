@@ -33,6 +33,13 @@ pub enum Record {
         text: String,
     },
     /// One more piece of a block that is still growing.
+    ///
+    /// # Invariant
+    ///
+    /// Only an older build writes one: a stream now lives in memory until its seal,
+    /// and a journal holds a block's whole form or nothing. It stays in the
+    /// vocabulary because the journals already on disk are full of them, and a
+    /// record a build cannot name is a record it cannot read past.
     Delta {
         id: u64,
         kind: LineKind,
@@ -65,6 +72,34 @@ const FRAME: u64 = 4;
 /// The framing a journal is written in. Bumped when `Record` changes shape.
 const VERSION: u32 = 1;
 
+/// One window's journal, held open for as long as this process draws it.
+///
+/// # Invariant
+///
+/// The open handle is what makes a record affordable: opening a file on the machine
+/// this was written on costs about ten milliseconds, a write on a handle about three
+/// microseconds, so a journal reopened per record turns a stream into a stall.
+/// See `docs/notes/tui-cache.md`.
+struct Slot {
+    path: PathBuf,
+    /// `None` until the first read or write, and again after a reset or a removal.
+    file: Option<File>,
+}
+
+impl Slot {
+    /// The file this window would use, named after this process.
+    fn new(dir: &Path, window: &str) -> Self {
+        Self {
+            path: dir.join(format!(
+                "{}.{}.journal",
+                escaped(window),
+                std::process::id()
+            )),
+            file: None,
+        }
+    }
+}
+
 /// The journals of one client, over one server address.
 ///
 /// # Invariant
@@ -77,7 +112,7 @@ pub struct Cache {
     /// Where this client keeps them, or `None` for a log that keeps nothing.
     dir: Option<PathBuf>,
     /// Window -> the journal this process uses for it. Decided once, by `new`.
-    journals: std::sync::Mutex<std::collections::HashMap<String, PathBuf>>,
+    journals: std::sync::Mutex<std::collections::HashMap<String, Slot>>,
 }
 
 impl Cache {
@@ -119,7 +154,7 @@ impl Cache {
     /// this process, which keeps a session at one file however often the window was
     /// opened. A rename that loses a race is no error: the loser writes a file of
     /// its own and the winner's records stand. See `docs/notes/tui-cache.md`.
-    fn claim(dir: &Path) -> std::collections::HashMap<String, PathBuf> {
+    fn claim(dir: &Path) -> std::collections::HashMap<String, Slot> {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return std::collections::HashMap::new();
         };
@@ -143,23 +178,27 @@ impl Cache {
                 .push(One { pid, written, path });
         }
         let me = std::process::id() as u64;
+        let mut ask = Ask::default();
         let mut journals = std::collections::HashMap::new();
         for (window, mut files) in found {
             files.sort_by_key(|one| one.written);
+            let mut chosen: Option<PathBuf> = None;
             if let Some(mine) = files.iter().find(|one| one.pid == me) {
-                journals.insert(window.clone(), mine.path.clone());
+                chosen = Some(mine.path.clone());
             } else if let Some(newest) = files.last()
-                && !cli::server::alive(newest.pid as u32)
+                && !ask.live(newest.pid)
             {
                 let mine = mine_path(&newest.path, me);
                 if std::fs::rename(&newest.path, &mine).is_ok() {
-                    journals.insert(window.clone(), mine);
+                    chosen = Some(mine);
                 }
             }
-            let chosen = journals.get(&window).cloned();
+            if let Some(path) = chosen.clone() {
+                journals.insert(window.clone(), Slot { path, file: None });
+            }
             // What is left over belongs to nobody: a pid says a process that ran.
             for one in &files {
-                if Some(&one.path) == chosen.as_ref() || cli::server::alive(one.pid as u32) {
+                if Some(&one.path) == chosen.as_ref() || ask.live(one.pid) {
                     continue;
                 }
                 let _ = std::fs::remove_file(&one.path);
@@ -168,8 +207,44 @@ impl Cache {
         journals
     }
 
-    /// The file for this window, made a decision about on first use.
-    fn journal(&self, window: &str) -> Option<PathBuf> {
+    /// Runs `f` on this window's journal, opening it once and keeping it open.
+    ///
+    /// # Invariant
+    ///
+    /// One handle per window for the life of the process: that is the whole cost
+    /// model of this module. A read and a write share it, and the lock makes the
+    /// seek and the transfer one step, so two windows never interleave.
+    /// See `docs/notes/tui-cache.md`.
+    fn with<T>(
+        &self,
+        window: &str,
+        create: bool,
+        f: impl FnOnce(&mut File) -> Option<T>,
+    ) -> Option<T> {
+        let dir = self.dir.as_ref()?;
+        let mut journals = self
+            .journals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let slot = journals
+            .entry(window.to_string())
+            .or_insert_with(|| Slot::new(dir, window));
+        if slot.file.is_none() {
+            if create {
+                std::fs::create_dir_all(dir).ok()?;
+            }
+            let mut open = OpenOptions::new();
+            open.read(true).write(true);
+            if create {
+                open.create(true);
+            }
+            slot.file = open.open(&slot.path).ok();
+        }
+        f(slot.file.as_mut()?)
+    }
+
+    /// Where this window's journal lives, whether or not it is open.
+    fn path(&self, window: &str) -> Option<PathBuf> {
         let dir = self.dir.as_ref()?;
         let mut journals = self
             .journals
@@ -178,15 +253,21 @@ impl Cache {
         Some(
             journals
                 .entry(window.to_string())
-                .or_insert_with(|| {
-                    dir.join(format!(
-                        "{}.{}.journal",
-                        escaped(window),
-                        std::process::id()
-                    ))
-                })
+                .or_insert_with(|| Slot::new(dir, window))
+                .path
                 .clone(),
         )
+    }
+
+    /// Drops this process's handle, so the file can be truncated or deleted.
+    fn close(&self, window: &str) {
+        let mut journals = self
+            .journals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(slot) = journals.get_mut(window) {
+            slot.file = None;
+        }
     }
 
     /// Appends one record, and answers where it was written.
@@ -200,64 +281,54 @@ impl Cache {
         let mut body = Vec::new();
         body.extend_from_slice(&VERSION.to_le_bytes());
         body.extend_from_slice(&serde_json::to_vec(record).ok()?);
-        let mut file = self.open_for_append(window).ok()?;
-        let at = file.seek(SeekFrom::End(0)).ok()?;
         let len = (body.len() as u32).to_le_bytes();
         let mut framed = Vec::with_capacity(body.len() + 8);
         framed.extend_from_slice(&len);
         framed.extend_from_slice(&body);
         framed.extend_from_slice(&len);
-        file.write_all(&framed).ok()?;
-        Some(at)
-    }
-
-    fn open_for_append(&self, window: &str) -> std::io::Result<File> {
-        let dir = self.dir.as_ref().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::Unsupported, "no cache directory")
-        })?;
-        std::fs::create_dir_all(dir)?;
-        let path = self.journal(window).ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::Unsupported, "no cache directory")
-        })?;
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .read(true)
-            .open(path)
+        self.with(window, true, |file| {
+            let at = file.seek(SeekFrom::End(0)).ok()?;
+            file.write_all(&framed).ok()?;
+            Some(at)
+        })
     }
 
     /// Where this window's journal ends: the offset a later record starts at.
+    ///
+    /// # Invariant
+    ///
+    /// Asks the file system rather than opening the file: a frame asks this for every
+    /// window it draws, and a window that has written nothing yet has no file to open.
     pub fn end(&self, window: &str) -> u64 {
-        self.journal(window)
-            .and_then(|path| std::fs::metadata(path).ok())
-            .map(|meta| meta.len())
-            .unwrap_or(0)
+        let Some(path) = self.path(window) else {
+            return 0;
+        };
+        std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0)
     }
 
     /// The record written at `at`, if one is there and this build can read it.
     pub fn read(&self, window: &str, at: u64) -> Option<Record> {
-        let mut file = File::open(self.journal(window)?).ok()?;
-        file.seek(SeekFrom::Start(at)).ok()?;
-        self.record_at(&mut file).map(|(_, record)| record)
+        self.with(window, false, |file| {
+            file.seek(SeekFrom::Start(at)).ok()?;
+            Self::record_at(file).map(|(_, record)| record)
+        })
     }
 
     /// Where the `count` records before `from` begin, or 0 when the file starts first.
     pub fn back(&self, window: &str, from: u64, count: usize) -> u64 {
-        let Some(mut file) = self.journal(window).and_then(|path| File::open(path).ok()) else {
-            return 0;
-        };
-        let mut at = from.min(self.end(window));
-        for _ in 0..count {
-            match self.previous(&mut file, at) {
-                Some(start) => at = start,
-                None => return 0,
+        self.with(window, false, |file| {
+            let end = file.seek(SeekFrom::End(0)).ok()?;
+            let mut at = from.min(end);
+            for _ in 0..count {
+                at = Self::previous(file, at)?;
             }
-        }
-        at
+            Some(at)
+        })
+        .unwrap_or(0)
     }
 
     /// The record just before `at`, if the file holds one this build understands.
-    fn previous(&self, file: &mut File, at: u64) -> Option<u64> {
+    fn previous(file: &mut File, at: u64) -> Option<u64> {
         if at < FRAME {
             return None;
         }
@@ -271,32 +342,32 @@ impl Cache {
         let mut body = vec![0u8; len as usize];
         file.seek(SeekFrom::Start(start + FRAME)).ok()?;
         file.read_exact(&mut body).ok()?;
-        self.decode(&body).map(|_| start)
+        Self::decode(&body).map(|_| start)
     }
 
     /// Every record from `from` to the end, oldest first.
     pub fn forward(&self, window: &str, from: u64) -> Vec<(u64, Record)> {
-        let Some(mut file) = self.journal(window).and_then(|path| File::open(path).ok()) else {
-            return Vec::new();
-        };
-        let end = self.end(window);
-        let mut at = from;
-        let mut out = Vec::new();
-        while at < end {
-            file.seek(SeekFrom::Start(at)).ok();
-            match self.record_at(&mut file) {
-                Some((next, record)) => {
-                    out.push((at, record));
-                    at = next;
+        self.with(window, false, |file| {
+            let end = file.seek(SeekFrom::End(0)).ok()?;
+            let mut at = from;
+            let mut out = Vec::new();
+            while at < end {
+                file.seek(SeekFrom::Start(at)).ok()?;
+                match Self::record_at(file) {
+                    Some((next, record)) => {
+                        out.push((at, record));
+                        at = next;
+                    }
+                    None => break,
                 }
-                None => break,
             }
-        }
-        out
+            Some(out)
+        })
+        .unwrap_or_default()
     }
 
     /// One record read forwards at the handle's position, and where the next starts.
-    fn record_at(&self, file: &mut File) -> Option<(u64, Record)> {
+    fn record_at(file: &mut File) -> Option<(u64, Record)> {
         let at = file.stream_position().ok()?;
         let mut head = [0u8; 4];
         if file.read_exact(&mut head).is_err() {
@@ -310,12 +381,11 @@ impl Cache {
         if u32::from_le_bytes(tail) as usize != len {
             return None;
         }
-        self.decode(&body)
-            .map(|record| (at + FRAME + len as u64 + FRAME, record))
+        Self::decode(&body).map(|record| (at + FRAME + len as u64 + FRAME, record))
     }
 
     /// One framed body as a record: the version first, so a foreign one is refused.
-    fn decode(&self, body: &[u8]) -> Option<Record> {
+    fn decode(body: &[u8]) -> Option<Record> {
         let (version, json) = body.split_first_chunk::<4>()?;
         if u32::from_le_bytes(*version) != VERSION {
             return None;
@@ -331,23 +401,27 @@ impl Cache {
     /// file, so emptying it is the statement `clear` makes. A file another live
     /// client is writing is left alone -- it is that client's record.
     pub fn reset(&self, window: &str) {
-        let Some(mine) = self.journal(window) else {
+        let Some(path) = self.path(window) else {
             return;
         };
-        let _ = std::fs::OpenOptions::new()
+        // Closed first: a truncate behind an open handle is a write at the wrong offset.
+        self.close(window);
+        let _ = OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
-            .open(&mine);
-        self.forget_abandoned(window, &mine);
+            .open(&path);
+        self.forget_abandoned(window, &path);
     }
 
     /// Drops a window's journals: the session it belonged to is gone.
     pub fn remove(&self, window: &str) {
-        let Some(mine) = self.journal(window) else {
+        let Some(path) = self.path(window) else {
             return;
         };
-        let _ = std::fs::remove_file(&mine);
+        // Windows refuses to delete a file this process still holds open.
+        self.close(window);
+        let _ = std::fs::remove_file(&path);
         self.forget_abandoned(window, Path::new(""));
     }
 
@@ -359,6 +433,7 @@ impl Cache {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
         };
+        let mut ask = Ask::default();
         for entry in entries.flatten() {
             let path = entry.path();
             let Some((name, pid)) = split_name(&path) else {
@@ -367,11 +442,31 @@ impl Cache {
             if name != window || path == keep {
                 continue;
             }
-            let live = cli::server::alive(pid as u32);
+            let live = ask.live(pid);
             if !live {
                 let _ = std::fs::remove_file(&path);
             }
         }
+    }
+}
+
+/// Whether a pid answers, asked once per pid for one walk of the directory.
+///
+/// # Invariant
+///
+/// `cli::server::alive` starts a process on Windows -- the first call on this machine
+/// costs about a third of a second -- and one walk asks about the same few pids once
+/// per file. An answer cannot change inside a walk: a pid that is gone stays gone.
+#[derive(Default)]
+struct Ask(std::collections::HashMap<u64, bool>);
+
+impl Ask {
+    /// Whether `pid` is a process, asking the machine at most once for it.
+    fn live(&mut self, pid: u64) -> bool {
+        *self
+            .0
+            .entry(pid)
+            .or_insert_with(|| cli::server::alive(pid as u32))
     }
 }
 

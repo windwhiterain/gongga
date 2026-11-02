@@ -6,7 +6,7 @@
 //! rows a reflow of the whole line would. See `docs/notes/tui-log.md`.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -53,6 +53,15 @@ struct Entry {
     col: usize,
     /// No more text can arrive, so the block is scrollback.
     sealed: bool,
+    /// Text this block holds that its journal does not.
+    ///
+    /// # Invariant
+    ///
+    /// Set by an append and cleared by the seal that writes the block whole, so
+    /// `Some(slot)` plus `pending` is a block whose record is older than what is on
+    /// screen. Such a block may not be dropped: reading it back would lose the
+    /// rows the operator is watching. See `docs/notes/tui-cache.md`.
+    pending: bool,
     /// Structured call fields, once the call's head arrives.
     call: Option<cli::protocol::Head>,
     /// The expanded sections, cached at their measured width.
@@ -123,6 +132,7 @@ impl Entry {
             starts: vec![0],
             col: 0,
             sealed: false,
+            pending: false,
             call: None,
             sections: String::new(),
             styled: Vec::new(),
@@ -519,9 +529,10 @@ impl Entry {
     /// # Invariant
     ///
     /// Only a block the journal can stand for alone: a block still growing has no
-    /// seal, and dropping its body would drop the text that has not arrived yet.
+    /// seal, and one holding text the journal has not been told yet would come back
+    /// missing its newest rows. Dropping either would lose what is on screen.
     fn drop_body(&mut self) {
-        if self.cold.is_some() || self.slot.is_none() {
+        if self.cold.is_some() || self.slot.is_none() || self.pending {
             return;
         }
         self.cold = Some(self.rows());
@@ -821,6 +832,15 @@ pub struct Log {
     next_id: u64,
     /// The blocks whose bodies are here. Eviction walks this, not the log.
     hot: Vec<usize>,
+    /// Windows this process has already decided the beginning of.
+    ///
+    /// # Invariant
+    ///
+    /// A window is here once, and only a name that arrives after this process
+    /// started is not. A window that received one line before its first frame is
+    /// still unseeded: the line is realtime, and the history behind it is the
+    /// journal's. See `docs/notes/tui-cache.md`.
+    seeded: HashSet<String>,
 }
 
 impl Default for Log {
@@ -869,6 +889,7 @@ impl Log {
             cache: Cache::none(),
             next_id: 0,
             hot: Vec::new(),
+            seeded: HashSet::new(),
         }
     }
 
@@ -900,6 +921,8 @@ impl Log {
         for window in windows {
             self.drop_window(&window);
         }
+        // Another endpoint is another journal: every window starts over.
+        self.seeded.clear();
     }
 
     /// Hands out the journal's next block id.
@@ -934,6 +957,12 @@ impl Log {
     }
 
     /// Records a block's whole current form, and where it can be read back from.
+    ///
+    /// # Invariant
+    ///
+    /// This is the only writer a *growing* block has: a stream keeps its text in
+    /// memory and lands here once, when it ends, so a journal never grows one chunk
+    /// at a time. See `docs/notes/tui-cache.md`.
     fn record_seal(&mut self, at: usize) {
         if at >= self.entries.len() {
             return;
@@ -941,27 +970,9 @@ impl Log {
         let record = self.entries[at].seal_record();
         if let Some(slot) = self.write(at, record) {
             self.entries[at].slot = Some(slot);
+            // The file now holds what is on screen, so the body may be dropped.
+            self.entries[at].pending = false;
         }
-    }
-
-    /// Records one more piece of a block that is still growing.
-    ///
-    /// # Invariant
-    ///
-    /// A delta is not a seal: it does not stand for the block on its own, so it
-    /// never becomes a `slot` and never makes a block droppable.
-    fn record_delta(&mut self, at: usize, text: &str) {
-        let Some(entry) = self.entries.get(at) else {
-            return;
-        };
-        let record = Record::Delta {
-            id: entry.id,
-            kind: entry.kind,
-            tag: entry.tag.clone(),
-            text: text.to_string(),
-            done: false,
-        };
-        self.write(at, record);
     }
 
     /// Caps how tall a block may get: `0` caps nothing, and a block past its cap
@@ -997,6 +1008,8 @@ impl Log {
     pub fn forget(&mut self, window: &str) {
         self.cache.remove(window);
         self.drop_window(window);
+        // The name may be handed out again: its next beginning is the server's.
+        self.seeded.remove(window);
     }
 
     /// Takes a window's blocks out of memory, keeping its journal.
@@ -1135,6 +1148,8 @@ impl Log {
     pub fn clear(&mut self, window: &str) {
         // The file holds what this window drew; `clear` says it holds nothing.
         self.cache.reset(window);
+        // The next beginning is whatever arrives from here, not what was read.
+        self.seeded.remove(window);
         if !self
             .entries
             .iter()
@@ -1470,7 +1485,9 @@ impl Log {
                 self.entries[at].append(text, width);
                 let after = self.contributions(at);
                 self.shift(at, before, after);
-                self.record_delta(at, text);
+                // Held in memory until the seal writes it: one record per block,
+                // not one per chunk. See `docs/notes/tui-cache.md`.
+                self.entries[at].pending = true;
                 at
             }
             // A blank chunk opens no block: one precedes every exit sentinel.
@@ -1492,7 +1509,7 @@ impl Log {
                 let at = self.entries.len() - 1;
                 self.attach(at);
                 self.open.insert(key.to_string(), at);
-                self.record_delta(at, text);
+                self.entries[at].pending = true;
                 at
             }
         };
@@ -1562,7 +1579,8 @@ impl Log {
         self.entries[at].append(text, width);
         let after = self.contributions(at);
         self.shift(at, before, after);
-        self.record_delta(at, text);
+        // The journal hears about this block when it ends, not once per chunk.
+        self.entries[at].pending = true;
     }
 
     /// The ledger a window reads, or `None` for a name nobody has written to yet.
@@ -1691,20 +1709,16 @@ impl Log {
         Viewport { rows, max_scroll }
     }
 
-    /// Fills an empty window from its journal, newest first, until it covers `rows`.
+    /// Fills a window from its journal, newest first, until it covers `rows`.
     ///
     /// # Invariant
     ///
-    /// Only an empty window: a window with blocks has them because this process
-    /// watched them arrive, and replaying on top would draw every row twice. The
-    /// answer is a window that starts where it stopped, which is what a window on a
-    /// session it has never drawn owes the operator. See `docs/notes/tui-cache.md`.
+    /// The question is whether *this process* has decided where the window starts,
+    /// not whether the window has blocks: a restart receives a realtime line before
+    /// its first frame, and that line must not hide the journal behind it. A name
+    /// decided once is never seeded again. See `docs/notes/tui-cache.md`.
     pub fn seed(&mut self, window: &str, width: usize, rows: usize) {
-        if self
-            .views
-            .get(window)
-            .is_some_and(|ledger| !ledger.blocks.is_empty())
-        {
+        if !self.seeded.insert(window.to_string()) {
             return;
         }
         let end = self.cache.end(window);
@@ -1723,7 +1737,14 @@ impl Log {
     }
 
     /// Rebuilds one window from its journal, from `start` to the end.
+    ///
+    /// # Invariant
+    ///
+    /// What this process already watched arrive is kept, and placed after what the
+    /// journal holds: a window that showed a line before it was seeded still has
+    /// that line, and it is newer than anything in the file.
     fn replay(&mut self, window: &str, start: u64) {
+        let live = self.take_window(window);
         self.drop_window(window);
         let mut ids: HashMap<u64, usize> = HashMap::new();
         for (at, record) in self.cache.forward(window, start) {
@@ -1739,6 +1760,72 @@ impl Log {
             .collect();
         for at in open {
             self.seal_quiet(at);
+        }
+        for entry in live {
+            self.restore(entry, &mut ids);
+        }
+    }
+
+    /// Takes a window's blocks out of memory and answers them, in arrival order.
+    ///
+    /// # Invariant
+    ///
+    /// The indexes the removal invalidates are repaired here: an `open` entry whose
+    /// block left with the window leaves too, and the rest name their new places.
+    /// `drop_window` may then run over a window that holds no blocks.
+    fn take_window(&mut self, window: &str) -> Vec<Entry> {
+        let mut moved = Vec::with_capacity(self.entries.len());
+        let mut kept = Vec::with_capacity(self.entries.len());
+        let mut taken = Vec::new();
+        for entry in std::mem::take(&mut self.entries) {
+            let mine = entry.window.as_ref() == window;
+            moved.push((!mine).then_some(kept.len()));
+            if mine {
+                taken.push(entry);
+            } else {
+                kept.push(entry);
+            }
+        }
+        self.entries = kept;
+        self.open = self
+            .open
+            .drain()
+            .filter_map(|(key, at)| moved.get(at).copied().flatten().map(|at| (key, at)))
+            .collect();
+        self.reindex();
+        taken
+    }
+
+    /// Puts a block this process watched arrive back, after a replay.
+    ///
+    /// # Invariant
+    ///
+    /// A block the journal also holds -- the same id -- is replaced by the live one:
+    /// what arrived here is newer than what was written there. A stream still open
+    /// takes its key back, or the next chunk would open a second block.
+    fn restore(&mut self, entry: Entry, ids: &mut HashMap<u64, usize>) {
+        let key = entry.key.clone();
+        let streaming = !entry.sealed && !key.is_empty();
+        let place = match ids.get(&entry.id).copied() {
+            Some(place) => {
+                let before = self.contributions(place);
+                let at = self.entries[place].at;
+                let mut entry = entry;
+                entry.at = at;
+                self.entries[place] = entry;
+                let after = self.contributions(place);
+                self.shift(place, before, after);
+                place
+            }
+            None => {
+                let id = entry.id;
+                let place = self.adopt(entry);
+                ids.insert(id, place);
+                place
+            }
+        };
+        if streaming {
+            self.open.insert(key, place);
         }
     }
 

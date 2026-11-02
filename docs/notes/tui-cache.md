@@ -32,6 +32,10 @@ The pid is in the file name. Consequence: two windows on one machine never appen
 the same file, because they are two pids; and a restart takes over the file the dead
 process left, because `cli::server::alive` says it is dead.
 
+Asking is the expensive half: `alive` starts a process on Windows. `Ask` answers once
+per pid for one walk of the directory, so a claim that finds five files of one dead
+window asks the machine once, not five times.
+
 `Cache::claim` runs once, at construction, over the directory: for each window, keep
 the file if it is already mine; otherwise, if the newest file's writer is gone, rename
 it to me (which keeps a session at one file however often the window was opened);
@@ -47,19 +51,52 @@ machine is what both windows are already standing on. It replaced a rule that as
 the *server* who owned it -- which meant the window that had not started the server
 wrote nothing at all, and that is exactly the case of a server on another machine.
 
+## One handle per window, for the life of the process
+
+`Cache` keeps the journal open: `Slot { path, file }` per window, opened on first use
+and held until the process ends. The numbers are the reason. On the machine this was
+measured on, an open costs about ten milliseconds and a write on an open handle about
+three microseconds -- three thousand times less -- so a journal reopened per record
+turned every stream into a stall.
+
+The handle is also why reads and writes share one lock: a seek and the transfer are
+one step, and no two windows can interleave inside a record.
+
+Two operations cannot happen with the handle open, and both close it first: `reset`
+truncates, `remove` deletes. Windows refuses to delete a file a process still holds,
+and a truncate behind an open handle is how a write would land at the wrong offset.
+The handle comes back on the next record.
+
 ## Record — a sealed block stands on its own
 
 `Seal` carries the whole block: id, kind, tag, key, text, whether it is opened, and
 the structured call head if it has one. Reading one record is enough to draw that
 block, with no earlier record needed, which is what makes a random read possible.
 
-`Delta` is one more piece of a block that is still growing. It is *not* self-sufficient
--- that is the whole difference -- so a block with deltas and no seal can never be
-dropped, and the newest page of a journal, which is where an interrupted stream lives,
-is rebuilt by replaying forward from a record boundary.
+`Delta` is one more piece of a block that is still growing, and only an older build
+writes one. It is *not* self-sufficient -- that is the whole difference -- so it never
+became a `slot`. It stays in the vocabulary because the journals already on disk are
+full of them, and a record a build cannot name is a record it cannot read past.
 
 Nothing else is recorded. `rewrite`, `relabel`, `describe` and a toggle all append a
 fresh `Seal`, because each of them changes the block's form and the newest seal wins.
+
+## A stream is written once, not once per chunk
+
+A block that is still growing keeps its text in memory and lands in the journal when
+it ends: one `Seal`, holding the whole thing. What that replaced was a `Delta` per
+chunk -- a session on this machine had 4514 of them for a single turn -- and each one
+was a file operation on the thread that draws.
+
+`Entry::pending` is the state that makes this safe. An append sets it; the seal that
+writes the block clears it. A block whose record is older than what is on screen may
+not be dropped, because reading it back would lose the newest rows. So a stream costs
+memory -- the one block being written -- and the journal never holds a half-arrived
+block.
+
+The cost of losing the process mid-turn is that turn's block: it was never written.
+That is the trade the journal makes everywhere else already -- it records what a
+window was told, not what a server still has.
 
 ## Framing — `[u32 len][version + json][u32 len]`
 
@@ -77,7 +114,9 @@ field, both times.
 block's `slot`, which is how the body is found again. `read` is one record at an
 offset. `back` walks backwards over record boundaries and answers where the `count`-th
 previous record begins, and `forward` reads from there to the end -- the two together
-are what a seed is built from.
+are what a seed is built from. `end` is the file's length, asked of the metadata rather
+than of an open handle: a frame asks it for every window it draws, and a window that
+has written nothing yet has no file.
 
 `reset` truncates this process's file, which is what `Log::clear` means: the command
 line holds the last command and no more, so its file should hold that too. It also
@@ -91,31 +130,48 @@ A `Log` built with no front-end in mind keeps nothing, and derives no path from 
 empty root: `Cache { dir: None }` answers "no record" rather than creating a directory
 in whatever directory the process happens to stand in.
 
-## log.rs — Entry::slot and Entry::cold
+## log.rs — Entry::slot, Entry::cold and Entry::pending
 
 `slot` is where the journal holds this block's whole current form; `cold` is that
-block's row count when its body is not here. They are the only two fields the cache
-added to a block, and they are what makes dropping a body invisible: the row index
-still counts it, so scroll bounds, click hit-testing and `Pane::anchor` do not move.
+block's row count when its body is not here. `slot` and `cold` are what makes dropping
+a body invisible: the row index still counts it, so scroll bounds, click hit-testing
+and `Pane::anchor` do not move.
+
+`pending` is the third: text this block holds that its journal does not. It is set by
+an append and cleared by the seal that writes the block, and it is what `drop_body`
+refuses. A block with pending text has a `slot`, because it was sealed once -- the
+label, the first chunk -- but that record is older than the screen.
 
 `rows()` answers from `cold` first, `reflow` refuses to lay out a body that is not
 here, and `hot()` is the question the rest of the file asks before touching `text`.
 
-## Log::seed — a window that has never drawn starts from its journal
+## Log::seed — a window whose beginning this process has not decided
 
 `seed(window, width, rows)` is called by the frame that is about to draw a window it
-has no blocks for. It reads backwards in `WALK`-record batches, replays what it found,
-and stops as soon as the window covers `rows` -- the pane's own height.
+has never decided the start of. The test is `Log::seeded` -- has *this process*
+answered where that window begins -- and not "does the window have blocks". It reads
+backwards in `WALK`-record batches, replays what it found, and stops as soon as the
+window covers `rows`, the pane's own height.
 
-Two things follow. The cost of opening a session is a page, not a transcript: the
-biggest session on this machine (1602 events, 2.5 MB of text) opens having replayed 73
-rows. And a window that has blocks is left alone: they are here because this process
-watched them arrive, and replaying on top would draw every row twice.
+That distinction is a bug this replaced. The test used to be "does this window have
+blocks", and a restart receives a `ctx … model …` line from the server before its
+first frame draws -- so the window looked like one this process had been watching all
+along, and the journal was never replayed. A session with thousands of rows came back
+as that one line.
 
-`replay` drops the window's blocks, applies the records in order, and then seals
-everything still open. Nothing survives a restart as an open stream -- the process
-that was writing it is gone -- so `Delta` records whose `done` never arrived are the
-tail of a block, not a block that is still growing.
+`replay` keeps what arrived live: it takes the window's blocks out, applies the
+journal's records, and puts the live blocks back after them, replacing any block the
+journal also holds by id. The rows are history first, then what this process saw.
+
+The cost of opening a session is a page, not a transcript: the biggest session on this
+machine (1602 events, 2.5 MB of text) opens having replayed 73 rows.
+
+Since a stream lands once, one record is one block: a batch of `WALK` records is a
+batch of blocks, and the row count it can cover is no longer a guess.
+
+Nothing survives a restart as an open stream -- the process that was writing it is
+gone -- so a `Delta` whose `done` never arrived (an older build's journal) is the tail
+of a block, not a block that is still growing.
 
 ## materialize — the body comes back at the width it is drawn at
 
@@ -138,7 +194,7 @@ see. That is the one way this cache could destroy what it is supposed to keep.
 After a pane has drawn, `Log::evict(window, start..end)` drops the bodies of the blocks
 that are entirely outside those rows: the blocks scrolled past, and the ones below the
 view. `Panes::begin_frame`/`end_frame` complete the rule for a window nobody drew at
-all -- a hidden session holds no bodies.
+all -- a hidden session holds no bodies, except the one block it is still writing.
 
 There is no budget and no number to tune. The bound is the render: a window costs the
 rows it is drawing, plus whatever the operator scrolled past without coming back to the
