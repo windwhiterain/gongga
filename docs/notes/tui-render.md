@@ -472,17 +472,16 @@ are spent on structure and none on the question of what kind of row it is.
 
 An opened item's box is two rules and the rows between them, and the item's label rides
 on the top rule. The box has no sides to pay for, so its rules are as wide as the window
-less the margin `set_render --box_edge` sets, and every row of it starts at that margin:
-one span of blanks in front of the row, the same number the log took out of the width
-when it wrapped it. The label keeps one column of air and ends in at least one dash,
-which is what tells the top rule from a folded row at the same width. A row of the body
-is drawn like any other row -- the kind's mark, then the quiet gray -- and the log
-already wrapped it, so the renderer pads nothing on the right and cuts nothing.
+and every row of it starts at the window's left edge. The label keeps one column of air
+and ends in at least one dash, which is what tells the top rule from a folded row at the
+same width. A row of the body is drawn like any other row -- the kind's mark, then the
+quiet gray -- and the log already wrapped it, so the renderer pads nothing on the right
+and cuts nothing.
 
-The margin and the box's width come from `log::box_margin`, which is `pub(crate)` for
-this reason: the renderer and the log must agree on where a box's own columns end, or the
-rules would fall outside the rows they separate and one side would be wider than the
-wheel answers for.
+`set_render --box_edge` is deliberately absent from this module: those columns are drawn
+exactly as the rest of the box, and the setting only decides where a wheel is the pane's
+(`log::hit`). An earlier version inset every row here by that much and the box looked
+like a narrower block floating in blank columns.
 
 ## shown_row
 

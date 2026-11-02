@@ -431,11 +431,6 @@ impl Panes {
         self.log.set_box_edge(columns);
     }
 
-    /// The columns a box leaves to its pane on each side.
-    pub fn box_edge(&self) -> usize {
-        self.log.box_edge()
-    }
-
     pub fn line(&mut self, name: &str, kind: LineKind, text: impl Into<String>) {
         self.log.push(name, kind, text);
     }

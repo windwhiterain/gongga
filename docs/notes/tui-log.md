@@ -372,26 +372,23 @@ had.
 
 ## Log::set_box_edge
 
-`set_render --box_edge <columns>`: how much of its window each side of a box gives
-back to the pane. The operator's idea, and a reaction to the wheel: once an opened
-item no longer hands the wheel to the pane at the end of its travel, a pointer that is
-over a box covering the window has no way to scroll the window at all. A margin is that
-way, and it is a *width the operator sets* rather than a constant in this crate: `0` is
-a box drawn edge to edge, and every other number is a strip on each side of a box whose
-wheel is the pane's. Its starting value is `protocol::DEFAULT_BOX_EDGE` (2): at `0` the
-only column of the window outside a box is the spare one the log never draws in, on the
-right, so the wheel appeared to scroll the window on one side only.
+`set_render --box_edge <columns>`: how many of a box's own columns at each side scroll
+the window instead of the box. The operator's idea, and a reaction to the wheel: once an
+opened item no longer hands the wheel to the pane at the end of its travel, a pointer
+over a box that covers the window has no way to scroll the window at all.
 
-It is the same number in two places, which is why it lives in one: the box is laid out
-at the window's width less twice the margin (`Log::inner_width`), and the renderer draws
-it that far in from each edge. `box_margin` is `pub(crate)` for the second of those, and
-it clamps -- a margin wider than the window would be a box with no rows, which is not a
-shape a frame may draw.
+It is a *region*, never a layout. The first version of this narrowed the box and drew
+blanks in the columns it had taken -- the operator's reaction was immediate and correct:
+"I asked you to make the edge scroll the outer window, not to render nothing there". A
+box is drawn at the window's full width, its rules to both ends, and `box_edge` only
+says which of those columns `log::hit` answers `None` for. So `box_margin` is used by
+`hit` alone, and setting the number lays nothing out: no reflow, no re-index, no
+`Ledger` field to keep stale.
 
-A margin is a shape, like a width, so a ledger remembers the one it was laid out with
-(`Ledger::edge`) and the next frame finds it stale the way it finds a width stale:
-`lay_out` reflows every hot block of that window and reads the cold ones back, then
-re-derives the row index. Setting it costs one layout per window, not one per frame.
+Its starting value is `protocol::DEFAULT_BOX_EDGE` (2), because `0` had a trap in it: the
+log is drawn one column short of its pane, so at `0` the only column of the window
+outside a box is that spare column on the right, and the wheel appeared to reach the
+window on one side only. `0` remains a setting for a box drawn with nothing reserved.
 
 ## Log::set_block_size
 

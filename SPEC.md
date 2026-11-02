@@ -145,8 +145,8 @@ for the first user message to a empty session, find all meta references recursiv
   - `del_sticky --name <name>`
   - `set_render [--block_size <n>](initial: 8) [--box_edge <n>](initial: 2)`:
     - `block_size`: max line count of non-output block, auto scroll.
-    - `box_edge`: columns an opened block leaves to the events on each side; those
-      columns, like its rules, scroll the events.
+    - `box_edge`: columns at each side of an opened block where the wheel scrolls the
+      events instead of the block; the block is drawn there like anywhere else.
   - `set_render_session --session <name> [--show <bool>]`
   - `connect_server [--ip <ip>](default: localhost) --port <port>`
   - `serve --port <port> [--home <path>](default: "~/.gongga")`

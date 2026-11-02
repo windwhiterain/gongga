@@ -113,12 +113,13 @@ the same rectangle the frame drew and cannot land on a cell it drew something el
 
 `item_at` answers the first question -- which block a press names, fold included.
 `box_at` answers the second: the same walk, and only an opened block's own content
-answers it. A box's rules and its margin are the window's edge rather than its content,
-and no other block has a scroll of its own, so all of them belong to the pane -- which
-is what an operator reaches the window with while a box covers most of it. It answered
-`Some` for every block at first, which made the wheel dead over every row of a window:
-a cell that is not a box's has to say so, or `scroll_at` ends on a block that cannot
-move. See `Log::set_box_edge` for the width of that margin and why it is a setting.
+answers it. A box's rules are the window's edge rather than its content, the outermost
+`box_edge` columns of a box are the window's by the operator's choice, and no other
+block has a scroll of its own -- so all of them belong to the pane, which is what an
+operator reaches the window with while a box covers most of it. It answered `Some` for
+every block at first, which made the wheel dead over every row of a window: a cell that
+is not a box's has to say so, or `scroll_at` ends on a block that cannot move. See
+`Log::set_box_edge`.
 
 `scroll_at` gives one notch to one thing, once. The box of an opened item takes it, and
 keeps it: there is no fall-through to the pane when the box runs out of travel, because

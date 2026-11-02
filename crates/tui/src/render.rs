@@ -766,36 +766,20 @@ fn draw_quota(f: &mut Frame, s: &Screen, area: Rect) {
 ///
 /// The box is two rules and no sides, so every row of it is the full width of the
 /// window and the label starts at the window's left edge, where the mark of every
-/// folded row starts. The scroll a box keeps is its rows: nothing here moves one.
-fn ruled_row(
-    kind: LineKind,
-    text: &str,
-    rule: crate::log::Rule,
-    width: u16,
-    edge: usize,
-) -> Line<'static> {
+/// folded row starts. The scroll a box keeps is its rows: nothing here moves one, and
+/// `box_edge` is not drawn here at all -- it is a region of the wheel, not a column
+/// the box gives up. See `docs/notes/tui-render.md`.
+fn ruled_row(kind: LineKind, text: &str, rule: crate::log::Rule, width: u16) -> Line<'static> {
     use crate::log::Rule;
-    if rule == Rule::Free {
-        return item_row(kind, text);
-    }
     let full = width as usize;
-    // The margin and the box's own width are the log's, so a rule cannot fall
-    // outside the rows it separates.
-    let margin = crate::log::box_margin(full, edge);
-    let inner = full.saturating_sub(2 * margin).max(1);
-    let body = match rule {
-        Rule::Free => Vec::new(),
-        Rule::Inside => item_row(kind, text).spans,
+    Line::from(match rule {
+        Rule::Free | Rule::Inside => item_row(kind, text).spans,
         Rule::Bottom => vec![Span::styled(
-            "\u{2500}".repeat(inner),
+            "\u{2500}".repeat(full),
             Style::default().fg(Color::Cyan),
         )],
-        Rule::Top => top_rule(kind, text, inner),
-    };
-    // One span of blanks in front: the columns the box gave back to its pane.
-    let mut spans = vec![Span::raw(" ".repeat(margin))];
-    spans.extend(body);
-    Line::from(spans)
+        Rule::Top => top_rule(kind, text, full),
+    })
 }
 
 /// The box's top rule: the item's label, then air and dashes to the box's width.
@@ -860,12 +844,11 @@ fn shown_row(
     shown: &Shown<'_>,
     rule: crate::log::Rule,
     width: u16,
-    edge: usize,
 ) -> Line<'static> {
     match shown {
         // Cloned: the frame outlives the borrow of the log it read.
         Shown::Styled(spans) => Line::from(spans.to_vec()),
-        Shown::Text(text) => ruled_row(kind, text.as_ref(), rule, width, edge),
+        Shown::Text(text) => ruled_row(kind, text.as_ref(), rule, width),
     }
 }
 
@@ -921,15 +904,13 @@ fn draw_rows(f: &mut Frame, s: &mut Screen, name: &str, area: Rect) {
     pane.anchor(area.height as usize, rows);
     let scroll = pane.scroll;
     let name = pane.name.clone();
-    // Read before the window, which borrows the panes for as long as it lives.
-    let edge = s.panes.box_edge();
     let window = s.panes.window(&name, width, area.height as usize, scroll);
     let max_scroll = window.max_scroll;
     // Cloned: the rows a frame draws cannot outlive the log they came from.
     let lines: Vec<Line> = window
         .rows
         .iter()
-        .map(|(kind, shown, rule)| shown_row(*kind, shown, *rule, width as u16, edge))
+        .map(|(kind, shown, rule)| shown_row(*kind, shown, *rule, width as u16))
         .collect();
     drop(window);
     let scroll = scroll.min(max_scroll);

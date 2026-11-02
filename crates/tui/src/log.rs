@@ -774,8 +774,6 @@ struct Ledger {
     cap: usize,
     /// The width `blocks` were last laid out at; 0 until a frame asks.
     width: usize,
-    /// The box margin they were laid out with, so a new margin is a new shape.
-    edge: usize,
 }
 
 /// One cell of a window, as the walk that answers a press and a wheel finds it.
@@ -843,22 +841,15 @@ const WALK: usize = 64;
 /// The rows of a block that fills every row it has.
 const NO_CAP: usize = usize::MAX;
 
-/// The columns one box takes out of each side of its window.
+/// How many of a box's own columns on each side belong to the wheel of the window.
 ///
 /// # Invariant
 ///
-/// Never more than leaves the box one column: an edge wider than the window is a
-/// box with no rows, and a frame is not allowed to draw nothing.
+/// A region, never a layout: the box is drawn at the window's full width either way,
+/// and these columns are only where a wheel is the pane's. Never more than leaves the
+/// box one column of its own. See `docs/notes/tui-log.md`.
 pub(crate) fn box_margin(width: usize, edge: usize) -> usize {
     edge.min(width.saturating_sub(1) / 2)
-}
-
-/// The width a block's rows are laid out at: a box gives `edge` columns each side.
-fn block_width(width: usize, edge: usize, boxed: bool) -> usize {
-    match boxed {
-        true => width.saturating_sub(2 * box_margin(width, edge)).max(1),
-        false => width.max(1),
-    }
 }
 
 /// The rows a block of `kind` may fill: the window's `cap`, else the log's.
@@ -949,8 +940,7 @@ impl Log {
             return;
         }
         let width = self.width_of(&entry.window);
-        let edge = self.edge;
-        materialize(&mut self.entries, &self.cache, at, width, edge);
+        materialize(&mut self.entries, &self.cache, at, width);
     }
 
     /// Writes one record about block `at`.
@@ -988,21 +978,13 @@ impl Log {
         self.reindex();
     }
 
-    /// How many columns a box leaves to its pane on each side.
+    /// How many of a box's own columns on each side scroll the window instead.
     ///
     /// # Invariant
     ///
-    /// A shape: the next frame lays every window out again. See
-    /// `docs/notes/tui-log.md`.
+    /// Nothing to lay out: the box is drawn at the window's full width either way.
     pub fn set_box_edge(&mut self, columns: usize) {
-        // No walk here: a ledger remembers the margin it was laid out with, so the
-        // next frame finds that shape stale the way it finds a width stale.
         self.edge = columns;
-    }
-
-    /// The columns a box leaves to its pane on each side.
-    pub fn box_edge(&self) -> usize {
-        self.edge
     }
 
     /// Caps one window's blocks whatever the log-wide cap says: the command line's
@@ -1080,15 +1062,6 @@ impl Log {
     /// The cap a window puts on its own blocks, or 0 for the log's.
     fn cap_of(&self, window: &str) -> usize {
         self.views.get(window).map(|ledger| ledger.cap).unwrap_or(0)
-    }
-
-    /// The width the block at `at` is laid out at: its own rows, a box's margin
-    /// taken out of both sides.
-    fn inner_width(&self, at: usize) -> usize {
-        match self.entries.get(at) {
-            Some(entry) => block_width(self.width_of(&entry.window), self.edge, entry.boxed()),
-            None => 0,
-        }
     }
 
     /// The width this window's blocks are laid out at; 0 until a frame asks.
@@ -1214,7 +1187,7 @@ impl Log {
         };
         self.touch(at);
         let before = self.contributions(at);
-        let width = self.inner_width(at);
+        let width = self.width_of(&self.entries[at].window);
         let entry = &mut self.entries[at];
         match &mut entry.source {
             // An answer's text is derived, so what changed is the document.
@@ -1312,7 +1285,7 @@ impl Log {
         let before = self.contributions(at);
         self.entries[at].expanded = !self.entries[at].expanded;
         // Read after the flip: whether it is a box is what its own width depends on.
-        let width = self.inner_width(at);
+        let width = self.width_of(&self.entries[at].window);
         let entry = &mut self.entries[at];
         entry.reflow(width);
         // The beginning is 0, so this is also what a restored block reads as.
@@ -1449,7 +1422,7 @@ impl Log {
             entry.call = Some(head.clone());
             // A call's structure is complete independently of its result stream.
             entry.sealed = true;
-            self.inner_width(at)
+            self.width_of(&self.entries[at].window)
         };
         self.entries[at].reflow(width);
         let after = self.contributions(at);
@@ -1479,7 +1452,7 @@ impl Log {
         let before = self.contributions(at);
         self.entries[at].tag = tag.to_string();
         self.entries[at].kind = kind;
-        let width = self.inner_width(at);
+        let width = self.width_of(&self.entries[at].window);
         self.entries[at].reflow(width);
         let after = self.contributions(at);
         self.shift(at, before, after);
@@ -1529,7 +1502,7 @@ impl Log {
             Some(at) => {
                 self.touch(at);
                 let before = self.contributions(at);
-                let width = self.inner_width(at);
+                let width = self.width_of(&self.entries[at].window);
                 self.entries[at].append(text, width);
                 let after = self.contributions(at);
                 self.shift(at, before, after);
@@ -1593,7 +1566,7 @@ impl Log {
     /// text rather than the rows keeps this correct at a width nobody measured
     /// yet: `reflow` derives the rows from the trimmed text afterwards.
     fn trim_tail(&mut self, at: usize) {
-        let width = self.inner_width(at);
+        let width = self.width_of(&self.entries[at].window);
         let before = self.contributions(at);
         let entry = &mut self.entries[at];
         // An answer's text is derived from its document: the document is trimmed.
@@ -1622,7 +1595,7 @@ impl Log {
             return;
         }
         self.touch(at);
-        let width = self.inner_width(at);
+        let width = self.width_of(&self.entries[at].window);
         let before = self.contributions(at);
         self.entries[at].append(text, width);
         let after = self.contributions(at);
@@ -1663,7 +1636,6 @@ impl Log {
             views,
             cache,
             block_size,
-            edge,
             ..
         } = self;
         let Some(ledger) = views.get(window) else {
@@ -1723,9 +1695,8 @@ impl Log {
             }
         }
         // Rows on screen are the one thing a frame may pay a disk read for.
-        let edge = *edge;
         for block in &shown_blocks {
-            materialize(entries, cache, block.block, ledger.width, edge);
+            materialize(entries, cache, block.block, ledger.width);
         }
         let mut rows: Vec<Row<'_>> = Vec::with_capacity(end - start);
         for spot in &shown_blocks {
@@ -1919,7 +1890,7 @@ impl Log {
                 entry.call = call.clone();
                 entry.sealed = true;
                 entry.slot = Some(at);
-                entry.reflow(block_width(width, self.edge, entry.boxed()));
+                entry.reflow(width);
                 match ids.get(id).copied() {
                     Some(place) => {
                         let before = self.contributions(place);
@@ -1949,7 +1920,7 @@ impl Log {
 
     /// Appends to a block during a replay: no journal, because it came from one.
     fn append_quiet(&mut self, at: usize, text: &str) {
-        let width = self.inner_width(at);
+        let width = self.width_of(&self.entries[at].window);
         let before = self.contributions(at);
         self.entries[at].append(text, width);
         let after = self.contributions(at);
@@ -2040,28 +2011,25 @@ impl Log {
     /// laying the log out twice per frame. See `docs/notes/tui-log.md`.
     fn lay_out(&mut self, window: &str, width: usize) {
         let width = width.max(1);
-        let edge = self.edge;
         let blocks = {
             let Some(ledger) = self.views.get_mut(window) else {
                 return;
             };
-            if ledger.width == width && ledger.edge == edge {
+            if ledger.width == width {
                 return;
             }
             ledger.width = width;
-            ledger.edge = edge;
             // Taken out so the blocks can be laid out while the ledger is written.
             std::mem::take(&mut ledger.blocks)
         };
         for at in blocks.iter().copied() {
             if self.entries[at].hot() {
-                let inner = block_width(width, edge, self.entries[at].boxed());
-                self.entries[at].reflow(inner);
+                self.entries[at].reflow(width);
                 continue;
             }
             // Read back, counted at this width, and dropped again: the index
             // needs the rows, and only a resize asks for them.
-            materialize(&mut self.entries, &self.cache, at, width, edge);
+            materialize(&mut self.entries, &self.cache, at, width);
             self.entries[at].drop_body();
         }
         if let Some(ledger) = self.views.get_mut(window) {
@@ -2093,7 +2061,7 @@ struct ShownBlock {
 /// drawing: a body is a function of the text and that width, so what comes back has
 /// the rows the index was already counting. A record that cannot be read leaves the
 /// block as it is rather than inventing an empty one. See `docs/notes/tui-cache.md`.
-fn materialize(entries: &mut [Entry], cache: &Cache, at: usize, width: usize, edge: usize) {
+fn materialize(entries: &mut [Entry], cache: &Cache, at: usize, width: usize) {
     let Some(entry) = entries.get(at) else {
         return;
     };
@@ -2107,7 +2075,7 @@ fn materialize(entries: &mut [Entry], cache: &Cache, at: usize, width: usize, ed
     let place = entry.at;
     let Some(mut fresh) = cache
         .read(&window, slot)
-        .and_then(|record| whole(record, &window, width, edge))
+        .and_then(|record| whole(record, &window, width))
     else {
         return;
     };
@@ -2125,7 +2093,7 @@ fn materialize(entries: &mut [Entry], cache: &Cache, at: usize, width: usize, ed
 /// eviction dropped. A `Delta` is the tail of a block and stands for nothing: it
 /// answers `None` rather than a block missing its head. See
 /// `docs/notes/tui-cache.md`.
-fn whole(record: Record, window: &str, width: usize, edge: usize) -> Option<Entry> {
+fn whole(record: Record, window: &str, width: usize) -> Option<Entry> {
     let (id, kind, tag, key, text, expanded, call) = match record {
         Record::Seal {
             id,
@@ -2147,6 +2115,6 @@ fn whole(record: Record, window: &str, width: usize, edge: usize) -> Option<Entr
     entry.call = call;
     // A line arrives whole and a seal ends a stream: both are scrollback.
     entry.sealed = true;
-    entry.reflow(block_width(width, edge, entry.boxed()));
+    entry.reflow(width);
     Some(entry)
 }
