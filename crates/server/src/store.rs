@@ -970,8 +970,12 @@ impl Store {
             .optional()?
         };
         let Some(text) = row else { return Ok(None) };
-        match serde_json::from_str(&text) {
-            Ok(layout) => Ok(Some(layout)),
+        match serde_json::from_str::<crate::prefix_cache::Layout>(&text) {
+            // Both lookups are derived: reading the row is what rebuilds them.
+            Ok(mut layout) => {
+                layout.reindex();
+                Ok(Some(layout))
+            }
             Err(e) => {
                 tracing::warn!(error = %e, "the stored prefix layout is not readable");
                 Ok(None)

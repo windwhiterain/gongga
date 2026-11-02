@@ -94,6 +94,17 @@ it would re-bill the transcript behind it. `{{entries}}` is the whole body, so t
 the entries arrive in is `prefix_cache`'s rather than the template's: a reader who
 reorders that text is reordering a cache, not a document.
 
+## REVISION
+
+What introduces a patch for an entry of the index that has changed since it was sent:
+`@@`-headed hunks, each under the spelling it corrects. `{{revisions}}` is the whole
+body, in the order the entries are emitted.
+
+Deliberately absent from `REQUIRED`. A home pinned before this template existed has an
+index and no use for a patch, and refusing to start over prose it may not need is the
+wrong trade; `Agent::index_tolerance` asks whether the template is there and stops
+patching when it is not -- the same answer a tolerance of `0` gives.
+
 ## dynamic_tail
 
 The session's start card: name, the harness and the commit it runs, the minute of the

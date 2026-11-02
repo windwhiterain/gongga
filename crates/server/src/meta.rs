@@ -94,13 +94,6 @@ pub struct Root {
     pub content: String,
 }
 
-impl Root {
-    /// The entry as the index carries it.
-    pub fn text(&self) -> String {
-        format!("{}\n{}", self.spelling, self.content)
-    }
-}
-
 /// The file a directory keeps its standing rules in.
 ///
 /// # Invariant

@@ -24,10 +24,7 @@ fn shared(store: &Store, session: &str) -> MutexGuard<'static, HashMap<String, L
         .unwrap_or_else(|e| e.into_inner());
     if !layouts.contains_key(session) {
         let layout = match store.prefix_layout(session) {
-            Ok(Some(mut layout)) => {
-                layout.reindex();
-                layout
-            }
+            Ok(Some(layout)) => layout,
             Ok(None) => Layout::new(),
             Err(e) => {
                 tracing::warn!(error = %e, session = %session, "the stored prefix layout cannot be read; starting empty");
@@ -44,31 +41,66 @@ fn shared(store: &Store, session: &str) -> MutexGuard<'static, HashMap<String, L
         .unwrap_or_else(|e| e.into_inner())
 }
 
-/// The digest that says "the same text as last time", for a caller's content.
-pub fn digest(text: &str) -> u64 {
+/// The digest that says "the same text as last time", for an item's text.
+fn digest(text: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     text.hash(&mut hasher);
     hasher.finish()
 }
 
+/// One thing a caller wants emitted, and what it says now.
+pub struct Wanted<'a> {
+    /// The name the caller knows it by, which may come to name other text later.
+    pub key: &'a str,
+    /// The text as it stands now.
+    pub text: &'a str,
+    /// What sending that text costs: tokens the provider counted, not bytes.
+    pub tokens: usize,
+}
+
+/// What to emit: each entry's name and the text to send under it, and the patches
+/// that catch up what changed.
+///
+/// # Invariant
+///
+/// The caller sends `entries` and appends `revisions` after them: a patch names the
+/// entry it belongs to, so the two lists stay one-to-one by name, never by position.
+#[derive(Debug, Default)]
+pub struct Plan {
+    pub entries: Vec<(String, String)>,
+    pub revisions: Vec<(String, String)>,
+}
+
 /// The cheapest order for `wanted`, learnt across what this session has emitted.
+///
+/// # Invariant
+///
+/// `tolerance` is the largest share of an entry's lines that may change and still be
+/// appended as a patch rather than re-sent: `None` makes edited text a new item.
 pub fn plan(
     store: &Store,
     session: &str,
     purpose: &str,
-    wanted: &[(&str, usize, u64)],
+    wanted: &[Wanted<'_>],
     rates: Rates,
-) -> Vec<String> {
+    tolerance: Option<f64>,
+) -> Plan {
     let mut layouts = shared(store, session);
     let Some(layout) = layouts.get_mut(session) else {
-        return Vec::new();
+        return Plan::default();
     };
-    let order = layout.plan(purpose, wanted, rates, crate::store::now_millis() as u64);
+    let planned = layout.plan(
+        purpose,
+        wanted,
+        rates,
+        tolerance,
+        crate::store::now_millis() as u64,
+    );
     if let Err(e) = store.save_prefix_layout(session, layout) {
         tracing::warn!(error = %e, session = %session, "the learnt prefix layout could not be written");
     }
-    order
+    planned
 }
 
 /// What a plan is priced at: the roster's rates, and how long a cache lasts.
@@ -119,12 +151,19 @@ pub struct Item {
     pub purpose: String,
     /// The name the caller knows it by, which may come to name other text later.
     pub key: String,
-    /// A digest of the bytes, which is what says "the same text as last time".
-    pub content: u64,
+    /// The text this item puts in its place: an edit within tolerance keeps the text
+    /// the provider holds.
+    pub text: String,
     /// One node per order this item has ended.
     nodes: Vec<NodeId>,
     /// What sending it costs: tokens the provider counted, not bytes estimated here.
     tokens: usize,
+}
+
+/// One entry whose text in the index is out of date, and the change since.
+struct Revision {
+    item: usize,
+    patch: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -151,6 +190,10 @@ pub struct Layout {
     /// `items`, so it is rebuilt rather than stored.
     #[serde(skip)]
     index: HashMap<(String, String, u64), usize>,
+    /// The item a name resolves to now, which is what an edited entry is measured
+    /// against.
+    #[serde(skip)]
+    named: HashMap<(String, String), usize>,
     nodes: Vec<Node>,
 }
 
@@ -159,12 +202,17 @@ impl Layout {
         Self::default()
     }
 
-    /// Rebuilds the lookup from `items`, for a layout that came off disk.
+    /// Rebuilds both lookups from `items`, for a layout that came off disk.
     pub fn reindex(&mut self) {
         self.index.clear();
+        self.named.clear();
         for (id, item) in self.items.iter().enumerate() {
-            self.index
-                .insert((item.purpose.clone(), item.key.clone(), item.content), id);
+            let name = (item.purpose.clone(), item.key.clone());
+            self.index.insert(
+                (item.purpose.clone(), item.key.clone(), digest(&item.text)),
+                id,
+            );
+            self.named.insert(name, id);
         }
     }
 
@@ -172,16 +220,17 @@ impl Layout {
     pub fn plan(
         &mut self,
         purpose: &str,
-        wanted: &[(&str, usize, u64)],
+        wanted: &[Wanted<'_>],
         rates: Rates,
+        tolerance: Option<f64>,
         now: u64,
-    ) -> Vec<String> {
+    ) -> Plan {
         // First, because everything after reads node indices.
         self.expire(now, rates.ttl_ms);
         let scale = rates.scale();
-        let ids = self.ids(purpose, wanted);
+        let (ids, revisions) = self.ids(purpose, wanted, tolerance);
         if ids.is_empty() {
-            return Vec::new();
+            return Plan::default();
         }
         // What sending all of it with nothing cached costs: the floor to beat.
         let mut best: f64 =
@@ -208,11 +257,44 @@ impl Layout {
                 tail = Some(self.add(id, tail, now));
             }
         }
-        let order = self.order(tail);
+        let entries = self.order(tail);
         // After the plan, never before: forgetting first would renumber the items
         // these ids name.
         self.forget_unwanted(purpose, &ids);
-        order
+        Plan {
+            revisions: self.place(&entries, revisions),
+            entries,
+        }
+    }
+
+    /// The revisions in the order their entries are emitted.
+    ///
+    /// # Invariant
+    ///
+    /// A patch is appended in the order of the entries it belongs to, so one entry's
+    /// diff can never land under another entry's name.
+    fn place(
+        &self,
+        entries: &[(String, String)],
+        revisions: Vec<Revision>,
+    ) -> Vec<(String, String)> {
+        let at: HashMap<&str, usize> = entries
+            .iter()
+            .enumerate()
+            .map(|(at, (key, _))| (key.as_str(), at))
+            .collect();
+        let mut placed: Vec<(usize, String, String)> = revisions
+            .into_iter()
+            .filter_map(|revision| {
+                let key = self.items[revision.item].key.clone();
+                at.get(key.as_str()).map(|at| (*at, key, revision.patch))
+            })
+            .collect();
+        placed.sort_by_key(|(at, _, _)| *at);
+        placed
+            .into_iter()
+            .map(|(_, key, patch)| (key, patch))
+            .collect()
     }
 
     /// Each chain's cost to send, and `None` for a chain that cannot be sent now.
@@ -272,34 +354,57 @@ impl Layout {
     }
 
     /// The item ids `wanted` names, in its order, declaring what is new.
-    fn ids(&mut self, purpose: &str, wanted: &[(&str, usize, u64)]) -> Vec<usize> {
+    ///
+    /// # Invariant
+    ///
+    /// An entry whose text changed keeps the item the provider already holds when the
+    /// change fits `tolerance`: its chain stays a candidate and the patch is appended
+    /// last, where a change costs the tail rather than the prefix.
+    fn ids(
+        &mut self,
+        purpose: &str,
+        wanted: &[Wanted<'_>],
+        tolerance: Option<f64>,
+    ) -> (Vec<usize>, Vec<Revision>) {
         let mut ids: Vec<usize> = Vec::with_capacity(wanted.len());
+        let mut revisions: Vec<Revision> = Vec::new();
         let mut restated = false;
-        for &(key, tokens, content) in wanted {
+        for want in wanted {
+            let content = digest(want.text);
+            let name = (purpose.to_string(), want.key.to_string());
             let id = match self
                 .index
-                .get(&(purpose.to_string(), key.to_string(), content))
+                .get(&(purpose.to_string(), want.key.to_string(), content))
             {
                 Some(&id) => {
-                    if self.items[id].tokens != tokens {
-                        self.items[id].tokens = tokens;
+                    if self.items[id].tokens != want.tokens {
+                        self.items[id].tokens = want.tokens;
                         restated = true;
                     }
                     id
                 }
-                None => {
-                    let id = self.items.len();
-                    self.items.push(Item {
-                        purpose: purpose.to_string(),
-                        key: key.to_string(),
-                        content,
-                        nodes: Vec::new(),
-                        tokens,
-                    });
-                    self.index
-                        .insert((purpose.to_string(), key.to_string(), content), id);
-                    id
-                }
+                None => match self.warm(purpose, want, tolerance) {
+                    Some((id, patch)) => {
+                        if !patch.is_empty() {
+                            revisions.push(Revision { item: id, patch });
+                        }
+                        id
+                    }
+                    None => {
+                        let id = self.items.len();
+                        self.items.push(Item {
+                            purpose: purpose.to_string(),
+                            key: want.key.to_string(),
+                            text: want.text.to_string(),
+                            nodes: Vec::new(),
+                            tokens: want.tokens,
+                        });
+                        self.index
+                            .insert((purpose.to_string(), want.key.to_string(), content), id);
+                        self.named.insert(name, id);
+                        id
+                    }
+                },
             };
             if !ids.contains(&id) {
                 ids.push(id);
@@ -308,7 +413,27 @@ impl Layout {
         if restated {
             self.recost();
         }
-        ids
+        (ids, revisions)
+    }
+
+    /// The item a name already resolves to, and the patch that catches it up.
+    ///
+    /// # Invariant
+    ///
+    /// A tolerated entry is measured against the text the provider holds, which is
+    /// the item's own: never against a version this server did not send.
+    fn warm(
+        &self,
+        purpose: &str,
+        want: &Wanted<'_>,
+        tolerance: Option<f64>,
+    ) -> Option<(usize, String)> {
+        let tolerance = tolerance?;
+        let id = *self
+            .named
+            .get(&(purpose.to_string(), want.key.to_string()))?;
+        let patch = crate::diff::patch(&self.items[id].text, want.text, tolerance)?;
+        Some((id, patch))
     }
 
     /// Drops every item whose text is not in `ids`, and the chains through it.
@@ -457,14 +582,15 @@ impl Layout {
         }
     }
 
-    fn order(&self, tail: Option<NodeId>) -> Vec<String> {
-        let mut keys = Vec::new();
+    fn order(&self, tail: Option<NodeId>) -> Vec<(String, String)> {
+        let mut entries = Vec::new();
         let mut walk = tail;
         while let Some(node) = walk {
-            keys.push(self.items[self.nodes[node.0].item].key.clone());
+            let item = &self.items[self.nodes[node.0].item];
+            entries.push((item.key.clone(), item.text.clone()));
             walk = self.nodes[node.0].parent;
         }
-        keys.reverse();
-        keys
+        entries.reverse();
+        entries
     }
 }

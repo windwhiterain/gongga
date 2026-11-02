@@ -410,6 +410,24 @@ costs a read of the files the index already names and nothing else: a build that
 the stored row writes no row, and `prompt_in_force` compares before appending, so only a
 real edit re-bills the prefix. That re-bill is the price of the edit being true.
 
+An edit within `Agent::index_tolerance` does not rewrite the entry: `prefix_cache` keeps
+the item it already emitted and answers with that text plus a patch, and this is where
+the patch is spliced in -- one template after the index's own, each block under the
+spelling it corrects, so the two lists stay one-to-one by name. That is what keeps the
+edit's cost to the tail: the entry above is still the bytes the provider cached, and the
+change is said once, at the end. Without the `reference_revision` template nothing is
+patched and the entry is re-sent, because a patch nobody introduced is an unexplained
+second copy of the entry.
+
+An edit within `Agent::index_tolerance` does not rewrite the entry: `prefix_cache` keeps
+the item it already emitted and answers with that text plus a patch, and this is where
+the patch is spliced in -- one template after the index's own, each block under the
+spelling it corrects, so the two lists stay one-to-one by name. That is what keeps an
+edit's cost to the tail: the entry above is still the bytes the provider cached, and the
+change is said once, at the end. Without the `reference_revision` template nothing is
+patched and the entry is re-sent, because a patch nobody introduced is an unexplained
+second copy of the entry.
+
 Two facts are decided here and used everywhere after: the order (the cache's, not the
 message's) and `rooted`, the spellings the index carries. `meta::expand` leaves exactly
 those literal, and `commands::expand_message` reads them off the stored row -- for a
