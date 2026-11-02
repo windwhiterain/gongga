@@ -157,7 +157,7 @@ fn ordered(
     invalid: f64,
     ttl_ms: u64,
 ) -> Vec<Value> {
-    let rows: Vec<(String, Value)> = skills
+    let rows: Vec<(String, String, Value)> = skills
         .into_iter()
         .map(|skill| {
             // The path: two directories may declare one name.
@@ -168,30 +168,33 @@ fn ordered(
                 "path": skill.path.display().to_string(),
                 "bucket": skill.bucket,
             });
-            (key, row)
+            let text = row.to_string();
+            (key, text, row)
         })
         .collect();
-    // The tokens and their digest: an edited row is a new item.
+    // The tokens: what sending this row costs, from what the provider counted.
     let ratio = store.token_ratio(model);
     let rates = crate::prefix_cache::Rates {
         price,
         invalid,
         ttl_ms,
     };
-    let wanted: Vec<(&str, usize, u64)> = rows
+    let wanted: Vec<crate::prefix_cache::Wanted> = rows
         .iter()
-        .map(|(key, row)| {
-            let text = row.to_string();
-            let digest = crate::prefix_cache::digest(&text);
-            let tokens = (text.len() as f64 * ratio).round().max(1.0) as usize;
-            (key.as_str(), tokens, digest)
+        .map(|(key, text, _)| crate::prefix_cache::Wanted {
+            key: key.as_str(),
+            text: text.as_str(),
+            tokens: (text.len() as f64 * ratio).round().max(1.0) as usize,
         })
         .collect();
-    let order = crate::prefix_cache::plan(store, session, "skill table", &wanted, rates);
-    let mut by_key: HashMap<String, Value> = rows.into_iter().collect();
-    order
+    // No tolerance: a row is json, and a diff of one is not something a reader reads.
+    let planned = crate::prefix_cache::plan(store, session, "skill table", &wanted, rates, None);
+    let mut by_key: HashMap<String, Value> =
+        rows.into_iter().map(|(key, _, row)| (key, row)).collect();
+    planned
+        .entries
         .into_iter()
-        .filter_map(|key| by_key.remove(&key))
+        .filter_map(|(key, _)| by_key.remove(&key))
         .collect()
 }
 

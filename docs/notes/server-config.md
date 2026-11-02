@@ -97,6 +97,18 @@ Send the context notice once a request would carry more than this many input
 tokens. `0` disables the notice, which will eventually hit the provider's context
 limit.
 
+## AgentConfig::index_change_tolerance
+
+How much of an indexed entry's lines may change before the entry is re-sent instead of
+kept and patched. The default is the size of one edit a reader makes in one place: a
+paragraph, a rule, a row. `0` restores the old behaviour exactly -- any change to a file
+the index carries is a new item and a re-billed prefix.
+
+A share rather than a count of lines, because these files are of wildly different sizes
+and one file's paragraph is another file's whole content. What the share is compared
+against, and why the comparison is the larger of the removed and added lines, is
+`docs/notes/server-diff.md`.
+
 ## Config::load_with_home
 
 `--home` is the most specific thing the operator typed, and it also decides where

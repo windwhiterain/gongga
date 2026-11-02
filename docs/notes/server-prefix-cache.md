@@ -172,9 +172,54 @@ The cost is one item per revision rather than one per name, but only until the n
 plan: `forget_unwanted` runs every time, so a home that edits a skill daily holds one
 version of it, not thirty.
 
-A digest rather than the text itself: the layout is one SQLite row, and a skill body
-can be larger than everything else in it put together. The digest is the identity, the
-size is the cost, and the bytes stay where they live.
+The identity is a digest of the text, so two entries are the same item exactly when
+their bytes hash alike. The bytes are kept beside it as well, and that is what the next
+section is about: a patch is measured against the text the provider was actually sent.
+
+## tolerance: keep the node, append the change
+
+An edited file used to cost the whole index. New bytes, new item, the old item dropped
+with every chain through it -- so the request re-sent the entry *and* everything planned
+after it. What that throws away is the prefix, not the edit: measured against a real
+provider, an edit at one point of the instructions keeps everything before that point
+(inserting a node between two others kept 5120-5504 of ~10.6k input tokens), while one
+line appended at the end kept 98.6%. Where a change sits decides what it costs, and the
+end is the cheapest place there is.
+
+So an entry whose text changed is measured before it is replaced. `diff::patch` says how
+many of its lines the change touches; under the caller's tolerance the item *stays* --
+same identity, same nodes, so every chain that carried it is still a candidate -- and the
+plan answers with the text it already holds plus a patch to append after the whole index.
+The request keeps its prefix and pays for the change alone.
+
+Three things make that safe:
+
+- **The patch is verified.** `diff::patch` applies its own output back to the old text and
+  returns nothing when it does not reproduce the new one. A model reading a patch that
+  does not apply would act on text this machine does not hold: worse than a cache miss.
+- **The text is what was sent, not the file's last version.** An item keeps the text the
+  provider holds, so a second edit is a diff from *that*. Two small edits to one file
+  therefore append one patch that says both, and the entry above is stale by exactly what
+  the patch says -- never by what two separate patches would each say.
+- **The prose that introduces it is a template, and without it the tolerance is off.**
+  `Agent::index_tolerance` asks for `reference_revision` before allowing a patch, so a
+  home pinned before that template existed keeps indexing and re-sending exactly as it
+  did. Off is also the answer for a tolerance of `0`.
+
+What it costs is in the row: an item keeps its text rather than only a digest, because
+the next plan diffs against it. A skill body is the largest thing in a `prefix_layout`
+row, and carrying it is the price of being able to say what changed instead of saying
+everything again. A row written before this -- an item with a digest and no text -- does
+not parse, so every session plans cold once after the upgrade: one re-billed prefix, and
+the honest way to change what an item is.
+
+Two readings of "no change" are worth knowing. A text that differs only in its final
+newline measures zero changed lines, so the entry is kept and nothing is appended: to a
+reader the two are the same text. And a change of exactly the tolerance -- `0.2` of a
+five-line entry is one line -- is over it: the boundary falls on the side of re-sending.
+
+Only the prompt index asks for this. The skill table passes `None`: a row is json, and a
+diff of json is not something a reader reads.
 
 ## shared, plan: one layout per home, on disk
 
@@ -184,8 +229,10 @@ dies: one row in `prefix_layout`, read once into the process's mutex and written
 after every plan. A restart is a new process asking the same endpoint for the same
 bytes, and it has to plan from what the last run learnt or its first request is cold.
 
-`plan(store, wanted)` is the whole interface, deliberately: a caller hands over keys
-with sizes and gets an order back, and knows nothing about chains. `index_skill` and
+`plan(store, wanted, rates, tolerance)` is the whole interface, deliberately: a caller
+hands over keys with their text and sizes and gets an order back -- each entry with the
+text to send under it, plus the patches that catch up what changed. It knows nothing
+about chains, and nothing about which of its entries were kept as they were. `index_skill` and
 the first prompt row are the two callers so far, and they are different kinds of
 thing -- a tool result and a system prompt -- which is the point of the algorithm
 being generic. Callers namespace their own keys, because a key identifies bytes: the
@@ -255,8 +302,10 @@ card is not re-rendered at all. See `docs/notes/server-body.md`.
 
 ## the index is derived, not stored
 
-`Layout::index` maps `(key, digest)` to an item, and it is `#[serde(skip)]`: JSON has no
-tuple key, and the map is a lookup over `items` rather than a fact of its own. So the
-store holds the list and the chains, and `reindex` rebuilds the map when the row is
-read. That is also why `forget_unwanted` rebuilds it after renumbering: one writer for
-one map, and no way for the two to disagree.
+`Layout::index` maps `(key, digest)` to an item and `Layout::named` maps `(purpose, key)`
+to the item that name resolves to now; both are `#[serde(skip)]`, because JSON has no
+tuple key and both are lookups over `items` rather than facts of their own. So the store
+holds the list and the chains, and `reindex` rebuilds the pair -- `store::prefix_layout`
+calls it, so no caller can hold a layout whose maps disagree with its items. That is also
+why `forget_unwanted` rebuilds them after renumbering: one writer for one map, and no way
+for the two to disagree.
