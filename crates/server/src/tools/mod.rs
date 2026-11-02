@@ -38,7 +38,14 @@ pub struct ToolContext {
     /// on its remote. See `crate::session::Shells`.
     pub shells: Arc<StdMutex<Shells>>,
     /// The session's persistent Python interpreters, named like shells.
-    pub pythons: Arc<tokio::sync::Mutex<Option<crate::tools::python::PythonRepl>>>,
+    pub pythons: Arc<
+        tokio::sync::Mutex<
+            std::collections::HashMap<
+                String,
+                Arc<tokio::sync::Mutex<crate::tools::python::PythonRepl>>,
+            >,
+        >,
+    >,
     /// The connection this session's references are read through, when its
     /// directory is on a remote.
     pub reader: Option<Arc<crate::remote::Reader>>,
@@ -254,6 +261,8 @@ impl ToolRegistry {
                 Box::new(DelBashTool),
                 Box::new(ListBashTool),
                 Box::new(index_skill::IndexSkillTool),
+                Box::new(python::DelPythonTool),
+                Box::new(python::ListPythonTool),
             ],
         }
     }

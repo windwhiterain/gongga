@@ -8,10 +8,10 @@ The interpreter is a child process, not an embedded runtime: the server spawns
 travels as JSON, the model never has to put a program through shell quoting, and
 `read_file`/`write_file`/`replace` are ordinary Python calls inside the block.
 
-The driver keeps one namespace for the process, so imports, variables and open
-files survive between tool calls. A single expression is evaluated and its
-`repr` printed; any other block is executed. Standard output and standard error
-are captured separately and returned together.
+Each named interpreter keeps one namespace for its process, so imports,
+variables and open files survive between calls to that name. A single expression
+is evaluated and its `repr` printed; any other block is executed. Standard output
+and standard error are captured separately and returned together.
 
 ## Restart and timeout
 
@@ -30,8 +30,9 @@ PATH. `timeout_ms` and `max_output_chars` are the same knobs as bash's.
 
 ## Session state
 
-`SessionInner::pythons` holds the interpreter behind the same session that owns
-the shells, so two sessions never share a namespace and a dropped session drops
-the process (`kill_on_drop`). It is one interpreter per session; there are no
-named Python shells, because the namespace is the state a name would have to
-identify.
+`SessionInner::pythons` holds a map from name to interpreter, behind the same
+session that owns the shells. `python` defaults to `default`; another `name`
+starts a separate process, `list_python` reports the live ones (pid, program,
+cwd) and `del_python` takes names by regex and stops their processes, the same
+verbs `list_bash` and `del_bash` provide. A dropped session drops every process
+(`kill_on_drop`), so two sessions never share a namespace.
