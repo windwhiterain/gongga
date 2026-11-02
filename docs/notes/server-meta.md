@@ -113,13 +113,32 @@ commit, which is exactly the thing `prompts::REQUIRED` exists to prevent -- and 
 startup check caught it: a build whose pin did not yet carry the template refused to
 start rather than sending a prompt with a hole in it.
 
-## why the index is built once
+## which message's references reach the index
 
-`agent::index_of` runs only when there is no prompt row yet, and every later row copies
-what the first one decided. Growing the index later would be correct and expensive: it
-sits in front of the whole transcript, so adding a section re-bills everything behind
-it. A reference named in a later message is expanded inline as before -- the index is
-the first turn's, the row that follows is history.
+The index is rebuilt on every request (`agent::index_of`, see `server-agent.md`), so
+"when was this named" decides whether it is in there, and the answer is not the same
+for the three kinds. Measured against a fake provider (`.dev/index-reach/probe.sh`):
+
+| named in | `@file:` | `@skill:` |
+| --- | --- | --- |
+| the session's first user message | in the index, mention stays literal | in the index, mention stays literal |
+| a later message | in the index from the next rebuild on (one new prompt row) | expanded inline at delivery, so it is never in the index |
+| the `Context notice`, before it is even delivered | -- the queue is read too, so its `@skill:` joins at the next rebuild | same |
+
+One more row, because skills name each other: a root's own mentions are walked, so a
+first message naming `@skill:chain` whose body says `@skill:leaf` carries both bodies.
+That is what lets the shipped chapter `ship/skills/prefix-cache` be referenced from four
+other places without being copied into them.
+
+The asymmetry on `@skill:` is `expand`'s, not the index's: a mention whose spelling the
+index does not already carry is replaced by a line of metadata before it is stored, so
+the text that would have keyed an index entry is gone. `@file:` mentions are never
+replaced, which is why a later one still arrives.
+
+What a reader should take from this is a writing rule, not a limitation: name what the
+work needs in the first message. `ship/skills/prefix-cache` holds that rule, the
+spelling table, and the examples -- for a reader who is about to write a brief or a
+lesson.
 
 ## why the value is one word
 
