@@ -424,7 +424,6 @@ impl Agent {
         name: &str,
         model: &str,
         cwd: &std::path::Path,
-        note: Option<&str>,
     ) -> anyhow::Result<crate::store::Prompt> {
         let stored = self.store.prompt(id)?;
         let prompts = crate::prompts::shared();
@@ -461,20 +460,17 @@ impl Agent {
                 None => (None, Vec::new()),
             },
         };
-        let handover = note.map(|s| prompts.render("handover_preamble", &[("handover", s)]));
         let prompt = crate::store::Prompt {
             instructions,
             index,
             tail,
             rooted,
-            handover,
             // Where the request said the shell stood, which is the stored row's
             // answer once there is one: a later move is not a rewrite.
             cwd: stored
                 .as_ref()
                 .map(|kept| kept.cwd.clone())
                 .unwrap_or_else(|| Self::stated(&home)),
-            stamp: crate::store::stamp(note),
         };
         // Only the texts that go on the wire are compared; `cwd` is a record.
         if let Some(kept) = stored.clone().filter(|kept| !kept.rewritten_by(&prompt)) {
@@ -629,11 +625,10 @@ impl Agent {
             effort,
             cwd,
         } = *attempt;
-        let note = self.store.handover(id)?;
         let generation = self.store.context_generation(id)?;
         let phase_started = std::time::Instant::now();
         let definitions = self.tools.definitions();
-        let prompt = self.prompt_in_force(id, &name, llm.model(), cwd, note.as_deref())?;
+        let prompt = self.prompt_in_force(id, &name, llm.model(), cwd)?;
         phases.prompt_ms = phase_started.elapsed().as_millis() as u64;
         // Pinned here, so every retry of this request replays the window that was
         // current when it started.
@@ -655,7 +650,6 @@ impl Agent {
             &prompt.instructions,
             prompt.index.as_deref(),
             prompt.tail.as_deref(),
-            prompt.handover.as_deref(),
             &source,
             &definitions,
             effort,

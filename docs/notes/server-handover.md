@@ -17,11 +17,11 @@ The threshold still exists, because somebody has to notice. The judgement does n
 
 ## Why a script and not a tool
 
-A handover's destructive state changes are two statements:
+A handover's destructive state change is one statement:
 
 ```sql
-update sessions set handover = ?, context_tokens = 0 where id = ?;
 delete from messages where session_id = ?;
+update sessions set context_tokens = 0 where id = ?;
 ```
 
 The token reset also advances `context_generation` through a database trigger, so
@@ -35,6 +35,41 @@ interface; WAL makes a second writer safe.
 Measured, for the record: 100 external writes against the live server, 0
 `SQLITE_BUSY`. The script sets `busy_timeout` anyway, because the one write that
 must not fail is the fold.
+
+## the lesson is a message, not a column
+
+The first lesson used to be a column. `sessions.handover` held it, the server
+rendered it through a `handover_preamble` template, and `llm::build_head` put it in
+front of the transcript as an item that belonged to no row. Three consequences, all
+of them the same consequence:
+
+- It was a concept outside SPEC: a note the server knew about and no message was.
+- Its `@` references were neither indexed nor expanded. SPEC's prefix-cache
+  optimization starts from the prompt, walks what it names, and appends that to the
+  instructions -- and a column is not something the walk looks at. A lesson that said
+  `@file: docs/notes/plan.md` cost a turn to re-read a file the index could have
+  carried once.
+- The prose had to be taught to each new reader: which template, which lifetime,
+  which placeholder.
+
+It is one `send_message` now, from the script, to the session it just emptied -- the
+same command an operator would type. Everything the server already does for a
+message then applies: `expand_message` decides what stays literal, the row is
+appended at the next step boundary, and the *next* `prompt_in_force` finds the
+lesson's references with `meta::roots` and puts them in the index. The heir's first
+request is an empty session's first request, which is the case SPEC's `.agents`
+optimization is written for.
+
+`heir` sends it rather than inserting the row itself, and the reason is ordering: it
+runs *inside* the call it must keep, so a row inserted here would sit between that
+call and its result, which is a transcript no provider accepts. `send_message` from a
+shell whose turn is busy is queued as an `inject` row and delivered by
+`Store::deliver_pending` at the boundary where the row is allowed -- and it is
+`deliver_pending`'s own rule, not a second one.
+
+If the send fails the lesson is printed instead, and the command exits non-zero: the
+transcript is already empty, so that result is the only copy left. Losing it silently
+is the one unrecoverable failure this command has.
 
 ## Agent::maybe_notify_context
 
@@ -83,7 +118,7 @@ spending the context the tool exists to protect.
 
 Forty messages with their whole text is about 3k tokens, so the body is returned in
 full and there is no preview by default — this is the conversation, and it is what
-a handover note has to be written from.
+the heir's first lesson has to be written from.
 
 ## Why there is no partial fold
 
@@ -96,7 +131,7 @@ would orphan a `tool_result`, its advice named the boundary the note already
 covered, and the retry that followed folded the same prefix again -- the command
 reported *folded 756 row(s), 262 row(s) still sent* and nothing moved. The note
 grew on every no-op, so every later request carried a longer note than the one
-before it.
+before it, which is why a note is now one message the agent writes once.
 
 With the fold gone there is nothing to choose: a row is either here or in the
 mentor. The measurement is still reset by the handover (`context_tokens = 0`),
@@ -125,24 +160,24 @@ Four things make that acceptable rather than dangerous:
   `tool_call`, and its result can only exist after the process returns. Deleting the
   call would leave that result at the head of the next request, and a provider rejects
   an output whose call is absent -- the whole transcript would fail to send, forever.
-  So the call stays, the archive gets the result that closes it, and the
-  instruction the emptied session needs is **not injected as a forged user turn**: it
-  is the text this command prints, which arrives as that call's result.
+  So the call stays, the archive gets the result that closes it, and the instruction
+  the emptied session needs comes with that result: the text this command prints. The
+  lesson itself is a message of its own, sent from here, so it is a row the server
+  delivers rather than a second kind of prose.
 - **The mentor is answered too.** The archive holds the learner's `tool_call`, so the
   script appends the `tool_result` that closes it, and that row is what tells the
   mentor what it has become: read when asked, answer when asked, fold nothing of its
   own -- the notice template repeats the same branch, because a mentor can hit a
   threshold too.
 - **Seq restarts when nothing is kept.** `seq` is `max(seq)+1` over the rows that
-  exist. When an operator empties a session from a shell there is no call in flight,
-  every row goes, and the next one is seq 1. There is nothing to record about where
-  the note ends: every row that is here is sent, so a session that was emptied sends
-  its note and whatever came after it.
+  exist. When `heir` runs from outside a turn there is no call in flight, every row
+  goes, and the next one -- the lesson -- is seq 1. Nothing records where a note
+  ends, because there is no note: what is here is what is sent.
 
 ## the handover is also a row
 
 The script writes one `events` row per handover -- mechanism, mentor, rows moved,
-the seq it covers, the call left in flight, the note's size, and the size the
+the seq it covers, the call left in flight, the lesson's size, and the size the
 context was measured at -- in the same transaction as the action. Nothing reads it
 to decide what to send: it exists so "how many times did this session compact" is
 a count instead of an inference from two columns and a mentor's name, and so a
@@ -158,7 +193,7 @@ a row*.
 
 The difference is who acts and when. A config reload rewrites the past without being
 asked, mid-conversation, invisibly. `heir` is asked, by the agent that owns the context,
-in one step where it also writes the note the next step will run on, and it names the
+in one step where it writes the lesson the next step will run on, and it names the
 archive it just made. The server's hands stay off the transcript either way -- which is
 why this is a script and not a tool: the tool surface is what the server will do to you,
 and the shell is what you chose to do.
@@ -178,9 +213,11 @@ row is what tells them apart.
 
 ## What the server still owns
 
-Reading the note stays in Rust: `Store::handover` feeds the request, and
-`history_item_to_input` puts it in front of the transcript. Writing one has no method
-at all: a fold is the skill issuing its own `DELETE FROM messages` over the same
-database.
+Nothing here. There is no note to read, no preamble to render and no item to put in
+front of the transcript: a lesson is a message, and a message is a row. The server's
+whole share is the threshold above -- `Agent::maybe_notify_context` -- plus the
+`deliver_pending` rule that decides when a queued message may be appended. Writing
+one has no method at all: a handover is the skill issuing its own
+`DELETE FROM messages` over the same database.
 That is the invariant in code form: **this server never compacts.** Deleting rows is not in this file's vocabulary at all;
 the only `DELETE FROM messages` that touches a session's own rows is in the skill.

@@ -208,7 +208,7 @@ impl LlmClient {
         }
     }
 
-    /// Streams one model request; `handover`, when present, is sent first.
+    /// Streams one model request.
     ///
     /// # Invariant
     ///
@@ -224,7 +224,6 @@ impl LlmClient {
         instructions: &str,
         index: Option<&str>,
         tail: Option<&str>,
-        handover: Option<&str>,
         source: &RequestSource,
         tools: &[ToolDefinition],
         effort: Option<&str>,
@@ -232,7 +231,7 @@ impl LlmClient {
     ) -> mpsc::Receiver<LlmEvent> {
         let (tx, rx) = mpsc::channel(256);
         let build_started = Instant::now();
-        let head = self.build_head(instructions, index, tail, handover, tools, effort);
+        let head = self.build_head(instructions, index, tail, tools, effort);
         // Owned, because the attempt below records it after this body is gone.
         let effort_sent = effort.map(str::to_string);
         let build_head_ms = build_started.elapsed().as_millis() as u64;
@@ -391,7 +390,6 @@ impl LlmClient {
         instructions: &str,
         index: Option<&str>,
         card: Option<&str>,
-        note: Option<&str>,
         tools: &[ToolDefinition],
         effort: Option<&str>,
     ) -> Vec<u8> {
@@ -456,24 +454,12 @@ impl LlmClient {
         head.pop();
         head.push_str(",\"input\":[");
         // SPEC's card: one message after the system prompt and before the first user
-        // message, so it goes in first -- ahead of the note, which is also one.
+        // message, so it goes in first.
         if let Some(card) = card.filter(|card| !card.is_empty()) {
             head.push_str(
                 &json!({
                     "role": "user",
                     "content": [{"type": "input_text", "text": card}],
-                })
-                .to_string(),
-            );
-            head.push(',');
-        }
-        // The note is the array's first message after the card, so the transcript
-        // never displaces it.
-        if let Some(note) = note {
-            head.push_str(
-                &json!({
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": note}],
                 })
                 .to_string(),
             );

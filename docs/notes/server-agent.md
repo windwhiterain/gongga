@@ -317,7 +317,7 @@ The prose a session sends is read from the config as it is *now* -- the instruct
 verbatim, the notes rendered -- compared with the stored row, and appended only when it
 differs. So the row always holds
 exactly what the last request carried, and an edit is in effect on the very next
-step: a template, a handover note, a directory.
+step: a template, an edited file the index names, a directory.
 
 The earlier rule kept the store's row and only re-rendered at a boundary -- the first
 step of a turn, a moved note, a changed directory -- so a template edit waited for the

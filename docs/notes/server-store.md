@@ -15,9 +15,8 @@ if that stops being true the fix is `spawn_blocking`, not a redesign.
 ## Prompt::rewritten_by
 
 One rule decides whether a request needs a new prompt row, and it is the only place
-that decision is made: compare what a request *sends*. `instructions`, `index`, `tail`
-and `handover` go on the wire; `cwd` and `stamp` are records of where the turn happened
-and what the note was.
+that decision is made: compare what a request *sends*. `instructions`, `index` and
+`tail` go on the wire; `cwd` is a record of where the turn happened.
 
 The distinction is not cosmetic. A live home wrote nine prompt rows in ninety seconds
 with `cwd` the only difference -- the shell had moved, and a move is not prose. Every
@@ -123,13 +122,13 @@ This doc comment used to carry three overlapping openings (`Loads the transcript
 in the order the model should see it`, the note replacement rule, and the
 fact that no writer exists). The surviving statements:
 
-A handover note, once written, stands in for everything that is no longer here, so
-that is all a request needs. The server never deletes a row: only the `heir` skill
-does, and only after it has copied every row into a mentor and compared the copy
-row for row.
+What a handover leaves is the rows that came after it -- nothing stands in for the
+part that is gone, because it is not gone from the mentor. The server never deletes
+a row: only the `heir` skill does, and only after it has copied every row into a
+mentor and compared the copy row for row.
 
-Production code always has a lower bound (a note), and a method nobody calls is a
-second way to ask the same question.
+Production code always has a lower bound, and a method nobody calls is a second way
+to ask the same question.
 
 ## pictures in a row
 
@@ -150,9 +149,8 @@ it.
 The cost, stated plainly: **the file is the state**. If the working directory is
 cleaned, the branch is switched, or the temp file is deleted, the replay is
 missing that picture. `crates/server/src/llm.rs` degrades it to a sentence naming
-the path instead of failing the request, and a fold writes "an image was
-shown here: <path>" into the note, so the model is never reasoning on as if it
-had seen something that is now gone.
+the path instead of failing the request, so the model is never reasoning on as if
+it had seen something that is now gone.
 
 ## MessageRow::parse — builtin_call
 
@@ -243,11 +241,6 @@ A gap in `seq` cannot happen today -- `append_message` is the only writer and ro
 go only with their session -- so this pins the query's contract rather than a bug
 that was seen.
 
-## Store::message_index
-
-A fold needs the seqs to decide where the note may take over, not just the
-contents.
-
 ## Store::set_usage_for_generation
 
 Called with the token counts from `usage`, never with a computed one: the provider
@@ -269,27 +262,21 @@ not overwritten with a transcript that no longer exists.
 as the share SPEC's title shows: the share is that count divided by this one, so
 keeping the pair keeps the division possible and reversible.
 
-## Prompt, stamp, prompt, append_prompt
+## Prompt, prompt, append_prompt
 
 A request is built from three things, and only two of them were durable: the rows,
-and the model's own answers. The prose -- the instructions and the handover note --
-was rendered fresh before every request and kept nowhere, so the database could not
-say what the model had actually been told. `Prompt` is that missing piece: the
-rendered instructions with the project's rules already joined, the rendered handover
-note, the directory the rules were read from, and a stamp of the note it was rendered
-from. It is written as a `system` row, and `Store::prompt` returns the newest one.
-
-The stamp is why the check is cheap. Comparing prose means rendering it, which means
-reading the config and two rule files; comparing a hash of the note says whether a
-fold happened without touching any prose. So a step that stores nothing re-renders
-nothing -- which is the rule this module exists to enforce: what is in the database is
-what was sent, and nothing re-decides it later.
+and the model's own answers. The prose was rendered fresh before every request and
+kept nowhere, so the database could not say what the model had actually been told.
+`Prompt` is that missing piece: the rendered instructions with the project's rules
+already joined, the index behind them, the start card, and the directory the rules
+were read from. It is written as a `system` row, and `Store::prompt` returns the
+newest one.
 
 `system` is excluded from history the way `notice` is -- it *is* the prompt, and
 appending it as a row inside the transcript would send the instructions twice -- but
-`messages_between` shows it, described: how many characters, with or without a note,
-read from which directory. An operator reading a session back should see that the
-prompt changed and where, without a 10k-character row in the middle of the dialogue.
+`messages_between` shows it, described: how many characters, read from which
+directory. An operator reading a session back should see that the prompt changed and
+where, without a 10k-character row in the middle of the dialogue.
 
 ## Store::add_pending_task
 
