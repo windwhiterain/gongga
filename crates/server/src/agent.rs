@@ -461,11 +461,12 @@ impl Agent {
             // old row keeps the old one, which is what "already sent" means.
             Some(kept) if !moved => kept.tail.clone(),
             _ => Some(prompts.render(
-                // Two shapes, two templates: a card that told every session about a
-                // peer would be wrong for every session that has none.
-                match remote {
-                    Some(_) => crate::prompts::TAIL_REMOTE,
-                    None => crate::prompts::TAIL,
+                // One shape per fact a card states, because a template has no
+                // conditional: where the workspace is, and whether its path is known.
+                match (remote, here.is_empty()) {
+                    (Some(_), false) => crate::prompts::TAIL_REMOTE,
+                    (Some(_), true) => crate::prompts::TAIL_REMOTE_UNSTATED,
+                    (None, _) => crate::prompts::TAIL,
                 },
                 &[
                     ("session", name),

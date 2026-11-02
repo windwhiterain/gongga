@@ -316,7 +316,9 @@ would reach for `bash`, and find out by failing. It is a second template now,
     machine's shell; `bash` is this one's.
 
 Two templates rather than one with a clause: a template has no conditional, and a
-session on this machine must keep the bytes it has already sent. The name comes from
+session on this machine must keep the bytes it has already sent. A third,
+`dynamic_tail_remote_unstated`, is the peer with no directory named -- see
+`docs/notes/server-prompts.md`. The name comes from
 `Shells::remote_name`, the same field `target` is answered with, so the card cannot
 describe a machine the shells are not on. A prompt row also records the peer it was
 written for (`Prompt.remote`), so `--remote none` in the directory the session left is

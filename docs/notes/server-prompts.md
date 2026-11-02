@@ -127,10 +127,17 @@ tell a model whether a path is this machine's or the remote's, and the wrong gue
 than one with a conditional, for two reasons: `substitute` has no conditionals by
 design, and a session on this machine keeps exactly the bytes it already sent.
 
+A third template, `dynamic_tail_remote_unstated`, is the peer with no directory known:
+naming one is optional (`--cwd` belongs to the peer), and a session's first card is the
+one it keeps -- `moved` deliberately does not rewrite a row whose recorded directory is
+empty, because the shell reporting where it started is not a move. Without that shape
+the default setup of a remote session would send "in ``" for the life of the session.
+
 Which one is chosen is the machine the shells are on (`Prompt.remote`, read from
-`Shells::remote_name`), and the row records it. That record is why `--remote none` in
-the directory the session left is a move: `Prompt::rewritten_by` compares the texts, but
-the *choice* of template is decided by a value that has to be recorded to be compared.
+`Shells::remote_name`) and whether a directory is known, and the row records the machine.
+That record is why `--remote none` in the directory the session left is a move:
+`Prompt::rewritten_by` compares the texts, but the *choice* of template is decided by a
+value that has to be recorded to be compared.
 
 ## substitute
 
