@@ -285,3 +285,12 @@ components over 255 characters. A shorter slug is not a smaller budget.
 `is_alphanumeric` is Unicode-aware, which is the whole point: it keeps the CJK
 and accented text a description is likely written in, while still rejecting `/`, `:`
 and spaces.
+
+## check_bash's wait
+
+`check_bash` owns unread output, so waiting for background jobs belongs here
+rather than in a separate `wait_bash`: the call waits while the shell's job count
+is non-zero, then reads the same pending buffer it always reads. `wait_ms` is a
+ceiling on the tool call, not on the jobs: on timeout the output so far is
+returned and the jobs keep running. A cancelled turn stops the wait and leaves
+them running. `detached` processes have no shell to wait on and are not included.
