@@ -11,6 +11,27 @@
 - track your WIP under (notes)[.agents/notes/].
 
 ## Verification
+
+### Invariant：门禁必须真的跑过
+
+**任何一道检查存在，就必须在它守的那一步真的跑过；跑过的证据是退出码，不是"应该没问题"。**
+
+- **不许关 hook。** 不用 `git -c core.hooksPath= commit`、不用 `--no-verify`、不删
+  `scripts/hooks/`。觉得 hook 太慢、太吵、和这次改动无关时，先读它为什么在那儿；
+  它拦的正是你以为无关的那一类。
+- **hook 只在它认得的路径上生效。** `pre-commit` 只在这次提交动了 `ship` 或
+  `crates/server/ship.toml` 时才判 pin；`ship/` 里的提交是子模块自己的 git，外层 hook
+  看不见。所以"子模块已提交、还没发布"这个中间态要自己盯着：`scripts/ship.sh --check`
+  的退出码是契约（0 一致 / 1 真漂移 / 3 远端没应答），`--check` 不是可选项。
+- **报"做完了"之前，这一轮的每一道门都要有一次真实的执行**：`cargo build`、
+  `cargo fmt --check`、`comments-check`（对着**基线**比，别只看总数）、
+  `test-layout-check`、`scripts/skill_contract.sh`、`scripts/ship.sh --check`，
+  以及单测够不着时的 L3 真进程脚本。没跑就说没跑，跑红了就说红了。
+- **不能只凭"代码看起来对"结案。** 同一类结论至少要有一个可复现的观测：真帧、真进程、
+  真 sqlite 行、`exit=N`、`sha`。这一轮就吃过教训——我为了省一次网络往返关掉了
+  `pre-commit`，于是把一个"pin 指向未发布 commit"的提交记了进去；hook 一直是好的，
+  是我没让它跑。
+
 - tests layout: 
   ```
   cargo install --git https://github.com/windwhiterain/test-layout.git test-layout-check --locked
