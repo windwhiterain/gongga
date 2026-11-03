@@ -93,30 +93,6 @@ nothing could ever hit, growing a branch per session and paying a scan for each.
 `del_session` deletes that session's row: a new session of the same name is a new
 conversation, and must not be warmed by the old one.
 
-## Carried rows: the transcript's own nodes
-
-The layout described only what this module orders -- the index -- and the request is
-mostly something else. So `plan` now takes `carried`: one entry per transcript row the
-request will send, in the order it sends them. They become items under the purpose
-`request tail`, pinned (`Item::pinned`), chained after the index chain, and **touched on
-every request**: the provider holds the prefix through each of them again, and only a
-node can say when.
-
-Three consequences, each of them a bug the missing nodes caused:
-
-- `Node::size` now reaches the end of the request, so the chain the plan chooses is
-  priced against what actually goes on the wire.
-- `expire` prunes a prefix that really did expire: a session idle past its tier's
-  lifetime has no warm node at all, transcript included, instead of an index chain that
-  looks alive while the provider holds nothing.
-- The framing is honest about what a request is: an ordering the plan chooses, and a
-  history appended behind it.
-
-A pinned item is never emitted by this module (`order` skips it), never a candidate
-(`cold_chains` allows any chain carrying one), and never part of `sequence` -- that
-question is about the index, and a transcript that grew a row must not change its answer.
-Rows come from `Store::sendable_rows`, the same filter the request walk uses.
-
 ## Layout::last
 
 The ids of the last emission, in order -- not a node, because the question it answers is

@@ -616,32 +616,11 @@ impl Agent {
             following_tokens: measured.saturating_sub(wanted.iter().map(|want| want.tokens).sum()),
             ..self.rates(model)
         };
-        // Every row this request carries, behind the index: the provider holds each
-        // prefix through them, and only a node can record that it did.
-        let upto = self.store.last_seq(id).unwrap_or(0);
-        let carried: Vec<(String, usize)> = self
-            .store
-            .sendable_rows(id, upto)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(seq, chars)| {
-                let tokens = (chars as f64 * self.store.token_ratio(model)).round() as usize;
-                (seq.to_string(), tokens)
-            })
-            .collect();
-        let carried: Vec<crate::prefix_cache::Carried<'_>> = carried
-            .iter()
-            .map(|(key, tokens)| crate::prefix_cache::Carried {
-                key: key.as_str(),
-                tokens: *tokens,
-            })
-            .collect();
         let planned = crate::prefix_cache::plan(
             &self.store,
             name,
             "prompt index",
             &wanted,
-            &carried,
             rates,
             self.index_tolerance(),
         );
