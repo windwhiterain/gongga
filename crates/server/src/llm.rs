@@ -613,6 +613,10 @@ pub enum LlmEvent {
     Reasoning {
         item_id: String,
         /// The provider's own item, replayed as it came; see `docs/notes/server-llm.md`.
+        ///
+        /// # Invariant
+        ///
+        /// Whole, never narrowed: a field dropped here is a field no request can send.
         item: serde_json::Value,
         /// The readable thought, for the reader only.
         summary: String,

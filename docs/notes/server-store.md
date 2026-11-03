@@ -440,3 +440,39 @@ has been told about", and it survives a restart that a broadcast subscriber woul
 not. `finish_turn` clears the counter and pushes the marker past the transcript
 whenever a turn ends *not* in error, which is what makes a later failure a new
 episode. See `server-monitor.md`.
+
+## Comments moved out of the code
+
+The comment checker holds a preamble to 120 characters and an `# Invariant` to 400,
+so the argument behind a short claim lives here. Nothing below is new policy; it is
+the text those comments used to carry.
+
+**`keep_streamed` (`settle_handover`'s neighbour).** Both an answer and a thought are
+kept as the rows a request is built from: a thought the model wrote is context it
+should read back. A half thought carries no `encrypted_content` — it never arrived —
+and that is accepted: measured, a reasoning item whose text is all it has answers 200.
+Both kinds are appended last, so nothing lands between a `function_call` and its own
+output; that is the one position rule with a 400 behind it, which is why
+`answer_open_calls` runs first.
+
+**A notice consumed by a turn.** A notice is advice about a measurement, not an
+operator's message. Emptying the transcript advances `context_generation` even if the
+old usage arrives late, so a notice whose measurement is stale is dropped rather than
+spoken.
+
+**`wire_item`.** A row's text is stored as written: the pictures it named stay in
+`display`, and the provider's file for each is resolved when a request is built. A
+file id in a row would stop working the day the provider deletes the file.
+
+**`settle_handover`.** The note used to be prose this server printed ahead of the
+transcript; a lesson is an ordinary message now, so no column holds request content and
+the agent's own `send_message` is the only way one gets there. Appended rather than
+placed at the front: the rows already in the transcript were sent, and a row is never
+put ahead of them. One transaction, because a start that stopped between the insert and
+the drop would append the same lesson again on the next one.
+
+**`events_after`.** `after` is exclusive and is the log's `id`, not the session's
+`seq`: one cursor has to mean one place in one stream, and the id is monotonic over the
+whole table while `seq` is only monotonic per session. A reader that keeps the last id
+it saw resumes exactly where it stopped, with no overlap and no gap. `kind` and
+`session` are filters on the way out, never on the way in.

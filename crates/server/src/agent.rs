@@ -793,7 +793,7 @@ impl Agent {
                     item,
                     summary,
                 } => {
-                    // The item, not a summary of it: a request sends it back whole.
+                    // The item, not a summary of it; see `docs/notes/server-agent.md`.
                     let payload = json!({"item": item, "summary": summary, "item_id": item_id});
                     said.insert(item_id.clone());
                     streamed.remove(&item_id);

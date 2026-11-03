@@ -249,10 +249,7 @@ CREATE TABLE IF NOT EXISTS uploads (
 CREATE INDEX IF NOT EXISTS uploads_by_id ON uploads(file_id);
 "#;
 
-/// What a character is assumed to cost before anything is measured.
-///
-/// Not a budget: the number a plan is made of when the provider has never counted a
-/// request for this model. See `docs/notes/server-store.md`.
+/// What a character costs when nothing has been measured; see `docs/notes/server-store.md`.
 pub const CHARS_PER_TOKEN: f64 = 4.0;
 
 #[derive(Debug, Clone)]
@@ -369,13 +366,9 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
 ///
 /// # Invariant
 ///
-/// The note used to be prose this server printed ahead of the transcript; a lesson is
-/// an ordinary message now, so no column holds request content and the agent's own
-/// `send_message` is the only way one gets there. Appended rather than placed at the
-/// front: the rows already in the transcript were sent, and a row is never put ahead
-/// of them. One transaction, because a start that stopped between the insert and the
-/// drop would append the same lesson again on the next one. See
-/// `docs/notes/server-handover.md`.
+/// Appended, never placed ahead of rows already sent; and in one transaction, because a
+/// start that stopped between the insert and the drop would append the lesson twice.
+/// See `docs/notes/server-handover.md`.
 fn settle_handover(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     if !has_column(conn, "sessions", "handover") {
         return Ok(());
@@ -705,9 +698,7 @@ impl Store {
         )?)
     }
 
-    /// One session, in the same shape the list returns, by name rather than by scan.
-    /// A session's name, by its row id: what a log row carries so a reader does
-    /// not have to join.
+    /// A session's name, by row id: what a log row carries, so a reader need not join.
     pub fn name_of_session(&self, id: i64) -> anyhow::Result<Option<String>> {
         let conn = self.lock();
         let mut stmt = conn.prepare("SELECT name FROM sessions WHERE id = ?1")?;
@@ -1049,20 +1040,7 @@ impl Store {
         };
         let mut settled = 0;
         for (item_id, turn, part, text) in pending {
-            // Both kinds are kept as the rows a request is built from: an answer to the
-            // model, and a thought to the model, because a thought it wrote is context
-            // it should read back. A half thought carries no `encrypted_content` -- it
-            // never arrived -- and that is accepted: measured, a reasoning item whose
-            // text is all it has answers 200 (`.agents/notes/2026-11-03-a-reasoning-
-            // item-needs-its-position-not-its-blob.md`).
-            //
-            // # Invariant
-            //
-            // These rows are appended last, so each lands after the last output of its
-            // conversation. That is the only position rule with a 400 behind it: a
-            // `function_call` must be followed immediately by its own output, so
-            // nothing may be inserted between them -- which is why `answer_open_calls`
-            // runs first, and why this appends rather than places.
+            // Appended last; see `docs/notes/server-store.md`.
             let stored = match part.as_str() {
                 "output" => Some((
                     "text",
@@ -1371,14 +1349,8 @@ impl Store {
     ///
     /// # Invariant
     ///
-    /// `after` is exclusive and is the log's `id`, not the session's `seq`: one
-    /// cursor has to mean one place in one stream, and the id is monotonic over
-    /// the whole table while `seq` is only monotonic per session. A reader that
-    /// keeps the last id it saw resumes exactly where it stopped, with no
-    /// overlap and no gap.
-    ///
-    /// `kind` and `session` are filters on the way out, never on the way in:
-    /// what is stored is the whole log, and a reader that wants one kind says so.
+    /// `after` is exclusive and is the log's `id`, never `seq`: the id is monotonic over
+    /// the table where `seq` is per session, and a filter is applied on the way out.
     pub fn events_after(
         &self,
         after: i64,
@@ -1491,10 +1463,7 @@ impl Store {
         Ok(id)
     }
 
-    /// The media type one copy was stored with.
-    ///
-    /// A copy's own row answers: a rewritten file mints a new copy, so the type that
-    /// goes with an id is that id's, never the path's newest.
+    /// The media type one copy was stored with: an id's own row, not the path's newest.
     pub fn picture_media_type(&self, id: i64) -> Option<String> {
         let conn = self.lock();
         conn.query_row(
@@ -1553,8 +1522,6 @@ impl Store {
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )?;
                 // A notice is advice about a measurement, not an operator's message.
-                // Emptying the transcript advances the generation even if old usage
-                // arrives late.
                 if (current_generation.max(0) as u64) != generation
                     || (tokens.max(0) as u64) < limit
                 {
@@ -1884,12 +1851,7 @@ pub struct Failure {
     pub last_seq: i64,
 }
 
-/// A window of the transcript plus where it ends, as `get_messages` reports it.
-///
-/// One row of the event log, still as stored: `payload` is the JSON text.
-///
-/// Parsing it is the caller's step, because what a payload means is `kind`'s
-/// business and this layer deliberately knows no kinds.
+/// One row of the event log, as stored: `payload` JSON, parsed by the caller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventRow {
     pub id: i64,
@@ -2029,9 +1991,7 @@ fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value>
             .unwrap_or_default()
             .to_string()
     };
-    // A row's text is stored as written: the pictures it named stay in `display`, and
-    // the provider's file for each is resolved when a request is built. A file id here
-    // would be a row that stops working when the provider deletes the file.
+    // Pictures stay in `display` and resolve per request.
     match kind {
         "text" => {
             let role = text_of("role");
@@ -2042,7 +2002,7 @@ fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value>
             })
         }
         "reasoning" => {
-            // The provider's item, whole: it may need `content`, which a summary lost.
+            // Byte for byte, never rebuilt; see `docs/notes/server-store.md`.
             if let Some(item) = value.get("item").filter(|item| item.is_object()) {
                 return Some(item.clone());
             }
@@ -2086,9 +2046,7 @@ fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value>
                 .get("replayable")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(true);
-            // Read back now, not at send time: whether this item can be replayed is
-            // a property of the row, and a request must not be the place that finds
-            // out it cannot.
+            // Read back now, not at send time: replayability is the row's property.
             crate::llm::sendable_activity(item, replayable, crate::blobs::dir())
         }
         _ => None,
