@@ -1748,18 +1748,18 @@ threading.Event().wait()
         handle.write(script)
 
 
-def read_ship_pin():
-    """The commit this build of the server installs, from `crates/server/ship.toml`.
+def read_ship_protocol():
+    """The content protocol this build of the server reads, from `crates/server/ship.toml`.
 
     Read as text rather than parsed as TOML: the harness only has to name the
-    object, and a full line match is the whole of that.
+    number, and a full line match is the whole of that.
     """
     path = os.path.join(ROOT, "crates", "server", "ship.toml")
     try:
         with open(path, "r", encoding="utf-8") as handle:
             for line in handle:
                 stripped = line.strip()
-                if stripped.startswith("commit"):
+                if stripped.startswith("protocol"):
                     _, _, rest = stripped.partition("=")
                     return rest.strip().strip('"').strip("'")
     except OSError:
@@ -1767,43 +1767,50 @@ def read_ship_pin():
     return None
 
 
-def seed_ship_cache(home):
-    """Put the pinned content in the home before the server asks for it.
+def seed_ship_checkout(home):
+    """Put the content in the home before the server asks for it.
 
-    `ship::install` fetches the pin from its network URL and refuses to start
-    when that fails and the home has never had the commit. The worktree carries
-    the same content as the `ship/` submodule, so fetching from there leaves a
-    cache the server accepts offline -- and the URL is a compiled-in pin, so a
+    `ship::install` fetches the content from its network URL, and a scratch home
+    that has never held it refuses to start when that fails. The worktree carries
+    the same content as the `ship/` submodule, so a local clone of it is a
+    checkout the server accepts offline -- the server takes the newest commit of it
+    that speaks the protocol this build reads, and the URL is compiled in, so a
     harness that never touches `crates/` has to do it this way.
     """
     source = os.path.join(ROOT, "ship")
-    commit = read_ship_pin()
-    if not os.path.isdir(source) or not commit:
+    protocol = read_ship_protocol()
+    if not os.path.isdir(source) or not protocol:
         return "no local ship checkout; the server will need its network remote"
-    cache = os.path.join(home, "ship.git")
+    checkout = os.path.join(home, "ship")
     git = shutil.which("git")
     if not git:
-        return "git is not on PATH; cannot seed the home's content cache"
+        return "git is not on PATH; cannot seed the home's content checkout"
     os.makedirs(home, exist_ok=True)
-    # `git init --bare` will not create a missing parent, and a directory left by
-    # an interrupted earlier run is not a repository: check for a working one
-    # rather than for a name.
-    if subprocess.run([git, "--git-dir", cache, "rev-parse", "--git-dir"], capture_output=True).returncode != 0:
-        if os.path.isdir(cache):
-            shutil.rmtree(cache, ignore_errors=True)
-        os.makedirs(cache, exist_ok=True)
-        init = subprocess.run([git, "--git-dir", cache, "init", "-q", "--bare"], capture_output=True)
-        if init.returncode != 0:
-            return "cannot create the content cache at %s: %s" % (cache, init.stderr.decode("utf-8", "replace").strip())
-    subprocess.run(
-        [git, "--git-dir", cache, "fetch", "-q", source, "+refs/heads/*:refs/heads/ship/*"],
-        capture_output=True,
+    # A directory left by an interrupted earlier run is not a clone: ask git
+    # rather than for a name, and start over when it says no.
+    if subprocess.run([git, "-C", checkout, "rev-parse", "--git-dir"], capture_output=True).returncode != 0:
+        if os.path.isdir(checkout):
+            shutil.rmtree(checkout, ignore_errors=True)
+        clone = subprocess.run([git, "clone", "-q", source, checkout], capture_output=True)
+        if clone.returncode != 0:
+            return "cannot clone the content into %s: %s" % (
+                checkout,
+                clone.stderr.decode("utf-8", "replace").strip(),
+            )
+    head = subprocess.run(
+        [git, "-C", checkout, "rev-parse", "HEAD"], capture_output=True
     )
-    probe = subprocess.run(
-        [git, "--git-dir", cache, "cat-file", "-e", "%s^{commit}" % commit],
-        capture_output=True,
+    says = subprocess.run(
+        [git, "-C", checkout, "show", "HEAD:ship.toml"], capture_output=True
     )
-    return "seeded %s with %s: %s" % (cache, commit[:8], "yes" if probe.returncode == 0 else "no")
+    speaks = "protocol = %s" % protocol
+    verdict = "yes" if speaks in says.stdout.decode("utf-8", "replace") else "no"
+    return "seeded %s at %s, speaks %s: %s" % (
+        checkout,
+        head.stdout.decode("utf-8", "replace").strip()[:8],
+        protocol,
+        verdict,
+    )
 
 
 class Stack:
@@ -1860,7 +1867,7 @@ class Stack:
 
     def start_server(self, fake_port):
         os.makedirs(self.options.home, exist_ok=True)
-        self.report("content cache: %s" % seed_ship_cache(self.options.home))
+        self.report("content checkout: %s" % seed_ship_checkout(self.options.home))
         port = self.options.server_port or free_port("udp")
         environment = _child_environment(
             {

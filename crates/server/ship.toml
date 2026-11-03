@@ -1,8 +1,10 @@
 # Where this build's content comes from, and which content protocol it speaks.
 #
-# Nothing here names a commit. The server asks `branch` for its newest commit that
-# speaks `protocol`, so a content change -- a skill's prose, a new skill, a path
-# retired -- reaches a machine by a restart: no edit to this file, no rebuild.
+# Nothing here names a commit, and nothing in this repository names one either: a
+# home keeps the content as a checkout of this URL, personal commits (`local`) on
+# top of official ones (`main`), and installs the newest commit of it that speaks
+# `protocol`. A content change -- a skill's prose, a new skill, a path retired --
+# reaches a machine by a restart, with no edit here and no rebuild.
 #
 # `protocol` is the one thing a content change can require here, and only when the
 # *shape* of the content moves in a way this build cannot read. The content
@@ -10,9 +12,8 @@
 # config and the skills live) that a reader of that protocol needs.
 #
 # A build that reads an older protocol still installs: it takes the newest commit
-# of `branch` that speaks its own, so an upstream that has moved on leaves it the
-# prose it was tested with instead of a server that cannot start.
+# that speaks its own, so an upstream which has moved on leaves it the prose it was
+# tested with instead of a server that cannot start.
 [ship]
 url = "https://github.com/windwhiterain/gongga-ship.git"
-branch = "main"
 protocol = 1

@@ -104,30 +104,25 @@ fn fetch(home: &Path, from: u32) -> anyhow::Result<PathBuf> {
 
 /// The path as the content this start resolved has it.
 fn blob(home: &Path, path: &str) -> anyhow::Result<Option<Vec<u8>>> {
-    let cache = home.join("ship.git");
     let Some(commit) = crate::ship::resolved_commit() else {
         return Ok(None);
     };
-    if !cache.is_dir() {
+    let fork = crate::fork::Fork::at(&crate::ship::checkout(home));
+    if !fork.exists() {
         return Ok(None);
     }
-    Ok(crate::ship::blob(&cache, commit, path))
+    Ok(fork.blob(commit, path))
 }
 
 /// The path as the newest commit in the cache has it: the resolved content may
 /// predate a step a newer install already knows, and a home stuck behind it needs the file, not
 /// the argument about which pin is current.
 fn newest_blob(home: &Path, path: &str) -> Option<Vec<u8>> {
-    let cache = home.join("ship.git");
-    if !cache.is_dir() {
+    let fork = crate::fork::Fork::at(&crate::ship::checkout(home));
+    if !fork.exists() {
         return None;
     }
-    let listed = Command::new("git")
-        .arg("--git-dir")
-        .arg(&cache)
-        .args(["rev-list", "--all", "--", path])
-        .output()
-        .ok()?;
+    let listed = crate::fork::git(fork.dir(), &["rev-list", "--all", "--", path]);
     if !listed.status.success() {
         return None;
     }
@@ -136,7 +131,7 @@ fn newest_blob(home: &Path, path: &str) -> Option<Vec<u8>> {
         if commit.is_empty() {
             continue;
         }
-        if let Some(bytes) = crate::ship::blob(&cache, commit, path) {
+        if let Some(bytes) = fork.blob(commit, path) {
             return Some(bytes);
         }
     }

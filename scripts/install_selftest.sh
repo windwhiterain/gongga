@@ -116,7 +116,7 @@ if [[ -n "${left// /}" ]]; then
 fi
 rm -rf "$home"; mkdir -p "$home"
 # This machine's real cache: the check must not reach the network.
-cp -r "$HOME/.gongga/ship.git" "$home/ship.git" 2>/dev/null
+cp -r "$HOME/.gongga/ship" "$home/ship" 2>/dev/null
 
 say "== an install of another pin is not an edit"
 seed skills/heir/SKILL.md stale

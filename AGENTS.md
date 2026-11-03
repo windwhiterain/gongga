@@ -20,9 +20,10 @@
   `scripts/hooks/`。觉得 hook 太慢、太吵、和这次改动无关时，先读它为什么在那儿；
   它拦的正是你以为无关的那一类。
 - **hook 只在它认得的路径上生效。** `pre-commit` 只在这次提交动了 `ship` 或
-  `crates/server/ship.toml` 时才判 pin；`ship/` 里的提交是子模块自己的 git，外层 hook
-  看不见。所以"子模块已提交、还没发布"这个中间态要自己盯着：`scripts/ship.sh --check`
-  的退出码是契约（0 一致 / 1 真漂移 / 3 远端没应答），`--check` 不是可选项。
+  `crates/server/ship.toml` 时才判 protocol；`ship/` 里的提交是子模块自己的 git，外层 hook
+  看不见——而内容已经不需要在本仓库留下提交了（`ignore = all`），所以"改了内容"与"本仓库
+  有提交"从此是两件事。推送内容之后仍要 `scripts/ship.sh --check`：退出码是契约
+  （0 一致 / 1 真漂移 / 3 远端没应答），它不是可选项。
 - **报"做完了"之前，这一轮的每一道门都要有一次真实的执行**：`cargo build`、
   `cargo fmt --check`、`comments-check`（对着**基线**比，别只看总数）、
   `test-layout-check`、`scripts/skill_contract.sh`、`scripts/ship.sh --check`，
@@ -30,7 +31,7 @@
 - **不能只凭"代码看起来对"结案。** 同一类结论至少要有一个可复现的观测：真帧、真进程、
   真 sqlite 行、`exit=N`、`sha`。这一轮就吃过教训——我为了省一次网络往返关掉了
   `pre-commit`，于是把一个"pin 指向未发布 commit"的提交记了进去；hook 一直是好的，
-  是我没让它跑。
+  是我没让它跑。现在没有 pin 了，但同一类事还在：内容推上去没有，只有 `--check` 说得出。
 
 - tests layout: 
   ```
@@ -82,7 +83,7 @@
 - **每个 worktree 自己的 `CARGO_TARGET_DIR`**。共用一个 `target/` 时并发 cargo 排队等锁，
   而且 Windows 锁着正在跑的 `.exe`，会直接 `拒绝访问 (os error 5)`。
 - **`.dev/` 会长到 GB 级**：`evolve.sh stage` 把构建放 `.dev/target`（为了绕开 exe 锁），
-  历次 `*-home/` 各带一个 `ship.git`。验证脚本自带清理，或别在这里攒。
+  历次 `*-home/` 各带一份 `ship` checkout。验证脚本自带清理，或别在这里攒。
 - **不要并发跑 `evolve`**：它靠 `.dev/evolve-current` 单指针决定谁接管 home，两个 agent
   同时 stage 会互相判成被 supersede。
 
@@ -122,42 +123,40 @@
 
 ## 发布（改过 ship 内容之后）
 
-`ship/` 是内容仓库在本仓库里的 submodule，所以「发布」有两个名字要一致：远端的 commit 和
-`crates/server/ship.toml` 的 `commit`。`scripts/ship.sh` 一次做完，并校验三处一致：
+**内容不再有 pin。** 二进制里只有内容仓库的 URL 和它读的 `protocol`；服务端把内容仓当成
+`fork` 那种 checkout（官方 `main` + 本机 `local`，见 `docs/notes/server-fork.md`），从这个 checkout
+里取「说它读的那个 protocol 的最新 commit」。所以发布 = **一次 push**，不产生本仓库的提交、
+不重新编译。
 
 ```bash
-scripts/ship.sh --check                # ship HEAD / 远端 main / ship.toml 是否说的是同一个 commit
-scripts/ship.sh --dry-run -m "..."     # 会做什么（不写不推）
-scripts/ship.sh -m "..."               # 提交 + push ship + 把 sha 写进 ship.toml + 这里 git add
-scripts/ship.sh -m "..." --push-main  # 再把本仓库的 pin 提交并 push
+scripts/ship.sh -m "heir: 把 mentor 写进指引"   # 提交 local → rebase 到 main → push 到 main
+scripts/ship.sh --check                          # 两端 protocol 一致吗 + 推上去了吗
+scripts/ship.sh --check --local                  # 同上，不问网络（pre-commit 用这个）
+scripts/ship.sh --dry-run -m "..."               # 会做什么（不写不推）
 ```
 
-- 有改动时 `-m` 必填：脚本不替你编一条发布说明。
-- 远端 main 上有 ship/ 没有的提交就拒绝 push，从不 force-push；`--check` 会把这种漂移说清楚。
-- `--check` 的退出码是契约：`0` 一致、`1` 不一致（真漂移）、`2` 用法、`3` **远端没应答**（只有
-  "这个 pin 能不能被取到"还没法判断）。第三种不是不一致，别把它当成不一致处理。
-- pin 是 `include_str!`，所以改完要 `cargo build -p gongga-server` 才生效，运行中的服务端还得 `evolve`。
-- 它自己有测试：`bash scripts/ship_selftest.sh` 拿一个临时 bare 仓库当远端，跑通提交、push、写 pin、
-  漂移拒绝、以及远端不可达与真漂移的区分全过程，不碰 GitHub。
+- **`.gitmodules` 里 `ignore = all`**：内容仓的 commit 与本 build 无关，所以改 skill 不会在本仓库
+  留下 `M ship` 这类半提交状态。别去掉它。
+- 有改动时 `-m` 必填：脚本不替你编一条发布说明。发布前的 rebase 是内置的，冲突就整体撤销、
+  什么都不推——自己手动解完再跑一次。
+- `--check` 的退出码是契约：`0` 一致、`1` 内容说的 protocol 与本 build 读的不一致（真漂移）、`2` 用法、
+  `3` **远端没应答**（"推上去没有"还没法判断）。第三种不是不一致，别当成不一致处理。
+- **protocol 什么时候动**：只有内容的**形状**变了（新增强制字段、换布局）才在本仓库
+  `crates/server/ship.toml` 里加一；一处 prose 修正、加一个 skill、退役一个路径都是内容，
+  都不该碰它。动的时候一次只切一档：先发内容、再发读得懂它的服务端，老 build 会沿着
+  first-parent 往回走，继续装它读得懂的那个 commit。
+- 它自己有测试：`bash scripts/ship_selftest.sh`（`--keep` 留住现场）。整条流程跑在临时仓库 +
+  临时 home + 真服务端上，不碰 GitHub。改内容仓解析这件事必须跑它——`--check` 通过不代表
+  装上去了。
 
-**提交时挡住"pin 指向一个没人发布过的 commit"**：`scripts/hooks/pre-commit`。它只在这次提交
-动了 `ship` 或 `crates/server/ship.toml` 时才跑（其余提交不发网络请求），不一致就拒绝；远端不可达
-只警告、不挡（提交不能依赖网络）。每个 clone 装一次：
+**提交时挡的是 protocol 漂移**：`scripts/hooks/pre-commit`，只在这次提交动了 `ship` 或
+`crates/server/ship.toml` 时才跑，用 `--check --local`（提交不能依赖网络）。它挡不住
+`--no-verify`、没装 hook 的 clone、以及任何不是这个 git 发的推送；那些只有接收侧能挡，
+靠 `gongga-ship` 的 main 禁 force-push、禁删分支。每个 clone 装一次：
 
 ```bash
 git config core.hooksPath scripts/hooks
 ```
-
-为什么值得挡：`ship.toml` 里写一个只存在于本工作树的 sha，新机器取不到它——而
-`install_at` 曾经对着取不到的 commit 报 `written: 0, fetched: true`，于是 home 里没有
-`config.toml`，几百行之后才以 "no prompt templates" 报出来，指向 home 而不是 pin。
-
-**推之前再挡一次**：`scripts/hooks/pre-push`。它问的是这次要推的**分支尖端**，不是提交的范围——
-merge、squash、rebase、cherry-pick 造出来的提交照样被问，包括只在冲突解决里存在的那个 pin。
-普通推送只多一次本地 `for-each-ref`；只有本机从没见过的 pin 才去问内容仓库。推送本来就要有网，
-所以这里**答不上就不推**（与 pre-commit 的"离线放行"相反）。它挡不住 `--no-verify`、没装 hook 的
-clone、以及任何不是这个 git 发的推送（网页、bot）——那些只有接收侧能挡，靠 `gongga-ship` 的 main
-禁 force-push、禁删分支。
 
 ## 改过服务端代码之后
 
@@ -193,7 +192,7 @@ skill 是"任务相关才读"的散文 + 脚本。三个桶，**越近的越先*
 | 桶 | 在哪 | 谁的 | 怎么改 |
 | --- | --- | --- | --- |
 | `project` | `<会话 cwd>/.agents/skills/<name>` | 这个 checkout | 直接改，随仓库走 |
-| `harness` | `$GONGGA_HOME/skills/<name>` | 内容仓库 `ship`，pin 一个 commit | 改 `ship/skills/<name>` 再发版 |
+| `harness` | `$GONGGA_HOME/skills/<name>` | 内容仓库 `ship`，按 protocol 取最新 commit | 改 `ship/skills/<name>` 再发版 |
 | `general` | `~/.agents/skills/<name>` | 社区 clone `gongga-agents` | 改社区仓库 |
 
 **别全读，也别 grep 目录**：调用 `index_skill` 工具，它返回 name / description / path /
@@ -202,16 +201,16 @@ skill 都要改一次这个文件，而读的人手上已经有那张表。
 
 **需要源码的 skill 不属于 `ship`。** `evolve` 要往上找 `Cargo.toml`、要编服务端、要读
 `.dev/`，装进 `$GONGGA_HOME` 之后它找不到仓库根，所以它住在**这个仓库**的
-`.agents/skills/evolve/`，随 checkout 走，不随 pin 走。**不要往 `$GONGGA_HOME/skills/` 里放它的
+`.agents/skills/evolve/`，随 checkout 走，不随内容仓走。**不要往 `$GONGGA_HOME/skills/` 里放它的
 副本**：那份副本会随源码一起变旧，而且它自己 `cd` 到 home 之后往上找不到 `Cargo.toml`，一行
 都跑不通——但 `index_skill` 会把两个同名 `evolve` 都列出来，读的人先撞上坏的那个。
 
 其余（`heir` / `image` / `self-control` / `subagent` + 默认 config）在内容仓库里，是这个仓库的
-**submodule**（`ship/`），所以「改 skill / 改默认 config」和「重新 pin」是同一件事：在 `ship/` 里
-改、在那边提交并 push，然后 `git add ship` + 把 `crates/server/ship.toml` 的 `commit` 改成同一个
-sha。两处不一致时服务端装的是 `ship.toml` 里那个 commit，不是你工作树里的那个。
-`ship/skills/<name>` 就是一层，没有 `harness/` 那一层——它原样映射成 `<home>/skills/<name>`。
-改 `$GONGGA_HOME/skills/` 里的已安装副本会被下一次合并判成「读者自己写的」而不再更新。
+**submodule**（`ship/`）。改 skill 就是**在 `ship/` 里改然后发布**（`scripts/ship.sh -m`），
+不产生本仓库的提交：内容仓的 commit 与本 build 无关（`ignore = all`），服务端按 protocol
+自己取最新的那个。`ship/skills/<name>` 就是一层，没有 `harness/` 那一层——它原样映射成
+`<home>/skills/<name>`。改 `$GONGGA_HOME/skills/` 里的已安装副本会被下一次合并判成
+「读者自己写的」而不再更新。
 
 **跑一个 skill 的脚本：从它自己的目录出发，别写桶的路径。** 正文里写入口用
 `SKILL_DIR=<本 SKILL.md 所在目录>`（`@skill:` 展开的 `SKILL.md: <path>`、`index_skill` 的

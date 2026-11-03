@@ -25,9 +25,9 @@ would fail on every new home, so the version is written and the chain is skipped
 
 The migrators are the one thing the install pass does not place, because a home
 two versions behind asks for the step it is missing, not for whatever the current
-pin happens to ship. `migrate/<from>-to-<to>.py` is looked for in the pinned
+content happens to ship. `migrate/<from>-to-<to>.py` is looked for in the resolved
 commit first, then in the newest commit of the cache that carries the path, then
-in a local checkout the pin names. It is written into `<home>/migrate/` so the
+in that checkout's history. It is written into `<home>/migrate/` so the
 next start runs the same bytes, and executed with `--home` and `--db`.
 
 ## an_interpreter_is_asked_not_looked_for

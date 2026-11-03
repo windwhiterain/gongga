@@ -12,6 +12,7 @@ mod clock;
 mod commands;
 mod config;
 mod diff;
+mod fork;
 mod image;
 mod instance;
 mod llm;
@@ -184,14 +185,13 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     // Installed before anything reads it: a config already here is the reader's.
     let installed = ship::install(&cfg.home)?;
     tracing::info!(
-        pin = %installed.pin.get(..10).unwrap_or(installed.pin.as_str()),
+        content = %installed.pin.get(..10).unwrap_or(installed.pin.as_str()),
         written = installed.written,
         updated = installed.updated,
         merged = installed.merged,
         removed = installed.removed,
-        rebased = ?installed.rebased,
         conflicts = ?installed.conflicts,
-        fetched = installed.fetched,
+        reachable = installed.reachable,
         "shipped content"
     );
     // Read again: the install may have just placed this home's config.

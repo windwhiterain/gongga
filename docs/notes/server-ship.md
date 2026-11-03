@@ -6,22 +6,27 @@ The harness ships three kinds of thing a user should be able to edit: the config
 the skills that speak about the server, and the skills that speak about the
 machine. None of them belongs in this repository, because a file in the working
 tree is a file a project's own edits and the harness's updates fight over. They
-live in a content repository of their own, and this module installs them into a
-home from a commit this binary pins.
+live in a content repository of their own, which a home keeps as a checkout and
+installs into itself.
 
-## MANIFEST, pinned
+## MANIFEST, link
 
-`ship.toml` is compiled in. Pinning by full sha rather than by branch means the
-prose a build was tested with is the prose that build sends; a force-push to
-`main` upstream cannot change what a running server says. A manifest that does not
-parse is a build bug, so `pinned()` panics instead of degrading into a server that
-installs nothing.
+`ship.toml` is compiled in, and it names no commit. A pin meant a content edit cost a
+commit here plus a rebuild, and the two names for one commit drifted the moment
+somebody forgot the second half; instead the URL and the protocol this build reads are
+what the binary carries, and the commit is whatever the branch says today.
 
-The `url` is any git URL, including a local path: `install_at` takes the pin and
-the roots as arguments, so a test drives a throwaway repository and never touches
-a real `~/.agents`.
+`protocol` is the one number that can force a rebuild, so it moves only when the
+*shape* of the content changes: a new required key in the content's declaration, a
+different layout. A wording fix, a new skill or a retired path is content, and content
+never needs a new build.
 
-## Roots, machine_root
+A manifest that does not parse is a build bug, so `link()` panics instead of degrading
+into a server that installs nothing. `GONGGA_SHIP_URL` overrides the URL alone, which
+is how a test drives a throwaway repository and how a person develops against a local
+checkout.
+
+## Roots, machine_root, checkout
 
 Two roots, because the two kinds of content have different lifetimes. What this
 repository owns -- the config, and the skills that describe *this server*
@@ -33,49 +38,38 @@ them: installing them into a home would give one machine five copies of the same
 procedure and five chances to edit them apart, and installing them into `~/.agents`
 would fight the clone for the same names.
 
-## ship.skills, the flat layout
+A home keeps its copy at `<home>/ship`: a checkout, kept the way the community roster
+is (`fork`) — official `main`, personal `local`, rebased. A person can therefore edit
+what this machine installs, and the edit survives an upstream change. `ship.git` was
+the old bare cache, and `adopt` turns one into the other without a network.
 
-`ship/skills/<name>` is one skill, and it lands as `<home>/skills/<name>`. No
-`harness/` level: the mapping is a tree copy, so a nesting in the repository
-becomes a nesting on disk, and `skills/harness/heir` would install as
-`skills/harness/heir` -- a skill whose directory says it belongs to a bucket that
-no longer exists. One level in the repository, one level in the home.
+## Declared, declared_at
 
-## ship.skills.retired
-
-A path this repository used to ship and no longer does. It is collected from the
-*old* pin only, which is what makes the copies an earlier install left recognisable
-as ours: the new pin has no such tree, so nothing is installed there, and the old
-one still describes what is on disk. Without it the files stay forever, and the
-five skills under `~/.agents/skills` would shadow the community copy of the same
-name -- `link_skills` never replaces a name it finds.
-
-The same removal takes the nesting out of the home: a pin that installed
-`skills/general/remote` under `skills` left `<home>/skills/general/remote`, which
-the flat mapping no longer accounts for. The removal loop sees it in the old pin's
-tree and takes it away.
-
-## install_at (refusal)
-
-No network and no cache is the one case that stops startup: a home with nothing
-installed and an unreachable URL would otherwise boot, take a turn, and answer with
-an empty prompt. A cache that already holds the pin answers instead, with a warning,
-because being offline is not being broken. See `docs/notes/server-prompts.md` for
-what the prose is used for.
+What the content says about itself, read from the commit it is installed from: the
+protocol it speaks, which path is the config, where the skills live, which paths an
+earlier commit left on the machine. It is parsed rather than copied into this binary
+because a mapping is a fact about *that* repository's history — moving a skill or
+retiring a path must not need a rebuild, which is the whole point of resolving by
+protocol.
 
 ## plans
 
 `config.toml` is mapped from one repository file to one home file; a skill bucket is
 mapped from a repository *tree* spread under `skills/`. The difference matters for
 `collect`, which yields one entry per file either way, and for what gets removed when
-upstream drops a path.
+upstream drops a path. The tag on each entry names that root's copy of the merge base.
 
 ## reconcile
 
-Three versions per file: the disk (ours), the pinned content (theirs), and the
-content of the pin this root was last reconciled against (the base). The base is why
-an upstream edit lands on a file nobody touched and does *not* land on one somebody
-did: without it, "differs from upstream" and "the reader edited this" look identical.
+Three versions per file: the disk (ours), the content (theirs), and the bytes this
+root last installed (the base). The base is why a content edit lands on a file nobody
+touched and does *not* land on one somebody did: without it, "differs from upstream"
+and "the reader edited this" look identical.
+
+The base lives in `<home>/.ship-base/<root>` rather than in git history, because the
+personal branch is rebased and a rewritten commit is no longer a base. It is a copy of
+what was placed, so it also says exactly what the last install did rather than what
+some commit said.
 
 `Report` is shared by both roots, so this root counts only what it added before
 deciding whether to advance its pin. Without that, one kept file in the machine root
@@ -85,39 +79,27 @@ A conflict or a kept file leaves the pin where it was, so the next start repeats
 same three-way merge against the same base. Advancing the pin past an unresolved file
 would silently adopt the unmerged result as the new truth.
 
-That rule has a failure mode of its own, and it is not theoretical: a base can fall
-*behind* the files a newer pin left, because the pin is written only when nothing
-conflicted. One transient conflict then makes every file the newer pin touched look like
-"both sides moved", so it conflicts too, so the pin never advances -- and the home stops
-receiving content while every start reports the same list of conflicts, which reads like
-"the reader edited these". Observed on this machine on 2026-11-02: five files whose bytes
-each matched a different pin, and a `.ship-pin` several publishes behind all of them.
+## seed_base, remember
 
-So before believing "both sides moved", `reconcile` asks whether ours moved at all: bytes
-that equal a commit's blob for their own path are an install of another pin, not an edit,
-and upstream replaces them (`reinstalled`). It is the question the `old.is_none()` case
-already asked with `is_a_past_install`, asked for one more reason -- and asked only for the
-three decisions that mean both sides moved, so a start that changes nothing spawns no
-`git rev-list`.
+`seed_base` copies the old pin's tree into the base directory, once, for a home
+installed by an older build that recorded a pin and no base of its own. It happens
+only when no base exists: a base that is there is what the last install placed, and
+re-seeding it from a commit would silently adopt that commit as the truth for every
+local edit.
 
-The one thing it gives up: a reader whose edit restores an earlier version byte-for-byte,
-while upstream also moved that file, loses the edit. Those bytes carry no local
-information beyond "some earlier version of this file", which is exactly what the base
-would have said.
+`remember` is the other half — every file placed is recorded, which is what makes the
+next merge three-way rather than a guess.
 
 ## Decision
 
 Six outcomes, and the sixth is the reason the tool exists: `Keep` is a file the reader
-authored where upstream also has one. What `decide` sees is ours, base and theirs; the
-reinstall question is asked *around* it, because "these bytes are an install of some other
-pin" is a fact about provenance rather than about a three-way merge, and folding it into the
-base would have meant a `git` call per editable file per start. It is not a merge failure -- nothing was
-refused -- it is the answer to "should the harness overwrite the config I wrote?",
-which is no.
+authored where the content also has one. What `decide` sees is ours, base and theirs,
+and nothing else: "these bytes are the last install" is already computed, because the
+base is a copy rather than a commit lookup.
 
-`Adopt` exists for the same reason from the other side: a file already byte-identical
-to the pin counts as current, not written, so a restart logs `written=0` and the log
-line means "this start changed nothing".
+`Adopt` exists for the other side: a file already byte-identical to the content counts
+as current, not written, so a restart logs `written=0` and the log line means "this
+start changed nothing".
 
 ## merge_text
 
@@ -131,9 +113,9 @@ because the base is on disk only as a temporary convenience.
 
 Paths come from `ls-tree -r --long`, so a shipped file's mode is known before it is
 written -- a skill script has to stay executable, and a `config.toml` that is not.
-Content comes from `cat-file blob`. `config_text` is the same read for one path, and
-it is what makes the pin the source of the prompt defaults: nothing copies that prose
-into this binary.
+Content comes from `git show <commit>:<path>`. `config_text` is the same read for one
+path, and it is what makes the resolved commit the source of the prompt defaults:
+nothing copies that prose into this binary.
 
 ## safe_relpath
 
@@ -142,20 +124,22 @@ would otherwise write outside it. Refusing on `..`, on an absolute path and on a
 drive letter, and accepting only `Normal` components, is cheaper than trusting the
 content repository, which is a third party by definition.
 
-## fetch, has_commit
+## resolve, newest_for, protocol_at
 
-The cache is bare (`<home>/ship.git`) and holds only `refs/heads/ship/*`: a home
-directory that contains a working tree invites someone to edit the thing the pin
-reads. `+refs/heads/*` is the refspec, because a pin that moved to a rewritten branch
-still has to be fetchable, and `has_commit` is the question that decides whether a
-failed fetch is damage or merely offline.
+`resolve` is the whole answer for one start, kept in a `OnceLock`: the migrator, the
+install and the prompt defaults all read one commit, so a fetch landing mid-start
+cannot make them disagree about what "the content" is.
+
+`newest_for` walks back through first parents until it finds a commit that speaks this
+build's protocol. Walking *back* rather than forward is the invariant: content that
+has moved to a protocol this build cannot read still serves this build the last commit
+it could read. The alternative is a machine that cannot start because somebody else's
+repository advanced — and a build whose content has no such commit refuses, naming
+both numbers.
 
 ## Report
 
 The counters exist for the log line; the lists exist because they name files a human has
 to open. `written` and `updated` on a start that should have changed nothing is the signal
-that the pin moved under a home.
-
-`rebased` is separate from `updated` for that reason: both write the pinned bytes over what
-was on disk, but only one of them means "this home had fallen behind and the harness fixed
-it" -- a sentence a reader should meet in the log rather than deduce from a count.
+that the content moved under a home. `reachable` says whether the repository answered
+this start, which is the one thing a log line has to distinguish from "nothing changed".

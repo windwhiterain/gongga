@@ -9,7 +9,7 @@ each one reachable only by recompiling, and each edit invisible to whoever was
 actually reading what the agent said.
 
 Nothing here holds the prose. A home's `config.toml` is the file a reader edits, and
-the pinned ship content behind it is what answers when the home says nothing; both are
+the shipped content behind it is what answers when the home says nothing; both are
 read from disk. The one list this module does own is `REQUIRED`, because the code is
 the only party that knows which names it asks for.
 
@@ -45,9 +45,9 @@ and the session and the spill path really are different every time.
 ## REQUIRED, TABLE
 
 The check that replaces a compiled-in copy. Without it the failure is silent and
-total: a home whose config has no `[prompts]` and whose `ship.git` cannot be read
+total: a home whose config has no `[prompts]` and whose content checkout cannot be read
 would send an empty system prompt, run every tool, and look healthy in the log.
-`main.rs` refuses to start on a non-empty answer, naming the templates and the pin.
+`main.rs` refuses to start on a non-empty answer, naming the templates and the content.
 
 `TABLE` is the one section read. The rest of the config is the loader's business, and
 this module must not learn to parse `[provider]` -- two readers of one file disagreeing
@@ -68,7 +68,7 @@ an error, and "still missing" is a match.
 ## read_table
 
 Returns the templates *and* the problems it found, and a file that does not parse
-yields nothing at all -- the pinned content then answers, because the home's own last
+yields nothing at all -- the shipped content then answers, because the home's own last
 good read is replaced by it. This is the same rule the config loader already applies to
 a hand-edited `cli.toml`: a broken file is damage, not a reason to refuse to run, and
 refusing would take the agent's tools away because of a comma.
@@ -81,7 +81,7 @@ key should not delete the other eight templates the home did write.
 An unknown name is almost always a misspelling, and a misspelled template is invisible:
 the server keeps running, the old wording keeps being sent, and nobody reads a log line
 that says nothing happened. So the name is named, once per read, and only for a name
-that is neither on `REQUIRED` nor in the pinned content.
+that is neither on `REQUIRED` nor in the shipped content.
 
 `complained` is why the same damaged file does not produce one line per request.
 
@@ -100,7 +100,7 @@ What introduces a patch for an entry of the index that has changed since it was 
 `@@`-headed hunks, each under the spelling it corrects. `{{revisions}}` is the whole
 body, in the order the entries are emitted.
 
-Deliberately absent from `REQUIRED`. A home pinned before this template existed has an
+Deliberately absent from `REQUIRED`. A home installed before this template existed has an
 index and no use for a patch, and refusing to start over prose it may not need is the
 wrong trade; `Agent::index_tolerance` asks whether the template is there and stops
 patching when it is not -- the same answer a tolerance of `0` gives.
@@ -169,7 +169,7 @@ shortened sentence never would be.
 
 A process global, because the prose is wanted at layers that carry no config: `store.rs`
 needs the interrupted-call line while building history, `llm.rs` needs the size hint
-while a stream is failing. `install` takes the home's config, layers the pinned ship
+while a stream is failing. `install` takes the home's config, layers the shipped
 content under it, and *returns what is missing*, which is the reason the global can be
 trusted by the time the first request is built.
 
@@ -222,6 +222,6 @@ An earlier shape of this module embedded `default.config.toml` with `include_str
 copied it into a new home. That put the same words in two places with different
 lifetimes: the binary's copy froze at build time, the home's copy was the one anybody
 read, and a fresh home inherited values computed by the loader rather than the file it
-was handed. Both are gone. `ship::config_text` reads the pinned blob out of the home's
-own `ship.git`, so the fallback moves when the pin moves and the home's file is the one
+was handed. Both are gone. `ship::config_text` reads the blob out of the home's
+own content checkout, so the fallback moves when the content moves and the home's file is the one
 the server runs on -- `main.rs` re-reads it after the install for exactly that reason.

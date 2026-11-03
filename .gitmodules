@@ -1,3 +1,7 @@
 [submodule "ship"]
 	path = ship
 	url = https://github.com/windwhiterain/gongga-ship.git
+	# The content is its own repository with its own life: this checkout is here to
+	# be edited and published, and the commit it is on says nothing about this build.
+	# Ignoring it is what keeps a shipped prose fix from becoming a commit here.
+	ignore = all

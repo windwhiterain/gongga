@@ -66,7 +66,7 @@ if [[ -n "${left// /}" ]]; then
   sleep 2
 fi
 rm -rf "$home"; mkdir -p "$home"
-cp -r "$HOME/.gongga/ship.git" "$home/ship.git" 2>/dev/null
+cp -r "$HOME/.gongga/ship" "$home/ship" 2>/dev/null
 : > "$log"
 
 export FAKE_LLM_TOOL=bash

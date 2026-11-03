@@ -141,7 +141,7 @@ export GONGGA_AGENTS_HOME="$agents"
   echo "[remotes.ghost]"
   echo "host = \"nobody@192.0.2.1\""
 } > "$home/config.toml"
-cp -r "$HOME/.gongga/ship.git" "$home/ship.git" 2>/dev/null
+cp -r "$HOME/.gongga/ship" "$home/ship" 2>/dev/null
 : > "$log"; : > "$dump"
 
 cat > "$work/remote-roster.toml" <<TOML

@@ -77,7 +77,7 @@ if [[ -n "${left// /}" ]]; then
 fi
 rm -rf "$home"; mkdir -p "$home"
 # The pinned content from this machine's real cache: this check must not fetch.
-cp -r "$HOME/.gongga/ship.git" "$home/ship.git" 2>/dev/null
+cp -r "$HOME/.gongga/ship" "$home/ship" 2>/dev/null
 : > "$log"
 
 "$bin/gongga-server.exe" --home "$home" --bind "127.0.0.1:$port" --log info >>"$log" 2>&1 &
