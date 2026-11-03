@@ -24,10 +24,13 @@ all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, l
 ## LLM API
 standard OpenAI Response API.
 - images: File API, gated by the roster's modalities.
-- auto recover invalid transcript (only add, no drop).
+- auto recover invalid transcript (only append, no drop).
 
 ### Invarian
 - everything must store and send.
+
+## Session name
+path, rendered in hierarchy.
 
 ## Tool
 all tool has optional `description` argument.
@@ -182,9 +185,15 @@ A second walk is a second answer to "which file does this name open".
 ## Git Managed Config
 personal(local) change always rebase on official(remote).
 
-
 ## Skill: Self Control
 do whatever user can do to the server.
+
+## Skill: subagent
+- create a new session under caller session's name.
+- subscribe new session's turn end event.
+- send_message to new session.
+- optionaly wait.
+
 
 ## Skill: evolve
 restart server should still keep its lifetime, e.g. tui spawned server's lifetime bound to tui.
