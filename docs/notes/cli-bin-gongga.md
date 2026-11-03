@@ -68,10 +68,11 @@ It is gone, and the gap it left is filled on the two sides it belonged to:
 What the two keep from the old command is the split the old command was built on:
 the pattern is a filter with no opinion, and every judgement about *when* to ask --
 whether a turn already finished, how long is too long, what a failure means --
-belongs to whoever is doing the work. `ship/skills/subagent/wait_turn` is one such
-caller: it reads the status, answers at once if the session is already idle, and
-otherwise asks the log (`events`) from a cursor, with a bound on each round so a
-turn that ended in the gap is caught by the next read instead of waited out.
+belongs to whoever is doing the work. `ship/skills/subagent` is one such caller:
+its `spawn` arms `^turn_end:<the child>$` for the session that ran it, so the parent
+is told once instead of polling, and a script that wants the log for itself reads
+`events` from a cursor, with a bound on each round so a turn that ended in the gap is
+caught by the next read instead of waited out.
 
 The client does still carry the one fact only it knows: `$GONGGA_SESSION`, sent as
 `ClientInfo::session`. A server cannot tell which session's shell a command came
