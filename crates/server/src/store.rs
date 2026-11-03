@@ -1042,12 +1042,20 @@ impl Store {
         };
         let mut settled = 0;
         for (item_id, turn, part, text) in pending {
-            // An answer is a message and goes in as one. A thought does not: it has no
-            // `encrypted_content`, and a reasoning item carrying only text is a shape
-            // the provider rejects (`reasoning_text must be passed back`). So half a
-            // thought is kept as a `notice` -- reader-only, never sent -- which is
-            // where "the reader saw this" belongs when "the model may read this again"
-            // is not true.
+            // Both kinds are kept as the rows a request is built from: an answer to the
+            // model, and a thought to the model, because a thought it wrote is context
+            // it should read back. A half thought carries no `encrypted_content` -- it
+            // never arrived -- and that is accepted: measured, a reasoning item whose
+            // text is all it has answers 200 (`.agents/notes/2026-11-03-a-reasoning-
+            // item-needs-its-position-not-its-blob.md`).
+            //
+            // # Invariant
+            //
+            // These rows are appended last, so each lands after the last output of its
+            // conversation. That is the only position rule with a 400 behind it: a
+            // `function_call` must be followed immediately by its own output, so
+            // nothing may be inserted between them -- which is why `answer_open_calls`
+            // runs first, and why this appends rather than places.
             let stored = match part.as_str() {
                 "output" => Some((
                     "text",
@@ -1055,9 +1063,9 @@ impl Store {
                            "item_id": item_id, "turn": turn}),
                 )),
                 "reasoning" => Some((
-                    "notice",
-                    json!({"text": text, "interrupted": true, "item_id": item_id,
-                           "turn": turn, "what": "a thought cut off mid-stream"}),
+                    "reasoning",
+                    json!({"summary": text, "item_id": item_id,
+                           "interrupted": true, "turn": turn}),
                 )),
                 // A call's text is its arguments, which the call row carries; an
                 // activity is progress, never an answer.

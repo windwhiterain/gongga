@@ -92,6 +92,9 @@ FORGET_AFTER = int(os.environ.get("FAKE_LLM_FORGET_FILES_AFTER") or 0)
 # A slow answer, in pieces: `piece|piece|...` and the pause between them.
 SLOW_PIECES = (os.environ.get("FAKE_LLM_SLOW_PIECES") or "").split("|") if os.environ.get("FAKE_LLM_SLOW_PIECES") else []
 SLOW_PAUSE = float(os.environ.get("FAKE_LLM_SLOW_PAUSE") or 0)
+# A thought streamed the same way, so a kill can land inside one.
+SLOW_REASONING = (os.environ.get("FAKE_LLM_SLOW_REASONING") or "").split("|") \
+    if os.environ.get("FAKE_LLM_SLOW_REASONING") else []
 
 
 def events(with_tool: bool, with_web: bool, with_image: bool, usage=(0, 0)):
@@ -143,6 +146,25 @@ def events(with_tool: bool, with_web: bool, with_image: bool, usage=(0, 0)):
                 "response.output_item.done",
                 item={**gen, "status": "completed", "result": "iVBORw0KGgoAAAANSUhEUg=="},
             ),
+        ]
+    # A thought, streamed the same way, so a kill can land inside one.
+    if SLOW_REASONING:
+        out += [
+            ev("response.output_item.added",
+               item={"id": "rs_1", "type": "reasoning", "status": "in_progress"}),
+        ]
+        for piece in SLOW_REASONING:
+            out += [
+                ev("response.reasoning_text.delta", item_id="rs_1", delta=piece),
+                {"event": "fake.pause", "data": {"seconds": SLOW_PAUSE}},
+            ]
+        out += [
+            ev("response.reasoning_text.done", item_id="rs_1",
+               text="".join(SLOW_REASONING)),
+            ev("response.output_item.done",
+               item={"id": "rs_1", "type": "reasoning", "status": "completed",
+                     "content": [{"type": "reasoning_text",
+                                  "text": "".join(SLOW_REASONING)}]}),
         ]
     pieces = SLOW_PIECES or ["hello from the fake model"]
     out += [ev("response.output_item.added", item={"id": "msg_1", "type": "message"})]

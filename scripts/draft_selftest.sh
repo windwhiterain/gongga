@@ -53,6 +53,8 @@ cp -r "$HOME/.gongga/ship" "$home/ship" 2>/dev/null
 # Three pieces, a second apart: a kill between them lands mid-answer.
 export FAKE_LLM_DUMP="$dump"
 export FAKE_LLM_SLOW_PIECES='the first half of an answer|the second half|the ending'
+# A thought streams first, so the kill can land inside one.
+export FAKE_LLM_SLOW_REASONING='I should think about|the first half of this'
 export FAKE_LLM_SLOW_PAUSE=1.2
 python -c "import os,runpy,sys;open(sys.argv[1],'w').write(str(os.getpid()));sys.argv=sys.argv[2:];runpy.run_path(sys.argv[0],run_name='__main__')" \
   "$work/draft.pid" "$root/scripts/fake_llm.py" "$fake_port" >"$work/draft-fake.log" 2>&1 &
@@ -92,29 +94,39 @@ cli=("$bin/gongga-cli.exe" --home "$home" --server "127.0.0.1:$port")
 "${cli[@]}" set_session --session writer --cwd "$work" --model fake/flash-fake >/dev/null 2>&1
 "${cli[@]}" send_message --session writer --message "say something long" >/dev/null 2>&1
 
-# Wait until the first piece has arrived, then kill: the answer is genuinely cut off.
-for _ in $(seq 1 100); do
-  grep -q "provider usage" "$log" && continue
+# Both a thought and an answer have to be in flight before the kill: that is what makes
+# each one's survival a separate fact rather than one scenario standing for two.
+for _ in $(seq 1 150); do
   python - "$home" <<'INNER' && break
 import sqlite3, sys
 c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
-n = c.execute("select count(*) from drafts where text <> ''").fetchone()[0]
-sys.exit(0 if n > 0 else 1)
+parts = {p for (p,) in c.execute("select distinct part from drafts where text <> ''")}
+sys.exit(0 if {"reasoning", "output"} <= parts else 1)
 INNER
   sleep 0.2
 done
 drafted=$(python - "$home" <<'INNER'
 import sqlite3, sys
 c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
-print(c.execute("select count(*) from drafts where text <> ''").fetchone()[0])
+print(",".join(sorted(p for (p,) in c.execute(
+    "select distinct part from drafts where text <> ''"))))
 INNER
 )
-[[ "${drafted:-0}" -ge 1 ]]
-ok "a streaming answer leaves a draft as it arrives" $?
+[[ "${drafted}" == *reasoning* && "${drafted}" == *output* ]]
+ok "a thought and an answer are both drafted as they stream" $?
 
+# The server runs under a watchdog, so killing the process that answers is not a kill:
+# the watchdog restarts it and the "restart" never happens. The tree has to go, and the
+# supervisor's pid is the one the server says it runs under.
 pid=$(cat "$home/server.lock")
-taskkill //PID "$pid" //T //F >/dev/null 2>&1
-sleep 2
+supervisor=$(sed -n 's/.*supervisor=\([0-9]*\).*/\1/p' "$log" | tail -1)
+taskkill //PID "${supervisor:-$pid}" //T //F >/dev/null 2>&1
+taskkill //PID "$pid" //F >/dev/null 2>&1
+for _ in $(seq 1 50); do
+  alive "$pid" || break
+  sleep 0.2
+done
+sleep 1
 
 : > "$log"
 start "$log"
@@ -145,17 +157,31 @@ assert stale == 0, f"{stale} draft(s) predate the row they became"
 INNER
 ok "it is a row marked interrupted, and the draft is gone" $?
 
-# Half a *thought* must not become a reasoning item: one without `encrypted_content`
-# is a shape the provider rejects, so it is kept where the reader can see it and no
-# request is built from it.
+# Half a *thought* is kept as a reasoning row, because a thought the model wrote is
+# context it should read back. Two things have to hold for that to be sendable: the
+# stored item is the shape measured as accepted (text, no blob), and it sits after the
+# last output -- never between a call and its own output.
 python - "$home" <<'INNER'
 import json, sqlite3, sys
-c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
-for (d,) in c.execute("select display from messages where kind='reasoning'"):
-    v = json.loads(d)
-    assert v.get("encrypted"), f"a reasoning row without a blob would be rejected: {v}"
+c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db:ro".replace(":ro", "?mode=ro"),
+                    uri=True)
+rows = list(c.execute("select seq, kind, display, content from messages order by seq"))
+half = [json.loads(d) for s, k, d, _ in rows if k == "reasoning" and "interrupted" in d]
+assert half, "the half thought was not kept as a reasoning row"
+assert not half[0].get("encrypted"), half[0]
+assert half[0]["summary"].strip(), half[0]
+# The wire item is what the provider was measured to accept: text and no blob.
+wire = json.loads(next(cl for s, k, d, cl in rows
+                       if k == "reasoning" and "interrupted" in d and cl))
+assert wire["type"] == "reasoning", wire
+assert wire["summary"] == [{"type": "summary_text", "text": half[0]["summary"]}], wire
+assert "encrypted_content" not in wire, wire
+# And its position: after the last tool output, never between a call and its output.
+last_output = max((s for s, k, _, _ in rows if k == "tool_result"), default=0)
+half_at = next(s for s, k, d, _ in rows if k == "reasoning" and "interrupted" in d)
+assert half_at > last_output, (half_at, last_output)
 INNER
-ok "no reasoning row is written without its blob" $?
+ok "the half thought is a reasoning row, in a position the provider accepts" $?
 
 # A finished answer leaves no draft behind: the normal path is unchanged.
 "${cli[@]}" send_message --session writer --message "and now a whole one" >/dev/null 2>&1

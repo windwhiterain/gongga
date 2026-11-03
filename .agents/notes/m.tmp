@@ -1,0 +1,16 @@
+store: half a thought is kept as a reasoning row
+
+A thought the model wrote is context it should read back, so a draft cut off
+mid-stream becomes a `reasoning` row rather than a reader-only notice. The previous
+version chose `notice` on the strength of a line in a 2026-10-30 note -- "only text,
+no encrypted_content -> 400" -- which does not reproduce: measured against the
+provider, text in `content`, text in `summary`, no text at all, and even a bogus
+`encrypted_content` token all answer 200. What does reproduce is position: anything
+between a `function_call` and its output answers 400, which is why these rows are
+appended after the last output and why `answer_open_calls` runs first.
+See .agents/notes/2026-11-03-a-reasoning-item-needs-its-position-not-its-blob.md.
+
+The fake can now stream a slow thought (FAKE_LLM_SLOW_REASONING), so draft_selftest
+can land a kill inside one and check both kinds survive. It also stops the watchdog
+before restarting: killing the process that answers is not a kill, because the
+watchdog restarts it and the "restart" never happens.
