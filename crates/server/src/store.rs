@@ -44,24 +44,9 @@ pub struct Prompt {
     pub remote: Option<String>,
 }
 
-impl Prompt {
-    /// Whether `later` says something different on the wire than `self` does.
-    ///
-    /// # Invariant
-    ///
-    /// Only the texts a request sends are compared. `cwd` is a record: a shell
-    /// reports one directory under several spellings, and a spelling is not a reason
-    /// to write a row or to re-bill a prefix. See `docs/notes/server-store.md`.
-    pub fn rewritten_by(&self, later: &Prompt) -> bool {
-        self.instructions != later.instructions
-            || self.index != later.index
-            || self.tail != later.tail
-    }
-}
-
 /// What the model is told about a call that never returned: the
 /// `interrupted_call` template.
-fn interrupted_call() -> String {
+pub fn interrupted_call() -> String {
     crate::prompts::shared()
         .text("interrupted_call")
         .unwrap_or_default()
@@ -1055,7 +1040,6 @@ impl Store {
             db_path: self.path.clone(),
             session_id,
             upto_seq: self.last_seq(session_id)?,
-            placeholder: interrupted_call(),
         })
     }
 
@@ -1677,14 +1661,27 @@ fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value>
             .unwrap_or_default()
             .to_string()
     };
+    // A row's pictures and its provider-minted file ids are spent here, once: what
+    // comes back is the exact item every later request will carry, so replaying a
+    // transcript cannot depend on a file that may since have gone.
+    let with_pictures = |field: &str| -> serde_json::Value {
+        let images = images_of(value);
+        let text = text_of(field);
+        if images.is_empty() {
+            return json!(text);
+        }
+        let text = crate::meta::with_file_ids(&text, &images);
+        let mut parts = vec![json!({"type": "input_text", "text": text})];
+        parts.extend(images.iter().map(crate::image::content_part));
+        serde_json::Value::Array(parts)
+    };
     match kind {
         "text" => {
             let role = text_of("role");
-            let text = text_of("text");
             Some(if role == "assistant" {
-                json!({"role": "assistant", "content": [{"type": "output_text", "text": text}]})
+                json!({"role": "assistant", "content": [{"type": "output_text", "text": text_of("text")}]})
             } else {
-                json!({"role": role, "content": text})
+                json!({"role": role, "content": with_pictures("text")})
             })
         }
         "reasoning" => {
@@ -1705,12 +1702,10 @@ fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value>
             "name": text_of("name"),
             "arguments": text_of("arguments"),
         })),
-        // The pictures ride in `display`: a stored item names a file, and the bytes
-        // are read when the request is written.
         "tool_result" => Some(json!({
             "type": "function_call_output",
             "call_id": text_of("call_id"),
-            "output": text_of("output"),
+            "output": with_pictures("output"),
         })),
         "builtin_call" => {
             let item = value.get("item")?;
@@ -1721,7 +1716,10 @@ fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value>
                 .get("replayable")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(true);
-            replayable.then(|| item.clone())
+            // Read back now, not at send time: whether this item can be replayed is
+            // a property of the row, and a request must not be the place that finds
+            // out it cannot.
+            crate::llm::sendable_activity(item, replayable, crate::blobs::dir())
         }
         _ => None,
     }

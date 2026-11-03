@@ -74,8 +74,6 @@ pub struct RequestSource {
     pub db_path: std::path::PathBuf,
     pub session_id: i64,
     pub upto_seq: i64,
-    /// What a call that never got its result is said to have been.
-    pub placeholder: String,
 }
 
 impl RequestSource {
@@ -89,12 +87,7 @@ impl RequestSource {
         let rows =
             crate::transcript::Transcript::open(&self.db_path, self.session_id, self.upto_seq)?;
         let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let body = crate::body::RequestBody::new(
-            head.to_vec(),
-            rows,
-            self.placeholder.clone(),
-            counter.clone(),
-        );
+        let body = crate::body::RequestBody::new(head.to_vec(), rows, counter.clone());
         Ok((body, counter))
     }
 }
