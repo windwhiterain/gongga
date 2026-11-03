@@ -23,10 +23,7 @@ use crate::config::Config;
 
 const FRAME_QUEUE: usize = 512;
 
-/// How often a draining server looks at whether its last turn has finished.
-///
-/// It keeps serving while it waits: a command that arrives during the drain is
-/// answered, which is how the window learns the server is stopping rather than gone.
+/// How often a draining server checks its last turn, while still serving a window.
 const DRAIN_TICK: Duration = Duration::from_millis(100);
 
 /// A send that waits this long is a client that stopped reading, not a queued burst.
@@ -61,16 +58,8 @@ pub async fn serve(cfg: Arc<Config>, d: Arc<Dispatch>, bus: EventBus) -> anyhow:
     let mut buf = vec![0u8; 65507];
 
     loop {
-        // `cancel` stops acceptance -- `Dispatch::shutting_down` refuses a new turn --
-        // but it does not close the socket. The drain that follows can take minutes,
-        // and a window still attached to this server has to be able to ask what is
-        // happening: a silent link is indistinguishable from a dead one, and that is
-        // exactly what made a cancel look like a disconnection. The loop leaves when
-        // the last turn has finished, which is what the process was waiting for.
-        // The tick is unconditional, and the token is asked inside: a `select!`
-        // guard is evaluated once, when the select is entered, so a branch disabled
-        // before the cancel would never wake again -- the loop would sit on the
-        // socket until some client happened to send something.
+        // `cancel` stops acceptance, not the socket; the tick is unconditional because a
+        // `select!` guard is read once, on entry.
         let received = tokio::select! {
             _ = tokio::time::sleep(DRAIN_TICK) => {
                 if d.shutdown.is_cancelled() && d.active.load(Ordering::SeqCst) == 0 {
@@ -172,9 +161,7 @@ pub async fn serve(cfg: Arc<Config>, d: Arc<Dispatch>, bus: EventBus) -> anyhow:
         });
     }
 
-    // The loop above left only after the last turn finished, so there is nothing
-    // left to wait for. Named here because "server stopped" is what a reader looks
-    // for when a handover seemed to hang.
+    // The loop left only after the last turn finished; a reader looks for this line.
     if d.shutdown.is_cancelled() {
         tracing::info!("server stopped");
     }
@@ -220,8 +207,7 @@ async fn handle_connection(
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_default(),
                 model: cfg.model.model(),
-                // Already decided by now: `--parent` at startup, or this very
-                // handshake. A client says whether it is the window in charge.
+                // Decided already: `--parent` at startup, or this handshake.
                 owner: crate::signal::owner(),
                 supervisor: crate::supervise::supervisor(),
                 draining: d.shutdown.is_cancelled(),
@@ -316,8 +302,7 @@ async fn run_commands(
     sink: protocol::ChannelSink,
 ) {
     while let Some(command) = queued.recv().await {
-        // Two numbers a slow command is bisected by: how long it waited behind
-        // earlier commands on this connection, and how long it then took.
+        // Two numbers: wait behind earlier commands on this connection, then the run.
         let ran_at = std::time::Instant::now();
         let outcome = dispatch(&d, &command.name, &command.args, command.caller.as_deref()).await;
         tracing::info!(

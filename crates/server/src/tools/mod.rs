@@ -78,8 +78,7 @@ pub struct ToolContext {
     pub model: String,
     /// What a plan for that model is priced at, from the roster and this machine.
     pub rates: crate::prefix_cache::Rates,
-    /// Set when the shells are being ended because the server is going: nothing
-    /// that stops then "finished", so nothing about it is worth a row.
+    /// Set when shells end because the server is going: nothing that stops then finished.
     pub closing: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -519,8 +518,8 @@ fn notice_background_end(
         if closing.load(std::sync::atomic::Ordering::SeqCst) {
             return;
         }
-        // Marked: this is the server talking, not a person, and it must not wake
-        // an idle session by itself. See `docs/notes/server-commands.md`.
+        // Marked: the server talking, so it must not wake an idle session. See
+        // `docs/notes/server-commands.md`.
         if let Err(e) = store.add_pending_task(
             &session,
             "inject",
@@ -604,8 +603,7 @@ async fn leave_running(
              and was left running, has now {status} after {total}.\n\n{text}",
             crate::agent::spent(waited)
         );
-        // Marked like any other notice: the server speaking, not the operator.
-        // The server's own exit stops this command; it did not finish. See
+        // Marked like any notice: the server speaking, not the operator. See
         // `docs/notes/server-session.md`.
         if closing.load(std::sync::atomic::Ordering::SeqCst) {
             return;
@@ -613,8 +611,7 @@ async fn leave_running(
         if let Err(e) = store.add_pending_task(
             &session,
             "inject",
-            // The machine names the side its references are read on: a notice about a
-            // command is that command's shell's, not wherever the session stands now.
+            // A notice about a command is that command's shell's, not the session's side.
             &json!({"message": message, "notice": "finished", "machine": machine.label()}),
         ) {
             tracing::warn!(session = %session, "could not queue a finished command: {e}");
@@ -742,9 +739,8 @@ impl Tool for BashTool {
     }
 
     fn parameters(&self) -> Value {
-        // One field means two things, because the two machines start in two places:
-        // this one's `default` shell stands where the harness runs, the peer's stands
-        // in the session's own directory.
+        // Two machines start in two places: this one where the harness runs, the peer in
+        // the session's directory.
         let name_note = match self.machine {
             Machine::Local => {
                 "Whichever bash this call is about. Without `detached`: which persistent \
@@ -789,8 +785,7 @@ impl Tool for BashTool {
                                  finishes. Ignored for background commands."
             }
         });
-        // A job of a shell is that shell's, on either machine; a detached process
-        // belongs to this machine's registry, so only `bash` declares it.
+        // A job of a shell is that shell's on either machine; only `bash` declares one.
         properties["background"] = json!({
             "type": "boolean",
             "description": "Start the command and return immediately instead of waiting \
@@ -841,11 +836,8 @@ impl Tool for BashTool {
             if command.trim().is_empty() {
                 return ToolOutcome::err("bash received an empty command");
             }
-            // `target` names the machine. A session's directory is on one peer, so the
-            // only name that can be answered is that one, and a name that is another
-            // peer's must not quietly run here. Declaring the argument is what makes
-            // this reachable: an undeclared key is passed through and ignored, which is
-            // the rule `argument_error` keeps. See `docs/notes/server-tools-mod.md`.
+            // `target` names the machine; another peer's must not quietly run here. See
+            // `docs/notes/server-tools-mod.md`.
             if self.machine == Machine::Remote
                 && let Some(stated) = args
                     .get("target")

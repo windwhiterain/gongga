@@ -41,8 +41,7 @@ pub fn serve(args: &Args, tokens: &[String]) -> anyhow::Result<()> {
     let port: u16 = port
         .parse()
         .with_context(|| format!("parsing --port {port:?}"))?;
-    // `serve --home <dir>` wins over the flag written before the command name:
-    // the nearer one is the one the operator just typed.
+    // The flag before the command name loses to `serve --home`: nearer is newer.
     let home = match parsed.get("home") {
         Some(named) => crate::home_dir(Some(&PathBuf::from(named))),
         None => crate::home_of(args),
@@ -81,16 +80,13 @@ pub async fn ensure(home: &Path, addr: SocketAddr) -> anyhow::Result<bool> {
 ///
 /// # Invariant
 ///
-/// The pid is what makes "did this window start the server it is talking to"
-/// answerable: a home already served refuses the lock, so the process started
-/// here exits at once and its pid never answers a dial. A caller compares it
-/// with the pid the greeting carried — and with the watchdog's, when the server
-/// runs under one: this answers the watchdog, the greeting the server. `owner` is the process whose death stops
-/// it; `None` is a one-shot caller. See `docs/notes/cli-server.md`.
-/// `key` is what this process will dial with, when it was given one explicitly:
-/// a server that minted a key of its own would refuse every dial from the window
-/// that started it. `None` lets the home decide, which is what a client started
-/// without a key already does.
+/// The pid answers "did this window start the server it is talking to": it is the
+/// watchdog's when one runs, where a greeting carries the server's.
+///
+/// # Invariant
+///
+/// `key` is what this process dials with, so a server may not mint its own; `None` lets
+/// the home decide. See `docs/notes/cli-server.md`.
 pub fn spawn(
     home: &Path,
     addr: SocketAddr,
@@ -112,15 +108,12 @@ const GONE_POLL: Duration = Duration::from_millis(100);
 ///
 /// # Invariant
 ///
-/// Asked first: `cancel` preserves the running turn as a pending row, and the
-/// server started next resumes it. A kill is the fallback for a server that does
-/// not answer, because a stale one holding the port is the worse outcome.
-/// Returns the pid that was stopped, if anything was serving.
+/// Asked first, killed only if it will not answer; returns the pid that was serving.
 ///
-/// The key is the one this process would *dial* with, not the one the home
-/// stored: a client started with `--key` proves its key by using it, and a
-/// server it cannot authenticate with is a server it cannot ask to stop.
-/// See `docs/notes/cli-server.md`.
+/// # Invariant
+///
+/// The key is the one this process would *dial* with, never the home's: a client started
+/// with `--key` proves it by using it. See `docs/notes/cli-server.md`.
 pub async fn stop(conn: &Connection, home: &Path, addr: SocketAddr) -> Option<u32> {
     if !starts_here(&addr) {
         return None;
@@ -257,8 +250,7 @@ fn start(
 ) -> anyhow::Result<Option<u32>> {
     let server = server_program(home)?;
     std::fs::create_dir_all(home).with_context(|| format!("creating {}", home.display()))?;
-    // Before the server exists, because the server cannot do it: its own
-    // `current_exe()` is `gongga-server`, not what a shell should type.
+    // Before the server exists: its `current_exe()` is not what a shell should type.
     install_commands(home, &server);
     let log = log_path(home);
     let out = std::fs::OpenOptions::new()
@@ -401,9 +393,7 @@ fn install_runner(home: &Path, me: &Path) {
 fn install_pair(home: &Path, cli: &Path, server: &Path) {
     for (name, program) in [(SERVER, server), (COMMAND, cli)] {
         if let Err(e) = place(home, name, program) {
-            // A copy that is there and in use is not a problem worth a red line
-            // on a window: something is running it, which is why it cannot be
-            // replaced. Missing is the case that needs saying.
+            // A copy in use is not worth a red line; missing is the case to report.
             if home.join("bin").join(program_name(name)).is_file() {
                 continue;
             }
@@ -441,8 +431,7 @@ fn place(home: &Path, name: &str, program: &Path) -> std::io::Result<PathBuf> {
             Ok(target)
         }
         Err(e) => {
-            // A running command cannot be replaced on Windows; the old one stays
-            // until the next start, which is what a stale build means anyway.
+            // A running command cannot be replaced on Windows; the old one stays.
             let _ = std::fs::remove_file(&temp);
             Err(e)
         }

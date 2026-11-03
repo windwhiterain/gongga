@@ -282,10 +282,7 @@ impl ChannelStream {
         self.shared.recv(&mut self.inbound).await
     }
 
-    /// Whatever has already arrived, without waiting.
-    ///
-    /// A reader that handles one message per frame falls behind a stream and the
-    /// window collapses; clearing a burst first is what keeps it ahead.
+    /// Whatever has already arrived, without waiting: clearing a burst keeps a reader ahead.
     pub fn try_recv(&mut self) -> Option<Vec<u8>> {
         self.shared.try_recv(&mut self.inbound)
     }
@@ -730,8 +727,7 @@ pub async fn connect(
 ) -> Result<Channel, ChannelError> {
     let (tx, rx) = mpsc::channel::<Frame>(512);
     let reader = socket.clone();
-    // Shared with the reader and with the handle: a refusal is the answer this
-    // channel ended on, and the only party that sees it is the read.
+    // Shared with the reader and the handle: only the read sees a refusal.
     let refused = Arc::new(AtomicBool::new(false));
     let read_refused = refused.clone();
     let reader_task = tokio::spawn(async move {
@@ -750,9 +746,7 @@ pub async fn connect(
                 }
                 Ok(_) => {}
                 Err(e) => {
-                    // An ICMP refusal arrives as an error on this read, and it is
-                    // news about the address: nothing is listening there. Not a
-                    // fault here, so it is recorded rather than swallowed.
+                    // An ICMP refusal is news about the address, so it is recorded.
                     if is_refusal(&e) {
                         read_refused.store(true, Ordering::Release);
                     }
@@ -782,8 +776,7 @@ pub fn accept(
     cfg: ChannelConfig,
     conn_id: u32,
 ) -> Channel {
-    // The demux owns the read, and it answers a refusal itself: a server never
-    // ends a channel on one. See `docs/notes/server-net.md`.
+    // The demux owns the read and answers a refusal itself. See `docs/notes/server-net.md`.
     let refused = Arc::new(AtomicBool::new(false));
     spawn_inner(
         socket,
@@ -1052,10 +1045,7 @@ async fn on_tick(
 /// How many stale packets one timer tick will resend.
 const MAX_RETRANSMITS_PER_TICK: usize = 8;
 
-/// Whether an error is the socket relaying an ICMP refusal for a datagram we
-/// sent -- an answer about the address, not a fault in this socket.
-///
-/// See `docs/notes/protocol-channel.md`.
+/// Whether an error is the socket relaying an ICMP refusal; see `docs/notes/protocol-channel.md`.
 fn is_refusal(e: &std::io::Error) -> bool {
     if cfg!(windows) {
         // `WSAECONNRESET` on a UDP socket: the peer answered "nothing here".
