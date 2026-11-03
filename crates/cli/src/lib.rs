@@ -523,9 +523,6 @@ pub enum Submission {
     Rejected,
     /// Nothing was sent because there is no link; the line itself is valid.
     Offline,
-    /// `wait`: nothing to send, because what it wants is read from the stream
-    /// this connection already receives. The one-shot loop reads it.
-    Wait(protocol::Args),
 }
 
 // Client state
@@ -1283,13 +1280,6 @@ impl Client {
 
         // One echo per command: this one, where it answers. A server command is
         // drawn from its `cmd` event.
-        // `wait` is the one client command that reads the connection rather than
-        // changing this client's own state, so it answers out of band: the one
-        // shot loop is where a stream can be read, and nothing here can wait.
-        if head == "wait" {
-            return Submission::Wait(args.clone());
-        }
-
         if spec.target == protocol::CommandTarget::Client {
             self.show(sink, &echo, &tokens, None);
             self.run_client_command(&head, &args, sink);
@@ -1818,9 +1808,6 @@ async fn run_once(client: &mut Client, link: &mut Link, command: &[String]) -> a
         // saying so.
         Submission::Offline => anyhow::bail!("not connected to the server"),
         // Nothing to send: what it waits for is already arriving on this link.
-        Submission::Wait(args) => {
-            return wait_on(link, &args).await;
-        }
         Submission::Send(msg) => msg,
     };
     let id = match &msg {
@@ -1880,71 +1867,6 @@ async fn run_once(client: &mut Client, link: &mut Link, command: &[String]) -> a
                 };
             }
         }
-    }
-}
-
-/// Reads the connection until one log row matches, prints it, and leaves.
-///
-/// # Invariant
-///
-/// This is a primitive, not a policy. It answers one question -- "what is the next
-/// log row of this kind?" -- and every judgement about *when* to ask it belongs to
-/// the caller: whether a turn already finished, how long is too long, what a
-/// failed turn means. Those are decisions about work, and a decision about work
-/// belongs in the script that is doing the work, where it can be read and changed
-/// without a rebuild.
-///
-/// So there is no name validation (a wrong `--session` is a filter that never
-/// matches, exactly as `grep` would), no status interpretation (the row says what
-/// happened; the reader decides what it means), and no timeout (`timeout(1)` bounds
-/// any command and already leaves with 124).
-///
-/// Nothing is polled. Every connection already receives every event on the bus, so
-/// this is a read loop with a predicate.
-async fn wait_on(link: &mut Link, args: &protocol::Args) -> anyhow::Result<()> {
-    let kind = args.get("kind").cloned().unwrap_or_default();
-    if kind.is_empty() {
-        anyhow::bail!("wait needs --kind: the log row to wait for, e.g. turn_end");
-    }
-    // A filter, compared as text: no lookup, no opinion about whether it exists.
-    let session = args.get("session").cloned().filter(|s| !s.is_empty());
-    loop {
-        let Some(bytes) = link.recv().await else {
-            anyhow::bail!("server disconnected while waiting for {kind}");
-        };
-        // A greeting or a refusal is not this wait's business.
-        let event = match decode_server(&bytes)? {
-            ServerMessage::Event(event) => event,
-            _ => continue,
-        };
-        let Event::Record {
-            kind: wrote,
-            session: about,
-            payload,
-            id,
-            ..
-        } = event
-        else {
-            continue;
-        };
-        if wrote != kind {
-            continue;
-        }
-        if let Some(who) = &session
-            && about.as_deref() != Some(who.as_str())
-        {
-            continue;
-        }
-        println!(
-            "{}",
-            serde_json::json!({
-                "kind": wrote,
-                "session": about,
-                "id": id,
-                "payload": payload,
-            })
-        );
-        return Ok(());
     }
 }
 
@@ -2216,7 +2138,24 @@ fn client_info(owner: Option<u32>) -> ClientInfo {
         build: protocol::BUILD.to_string(),
         label: format!("cli/pid-{}", std::process::id()),
         owner,
+        // Which session this process was started from: the server cannot know it,
+        // and `subscribe` is what needs it. See [`ClientInfo::session`].
+        session: calling_session(),
     }
+}
+
+/// The session whose shell started this process, if any.
+///
+/// # Invariant
+///
+/// The environment only, never a sticky argument: a sticky `session` is the one a
+/// command *acts on*, and the caller is the one it was run from. Confusing the two
+/// would make `subscribe` notice whoever was named last.
+fn calling_session() -> Option<String> {
+    std::env::var("GONGGA_SESSION")
+        .ok()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
 }
 
 fn home_dir(explicit: Option<&Path>) -> PathBuf {

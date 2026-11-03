@@ -350,14 +350,6 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                 }
                 match outcome {
                     cli::Submission::Local | cli::Submission::Rejected => {}
-                    // `wait` reads a stream, and this window is already drawing
-                    // every session's events: there is nothing for it to wait on
-                    // that the operator cannot already see.
-                    cli::Submission::Wait(_) => TuiSink(&mut ui).say(
-                        LineKind::System,
-                        "wait is for a script: this window already draws every session as \
-                         it happens",
-                    ),
                     // Nothing left this process, so the text is still the operator's:
                     // put it back rather than log it away.
                     cli::Submission::Offline => ui.restore_input(&line),
