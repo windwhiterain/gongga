@@ -103,6 +103,26 @@ pub fn plan(
     planned
 }
 
+/// Records that a request carrying `keys` was answered: those nodes and their ancestors
+/// are warm again.
+///
+/// # Invariant
+///
+/// `keys` are the spellings the request emitted, in order, and only an answered request
+/// calls this: `touched` never means "a plan liked it".
+pub fn confirm(store: &Store, session: &str, purpose: &str, keys: &[String]) {
+    let mut layouts = shared(store, session);
+    let Some(layout) = layouts.get_mut(session) else {
+        return;
+    };
+    if !layout.confirm(purpose, keys, crate::store::now_millis() as u64) {
+        return;
+    }
+    if let Err(e) = store.save_prefix_layout(session, layout) {
+        tracing::warn!(error = %e, session = %session, "the warm prefix could not be written");
+    }
+}
+
 /// What a plan is priced at: the roster's rates, and how long a cache lasts.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Rates {
@@ -110,8 +130,7 @@ pub struct Rates {
     pub price: Option<crate::providers::Price>,
     /// The chance a prefix the provider once held is gone by the next request.
     pub invalid: f64,
-    /// How long a prefix survives in the tier this server buys -- the provider's default,
-    /// since no request names one -- in millis; `0` never expires. See
+    /// How long a prefix survives in the tier this server buys; `0` never expires. See
     /// `docs/notes/server-prefix-cache.md`.
     pub ttl_ms: u64,
 }
@@ -245,12 +264,11 @@ impl Layout {
                 chosen = Some(NodeId(node));
             }
         }
+        // Only an answered request holds anything. See `Layout::confirm`.
         let mut warm = HashSet::new();
         let mut walk = chosen;
         while let Some(node) = walk {
             warm.insert(self.nodes[node.0].item);
-            // Sent again, so the provider holds it again: the chain is fresh now.
-            self.nodes[node.0].touched = now;
             walk = self.nodes[node.0].parent;
         }
         let mut tail = chosen;
@@ -436,6 +454,44 @@ impl Layout {
             .get(&(purpose.to_string(), want.key.to_string()))?;
         let patch = crate::diff::patch(&self.items[id].text, want.text, tolerance)?;
         Some((id, patch))
+    }
+
+    /// Touches the chain `keys` walks, from its root to where the keys stop matching.
+    ///
+    /// # Invariant
+    ///
+    /// The walk follows the children in the order the request emitted, so the nodes
+    /// touched are exactly the prefixes that request carried; a key no child carries
+    /// ends it, because the provider holds no prefix past that point.
+    fn confirm(&mut self, purpose: &str, keys: &[String], now: u64) -> bool {
+        let mut tail: Option<NodeId> = None;
+        for key in keys {
+            let next = self.children_of(tail).into_iter().find(|node| {
+                let item = &self.items[self.nodes[node.0].item];
+                item.purpose == purpose && item.key == *key
+            });
+            let Some(node) = next else { break };
+            tail = Some(node);
+        }
+        let mut touched = false;
+        let mut walk = tail;
+        while let Some(node) = walk {
+            self.nodes[node.0].touched = now;
+            touched = true;
+            walk = self.nodes[node.0].parent;
+        }
+        touched
+    }
+
+    /// Every node whose parent is `parent`, roots included.
+    fn children_of(&self, parent: Option<NodeId>) -> Vec<NodeId> {
+        match parent {
+            Some(node) => self.nodes[node.0].children.clone(),
+            None => (0..self.nodes.len())
+                .filter(|node| self.nodes[*node].parent.is_none())
+                .map(NodeId)
+                .collect(),
+        }
     }
 
     /// Drops every item whose text is not in `ids`, and the chains through it.

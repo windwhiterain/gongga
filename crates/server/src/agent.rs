@@ -880,6 +880,9 @@ impl Agent {
                 }
                 LlmEvent::Completed { usage } => {
                     saw_completion = true;
+                    // The provider answered this request, so the index it carried is
+                    // warm again -- and only that one. See `docs/notes/server-prefix-cache.md`.
+                    crate::prefix_cache::confirm(&self.store, name, "prompt index", &prompt.rooted);
                     // Outside the guard: a provider with no counts still took the time.
                     let ttft_ms =
                         first_token.map(|t| t.duration_since(requested).as_millis() as u64);

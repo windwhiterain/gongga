@@ -96,9 +96,30 @@ conversation, and must not be warmed by the old one.
 ## Node::touched, expire
 
 A price says what a hit is worth; a lifetime says whether there is one. Each node
-records `touched`, the moment its chain was last sent, and using a chain refreshes
-every node on it, so `touched` never decreases towards the root: a node is stale
-exactly when its own prefix expired.
+records `touched`, the moment the provider last answered a request carrying that chain,
+and confirming a chain refreshes every node on it, so `touched` never decreases towards
+the root: a node is stale exactly when its own prefix expired.
+
+`touched` used to be written by `plan`, which made it a claim about a choice rather than
+about a request: a 400, a dead socket, a cancelled turn all marked a chain warm that the
+provider never held. It is now written by `confirm`, called from the one place that knows
+the provider answered -- `LlmEvent::Completed` in `agent`, with the spellings the request
+emitted (`Prompt::rooted`, which is the index's own order). Retries inside `llm::stream`
+report a failure or a retry and only the attempt that completes counts, so a request that
+took four attempts warms nothing until the fourth works.
+
+A plan still creates nodes for entries it has never emitted, and those are born at the
+current instant -- they would look warm to `expire` if the request that created them
+failed. Nothing reads them until the chain is chosen again, and a chain the provider
+never held is a miss rather than an error; the first request after that failure confirms
+what actually went out. Making that exact would mean dropping unconfirmed nodes, which is
+worth doing when something else needs the distinction.
+
+The skill table's ordering (`tools/index_skill`) is planned the same way but has no
+confirm: it is a tool result inside the transcript, so it is not a prefix the provider
+holds for the *next* request's sake. Its nodes now expire with their tier and the table
+falls back to the caller's order -- no behaviour change, because the row was already
+written and replayed verbatim.
 
 `expire` runs first, before anything reads a node index. A stale node takes its whole
 subtree with it, because a provider's cache is a prefix -- if the front of a chain is
