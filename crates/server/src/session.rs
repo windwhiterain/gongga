@@ -439,8 +439,7 @@ pub struct Tuning {
     /// The context level a notice is sent at, as a percentage of the window;
     /// `None` means the default share.
     pub context_limit: Option<u8>,
-    /// How hard the model should think, in the roster's spelling, resolved when
-    /// `set_session` wrote it; `None` is a model that publishes no level.
+    /// How hard to think, in the roster's spelling; `None` is a model publishing no level.
     pub thinking_effort: Option<String>,
 }
 
@@ -477,8 +476,7 @@ struct SessionInner {
     resumable: AtomicBool,
     /// Set by `cancel`: stop at the next storable point. See `request_stop`.
     stopping: AtomicBool,
-    /// Set before the shells are ended: a command that stops now was stopped, and
-    /// a notice about it would be news about the server's own exit.
+    /// Set before the shells end, so a stop announced now is the command's, not the exit's.
     closing: Arc<AtomicBool>,
     /// The connection this session's references are read through, if any.
     reader: Mutex<Option<Arc<crate::remote::Reader>>>,
@@ -631,9 +629,8 @@ impl SessionHandle {
     /// not on every step that stays above it, and it is told again only after it
     /// has folded something -- the point at which the advice changed.
     pub fn note_context_asked(&self, tokens: u64, budget: u64) -> bool {
-        // A quarter of the budget is the granule: small enough that a session
-        // still drifting upward is told again before it doubles, large enough
-        // that a turn spent just over the line is not nagged on every step.
+        // A quarter of the budget is the granule: told again before it doubles, not every
+        // step.
         let granule = (budget / 4).max(1);
         let mut current = self.inner.context_asked.load(Ordering::SeqCst);
         loop {
@@ -1048,9 +1045,8 @@ impl SessionManager {
                     .await?
             }
         };
-        // A listing reports a status or it did not answer at all: waiting has no
-        // deadline, so a missing status is a shell that died -- and `listing_run`
-        // has already forgotten it.
+        // No status means the shell died: waiting has no deadline, so a listing either
+        // reports one or did not answer.
         let Some(status) = outcome.exit_code else {
             anyhow::bail!(
                 "remote {name:?} did not answer while listing {directory:?}, and its shell \
@@ -1110,11 +1106,7 @@ impl SessionManager {
             Err(_) => directory.to_string(),
         };
         let command = listing_script(&directory);
-        // Measured: 1.7s for the first listing on a fresh remote (ssh, the runner and
-        // a shell), 0.17-0.21s for every one after, and 6.6s for a cold `System32`
-        // -- which is why there is no deadline here. A listing also does not follow
-        // with `pwd`: nothing here reads the shell's directory.
-        // Asked and waited for: this ends when the peer answers or its shell ends.
+        // Asked and waited for: no deadline, a cold `System32` listing measured 6.6s.
         let outcome = shell.run_until_settled(&command).await;
         if outcome.is_err() {
             drop(shell);
@@ -1228,10 +1220,7 @@ impl SessionManager {
         self.live.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The model a session's row already carries, in the roster's spelling.
-    ///
-    /// `None` when the session does not exist yet or its row names no model: that
-    /// is what makes `set_session` ask for `--model` instead of inventing one.
+    /// The model the row already carries; `None` is why `set_session` demands `--model`.
     pub fn recorded_model(&self, name: &str) -> Option<String> {
         let row = self.store.get_session(name).ok().flatten()?;
         let model = row.model.trim();
@@ -1430,15 +1419,12 @@ impl SessionManager {
         ask: RemoteAsk,
         cwd: Option<&str>,
     ) -> anyhow::Result<MoveOutcome> {
-        // An unstated remote is the one it already records: a move of directory
-        // alone must not carry the session to another machine, and the row must not
-        // end up naming one place while its shells are on another.
+        // An unstated remote is the one it records: a directory move must not move machines.
         let wanted_remote = match ask {
             RemoteAsk::Keep => self.recorded_remote(session.name()),
             RemoteAsk::Machine(remote) => remote,
         };
-        // Resolved before anything is queued or ended: an unknown name must not wait
-        // in a slot that would later tear down working shells on its way to failing.
+        // Resolved before anything is queued: an unknown name must not tear down shells.
         self.endpoint_for(wanted_remote.as_deref())?;
         let request = MoveRequest {
             remote: wanted_remote,
