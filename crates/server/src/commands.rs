@@ -27,6 +27,8 @@ pub struct Dispatch {
     pub sessions: SessionManager,
     pub store: Store,
     pub bus: EventBus,
+    /// What sessions asked to be told about, and the matcher that tells them.
+    pub subscriptions: Arc<crate::subscriptions::Subscriptions>,
     /// Commands registered by scripts, and the way to run one.
     pub scripts: Arc<crate::script::Scripts>,
     /// The machine's LLM roster: what `set_session --model` is checked against.
@@ -442,6 +444,42 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
         },
         CommandSpec {
             target: CommandTarget::Server,
+            name: "subscribe".into(),
+            description: "Ask to be told about the events this pattern matches. Registers \
+                     and answers at once -- it does not wait for a match. A match becomes a \
+                     message to the session that subscribed, so an idle one is woken by it; \
+                     the agent's side of waiting for that message is the `wait` tool."
+                .into(),
+            args: vec![
+                arg(
+                    "event",
+                    "A regex, matched against an event's name -- a log row's `kind` \
+                     (`turn_end`, `tool_result`, `context_notice`) or another event's own \
+                     (`status`, `usage`, `sessions`, `log`, `cmd_result`) -- and against \
+                     `name:session` when the event is about a session, so `turn_end:child` \
+                     is one session's turn ending. Unanchored, so write `^turn_end$` for \
+                     exactly one name.",
+                    true,
+                    Some("pattern"),
+                    CompletionSource::None,
+                ),
+                arg(
+                    "persistant",
+                    "`true` keeps the subscription armed after it fires, so every later \
+                     match is news too. Without it one match is the whole subscription.",
+                    false,
+                    Some("true|false"),
+                    CompletionSource::Static(
+                        protocol::SHOW_VALUES
+                            .iter()
+                            .map(|v| v.to_string())
+                            .collect(),
+                    ),
+                ),
+            ],
+        },
+        CommandSpec {
+            target: CommandTarget::Server,
             name: "get_messages".into(),
             description: "Read the transcript: a range of sequence numbers, oldest first. \
                      Each row arrives as the event it was published as, before the result."
@@ -505,7 +543,14 @@ fn sticky_arg(mut spec: protocol::ArgSpec, sticky: bool) -> protocol::ArgSpec {
     spec
 }
 
-pub async fn dispatch(d: &Dispatch, name: &str, args: &Args) -> Outcome {
+/// Runs one command, as the session `caller` if the connection named one.
+///
+/// # Invariant
+///
+/// `caller` is the session the command was run *from*, which the client read off
+/// its own environment. It is not the `session` argument: that one is who the
+/// command acts on, and `subscribe` is the one command that needs both told apart.
+pub async fn dispatch(d: &Dispatch, name: &str, args: &Args, caller: Option<&str>) -> Outcome {
     // One catalog decides existence, runner and required args, for every kind.
     let spec = match resolve(&d.catalog().await, name, args) {
         Ok(spec) => spec,
@@ -523,6 +568,7 @@ pub async fn dispatch(d: &Dispatch, name: &str, args: &Args) -> Outcome {
         "cancel" => cancel(d).await,
         "get_messages" => get_messages(d, args).await,
         "events" => events(d, args).await,
+        "subscribe" => subscribe(d, args, caller).await,
         // Published as a server command but unhandled: a catalog bug, named.
         other => Outcome::err(format!(
             "{other} is published as a server command but has no handler"
@@ -1148,6 +1194,68 @@ async fn get_messages(d: &Dispatch, args: &Args) -> Outcome {
     transcript_outcome(&name, t)
 }
 
+/// Arms a pattern, and answers with what it armed.
+///
+/// # Invariant
+///
+/// The session is the caller's, never the `--event` pattern's: a pattern names
+/// what to watch, and the caller is who hears about it. Refusing without a caller
+/// is deliberate -- a subscription with no addressee would match, fire, and tell
+/// nobody, which is the one failure a registry cannot notice by itself.
+async fn subscribe(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
+    let pattern = args.get("event").map(String::as_str).unwrap_or("").trim();
+    if pattern.is_empty() {
+        return Outcome::err(
+            "subscribe needs --event: a pattern over event names, e.g. `turn_end`",
+        );
+    }
+    let Some(caller) = caller.filter(|name| !name.trim().is_empty()) else {
+        return Outcome::err(
+            "subscribe notices the session it was run from, and this client did not say \
+             which: run it from a session's shell, where `$GONGGA_SESSION` is set",
+        );
+    };
+    match d.store.get_session(caller) {
+        Ok(Some(_)) => {}
+        Ok(None) => return Outcome::err(format!("no session named {caller:?} to notice")),
+        Err(e) => return Outcome::err(e.to_string()),
+    }
+    let persistent = match args.get("persistant") {
+        None => false,
+        Some(raw) => match parse_flag(raw) {
+            Ok(value) => value,
+            Err(_) => {
+                return Outcome::err(format!(
+                    "--persistant takes {}, not {raw:?}",
+                    protocol::SHOW_VALUES.join(" or ")
+                ));
+            }
+        },
+    };
+    match d.subscriptions.arm(caller, pattern, persistent).await {
+        Ok(row) => {
+            tracing::info!(
+                session = %caller, subscription = row.id, pattern = %pattern,
+                persistent, "subscribed"
+            );
+            Outcome::ok_with(
+                format!(
+                    "subscription {} armed: {caller} hears about `{pattern}`{}",
+                    row.id,
+                    if persistent { ", every time" } else { " once" }
+                ),
+                json!({
+                    "id": row.id,
+                    "session": caller,
+                    "event": pattern,
+                    "persistant": persistent,
+                }),
+            )
+        }
+        Err(e) => Outcome::err(e),
+    }
+}
+
 /// The log, after a cursor: what a subscriber reads, and what a watcher polls.
 ///
 /// # Invariant
@@ -1356,6 +1464,9 @@ async fn finish_delete(d: &Dispatch, name: &str, was_busy: bool, dropped: usize)
             if let Err(e) = d.store.forget_prefix_layout(name) {
                 tracing::warn!(session = %name, error = %e, "could not forget the prefix layout");
             }
+            // SPEC: a deleted session's bash go with it, and so do its
+            // subscriptions -- there is nobody left to tell.
+            let forgotten = d.subscriptions.forget_session(name).await;
             publish_sessions(d);
             let mut message = format!("deleted session {name}");
             if stopped.stopped > 0 {
@@ -1369,6 +1480,9 @@ async fn finish_delete(d: &Dispatch, name: &str, was_busy: bool, dropped: usize)
             }
             if dropped > 0 {
                 message.push_str(&format!("; dropped {dropped} pending task(s)"));
+            }
+            if forgotten > 0 {
+                message.push_str(&format!("; dropped {forgotten} subscription(s)"));
             }
             Outcome::ok(message)
         }

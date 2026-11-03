@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use protocol::{
-    self, Args, ChannelError, ClientMessage, Event, ServerInfo, ServerMessage, decode_client,
-    encode_server,
+    self, Args, ChannelError, ClientInfo, ClientMessage, Event, ServerInfo, ServerMessage,
+    decode_client, encode_server,
     frame::{Flags, Frame},
 };
 use tokio::net::UdpSocket;
@@ -39,6 +39,9 @@ struct Queued {
     id: u64,
     name: String,
     args: Args,
+    /// The session this connection was started from, if it named one: see
+    /// [`protocol::ClientInfo::session`].
+    caller: Option<String>,
     /// When the datagram was read: the wait a slow answer is told apart by.
     arrived: std::time::Instant,
 }
@@ -188,9 +191,9 @@ async fn handle_connection(
     let (sink, mut stream) = channel.split();
 
     // Authenticate first: an unauthenticated peer must not see the catalog.
-    if !authenticate(&sink, &mut stream, &cfg.key, peer, conn_id).await {
+    let Some(client) = authenticate(&sink, &mut stream, &cfg.key, peer, conn_id).await else {
         return;
-    }
+    };
 
     let mut bus_rx = bus.subscribe();
     // Commands run elsewhere: one must not hold up the events owed here.
@@ -244,7 +247,7 @@ async fn handle_connection(
             incoming = stream.recv() => {
                 let Some(bytes) = incoming else { break };
                 match decode_client(&bytes) {
-                    Ok(ClientMessage::Hello { client, .. }) => {
+                    Ok(ClientMessage::Hello { .. }) => {
                         tracing::info!(%peer, conn_id, label = %client.label, "client ready");
                     }
                     Ok(ClientMessage::Command { id, name, args }) => {
@@ -262,6 +265,7 @@ async fn handle_connection(
                                 id,
                                 name,
                                 args,
+                                caller: client.session.clone(),
                                 arrived: std::time::Instant::now(),
                             })
                             .is_err()
@@ -308,7 +312,7 @@ async fn run_commands(
         // Two numbers a slow command is bisected by: how long it waited behind
         // earlier commands on this connection, and how long it then took.
         let ran_at = std::time::Instant::now();
-        let outcome = dispatch(&d, &command.name, &command.args).await;
+        let outcome = dispatch(&d, &command.name, &command.args, command.caller.as_deref()).await;
         tracing::info!(
             command = %command.name,
             session = command.args.get("session").map(String::as_str).unwrap_or("-"),
@@ -341,14 +345,18 @@ async fn run_commands(
     }
 }
 
-/// Waits for the client's `Hello` and checks its key. False means "closed".
+/// Waits for the client's `Hello` and checks its key.
+///
+/// `None` means the connection is closed. What comes back is the client's own
+/// account of itself, which the commands on this connection are then run as: who
+/// dialled is not a per-command question.
 async fn authenticate(
     sink: &protocol::ChannelSink,
     stream: &mut protocol::ChannelStream,
     expected: &str,
     peer: SocketAddr,
     conn_id: u32,
-) -> bool {
+) -> Option<ClientInfo> {
     let greeting = tokio::time::timeout(HANDSHAKE_TIMEOUT, stream.recv()).await;
     let outcome = match greeting {
         Ok(Some(bytes)) => match decode_client(&bytes) {
@@ -366,7 +374,7 @@ async fn authenticate(
                     if let Some(owner) = client.owner {
                         crate::signal::adopt(owner);
                     }
-                    return true;
+                    return Some(client);
                 }
                 tracing::warn!(%peer, "rejected client: wrong key");
                 "wrong key"
@@ -374,10 +382,10 @@ async fn authenticate(
             Ok(_) => "expected a Hello first",
             Err(_) => "unparsable handshake",
         },
-        Ok(None) => return false,
+        Ok(None) => return None,
         Err(_) => {
             tracing::debug!(%peer, "handshake timed out");
-            return false;
+            return None;
         }
     };
     let _ = send_server(
@@ -387,7 +395,7 @@ async fn authenticate(
         },
     )
     .await;
-    false
+    None
 }
 
 /// Length-independent comparison over every byte, so timing leaks no prefix.

@@ -34,6 +34,7 @@ mod shell_command;
 mod ship;
 mod signal;
 mod store;
+mod subscriptions;
 pub mod supervise;
 mod tools;
 mod transcript;
@@ -288,6 +289,10 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         tracing::warn!(problem = %problem, "a script could not be read");
     }
 
+    // The armed subscriptions come back with the database, so a restart resumes
+    // what sessions asked to be told about rather than dropping it.
+    let subscriptions = crate::subscriptions::Subscriptions::load(store.clone(), bus.clone());
+
     let dispatch = Arc::new(Dispatch {
         agent: Arc::new(Agent {
             store: store.clone(),
@@ -311,6 +316,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         sessions: sessions.clone(),
         store: store.clone(),
         bus: bus.clone(),
+        subscriptions: subscriptions.clone(),
         scripts: scripts.clone(),
         providers: providers::Handle,
         active: Arc::new(AtomicUsize::new(0)),
@@ -334,6 +340,12 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         elapsed_ms = adoption_started.elapsed().as_millis() as u64,
         "detached jobs adopted from the previous run"
     );
+
+    // One matcher for every armed pattern: a match becomes an inbox row for the
+    // session that asked for it. See `docs/notes/server-subscriptions.md`.
+    let watching = subscriptions.clone();
+    let stop_watching = dispatch.shutdown.clone();
+    tokio::spawn(async move { watching.watch(stop_watching).await });
 
     // Undelivered messages get a turn, and unseen failures get handed over.
     let wake = dispatch.clone();

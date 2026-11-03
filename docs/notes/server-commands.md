@@ -407,6 +407,24 @@ Not quite yet: the acknowledgement announcing what is being cancelled is worth
 more than a fast exit, and the listen loop publishes it only after this handler
 returns. A quarter second is well inside one round trip.
 
+## subscribe
+
+Arms a pattern for the session it was run from. The command answers at once: it
+registers rather than waits, and the news goes to the session as an inbox row --
+see `docs/notes/server-subscriptions.md` for why waiting is the `wait` tool's job
+and not a command's.
+
+The session is the *caller's*, never the pattern's. It comes from
+`ClientInfo::session`, which the client reads off `$GONGGA_SESSION`: who a command
+acts on (`--session`) and who ran it are two different questions, and this is the
+one command that needs both answered separately. A client that names no session is
+refused, because a subscription with no addressee would fire and tell nobody.
+
+`--persistant` is whether it survives its own match: without it one match is the
+whole subscription, and the row is deleted as it fires. A pattern meant to fire
+every time says so, and one that only ever needed to happen once stops costing
+anything after it does.
+
 ## nudge_inboxes
 
 The normal path needs no help: a message written while a turn is running is
