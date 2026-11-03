@@ -133,6 +133,15 @@ one it keeps -- `moved` deliberately does not rewrite a row whose recorded direc
 empty, because the shell reporting where it started is not a move. Without that shape
 the default setup of a remote session would send "in ``" for the life of the session.
 
+Both remote cards also say what stays on this machine, because a model that assumes
+otherwise spends a turn discovering it: `remote_bash` has no `gongga-cli` -- the
+command layer, this home and every skill `index_skill` lists are here -- and
+`read_file`, `write_file`, `replace` and `python` act here, which for a session whose
+directory belongs to the peer means a relative path names *this* machine's copy of
+that same spelling and never the peer's. That is the one place the model is told, and
+it is told only there: a local session is not, because the bytes it has already sent
+are the ones it keeps.
+
 Which one is chosen is the machine the shells are on (`Prompt.remote`, read from
 `Shells::remote_name`) and whether a directory is known, and the row records the machine.
 That record is why `--remote none` in the directory the session left is a move:
