@@ -775,14 +775,11 @@ impl Agent {
                 }
                 LlmEvent::Reasoning {
                     item_id,
+                    item,
                     summary,
-                    encrypted,
                 } => {
-                    let mut payload = json!({"summary": summary});
-                    if let Some(e) = encrypted {
-                        payload["encrypted"] = json!(e);
-                    }
-                    payload["item_id"] = json!(item_id);
+                    // The item, not a summary of it: a request sends it back whole.
+                    let payload = json!({"item": item, "summary": summary, "item_id": item_id});
                     said.insert(item_id.clone());
                     streamed.remove(&item_id);
                     let _ = self.store.append_message(id, "reasoning", &payload);

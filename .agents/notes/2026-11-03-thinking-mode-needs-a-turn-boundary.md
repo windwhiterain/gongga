@@ -15,16 +15,41 @@ HTTP 400 Bad Request: The `reasoning_text` in the thinking mode must be passed b
 `set_session --thinking_effort low` 把等级抬进 thinking，下一步要续的就是那段没有 reasoning
 的历史。
 
-## 关键结论
+## 关键结论（第二版，推翻第一版）
 
-**这条报错在描述一个不存在的原因。** 它说"reasoning_text 必须回传"，但实测：
+报错是**字面正确**的：厂商确实要 `reasoning_text` 回传。真正丢东西的是**我们**。
 
-- 抄本里本来就没有 reasoning 可回传（`reasoning_items=0`），不是我们弄丢了；
-- 伪造任何 reasoning item 都不解决问题，除非伪造得"足够真"（���下��）；
-- **在末尾追加一条 `role:user` 消息，同一份字节立刻 200**。
+`reasoning` 行在三个地方被收窄过一次：
 
-也就是说厂商要的不是文本，是**turn 边界**：它只校验"最近一条 user 之后的那一段"，前面的一律
-当已完成的轮次。补一条 user 等于把整段历史宣布为"上一轮"，本步从空开始。
+1. `llm.rs` 造 `LlmEvent::Reasoning` 时只带 `summary` + `encrypted`，provider 返回的 `content`
+   （思考原文）在这里就没了；
+2. `agent.rs` 落库成 `{"summary", "encrypted", "item_id"}`，同样没有 `content`；
+3. `store::wire_item` 回放时重新拼 `{"type":"reasoning","summary":[],"encrypted_content":...}`，
+   连 `summary` 都清空，注释还写着 "The blob is the whole thought"。
+
+拿 `subagent` 会话真实存的旧行逐字段加回去，只有 `content` 能翻转判决：
+
+| 加什么 | 结果 |
+| --- | --- |
+| 原样（旧代码发的形状） | 400 |
+| `+ status: "completed"` | 400 |
+| `+ summary: [{summary_text}]` | 400 |
+| `+ status + summary` | 400 |
+| **`+ content: [{reasoning_text, text: "x"}]`** | **200** |
+
+这违反 SPEC 的 `everything must store and send`：存的是摘要、发的是重建物，而不是 provider
+给的那个 item。
+
+### 第一版结论（错，留作记录）
+
+曾判断"厂商要的不是文本而是 turn 边界"，依据是末尾追加一条 `role:user` 也能 200，而当时伪造
+reasoning 一律 400。第二版解释得更好：追加 user 让**整段**历史豁免校验，等于绕开；伪造失败是
+因为我伪造的形状/位置不对。两条路都能让请求通过，但只有"原样回传"不丢信息。
+
+追加 user 那条路的边界结论仍然成立：
+
+- 只有 `role:user` 算边界，`system`/`developer`/`assistant` 都不算，空 content 也算；
+- 只在最近一条 user 之后校验；请求不带 `tools` 时不校验；`effort=none` 时不校验。
 
 ## 测量（全部对 `api.deepseek.com/v1/responses`，`deepseek-flash`，`stream:false`）
 
@@ -87,11 +112,23 @@ HTTP 400 Bad Request: The `reasoning_text` in the thinking mode must be passed b
 
 ## 采用的修法
 
-请求前判定：thinking 开着、且请求带 tools、且**最近一条 user 之后存在一个不以 reasoning
-开头的段** → 追加一行 `kind='thinking_mark'`，wire item 是 `{role:user, content:"(thinking enabled)"}`。
+**主修法：存原样、发原样。** `LlmEvent::Reasoning` 带上 provider 的 item，`agent.rs` 按
+`builtin_call` 的先例落库成 `{"item": item, "summary": summary, "item_id": ...}`，`wire_item`
+发现 `item` 就直接发它（老行仍走原来的重建路径）。这样 `content`/`status`/`summary` 都不会在
+半路蒸发。
+
+**兜底：追加 turn 边界。** 老行没有 `content`，无法回填（见上表：伪造一律 400）。对这种抄本，
+在请求前判定"thinking 开着、带 tools、最近一条 user 之后存在不以 reasoning 开头的段"，就追加
+一行 `kind='thinking_mark'`，wire item 是 `{role:user, content:"(thinking enabled)"}`。
+
+两条都在实测里各救了一次同一个 turn：`t1` 在 `effort=max` 下 step0→2 全部 200、turn end Done；
+其中 step1 的响应 `reasoning_items=0`，是 boundary 兜底让 step2 通过的（日志
+`appended a turn boundary ... session=t1`）。
+
+### 兜底那一条的细节
 
 自收敛：追加后那一轮在 thinking 下产生，自带 reasoning；下次同一位置再判定时，最后一条 user
-就是这条标记，其后为空 �� 不再追加。**每次抬进 thinking 最多一条。**
+就是这条标记，其后为空 —— 不再追加。**每次抬进 thinking 最多一条。**
 
 ### 为什么用新 kind 而不是 `kind='text', role='user'`
 

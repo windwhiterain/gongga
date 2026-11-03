@@ -44,13 +44,11 @@ pub struct Prompt {
     pub remote: Option<String>,
 }
 
-/// The row that closes a turn for a provider that will not continue a step written
-/// without thinking. See `docs/notes/server-store.md`.
+/// The row that closes a turn: see `docs/notes/server-store.md`.
 ///
 /// # Invariant
 ///
-/// Fixed text, because every later request of the session carries it: two requests over
-/// one transcript must build the same bytes for it.
+/// Fixed text, because every later request of the session carries it.
 pub const THINKING_MARK: &str = "(thinking enabled)";
 
 /// What the model is told about a call that never returned: the
@@ -1130,9 +1128,7 @@ impl Store {
     ///
     /// # Invariant
     ///
-    /// Only rows after the last user row are read, because that is the window a provider
-    /// checks; a transcript whose every such step opens with reasoning answers false. The
-    /// walk is bounded by one turn of rows, and it stops at the first user row found.
+    /// Only rows after the last user row are read: that is the window a provider checks.
     pub fn thinking_mark_needed(&self, session_id: i64) -> anyhow::Result<bool> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
@@ -1143,8 +1139,7 @@ impl Store {
         let rows = stmt.query_map(params![session_id], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
         })?;
-        // Read backwards so the walk stops at this turn's first row rather than
-        // starting from the oldest row the session ever wrote.
+        // Backwards, so the walk stops at this turn's first row.
         let mut tail: Vec<(String, bool)> = Vec::new();
         for row in rows {
             let (kind, display) = row?;
@@ -1961,10 +1956,12 @@ fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value>
             })
         }
         "reasoning" => {
+            // The provider's item, whole: it may need `content`, which a summary lost.
+            if let Some(item) = value.get("item").filter(|item| item.is_object()) {
+                return Some(item.clone());
+            }
             let mut item = json!({"type": "reasoning", "summary": []});
             match value.get("encrypted").and_then(|v| v.as_str()) {
-                // The blob is the whole thought; the summary beside it is for humans,
-                // and sending both would put every thought in twice.
                 Some(encrypted) => item["encrypted_content"] = json!(encrypted),
                 // No blob -- an interrupted thought. The text is all there is, so it
                 // is replayed as what it says rather than dropped.
@@ -1987,8 +1984,7 @@ fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value>
             "name": text_of("name"),
             "arguments": text_of("arguments"),
         })),
-        // A boundary the harness draws, not a thing the reader said: a provider takes
-        // a step written without thinking as finished once a user row follows it.
+        // A boundary the harness draws, not a thing the reader said.
         "thinking_mark" => Some(json!({"role": "user", "content": text_of("text")})),
         "tool_result" => Some(json!({
             "type": "function_call_output",
