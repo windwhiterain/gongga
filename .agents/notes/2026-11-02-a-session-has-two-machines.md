@@ -34,10 +34,15 @@ unchanged, and `default` is whichever machine owns the session's directory.
 
 ## What is refused rather than emulated
 
-`background` and `detached` on `remote_bash`: the job's scratch file and its
-completion watcher are this machine's. A capped output on a remote is not spilled to a
-file, because the path would name this machine. Both are refusals with advice, never a
-local fallback.
+`detached` on `remote_bash`: a detached process belongs to this machine's registry, so
+it would be started here and outlive everything asked of the peer. A capped output on a
+remote is not spilled to a file, because the path would name this machine. Both are
+refusals with advice, never a local fallback.
+
+`background` was on that list and came off it on 2026-11-03, by the user's instruction:
+the job's file lives in the endpoint's own temporary directory and its end is an event
+-- the wrapper's sentinel, or the shell's channel ending. See
+`docs/notes/server-remote.md`.
 
 ## Compatibility
 
