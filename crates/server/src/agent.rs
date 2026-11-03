@@ -720,6 +720,9 @@ impl Agent {
         // Chunks that no completion event will store. See `docs/notes/server-agent.md`.
         let mut streamed: std::collections::HashMap<String, (ResponsePart, String)> =
             Default::default();
+        // When each item's draft was last written, so a fast stream is not one disk
+        // write per chunk: what a kill may lose is at most DRAFT_FLUSH of text.
+        let mut drafted: std::collections::HashMap<String, std::time::Instant> = Default::default();
         let mut ran_tools = false;
         let mut failure: Option<String> = None;
         let mut saw_completion = false;
@@ -747,11 +750,21 @@ impl Agent {
                     let call_id = calls.get(&item_id).cloned();
                     began.insert((item_id.clone(), part));
                     said.insert(item_id.clone());
-                    streamed
+                    let whole = streamed
                         .entry(item_id.clone())
-                        .or_insert_with(|| (part, String::new()))
-                        .1
-                        .push_str(&text);
+                        .or_insert_with(|| (part, String::new()));
+                    whole.1.push_str(&text);
+                    // The draft is what survives a process that never finishes this
+                    // item: the reader has already seen these chunks.
+                    let due = drafted
+                        .get(&item_id)
+                        .is_none_or(|at| at.elapsed() >= DRAFT_FLUSH);
+                    if due && text_worth_keeping(part) {
+                        drafted.insert(item_id.clone(), std::time::Instant::now());
+                        let _ =
+                            self.store
+                                .save_draft(id, &item_id, turn, part_name(part), &whole.1);
+                    }
                     self.bus.publish(Event::Response(ResponseEvent {
                         session: name.to_string(),
                         turn,
@@ -782,6 +795,7 @@ impl Agent {
                     let payload = json!({"item": item, "summary": summary, "item_id": item_id});
                     said.insert(item_id.clone());
                     streamed.remove(&item_id);
+                    self.settle_item(id, &item_id);
                     let _ = self.store.append_message(id, "reasoning", &payload);
                 }
                 // The provider executed this one; keeping the item verbatim is
@@ -793,6 +807,7 @@ impl Agent {
                 } => {
                     said.insert(item_id.clone());
                     streamed.remove(&item_id);
+                    self.settle_item(id, &item_id);
                     let _ = self.store.append_message(
                         id,
                         "builtin_call",
@@ -817,6 +832,7 @@ impl Agent {
                 }
                 LlmEvent::Output { item_id, text } => {
                     streamed.remove(&item_id);
+                    self.settle_item(id, &item_id);
                     if !text.trim().is_empty() {
                         let _ = self.store.append_message(
                             id,
@@ -835,6 +851,7 @@ impl Agent {
                 } => {
                     // Its own text is the arguments, which this event stores.
                     streamed.remove(&item_id);
+                    self.settle_item(id, &item_id);
                     // Before it runs: this id is what the result carries, which
                     // is how a front-end holds a call and its output as one item.
                     self.bus.publish(Event::ToolCall(protocol::ToolCallEvent {
@@ -1248,6 +1265,17 @@ impl Agent {
         }));
     }
 
+    /// Forgets the drafts of items whose finished rows were just written.
+    ///
+    /// # Invariant
+    ///
+    /// Called wherever a real row is appended, so a draft never outlives the row it
+    /// became: a leftover draft would be a second copy of the same answer, appended at
+    /// the next start under an `interrupted` flag that is no longer true.
+    fn settle_item(&self, id: i64, item_id: &str) {
+        let _ = self.store.drop_draft(id, item_id);
+    }
+
     /// Stores what a cancelled item had already said, and closes its block.
     ///
     /// # Invariant
@@ -1289,6 +1317,7 @@ impl Agent {
                 done: true,
                 call_id: calls.get(&item_id).cloned(),
             }));
+            self.settle_item(id, &item_id);
         }
     }
 
@@ -1779,5 +1808,29 @@ fn with_time(output: String, run_ms: u64) -> String {
         format!("{output}{note}")
     } else {
         format!("{output}\n{note}")
+    }
+}
+
+/// How often a streaming item's draft is written to disk.
+///
+/// A bound on what a kill can lose, not on how fast a stream may run: one write per
+/// item per interval, however many chunks arrive between them.
+const DRAFT_FLUSH: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Whether a part's text is worth keeping before the item finishes.
+///
+/// A call's text is its arguments, which the call row carries once it is complete;
+/// an activity is progress toward an answer that has not been given.
+fn text_worth_keeping(part: ResponsePart) -> bool {
+    matches!(part, ResponsePart::Output | ResponsePart::Reasoning)
+}
+
+/// The name a draft stores a part under, so `settle_drafts` can read it back.
+fn part_name(part: ResponsePart) -> &'static str {
+    match part {
+        ResponsePart::Output => "output",
+        ResponsePart::Reasoning => "reasoning",
+        ResponsePart::ToolCall => "tool_call",
+        ResponsePart::Activity => "activity",
     }
 }

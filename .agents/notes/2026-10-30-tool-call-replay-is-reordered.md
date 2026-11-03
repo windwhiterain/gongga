@@ -48,7 +48,7 @@ No tool output found for tool call call_00_jXpZ...
 | reasoning 提到 call 之前 | 200 |
 | 去掉中间那条 reasoning | 200 |
 | 改成 `call→自己的 output` 相邻 | 200 |
-| 只有 text 没有 `encrypted_content` | 400（所以别放弃 blob） |
+| 只有 text 没有 `encrypted_content` | 400（所以别放弃 blob）——**2026-11-03 复现不出来**，见 `2026-11-03-a-reasoning-item-needs-its-position-not-its-blob.md` |
 
 ## 修法
 

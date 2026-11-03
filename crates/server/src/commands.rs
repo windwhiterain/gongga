@@ -1646,6 +1646,38 @@ pub fn nudge_inboxes(d: &Dispatch) -> usize {
 }
 
 /// Replays interrupted work with exactly one recovery owner per session.
+/// Keeps what a stream had said when the process stopped mid-answer, in every session.
+///
+/// # Invariant
+///
+/// Every draft becomes a row marked `interrupted`, so half a message is half a message
+/// in the transcript rather than nothing at all. Run with the same eagerness as
+/// [`answer_open_calls`]: before anything serves, because the next request is built
+/// from these rows. See `docs/notes/server-store.md`.
+pub fn settle_drafts(d: &Dispatch) -> usize {
+    let Ok(sessions) = d.store.list_sessions() else {
+        return 0;
+    };
+    let mut settled = 0;
+    for row in sessions {
+        match d.store.settle_drafts(row.id) {
+            Ok(0) => {}
+            Ok(count) => {
+                tracing::info!(
+                    session = %row.name, count,
+                    "kept what a stream had said when the last run stopped"
+                );
+                settled += count;
+            }
+            Err(e) => tracing::warn!(
+                session = %row.name, error = %e,
+                "could not keep the half-answers the last run left behind"
+            ),
+        }
+    }
+    settled
+}
+
 /// Answers every call the last run left open, in every session.
 ///
 /// # Invariant
