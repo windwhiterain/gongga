@@ -44,6 +44,15 @@ pub struct Prompt {
     pub remote: Option<String>,
 }
 
+/// The row that closes a turn for a provider that will not continue a step written
+/// without thinking. See `docs/notes/server-store.md`.
+///
+/// # Invariant
+///
+/// Fixed text, because every later request of the session carries it: two requests over
+/// one transcript must build the same bytes for it.
+pub const THINKING_MARK: &str = "(thinking enabled)";
+
 /// What the model is told about a call that never returned: the
 /// `interrupted_call` template.
 pub fn interrupted_call() -> String {
@@ -1117,6 +1126,45 @@ impl Store {
         Ok(())
     }
 
+    /// Whether a thinking-mode request cannot continue this transcript as it stands.
+    ///
+    /// # Invariant
+    ///
+    /// Only rows after the last user row are read, because that is the window a provider
+    /// checks; a transcript whose every such step opens with reasoning answers false. The
+    /// walk is bounded by one turn of rows, and it stops at the first user row found.
+    pub fn thinking_mark_needed(&self, session_id: i64) -> anyhow::Result<bool> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT kind, display FROM messages
+              WHERE session_id = ?1 AND content IS NOT NULL
+              ORDER BY seq DESC",
+        )?;
+        let rows = stmt.query_map(params![session_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        // Read backwards so the walk stops at this turn's first row rather than
+        // starting from the oldest row the session ever wrote.
+        let mut tail: Vec<(String, bool)> = Vec::new();
+        for row in rows {
+            let (kind, display) = row?;
+            let user = kind == "text" && is_user_row(&display);
+            tail.push((kind, user));
+            if user {
+                break;
+            }
+        }
+        tail.reverse();
+        let mut boundary = true;
+        for (kind, user) in tail {
+            if boundary && !user && kind != "reasoning" {
+                return Ok(true);
+            }
+            boundary = user || kind == "tool_result";
+        }
+        Ok(false)
+    }
+
     /// Every operator message this session has stored, oldest first.
     pub fn user_texts(&self, session_id: i64) -> anyhow::Result<Vec<String>> {
         let conn = self.lock();
@@ -1827,7 +1875,7 @@ impl MessageRow {
                 row.elapsed_ms = value.get("elapsed_ms").and_then(|v| v.as_u64());
             }
             // The harness talking to the reader: no role, no answer in the model's mouth.
-            "notice" => row.text = str_of("text").unwrap_or_default(),
+            "notice" | "thinking_mark" => row.text = str_of("text").unwrap_or_default(),
             // The reader sees which prompt was in force, not 10k characters of it.
             "system" => {
                 let cwd = str_of("cwd").unwrap_or_default();
@@ -1846,6 +1894,18 @@ impl MessageRow {
         }
         row
     }
+}
+
+/// Whether a `text` row is the reader speaking, rather than the model.
+///
+/// # Invariant
+///
+/// A row that does not parse is not a user row: it is a row no request is built from, and
+/// calling it a turn boundary would cut a request short instead of closing a turn.
+fn is_user_row(display: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(display)
+        .ok()
+        .is_some_and(|value| value.get("role").and_then(serde_json::Value::as_str) == Some("user"))
 }
 
 /// The pictures a stored `tool_result` row recorded, by path.
@@ -1927,6 +1987,9 @@ fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value>
             "name": text_of("name"),
             "arguments": text_of("arguments"),
         })),
+        // A boundary the harness draws, not a thing the reader said: a provider takes
+        // a step written without thinking as finished once a user row follows it.
+        "thinking_mark" => Some(json!({"role": "user", "content": text_of("text")})),
         "tool_result" => Some(json!({
             "type": "function_call_output",
             "call_id": text_of("call_id"),
