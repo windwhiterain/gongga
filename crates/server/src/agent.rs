@@ -1000,7 +1000,6 @@ impl Agent {
         ctx: &ToolContext,
         printed_on: crate::session::Machine,
         output: &str,
-        llm: &LlmClient,
     ) -> Vec<crate::image::ImageRef> {
         let mut out = Vec::new();
         // The bytes are on the machine that printed the name, which is not always
@@ -1039,27 +1038,10 @@ impl Agent {
             }
             let mut image = crate::image::ImageRef::new(path, media);
             // Stored too: the text stays the command's words, the copy is the record.
+            // Nothing is uploaded here: the provider's file is resolved when a request
+            // is written, so a replay months later still has something to name.
             image.copy =
                 crate::image::pictures::remember(&self.store, &image.path, media, &bytes).ok();
-            // One id per file per session: a replay reuses it instead of the bytes.
-            match llm
-                .upload_bytes(&image.path, &image.media_type, &bytes)
-                .await
-            {
-                Ok(id) => image.file_id = Some(id),
-                Err(e) => {
-                    // Attaching is an improvement, not a requirement: the turn goes
-                    // on with the reference as text.
-                    self.bus.publish(Event::Log {
-                        level: LogLevel::Warn,
-                        message: format!(
-                            "{}: could not attach {given} ({e}); it stays a path in the text",
-                            ctx.session
-                        ),
-                    });
-                    continue;
-                }
-            }
             out.push(image);
         }
         out
@@ -1138,7 +1120,7 @@ impl Agent {
         // session happens to stand. See `docs/notes/server-remote.md`.
         let printed_on = self.tools.machine_of(&tool, &ctx);
         let scanned = self
-            .attach_references(&ctx, printed_on, &outcome.output, llm)
+            .attach_references(&ctx, printed_on, &outcome.output)
             .await;
         let attach_ms = attach_started.elapsed().as_millis() as u64;
         // A tool that streamed nothing owes its output to the final chunk.

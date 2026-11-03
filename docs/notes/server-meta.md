@@ -15,9 +15,10 @@ at, and a message about a picture would attach a picture the user only meant to 
 about. The prefix decides, not the file's extension.
 
 The `id` a picture carries is not the provider's: it is the copy this home keeps
-(`docs/notes/server-pictures.md`), which is what a row can still show years later.
-Before the request is written, `with_file_ids` replaces it with the File ID the
-upload minted, which is what a provider can read.
+(`docs/notes/server-pictures.md`), which is what a row can still show years later. Nothing
+replaces it in the text, because a provider's file is not something a row may record: it
+expires. A request resolves the copy to whatever file the provider holds *now*, and that
+is the only value in the body that is looked up rather than copied.
 
 ## indexed on the first turn: the root set
 
@@ -206,17 +207,17 @@ the model reads "there was supposed to be a picture here" instead of a hole in
 the sentence.
 
 An upload is not part of that list. It is the one step whose failure loses nothing:
-the copy is already in this home, the row keeps it, and `image::content_part` sends
-those bytes when there is no file id. A File API that is down costs a bigger request.
+the copy is already in this home, the row keeps it, and `image::files` sends those bytes
+when there is no file id. A File API that is down costs a bigger request.
 
 ## the upload, and what happens without it
 
-The File API call happens at delivery, so the request carries the id rather than
-the bytes. It is an optimisation with a fallback, not a requirement: an upload
-that fails leaves the row's picture without a file id, and `image::content_part`
-inlines the copy when it writes the request. An unreachable File API costs a
-bigger request and never the message.
+The File API call happens when a request is written, not when a message arrives, and
+that is the difference between a transcript and a log of one: a file the provider minted
+is deleted by the provider, so the id is looked up at the moment it is needed and a
+stale one is replaced. Delivering no longer costs a round trip; the first request that
+needs a picture does, and every later one reuses the file while it has life left.
 
-Delivering costs one provider round trip per picture. That is the price of "in
-advance" in the SPEC: it buys a transcript that replays without touching the
-file again.
+It is an optimisation with a fallback, not a requirement: an upload that fails makes
+`image::files` inline the copy instead. An unreachable Files API costs a bigger request
+and never the message.

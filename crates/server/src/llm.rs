@@ -74,12 +74,18 @@ pub struct RequestSource {
     pub db_path: std::path::PathBuf,
     pub session_id: i64,
     pub upto_seq: i64,
+    /// Where the pictures of this transcript are kept. Owned, because the body outlives
+    /// the call that built it and reads that store while the turn writes to it.
+    pub store: crate::store::Store,
 }
 
 impl RequestSource {
+    /// Opens the window as a body. `uploader` is the connection this request goes
+    /// through, and it is the only thing a body may use it for.
     fn open(
         &self,
         head: &[u8],
+        uploader: std::sync::Arc<Uploader>,
     ) -> anyhow::Result<(
         crate::body::RequestBody,
         std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -87,7 +93,8 @@ impl RequestSource {
         let rows =
             crate::transcript::Transcript::open(&self.db_path, self.session_id, self.upto_seq)?;
         let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let body = crate::body::RequestBody::new(head.to_vec(), rows, counter.clone());
+        let files = crate::image::files::Files::new(self.store.clone(), uploader);
+        let body = crate::body::RequestBody::new(head.to_vec(), rows, files, counter.clone());
         Ok((body, counter))
     }
 }
@@ -149,55 +156,12 @@ impl LlmClient {
         crate::config::accepts_image(&self.modalities)
     }
 
-    /// Mints a provider-side id for one picture, so the request carries that
-    /// instead of the bytes.
-    ///
-    /// # Invariant
-    ///
-    /// One upload, for bytes read by whoever could read them -- a peer's disk
-    /// included.
-    ///
-    /// # Invariant
-    ///
-    /// `path` only names the file the provider will see: what is sent is `bytes`, so a
-    /// picture on a machine this server cannot read is uploaded exactly once. The
-    /// caller keeps its bytes, because the same picture is also copied into this home.
-    pub async fn upload_bytes(
-        &self,
-        path: &str,
-        media_type: &str,
-        bytes: &[u8],
-    ) -> anyhow::Result<String> {
-        let name = std::path::Path::new(path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("image")
-            .to_string();
-        let part = reqwest::multipart::Part::bytes(bytes.to_vec())
-            .file_name(name)
-            .mime_str(media_type)?;
-        let form = reqwest::multipart::Form::new()
-            .text("purpose", "user_data")
-            .part("file", part);
-        let url = format!("{}/files", self.base_url);
-        let response = self
-            .http
-            .post(&url)
-            .bearer_auth(&self.api_key)
-            .multipart(form)
-            .send()
-            .await?;
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        if !status.is_success() {
-            anyhow::bail!("HTTP {status} from {url}: {}", shorten_body(&body));
-        }
-        let value: Value = serde_json::from_str(&body)?;
-        value["id"].as_str().map(str::to_string).ok_or_else(|| {
-            anyhow::anyhow!(
-                "{url} returned no file id: {}",
-                body.chars().take(200).collect::<String>()
-            )
+    /// The Files API for this connection: what a request body uploads its pictures to.
+    pub fn uploader(&self) -> std::sync::Arc<Uploader> {
+        std::sync::Arc::new(Uploader {
+            http: self.http.clone(),
+            base_url: self.base_url.clone(),
+            api_key: self.api_key.clone(),
         })
     }
 
@@ -247,15 +211,23 @@ impl LlmClient {
         let headers_timeout = self.headers_timeout;
         let idle_timeout = self.idle_timeout;
         let max_retries = self.max_retries;
+        // The one handle a body may use to reach a provider: which endpoint a picture
+        // goes to, and nothing about the model.
+        let uploader = self.uploader();
         let retry_base = self.retry_base;
 
         tokio::spawn(async move {
             let mut attempt: u32 = 0;
+            // A dead file id is answered once by forgetting it and sending again. Not
+            // through `retryable`, which counts attempts against a configured ceiling:
+            // this failure is not a bad minute, and its fix is not another try of the
+            // same bytes.
+            let mut recovered_file = false;
             loop {
                 // Opened again for every attempt: a body is read once, and a retry
                 // has to send what the attempt before it sent.
                 let open_started = Instant::now();
-                let opened = source.open(&head);
+                let opened = source.open(&head, uploader.clone());
                 let transcript_open_ms = open_started.elapsed().as_millis() as u64;
                 let mut probe =
                     crate::probe::AttemptProbe::new(build_head_ms, transcript_open_ms, head_bytes);
@@ -336,6 +308,24 @@ impl LlmClient {
                 // retry needs a reason to announce.
                 if !completed && failure.is_none() {
                     failure = Some((retry_reason(&None, false, produced), true));
+                }
+                // A file the provider no longer holds is forgotten, and the request is
+                // built again: the next body resolves a fresh one from the copy.
+                if !recovered_file
+                    && failure
+                        .as_ref()
+                        .is_some_and(|(message, _)| dead_file(message))
+                {
+                    recovered_file = true;
+                    let forgotten =
+                        crate::image::uploads::forget_scope(&source.store, &uploader.scope())
+                            .unwrap_or(0);
+                    tracing::warn!(
+                        forgotten,
+                        "the provider refused a picture's file; its ids were forgotten and \
+                         the request is sent again"
+                    );
+                    continue;
                 }
                 // Empty completion or cut-short stream: both are retryable, so
                 // long as nothing said this attempt can never work.
@@ -467,6 +457,103 @@ impl LlmClient {
             head.push(',');
         }
         head.into_bytes()
+    }
+}
+
+/// The part of a connection that files are uploaded to, and deleted from.
+///
+/// # Invariant
+///
+/// Separate from `LlmClient` because a request body outlives the call that built it and
+/// needs only this: an endpoint, a key, and a client. Handing a body the whole client
+/// would hand it a model, a roster entry and a retry policy it must not be free to use.
+#[derive(Debug, Clone)]
+pub struct Uploader {
+    http: reqwest::Client,
+    base_url: String,
+    api_key: String,
+}
+
+impl Uploader {
+    /// Mints a provider-side id for one picture, so the request carries that instead
+    /// of the bytes.
+    ///
+    /// # Invariant
+    ///
+    /// `path` only names the file the provider will see: what is sent is `bytes`, so a
+    /// picture on a machine this server cannot read is uploaded exactly once. The
+    /// lifetime is stated, because a provider that is not told keeps the file for ever,
+    /// and permanent files are what exhaust an account. See `image::uploads`.
+    pub async fn upload(
+        &self,
+        path: &str,
+        media_type: &str,
+        bytes: &[u8],
+    ) -> anyhow::Result<crate::image::Uploaded> {
+        let name = std::path::Path::new(path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("image")
+            .to_string();
+        let part = reqwest::multipart::Part::bytes(bytes.to_vec())
+            .file_name(name)
+            .mime_str(media_type)?;
+        let form = reqwest::multipart::Form::new()
+            .text("purpose", "user_data")
+            .text("expires_after[anchor]", "created_at")
+            .text(
+                "expires_after[seconds]",
+                crate::image::uploads::EXPIRES_AFTER_SECS.to_string(),
+            )
+            .part("file", part);
+        let url = format!("{}/files", self.base_url);
+        let response = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.api_key)
+            .multipart(form)
+            .send()
+            .await?;
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            anyhow::bail!("HTTP {status} from {url}: {}", shorten_body(&body));
+        }
+        let value: Value = serde_json::from_str(&body)?;
+        let id = value["id"].as_str().map(str::to_string).ok_or_else(|| {
+            anyhow::anyhow!(
+                "{url} returned no file id: {}",
+                body.chars().take(200).collect::<String>()
+            )
+        })?;
+        // The provider's own statement when it makes one, an assumption counted from
+        // now when it does not: either way the row records when this stops working.
+        let expires_at = value["expires_at"]
+            .as_i64()
+            .map(|secs| secs * 1000)
+            .unwrap_or_else(|| crate::image::uploads::expiry_assumed(crate::store::now_millis()));
+        Ok(crate::image::Uploaded { id, expires_at })
+    }
+
+    /// Which provider namespace these files belong to: the endpoint, never the key.
+    pub fn scope(&self) -> String {
+        crate::image::uploads::scope(&self.base_url)
+    }
+
+    /// Deletes one provider file, so a copy that will never be sent again stops
+    /// counting against the account.
+    pub async fn delete(&self, file_id: &str) -> anyhow::Result<()> {
+        let url = format!("{}/files/{file_id}", self.base_url);
+        let response = self
+            .http
+            .delete(&url)
+            .bearer_auth(&self.api_key)
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            anyhow::bail!("HTTP {} from {url}", response.status());
+        }
+        Ok(())
     }
 }
 
@@ -615,6 +702,25 @@ fn backoff(base: Duration, attempt: u32) -> Duration {
 /// See `docs/notes/server-llm.md`.
 fn retryable(attempt: u32, max_retries: u32) -> bool {
     max_retries == 0 || attempt < max_retries
+}
+
+/// Whether the provider is refusing a picture's file rather than the request.
+///
+/// # Invariant
+///
+/// A file id is the one part of a request that can die without this server being wrong:
+/// the provider expires it, deletes it, or another key on the same account does. Treating
+/// that as a refusal would leave a transcript that can never be sent again, so it is
+/// recognized here by the words a provider uses and handled by forget-and-retry.
+fn dead_file(detail: &str) -> bool {
+    let said = detail.to_lowercase();
+    let file = said.contains("file");
+    let gone = said.contains("expired")
+        || said.contains("not found")
+        || said.contains("does not exist")
+        || said.contains("deleted")
+        || said.contains("invalid");
+    file && gone
 }
 
 /// Whether resending the same request could succeed: a bad minute could, a

@@ -8,7 +8,8 @@ the second of them:
   - copy the image to transcript, dedup by path.
 ```
 
-`meta` appends the id and `body` substitutes the File ID at send time; the copy is here.
+`meta` appends the copy's id to the mention; `image::files` resolves that copy to the
+provider's file when a request is written; the bytes are here.
 
 ## why a copy at all
 
@@ -31,8 +32,8 @@ request and a picture is a megabyte. `install` is called by `Store::open`, which
 one place that knows where the database is -- `blobs` is installed by `lib.rs` because a
 provider payload arrives in the middle of a stream, while a picture arrives at delivery,
 with the store in hand. Without a home (`:memory:`) the module degrades the way `blobs`
-does: the row keeps its path, the mention gets no id, and `image::content_part` reads the
-path, which is what every build did before this file existed.
+does: the row keeps its path, the mention gets no id, and `image::files` reads the path,
+which is what every build did before this file existed.
 
 The file has no extension: the media type is in the row that names the id, and the id is
 the whole name, so a picture can never be read as a different kind because a suffix went
@@ -58,8 +59,52 @@ on every delivery.
 
 `remember` writes the row first, because the id is what the copy is named by, and drops
 the row again if the write fails. A crash between the two leaves a row with no file, and
-`read` answers `None` for it: the mention keeps its id, `content_part` falls back to the
+`read` answers `None` for it: the mention keeps its id, `image::files` falls back to the
 path, and a request never carries a picture read from half of one.
+
+## the provider's file is not recorded here
+
+A row records the copy and never the file the provider minted for it. `uploads` (see
+`uploads.rs`) holds `(scope, copy) -> (file_id, expires_at)`, and a request looks the id
+up while it is being written.
+
+The reason is that a provider deletes its files. DeepSeek keeps one for ever only if the
+upload omits `expires_after` -- and permanent files are what exhaust an account: 10,000
+files and 25 GiB, both counted per account, shared by every key on it. So `EXPIRES_AFTER_SECS`
+is stated (seven days) and a file is reused only while `REFRESH_MARGIN_SECS` (an hour) of
+life is left. A row that recorded the id would be a message that stops working when the
+provider drops the file, and a transcript cannot be told to stop carrying it.
+
+This is the one value `body.rs` resolves rather than copies, and it is not the kind of
+rewrite that cost the prefix cache: a re-upload happens when a provider expires a file --
+days apart -- while a re-rendered index happened at every step.
+
+## uploads.rs
+
+`scope` is the endpoint, never the API key: DeepSeek shares files across every key on one
+account, so including the key would make an account's own uploads invisible to its other
+keys. `reusable_at` is the margin rule. `oldest` is what a quota refusal gives up --
+oldest-expiring first, because that file was about to be unusable anyway. `forget` is how
+a refused id stops being an answer, and `forget_scope` is the hammer for a refusal that
+did not name which file.
+
+## files.rs
+
+`Files` is per request: it memoises what it resolved, so a transcript naming one picture
+ten times uploads nothing twice. `part` returns the content part -- a file id when one can
+be had, the bytes inline when it cannot, a note when neither. Inline is the fallback on
+purpose: a picture that was sent yesterday must be sent today, and a missing Files API is
+a bigger request, not a missing picture.
+
+A quota refusal in `upload` deletes this endpoint's oldest files and tries once more. Once,
+not in a loop: a second refusal means the account is actually full, and deleting more of
+the user's pictures to learn that is not this code's business.
+
+## a file the provider no longer has
+
+`llm::stream` recognizes the refusal (`dead_file`) and, once per request, forgets this
+endpoint's ids and rebuilds the body -- which uploads every picture again. It is not routed
+through the retry counter: that counts a bad minute against a ceiling, and this is neither.
 
 ## measured
 

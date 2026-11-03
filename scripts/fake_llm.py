@@ -32,6 +32,8 @@ request calls a tool, the second answers" works without any real logic.
 """
 
 import json
+import re
+import time
 import os
 import sys
 import threading
@@ -81,6 +83,12 @@ IMAGE_GEN = os.environ.get("FAKE_LLM_IMAGE_GEN") == "1"
 
 _lock = threading.Lock()
 _requests = 0
+_uploads = 0
+# The file ids this fake is holding. `FAKE_LLM_FORGET_FILES_AFTER=n` drops all of them
+# after the n-th /responses request, which is how a provider expiring a file is modeled.
+UPLOADED: set[str] = set()
+FILES_LOG = os.environ.get("FAKE_LLM_FILES_LOG") or ""
+FORGET_AFTER = int(os.environ.get("FAKE_LLM_FORGET_FILES_AFTER") or 0)
 
 
 def events(with_tool: bool, with_web: bool, with_image: bool, usage=(0, 0)):
@@ -196,24 +204,64 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         global _requests
+        if FORGET_AFTER and _requests == FORGET_AFTER:
+            UPLOADED.clear()
         raw = self.request_body()
         # The Files API is a different shape from the Responses stream: one JSON
         # id back, nothing to stream. Without this the harness's upload would be
         # answered with an SSE body and read as "no file id".
         if self.path.rstrip("/").endswith("/files"):
+            # One id per upload, counted: a caller that uploads the same picture twice
+            # gets two ids, which is how a reuse bug becomes visible.
+            global _uploads
+            _uploads += 1
+            file_id = f"file-fake-{_uploads}"
+            UPLOADED.add(file_id)
+            with open(FILES_LOG, "a", encoding="utf-8") as log:
+                log.write(file_id + "\n")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(
                 json.dumps(
                     {
-                        "id": f"file-fake-{len(raw)}",
+                        "id": file_id,
                         "object": "file",
                         "bytes": len(raw),
                         "purpose": "user_data",
+                        "created_at": int(time.time()),
+                        "expires_at": int(time.time()) + 7 * 24 * 3600,
                     }
                 ).encode()
             )
+            return
+        if self.command == "DELETE" and "/files/" in self.path:
+            UPLOADED.discard(self.path.rsplit("/", 1)[-1])
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"deleted": true}')
+            return
+        # A file this endpoint no longer holds: the shape a real provider answers with
+        # when its file expired or was deleted. Named here so the harness can prove it
+        # forgets the id and uploads again instead of failing the turn for ever.
+        named = set(re.findall(r"file-fake-\d+", raw.decode("utf-8", "replace")))
+        missing = named - UPLOADED
+        if missing:
+            detail = json.dumps(
+                {
+                    "error": {
+                        "message": f"file {sorted(missing)[0]} has expired or does not exist",
+                        "type": "invalid_request_error",
+                        "code": "file_not_found",
+                    }
+                }
+            ).encode()
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(detail)))
+            self.end_headers()
+            self.wfile.write(detail)
             return
         # The `model` field, never the body: a transcript may name the model that
         # is being refused, and a match on the text would refuse the wrong request.

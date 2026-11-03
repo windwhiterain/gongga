@@ -2,14 +2,12 @@
 //!
 //! # Invariant
 //!
-//! This module only ever *copies* rows. What a row is sent as was decided when it
-//! was appended (`store::append_message`), and nothing here re-derives it: a
-//! request is the concatenation of the stored bytes in `seq` order, which is what
-//! makes the outgoing body a strict extension of the previous one. Every re-derivation
-//! that used to live here -- reordering a step, inventing an answer for a call that
-//! never returned, substituting a picture's file id, skipping a row whose payload had
-//! gone -- rewrote bytes the provider had already cached, and each one silently cost
-//! the whole transcript.
+//! A row is copied as stored, and the one value resolved while writing is the provider
+//! file id of a picture -- because a provider deletes its files and a row may not record
+//! one. Everything else a row's shape depends on was decided when it was appended
+//! (`store::append_message`): reordering a step, inventing an answer for a call that
+//! never returned, or skipping a row whose payload had gone each rewrote bytes the
+//! provider had already cached, and each cost the whole transcript.
 
 use std::collections::VecDeque;
 use std::io::Error as IoError;
@@ -20,7 +18,9 @@ use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use futures_util::stream::Stream;
+use serde_json::Value;
 
+use crate::image::{ImageRef, files::Files};
 use crate::transcript::Transcript;
 
 /// A model request's body, produced as the network asks for it.
@@ -28,6 +28,8 @@ pub struct RequestBody {
     /// The object up to and including `"input":[`.
     head: Option<Vec<u8>>,
     rows: Option<Transcript>,
+    /// What this request knows about the files behind its pictures.
+    files: Files,
     /// Encoded items waiting to be read.
     ready: VecDeque<Vec<u8>>,
     tail: Option<Vec<u8>>,
@@ -35,61 +37,71 @@ pub struct RequestBody {
     wrote: bool,
     /// How many bytes the network has taken, counted as they go.
     counter: Arc<AtomicUsize>,
+    /// A row whose pictures were still being resolved when the last poll returned.
+    pending: Option<Next>,
 }
 
 impl RequestBody {
-    pub fn new(head: Vec<u8>, rows: Transcript, counter: Arc<AtomicUsize>) -> Self {
+    pub fn new(head: Vec<u8>, rows: Transcript, files: Files, counter: Arc<AtomicUsize>) -> Self {
         Self {
             head: Some(head),
             rows: Some(rows),
+            files,
             ready: VecDeque::new(),
             tail: Some(b"]}".to_vec()),
             wrote: false,
             counter,
+            pending: None,
         }
     }
 
     /// Queues one item, with the comma that separates it from the last.
-    fn emit(&mut self, bytes: &str) {
+    fn emit(&mut self, bytes: String) {
         if self.wrote {
             self.ready.push_back(b",".to_vec());
         }
         self.wrote = true;
-        self.ready.push_back(bytes.as_bytes().to_vec());
+        self.ready.push_back(bytes.into_bytes());
     }
 
-    /// Produces the next chunk, or says the body is over.
-    fn fill(&mut self) -> Result<bool, IoError> {
+    /// Queues the next chunk, or says the body is over.
+    fn step(&mut self) -> Step {
         if let Some(head) = self.head.take() {
             self.ready.push_back(head);
-            return Ok(true);
+            return Step::Ready(true);
         }
         if let Some(rows) = self.rows.as_mut() {
             match rows.next() {
-                Some(Err(e)) => return Err(IoError::other(e)),
-                Some(Ok(item)) => {
-                    self.emit(&item);
-                    return Ok(true);
+                Some(Err(e)) => return Step::Failed(IoError::other(e)),
+                Some(Ok(Stored { item, pictures })) => {
+                    if pictures.is_empty() {
+                        self.emit(item);
+                        return Step::Ready(true);
+                    }
+                    // The one value resolved while writing: which file the provider now
+                    // holds for each picture. Everything else is the stored bytes.
+                    return Step::Resolving((item, pictures));
                 }
                 None => {
                     self.rows = None;
-                    return Ok(true);
+                    return Step::Ready(true);
                 }
             }
         }
         if let Some(tail) = self.tail.take() {
             self.ready.push_back(tail);
-            return Ok(true);
+            return Step::Ready(true);
         }
-        Ok(false)
+        Step::Ready(false)
     }
 }
 
 impl Stream for RequestBody {
     type Item = Result<Bytes, IoError>;
 
-    /// One chunk per poll: reading a row is a seek, not a wait.
-    fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    /// One chunk per poll. A row with pictures is resolved by an async step, so a row
+    /// being filled is held as a future and polled again by the same `poll_next`.
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
         loop {
             if let Some(chunk) = this.ready.pop_front() {
@@ -99,10 +111,29 @@ impl Stream for RequestBody {
                 this.counter.fetch_add(chunk.len(), Ordering::Relaxed);
                 return Poll::Ready(Some(Ok(Bytes::from(chunk))));
             }
-            match this.fill() {
-                Ok(true) => continue,
-                Ok(false) => return Poll::Ready(None),
-                Err(e) => return Poll::Ready(Some(Err(e))),
+            // A chunk queued by the last await is taken first; only when there is none
+            // is the next one asked for.
+            let mut future: Next = match this.pending.take() {
+                Some(pending) => pending,
+                None => match this.step() {
+                    Step::Ready(true) => continue,
+                    Step::Ready(false) => return Poll::Ready(None),
+                    Step::Failed(e) => return Poll::Ready(Some(Err(e))),
+                    Step::Resolving((item, pictures)) => {
+                        let files = this.files.clone();
+                        Box::pin(async move { resolved(files, item, pictures).await })
+                    }
+                },
+            };
+            match future.as_mut().poll(cx) {
+                Poll::Ready(text) => {
+                    this.emit(text);
+                    continue;
+                }
+                Poll::Pending => {
+                    this.pending = Some(future);
+                    return Poll::Pending;
+                }
             }
         }
     }
@@ -112,4 +143,52 @@ impl Stream for RequestBody {
         // promise the network can hold to anyway.
         (0, None)
     }
+}
+
+/// What one turn of [`RequestBody::step`] produced.
+enum Step {
+    /// A chunk was queued, or the body is over.
+    Ready(bool),
+    /// This row carries pictures, and the files behind them have to be found first.
+    Resolving((String, Vec<ImageRef>)),
+    Failed(IoError),
+}
+
+/// A resolution in progress.
+///
+/// Owned, because a poll that returns `Pending` cannot hand a borrow of `self` back to
+/// whoever polls next: the future carries its own handles instead.
+type Next = std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>>;
+
+/// One stored row as a request reads it: the item, and the pictures it named.
+pub struct Stored {
+    pub item: String,
+    pub pictures: Vec<ImageRef>,
+}
+
+/// The stored item, with its pictures named as the files the provider holds.
+///
+/// # Invariant
+///
+/// The field a picture rides in is the one its kind keeps text in -- `content` for a
+/// message, `output` for a result -- and the text is what the reader wrote. A row whose
+/// stored item does not parse is sent as stored: a broken row is not this module's to
+/// fix, and least of all on the way to a cache.
+async fn resolved(mut files: Files, item: String, pictures: Vec<ImageRef>) -> String {
+    let Ok(mut value) = serde_json::from_str::<Value>(&item) else {
+        return item;
+    };
+    let field = match value.get("type").and_then(Value::as_str) {
+        Some("function_call_output") => "output",
+        _ => "content",
+    };
+    let Some(text) = value.get(field).and_then(Value::as_str).map(str::to_string) else {
+        return item;
+    };
+    let mut parts = vec![serde_json::json!({"type": "input_text", "text": text})];
+    for picture in &pictures {
+        parts.push(files.part(picture).await);
+    }
+    value[field] = Value::Array(parts);
+    value.to_string()
 }
