@@ -110,17 +110,10 @@ pub struct Rates {
     pub price: Option<crate::providers::Price>,
     /// The chance a prefix the provider once held is gone by the next request.
     pub invalid: f64,
-    /// How long a prefix survives in the tier this server buys; `0` never expires. See
+    /// How long a prefix survives in the tier this server buys -- the provider's default,
+    /// since no request names one -- in millis; `0` never expires. See
     /// `docs/notes/server-prefix-cache.md`.
     pub ttl_ms: u64,
-    /// Tokens this request carries after the index: the transcript and the card.
-    ///
-    /// # Invariant
-    ///
-    /// Priced only as what changing the index costs, because the index sits ahead of
-    /// the transcript in the provider's prefix: an emission that differs from the one
-    /// it holds is a miss for every byte behind it, not only for the index.
-    pub following_tokens: usize,
 }
 
 /// What a cached token is worth when the roster states no rate: a stand-in.
@@ -204,10 +197,6 @@ pub struct Layout {
     #[serde(skip)]
     named: HashMap<(String, String), usize>,
     nodes: Vec<Node>,
-    /// The item ids the last emission carried, in order; empty when no emission has
-    /// been made under this layout yet.
-    #[serde(default)]
-    last: Vec<usize>,
 }
 
 impl Layout {
@@ -245,17 +234,12 @@ impl Layout {
         if ids.is_empty() {
             return Plan::default();
         }
-        let following = rates.following_tokens as f64;
         // What sending all of it with nothing cached costs: the floor to beat.
-        let baseline = self.sequence(None, &ids);
-        let mut best: f64 = ids.iter().map(|&id| self.items[id].tokens).sum::<usize>() as f64
-            * scale
-            + self.paid_behind(&baseline, following, scale);
+        let mut best: f64 =
+            ids.iter().map(|&id| self.items[id].tokens).sum::<usize>() as f64 * scale;
         let mut chosen: Option<NodeId> = None;
         for (node, cost) in self.cold_chains(&ids, scale).into_iter().enumerate() {
             let Some(cost) = cost else { continue };
-            let sequence = self.sequence(Some(NodeId(node)), &ids);
-            let cost = cost + self.paid_behind(&sequence, following, scale);
             if cost < best {
                 best = cost;
                 chosen = Some(NodeId(node));
@@ -276,7 +260,6 @@ impl Layout {
             }
         }
         let entries = self.order(tail);
-        self.last = self.sequence(tail, &ids);
         // After the plan, never before: forgetting first would renumber the items
         // these ids name.
         self.forget_unwanted(purpose, &ids);
@@ -360,37 +343,6 @@ impl Layout {
             carried[node] = true;
         }
         carried
-    }
-
-    /// The item ids an emission under `chain` would carry, in order.
-    fn sequence(&self, chain: Option<NodeId>, ids: &[usize]) -> Vec<usize> {
-        let mut carried: Vec<usize> = Vec::new();
-        let mut walk = chain;
-        while let Some(node) = walk {
-            carried.push(self.nodes[node.0].item);
-            walk = self.nodes[node.0].parent;
-        }
-        carried.reverse();
-        for &id in ids {
-            if !carried.contains(&id) {
-                carried.push(id);
-            }
-        }
-        carried
-    }
-
-    /// What the payload behind the index costs under this emission.
-    ///
-    /// # Invariant
-    ///
-    /// Warm at the hit rate only for the emission the provider already holds; every
-    /// other one pays the miss rate for the whole transcript.
-    fn paid_behind(&self, sequence: &[usize], following: f64, scale: f64) -> f64 {
-        if sequence == self.last {
-            following
-        } else {
-            following * scale
-        }
     }
 
     fn subtree(&self, item: usize) -> Vec<usize> {
@@ -526,8 +478,6 @@ impl Layout {
         for node in &mut self.nodes {
             node.item = reindex[node.item].expect("a kept node's item was kept");
         }
-        // An emission with a dropped item cannot be repeated, so it no longer counts.
-        self.last = self.last.iter().filter_map(|item| reindex[*item]).collect();
         self.reindex();
     }
 

@@ -403,12 +403,6 @@ session is under its directory's rules without having to ask for them. One strin
 plan, a chain in `prefix_cache`, and measured, an item per node re-uses slightly less at
 steady state (94.5% against 97.7%), not more.
 
-`index_of` hands `prefix_cache` the index it is about to replace, and the plan prices
-the transcript behind it (`Rates::following_tokens`): an emission that differs from the
-last one is charged for the whole context it invalidates, not just for its own rows. That
-is why the ordering is stable across steps even though it is recomputed on each one, and
-why an edit is answered with a patch rather than a re-send wherever the tolerance allows.
-
 It runs on **every** request, not once at the first row. An index frozen at the first
 turn would keep answering with the bytes a file had then, so an edited `SKILL.md` would
 never reach the session that indexed it -- stale text, silently, forever. Rebuilding

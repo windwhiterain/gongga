@@ -93,13 +93,6 @@ nothing could ever hit, growing a branch per session and paying a scan for each.
 `del_session` deletes that session's row: a new session of the same name is a new
 conversation, and must not be warmed by the old one.
 
-## Layout::last
-
-The ids of the last emission, in order -- not a node, because the question it answers is
-"would this emission repeat the bytes the provider holds", and a node answers only "which
-of my ancestors are warm". `forget_unwanted` remaps it with the items, since an item
-dropped from the layout cannot be repeated.
-
 ## Node::touched, expire
 
 A price says what a hit is worth; a lifetime says whether there is one. Each node
@@ -166,34 +159,6 @@ time is worth `(1 - p)` of its discount, so
 At `p = 0` the scale is the roster's ratio; at `p = 1` it is `1.0`, which says planning
 for warmth buys nothing and the caller's own order stands. That is the whole knob: no
 other number in this module decides anything.
-
-## what follows the index: `following_tokens`
-
-The cost model priced only the rows it could see, and the biggest row of the request
-was not one of them. The index is emitted inside `instructions`, which the provider's
-prefix puts *ahead* of every `input` item, so the transcript behind it -- 130k tokens in
-a live session, against a few thousand of index -- is warm exactly while the index bytes
-are the ones that were sent. A plan that reorders the index to save a thousand index
-tokens therefore loses the whole context's hit: the module was choosing between chains
-as if nothing came after them.
-
-So `Rates::following_tokens` is what the request carries behind the index, and `plan`
-prices two emissions differently: the one that repeats `Layout::last` (the item ids the
-last emission carried, in order) keeps that payload at the hit rate; any other emission
-pays the miss rate for it. The number is the provider's own: `Agent::index_of` takes the
-session's last measured input tokens and subtracts the index it is about to send. It is
-an overstatement by the prose ahead of the index, which cannot be separated from that one
-measurement -- a hundred tokens against a hundred thousand.
-
-A tool result passes `0`, because it is a row inside the transcript: no payload of the
-request sits behind it, and only the transcript's own warmth pays for changing it.
-
-The consequence worth stating: **any change to the index re-bills the transcript.** A
-message that names a new file is such a change, and no ordering can avoid it -- the index
-cannot be appended to after the transcript without moving it out of the system prompt,
-which SPEC puts it in. What the price buys is the other half: the plan stops reordering
-for its own sake, and patches an edited entry instead of re-sending it, because both are
-now measured against the same context.
 
 When the roster states no usable pair, the scale falls back to
 [`DEFAULT_MISS_RATIO`] -- a stand-in, because the alternative is worse than a guess: a
