@@ -161,26 +161,26 @@ impl LlmClient {
     ///
     /// # Invariant
     ///
-    /// The id is kept on the [`crate::image::ImageRef`], so a replayed transcript
-    /// reuses it instead of uploading again.
-    /// One upload, for bytes read by whoever could read them -- a peer's disk included.
+    /// One upload, for bytes read by whoever could read them -- a peer's disk
+    /// included.
     ///
     /// # Invariant
     ///
     /// `path` only names the file the provider will see: what is sent is `bytes`, so a
-    /// picture on a machine this server cannot read is uploaded exactly once.
+    /// picture on a machine this server cannot read is uploaded exactly once. The
+    /// caller keeps its bytes, because the same picture is also copied into this home.
     pub async fn upload_bytes(
         &self,
         path: &str,
         media_type: &str,
-        bytes: Vec<u8>,
+        bytes: &[u8],
     ) -> anyhow::Result<String> {
         let name = std::path::Path::new(path)
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("image")
             .to_string();
-        let part = reqwest::multipart::Part::bytes(bytes)
+        let part = reqwest::multipart::Part::bytes(bytes.to_vec())
             .file_name(name)
             .mime_str(media_type)?;
         let form = reqwest::multipart::Form::new()

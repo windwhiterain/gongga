@@ -76,6 +76,8 @@ fn with_pictures(item: String, kind: &str, images: &[crate::image::ImageRef]) ->
     let Some(text) = value.get(field).and_then(|v| v.as_str()) else {
         return item;
     };
+    // The row names its copy; a send names the File ID the provider minted.
+    let text = crate::meta::with_file_ids(text, images);
     let mut parts = vec![json!({"type": "input_text", "text": text})];
     parts.extend(images.iter().map(content_part));
     value[field] = Value::Array(parts);

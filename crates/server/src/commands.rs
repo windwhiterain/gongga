@@ -641,7 +641,7 @@ async fn expand_message(
     )
     .await;
     let borrowed: Vec<&str> = indexed.iter().map(String::as_str).collect();
-    Ok(crate::meta::expand(source, &home, &message, llm, &borrowed).await)
+    Ok(crate::meta::expand(&d.store, source, &home, &message, llm, &borrowed).await)
 }
 
 /// Puts `message` into `name`'s hands: a turn when it is free, an inbox row when not.

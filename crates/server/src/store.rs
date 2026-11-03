@@ -206,6 +206,15 @@ CREATE TABLE IF NOT EXISTS prefix_layout (
     session TEXT PRIMARY KEY,
     layout  TEXT NOT NULL
 );
+
+-- The pictures a message named, copied into this home: the row names the copy by
+-- id, and the bytes live beside the database. See `docs/notes/server-pictures.md`.
+CREATE TABLE IF NOT EXISTS pictures (
+    id         INTEGER PRIMARY KEY,
+    path       TEXT NOT NULL,
+    media_type TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS pictures_path ON pictures(path);
 "#;
 
 /// What a character is assumed to cost before anything is measured.
@@ -407,6 +416,9 @@ impl Store {
         if path != Path::new(":memory:") {
             if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
                 std::fs::create_dir_all(parent)?;
+                // Beside the database, because that is the one place that knows
+                // where it is. See `docs/notes/server-pictures.md`.
+                crate::image::pictures::install(&parent.join("pictures"));
             }
         }
         let conn = Connection::open(path)?;
@@ -1218,6 +1230,44 @@ impl Store {
         Self::append_message_conn(&tx, session_id, "text", &user_row(expanded))?;
         tx.commit()?;
         Ok(id)
+    }
+
+    /// The newest copy this home holds for `path`, and the type it was read as.
+    ///
+    /// # Invariant
+    ///
+    /// The newest row answers, not the oldest: a rewritten file mints a new copy, so a
+    /// lookup that walked back would offer a picture nothing was sent with.
+    pub fn picture_of(&self, path: &str) -> Option<(i64, String)> {
+        let conn = self.lock();
+        conn.query_row(
+            "SELECT id, media_type FROM pictures WHERE path = ?1 ORDER BY id DESC LIMIT 1",
+            params![path],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .ok()?
+    }
+
+    /// Records one picture copy, returning the id a message names it by.
+    pub fn add_picture(&self, path: &str, media_type: &str) -> anyhow::Result<i64> {
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT INTO pictures (path, media_type) VALUES (?1, ?2)",
+            params![path, media_type],
+        )?;
+        let id = tx.last_insert_rowid();
+        tx.commit()?;
+        Ok(id)
+    }
+
+    /// Forgets a copy that could not be written, so no row names a missing picture.
+    pub fn drop_picture(&self, id: i64) {
+        let conn = self.lock();
+        if let Err(e) = conn.execute("DELETE FROM pictures WHERE id = ?1", params![id]) {
+            tracing::warn!(id, error = %e, "cannot drop a picture copy that was never written");
+        }
     }
 
     /// Delivers current injected messages and removes their inbox rows in one transaction.

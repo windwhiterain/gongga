@@ -304,11 +304,11 @@ pub async fn literal(
 /// A spelling in `indexed` -- text the prompt's index already carries -- stays
 /// literal and keys that index. See `docs/notes/server-meta.md`.
 ///
-///
 /// An unresolvable reference stays in the text verbatim: an unreadable picture or
 /// an unknown skill must still be a message. `llm` is `None` when no client
 /// resolved, and then only skill references are expanded.
 pub async fn expand(
+    store: &crate::store::Store,
     source: Source<'_>,
     home: &Path,
     text: &str,
@@ -327,21 +327,21 @@ pub async fn expand(
                 Some(metadata) => (metadata, None),
                 None => continue,
             },
-            Reference::Image => match picture(source, home, &mention.value, llm).await {
-                Some(image) => (String::new(), Some(image)),
+            Reference::Image => match picture(store, source, home, &mention.value, llm).await {
+                Some(image) => {
+                    // SPEC keeps the mention and appends the copy it stands for, so
+                    // the row still says which picture it was sent with.
+                    let spelled = &text[mention.start..mention.end];
+                    let kept = match image.copy {
+                        Some(copy) => format!("{spelled} ({copy})"),
+                        None => spelled.to_string(),
+                    };
+                    (kept, Some(image))
+                }
                 None => continue,
             },
         };
-        // Only a hole closes up: eating the space before a kept mention glues words.
-        let closes_hole = replacement.is_empty()
-            && mention.start > cursor
-            && text[cursor..mention.start].ends_with(' ');
-        let from = if closes_hole {
-            mention.start - 1
-        } else {
-            mention.start
-        };
-        out.text.push_str(&text[cursor..from]);
+        out.text.push_str(&text[cursor..mention.start]);
         out.text.push_str(&replacement);
         cursor = mention.end;
         if let Some(image) = image {
@@ -374,14 +374,15 @@ fn skill_metadata(home: &Path, machine: crate::session::Machine, name: &str) -> 
     ))
 }
 
-/// The picture `@image: <path>` names, uploaded when the model can see one.
+/// The picture `@image: <path>` names: copied into this home, then uploaded.
 ///
 /// # Invariant
 ///
-/// An upload that fails still attaches the picture: `image::content_part` inlines
-/// the bytes when there is no file id, so an unreachable File API costs a bigger
-/// request and never the message.
+/// The upload is what a request carries and the copy is what a stored row keeps, so
+/// one without the other is still a message: an upload that failed costs a bigger
+/// request, and `image::content_part` inlines the bytes of the copy.
 async fn picture(
+    store: &crate::store::Store,
     source: Source<'_>,
     home: &Path,
     given: &str,
@@ -390,26 +391,61 @@ async fn picture(
     let path = source.spelling(home, given);
     let bytes = source.read(home, given).await?;
     let media = image::media_type(std::path::Path::new(&path), &bytes)?;
-    let mut reference = ImageRef::new(path, media);
     let llm = llm?;
     if !llm.accepts_image() {
-        tracing::warn!(path = %reference.path, "a picture was named for a model that cannot see one");
+        tracing::warn!(path = %path, "a picture was named for a model that cannot see one");
         return None;
     }
+    let mut reference = ImageRef::new(path, media);
+    // The copy first: a stored row keeps it whatever the File API answers.
+    reference.copy = crate::image::pictures::remember(store, &reference.path, media, &bytes).ok();
     match llm
-        .upload_bytes(&reference.path, &reference.media_type, bytes)
+        .upload_bytes(&reference.path, &reference.media_type, &bytes)
         .await
     {
         Ok(id) => reference.file_id = Some(id),
-        Err(e) => {
-            // A row keeps a path, never bytes: an upload that failed stays text.
-            tracing::warn!(
-                path = %reference.path,
-                error = %e,
-                "could not upload a named picture; it stays a reference in the text"
-            );
-            return None;
-        }
+        Err(e) => tracing::warn!(
+            path = %reference.path,
+            error = %e,
+            "could not mint a file id; the picture is sent from its copy instead"
+        ),
     }
     Some(reference)
+}
+
+/// `text` as a request sends it: each mention names the provider's file instead.
+///
+/// # Invariant
+///
+/// Only the `(id)` a mention carries is rewritten, and only for a picture this row
+/// recorded: a row keeps the copy it was sent with, and a request carries the id the
+/// provider was given. See `docs/notes/server-meta.md`.
+pub fn with_file_ids(text: &str, images: &[ImageRef]) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0;
+    for mention in mentions(text) {
+        if mention.kind != Reference::Image || mention.start < cursor {
+            continue;
+        }
+        let Some(rest) = text[mention.end..].strip_prefix(" (") else {
+            continue;
+        };
+        let digits = rest.chars().take_while(char::is_ascii_digit).count();
+        let Ok(copy) = rest[..digits].parse::<i64>() else {
+            continue;
+        };
+        if !rest[digits..].starts_with(')') {
+            continue;
+        }
+        let id = images
+            .iter()
+            .find(|image| image.copy == Some(copy))
+            .and_then(|image| image.file_id.as_deref());
+        let Some(id) = id else { continue };
+        out.push_str(&text[cursor..mention.end]);
+        out.push_str(&format!(" ({id})"));
+        cursor = mention.end + digits + 3;
+    }
+    out.push_str(&text[cursor..]);
+    out
 }

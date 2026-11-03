@@ -101,6 +101,13 @@ depends on the kind, and only on the kind -- `content` for a message, `output`
 for a result -- because those are the fields those two kinds keep their text in.
 Everything else goes out byte for byte as stored.
 
+The text is also where a picture's id becomes a File ID: `meta::with_file_ids`
+walks the mentions of that field and rewrites the `(id)` a message appended into the
+id the provider minted. It is a walk over mentions rather than a replace of
+`(<id>)`, because a row may say `(7)` about something else and SPEC's substitution
+is about a reference. A tool result carries no id in its text -- its output is the
+command's words -- so only the pictures on it change shape.
+
 ## RequestSource — what a retry replays
 
 The source names a session and a pinned `upto_seq` rather than holding a body,

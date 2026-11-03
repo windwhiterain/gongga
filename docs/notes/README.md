@@ -55,6 +55,7 @@ note is a bug.
 | [`server-llm.md`](server-llm.md) | `crates/server/src/llm.rs` |
 | [`server-meta.md`](server-meta.md) | `crates/server/src/meta.rs` |
 | [`server-net.md`](server-net.md) | `crates/server/src/net.rs` |
+| [`server-pictures.md`](server-pictures.md) | `crates/server/src/image/pictures.rs` |
 | [`server-prefix-cache.md`](server-prefix-cache.md) | `crates/server/src/prefix_cache.rs` |
 | [`server-process.md`](server-process.md) | `crates/server/src/process.rs` |
 | [`server-prompts.md`](server-prompts.md) | `crates/server/src/prompts.rs` |

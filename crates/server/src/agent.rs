@@ -1068,9 +1068,12 @@ impl Agent {
                 continue;
             }
             let mut image = crate::image::ImageRef::new(path, media);
+            // Stored too: the text stays the command's words, the copy is the record.
+            image.copy =
+                crate::image::pictures::remember(&self.store, &image.path, media, &bytes).ok();
             // One id per file per session: a replay reuses it instead of the bytes.
             match llm
-                .upload_bytes(&image.path, &image.media_type, bytes)
+                .upload_bytes(&image.path, &image.media_type, &bytes)
                 .await
             {
                 Ok(id) => image.file_id = Some(id),

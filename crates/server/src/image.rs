@@ -1,5 +1,7 @@
 //! Pictures: formats, media types, and what a provider will accept.
 
+pub(crate) mod pictures;
+
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -19,6 +21,13 @@ pub const KNOWN: &[(&str, &str)] = &[
 pub struct ImageRef {
     pub path: String,
     pub media_type: String,
+    /// The copy this home holds, named by the id the message appends.
+    ///
+    /// # Invariant
+    ///
+    /// The bytes shown to a model come from this copy, never from the path: a
+    /// picture a user has since overwritten is still the picture that was sent.
+    pub copy: Option<i64>,
     /// A provider-side id, once one has been minted for this file.
     ///
     /// # Invariant
@@ -33,6 +42,7 @@ impl ImageRef {
         Self {
             path: path.into(),
             media_type: media_type.into(),
+            copy: None,
             file_id: None,
         }
     }
@@ -40,6 +50,9 @@ impl ImageRef {
     /// The pair a stored row keeps: a path and its type, never the bytes.
     pub fn to_json(&self) -> Value {
         let mut row = json!({"path": self.path, "media_type": self.media_type});
+        if let Some(copy) = self.copy {
+            row["copy"] = json!(copy);
+        }
         if let Some(id) = &self.file_id {
             row["file_id"] = json!(id);
         }
@@ -55,6 +68,7 @@ impl ImageRef {
                 .and_then(|m| m.as_str())
                 .unwrap_or("application/octet-stream")
                 .to_string(),
+            copy: value.get("copy").and_then(serde_json::Value::as_i64),
             file_id: value
                 .get("file_id")
                 .and_then(|i| i.as_str())
@@ -108,22 +122,27 @@ pub fn media_type(path: &Path, bytes: &[u8]) -> Option<&'static str> {
 ///
 /// # Invariant
 ///
-/// A file id is preferred to the bytes, and a file that is gone degrades to a note
-/// rather than failing the turn: the transcript says the picture was there.
+/// The id beats the bytes, and the transcript's copy beats the path; a picture
+/// nothing can read degrades to a note, never to a failed turn.
 pub fn content_part(image: &ImageRef) -> Value {
     if let Some(id) = &image.file_id {
         return json!({"type": "input_image", "file_id": id});
     }
-    match std::fs::read(&image.path) {
-        Ok(bytes) => json!({
+    // The copy first: a path says where a picture came from, not what was sent.
+    let kept = image
+        .copy
+        .and_then(crate::image::pictures::read)
+        .or_else(|| std::fs::read(&image.path).ok());
+    match kept {
+        Some(bytes) => json!({
             "type": "input_image",
             "image_url": format!("data:{};base64,{}", image.media_type, crate::base64::encode(&bytes)),
         }),
-        Err(e) => json!({
+        None => json!({
             "type": "input_text",
             "text": format!(
-                "[the image at {} is no longer readable ({e}); it was here when this \
-                 tool call ran, and whatever it showed cannot be recovered]",
+                "[the image at {} is no longer readable and this home holds no copy, so \
+                 whatever it showed cannot be recovered]",
                 image.path
             ),
         }),

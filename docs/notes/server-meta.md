@@ -5,7 +5,7 @@ something different:
 
 | written | becomes |
 | --- | --- |
-| `@image: <path>` | an attachment: the reference leaves the text, the picture rides the row |
+| `@image: <path>` | the mention plus the id of its copy: `@image: <path> (id)`, with the picture on the row |
 | `@skill: <name>` | its spelling kept, with the `SKILL.md` it names: `@skill: <name> (<path>)` |
 | `@file: <path>` | nothing: a mention, left exactly as written |
 
@@ -13,6 +13,11 @@ Keeping the spelling is what makes the index work, and it is why `@file:` is lef
 alone entirely: without a spelling to match on, `@file: x` would have to be guessed
 at, and a message about a picture would attach a picture the user only meant to talk
 about. The prefix decides, not the file's extension.
+
+The `id` a picture carries is not the provider's: it is the copy this home keeps
+(`docs/notes/server-pictures.md`), which is what a row can still show years later.
+Before the request is written, `with_file_ids` replaces it with the File ID the
+upload minted, which is what a provider can read.
 
 ## indexed on the first turn: the root set
 
@@ -187,10 +192,10 @@ holds the expanded text and the pictures (`Expanded::to_json`), so a message
 queued behind a running turn arrives as it was sent, not as the machine looks
 when the turn gets round to it.
 
-Only a replacement that stands for nothing takes the space before it with it: an
-image leaves a hole, so the sentence closes up around it, while a mention that keeps
-text keeps the space it had. Eating that one glues the previous word to the
-reference -- `and @skill: late` was stored as `andskill` before 2026-11-03.
+Every replacement keeps text now -- a skill's pointer, a picture's mention and id --
+so none of them touches the space in front of it. It used to: a picture was replaced
+by nothing, and the rule that closed the sentence up around that hole was applied to
+every mention, which glued `and @skill: late` into `andskill` until 2026-11-03.
 
 ## a reference that cannot be resolved stays text
 
@@ -200,12 +205,16 @@ written. A message is never refused because one of its references was stale, and
 the model reads "there was supposed to be a picture here" instead of a hole in
 the sentence.
 
+An upload is not part of that list. It is the one step whose failure loses nothing:
+the copy is already in this home, the row keeps it, and `image::content_part` sends
+those bytes when there is no file id. A File API that is down costs a bigger request.
+
 ## the upload, and what happens without it
 
 The File API call happens at delivery, so the request carries the id rather than
 the bytes. It is an optimisation with a fallback, not a requirement: an upload
 that fails leaves the row's picture without a file id, and `image::content_part`
-inlines the bytes when it writes the request. An unreachable File API costs a
+inlines the copy when it writes the request. An unreachable File API costs a
 bigger request and never the message.
 
 Delivering costs one provider round trip per picture. That is the price of "in

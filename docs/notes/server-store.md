@@ -138,7 +138,8 @@ to ask the same question.
 ## pictures in a row
 
 A tool result, and a message written with `@image:`, carry the text they always
-carried plus `images`: a path and a media type per picture, never the bytes.
+carried plus `images`: a path, a media type and the id of the copy this home keeps
+per picture, never the bytes themselves.
 
 `user_row` is where a message's pictures become a row, and `images_of` is how a
 row reads them back -- the same field both ways, so `deliver_pending` and
@@ -151,11 +152,12 @@ which the CLI prints -- would pour it into a terminal. A path is small, readable
 and lets the same picture be looked at again only when a request actually needs
 it.
 
-The cost, stated plainly: **the file is the state**. If the working directory is
-cleaned, the branch is switched, or the temp file is deleted, the replay is
-missing that picture. `crates/server/src/llm.rs` degrades it to a sentence naming
-the path instead of failing the request, so the model is never reasoning on as if
-it had seen something that is now gone.
+The file is no longer the state, and that changed on 2026-11-03: the bytes are
+copied into `<home>/pictures` when the row is written, and `image::content_part`
+reads that copy. A working directory that is cleaned or a branch that is switched
+now costs nothing, and a file rewritten at the same path does not turn an old
+message into a new picture. `docs/notes/server-pictures.md` has the reasoning;
+the `pictures` table holds the copy's ids and the path it was deduped on.
 
 ## MessageRow::parse — builtin_call
 
