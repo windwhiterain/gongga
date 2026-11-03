@@ -182,6 +182,19 @@ inter=$("${cli[@]}" interrupt_session main 2>&1)
 ok "interrupt_session main" $?
 say "$inter"
 
+# 15. The operation the window's gestures use crosses the wire: the protocol
+#     carries it beside the commands, and the server answers it like one.
+"${cli[@]}" set_session doomed --cwd "$root" >/dev/null 2>&1
+probe=$(python "$root/scripts/operation_probe.py" --port "$port" --key "$(cat "$home/server.key")" delete_session --session doomed 2>&1)
+[[ "$probe" == *'"ok":true'* ]]
+ok "the delete_session operation is answered" $?
+say "$probe"
+
+# 16. The session it deleted is gone.
+left=$("${cli[@]}" get_messages doomed 2>&1)
+[[ "$left" == *"no session"* || "$left" == *'"ok":false'* ]]
+ok "the session the operation deleted is gone" $?
+
 rm -f "$root/cmd-selftest.txt" "$root/sub.txt"
 echo
 if [[ "$fails" == 0 ]]; then

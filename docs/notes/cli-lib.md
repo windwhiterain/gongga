@@ -297,6 +297,17 @@ message looks like what they wrote. The wire never sees this distinction: a
 message is `send_message <session> <text>`, the session being the sticky one,
 named explicitly so the text never lands on the session argument.
 
+## Client::apply
+
+The API a window's gestures use. An operation is not a command line: the window
+says what it means -- make this session sticky, show or hide its window, delete
+it -- and the client answers the two that are its own state on the spot, and
+sends the one that is not.
+
+Each of them ends in the same code the matching command ends in (`stick`,
+`set_shown`), so a gesture and the command that does the same thing cannot
+drift into two behaviors.
+
 ## Client::handle_bytes
 
 Decoding lives here so a front-end never has to name a `ServerMessage`: it

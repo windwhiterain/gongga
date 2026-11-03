@@ -77,6 +77,26 @@ would be completed: `--name session --value <TAB>` offers sessions. The client
 needs this because the shape of the value depends on which argument it is going
 to fill.
 
+## Operation
+
+The gestures a window offers, as API rather than as commands. `sticky_session`,
+`render_session` and `delete_session` are what a click means; a window asks for
+one of them and the client answers the two that are its own state, while the
+server answers the one that is not -- and it answers it where it answers
+`del_session`, so one deletion has one behavior however it was asked for.
+
+The reason it is not a command line: the window would carry the command syntax,
+and every change of that syntax would break the window. The reason it is not a
+second way to say the same thing: `Operation::as_command` is where the two meet,
+and the client-side operations never reach the server at all.
+
+## ClientMessage::Operation
+
+Beside `Command`, on the same wire: the message kind a window's gesture is
+carried in. It carries an id like a command, so the answer is addressed the
+same way, and the server answers it with a `CmdResult` -- the same answer, from
+the same handler.
+
 ## ArgSpec::positional
 
 SPEC's command lines bind arguments by position -- `send_message <session>

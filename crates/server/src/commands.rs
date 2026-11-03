@@ -742,11 +742,11 @@ async fn list_paths(d: &Dispatch, args: &Args) -> Outcome {
 
 async fn send_message(d: &Dispatch, args: &Args) -> Outcome {
     let Some(message) = args.get("message").cloned() else {
-        return Outcome::err("send_message requires --message");
+        return Outcome::err("send_message requires a message");
     };
     let Some(name) = args.get("session").cloned() else {
         return Outcome::err(
-            "send_message requires --session; set a sticky `session` to avoid typing it",
+            "send_message requires a session; set a sticky `session` to avoid typing it",
         );
     };
     deliver(d, &name, message).await
@@ -1157,7 +1157,7 @@ fn resolve_model(d: &Dispatch, model: &str) -> Result<crate::providers::Entry, S
             .providers
             .resolve_by_name(model)
             .map(|c| c.entry)
-            .ok_or_else(|| format!("--model {model}: {e}")),
+            .ok_or_else(|| format!("model {model}: {e}")),
     }
 }
 
@@ -1200,14 +1200,12 @@ fn parse_seq_slice(raw: &str, last_seq: i64) -> Result<SeqWindow, String> {
     let one = |part: &str, side: &str| -> Result<i64, String> {
         let part = part.trim();
         let n: i64 = part.parse().map_err(|_| {
-            format!(
-                "--range takes sequence numbers like `5:10` or `-5:`, got {part:?} in the {side}"
-            )
+            format!("range takes sequence numbers like `5:10` or `-5:`, got {part:?} in the {side}")
         })?;
         // Seq starts at 1, so 0 is a typo written either way.
         if n == 0 {
             return Err(format!(
-                "--range counts sequence numbers from 1, or from -1 backwards; got 0 in the {side}"
+                "range counts sequence numbers from 1, or from -1 backwards; got 0 in the {side}"
             ));
         }
         // Negative counts back from the tail, like a Python index: -1 is the newest row.
@@ -1222,7 +1220,7 @@ fn parse_seq_slice(raw: &str, last_seq: i64) -> Result<SeqWindow, String> {
     // A second colon is a step (`1:2:3`), which names no range here.
     if raw.matches(':').count() > 1 {
         return Err(format!(
-            "--range takes one `start:end` range, not a step: got {raw:?}"
+            "range takes one `start:end` range, not a step: got {raw:?}"
         ));
     }
     let window = match raw.split_once(':') {
@@ -1235,7 +1233,7 @@ fn parse_seq_slice(raw: &str, last_seq: i64) -> Result<SeqWindow, String> {
         }
         Some((start, end)) => {
             if start.trim().is_empty() && end.trim().is_empty() {
-                return Err("--range needs a bound on one side, e.g. `-5:` or `:10`".into());
+                return Err("range needs a bound on one side, e.g. `-5:` or `:10`".into());
             }
             let first = if start.trim().is_empty() {
                 1
@@ -1250,7 +1248,7 @@ fn parse_seq_slice(raw: &str, last_seq: i64) -> Result<SeqWindow, String> {
             // Backwards as written is a typo; empty after clamping is an answer.
             if !start.trim().is_empty() && !end.trim().is_empty() && first > last {
                 return Err(format!(
-                    "--range {raw} runs backwards: it starts at {first} and ends at {last}"
+                    "range {raw} runs backwards: it starts at {first} and ends at {last}"
                 ));
             }
             SeqWindow { first, last }

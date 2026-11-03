@@ -179,7 +179,7 @@ catalog's argument names, because it names an *event* field. Its `--value`
 completes as the argument of the same name would -- `session` offers sessions --
 through the same `OfNamedArgument` hop the sticky value uses.
 
-A name can mean one thing in two commands (`set_session --session` targets a
-session; `show_session --session` names one to draw), and the hop prefers the
+A name can mean one thing in two commands (`set_session <session>` targets a
+session; `show_session <session>` names one to draw), and the hop prefers the
 argument that is *required*: that is the reading a free-form value should mirror.
 Catalog order does not decide it.

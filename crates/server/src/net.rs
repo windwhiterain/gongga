@@ -267,6 +267,44 @@ async fn handle_connection(
                             break;
                         }
                     }
+                    Ok(ClientMessage::Operation { id, operation }) => {
+                        // An operation is answered where a command is: one
+                        // handler, one behavior, whichever way it was asked for.
+                        let Some((name, args)) = operation.as_command() else {
+                            let result = Event::CmdResult {
+                                id,
+                                ok: false,
+                                message: format!(
+                                    "{operation:?} is the client's own state, not the server's"
+                                ),
+                                data: None,
+                            };
+                            if send_event(&sink, result).await.is_err() {
+                                break;
+                            }
+                            continue;
+                        };
+                        let echo = Event::Cmd {
+                            id,
+                            name: name.to_string(),
+                            args: args.clone(),
+                        };
+                        if send_event(&sink, echo).await.is_err() {
+                            break;
+                        }
+                        if commands
+                            .send(Queued {
+                                id,
+                                name: name.to_string(),
+                                args,
+                                caller: client.session.clone(),
+                                arrived: std::time::Instant::now(),
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
                     Ok(ClientMessage::Bye) => break,
                     Err(e) => {
                         tracing::warn!(%peer, error = %e, "dropping unparsable message");
@@ -444,7 +482,7 @@ async fn queue_event(
             };
             let why = format!(
                 "the reply was {len} bytes, over the {limit} bytes one message carries; \
-                 ask for fewer rows with --range, e.g. `--range -500:`"
+                 ask for fewer rows with a range, e.g. `-500:`"
             );
             tracing::warn!(id, len, limit, "reply too large to send");
             let small = ServerMessage::Event(Event::CmdResult {

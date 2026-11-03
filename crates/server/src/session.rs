@@ -1220,7 +1220,7 @@ impl SessionManager {
         self.live.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The model the row already carries; `None` is why `set_session` demands `--model`.
+    /// The model the row already carries; `None` is why `set_session` demands one.
     pub fn recorded_model(&self, name: &str) -> Option<String> {
         let row = self.store.get_session(name).ok().flatten()?;
         let model = row.model.trim();

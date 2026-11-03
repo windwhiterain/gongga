@@ -3,7 +3,7 @@
 ## path
 
 The agent drives its own server with a command line, so that command has to be
-something its shell can find by name: `gongga-cli send_message --session x`.
+something its shell can find by name: `gongga-cli send_message x <text>`.
 
 Who puts it there is the CLI's business, not this module's: the server links
 itself into `<home>/bin` under that name as it comes up (`cli::server::place`).

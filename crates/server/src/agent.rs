@@ -275,7 +275,7 @@ impl Agent {
     ) -> anyhow::Result<(Arc<LlmClient>, u64)> {
         let (llm, context) = match &tuning.model {
             // The config's `[model]` is the server's own, never a session's.
-            None => anyhow::bail!("{name} states no model: set_session --model"),
+            None => anyhow::bail!("{name} states no model: set_session <session> <model>"),
             Some(model) => {
                 let choice = self
                     .providers

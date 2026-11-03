@@ -90,6 +90,14 @@ Unbounded, because there is nowhere to put an excess command. The transport's ow
 window is what limits how many can be in flight from one peer, and dropping one
 would turn into a client waiting on a reply that will never come.
 
+## handle_connection (operations)
+
+An operation arrives beside the commands and is answered where a command is:
+`Operation::as_command` turns the one the server owns into the command it
+mirrors, and the same queue, the same dispatch and the same answer carry it.
+The two the client owns are refused by name -- they are the caller's own state,
+and a server that changed them would change the wrong side of the wire.
+
 ## a client that is not reading
 
 Two lines name it, both at warning level because both mean events were lost or

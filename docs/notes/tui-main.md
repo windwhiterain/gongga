@@ -32,7 +32,7 @@ meant:
 ```sh
 gongga-tui            # the window
 gongga-tui cli        # the catalog, exactly like `gongga-cli` with nothing at all
-gongga-tui cli get_messages --session main --range -5:
+gongga-tui cli get_messages main -5:
 ```
 
 The word is taken off the front of the command and the rest is the layer's.
@@ -43,7 +43,7 @@ command line after it means "list what the server publishes", which is what an
 empty command line means for `gongga-cli` too.
 
 A command line that never says it is still passed straight to the layer, because
-this front-end is a transparent wrapper: `gongga-tui serve --port <p>` is how the
+this front-end is a transparent wrapper: `gongga-tui serve <p>` is how the
 window brings its own server up, and renaming that would mean this crate knowing
 which commands exist.
 

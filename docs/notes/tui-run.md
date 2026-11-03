@@ -26,7 +26,7 @@ and Alt+Q still works while it backs off.
 The grammar is decided by the first character -- the one piece of syntax an
 operator has to know:
 
-* `/` begins a command: `/send_message --session main --message hi`.
+* `/` begins a command: `/send_message main hi`.
 * Anything else is a message to the agent.
 
 It lives here, not in the command layer, because it is a property of the one

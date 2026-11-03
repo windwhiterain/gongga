@@ -329,6 +329,19 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
             // what the completion was waiting for.
             Step::Input(Some(UiEvent::Recomplete)) => {}
             Step::Input(Some(UiEvent::Quit)) => break Ok(()),
+            // A gesture of the window's own: an operation, not a line.
+            Step::Input(Some(UiEvent::Operate(operation))) => {
+                let outcome = client.apply(operation, &mut TuiSink(&mut ui));
+                if let cli::Submission::Send(msg) = outcome
+                    && let Some(open) = link.as_ref()
+                    && let Err(e) = open.send(msg).await
+                {
+                    TuiSink(&mut ui).say(
+                        LineKind::Error,
+                        &format!("the operation could not be sent: {e}"),
+                    );
+                }
+            }
             Step::Input(Some(UiEvent::Submit(line))) => {
                 let outcome = submission(&mut client, &line, &mut TuiSink(&mut ui));
                 // A `connect_server` moved the address: drop the link and let

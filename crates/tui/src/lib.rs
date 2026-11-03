@@ -112,6 +112,14 @@ pub enum UiEvent {
     /// A finished input line. It may contain newlines: a message with
     /// paragraphs is still one message.
     Submit(String),
+    /// A gesture of the window's own: an operation, never a command line.
+    ///
+    /// # Invariant
+    ///
+    /// The window asks for what it means -- "make this session sticky" -- and
+    /// the command layer answers it. Spelling it as a command line would put
+    /// the command syntax in the window, where it does not belong.
+    Operate(cli::protocol::Operation),
     /// Alt+Q: leave.
     Quit,
     /// Nothing to submit: the completion asked for something only the connection
@@ -500,7 +508,7 @@ pub struct Tui {
     input_seen: Option<(usize, usize)>,
     /// A click on a session, as the command line it asks for, waiting for the loop
     /// to take it. See `docs/notes/tui-lib.md`.
-    clicked: Option<String>,
+    clicked: Option<cli::protocol::Operation>,
 }
 
 impl Tui {
@@ -748,8 +756,8 @@ impl Tui {
         loop {
             // A click is a command, and commands go through the loop that already
             // knows how to send one.
-            if let Some(line) = self.clicked.take() {
-                return Some(UiEvent::Submit(line));
+            if let Some(operation) = self.clicked.take() {
+                return Some(UiEvent::Operate(operation));
             }
             if self.draw().is_err() {
                 return None;
@@ -1006,7 +1014,9 @@ impl Tui {
             && let Some(target) = self.screen.sticky_session.clone()
         {
             self.close_completion();
-            return Some(UiEvent::Submit(delete_line(&target)));
+            return Some(UiEvent::Operate(cli::protocol::Operation::DeleteSession {
+                session: target,
+            }));
         }
 
         if edit_input(
@@ -1100,7 +1110,11 @@ impl Tui {
         // SPEC's two clicks: a name shows or hides its window, a header points
         // the reading at it.
         match hit.part {
-            Part::Header => self.clicked = Some(sticky_line(&hit.name)),
+            Part::Header => {
+                self.clicked = Some(cli::protocol::Operation::StickySession {
+                    session: hit.name.clone(),
+                })
+            }
             // A row that names no session is only a group, and the only thing that
             // can happen to it is folding.
             Part::Fold => self.screen.panes.toggle_row(&hit.name),
@@ -1114,7 +1128,10 @@ impl Tui {
                     .panes
                     .get(&hit.name)
                     .is_some_and(|pane| pane.kind == crate::panes::Kind::Shown);
-                self.clicked = Some(toggle_line(&hit.name, shown));
+                self.clicked = Some(cli::protocol::Operation::RenderSession {
+                    session: hit.name.clone(),
+                    show: !shown,
+                });
             }
             // A press in the events opens or closes SPEC's `abstract` there.
             Part::Pane => {
@@ -1355,34 +1372,6 @@ impl Drop for Tui {
         // A panicking caller must not leave the terminal in raw mode.
         let _ = self.restore();
     }
-}
-
-/// The command line a click on a session asks for.
-///
-/// # Invariant
-///
-/// It starts with `/`: a line without one is prose, and prose goes to the agent.
-/// A click that sent "set_sticky --name session --value peer" as a message was
-/// exactly the bug this spelling exists to prevent. See `docs/notes/tui-lib.md`.
-fn sticky_line(session: &str) -> String {
-    format!("/set_sticky --name session --value {session}")
-}
-
-/// What a click on a name asks for: its window, the other way round.
-///
-/// # Invariant
-///
-/// "The other way round" is what a click means, and what the window knows is what
-/// it draws: a session with a band beside the list is shown, one without it is
-/// hidden. SPEC hangs the sticky session off the same click, and the client
-/// command does that. See `docs/notes/tui-lib.md`.
-fn toggle_line(session: &str, shown: bool) -> String {
-    format!("/set_render_session --session {session} --show {}", !shown)
-}
-
-/// The command line Shift+Delete asks for: the sticky session's own deletion.
-fn delete_line(session: &str) -> String {
-    format!("/del_session --session {session}")
 }
 
 /// Paints `screen` and leaves the console caret on the prompt.

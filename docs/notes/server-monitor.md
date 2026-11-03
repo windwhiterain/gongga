@@ -196,7 +196,7 @@ whole chain:
 
 | step | result |
 | --- | --- |
-| `set_session --session '@mine'` | refused: the `@` prefix belongs to the harness |
+| `set_session '@mine'` | refused: the `@` prefix belongs to the harness |
 | a session on the refused model | `turn end … outcome=Failed`, `status='error'` |
 | the handover | `handed a failure to the monitor session=broken model="dead/flash-dead"`, `@monitor` created, `monitor_seq` past the transcript |
 | the monitor's own turn | `turn end session=@monitor outcome=Failed`, then `model="fake/flash-fake" attempt=2`, and that turn ends `Done` |

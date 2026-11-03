@@ -135,12 +135,12 @@ of its own (SPEC gives it one). The keys keep acting on the sticky session whate
 the pointer did.
 
 A click is a different thing, and SPEC gives it two jobs. On a name it toggles that
-session's window: the line is `/set_render_session --session <name> --show <!shown>`,
-with "shown" read from what the window draws (`Kind::Shown`). On a header it sets the
-sticky session: `/set_sticky --name session --value <name>`. Both are handed to the
-loop as a submitted line, so the rule stays in the command layer and the window keeps
-one path for everything the operator asks for. The leading `/` is what makes it a
-command: a line without one is prose, and prose goes to the agent.
+session's window, with "shown" read from what the window draws (`Kind::Shown`). On a
+header it sets the sticky session. Both are *operations*, not command lines: the
+window says what it means -- `Operation::RenderSession`, `Operation::StickySession`
+-- and the command layer answers it, the same way it answers the command that does
+the same thing. Spelling them as lines would put the command syntax in the window,
+where it does not belong, and would break the window every time the syntax moved.
 
 Hiding a session that is shown therefore sends one line, not three. The sticky
 follow-on -- showing makes it sticky, hiding the sticky one clears it -- is
@@ -402,8 +402,8 @@ are choosing for.
 SPEC gives Shift+Delete the sticky session, and not the editor's Delete or
 Backspace: those two erase a character, so the same key did two unrelated things
 depending on whether the line happened to be empty. The window asks for the
-deletion the way a click does -- it submits `/del_session --session <name>` --
-and the command layer owns the rule.
+deletion the way a click does -- `Operation::DeleteSession`, which the server
+answers where it answers `del_session` -- and the command layer owns the rule.
 
 The modifier is what makes the binding a delete and not an edit, so a bare
 Delete still erases a character, in the prompt as everywhere else: this key is

@@ -1375,6 +1375,56 @@ impl Client {
         self.after_sticky_change(sink);
     }
 
+    /// Applies one operation: the API a window's gestures use.
+    ///
+    /// # Invariant
+    ///
+    /// An operation is not a command line: the window asks for "make this
+    /// session sticky", and the client answers it the same way the command
+    /// does -- one behavior per gesture, whichever way it was asked for.
+    pub fn apply(&mut self, operation: protocol::Operation, sink: &mut dyn Sink) -> Submission {
+        match operation {
+            protocol::Operation::StickySession { session } => {
+                self.stick("session", &session, sink);
+                Submission::Local
+            }
+            protocol::Operation::RenderSession { session, show } => {
+                self.set_shown(&session, show, sink);
+                Submission::Local
+            }
+            protocol::Operation::DeleteSession { .. } => {
+                let id = self.next_id();
+                Submission::Send(ClientMessage::Operation { id, operation })
+            }
+        }
+    }
+
+    /// Makes one argument sticky, and says what it is now.
+    fn stick(&mut self, name: &str, value: &str, sink: &mut dyn Sink) {
+        match self.sticky.set(name, value) {
+            Ok(()) => {
+                self.row(sink, LineKind::Result, &format!("sticky {name} = {value}"));
+                self.after_sticky_change(sink);
+            }
+            Err(e) => self.row(sink, LineKind::Error, &format!("could not save: {e}")),
+        }
+    }
+
+    /// Shows or hides one session's window.
+    fn set_shown(&mut self, session: &str, show: bool, sink: &mut dyn Sink) {
+        if let Err(e) = self.shown.set(session, show) {
+            self.row(sink, LineKind::Error, &format!("could not save: {e}"));
+            return;
+        }
+        self.row(
+            sink,
+            LineKind::Result,
+            &format!("render {session} = {show}"),
+        );
+        self.follow_shown(session, show, sink);
+        self.after_sticky_change(sink);
+    }
+
     /// Runs one client command, whose args the spec already validated.
     fn run_client_command(&mut self, name: &str, args: &protocol::Args, sink: &mut dyn Sink) {
         let arg_name = args.get("type").cloned().unwrap_or_default();
@@ -1386,7 +1436,7 @@ impl Client {
                 sink,
                 LineKind::Error,
                 &format!(
-                    "serve takes over the process; run it in a shell: `{} serve --port <port>`",
+                    "serve takes over the process; run it in a shell: `{} serve <port>`",
                     typed_name()
                 ),
             ),
@@ -1418,17 +1468,7 @@ impl Client {
                     );
                     return;
                 }
-                match self.sticky.set(&arg_name, &value) {
-                    Ok(()) => {
-                        self.row(
-                            sink,
-                            LineKind::Result,
-                            &format!("sticky {arg_name} = {value}"),
-                        );
-                        self.after_sticky_change(sink);
-                    }
-                    Err(e) => self.row(sink, LineKind::Error, &format!("could not save: {e}")),
-                }
+                self.stick(&arg_name, &value, sink);
             }
             "del_sticky" => match self.sticky.del(&arg_name) {
                 Ok(true) => {
@@ -1516,7 +1556,7 @@ impl Client {
     /// # Invariant
     ///
     /// It changes a view and never the state: the blocks a session already said are
-    /// still held, so `--show true` after `--show false` brings them back. SPEC's
+    /// still held, so `true` after `false` brings them back. SPEC's
     /// click is this command, so the sticky session follows the window: shown makes
     /// it sticky, hidden and sticky clears the sticky. See `docs/notes/cli-lib.md`.
     fn run_render_session(&mut self, args: &protocol::Args, sink: &mut dyn Sink) {
@@ -1533,13 +1573,7 @@ impl Client {
                 return;
             }
         };
-        if let Err(e) = self.shown.set(&name, show) {
-            self.row(sink, LineKind::Error, &format!("could not save: {e}"));
-            return;
-        }
-        self.row(sink, LineKind::Result, &format!("render {name} = {show}"));
-        self.follow_shown(&name, show, sink);
-        self.after_sticky_change(sink);
+        self.set_shown(&name, show, sink);
     }
 
     /// Points the sticky session at the window just shown, or clears it.
@@ -2125,7 +2159,7 @@ async fn connect(args: &Args) -> anyhow::Result<(Client, Link)> {
         Err(failure) if failure.is_fatal() => return Err(failure.into_error()),
         Err(failure) => {
             return Err(anyhow!(
-                "{}; is a server running? Start one with `{} serve --port <port>`",
+                "{}; is a server running? Start one with `{} serve <port>`",
                 failure.message(),
                 typed_name()
             ));

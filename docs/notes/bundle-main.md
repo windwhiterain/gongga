@@ -137,7 +137,7 @@ to the first is an overlay, not a bigger binary.
 
 ```sh
 ./gongga --version        # this is gongga-cli, and here is the build
-./gongga serve --port 9700
+./gongga serve 9700
 ./gongga                  # the catalog, from that server
 ./gongga tui              # the window
 ```

@@ -45,7 +45,7 @@ pub fn serve(args: &Args, tokens: &[String]) -> anyhow::Result<()> {
     };
     let port: u16 = port
         .parse()
-        .with_context(|| format!("parsing --port {port:?}"))?;
+        .with_context(|| format!("parsing port {port:?}"))?;
     // The flag before the command name loses to `serve --home`: nearer is newer.
     let home = match parsed.get("home") {
         Some(named) => crate::home_dir(Some(&PathBuf::from(named))),

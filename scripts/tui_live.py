@@ -45,7 +45,7 @@ contain spaces. `#` starts a comment.
     keys <text>              type, one character per --type-delay-ms
     burst <text>             type as fast as the pipe takes it
     enter                    CR
-    key <name>               enter|esc|tab|backspace|delete|up|down|left|right|
+    key <name>               enter|esc|tab|backspace|delete|shift-delete|up|down|left|right|
                              home|end|pgup|pgdn|f1..f4
     alt <text>               Alt+<text>: ESC then the characters
     paste <text>             bracketed paste (ESC[200~ ... ESC[201~), one burst
@@ -1383,6 +1383,7 @@ KEY_SEQUENCES = {
     "tab": b"\t",
     "backspace": b"\x7f",
     "delete": b"\x1b[3~",
+    "shift-delete": b"\x1b[3;2~",
     "up": b"\x1b[A",
     "down": b"\x1b[B",
     "right": b"\x1b[C",

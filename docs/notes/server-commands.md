@@ -104,7 +104,7 @@ checked before anything else about the session is resolved: a refusal must not h
 written a model, moved a directory or ended a shell on its way out.
 
 It exists because the command's normal shape is dangerous in exactly one case. A
-`set_session --session <name>` with no session is a creation; with one, it is a
+`set_session <name>` with no session is a creation; with one, it is a
 *selection*, and both answer `session is now <name>`. So a caller that means "start my
 own session" and picks a name someone else already used gets no error -- it gets the
 other session's transcript, and the next `send_message` puts its brief in the middle of

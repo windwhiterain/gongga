@@ -20,6 +20,8 @@ pub enum ClientMessage {
     Hello { client: ClientInfo, key: String },
     /// A command, already parsed and with sticky arguments applied.
     Command { id: u64, name: String, args: Args },
+    /// An operation, beside the commands: what a window's gestures ask for.
+    Operation { id: u64, operation: Operation },
     /// Polite disconnect.
     Bye,
 }
@@ -204,7 +206,7 @@ impl Event {
         }
     }
 
-    /// The name a `subscribe --event` pattern is matched against.
+    /// The name a `subscribe <name> <pattern>` pattern is matched against.
     ///
     /// # Invariant
     ///
@@ -571,6 +573,47 @@ pub struct CmdArg {
 }
 
 // Command catalog, published by the server and consumed by the CLI completer
+
+/// An operation a client asks for: the gestures a window offers, beside the
+/// commands it types.
+///
+/// # Invariant
+///
+/// These are API, not commands: a window asks for "make this session sticky",
+/// never for a command line to spell. The client answers the two that are its
+/// own state, and the server answers the one that is not -- and both answer
+/// them the same way the matching command does, so there is one behavior per
+/// gesture. See `docs/notes/protocol-message.md`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum Operation {
+    /// Make a session the sticky one.
+    StickySession { session: String },
+    /// Show or hide a session's window.
+    RenderSession { session: String, show: bool },
+    /// Delete a session, its shells and its transcript.
+    DeleteSession { session: String },
+}
+
+impl Operation {
+    /// The command an operation asks the server for, when it asks for one.
+    ///
+    /// # Invariant
+    ///
+    /// `None` for the two that are the client's own state: the server cannot
+    /// change a caller's window, and saying "unknown" would hide a request
+    /// that is right there.
+    pub fn as_command(&self) -> Option<(&'static str, Args)> {
+        match self {
+            Operation::DeleteSession { session } => {
+                let mut args = Args::new();
+                args.insert("session".to_string(), session.clone());
+                Some(("del_session", args))
+            }
+            Operation::StickySession { .. } | Operation::RenderSession { .. } => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommandSpec {

@@ -155,7 +155,7 @@ runs exactly that.
 
 3. A session on it:
 
-       gongga-cli set_session --session build --remote build --model <provider>/<model>
+       gongga-cli set_session build <provider>/<model> --remote build
 
    `--cwd` is optional and, when given, is a path **on the peer**: the endpoint
    canonicalises it and refuses one it does not have.
