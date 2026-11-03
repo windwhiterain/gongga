@@ -363,12 +363,12 @@ The other modifier bindings sit on Alt for the same reason as the exit: a
 terminal that keeps Ctrl+K for itself is not unusual, and a binding nobody can
 press is worse than no binding.
 
-Paging lives on the arrows that already mean "history" and "cursor": Alt+arrows,
-because PgUp/PgDn on a laptop hide behind Fn, where some of them are not even
-wired to scroll.
-
 Ctrl+<letter> would otherwise insert its letter: a terminal that does deliver
 Ctrl+K here (some do) must not type a `k`.
+
+The arrows are not this branch's: they answer in `handle_arrow`, before the Alt
+and Ctrl branches, so that a modifier the terminal attached to them cannot take
+the caret away.
 
 Nothing in this branch knows what an arrow means: SPEC's three bindings on ↑/↓
 are told apart in `arrow_key` and performed in `arrow`, which is what a test can
@@ -392,11 +392,27 @@ prompt it is the one thing an operator presses by reflex. The result was that a
 message already sent came back into the prompt when nothing was being recalled.
 Splitting the two keys is what makes "the line above" mean the line above.
 
+## Tui::handle_arrow
+
+One arrow key, and the only place an arrow is answered.
+
+# Invariant
+
+Only Shift changes what an arrow does, and only where SPEC says so. A terminal
+that attaches Alt or Ctrl to the arrows -- a keyboard layer, an IME, a host that
+decorates them -- must not take the caret away from the operator. It used to:
+Alt+Left was a word jump, Alt+Right was bound to nothing at all, and Alt+Up/Down
+paged the log, so an operator whose arrows arrived decorated saw the caret jump a
+word on one side and stay still on the other.
+
+The word jump moved to Ctrl+Left and Ctrl+Right, which is where every other
+editor puts it. VS Code's terminal eats those, so the jump is simply absent
+there; the caret still moves.
+
 ## Tui::arrow_key
 
 The key table alone: which code with which modifiers asks for which of the three.
-Alt+arrows never reach it -- they page, above the Alt branch -- so `Line` is only
-ever a bare arrow.
+No modifier but Shift reaches it, so `Line` is every arrow that is not a recall.
 
 ## Tui::arrow
 

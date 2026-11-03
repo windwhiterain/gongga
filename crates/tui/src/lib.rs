@@ -946,8 +946,8 @@ impl Tui {
     /// # Invariant
     ///
     /// Shift is the recall's, and a bare arrow is the prompt's, so the two can
-    /// never be the same keystroke. Alt+arrows never arrive here: they page,
-    /// above this point.
+    /// never be the same keystroke. No other modifier reaches here: an arrow
+    /// means the same thing whatever the terminal sent with it.
     fn arrow_key(key: &KeyEvent) -> Option<Arrow> {
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         match key.code {
@@ -982,6 +982,43 @@ impl Tui {
         }
     }
 
+    /// One arrow key: the caret's, whatever else the terminal attached to it.
+    ///
+    /// # Invariant
+    ///
+    /// Only Shift changes what an arrow does, and only where SPEC says so. A
+    /// terminal that sends Alt or Ctrl along with the arrows must not take the
+    /// caret away from the operator. See `docs/notes/tui-lib.md`.
+    fn handle_arrow(&mut self, key: KeyEvent) -> Option<UiEvent> {
+        let word = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Up | KeyCode::Down => {
+                if let Some(action) = Self::arrow_key(&key) {
+                    self.arrow(action);
+                }
+            }
+            KeyCode::Left => {
+                // The caret moves, so the popup's token is stale: it goes.
+                self.close_completion();
+                if word {
+                    self.screen.input.word_left();
+                } else {
+                    self.screen.input.left();
+                }
+            }
+            KeyCode::Right => {
+                self.close_completion();
+                if word {
+                    self.screen.input.word_right();
+                } else {
+                    self.screen.input.right();
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+
     fn handle_key(&mut self, key: KeyEvent) -> Option<UiEvent> {
         if let Some(action) = Self::shortcut(&key) {
             return Some(action);
@@ -1003,28 +1040,19 @@ impl Tui {
             return None;
         }
 
+        // An arrow is the caret's: a modifier the terminal sends must not take it away.
+        if matches!(
+            key.code,
+            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down
+        ) {
+            return self.handle_arrow(key);
+        }
+
         // The other modifier bindings use Alt too: a terminal that eats Ctrl+K is common.
         if key.modifiers.contains(KeyModifiers::ALT) {
-            match key.code {
-                KeyCode::Char('k' | 'K') => {
-                    self.close_completion();
-                    self.screen.input.kill_to_end();
-                }
-                KeyCode::Left => {
-                    self.close_completion();
-                    self.screen.input.word_left();
-                }
-                // Alt+arrows page, because PgUp/PgDn hide behind Fn on laptops;
-                // a bare ↑↓ stays with the prompt's own lines.
-                KeyCode::Up => {
-                    let page = self.page_height() as i64;
-                    self.screen.scroll_by(page);
-                }
-                KeyCode::Down => {
-                    let page = self.page_height() as i64;
-                    self.screen.scroll_by(-page);
-                }
-                _ => {}
+            if matches!(key.code, KeyCode::Char('k' | 'K')) {
+                self.close_completion();
+                self.screen.input.kill_to_end();
             }
             return None;
         }
@@ -1060,11 +1088,6 @@ impl Tui {
                     self.refresh_completion();
                 }
                 self.apply_completion();
-            }
-            KeyCode::Up | KeyCode::Down => {
-                if let Some(action) = Self::arrow_key(&key) {
-                    self.arrow(action);
-                }
             }
             KeyCode::Enter => {
                 let raw = self.screen.input.text().trim().to_string();
@@ -1498,18 +1521,18 @@ fn restore_once(restored: &mut bool, restore: impl FnOnce() -> io::Result<()>) -
 }
 
 /// Editing or moving invalidates the popup's token range, even if the key is a no-op.
+///
+/// # Invariant
+///
+/// The arrows are not here: they move the caret too, but they answer to
+/// `handle_arrow`, which owns the modifiers a terminal may attach to them.
 fn edit_input(input: &mut InputLine, completion: &mut Option<Completion>, key: KeyCode) -> bool {
-    if !matches!(
-        key,
-        KeyCode::Delete | KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End
-    ) {
+    if !matches!(key, KeyCode::Delete | KeyCode::Home | KeyCode::End) {
         return false;
     }
     *completion = None;
     match key {
         KeyCode::Delete => input.delete(),
-        KeyCode::Left => input.left(),
-        KeyCode::Right => input.right(),
         KeyCode::Home => input.home(),
         KeyCode::End => input.end(),
         _ => unreachable!(),

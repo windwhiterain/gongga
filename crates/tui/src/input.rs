@@ -137,6 +137,28 @@ impl InputLine {
             .map(|i| i + before[i..].chars().next().unwrap().len_utf8())
             .unwrap_or(0);
     }
+
+    /// The end of the word the caret is in, or of the next one.
+    ///
+    /// # Invariant
+    ///
+    /// The other end of `word_left`, which lands on a word's beginning: the
+    /// two keys put the caret at the two ends of a word.
+    pub fn word_right(&mut self) {
+        let from = self.cursor;
+        let Some(start) = self.text[from..]
+            .char_indices()
+            .find(|(_, ch)| !ch.is_whitespace())
+            .map(|(index, _)| from + index)
+        else {
+            self.cursor = self.text.len();
+            return;
+        };
+        self.cursor = self.text[start..]
+            .find(char::is_whitespace)
+            .map(|index| start + index)
+            .unwrap_or(self.text.len());
+    }
 }
 
 /// `at`, rounded down to a char boundary, since slicing off one panics.
