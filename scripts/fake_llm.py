@@ -89,6 +89,9 @@ _uploads = 0
 UPLOADED: set[str] = set()
 FILES_LOG = os.environ.get("FAKE_LLM_FILES_LOG") or ""
 FORGET_AFTER = int(os.environ.get("FAKE_LLM_FORGET_FILES_AFTER") or 0)
+# A slow answer, in pieces: `piece|piece|...` and the pause between them.
+SLOW_PIECES = (os.environ.get("FAKE_LLM_SLOW_PIECES") or "").split("|") if os.environ.get("FAKE_LLM_SLOW_PIECES") else []
+SLOW_PAUSE = float(os.environ.get("FAKE_LLM_SLOW_PAUSE") or 0)
 
 
 def events(with_tool: bool, with_web: bool, with_image: bool, usage=(0, 0)):
@@ -141,10 +144,14 @@ def events(with_tool: bool, with_web: bool, with_image: bool, usage=(0, 0)):
                 item={**gen, "status": "completed", "result": "iVBORw0KGgoAAAANSUhEUg=="},
             ),
         ]
-    out += [
-        ev("response.output_item.added", item={"id": "msg_1", "type": "message"}),
-        ev("response.output_text.delta", item_id="msg_1", delta="hello from the fake model"),
-    ]
+    pieces = SLOW_PIECES or ["hello from the fake model"]
+    out += [ev("response.output_item.added", item={"id": "msg_1", "type": "message"})]
+    for piece in pieces:
+        out += [
+            ev("response.output_text.delta", item_id="msg_1", delta=piece),
+            # A marker the handler turns into a pause, so a kill lands mid-answer.
+            {"event": "fake.pause", "data": {"seconds": SLOW_PAUSE}},
+        ]
     if with_web:
         out += [
             ev(
@@ -159,14 +166,15 @@ def events(with_tool: bool, with_web: bool, with_image: bool, usage=(0, 0)):
                 },
             ),
         ]
+    whole = "".join(pieces)
     out += [
-        ev("response.output_text.done", item_id="msg_1", text="hello from the fake model"),
+        ev("response.output_text.done", item_id="msg_1", text=whole),
         ev(
             "response.output_item.done",
             item={
                 "id": "msg_1",
                 "type": "message",
-                "content": [{"type": "output_text", "text": "hello from the fake model"}],
+                "content": [{"type": "output_text", "text": whole}],
             },
         ),
         ev(
@@ -299,6 +307,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         for e in events(first and bool(TOOL_NAME), WEB, IMAGE_GEN, measure(units(raw))):
+            if e["event"] == "fake.pause":
+                # Not a protocol event: a delay, so a client can be killed mid-stream.
+                time.sleep(float(e["data"]["seconds"]))
+                continue
             self.wfile.write(f"event: {e['event']}\n".encode())
             self.wfile.write(f"data: {json.dumps(e['data'])}\n\n".encode())
             self.wfile.flush()

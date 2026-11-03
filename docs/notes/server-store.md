@@ -61,6 +61,30 @@ call is in flight, and `answer_open_calls` at every start, for a run that died b
 could answer. The second is SPEC's "auto recover invalid transcript (only append, no
 drop)", and it is why the request builder no longer has to invent anything.
 
+## drafts: what a stream has said so far
+
+`drafts` is not part of the transcript: a row there is rewritten as chunks arrive and
+deleted when the finished item is appended, which is exactly the opposite of the rule the
+transcript lives under. It exists because the alternative is worse. The text of a
+streaming answer lived in one process's memory, so a `kill -9`, a power cut or a watchdog
+that gave up lost an answer the window had already drawn -- the reader saw a message that
+the record says was never said.
+
+`agent` writes an item's draft at most once per `DRAFT_FLUSH` (250ms), so what a kill can
+lose is a quarter second of text rather than all of it, and a fast stream is not one disk
+write per chunk. `settle_drafts` runs at every start, before anything serves: each draft
+with text becomes an appended row and the table is cleared. Once, because the row is the
+record now -- and the test that says so compares *ages*, since the pending turn is
+replayed and streams an answer of its own.
+
+An answer becomes a `text` row marked `interrupted`. A **thought** does not become a
+`reasoning` row: a reasoning item with text and no `encrypted_content` is a shape the
+provider rejects (`reasoning_text must be passed back`, measured in
+`.agents/notes/2026-10-30-tool-call-replay-is-reordered.md`), so half a thought is kept as
+a `notice` -- reader-only, never sent. The reader keeps what it saw; the request keeps
+what the provider will accept. Measured over this machine's transcript: 1,320 reasoning
+rows, all with their blob.
+
 `open_calls` answers "what would a provider find unpaired" from the rows themselves, by
 `call_id`, because that is what a provider pairs on. Measured over this machine's
 transcripts: of 2,870 calls, two had no following row at all -- both from a run killed

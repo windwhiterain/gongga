@@ -151,6 +151,21 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS events_by_session ON events(session_id, seq);
 
+-- What a stream has said so far, while it is saying it. Not the transcript: a row
+-- here is rewritten as chunks arrive and deleted when the finished item is appended,
+-- which is how half a message survives a process that is killed mid-stream. At the
+-- next start every draft becomes a row marked `interrupted`, so the reader keeps what
+-- it saw and the transcript keeps what it was sent. See `docs/notes/server-store.md`.
+CREATE TABLE IF NOT EXISTS drafts (
+    session_id INTEGER NOT NULL,
+    item_id    TEXT NOT NULL,
+    turn       INTEGER NOT NULL,
+    part       TEXT NOT NULL,
+    text       TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (session_id, item_id)
+);
+
 -- Work that was in flight when the process stopped. `cancel` leaves these rows
 -- in place on purpose, and the next start replays them.
 CREATE TABLE IF NOT EXISTS pending_tasks (
@@ -944,6 +959,117 @@ impl Store {
     pub fn append_prompt(&self, session_id: i64, prompt: &Prompt) -> anyhow::Result<i64> {
         let payload = serde_json::to_value(prompt)?;
         self.append_message(session_id, "system", &payload)
+    }
+
+    // -- what a stream has said so far -------------------------------------
+
+    /// Records the text of an item still being streamed.
+    ///
+    /// # Invariant
+    ///
+    /// Overwritten, not appended: this is a draft, and the row it becomes is written
+    /// once when the item finishes (or at the next start, if it never does). The
+    /// transcript is append-only; this table is not part of it.
+    pub fn save_draft(
+        &self,
+        session_id: i64,
+        item_id: &str,
+        turn: u64,
+        part: &str,
+        text: &str,
+    ) -> anyhow::Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO drafts (session_id, item_id, turn, part, text, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(session_id, item_id) DO UPDATE SET
+                 text = excluded.text,
+                 part = excluded.part,
+                 turn = excluded.turn,
+                 updated_at = excluded.updated_at",
+            params![session_id, item_id, turn as i64, part, text, now_millis()],
+        )?;
+        Ok(())
+    }
+
+    /// Forgets an item's draft: its finished row is the record now.
+    pub fn drop_draft(&self, session_id: i64, item_id: &str) -> anyhow::Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "DELETE FROM drafts WHERE session_id = ?1 AND item_id = ?2",
+            params![session_id, item_id],
+        )?;
+        Ok(())
+    }
+
+    /// Forgets every draft of `session`: a new step's stream is new items.
+    pub fn drop_drafts(&self, session_id: i64) -> anyhow::Result<usize> {
+        let conn = self.lock();
+        Ok(conn.execute(
+            "DELETE FROM drafts WHERE session_id = ?1",
+            params![session_id],
+        )?)
+    }
+
+    /// Appends a row for every draft a stopped process left behind, and clears them.
+    ///
+    /// # Invariant
+    ///
+    /// The text is stored as it stood, `interrupted: true`, and in the order the
+    /// drafts were last touched. Half a message is what the reader was shown, and a
+    /// transcript that dropped it would say the model said nothing at all.
+    pub fn settle_drafts(&self, session_id: i64) -> anyhow::Result<usize> {
+        let pending: Vec<(String, u64, String, String)> = {
+            let conn = self.lock();
+            let mut stmt = conn.prepare(
+                "SELECT item_id, turn, part, text FROM drafts
+                  WHERE session_id = ?1 AND text <> ''
+                  ORDER BY updated_at, item_id",
+            )?;
+            let rows = stmt.query_map(params![session_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)? as u64,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            out
+        };
+        let mut settled = 0;
+        for (item_id, turn, part, text) in pending {
+            // An answer is a message and goes in as one. A thought does not: it has no
+            // `encrypted_content`, and a reasoning item carrying only text is a shape
+            // the provider rejects (`reasoning_text must be passed back`). So half a
+            // thought is kept as a `notice` -- reader-only, never sent -- which is
+            // where "the reader saw this" belongs when "the model may read this again"
+            // is not true.
+            let stored = match part.as_str() {
+                "output" => Some((
+                    "text",
+                    json!({"role": "assistant", "text": text, "interrupted": true,
+                           "item_id": item_id, "turn": turn}),
+                )),
+                "reasoning" => Some((
+                    "notice",
+                    json!({"text": text, "interrupted": true, "item_id": item_id,
+                           "turn": turn, "what": "a thought cut off mid-stream"}),
+                )),
+                // A call's text is its arguments, which the call row carries; an
+                // activity is progress, never an answer.
+                _ => None,
+            };
+            if let Some((kind, payload)) = stored {
+                self.append_message(session_id, kind, &payload)?;
+                settled += 1;
+            }
+        }
+        self.drop_drafts(session_id)?;
+        Ok(settled)
     }
 
     /// Every call in `session` whose answer a request would look for and not find.

@@ -330,6 +330,11 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     if answered > 0 {
         tracing::info!(answered, "transcript repaired before serving");
     }
+    // And what a stream was still saying when the process stopped: kept, not lost.
+    let settled = commands::settle_drafts(&dispatch);
+    if settled > 0 {
+        tracing::info!(settled, "half-answers kept before serving");
+    }
     // Whatever was in flight when the server last stopped is owed work.
     let resumed = commands::resume_pending(&dispatch).await;
     if resumed > 0 {
