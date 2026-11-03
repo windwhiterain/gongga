@@ -906,6 +906,34 @@ impl Store {
         })
     }
 
+    /// The session's last answer: the last assistant `text` row.
+    ///
+    /// # Invariant
+    ///
+    /// A `text` row is either a user message or the assistant's own words; the
+    /// last assistant one is the answer of the turn that just ended, so a
+    /// reader that wants the answer does not have to read the whole transcript
+    /// to find it.
+    pub fn last_answer(&self, session_id: i64) -> anyhow::Result<Option<String>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT display FROM messages WHERE session_id = ?1 AND kind = 'text' \
+             ORDER BY seq DESC LIMIT 8",
+        )?;
+        let rows = stmt.query_map(params![session_id], |r| r.get::<_, String>(0))?;
+        for row in rows {
+            let display = row?;
+            let value: serde_json::Value =
+                serde_json::from_str(&display).unwrap_or(serde_json::Value::Null);
+            if value.get("role").and_then(|v| v.as_str()) == Some("assistant")
+                && let Some(text) = value.get("text").and_then(|v| v.as_str())
+            {
+                return Ok(Some(text.to_string()));
+            }
+        }
+        Ok(None)
+    }
+
     /// The provider's last input measurement and the transcript generation it belongs to.
     pub fn context_measurement(&self, session_id: i64) -> anyhow::Result<(u64, u64)> {
         let conn = self.lock();

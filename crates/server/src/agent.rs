@@ -23,6 +23,15 @@ use crate::store::Store;
 use crate::tools::detached::DetachedRegistry;
 use crate::tools::{ToolContext, ToolRegistry};
 
+/// How much of a turn's answer a `turn_end` row carries.
+///
+/// # Invariant
+///
+/// The answer is a convenience, not the record: the transcript keeps all of it,
+/// so a row that carries the head of a long answer loses nothing that cannot be
+/// read again.
+const ANSWER_LIMIT: usize = 32_000;
+
 pub struct Agent {
     pub store: Store,
     /// The machine's roster, which `--model` names resolve against. A live view:
@@ -115,6 +124,19 @@ impl Agent {
                 (TurnOutcome::Failed, 0)
             }
         };
+        // The turn's own words ride the row: a subscriber reads them there.
+        let answer = self
+            .store
+            .last_answer(session.id())
+            .unwrap_or(None)
+            .map(|text| {
+                if text.chars().count() > ANSWER_LIMIT {
+                    let head: String = text.chars().take(ANSWER_LIMIT).collect();
+                    format!("{head}\n… (the answer continues in the transcript)")
+                } else {
+                    text
+                }
+            });
         // The turn's outcome as a row, not only a line: a reader with the database need
         // not match prose.
         self.log_event(
@@ -124,6 +146,7 @@ impl Agent {
                 "outcome": outcome.label(),
                 "steps": steps,
                 "elapsed_ms": started.elapsed().as_millis() as u64,
+                "answer": answer,
             }),
         );
         let (status, detail) = match outcome {
