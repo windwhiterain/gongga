@@ -2,12 +2,9 @@
 //!
 //! # Invariant
 //!
-//! A row is copied as stored, and the one value resolved while writing is the provider
-//! file id of a picture -- because a provider deletes its files and a row may not record
-//! one. Everything else a row's shape depends on was decided when it was appended
-//! (`store::append_message`): reordering a step, inventing an answer for a call that
-//! never returned, or skipping a row whose payload had gone each rewrote bytes the
-//! provider had already cached, and each cost the whole transcript.
+//! A row is copied as stored; the one value resolved while writing is a picture's provider
+//! file id. Everything else was decided when the row was appended. See
+//! `docs/notes/server-body.md`.
 
 use std::collections::VecDeque;
 use std::io::Error as IoError;
@@ -78,8 +75,7 @@ impl RequestBody {
                         self.emit(item);
                         return Step::Ready(true);
                     }
-                    // The one value resolved while writing: which file the provider now
-                    // holds for each picture. Everything else is the stored bytes.
+                    // The one value resolved while writing: the provider's file per picture.
                     return Step::Resolving((item, pictures));
                 }
                 None => {
@@ -99,8 +95,7 @@ impl RequestBody {
 impl Stream for RequestBody {
     type Item = Result<Bytes, IoError>;
 
-    /// One chunk per poll. A row with pictures is resolved by an async step, so a row
-    /// being filled is held as a future and polled again by the same `poll_next`.
+    /// One chunk per poll; a row with pictures is held as a future while it resolves.
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
         loop {
@@ -154,10 +149,7 @@ enum Step {
     Failed(IoError),
 }
 
-/// A resolution in progress.
-///
-/// Owned, because a poll that returns `Pending` cannot hand a borrow of `self` back to
-/// whoever polls next: the future carries its own handles instead.
+/// A resolution in progress: owned, because a `Pending` poll cannot lend `self` out.
 type Next = std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>>;
 
 /// One stored row as a request reads it: the item, and the pictures it named.

@@ -76,13 +76,9 @@ pub enum ServerMessage {
     ///
     /// # Invariant
     ///
-    /// A new kind of event is not a breaking change. The wire is decoded by the
-    /// binary that happens to be running, and a client built before an event
-    /// existed would otherwise fail to parse the message and lose the whole
-    /// connection -- which made every addition a lockstep upgrade of every
-    /// front-end. Here the bytes are kept as they arrived: a reader that knows
-    /// the kind prints it, one that does not shows it as unknown instead of
-    /// dying. See `docs/notes/protocol-message.md`.
+    /// A new kind of event is not a breaking change: the bytes are kept as they arrived,
+    /// so a reader shows an unknown kind instead of losing the connection. See
+    /// `docs/notes/protocol-message.md`.
     Unknown {
         /// The event exactly as it arrived, so a front-end can pass it on.
         event: serde_json::Value,
@@ -105,9 +101,8 @@ pub struct ServerInfo {
     pub home: String,
     pub cwd: String,
     pub model: String,
-    /// The process this server follows, if one does: a window that owns it dies,
-    /// and the server stops. A reader compares it with its own pid to learn
-    /// whether it is the window in charge. See `docs/notes/protocol-message.md`.
+    /// The process this server follows: a reader compares it with its own pid. See
+    /// `docs/notes/protocol-message.md`.
     #[serde(default)]
     pub owner: Option<u32>,
     /// The watchdog this server runs under, when it runs under one.
@@ -171,12 +166,8 @@ pub enum Event {
     ///
     /// # Invariant
     ///
-    /// The shape is `kind` plus a free-form `payload`, never a variant per kind.
-    /// The log is append-only data -- `turn_end`, `step_timing`, `tool_result`,
-    /// `usage`, and whatever a script emits tomorrow -- so a closed enum here
-    /// would mean a wire change for every new kind, which is the cost this whole
-    /// mechanism exists to remove. A reader switches on `kind` and ignores what it
-    /// does not know.
+    /// The shape is `kind` plus a free-form `payload`, never a variant per kind: the log
+    /// is append-only data, so a closed enum would mean a wire change for every new kind.
     Record {
         /// The log's own id: a cursor, monotonic over the whole table.
         id: i64,
@@ -850,14 +841,8 @@ pub fn encode_server(msg: &ServerMessage) -> Result<Vec<u8>, serde_json::Error> 
 ///
 /// # Invariant
 ///
-/// Only a message that *is* an event falls back: the outer tag has to say
-/// `event` and the payload has to be an object with a `t` of its own. Anything
-/// else fails as it did before, because a corrupt frame is a real error and
-/// hiding it would turn a bug into a silent gap.
-///
-/// A recognised tag whose fields this build cannot read falls back as well --
-/// that is the same situation one step along: the server learned a required
-/// field before this client did.
+/// Only a message that *is* an event falls back: a corrupt frame stays an error, or a bug
+/// becomes a silent gap. A known tag with unreadable fields falls back too.
 pub fn decode_server(bytes: &[u8]) -> Result<ServerMessage, serde_json::Error> {
     let error = match serde_json::from_slice::<ServerMessage>(bytes) {
         Ok(message) => return Ok(message),
