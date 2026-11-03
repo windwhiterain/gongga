@@ -31,10 +31,13 @@ standard OpenAI Response API.
 ## Session name
 path, rendered in hierarchy.
 ## Tool
-all tool has optional `description` argument.
+tool are wrapper of cmd that agents can directly call to avoid escape.
+
+all tool has optional `description`, `max_output` argument.
+- `max_output`: in chars, if exeeded, save to temp file and return the file metadata {path, chars, line count}
 
 use `which("bash")` as bash.
-- bash{command, name = "default", background = false, detached = false, time_out = <time_out>}:
+- bash{command, name = "default", background = false, detached = false, timeout_ms = <timeout_ms>}:
   cwd is session's cwd if session has no remote.
   runs in the persistent shell `name`
   - key = {session_name, bash_name}.
@@ -46,11 +49,12 @@ use `which("bash")` as bash.
 - check_python{...}: mirror check_bash.
 - del_bash{name_regex}: delete matched bash with the caller sessions' name in key. 
 - del_python{...}: mirror del_bash.
-- remote_bash{command, name, target = <session's remote>, background = false, time_out = <time_out>}:
+- remote_bash{command, name, target = <session's remote>, background = false, timeout_ms = <timeout_ms>}:
   cwd is session's cwd if session's remote is target.
   non-meta reference the remote skill.
 - remote_python{code, ...}: mirror remote_bash.
-- wait{time_out = <time_out>}
+- read_file/write_file/replace
+- wait{timeout_ms = <timeout_ms>}
 
 File tools run through the Python tool's interpreter on the session's machine, so
 file content is a JSON field and never a shell command or Python source:
@@ -143,8 +147,8 @@ for the first user message to a empty session, find all meta references recursiv
   - `interrupt_session <session>`
   - `cancel`: not instantly, but finish every task that can't be serialized to data, then store the pending tasks into data, the exit. next start will auto pick up those tasks.  
   - `trigger_event <event>`
-  - `subscribe <subscription> <pattern> [--persistant] [--bash <cmd>] [--python <code>]`:
-    run bash cmd or python code in persistant bash or python interpreter.
+  - `subscribe <subscription> <pattern> [--persistant] [--bash <bash> --cmd <cmd>] [--python <python> --code <code>]`:
+    when pattern matched triggered event, run bash cmd or python code in persistant bash or python interpreter.
   - `del_subscribe <subscription>`
 - server_script: that registered by external python scripts
   - `get_messages <session> [<begin>]:[<end>]`: return the items in closed range <begin>:<end> (negative number count from end, missing number means boundary).
