@@ -1572,19 +1572,21 @@ mod tests {
     /// The tail is cached prose, so a re-spelling must not rewrite it.
     #[test]
     fn a_directory_is_stated_one_way() {
-        let dir = tempfile::tempdir().unwrap();
-        let forward = dir.path().display().to_string().replace('\\', "/");
+        let dir = std::env::temp_dir().join(format!("gongga-stated-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a directory to spell");
+        let forward = dir.display().to_string().replace('\\', "/");
         let slashed = std::path::PathBuf::from(&forward);
         assert_eq!(
-            Agent::stated(dir.path()),
+            Agent::stated(&dir),
             Agent::stated(&slashed),
             "{forward} and {} name one directory",
-            dir.path().display()
+            dir.display()
         );
         assert!(
-            !Agent::stated(dir.path()).starts_with(r"\\?\"),
+            !Agent::stated(&dir).starts_with(r"\\?\"),
             "the canonical prefix is not prose"
         );
+        let _ = std::fs::remove_dir(&dir);
     }
 
     /// The prompt row's own facts are stamped once, so a later read cannot move them.
@@ -1597,15 +1599,16 @@ mod tests {
     fn the_start_card_is_stamped_and_then_read_back() {
         let store =
             crate::store::Store::open(std::path::Path::new(":memory:")).expect("a throwaway store");
-        let id = store.create_session("s", "m", ".").expect("a session");
+        let id = store
+            .create_session_on("s", "m", ".", None)
+            .expect("a session");
         let first = crate::store::Prompt {
             instructions: "prose".to_string(),
             index: None,
             tail: Some("Session `s`, 2026-11-01 14:00 UTC".to_string()),
             rooted: Vec::new(),
-            handover: None,
             cwd: ".".to_string(),
-            stamp: String::new(),
+            remote: None,
         };
         store.append_prompt(id, &first).expect("one row");
         // A minute later: the stored card is what a request carries, not the clock.
