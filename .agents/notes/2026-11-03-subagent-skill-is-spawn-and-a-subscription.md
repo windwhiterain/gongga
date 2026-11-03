@@ -76,6 +76,23 @@ probe 的后一条 = "Now also look at @file: late.md and @skill: late, then sto
 - 上一次真跑还顺带证伪了我自己的一条断言：`probe` 也会听见 `probe/impl/2`——那不是漏，
   是 `spawn` 的**调用者**是 `probe`，所以它替 `probe` 订阅了两个孩子。J 改成孙会话才测到锚。
 
+## 一个后来的追问：`wait` 时它已经 turn end 了呢
+
+用户指出：订阅在派活之前，所以它结束得再早，通知也已经到了——那它就不会在 `wait` 里干等。
+对，这条现在写进正文了，而且量成了两个方向（`scripts/subagent_selftest.sh` 的 L/M）：
+
+| 情形 | 结果 |
+| --- | --- |
+| 没有订阅（手写 `set_session` 的会话），`wait {timeout_ms: 2500}` | 坐满 **3121 ms**，回 `nothing arrived within 2.5s` |
+| `spawn` 的子会话在父会话 `wait` 期间跑完 | **321 ms** 就回 `1 row(s) arrived … (a subscribe match)` |
+
+量的时候还撞出一件事，正是那个追问的镜像：父会话**空闲**时，通知不是排队的行，而是**把这一轮
+叫起来的那条 user 消息**。这一轮里再调 `wait`，队列是空的，于是必然坐满超时——回执就在同一段
+上下文里，`wait` 却看不见它。所以正文多一条：**回执已经在眼前时不要 `wait`，直接读结果**。
+
+`wait` 等的一直是"下一件"，不是"上一件"；会等空的唯一写法是**订阅挂在事件之后**
+（手写订阅，或 `--persistant false` 只覆盖一轮）。
+
 ## 没做的
 
 - 没有 `unsubscribe` / `list_subscriptions`：SPEC 没写，`del_session` 与 `--persistant false`

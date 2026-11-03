@@ -70,6 +70,8 @@ server_pid=""; fake_pid=""
 cleanup() {
   for pid in $(serving_home) "$server_pid"; do alive "$pid" && taskkill //PID "$pid" //T //F >/dev/null 2>&1; done
   alive "$fake_pid" && taskkill //PID "$fake_pid" //F >/dev/null 2>&1
+  alive "${wait_fake_pid:-}" && taskkill //PID "$wait_fake_pid" //F >/dev/null 2>&1
+  rm -f "$work/wait-fake.pid"
   rm -f "$work/fake.pid"
   sleep 1
   [[ "${1:-}" == keep ]] && { echo "note: kept $home"; return; }
@@ -100,7 +102,7 @@ mkdir -p "$home/skills"
 cp -r "$skill" "$home/skills/subagent"
 cp -r "$root/ship/config/config.toml" "$home/config.toml" 2>/dev/null
 
-port=$(free_port); fake_port=$(free_port)
+port=$(free_port); fake_port=$(free_port); wait_port=$(free_port)
 # What `spawn` runs must find *this* server and *this* key, not the machine's own:
 # `gongga-cli` resolves both from `GONGGA_SERVER` / `GONGGA_HOME` before any default.
 export GONGGA_HOME="$home"
@@ -118,6 +120,23 @@ INNER
 for _ in $(seq 1 50); do [[ -s "$work/fake.pid" ]] && break; sleep 0.2; done
 fake_pid=$(cat "$work/fake.pid" 2>/dev/null)
 wait_tcp "$fake_port" || hard "the fake endpoint never answered"
+# The endpoint whose first request asks the model to `wait`.
+start_wait_fake() {
+  alive "${wait_fake_pid:-}" && taskkill //PID "$wait_fake_pid" //F >/dev/null 2>&1
+  rm -f "$work/wait-fake.pid"
+  env FAKE_LLM_TOOL=wait FAKE_LLM_TOOL_ARGS='{"timeout_ms": 2500}' \
+    python - "$root" "$work" "$wait_port" <<'INNER' &
+import os, runpy, sys
+root, work, port = sys.argv[1], sys.argv[2], sys.argv[3]
+open(os.path.join(work, "wait-fake.pid"), "w").write(str(os.getpid()))
+sys.argv = [os.path.join(root, "scripts/fake_llm.py"), port]
+runpy.run_path(sys.argv[0], run_name="__main__")
+INNER
+  for _ in $(seq 1 50); do [[ -s "$work/wait-fake.pid" ]] && break; sleep 0.2; done
+  wait_fake_pid=$(cat "$work/wait-fake.pid" 2>/dev/null)
+  wait_tcp "$wait_port" || hard "the wait endpoint never answered"
+}
+start_wait_fake
 
 cat > "$work/subagent-roster.toml" <<TOML
 [[provider]]
@@ -136,9 +155,29 @@ key_env = "FAKE_API_KEY"
   tier = "flash"
   context = 100000
   modalities = ["text"]
+
+# A second endpoint, whose fake calls `wait` on the first request of its own process:
+# the one request in a run that opens by waiting for news.
+[[provider]]
+id = "waitfake"
+name = "Wait Fake"
+key_env = "WAIT_API_KEY"
+
+  [[provider.endpoint]]
+  id = "openai"
+  api = "openai-responses"
+  base_url = "http://127.0.0.1:$wait_port/v1"
+
+  [[provider.model]]
+  id = "wait-fake"
+  name = "Wait Fake"
+  tier = "flash"
+  context = 100000
+  modalities = ["text"]
 TOML
 export GONGGA_PROVIDERS_CATALOG="$work/subagent-roster.toml"
 export FAKE_API_KEY=sk-fake
+export WAIT_API_KEY=sk-fake
 
 "$bin/gongga-server.exe" --home "$home" --bind "127.0.0.1:$port" --log info >>"$log" 2>&1 &
 for _ in $(seq 1 150); do [[ -s "$home/server.lock" ]] && break; sleep 0.2; done
@@ -255,6 +294,39 @@ ok "K the deleted session's subscriptions go with it" $?
 ok "K the parent's own two stay: $(query "select group_concat(pattern,' ') from subscriptions where session='probe'")" $?
 [[ "$(query "select count(*) from sessions where name='probe/impl/review'")" == "1" ]]
 ok "K and its child session is still there, now unheard" $?
+
+# --- L: `wait` waits for the NEXT thing, and no subscription means it sits ------
+# 2.5 s is the bound the fake asks for, so a timeout is 2.5 s of wall clock and an
+# early answer is not: the two are told apart by time as well as by the words.
+"${cli[@]}" set_session --session alone --model waitfake/wait-fake >"$work/alone.out" 2>&1
+started=$(date +%s%3N)
+"${cli[@]}" send_message --session alone --message 'open by waiting' >"$work/alone-msg.out" 2>&1
+await alone 1 || hard "the waiting session's turn never ended"
+spent=$(( $(date +%s%3N) - started ))
+# The last result of that session, as one value: an `output` is multi-line, so a
+# line of the answer is not the answer.
+waits=$(query "select json_extract(display,'\$.output') from messages where session_id=(select id from sessions where name='alone') and kind='tool_result' order by seq desc limit 1")
+[[ "$waits" == *"nothing arrived within"* && $spent -ge 2500 ]]
+ok "L with no subscription, wait sits to its timeout: $spent ms, '$waits'" $?
+
+# --- M: a spawned child's turn end is what interrupts that same wait -------------
+# The parent has to be busy for the notice to be a queued row: it is inside its
+# first `wait` when the child finishes, so the tool returns early instead of timing out.
+start_wait_fake
+child_from_alone=$(GONGGA_SESSION=alone "$skill/spawn.py" impl --model waitfake/wait-fake 2>/dev/null)
+[[ "$child_from_alone" == "alone/impl" ]]; ok "M a second parent gets its own child: $child_from_alone" $?
+"${cli[@]}" send_message --session alone --message 'wait while the child works' >"$work/alone-wait.out" 2>&1
+for _ in $(seq 1 100); do
+  [[ $(query "select count(*) from messages where session_id=(select id from sessions where name='alone') and kind='tool_call'") -ge 2 ]] && break
+  sleep 0.2
+done
+before=$(turns_of alone)
+"${cli[@]}" send_message --session "$child_from_alone" --message 'answer at once' >"$work/child-quick.out" 2>&1
+await "$child_from_alone" 1 || hard "the child's turn never ended"
+await alone $(( before + 1 )) || hard "the parent's waiting turn never ended"
+last=$(query "select json_extract(display,'\$.output') from messages where session_id=(select id from sessions where name='alone') and kind='tool_result' order by seq desc limit 1")
+[[ "$last" == *"arrived while this call waited"* && "$last" == *"subscribe"* ]]
+ok "M the child's turn end interrupts it: '$last'" $?
 
 # --- I: the declared entry is what `skill subagent` runs -----------------------
 entry=$("${cli[@]}" skill which subagent 2>/dev/null | cut -f4)
