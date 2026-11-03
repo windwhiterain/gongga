@@ -112,7 +112,9 @@ ok "a draining server still answers a command" $?
 grep -q "the server is stopping" "$log"
 ok "the drain is announced on the event stream" $?
 
-# The turn really did finish before the process left.
+# The turn really did finish before the process left: waited for, not raced. The
+# drain is what makes the wait long, and this is the assertion that says it ended.
+for _ in $(seq 1 100); do grep -q "turn end session=sleeper outcome=Cancelled" "$log" && break; sleep 0.2; done
 grep -q "turn end session=sleeper outcome=Cancelled" "$log"
 ok "the turn finished, then the server stopped" $?
 

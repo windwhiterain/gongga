@@ -65,9 +65,13 @@ pub async fn serve(cfg: Arc<Config>, d: Arc<Dispatch>, bus: EventBus) -> anyhow:
         // happening: a silent link is indistinguishable from a dead one, and that is
         // exactly what made a cancel look like a disconnection. The loop leaves when
         // the last turn has finished, which is what the process was waiting for.
+        // The tick is unconditional, and the token is asked inside: a `select!`
+        // guard is evaluated once, when the select is entered, so a branch disabled
+        // before the cancel would never wake again -- the loop would sit on the
+        // socket until some client happened to send something.
         let received = tokio::select! {
-            _ = tokio::time::sleep(DRAIN_TICK), if d.shutdown.is_cancelled() => {
-                if d.active.load(Ordering::SeqCst) == 0 {
+            _ = tokio::time::sleep(DRAIN_TICK) => {
+                if d.shutdown.is_cancelled() && d.active.load(Ordering::SeqCst) == 0 {
                     break;
                 }
                 continue;
