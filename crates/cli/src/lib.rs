@@ -1915,7 +1915,7 @@ pub async fn list_commands(args: &Args) -> anyhow::Result<()> {
     let commands = client.commands();
     link.goodbye().await;
     println!(
-        "{} command(s); run one with `gongga <command> --<arg> <value>`.",
+        "{} command(s); run one with `gongga <command> <args>`; each takes line says its shape.",
         commands.len()
     );
     for command in commands {
