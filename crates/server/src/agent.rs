@@ -676,9 +676,7 @@ impl Agent {
             .prompt_in_force(session, id, llm.model(), cwd, source)
             .await?;
         phases.prompt_ms = phase_started.elapsed().as_millis() as u64;
-        // A provider refuses to continue, in thinking mode, a step it wrote while thinking
-        // was off. The repair is a row, not a rewrite: SPEC lets a transcript be repaired by
-        // appending. See `docs/notes/server-agent.md`.
+        // See `docs/notes/server-agent.md` for why this appends a row rather than rewriting.
         if thinks(effort) && !definitions.is_empty() {
             self.mark_thinking_start(id, name);
         }
@@ -1419,17 +1417,12 @@ impl TurnOutcome {
     }
 }
 
-/// What a panicking task carries, as text.
-/// Whether a level asks the model to think, which is what makes a reasoning row mandatory.
-///
-/// # Invariant
-///
-/// `none` is the one level that is not thinking: the roster spells thinking-off that way,
-/// and a provider produces no reasoning for it.
+/// Whether a level asks the model to think: `none` is the one level that does not.
 fn thinks(effort: Option<&str>) -> bool {
     effort.is_some_and(|level| level != "none")
 }
 
+/// What a panicking task carries, as text.
 pub(crate) fn panic_message(payload: &(dyn Any + Send)) -> String {
     if let Some(text) = payload.downcast_ref::<&str>() {
         (*text).to_string()
