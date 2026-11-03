@@ -123,26 +123,32 @@ start rather than sending a prompt with a hole in it.
 
 ## which message's references reach the index
 
-The index is rebuilt on every request (`agent::index_of`, see `server-agent.md`), so
-"when was this named" decides whether it is in there, and the answer is not the same
-for the three kinds. Measured against a fake provider (`.dev/index-reach/probe.sh`):
+`agent::index_of` runs on the request that writes the session's prompt row, and
+`prompt_in_force` returns that row from then on (see `server-agent.md`), so "when was
+this named" decides whether it is in there at all:
 
 | named in | `@file:` | `@skill:` |
 | --- | --- | --- |
 | the session's first user message | in the index, mention stays literal | in the index, mention stays literal |
-| a later message | in the index from the next rebuild on (one new prompt row) | the same: the mention keeps its spelling, so the next rebuild reads the body in |
-| the `Context notice`, before it is even delivered | -- the queue is read too, so its `@skill:` joins at the next rebuild | same |
+| a message already queued when that row was written | the queue is read too, so it is in the index as well | same |
+| any later message | nothing: the mention stays a literal path with no entry behind it | expanded to `@skill: <name> (<its SKILL.md>)`; the body is not in the index, so the reader opens the file itself |
 
 One more row, because skills name each other: a root's own mentions are walked, so a
 first message naming `@skill:chain` whose body says `@skill:leaf` carries both bodies.
 That is what lets the shipped chapter `ship/skills/prefix-cache` be referenced from four
 other places without being copied into them.
 
-The two behave alike, and the reason is `expand`'s: it appends the metadata and leaves
-the mention in the row, so the spelling that keys the index survives for a later
-rebuild. Until 2026-11-03 it replaced the mention with prose instead, so a skill named
-after the first message never reached the index and the row kept a description that
-went stale the moment the skill changed.
+The first two rows are why the writing rule is a rule and not a preference. Measured at
+`52c180a` with a fake provider (`scripts/subagent_selftest.sh`, scenarios 0 and H): a
+session whose first message named `@file: early.md` kept
+`rooted = ['@file:early.md']` through three turns, its later message's `@skill: late`
+was stored as `@skill: late (<path>)`, and the request behind that turn carried `EARLY`
+and no `LATE`. One `system` row, not one per request.
+
+Until 2026-11-03 this section said the index was rebuilt on every request, and that a
+later message joined it on the next rebuild. That was `index_of`'s rule before the head
+was stamped, and the stamped head is the answer to a measured bill: a 24k-character
+index edited by one line cost one session 292,992 cached tokens (`server-agent.md`).
 
 What a reader should take from this is a writing rule, not a limitation: name what the
 work needs in the first message. `ship/skills/prefix-cache` holds that rule, the
