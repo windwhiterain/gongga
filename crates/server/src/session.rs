@@ -15,7 +15,7 @@ use crate::remote::endpoint::Endpoint;
 use crate::remote::shell_set::ShellSet;
 use crate::store::{SessionRow, Store};
 use crate::tools::detached::DetachedRegistry;
-use crate::tools::python::PythonRepl;
+use crate::tools::python::Repl;
 use std::collections::HashMap as PythonMap;
 
 /// The name of the shell every session starts with.
@@ -116,6 +116,17 @@ impl Shells {
             Some(_) => vec![Machine::Local, Machine::Remote],
             None => vec![Machine::Local],
         }
+    }
+
+    /// Where one machine's shells run, for a caller that needs another program there.
+    ///
+    /// # Invariant
+    ///
+    /// `None` when the session has no shells on that machine, which is what a tool
+    /// reports rather than starting the program on the wrong one.
+    pub fn endpoint(&self, machine: Machine) -> Option<crate::remote::endpoint::Endpoint> {
+        let set = self.set(machine)?;
+        set.lock().ok().map(|set| set.endpoint().clone())
     }
 
     /// Where `machine`'s own `default` shell last said it was.
@@ -447,7 +458,7 @@ struct SessionInner {
     /// This machine's shells, and the remote's when the session names one.
     shells: Arc<Mutex<Shells>>,
     /// The persistent Python interpreters, named like shells.
-    pythons: Arc<AsyncMutex<PythonMap<String, Arc<AsyncMutex<PythonRepl>>>>>,
+    pythons: Arc<AsyncMutex<PythonMap<String, Arc<AsyncMutex<Repl>>>>>,
     cancel: Mutex<CancellationToken>,
     /// How many times the operator has cancelled; a queued turn compares it across the wait.
     cancels: AtomicU64,
@@ -502,7 +513,7 @@ impl SessionHandle {
         self.inner.shells.clone()
     }
 
-    pub fn pythons(&self) -> Arc<AsyncMutex<PythonMap<String, Arc<AsyncMutex<PythonRepl>>>>> {
+    pub fn pythons(&self) -> Arc<AsyncMutex<PythonMap<String, Arc<AsyncMutex<Repl>>>>> {
         self.inner.pythons.clone()
     }
 

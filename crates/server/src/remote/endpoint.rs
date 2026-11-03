@@ -135,12 +135,27 @@ impl Endpoint {
     /// A remote `cwd` is the endpoint's to accept: a directory it does not have is
     /// an error here, never a quiet substitution of this machine's.
     pub async fn connect(&self, cwd: Option<&str>) -> anyhow::Result<ShellHandle> {
+        self.connect_program(cwd, None, None).await
+    }
+
+    /// One program on the endpoint, with the arguments it is to be started with.
+    ///
+    /// # Invariant
+    ///
+    /// The program is named for that machine, never resolved here: a path this
+    /// machine holds is not evidence about one the peer has.
+    pub async fn connect_program(
+        &self,
+        cwd: Option<&str>,
+        program: Option<&str>,
+        args: Option<&[String]>,
+    ) -> anyhow::Result<ShellHandle> {
         let command = self.runner_command()?;
         let runner = Runner::spawn(command)
             .await
             .map_err(|e| anyhow::anyhow!("{}: {e}", self.describe()))?;
         runner
-            .open(cwd, None)
+            .open_with(cwd, program, args)
             .await
             .map_err(|e| anyhow::anyhow!("{}: {e}", self.describe()))
     }

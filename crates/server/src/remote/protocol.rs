@@ -6,7 +6,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// The version both ends must agree on before any other frame counts.
-pub const PROTOCOL: u32 = 1;
+///
+/// # Invariant
+///
+/// Raised when a request gains a meaning an older runner would silently ignore: a
+/// runner that dropped `args` would run the program it was given with a shell's
+/// flags, which is a wrong answer rather than a missing one. 2 added `args` to
+/// `Open`, which is how a program other than a shell is started.
+pub const PROTOCOL: u32 = 2;
 
 /// One request; `id` is the client's, and the reply repeats it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,11 +34,15 @@ impl Request {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Op {
-    /// Start a shell under the client's own id, rooted at an endpoint-local `cwd`.
+    /// Start a program under the client's own id, rooted at an endpoint-local `cwd`.
     Open {
         shell: u64,
         cwd: Option<String>,
+        /// The program; absent is the peer's `bash`.
         program: Option<String>,
+        /// Its arguments. Absent means a shell's own, which no other program may get.
+        #[serde(default)]
+        args: Option<Vec<String>>,
     },
     /// Bytes for that shell's stdin, base64 because a line has no binary.
     Write {

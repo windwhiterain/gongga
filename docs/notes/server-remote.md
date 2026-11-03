@@ -6,6 +6,11 @@ by id. See `.agents/notes/2026-11-01-remote-is-a-shell-endpoint.md` for the deci
 
 ## `remote::protocol`
 
+Protocol 2 added `args` to `Op::Open`, so a program other than a shell can be started
+there -- `remote_python` is its one caller. The bump is deliberate: a runner that
+dropped `args` would start `python` with `--norc`, a wrong answer rather than a
+missing one, and an older runner is refused by version before anything is sent.
+
 One JSON object per line, in both directions, tagged so a frame says what it is:
 
 - a **request** has an `id` and an `op`;
@@ -182,6 +187,8 @@ task, a reader task, a stderr task, and a reaper.
 - a closed reader wakes every waiter with the reason, so a dead transport is an
   error and not a hang;
 - `ShellHandle::close` answers from the endpoint's report only;
+- `Runner::open_with` is `open` with the program's own arguments, which is how the
+  endpoint starts an interpreter instead of a shell;
 - `ShellControl` carries the shell's queue as well as its runner, so a watcher can
   read a peer file (`read`) and hear the shell end (`ended`) without taking the
   handle's lock — which is what a background job's tailer needs while its shell is

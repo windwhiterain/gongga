@@ -27,6 +27,7 @@ pub mod index_skill;
 #[cfg(windows)]
 pub mod job;
 pub mod python;
+pub mod python_remote;
 
 /// Everything a tool invocation needs, supplied per call by the agent loop.
 pub struct ToolContext {
@@ -37,13 +38,10 @@ pub struct ToolContext {
     /// The session's named shells, on this machine and -- when it names one --
     /// on its remote. See `crate::session::Shells`.
     pub shells: Arc<StdMutex<Shells>>,
-    /// The session's persistent Python interpreters, named like shells.
+    /// The session's interpreters, named like shells: one name, one interpreter.
     pub pythons: Arc<
         tokio::sync::Mutex<
-            std::collections::HashMap<
-                String,
-                Arc<tokio::sync::Mutex<crate::tools::python::PythonRepl>>,
-            >,
+            std::collections::HashMap<String, Arc<tokio::sync::Mutex<python::Repl>>>,
         >,
     >,
     /// The connection this session's references are read through, when its
@@ -274,12 +272,16 @@ impl ToolRegistry {
     /// Adds the persistent Python tool with the configuration the server resolved.
     pub fn with_python(mut self, python: crate::config::PythonConfig) -> Self {
         let files = python.clone();
-        self.tools.push(Box::new(python::PythonTool {
-            program: python.program,
-            args: python.args,
-            timeout: python.timeout,
-            max_output_chars: python.max_output_chars,
-        }));
+        // One implementation, two names: here, and on the session's peer.
+        for machine in [Machine::Local, Machine::Remote] {
+            self.tools.push(Box::new(python::PythonTool {
+                machine,
+                program: python.program.clone(),
+                args: python.args.clone(),
+                timeout: python.timeout,
+                max_output_chars: python.max_output_chars,
+            }));
+        }
         self.tools.push(Box::new(python::ReadFileTool {
             program: files.program.clone(),
             args: files.args.clone(),

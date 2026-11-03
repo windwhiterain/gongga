@@ -393,6 +393,17 @@ impl Runner {
         cwd: Option<&str>,
         program: Option<&str>,
     ) -> anyhow::Result<ShellHandle> {
+        self.open_with(cwd, program, None).await
+    }
+
+    /// Starts one program on the peer: a shell when `args` is `None`, else exactly
+    /// what `args` says.
+    pub async fn open_with(
+        &self,
+        cwd: Option<&str>,
+        program: Option<&str>,
+        args: Option<&[String]>,
+    ) -> anyhow::Result<ShellHandle> {
         let id = self.inner.next_shell.fetch_add(1, Ordering::SeqCst);
         let output = ShellQueue::new();
         self.inner
@@ -406,6 +417,7 @@ impl Runner {
             shell: id,
             cwd: cwd.map(str::to_string),
             program: program.map(str::to_string),
+            args: args.map(<[String]>::to_vec),
         };
         let reply = match self.request(op).await {
             Ok(reply) => reply,

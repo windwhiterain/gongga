@@ -22,7 +22,7 @@ use crate::tools::{Tool, ToolContext, ToolOutcome};
 
 const DEFAULT_NAME: &str = "default";
 
-const DRIVER: &str = r#"
+pub(crate) const DRIVER: &str = r#"
 import ast, builtins, contextlib, io, json, os, stat, sys, tempfile, traceback
 _ns = {"__name__": "__main__", "__builtins__": builtins}
 
@@ -178,11 +178,6 @@ impl PythonRepl {
         &self.cwd
     }
 
-    /// Runs one block and returns its captured standard output and error.
-    pub async fn run(&mut self, code: &str, timeout: Duration) -> anyhow::Result<Reply> {
-        self.run_request(&json!({ "code": code }), timeout).await
-    }
-
     /// Sends one structured request; the driver's op decides what it does.
     pub async fn run_request(
         &mut self,
@@ -227,6 +222,65 @@ impl PythonRepl {
     }
 }
 
+/// One interpreter, wherever it runs.
+///
+/// # Invariant
+///
+/// A name is one interpreter: the map holds one of these per name, so `python` and
+/// `remote_python` cannot both answer to it. See `docs/notes/server-tools-python.md`.
+pub enum Repl {
+    Local(PythonRepl),
+    Remote(crate::tools::python_remote::RemoteRepl),
+}
+
+impl Repl {
+    pub fn machine(&self) -> Machine {
+        match self {
+            Repl::Local(_) => Machine::Local,
+            Repl::Remote(repl) => repl.machine(),
+        }
+    }
+
+    pub fn pid(&self) -> Option<u32> {
+        match self {
+            Repl::Local(repl) => repl.pid(),
+            Repl::Remote(repl) => repl.pid(),
+        }
+    }
+
+    pub fn program(&self) -> String {
+        match self {
+            Repl::Local(repl) => repl.program().display().to_string(),
+            Repl::Remote(repl) => repl.program(),
+        }
+    }
+
+    pub fn cwd(&self) -> &Path {
+        match self {
+            Repl::Local(repl) => repl.cwd(),
+            Repl::Remote(repl) => repl.cwd(),
+        }
+    }
+
+    pub async fn run_request(
+        &mut self,
+        request: &Value,
+        timeout: Duration,
+    ) -> anyhow::Result<Reply> {
+        match self {
+            Repl::Local(repl) => repl.run_request(request, timeout).await,
+            Repl::Remote(repl) => repl.run_request(request, timeout).await,
+        }
+    }
+
+    pub async fn kill(&mut self) {
+        match self {
+            Repl::Local(repl) => repl.kill().await,
+            Repl::Remote(repl) => repl.kill().await,
+        }
+    }
+}
+
 #[derive(Debug, serde::Deserialize)]
 pub struct Reply {
     pub ok: bool,
@@ -256,7 +310,60 @@ const DESCRIPTION: &str = "Run Python in a persistent interpreter on this machin
     `timeout_ms` for a long computation, and `list_python` / `del_python` to see and \
     end interpreters the way `list_bash` / `del_bash` do.";
 
+/// What `remote_python` says it is: the same interpreter, on the session's peer.
+///
+/// # Invariant
+///
+/// It names the machine a path belongs to, because the one thing a model gets wrong
+/// here is writing to this machine's file while meaning the peer's.
+const REMOTE_DESCRIPTION: &str = "Run Python in a persistent interpreter on this \
+    session's remote endpoint -- the machine `set_session --remote` named. Same \
+    `code`, `name`, `timeout_ms` and `restart` as `python`, and the same name space: a \
+    name the other machine already holds is refused rather than quietly becoming a \
+    second interpreter. State survives between calls to one name because it is one \
+    process on that machine. Paths \
+    are that machine's: `open()` in this interpreter reads and writes the peer's files, \
+    while `read_file`, `write_file` and `replace` are this machine's. Standard output \
+    and standard error come back the same way, and `list_python` / `del_python` cover \
+    both machines and say which one an interpreter is on.";
+
+impl PythonTool {
+    /// Starts one interpreter on this tool's machine.
+    ///
+    /// # Invariant
+    ///
+    /// A peer's Python is started by name there, never here: the program this machine
+    /// resolved is not evidence about the one that machine has.
+    async fn start(&self, ctx: &ToolContext, cwd: &Path) -> anyhow::Result<Repl> {
+        match self.machine {
+            Machine::Local => Ok(Repl::Local(PythonRepl::spawn(
+                self.program.as_deref(),
+                &self.args,
+                cwd,
+            )?)),
+            Machine::Remote => {
+                let endpoint = ctx
+                    .shells
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .endpoint(Machine::Remote);
+                let Some(endpoint) = endpoint else {
+                    anyhow::bail!(
+                        "this session names no remote, so there is no second machine to run \
+                         Python on; `python` is the interpreter here"
+                    );
+                };
+                Ok(Repl::Remote(
+                    crate::tools::python_remote::RemoteRepl::spawn(&endpoint, cwd, DRIVER).await?,
+                ))
+            }
+        }
+    }
+}
+
 pub struct PythonTool {
+    /// Which machine this tool drives. One implementation, two names.
+    pub machine: Machine,
     pub program: Option<PathBuf>,
     pub args: Vec<String>,
     pub timeout: Duration,
@@ -265,15 +372,21 @@ pub struct PythonTool {
 
 impl Tool for PythonTool {
     fn name(&self) -> &'static str {
-        "python"
+        match self.machine {
+            Machine::Local => "python",
+            Machine::Remote => "remote_python",
+        }
     }
 
     fn description(&self) -> &'static str {
-        DESCRIPTION
+        match self.machine {
+            Machine::Local => DESCRIPTION,
+            Machine::Remote => REMOTE_DESCRIPTION,
+        }
     }
 
     fn machine(&self, _ctx: &ToolContext) -> Machine {
-        Machine::Local
+        self.machine
     }
 
     fn parameters(&self) -> Value {
@@ -341,26 +454,36 @@ impl Tool for PythonTool {
                 .map(str::trim)
                 .filter(|s| !s.is_empty());
 
+            if restart {
+                let old = ctx.pythons.lock().await.remove(name);
+                if let Some(old) = old {
+                    old.lock().await.kill().await;
+                }
+            }
+            // A name is one interpreter: the other tool's is refused, not borrowed.
+            let existing = ctx.pythons.lock().await.get(name).cloned();
+            if let Some(handle) = existing {
+                let owner = handle.lock().await.machine();
+                if owner != self.machine {
+                    return ToolOutcome::err(format!(
+                        "`{name}` is already a Python on {}: a name is one interpreter, and \
+                         `python` and `remote_python` share the names. Name this one \
+                         otherwise, or `del_python name_regex: \"^{name}$\"` first.",
+                        owner.named()
+                    ));
+                }
+            }
             let handle = {
                 let mut pythons = ctx.pythons.lock().await;
-                if restart {
-                    if let Some(old) = pythons.remove(name) {
-                        let mut repl = old.lock().await;
-                        repl.kill().await;
-                    }
-                }
                 match pythons.get(name) {
                     Some(handle) => handle.clone(),
                     None => {
-                        let repl = match PythonRepl::spawn(
-                            self.program.as_deref(),
-                            &self.args,
-                            &ctx.cwd,
-                        ) {
+                        let repl = match self.start(ctx, &ctx.cwd).await {
                             Ok(repl) => repl,
                             Err(e) => {
                                 return ToolOutcome::err(format!(
-                                    "python {name:?} did not start: {e}"
+                                    "{} {name:?} did not start: {e}",
+                                    self.name()
                                 ));
                             }
                         };
@@ -372,7 +495,7 @@ impl Tool for PythonTool {
             };
 
             let mut repl = handle.lock().await;
-            match repl.run(code, timeout).await {
+            match repl.run_request(&json!({ "code": code }), timeout).await {
                 Ok(reply) => {
                     let mut text = reply.stdout;
                     if !reply.stderr.is_empty() {
@@ -384,13 +507,8 @@ impl Tool for PythonTool {
                     if !reply.ok && !text.contains("Traceback") {
                         text.push_str("\n(the block raised)");
                     }
-                    let text = ctx.cap(
-                        Machine::Local,
-                        name,
-                        description,
-                        text,
-                        self.max_output_chars,
-                    );
+                    let text =
+                        ctx.cap(self.machine, name, description, text, self.max_output_chars);
                     ToolOutcome::ok(if text.is_empty() {
                         "(no output)".to_string()
                     } else {
@@ -470,7 +588,7 @@ impl Tool for DelPythonTool {
                     .filter(|name| regex.is_match(name))
                     .cloned()
                     .collect();
-                let handles: Vec<Arc<AsyncMutex<PythonRepl>>> = names
+                let handles: Vec<Arc<AsyncMutex<Repl>>> = names
                     .iter()
                     .filter_map(|name| pythons.remove(name))
                     .collect();
@@ -495,10 +613,10 @@ impl Tool for ListPythonTool {
     }
 
     fn description(&self) -> &'static str {
-        "List the Python interpreters of this session: their names, pids, the program \
-         each was started from, and the directory each is standing in. `name_regex` \
-         narrows the answer to the names that match, which is how one name's state is \
-         asked about."
+        "List the Python interpreters of this session: their names, the machine each \
+         runs on, pids, the program each was started from, and the directory each is \
+         standing in. `name_regex` narrows the answer to the names that match, which is \
+         how one name's state is asked about."
     }
 
     fn parameters(&self) -> Value {
@@ -537,7 +655,7 @@ impl Tool for ListPythonTool {
                     }
                 },
             };
-            let handles: Vec<(String, Arc<AsyncMutex<PythonRepl>>)> = {
+            let handles: Vec<(String, Arc<AsyncMutex<Repl>>)> = {
                 let pythons = ctx.pythons.lock().await;
                 pythons
                     .iter()
@@ -556,8 +674,9 @@ impl Tool for ListPythonTool {
                 let repl = handle.lock().await;
                 rows.push(json!({
                     "name": name,
+                    "machine": repl.machine().label(),
                     "pid": repl.pid(),
-                    "program": repl.program().display().to_string(),
+                    "program": repl.program(),
                     "cwd": repl.cwd().display().to_string(),
                 }));
             }

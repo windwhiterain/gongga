@@ -176,7 +176,8 @@ impl Runner {
                 shell,
                 cwd,
                 program,
-            } => self.open(shell, cwd, program).await,
+                args,
+            } => self.open(shell, cwd, program, args).await,
             Op::Write { shell, data } => self.write(shell, &data).await,
             Op::Signal { shell, signal } => self.signal(shell, &signal).await,
             Op::Pause { shell } => self.pause(shell, true).await,
@@ -195,6 +196,7 @@ impl Runner {
         shell: u64,
         cwd: Option<String>,
         program: Option<String>,
+        args: Option<Vec<String>>,
     ) -> Result<Value, String> {
         let program = program.unwrap_or_else(|| "bash".to_string());
         let root = match &cwd {
@@ -210,9 +212,12 @@ impl Runner {
             return Err(format!("not a directory on the endpoint: {root:?}"));
         }
         let mut command = Command::new(&program);
+        // Shell flags are a shell's: `--norc` to an interpreter is a usage error.
+        match &args {
+            Some(args) => command.args(args),
+            None => command.arg("--norc").arg("--noprofile"),
+        };
         command
-            .arg("--norc")
-            .arg("--noprofile")
             .current_dir(&root)
             .env("TERM", "dumb")
             .env("PS1", "")

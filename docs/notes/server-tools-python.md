@@ -32,6 +32,33 @@ asked politely to give it back.
 program, and with neither set the server takes `python3`, then `python`, from
 PATH. `timeout_ms` and `max_output_chars` are the same knobs as bash's.
 
+## remote_python
+
+The same driver on the session's peer. One `Repl` enum holds either side, so a name is
+one interpreter and the other tool's answer to it is refused rather than borrowed --
+`\`default` is already a Python on its remote`, measured.
+
+What is *not* shared is how the process is reached, and two measurements decided it:
+
+- **`exec` in the peer's bash does not replace the shell.** It starts a child and
+  exits, so the runner sees the shell end and every request is answered with "the
+  Python interpreter on the endpoint ended". So the peer starts the program itself:
+  `Op::Open` carries `args`, and `--norc --noprofile` stay the shell's business.
+- **a name on the peer's `PATH` is not an interpreter.** On a Windows peer `python3`
+  is the Store's alias stub: it exits 0 having run nothing, and an empty answer read
+  as success is a silent wrong answer. So every candidate is asked a real question
+  first (`1 + 1`) and one that cannot answer it is not that machine's Python.
+
+Because `args` is a new meaning on `Open`, the runner protocol went to **2**: a
+runner that ignored `args` would start `python` with `--norc`, which is a wrong
+answer rather than a missing one. Every peer already installed must be reinstalled,
+and the refusal says which versions disagreed -- measured: *"the endpoint's runner
+speaks protocol 1, and this server speaks protocol 2"*.
+
+Paths are the interpreter's, and the interpreter is native: a Windows peer's Python
+wants `C:/Windows/win.ini`, and answers `[Errno 2]` for `/c/Windows/win.ini` however
+well the shell beside it resolves that spelling. Measured both ways.
+
 ## Session state
 
 `SessionInner::pythons` holds a map from name to interpreter, behind the same
