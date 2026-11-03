@@ -44,6 +44,13 @@ pub struct Prompt {
     pub remote: Option<String>,
 }
 
+/// The row that closes a turn: see `docs/notes/server-store.md`.
+///
+/// # Invariant
+///
+/// Fixed text, because every later request of the session carries it.
+pub const THINKING_MARK: &str = "(thinking enabled)";
+
 /// What the model is told about a call that never returned: the
 /// `interrupted_call` template.
 pub fn interrupted_call() -> String {
@@ -1251,6 +1258,42 @@ impl Store {
         Ok(())
     }
 
+    /// Whether a thinking-mode request cannot continue this transcript as it stands.
+    ///
+    /// # Invariant
+    ///
+    /// Only rows after the last user row are read: that is the window a provider checks.
+    pub fn thinking_mark_needed(&self, session_id: i64) -> anyhow::Result<bool> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT kind, display FROM messages
+              WHERE session_id = ?1 AND content IS NOT NULL
+              ORDER BY seq DESC",
+        )?;
+        let rows = stmt.query_map(params![session_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        // Backwards, so the walk stops at this turn's first row.
+        let mut tail: Vec<(String, bool)> = Vec::new();
+        for row in rows {
+            let (kind, display) = row?;
+            let user = kind == "text" && is_user_row(&display);
+            tail.push((kind, user));
+            if user {
+                break;
+            }
+        }
+        tail.reverse();
+        let mut boundary = true;
+        for (kind, user) in tail {
+            if boundary && !user && kind != "reasoning" {
+                return Ok(true);
+            }
+            boundary = user || kind == "tool_result";
+        }
+        Ok(false)
+    }
+
     /// Every operator message this session has stored, oldest first.
     pub fn user_texts(&self, session_id: i64) -> anyhow::Result<Vec<String>> {
         let conn = self.lock();
@@ -1961,7 +2004,7 @@ impl MessageRow {
                 row.elapsed_ms = value.get("elapsed_ms").and_then(|v| v.as_u64());
             }
             // The harness talking to the reader: no role, no answer in the model's mouth.
-            "notice" => row.text = str_of("text").unwrap_or_default(),
+            "notice" | "thinking_mark" => row.text = str_of("text").unwrap_or_default(),
             // The reader sees which prompt was in force, not 10k characters of it.
             "system" => {
                 let cwd = str_of("cwd").unwrap_or_default();
@@ -1980,6 +2023,18 @@ impl MessageRow {
         }
         row
     }
+}
+
+/// Whether a `text` row is the reader speaking, rather than the model.
+///
+/// # Invariant
+///
+/// A row that does not parse is not a user row: it is a row no request is built from, and
+/// calling it a turn boundary would cut a request short instead of closing a turn.
+fn is_user_row(display: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(display)
+        .ok()
+        .is_some_and(|value| value.get("role").and_then(serde_json::Value::as_str) == Some("user"))
 }
 
 /// The pictures a stored `tool_result` row recorded, by path.
@@ -2035,10 +2090,12 @@ fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value>
             })
         }
         "reasoning" => {
+            // The provider's item, whole: it may need `content`, which a summary lost.
+            if let Some(item) = value.get("item").filter(|item| item.is_object()) {
+                return Some(item.clone());
+            }
             let mut item = json!({"type": "reasoning", "summary": []});
             match value.get("encrypted").and_then(|v| v.as_str()) {
-                // The blob is the whole thought; the summary beside it is for humans,
-                // and sending both would put every thought in twice.
                 Some(encrypted) => item["encrypted_content"] = json!(encrypted),
                 // No blob -- an interrupted thought. The text is all there is, so it
                 // is replayed as what it says rather than dropped.
@@ -2061,6 +2118,8 @@ fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value>
             "name": text_of("name"),
             "arguments": text_of("arguments"),
         })),
+        // A boundary the harness draws, not a thing the reader said.
+        "thinking_mark" => Some(json!({"role": "user", "content": text_of("text")})),
         "tool_result" => Some(json!({
             "type": "function_call_output",
             "call_id": text_of("call_id"),

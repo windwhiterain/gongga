@@ -676,6 +676,12 @@ impl Agent {
             .prompt_in_force(session, id, llm.model(), cwd, source)
             .await?;
         phases.prompt_ms = phase_started.elapsed().as_millis() as u64;
+        // A provider refuses to continue, in thinking mode, a step it wrote while thinking
+        // was off. The repair is a row, not a rewrite: SPEC lets a transcript be repaired by
+        // appending. See `docs/notes/server-agent.md`.
+        if thinks(effort) && !definitions.is_empty() {
+            self.mark_thinking_start(id, name);
+        }
         // Pinned here, so every retry of this request replays the window that was
         // current when it started.
         let phase_started = std::time::Instant::now();
@@ -782,14 +788,11 @@ impl Agent {
                 }
                 LlmEvent::Reasoning {
                     item_id,
+                    item,
                     summary,
-                    encrypted,
                 } => {
-                    let mut payload = json!({"summary": summary});
-                    if let Some(e) = encrypted {
-                        payload["encrypted"] = json!(e);
-                    }
-                    payload["item_id"] = json!(item_id);
+                    // The item, not a summary of it: a request sends it back whole.
+                    let payload = json!({"item": item, "summary": summary, "item_id": item_id});
                     said.insert(item_id.clone());
                     streamed.remove(&item_id);
                     self.settle_item(id, &item_id);
@@ -1326,6 +1329,38 @@ impl Agent {
     /// from. An `Event::Log` alone is broadcast and forgotten: "why did that
     /// turn fail" was unanswerable a minute later, and the failure of the
     /// *first* attempt of a request exists nowhere else at all.
+    /// Appends the row that lets thinking mode continue what was written without it.
+    ///
+    /// # Invariant
+    ///
+    /// At most one row per step, and only when the transcript asks for it, so a session
+    /// that never leaves thinking mode never carries one.
+    fn mark_thinking_start(&self, id: i64, session: &str) {
+        let needed = match self.store.thinking_mark_needed(id) {
+            Ok(needed) => needed,
+            Err(e) => {
+                tracing::warn!(session = %session, error = %e, "cannot read the transcript's tail");
+                return;
+            }
+        };
+        if !needed {
+            return;
+        }
+        match self.store.append_message(
+            id,
+            "thinking_mark",
+            &json!({"text": crate::store::THINKING_MARK}),
+        ) {
+            Ok(_) => tracing::info!(
+                session = %session,
+                "appended a turn boundary: thinking mode cannot continue a step written without it"
+            ),
+            Err(e) => {
+                tracing::warn!(session = %session, error = %e, "cannot append the thinking marker")
+            }
+        }
+    }
+
     fn error(&self, id: i64, session: &str, what: &str, e: anyhow::Error) {
         tracing::error!(session = %session, "failed to {what}: {e}");
         let said = format!("{session}: failed to {what}: {e}");
@@ -1385,6 +1420,16 @@ impl TurnOutcome {
 }
 
 /// What a panicking task carries, as text.
+/// Whether a level asks the model to think, which is what makes a reasoning row mandatory.
+///
+/// # Invariant
+///
+/// `none` is the one level that is not thinking: the roster spells thinking-off that way,
+/// and a provider produces no reasoning for it.
+fn thinks(effort: Option<&str>) -> bool {
+    effort.is_some_and(|level| level != "none")
+}
+
 pub(crate) fn panic_message(payload: &(dyn Any + Send)) -> String {
     if let Some(text) = payload.downcast_ref::<&str>() {
         (*text).to_string()

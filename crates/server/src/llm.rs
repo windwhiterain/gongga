@@ -612,8 +612,10 @@ pub enum LlmEvent {
     /// A reasoning item to persist, for replay on the next request.
     Reasoning {
         item_id: String,
+        /// The provider's own item, replayed as it came; see `docs/notes/server-llm.md`.
+        item: serde_json::Value,
+        /// The readable thought, for the reader only.
         summary: String,
-        encrypted: Option<String>,
     },
     /// Assistant text, emitted once at the end of the message item.
     Output {
@@ -1480,8 +1482,8 @@ async fn handle(
                     }
                     out.send(LlmEvent::Reasoning {
                         item_id: id.clone(),
+                        item: item.clone(),
                         summary,
-                        encrypted: item["encrypted_content"].as_str().map(str::to_string),
                     })
                     .await?;
                     out.send(LlmEvent::PartDone {
