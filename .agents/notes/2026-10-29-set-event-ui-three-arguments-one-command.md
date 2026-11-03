@@ -1,5 +1,9 @@
 # `set_event_ui` 的三个参数：块高、会话过滤、分屏（WIP）
 
+> **命令写法已改**（2026-11-03）：本文里的 `--session`/`--message`/`--range`/`--event`
+> 是当时的写法；现在按位置给：`send_message <会话> <消息>`、`get_messages <会话> [范围]`、
+> `subscribe <名字> <pattern>`。本文记的是当时的决定，语法以 SPEC 为准。
+
 SPEC 的 UI 一节改成
 `set_event_ui [--block_size <line>] [--session <name|none>] [--split <bool>]`，
 并把 `set_event_filter` / `del_event_filter` 两行（含它们那句「auto set `--session`

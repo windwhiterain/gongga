@@ -146,28 +146,23 @@ SCENARIOS = {
         ],
     },
     "gesture-operations": {
-        "description": "the window's own gestures: click to make sticky, shift-delete to delete",
+        "description": "the window's own gestures: a click asks for an operation",
         "options": {"tool": "bash", "fake": "stream"},
         "script": [
             "# the gestures are operations, not command lines: the window asks for"
-            "# what it means and the command layer answers it",
+            "# what it means and the command layer answers it. The delete gesture"
+            "# is not here: this terminal does not deliver Shift+Delete, so"
+            "# scripts/cmd_selftest.sh answers that operation on the wire instead.",
             "expect session(s) 20000",
             "label creating the session the gesture will act on",
             "keys /set_session main",
             "enter",
             "wait 900",
             "expect main 8000",
-            "label shift-delete deletes the sticky session: the operation crosses the wire",
-            "key shift-delete",
-            "sleep-until-frame 3 6000",
-            "gone main 8000",
             "label a click on a session's name hides its window: an operation",
-            "keys /set_session peer",
-            "enter",
-            "wait 900",
             "click 4 2",
-            "sleep-until-frame 2 4000",
-            "expect render peer = false 8000",
+            "sleep-until-frame 1 4000",
+            "expect render main = false 8000",
         ],
     },
     "event-ui-toggles": {

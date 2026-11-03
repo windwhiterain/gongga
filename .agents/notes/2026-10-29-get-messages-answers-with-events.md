@@ -1,5 +1,9 @@
 # 读回的 transcript 是事件，不是回执里的字段（WIP）
 
+> **命令写法已改**（2026-11-03）：本文里的 `--session`/`--message`/`--range`/`--event`
+> 是当时的写法；现在按位置给：`send_message <会话> <消息>`、`get_messages <会话> [范围]`、
+> `subscribe <名字> <pattern>`。本文记的是当时的决定，语法以 SPEC 为准。
+
 User 的指令：「把 get_message 的返回从 cmd_result 换成重发那几个 message 的 events」，加上
 随后的「不新增，复用已有事件」——后一条把第一次的实现（`Event::Message`，已合进 `3129a46`）
 撤掉了。两个分叉问出来的：

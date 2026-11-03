@@ -1,5 +1,9 @@
 # 光标不再跟着 events 跑；窗口退了自己起的 server（WIP）
 
+> **命令写法已改**（2026-11-03）：本文里的 `--session`/`--message`/`--range`/`--event`
+> 是当时的写法；现在按位置给：`send_message <会话> <消息>`、`get_messages <会话> [范围]`、
+> `subscribe <名字> <pattern>`。本文记的是当时的决定，语法以 SPEC 为准。
+
 三件事，都是「用户报的现象 → 量出来的根因」。
 
 ## 1. 光标跟着 events 走

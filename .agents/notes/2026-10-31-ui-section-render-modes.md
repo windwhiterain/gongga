@@ -1,5 +1,9 @@
 # 按新 SPEC 的 UI 一节重做窗口：每会话一个渲染模式（WIP）
 
+> **命令写法已改**（2026-11-03）：本文里的 `--session`/`--message`/`--range`/`--event`
+> 是当时的写法；现在按位置给：`send_message <会话> <消息>`、`get_messages <会话> [范围]`、
+> `subscribe <名字> <pattern>`。本文记的是当时的决定，语法以 SPEC 为准。
+
 SPEC 的 UI 一节整段重写了，`Cmd` 的 client 一节也换了三个命令名。这一轮把代码对上去。
 
 ## SPEC 说了什么

@@ -1,5 +1,9 @@
 # 显示哪个会话由 `show_session`/`hide_session` 说，`set_session` 不再写 sticky（WIP）
 
+> **命令写法已改**（2026-11-03）：本文里的 `--session`/`--message`/`--range`/`--event`
+> 是当时的写法；现在按位置给：`send_message <会话> <消息>`、`get_messages <会话> [范围]`、
+> `subscribe <名字> <pattern>`。本文记的是当时的决定，语法以 SPEC 为准。
+
 SPEC 的 client 一节这一轮改了三处，代码跟着改：
 
 - `set_event_ui` 只留 `--block_size`、`--split`。

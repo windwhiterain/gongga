@@ -19,7 +19,7 @@ SPEC 的 `## Skill: subagent` 只有四条：
 新版让 `spawn` 一次做完前两条：
 
 - **建会话**仍是 `set_session --must_create true`，名字仍是 `<父会话>/<角色>`、撞了加 `/2`。
-- **订阅**由 `spawn` 替调用者发：`subscribe --event '^turn_end:<名字>$' --persistant true`，
+- **订阅**由 `spawn` 替调用者发：`subscribe <名字> '^turn_end:<名字>$' --persistant true`，
   在返回名字**之前**完成；订阅失败则 `del_session` 撤销刚建的会话，退出 2，说清哪一步失败。
 - 模式两端锚死并 `re.escape` 名字：`subscribe` 是**非锚定**的正则，`turn_end:main/impl`
   会连 `main/impl/2` 一起匹配，父会话就会为别人的回合白等。selftest 的 J 专门造一个孙会话

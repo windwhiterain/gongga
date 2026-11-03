@@ -16,10 +16,13 @@ CLI 原来有一条客户端命令 `wait --kind K --session NAME`：读连接上
 
 SPEC 把这两件事分给了两侧，代码跟上：
 
-- **`subscribe --event <pattern> [--wait_ms <ms>] [--persistant <bool>]`** 是**内核命令**
+- **`subscribe <名字> <pattern> [--persistant <bool>]`** 是**内核命令**
   （`crates/server/src/subscriptions.rs`）。登记完**立刻**返回；匹配时把消息投给**发起它的
   会话**，走 `send_message` 的那条路（`inject` 行），所以空闲会话会被真的叫醒，忙的会话在
   下一个 step 边界读到。
+  （后来又长出两样：`--bash <名字> --cmd <cmd>` / `--python <名字> --code <code>`，匹配时在
+  **会话自己的**那个同名常驻解释器里跑；以及 `del_subscribe <名字>` 按名字撤订。
+  `trigger_event <名字>` 手工发一个事件，让订阅自己响。）
 - **`wait {timeout_ms}`** 是**工具**（`crates/server/src/tools/mod.rs`）。agent 在回合里用它
   等到"任何东西落地"——后台任务报告、`subscribe` 的消息、人的消息——并且**什么都不消费**：
   消息仍然在下一个 step 边界按原路进 transcript，只有一条投递路径。
