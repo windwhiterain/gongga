@@ -27,13 +27,13 @@ standard OpenAI Response API.
 - auto recover invalid transcript (only add, no drop).
 
 ### Invarian
-- everything in message must store and send.
+- everything must store and send.
 
 ## Tool
 all tool has optional `description` argument.
 
 use `which("bash")` as bash.
-- bash{command, name = "default", background = false, detached = false}:
+- bash{command, name = "default", background = false, detached = false, time_out = <timeout>}:
   cwd is session's cwd if session has no remote.
   runs in the persistent shell `name`, or starts a detached bash of that name.
   - key = {session_name, bash_name}.
@@ -41,9 +41,10 @@ use `which("bash")` as bash.
 - list_bash{name_regex}: list matched bash with the caller session's name in key.
 - check_bash{name = "default", wait_ms = 0}: return bash's output that hasn't been read by the caller session. With `wait_ms > 0` and background jobs still running, wait until they finish or the wait expires, then return the unread output: a timeout leaves the jobs running.
 - del_bash{name_regex}: delete matched bash with the caller sessions' name in key. 
-- remote_bash{command, name, target = session's remote}:
+- remote_bash{command, name, target = session's remote, background = false, time_out = <timeout>}:
   cwd is session's cwd if session's remote is target.
   reference the remote skill.
+- wait{time_out = <timeout>}
 
 File tools run through the Python tool's interpreter on the session's machine, so
 file content is a JSON field and never a shell command or Python source:
@@ -62,11 +63,7 @@ everything in database (sqlite) under a home directory, structured for agentic r
 after the system prompt, before the first user message, inject one message with useful information about session name, harness version (commit id), cwd, time.
 
 ### Invariant
-transcript that has been sent must not be change.
-
-## Session Name
-a name is `/`-separated segments: `a/b/c`. no segment may be empty or begin with `@`.
-a name is one row of the list, and each prefix of it is a group row.
+transcript is append only, transcript that has been sent must not be change.
 
 ## Meta
 preprocess before saving to transcripts.
@@ -140,8 +137,15 @@ for the first user message to a empty session, find all meta references recursiv
   - `send_message --session <name> --message <string>`: inject message instantly, turn waiting bash to backgound.
   - `interrupt_session --session <name>`
   - `cancel`: not instantly, but finish every task that can't be serialized to data, then store the pending tasks into data, the exit. next start will auto pick up those tasks.  
+  - `subscribe --event <pattern> [--persistant]`:
+    notice the caller session when event pattern matched.
 - server_script: that registered by external python scripts
   - `get_messages --session <name> --range <begin:end>`: return the rows in that closed range `range` (negative number to count from end).
+  - `skill <name> [args...]` | `skill ls` | `skill which <name>` | `skill run <name>`:
+    run the entry a skill declares, resolved by the roots above. argv is passed through
+    unparsed, the entry's exit code is this command's, and neither needs a server nor a
+    runtime -- an entry is a file on this disk. `run` reaches a skill whose own name is
+    `ls` or `which`.
 - client:
   - `set_sticky --name <name> --value <value>`:
   - `del_sticky --name <name>`
@@ -152,11 +156,6 @@ for the first user message to a empty session, find all meta references recursiv
   - `set_render_session --session <name> [--show <bool>]`
   - `connect_server [--ip <ip>](default: localhost) --port <port>`
   - `serve --port <port> [--home <path>](default: "~/.gongga")`
-  - `skill <name> [args...]` | `skill ls` | `skill which <name>` | `skill run <name>`:
-    run the entry a skill declares, resolved by the roots above. argv is passed through
-    unparsed, the entry's exit code is this command's, and neither needs a server nor a
-    runtime -- an entry is a file on this disk. `run` reaches a skill whose own name is
-    `ls` or `which`.
 
 ## Skill
 a skill is a directory holding `SKILL.md`: `name`, `description`, and what its body needs.
