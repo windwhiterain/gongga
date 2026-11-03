@@ -6,7 +6,18 @@ use std::path::PathBuf;
 
 use tokio::process::Command;
 
-use crate::remote::transport::{Runner, ShellHandle};
+use crate::remote::transport::{ProtocolMismatch, Runner, ShellHandle};
+
+/// One argument of a command line, quoted when it carries a space.
+///
+/// See `docs/notes/server-remote.md`.
+fn quoted(value: &str) -> String {
+    if value.contains(char::is_whitespace) {
+        format!("\"{value}\"")
+    } else {
+        value.to_string()
+    }
+}
 
 /// The words of a runner command: `"gongga runner"` is two argv words on the peer.
 ///
@@ -65,6 +76,68 @@ impl Endpoint {
                 None => format!("ssh {host} ({runner})"),
             },
         }
+    }
+
+    /// The error, with the way out of it when there is one.
+    ///
+    /// # Invariant
+    ///
+    /// A peer that speaks another protocol is the one failure a reader can act
+    /// on without reading the source: the distribution on the peer has to be
+    /// replaced and this machine's remote pointed at the new one. The refusal
+    /// carries that command, because a refusal naming only two numbers leaves
+    /// the reader to work the repair out alone.
+    fn explain(&self, error: anyhow::Error) -> anyhow::Error {
+        match error.downcast::<ProtocolMismatch>() {
+            Ok(mismatch) => match self.remedy() {
+                Some(remedy) => anyhow::anyhow!("{}: {mismatch}; {remedy}", self.describe()),
+                None => anyhow::anyhow!("{}: {mismatch}", self.describe()),
+            },
+            Err(error) => anyhow::anyhow!("{}: {error}", self.describe()),
+        }
+    }
+
+    /// The command that replaces the distribution on the peer.
+    ///
+    /// # Invariant
+    ///
+    /// Only an endpoint reached over ssh has a peer to reinstall, and the
+    /// command is the deployment tool's own: one a reader can run as it stands.
+    fn remedy(&self) -> Option<String> {
+        let Endpoint::Remote {
+            transport:
+                Reach::Ssh {
+                    host,
+                    port,
+                    identity,
+                },
+            ..
+        } = self
+        else {
+            return None;
+        };
+        let (user, address) = match host.rsplit_once('@') {
+            Some((user, address)) => (Some(user), address),
+            None => (None, host.as_str()),
+        };
+        let mut command = String::from("gongga-cli skill remote install --host ");
+        command.push_str(address);
+        if let Some(user) = user {
+            command.push_str(" --user ");
+            command.push_str(user);
+        }
+        if let Some(port) = port {
+            command.push_str(" --port ");
+            command.push_str(&port.to_string());
+        }
+        if let Some(identity) = identity {
+            command.push_str(" --identity ");
+            command.push_str(&quoted(&identity.display().to_string()));
+        }
+        Some(format!(
+            "reinstall the distribution on the peer with `{command}`, point this machine's \
+             remote at the runner it prints, and restart the server"
+        ))
     }
 
     /// The command that starts a runner for this endpoint.
@@ -145,9 +218,7 @@ impl Endpoint {
         args: Option<&[String]>,
     ) -> anyhow::Result<ShellHandle> {
         let command = self.runner_command()?;
-        let runner = Runner::spawn(command)
-            .await
-            .map_err(|e| anyhow::anyhow!("{}: {e}", self.describe()))?;
+        let runner = Runner::spawn(command).await.map_err(|e| self.explain(e))?;
         runner
             .open_with(cwd, program, args)
             .await

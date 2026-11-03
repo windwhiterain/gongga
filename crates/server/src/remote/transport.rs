@@ -26,6 +26,21 @@ const GREETING: std::time::Duration = std::time::Duration::from_secs(10);
 /// How long a dropped transport waits for its runner to end its own shells.
 const DISCONNECT_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// The peer speaks another protocol: the two ends cannot talk.
+///
+/// # Invariant
+///
+/// Only a distribution on the peer can change that, and the reader is told which
+/// command does it. See `docs/notes/server-remote.md`.
+#[derive(Debug, thiserror::Error)]
+#[error("the endpoint's runner speaks protocol {peer}, and this server speaks protocol {server}")]
+pub struct ProtocolMismatch {
+    /// The number the peer's runner greeted with.
+    pub peer: u32,
+    /// The number this server speaks.
+    pub server: u32,
+}
+
 /// One shell's output in flight, and the flow control that keeps it bounded.
 ///
 /// # Invariant
@@ -338,10 +353,11 @@ impl Runner {
             anyhow::bail!("the endpoint's runner greeted with something else");
         };
         if protocol != PROTOCOL {
-            anyhow::bail!(
-                "the endpoint's runner speaks protocol {protocol}, and this server speaks \
-                 protocol {PROTOCOL}"
-            );
+            return Err(ProtocolMismatch {
+                peer: protocol,
+                server: PROTOCOL,
+            }
+            .into());
         }
         inner.pid.store(pid, Ordering::SeqCst);
         Ok(Self { inner })
