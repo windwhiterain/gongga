@@ -688,9 +688,10 @@ const REMOTE_BASH_DESCRIPTION: &str = "Run a shell command in a persistent shell
      here, and a name the other machine already holds is refused. `cd`, exports and shell \
      functions survive between calls because it is one process on that machine. `target` \
      may be written and names that same machine; it takes no other value, because a \
-     session has one directory on one machine. `background` and `detached` are not offered \
-     here: the job's scratch file and its completion are watched on this machine. Use a \
-     foreground command, or `&` with a log file on that machine. Paths are that machine's: \
+     session has one directory on one machine. With `background`, the job runs in that \
+     shell, `check_bash` collects what it printed, and this session is told when it ends. \
+     `detached` is not offered here, because a detached process belongs to this machine's \
+     registry. Paths are that machine's: \
      a path this machine has is not necessarily a path there. Output is capped; a cut is \
      not spilled to a file, because the file would be here and the reader is there.";
 
@@ -769,16 +770,16 @@ impl Tool for BashTool {
                                  finishes. Ignored for background commands."
             }
         });
-        // What only one of the two machines can do. `bash` returns at once for two
-        // flags a peer's shell cannot honour, and those are declared where they work:
-        // see `docs/notes/server-tools-mod.md`.
+        // A job of a shell is that shell's, on either machine; a detached process
+        // belongs to this machine's registry, so only `bash` declares it.
+        properties["background"] = json!({
+            "type": "boolean",
+            "description": "Start the command and return immediately instead of waiting \
+                             for it. Collect what it printed with `check_bash`, and this \
+                             session is told when it ends. Defaults to false."
+        });
         match self.machine {
             Machine::Local => {
-                properties["background"] = json!({
-                    "type": "boolean",
-                    "description": "Start the command and return immediately instead of \
-                                     waiting for it. Defaults to false."
-                });
                 properties["detached"] = json!({
                     "type": "boolean",
                     "description": "Run the command as a process of its own and return at \

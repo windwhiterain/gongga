@@ -12,10 +12,17 @@ use tokio::sync::mpsc;
 use crate::remote::endpoint::Endpoint;
 use crate::remote::protocol::Event;
 use crate::remote::transport::{CloseReport, Runner, ShellControl, ShellHandle};
-use crate::tools::bash::{BashChunk, BashOutcome, BashStream};
+use crate::tools::bash::{
+    BackgroundNotifier, BashChunk, BashOutcome, BashStream, background_done_marker,
+    background_script,
+};
 
 /// The one command that says where a peer's shell is, in its own machine's spelling.
 const PWD: &str = "command pwd -W 2>/dev/null || command pwd";
+
+/// Asks the endpoint where it keeps temporary files, without moving its shell.
+const TEMP_DIR: &str =
+    "( command cd \"${TMPDIR:-/tmp}\" && { command pwd -W 2>/dev/null || command pwd; } )";
 
 /// Why a shell on the endpoint can send no sentinel again.
 const ENDED_NO_CONNECTION: &str = "this shell never connected to the endpoint";
@@ -236,6 +243,10 @@ pub struct RemoteShell {
     out_of_sync: bool,
     pending: Arc<StdMutex<String>>,
     jobs: Arc<AtomicUsize>,
+    /// Which job number this shell hands out next.
+    next_job: u64,
+    /// The endpoint's temporary directory, asked once. See `temp_dir`.
+    temp_dir: Option<String>,
 }
 
 impl RemoteShell {
@@ -261,6 +272,8 @@ impl RemoteShell {
             out_of_sync: false,
             pending: Arc::new(StdMutex::new(String::new())),
             jobs: Arc::new(AtomicUsize::new(0)),
+            next_job: 0,
+            temp_dir: None,
         }
     }
 
@@ -441,24 +454,64 @@ impl RemoteShell {
         }
     }
 
-    /// Refused, never launched here.
+    /// Starts a command in this shell without waiting; `notify` hears when it ends.
     ///
     /// # Invariant
     ///
-    /// A background job needs a scratch file and a completion watcher this server can
-    /// read; on a peer neither exists yet, and launching one locally would run the
-    /// model's command on the wrong machine. See `docs/notes/server-remote.md`.
+    /// The job runs in this shell, on the peer: launching it here would run the
+    /// model's command on the wrong machine. Its end is an event, never a clock --
+    /// the wrapper's sentinel in the endpoint's file, or this shell's channel ending.
+    /// See `docs/notes/server-remote.md`.
     pub async fn run_background(
         &mut self,
-        _command: &str,
-        _notify: Option<crate::tools::bash::BackgroundNotifier>,
+        command: &str,
+        notify: Option<BackgroundNotifier>,
     ) -> anyhow::Result<u64> {
-        anyhow::bail!(
-            "`background` is not available on a remote endpoint: the job's output and its \
-             completion are watched this machine's way, and the shell is not on this \
-             machine. Run it in the foreground, or start it with a `&` and a log file on \
-             the endpoint."
-        )
+        self.next_job += 1;
+        let job = self.next_job;
+        let dir = self.temp_dir().await?;
+        let out_path = format!("{dir}/gongga-bg-{}-{job}.out", self.marker);
+        let done_marker = background_done_marker(job);
+        // No pid file: a peer has no question "is this wrapper alive", and its shell's
+        // end is the event that answers it.
+        let script = background_script(command, &out_path, None, &done_marker);
+        let control = {
+            let shell = self.connect().await?;
+            shell.write(script.as_bytes()).await?;
+            shell.control()
+        };
+        self.jobs.fetch_add(1, Ordering::SeqCst);
+        tokio::spawn(tail_remote_background(
+            control,
+            out_path,
+            done_marker,
+            job,
+            self.pending.clone(),
+            self.jobs.clone(),
+            notify,
+        ));
+        Ok(job)
+    }
+
+    /// Where the endpoint keeps temporary files, in its own machine's spelling.
+    ///
+    /// # Invariant
+    ///
+    /// Asked once per shell and kept: the shell's own `cd` must not move, so the
+    /// question is a subshell, and the answer is the path this side stores and hands
+    /// back to a file read.
+    async fn temp_dir(&mut self) -> anyhow::Result<String> {
+        if let Some(dir) = &self.temp_dir {
+            return Ok(dir.clone());
+        }
+        let out = self.run_until_settled(TEMP_DIR).await?;
+        let raw = out.stdout.trim().to_string();
+        if raw.is_empty() {
+            anyhow::bail!("the endpoint did not say where its temporary directory is");
+        }
+        let dir = self.canonical(&raw).await?;
+        self.temp_dir = Some(dir.clone());
+        Ok(dir)
     }
 
     /// Reads until the command that outlived its deadline finishes.
@@ -600,6 +653,85 @@ impl RemoteShell {
         }
         Ok(())
     }
+}
+
+/// Follows one background job's output file on the endpoint.
+///
+/// # Invariant
+///
+/// The job ends on one of two events, never on a clock: its wrapper writes the
+/// sentinel into the file, or this shell's channel ends -- the job is a child of that
+/// shell, so a dead shell is a dead job. The file is removed through the shell at the
+/// end, because a peer has no file to delete from here.
+async fn tail_remote_background(
+    control: ShellControl,
+    path: String,
+    done_marker: String,
+    job: u64,
+    pending: Arc<StdMutex<String>>,
+    jobs: Arc<AtomicUsize>,
+    notify: Option<BackgroundNotifier>,
+) {
+    let started = std::time::Instant::now();
+    let mut offset = 0u64;
+    let mut missing = 0u32;
+    let mut carry = Vec::new();
+    let mut settled = false;
+    let mut ended = false;
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(crate::tools::bash::POLL) => {}
+            _ = control.ended() => ended = true,
+        }
+        // Read after the wait either way, so a wrapper that just exited is not missed.
+        match control.read(&path, offset).await {
+            Ok(chunk) => {
+                missing = 0;
+                if !chunk.data.is_empty() {
+                    settled = crate::tools::bash::push_background_chunk(
+                        &mut carry,
+                        &chunk.data,
+                        &done_marker,
+                        &pending,
+                    );
+                    offset = chunk.next;
+                }
+            }
+            Err(_) => missing += 1,
+        }
+        if settled || ended {
+            break;
+        }
+        // The shell is alive and the file never appeared: the wrapper did not run.
+        if missing > crate::tools::bash::MISSING_FILE_POLLS {
+            break;
+        }
+    }
+    if !settled && !carry.is_empty() {
+        crate::tools::bash::collect(&pending, &String::from_utf8_lossy(&carry));
+    }
+    // Ended before anyone is told, so no notice outruns `check_bash`.
+    jobs.fetch_sub(1, Ordering::SeqCst);
+    if settled || ended {
+        if let Some(notify) = notify {
+            let code = if settled {
+                crate::tools::bash::exit_code(&carry)
+            } else {
+                None
+            };
+            notify(crate::tools::bash::BackgroundEnd {
+                job,
+                code,
+                ran: started.elapsed(),
+            });
+        }
+    }
+    // Removed by the shell that made it; a shell that is gone takes it with its tree.
+    let cleanup = format!(
+        "command rm -f {} >/dev/null 2>&1 &\n",
+        crate::tools::bash::shell_quote(&path)
+    );
+    let _ = control.write(cleanup.as_bytes()).await;
 }
 
 /// The bytes one `out` event carried.

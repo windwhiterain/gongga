@@ -13,9 +13,9 @@ use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::mpsc;
 
 /// How often a background job's scratch file is re-read.
-const POLL: Duration = Duration::from_millis(150);
+pub(crate) const POLL: Duration = Duration::from_millis(150);
 /// Polls without the scratch file ever appearing before giving up (~6s).
-const MISSING_FILE_POLLS: u32 = 40;
+pub(crate) const MISSING_FILE_POLLS: u32 = 40;
 
 /// Where a chunk of tool output came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,7 +120,7 @@ pub struct BashShell {
 }
 
 /// Hands a piece of background output to whoever eventually asks for it.
-fn collect(pending: &StdMutex<String>, text: &str) {
+pub(crate) fn collect(pending: &StdMutex<String>, text: &str) {
     if text.is_empty() {
         return;
     }
@@ -129,8 +129,53 @@ fn collect(pending: &StdMutex<String>, text: &str) {
     }
 }
 
+/// The marker a finished job's status travels after.
+///
+/// # Invariant
+///
+/// Unguessable: a job that printed it would end its own output early.
+pub(crate) fn background_done_marker(job: u64) -> String {
+    format!(
+        "__GONGGA_BG_{}_{job}__",
+        &uuid::Uuid::new_v4().simple().to_string()[..12]
+    )
+}
+
+/// The wrapper that runs `command` in the background, and where its status lands.
+///
+/// # Invariant
+///
+/// The wrapper, not the job, writes the sentinel: a job killed by a signal still
+/// reports its status, and a tailer that only reads the file learns the outcome.
+/// `pid_path` is `Some` for a caller that can ask this machine whether the wrapper
+/// is still alive; a peer has no such question, and leaves it out.
+pub(crate) fn background_script(
+    command: &str,
+    out_path: &str,
+    pid_path: Option<&str>,
+    done_marker: &str,
+) -> String {
+    let out = shell_quote(out_path);
+    let mut script = format!(
+        "{{ (\n{command}\n); command printf '\\n%s%d\\n' '{done_marker}' \"$?\"; }} > {out} 2>&1 &\n"
+    );
+    if let Some(pid_file) = pid_path {
+        // Git Bash's `$!` is an MSYS pid; Windows process APIs need its winpid.
+        let pid = if cfg!(windows) {
+            "$(</proc/$!/winpid)"
+        } else {
+            "$!"
+        };
+        script.push_str(&format!(
+            "command printf '%s\\n' \"{pid}\" > {}\n",
+            shell_quote(pid_file)
+        ));
+    }
+    script
+}
+
 /// Quotes one word for the shell, including embedded single quotes.
-fn shell_quote(text: &str) -> String {
+pub(crate) fn shell_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
@@ -347,25 +392,10 @@ impl BashShell {
         let pid_file = scratch.with_extension("pid");
         let _ = std::fs::remove_file(&scratch);
         let _ = std::fs::remove_file(&pid_file);
-        let path = shell_quote(&skill::shell_path(&scratch));
-        let pid_path = shell_quote(&skill::shell_path(&pid_file));
-        // Git Bash's `$!` is an MSYS pid; Windows process APIs need its winpid.
-        let pid = if cfg!(windows) {
-            "$(</proc/$!/winpid)"
-        } else {
-            "$!"
-        };
-        // Unguessable, like the foreground marker: a job that prints this line
-        // would otherwise end its own output early.
-        let done_marker = format!(
-            "__GONGGA_BG_{}_{job}__",
-            &uuid::Uuid::new_v4().simple().to_string()[..12]
-        );
-        // The wrapper, not the job, writes the sentinel: see
-        // `docs/notes/server-tools-bash.md`.
-        let script = format!(
-            "{{ (\n{command}\n); command printf '\\n%s%d\\n' '{done_marker}' \"$?\"; }} > {path} 2>&1 &\ncommand printf '%s\\n' \"{pid}\" > {pid_path}\n"
-        );
+        let out_path = skill::shell_path(&scratch);
+        let pid_path = skill::shell_path(&pid_file);
+        let done_marker = background_done_marker(job);
+        let script = background_script(command, &out_path, Some(&pid_path), &done_marker);
         self.stdin.write_all(script.as_bytes()).await?;
         self.stdin.flush().await?;
 
@@ -642,7 +672,7 @@ async fn wrapper_gone(pid_file: &Path) -> bool {
 }
 
 /// The digits the wrapper printed after the sentinel: it writes `\n<marker><code>\n`.
-fn exit_code(after_marker: &[u8]) -> Option<i32> {
+pub(crate) fn exit_code(after_marker: &[u8]) -> Option<i32> {
     let digits: String = String::from_utf8_lossy(after_marker)
         .trim()
         .chars()
@@ -653,7 +683,7 @@ fn exit_code(after_marker: &[u8]) -> Option<i32> {
 
 /// Adds new bytes, holding back a partial sentinel; true once the whole sentinel
 /// has been consumed.
-fn push_background_chunk(
+pub(crate) fn push_background_chunk(
     carry: &mut Vec<u8>,
     bytes: &[u8],
     marker: &str,

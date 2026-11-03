@@ -131,6 +131,11 @@ the unread buffer; `check_bash` is how the model collects it. The job keeps the
 shell's `cd`/exports, so a background command still runs where the foreground
 ones run.
 
+One builder writes the wrapper for both machines (`background_script`), so a
+`bash` job and a `remote_bash` job cannot drift. A peer differs in what only it can
+answer: `pid_path` is `None` there, because this machine cannot ask a peer whether a
+wrapper is alive, and the shell's own end is the event that answers it instead.
+
 The wrapper writes the done sentinel, not the job, so three things have to hold
 of the script:
 

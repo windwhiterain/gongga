@@ -81,6 +81,17 @@ impl ShellQueue {
         self.events.lock().unwrap_or_else(|e| e.into_inner()).ended
     }
 
+    /// Resolves once this queue has ended.
+    async fn wait_ended(&self) {
+        loop {
+            let notified = self.ready.notified();
+            if self.ended() {
+                return;
+            }
+            notified.await;
+        }
+    }
+
     /// The next frame, waiting for one if the queue is empty; `None` at the end.
     async fn next(&self) -> Option<Event> {
         loop {
@@ -575,6 +586,7 @@ impl ShellHandle {
             runner: self.runner.clone(),
             id: self.id,
             pid: self.pid,
+            output: self.output.clone(),
         }
     }
 
@@ -601,6 +613,8 @@ pub struct ShellControl {
     id: u64,
     /// The endpoint's own pid, for a report; this machine cannot signal it.
     pid: u32,
+    /// The shell's own output queue, for a watcher that must not take its lock.
+    output: Arc<ShellQueue>,
 }
 
 impl ShellControl {
@@ -611,6 +625,33 @@ impl ShellControl {
     /// The endpoint's pid for this shell, which is not a pid on this machine.
     pub fn endpoint_pid(&self) -> u32 {
         self.pid
+    }
+
+    /// One chunk of a file on this shell's endpoint, read by the same runner.
+    pub async fn read(&self, path: &str, offset: u64) -> anyhow::Result<FileChunk> {
+        self.runner.read(path, offset).await
+    }
+
+    /// Bytes for the shell's stdin, sent without taking its lock.
+    pub async fn write(&self, bytes: &[u8]) -> anyhow::Result<()> {
+        self.runner
+            .request(Op::Write {
+                shell: self.id,
+                data: crate::base64::encode(bytes),
+            })
+            .await
+            .map(|_| ())
+    }
+
+    /// Resolves when this shell is over: its channel ended, or its route went.
+    ///
+    /// # Invariant
+    ///
+    /// A watcher learns a shell's end as an event, never by polling a clock: a
+    /// background job that writes no sentinel because its shell died is otherwise
+    /// indistinguishable from one that is merely slow.
+    pub async fn ended(&self) {
+        self.output.wait_ended().await
     }
 
     /// Ends the shell on the peer and says whether that is confirmed.

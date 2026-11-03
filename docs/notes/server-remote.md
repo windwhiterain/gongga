@@ -181,7 +181,11 @@ task, a reader task, a stderr task, and a reaper.
   be read by another and nothing is dropped for being unread;
 - a closed reader wakes every waiter with the reason, so a dead transport is an
   error and not a hang;
-- `ShellHandle::close` answers from the endpoint's report only.
+- `ShellHandle::close` answers from the endpoint's report only;
+- `ShellControl` carries the shell's queue as well as its runner, so a watcher can
+  read a peer file (`read`) and hear the shell end (`ended`) without taking the
+  handle's lock — which is what a background job's tailer needs while its shell is
+  busy running something else.
 
 `DISCONNECT_GRACE` is the one place this file waits on purpose: when the last
 owner drops, the child is *not* killed at once. The runner learns of the end from
@@ -313,6 +317,43 @@ Still refused, each with a message and never a local fallback:
 - a capped output on a remote is not spilled to a file: the path would name this
   machine, so the model is told the tail was dropped instead;
 - `remote_bash` with a `target` that is not this session's peer.
+
+## A background job of a peer's shell
+
+`remote_bash` with `background` starts a job in the session's own shell on the
+peer, exactly as `bash` does here: one builder writes the wrapper
+(`background_script`), so the two machines cannot drift. The wrapper runs the
+command in a subshell, sends its output to a file, and writes its status after a
+sentinel the job cannot guess. `background_done_marker` makes that marker.
+
+Three things differ, and each is a question only the peer can answer:
+
+- **where the file is.** The endpoint's temporary directory is asked once per shell
+  with `( command cd "${TMPDIR:-/tmp}" && { command pwd -W 2>/dev/null || command pwd; } )`
+  and kept: a subshell, because asking must not move the shell's own directory, and
+  the native spelling, because this side stores the answer and hands it back to a
+  file read. Measured: `C:/Users/Admin/AppData/Local/Temp`, 646ms cold, once.
+- **how it is read.** `Op::Read` through the same runner, from the offset already
+  consumed. Measured: **15-16ms** per poll on a small file, so a 150ms poll costs
+  about a tenth of one connection. A poll is a request, not a byte stream, which is
+  why the same read of a 4.7MB binary cost 57ms: the bytes were the price, not the
+  asking.
+- **when it has ended.** Two events, never a clock: the wrapper's sentinel appears in
+  the file, or the shell's channel ends — the job is a child of that shell, so a dead
+  shell is a dead job. `ShellControl::ended` waits on the shell's own queue, which is
+  how a watcher hears that without taking the shell's lock. There is no pid file here
+  and no `kill -0`: this machine cannot ask a peer whether a pid is alive, and it does
+  not need to. Measured on a killed shell: the notice arrived in 295ms with no status,
+  which is the honest answer.
+
+The file is removed by the shell that made it (`command rm -f … &`, no output on the
+shell's pipes). A shell that dies with a job running leaves that file behind — one
+small file in the peer's temp directory, which is the price of not having a delete of
+our own there.
+
+What is *not* different: the notice. It is `BackgroundEnd`, so the same
+`background_notifier` queues the same inbox row, and `check_bash` reads the same
+unread buffer — both were already machine-agnostic, and needed no change.
 
 ## `target`: one machine, written out loud
 
