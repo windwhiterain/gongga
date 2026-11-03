@@ -86,7 +86,7 @@ def run(command, args):
             "data": {"args": args, "home": os.environ.get("GONGGA_HOME")},
         }
     if command == "script_say":
-        cli("send_message", "--session", args["session"], "--message", args["message"])
+        cli("send_message", args["session"], args["message"])
         return {"ok": True, "message": f"said it to {args['session']}"}
     return {"ok": False, "message": f"{command} is not mine"}
 

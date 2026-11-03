@@ -214,14 +214,20 @@ CREATE TABLE IF NOT EXISTS prefix_layout (
     layout  TEXT NOT NULL
 );
 
--- What a session asked to be told about: a pattern over the event stream, and
--- who hears about a match. `persistent` decides whether a subscription survives
--- its own match. See `docs/notes/server-subscriptions.md`.
+-- What a session asked to be told about: a named pattern over the event
+-- stream, who hears about a match, and what runs when it fires. `persistent`
+-- decides whether a subscription survives its own match. See
+-- `docs/notes/server-subscriptions.md`.
 CREATE TABLE IF NOT EXISTS subscriptions (
     id         INTEGER PRIMARY KEY,
     session    TEXT NOT NULL,
+    name       TEXT NOT NULL DEFAULT '',
     pattern    TEXT NOT NULL,
     persistent INTEGER NOT NULL,
+    bash       TEXT,
+    cmd        TEXT,
+    python     TEXT,
+    code       TEXT,
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS subscriptions_by_session ON subscriptions(session);
@@ -348,6 +354,20 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "call_id",
         "ALTER TABLE messages ADD COLUMN call_id TEXT",
     )?;
+    add_column_if_missing(
+        conn,
+        "subscriptions",
+        "name",
+        "ALTER TABLE subscriptions ADD COLUMN name TEXT NOT NULL DEFAULT ''",
+    )?;
+    for (column, ddl) in [
+        ("bash", "ALTER TABLE subscriptions ADD COLUMN bash TEXT"),
+        ("cmd", "ALTER TABLE subscriptions ADD COLUMN cmd TEXT"),
+        ("python", "ALTER TABLE subscriptions ADD COLUMN python TEXT"),
+        ("code", "ALTER TABLE subscriptions ADD COLUMN code TEXT"),
+    ] {
+        add_column_if_missing(conn, "subscriptions", column, ddl)?;
+    }
     backfill_wire_items(conn)?;
     conn.execute_batch(
         "CREATE TRIGGER IF NOT EXISTS session_context_reset
@@ -1715,35 +1735,67 @@ impl Store {
     pub fn add_subscription(
         &self,
         session: &str,
+        name: &str,
         pattern: &str,
         persistent: bool,
+        action: Option<crate::subscriptions::Action>,
     ) -> anyhow::Result<SubscriptionRow> {
+        let (bash, cmd, python, code) = match action {
+            Some(crate::subscriptions::Action::Bash { name, cmd }) => {
+                (Some(name), Some(cmd), None, None)
+            }
+            Some(crate::subscriptions::Action::Python { name, code }) => {
+                (None, None, Some(name), Some(code))
+            }
+            None => (None, None, None, None),
+        };
         let conn = self.lock();
+        // One name is one subscription: arming it again replaces what it held,
+        // so `del_subscribe <name>` is always one well-defined row.
         conn.execute(
-            "INSERT INTO subscriptions (session, pattern, persistent, created_at)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![session, pattern, persistent, now_millis()],
+            "DELETE FROM subscriptions WHERE session = ?1 AND name = ?2",
+            params![session, name],
+        )?;
+        conn.execute(
+            "INSERT INTO subscriptions
+                 (session, name, pattern, persistent, bash, cmd, python, code, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                session, name, pattern, persistent, bash, cmd, python, code, now_millis()
+            ],
         )?;
         Ok(SubscriptionRow {
             id: conn.last_insert_rowid(),
             session: session.to_string(),
+            name: name.to_string(),
             pattern: pattern.to_string(),
             persistent,
+            bash,
+            cmd,
+            python,
+            code,
         })
     }
 
     /// Every armed subscription, oldest first, so a matcher can keep one list.
     pub fn subscriptions(&self) -> anyhow::Result<Vec<SubscriptionRow>> {
         let conn = self.lock();
-        let mut stmt =
-            conn.prepare("SELECT id, session, pattern, persistent FROM subscriptions ORDER BY id")?;
+        let mut stmt = conn.prepare(
+            "SELECT id, session, name, pattern, persistent, bash, cmd, python, code
+             FROM subscriptions ORDER BY id",
+        )?;
         let rows = stmt
             .query_map([], |r| {
                 Ok(SubscriptionRow {
                     id: r.get(0)?,
                     session: r.get(1)?,
-                    pattern: r.get(2)?,
-                    persistent: r.get(3)?,
+                    name: r.get(2)?,
+                    pattern: r.get(3)?,
+                    persistent: r.get(4)?,
+                    bash: r.get(5)?,
+                    cmd: r.get(6)?,
+                    python: r.get(7)?,
+                    code: r.get(8)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1755,6 +1807,14 @@ impl Store {
         self.lock()
             .execute("DELETE FROM subscriptions WHERE id = ?1", params![id])?;
         Ok(())
+    }
+
+    /// Drops the named subscription of one session; answers how many rows went.
+    pub fn delete_subscription_name(&self, session: &str, name: &str) -> anyhow::Result<usize> {
+        Ok(self.lock().execute(
+            "DELETE FROM subscriptions WHERE session = ?1 AND name = ?2",
+            params![session, name],
+        )?)
     }
 
     /// Everything one session asked to be told about; a deleted session owes none.
@@ -1778,10 +1838,20 @@ pub struct SubscriptionRow {
     pub id: i64,
     /// Who hears about a match.
     pub session: String,
+    /// The name it is armed, re-armed and dropped by.
+    pub name: String,
     /// The pattern, as it was typed.
     pub pattern: String,
     /// Whether it stays armed after it fires.
     pub persistent: bool,
+    /// The session's named shell a match runs in, when it carries one.
+    pub bash: Option<String>,
+    /// The bash command run on a match.
+    pub cmd: Option<String>,
+    /// The session's named interpreter a match runs in, when it carries one.
+    pub python: Option<String>,
+    /// The Python code run on a match.
+    pub code: Option<String>,
 }
 
 /// A row of unfinished work, replayed on the next start.

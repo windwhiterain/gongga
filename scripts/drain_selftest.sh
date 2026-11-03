@@ -84,11 +84,11 @@ for _ in $(seq 1 300); do grep -q "listening (UDP) local=127.0.0.1:$port" "$log"
 grep -q "listening (UDP) local=127.0.0.1:$port" "$log" || { echo "FAIL · the server never listened"; exit 1; }
 
 cli=("$bin/gongga-cli.exe" --home "$home" --server "127.0.0.1:$port")
-created=$("${cli[@]}" set_session --session sleeper --cwd "$work" --model fake/flash-fake 2>&1)
+created=$("${cli[@]}" set_session sleeper --cwd "$work" --model fake/flash-fake 2>&1)
 [[ "$created" == *'"ok":true'* ]] || { echo "FAIL · session not created: $created" >&2; exit 1; }
 
 # A turn that is still running when `cancel` lands: that is what makes a drain.
-"${cli[@]}" send_message --session sleeper --message "run the slow command" >/dev/null 2>&1
+"${cli[@]}" send_message sleeper "run the slow command" >/dev/null 2>&1
 for _ in $(seq 1 100); do grep -q "tool start session=sleeper" "$log" && break; sleep 0.2; done
 grep -q "tool start session=sleeper" "$log" || { echo "FAIL · the turn never started"; exit 1; }
 
@@ -101,7 +101,7 @@ answered=""
 for _ in $(seq 1 25); do
   # Still draining: the process is up and no "server stopped" line yet.
   grep -q "server stopped" "$log" && break
-  answered=$("${cli[@]}" get_messages --session sleeper --range -1:-1 2>&1)
+  answered=$("${cli[@]}" get_messages sleeper -1:-1 2>&1)
   [[ "$answered" == *'"ok":true'* ]] && break
   sleep 0.2
 done

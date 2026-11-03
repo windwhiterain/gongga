@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use protocol::{Args, BLOCK_SIZES, BOX_EDGES, CommandSpec};
+use protocol::{ArgSpec, Args, BLOCK_SIZES, BOX_EDGES, CommandSpec};
 use serde::{Deserialize, Serialize};
 
 /// How many wrapped rows one block may fill. Client-side only.
@@ -395,40 +395,143 @@ pub fn roots(home: &Path, project: Option<&Path>) -> skill::Roots {
     )
 }
 
-/// `--flag value` or `--flag=value`; nothing positional, and a value may
-/// start with `--`.
-pub fn parse_args(tokens: &[String]) -> anyhow::Result<Args> {
+/// Binds one line's tokens to a published spec: a bare word fills the next
+/// unfilled positional argument in the spec's own order; `--flag value` and
+/// `--flag=value` name the rest.
+///
+/// # Invariant
+///
+/// The spec is the only syntax the caller knows: a command this client never
+/// heard of cannot be parsed, and a token that names nothing in the spec is a
+/// typo to report, not a shape to guess at. A value may start with `--` only
+/// in the `--flag=--value` spelling; a bare `--word` is read as a flag.
+pub fn parse_args(tokens: &[String], spec: Option<&CommandSpec>) -> anyhow::Result<Args> {
+    let flags: Vec<&ArgSpec> = spec
+        .map(|s| s.args.iter().filter(|a| !a.positional).collect())
+        .unwrap_or_default();
+    let slots: Vec<&ArgSpec> = spec
+        .map(|s| s.args.iter().filter(|a| a.positional).collect())
+        .unwrap_or_default();
+    let takes = |name: &str| flags.iter().any(|a| a.name == name);
     let mut args = Args::new();
+    let mut next_slot = 0usize;
     let mut i = 0;
     while i < tokens.len() {
         let token = &tokens[i];
-        let Some(flag) = token.strip_prefix("--") else {
-            anyhow::bail!("unexpected argument {token:?}; flags start with `--`");
-        };
-        if let Some((name, value)) = flag.split_once('=') {
-            args.insert(name.to_string(), value.to_string());
-            i += 1;
+        if token.starts_with("--") {
+            let flag = token.trim_start_matches('-');
+            if let Some((name, value)) = flag.split_once('=') {
+                if !takes(name) {
+                    anyhow::bail!(
+                        "{} has no argument --{name}; it takes {}",
+                        spec.map(|s| s.name.as_str()).unwrap_or("this command"),
+                        signature(spec),
+                    );
+                }
+                insert_once(&mut args, name, value)?;
+                i += 1;
+            } else {
+                if !takes(flag) {
+                    anyhow::bail!(
+                        "{} has no argument --{flag}; it takes {}",
+                        spec.map(|s| s.name.as_str()).unwrap_or("this command"),
+                        signature(spec),
+                    );
+                }
+                let value = tokens
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow::anyhow!("--{flag} needs a value"))?;
+                insert_once(&mut args, flag, value)?;
+                i += 2;
+            }
         } else {
-            let value = tokens
-                .get(i + 1)
-                .ok_or_else(|| anyhow::anyhow!("--{flag} needs a value"))?;
-            args.insert(flag.to_string(), value.clone());
-            i += 2;
+            let Some(slot) = slots.get(next_slot) else {
+                anyhow::bail!(
+                    "unexpected argument {token:?}; {} takes {}",
+                    spec.map(|s| s.name.as_str()).unwrap_or("this command"),
+                    signature(spec),
+                );
+            };
+            insert_once(&mut args, &slot.name, token)?;
+            next_slot += 1;
+            i += 1;
         }
     }
     Ok(args)
 }
 
-/// Renders arguments back to a command line, for the echoed `$ ...` line.
-pub fn render_args(args: &Args) -> String {
-    args.iter()
-        .map(|(k, v)| {
-            if v.contains(' ') {
-                format!(" --{k} \"{v}\"")
+/// A repeated argument is a contradiction, whatever spellings it was given.
+fn insert_once(args: &mut Args, name: &str, value: &str) -> anyhow::Result<()> {
+    if args.contains_key(name) {
+        anyhow::bail!("argument --{name} given twice");
+    }
+    args.insert(name.to_string(), value.to_string());
+    Ok(())
+}
+
+/// The one-line syntax of a command, as SPEC spells it: `<name>` for a
+/// required positional, `[<name>]` for an optional one, `--name <hint>` for a
+/// flag. A command with neither is `nothing`.
+pub fn signature(spec: Option<&CommandSpec>) -> String {
+    let Some(spec) = spec else {
+        return "nothing".to_string();
+    };
+    if spec.args.is_empty() {
+        return "nothing".to_string();
+    }
+    spec.args
+        .iter()
+        .map(|a| {
+            let hint = a.value_hint.as_deref().unwrap_or(&a.name);
+            if a.positional {
+                if a.required {
+                    format!("<{}>", a.name)
+                } else {
+                    format!("[<{}>]", a.name)
+                }
+            } else if a.required {
+                format!("--{} <{}>", a.name, hint)
             } else {
-                format!(" --{k} {v}")
+                format!("[--{} <{}>]", a.name, hint)
             }
         })
         .collect::<Vec<_>>()
-        .join("")
+        .join(" ")
+}
+
+/// Renders bound arguments back to a command line, positionals bare in their
+/// published order, for the echoed command row.
+pub fn render_args(args: &Args, spec: Option<&CommandSpec>) -> String {
+    let mut out = String::new();
+    if let Some(spec) = spec {
+        for arg in spec.args.iter().filter(|a| a.positional) {
+            if let Some(value) = args.get(&arg.name) {
+                out.push(' ');
+                out.push_str(&render_value(value));
+            }
+        }
+    }
+    for (k, v) in args.iter() {
+        if spec
+            .map(|s| {
+                s.args
+                    .iter()
+                    .any(|a| a.positional && a.name == *k)
+            })
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        out.push_str(&format!(" --{k} {}", render_value(v)));
+    }
+    out
+}
+
+/// One value as it reads on a command line: quoted when it holds a space.
+fn render_value(value: &str) -> String {
+    if value.contains(' ') {
+        format!("\"{value}\"")
+    } else {
+        value.to_string()
+    }
 }

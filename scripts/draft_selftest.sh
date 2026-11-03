@@ -91,8 +91,8 @@ start() {
 start "$log"
 grep -q "listening (UDP) local=127.0.0.1:$port" "$log" || { echo "FAIL · the server never listened"; exit 1; }
 cli=("$bin/gongga-cli.exe" --home "$home" --server "127.0.0.1:$port")
-"${cli[@]}" set_session --session writer --cwd "$work" --model fake/flash-fake >/dev/null 2>&1
-"${cli[@]}" send_message --session writer --message "say something long" >/dev/null 2>&1
+"${cli[@]}" set_session writer --cwd "$work" --model fake/flash-fake >/dev/null 2>&1
+"${cli[@]}" send_message writer "say something long" >/dev/null 2>&1
 
 # Both a thought and an answer have to be in flight before the kill: that is what makes
 # each one's survival a separate fact rather than one scenario standing for two.
@@ -184,7 +184,7 @@ INNER
 ok "the half thought is a reasoning row, in a position the provider accepts" $?
 
 # A finished answer leaves no draft behind: the normal path is unchanged.
-"${cli[@]}" send_message --session writer --message "and now a whole one" >/dev/null 2>&1
+"${cli[@]}" send_message writer "and now a whole one" >/dev/null 2>&1
 for _ in $(seq 1 100); do grep -q "turn end session=writer" "$log" && break; sleep 0.3; done
 python - "$home" <<'INNER'
 import sqlite3, sys

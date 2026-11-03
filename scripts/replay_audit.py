@@ -78,8 +78,8 @@ def main():
         def command(*args):
             subprocess.run(base + list(args), capture_output=True, text=True)
 
-        command("set_session", "--session", "audit")
-        command("send_message", "--session", "audit", "--message", "第一回合，会调一个工具")
+        command("set_session", "audit")
+        command("send_message", "audit", "第一回合，会调一个工具")
         time.sleep(8)
 
         # A prose edit between turns: it must land as a new row, not rewrite the old.
@@ -89,12 +89,12 @@ def main():
         assert raw.count(anchor) == 1
         io.open(cfg + ".tmp", "wb").write(raw.replace(anchor, anchor + b" Edited between turns."))
         os.replace(cfg + ".tmp", cfg)
-        command("send_message", "--session", "audit", "--message", "第二回合，改过的散文")
+        command("send_message", "audit", "第二回合，改过的散文")
         time.sleep(8)
 
         # New content entering the store mid-conversation, the way an heir's first
         # lesson does: a message that names a reference of its own.
-        command("send_message", "--session", "audit", "--message", "第三回合，带一个 @file: Cargo.toml 的引用")
+        command("send_message", "audit", "第三回合，带一个 @file: Cargo.toml 的引用")
         time.sleep(8)
 
         # Deleting a session has to take the payload with it -- and it has to be
@@ -109,7 +109,7 @@ def main():
         rows = [(r["seq"], r["kind"], r["display"]) for r in db.execute(
             "select seq, kind, display from messages where session_id=? order by seq", (sid,))]
         db.close()
-        deleted = subprocess.run(base + ["del_session", "--session", "audit"],
+        deleted = subprocess.run(base + ["del_session", "audit"],
                                  capture_output=True, text=True)
         print("   del_session:", (deleted.stdout or deleted.stderr).strip()[:110])
         time.sleep(3)

@@ -417,26 +417,34 @@ impl Completer for Catalog {
             return got;
         }
 
-        // Past the command name: a flag's value, whose flag sits one word back,
-        // or two once the value has started.
+        let Some(spec) = cmd.and_then(|c| all.iter().find(|s| s.name == c)) else {
+            return Vec::new();
+        };
+        // Past the command name, a word completes one of two things: the value
+        // of the flag it follows, or the next unfilled positional argument --
+        // the word being completed is not yet on the line, so it fills the
+        // slot after the ones that are.
         let flag_index = if token.is_empty() {
             position.checked_sub(1)
         } else {
             position.checked_sub(2)
         };
-        let Some(flag) = flag_index
+        if let Some(flag) = flag_index
             .and_then(|i| words.get(i))
             .and_then(|w| w.strip_prefix("--"))
-        else {
-            return Vec::new();
-        };
-        let Some(spec) = cmd
-            .and_then(|c| all.iter().find(|s| s.name == c))
-            .and_then(|c| c.args.iter().find(|a| a.name == flag))
-        else {
-            return Vec::new();
-        };
-        resolve(&spec.completions, &token, &ctx, &words, 0)
+        {
+            let Some(arg) = spec.args.iter().find(|a| a.name == flag) else {
+                return Vec::new();
+            };
+            return resolve(&arg.completions, &token, &ctx, &words, 0);
+        }
+        let filled = positional_tokens(&spec, &words, word_at_cursor).len();
+        spec.args
+            .iter()
+            .filter(|a| a.positional)
+            .nth(filled)
+            .map(|arg| resolve(&arg.completions, &token, &ctx, &words, 0))
+            .unwrap_or_default()
     }
 }
 
@@ -545,8 +553,12 @@ fn resolve(
             token,
             "skill",
         ),
+        // The named argument is the line's first positional -- `set_sticky
+        // <type> <value>` completes the value the way the type names -- or,
+        // on an older server's spelling, the value of `--name`.
         CompletionSource::OfNamedArgument if depth < 2 => {
-            let Some(named) = flag_value(words, "name") else {
+            let named = first_positional(ctx, words).or_else(|| flag_value(words, "name"));
+            let Some(named) = named else {
                 return Vec::new();
             };
             let shaped: Vec<&protocol::ArgSpec> = ctx
@@ -577,6 +589,15 @@ fn resolve(
     }
 }
 
+/// The first positional word on the line, when the command keeps one.
+fn first_positional<'a>(ctx: &Ctx<'_>, words: &'a [String]) -> Option<&'a str> {
+    let spec = words
+        .first()
+        .map(|c| c.trim_start_matches('/'))
+        .and_then(|c| ctx.all.iter().find(|s| s.name == c))?;
+    positional_tokens(spec, words, None).first().copied()
+}
+
 /// How long an answer stands before the same directory is asked for again.
 ///
 /// # Invariant
@@ -586,12 +607,69 @@ fn resolve(
 const REVALIDATE: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// The session this line acts on: the one it names, else the one a bare message goes to.
+///
+/// Naming is positional or a flag: `send_message <session> <message>` carries
+/// the name as its first word after the command, and the flag spelling is what
+/// an older server publishes.
 fn session_on_line<'a>(inner: &'a Inner, words: &[String]) -> Option<&'a SessionInfo> {
-    let name = match flag_value(words, "session") {
-        Some(named) => named,
-        None => inner.message_session.as_deref()?,
-    };
+    let name = session_named(inner, words)?;
     inner.sessions.iter().find(|s| s.name == name)
+}
+
+/// The session name a line carries, wherever its spec keeps the argument.
+fn session_named<'a>(inner: &'a Inner, words: &'a [String]) -> Option<&'a str> {
+    if let Some(value) = positional_value(inner, words, "session") {
+        return Some(value);
+    }
+    flag_value(words, "session").or(inner.message_session.as_deref())
+}
+
+/// The value bound to the positional argument `name` on this line, when the
+/// command's spec keeps it positionally.
+fn positional_value<'a>(
+    inner: &Inner,
+    words: &'a [String],
+    name: &str,
+) -> Option<&'a str> {
+    let spec = words
+        .first()
+        .map(|c| c.trim_start_matches('/'))
+        .and_then(|c| inner.published.iter().find(|s| s.name == c))?;
+    let index = spec
+        .args
+        .iter()
+        .filter(|a| a.positional)
+        .position(|a| a.name == name)?;
+    let tokens = positional_tokens(spec, words, None);
+    tokens.get(index).copied()
+}
+
+/// The bare words of a command line: the ones not consumed by a flag, in their
+/// order; `skip` is the word being completed. A known flag takes the following
+/// word as its value, so both are stepped over.
+fn positional_tokens<'a>(
+    spec: &CommandSpec,
+    words: &'a [String],
+    skip: Option<usize>,
+) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    let mut i = 1;
+    while i < words.len() {
+        if Some(i) == skip {
+            i += 1;
+            continue;
+        }
+        let word = &words[i];
+        if let Some(flag) = word.strip_prefix("--") {
+            let name = flag.split('=').next().unwrap_or(flag);
+            let known = spec.args.iter().any(|a| !a.positional && a.name == name);
+            i += if known && !flag.contains('=') { 2 } else { 1 };
+        } else {
+            out.push(word.as_str());
+            i += 1;
+        }
+    }
+    out
 }
 
 /// The machine `--remote` names, when the config holds it.

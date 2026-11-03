@@ -98,13 +98,13 @@ for _ in $(seq 1 300); do grep -q "listening (UDP) local=127.0.0.1:$port" "$log"
 grep -q "listening (UDP) local=127.0.0.1:$port" "$log" || { echo "FAIL · the server never listened"; exit 1; }
 
 cli=("$bin/gongga-cli.exe" --home "$home" --server "127.0.0.1:$port")
-created=$("${cli[@]}" set_session --session viewer --cwd "$work" --model fake/flash-fake 2>&1)
+created=$("${cli[@]}" set_session viewer --cwd "$work" --model fake/flash-fake 2>&1)
 [[ "$created" == *'"ok":true'* ]] || { echo "FAIL · session not created: $created" >&2; exit 1; }
 
 posix_png=$(cygpath -m "$png" 2>/dev/null || echo "$png")
 turns=0
 send() {
-  "${cli[@]}" send_message --session viewer --message "$1" >/dev/null 2>&1
+  "${cli[@]}" send_message viewer "$1" >/dev/null 2>&1
   turns=$((turns + 1))
   for _ in $(seq 1 120); do
     [[ $(grep -c 'turn end session=viewer' "$log") -ge $turns ]] && break

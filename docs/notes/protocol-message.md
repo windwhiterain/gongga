@@ -114,9 +114,10 @@ two sources say "complete against that list" without shipping the list, which is
 the same arrangement as `Sessions` -- the server names where a value comes from,
 and the side that owns it fills it in.
 
-`set_render_session --show` completes through a static list, because `true` and
-`false` are the protocol's own words (`SHOW_VALUES`), not the client's state. Its
-`--session` completes through `Sessions` like every other session argument.
+`set_render_session <session> <show>` completes the show word through a static
+list, because `true` and `false` are the protocol's own words (`SHOW_VALUES`), not
+the client's state. Its session completes through `Sessions` like every other
+session argument.
 
 ## UsageEvent, Usage
 
@@ -152,13 +153,14 @@ with it. Absent is the normal case: `None` is not `Some(0)`.
 
 `session` is the session this process was started from, read off `$GONGGA_SESSION` by
 the client and sent as `#[serde(default)]` so a bridge, a window, and a server that
-never heard of it all keep working. Only the process knows it: a command's `--session`
-names who it *acts on*, and `subscribe` is the one command where the two questions are
-different -- a pattern names what to watch, the caller is who hears about it.
+never heard of it all keep working. Only the process knows it: a command's `session`
+argument names who it *acts on*, and `subscribe` is the one command where the two
+questions are different -- a pattern names what to watch, the caller is who hears
+about it.
 
 ## Event::name
 
-The name a `subscribe --event` pattern is matched against: a log row's own `kind`, and
+The name a `subscribe <name> <pattern>` pattern is matched against: a log row's own `kind`, and
 every other event's variant (`status`, `usage`, `sessions`, `log`, `cmd`, ...). Not a
 second dispatch table -- a new row kind needs no entry, which is the same reason
 `Record` carries its kind as data -- and the reason a pattern can spell a kind the

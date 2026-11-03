@@ -214,19 +214,19 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
             name: "send_message".into(),
             description: "Send a message to a session and run a turn.".into(),
             args: vec![
-                arg(
-                    "message",
-                    "The message text.",
-                    true,
-                    Some("text"),
-                    CompletionSource::None,
-                ),
-                arg(
+                pos(
                     "session",
                     "Target session. Required: there is no implicit default.",
                     true,
                     Some("name"),
                     CompletionSource::Sessions,
+                ),
+                pos(
+                    "message",
+                    "The message text.",
+                    true,
+                    Some("text"),
+                    CompletionSource::None,
                 ),
             ],
         },
@@ -238,25 +238,14 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                       it. Settings omitted now are left as they are."
                     .into(),
             args: vec![
-                arg(
+                pos(
                     "session",
                     "Session to create or reconfigure.",
                     true,
                     Some("name"),
                     CompletionSource::Sessions,
                 ),
-                arg(
-                    "cwd",
-                    "Working directory for the session: where a new one is created, and \
-                     where an existing one is moved to. It must be a directory that \
-                     exists on the machine it names -- this one, or the remote's -- or \
-                     the command is refused; completion reads that machine's directories.",
-                    false,
-                    Some("path"),
-                    // The client lists the filesystem it sits on, which is a hint only.
-                    CompletionSource::Paths,
-                ),
-                // SPEC: `--model (sticky)`, so a model set once is a mode rather
+                // SPEC: `<model>(sticky)`, so a model set once is a mode rather
                 // than a repetition in every command.
                 sticky_arg(
                     arg_spec(
@@ -264,10 +253,28 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                         "The model to run this session's turns on, as <provider>/<model \
                          name>. Remembered: a later `set_session` that names none uses it.",
                         false,
+                        true,
                         Some("model"),
                         CompletionSource::Static(crate::providers::roster().models()),
                     ),
                     true,
+                ),
+                arg(
+                    "thinking_effort",
+                    "How hard the model should think, in the roster's spelling (`low`, \
+                     `high`, `xhigh`, ...). Mapped onto what the model actually accepts \
+                     and checked against it, so a level it does not take fails here. \
+                     Defaults to the model's own.",
+                    false,
+                    Some("level"),
+                    // The one vocabulary the server ranks by, so the list offered
+                    // here and `highest in supported` cannot drift apart.
+                    CompletionSource::Static(
+                        crate::providers::LEVELS
+                            .iter()
+                            .map(|s| s.to_string())
+                            .collect(),
+                    ),
                 ),
                 arg(
                     "context_limit",
@@ -289,14 +296,26 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     ),
                 ),
                 arg(
+                    "cwd",
+                    "Working directory for the session: where a new one is created, and \
+                     where an existing one is moved to. It must be a directory that \
+                     exists on the machine it names -- this one, or the remote's -- or \
+                     the command is refused; completion reads that machine's directories.",
+                    false,
+                    Some("path"),
+                    // The client lists the filesystem it sits on, which is a hint only.
+                    CompletionSource::Paths,
+                ),
+                arg(
                     "remote",
                     "Which machine this session's shells run on, named by a `[remotes.<name>]` \
                      table in this machine's `~/.agents/remotes.toml`. Omit for this \
                      machine, and name `none` to move a session back here. Naming a \
                      different one moves an existing session: every shell on the old \
                      machine is ended first, and a move asked for during a turn waits for \
-                     that turn to end. A session keeping a remote has shells on both \
-                     machines: `bash` here, `remote_bash` there.",
+                     that turn to end. A session with shells somewhere else reads its \
+                     paths and skills there, so what completes for it is what it can \
+                     open.",
                     false,
                     Some("name"),
                     // Exactly the tables this server was started with: `local` is
@@ -308,23 +327,6 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                         names.extend(remotes.to_vec());
                         names
                     }),
-                ),
-                arg(
-                    "thinking_effort",
-                    "How hard the model should think, in the roster's spelling (`low`, `high`, \
-                     `xhigh`, ...). Mapped onto what the model actually accepts and checked \
-                     against it, so a level it does not take fails here. Defaults to the \
-                     model's own.",
-                    false,
-                    Some("level"),
-                    // The one vocabulary the server ranks by, so the list offered
-                    // here and `highest in supported` cannot drift apart.
-                    CompletionSource::Static(
-                        crate::providers::LEVELS
-                            .iter()
-                            .map(|s| s.to_string())
-                            .collect(),
-                    ),
                 ),
                 arg(
                     "must_create",
@@ -372,7 +374,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
             target: CommandTarget::Server,
             name: "del_session".into(),
             description: "Delete a session, its shells and its transcript.".into(),
-            args: vec![arg(
+            args: vec![pos(
                 "session",
                 "Session to delete.",
                 true,
@@ -387,7 +389,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 "Stop the turn one session is running. The turn is dropped, not resumed on \
                       the next start. Detached jobs keep running."
                     .into(),
-            args: vec![arg(
+            args: vec![pos(
                 "session",
                 "Session whose turn should stop.",
                 true,
@@ -407,8 +409,8 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
             target: CommandTarget::Server,
             name: "events".into(),
             description: "Read the server's event log: one row per thing that happened, oldest \
-                     first, as `{id, kind, payload}`. A cursor, not a transcript -- keep the \
-                     last id and ask again from there."
+                      first, as `{id, kind, payload}`. A cursor, not a transcript -- keep the \
+                      last id and ask again from there."
                 .into(),
             args: vec![
                 arg(
@@ -446,14 +448,23 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
         CommandSpec {
             target: CommandTarget::Server,
             name: "subscribe".into(),
-            description: "Ask to be told about the events this pattern matches. Registers \
-                     and answers at once -- it does not wait for a match. A match becomes a \
-                     message to the session that subscribed, so an idle one is woken by it; \
-                     the agent's side of waiting for that message is the `wait` tool."
+            description: "Name a subscription over the event stream and ask for it to be \
+                      armed. It answers at once -- it does not wait for a match. A match \
+                      notices the session that armed it, and runs `--bash`/`--python` when \
+                      one is given; the agent's side of waiting for the notice is the \
+                      `wait` tool."
                 .into(),
             args: vec![
-                arg(
-                    "event",
+                pos(
+                    "subscription",
+                    "The name it is armed and dropped by. Arming a name again replaces \
+                     what it held.",
+                    true,
+                    Some("name"),
+                    CompletionSource::None,
+                ),
+                pos(
+                    "pattern",
                     "A regex, matched against an event's name -- a log row's `kind` \
                      (`turn_end`, `tool_result`, `context_notice`) or another event's own \
                      (`status`, `usage`, `sessions`, `log`, `cmd_result`) -- and against \
@@ -477,7 +488,68 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                             .collect(),
                     ),
                 ),
+                arg(
+                    "bash",
+                    "The name of the session's own persistent shell the action runs in: \
+                     the same shell `bash` uses under that name, so `cd` and exports are \
+                     shared between a subscription and the session.",
+                    false,
+                    Some("name"),
+                    CompletionSource::None,
+                ),
+                arg(
+                    "cmd",
+                    "The bash command `--bash` runs on a match; what it prints is a log \
+                     row (`subscription`).",
+                    false,
+                    Some("cmd"),
+                    CompletionSource::None,
+                ),
+                arg(
+                    "python",
+                    "The name of the session's own persistent interpreter the action runs \
+                     in: the same namespace `python` uses under that name.",
+                    false,
+                    Some("name"),
+                    CompletionSource::None,
+                ),
+                arg(
+                    "code",
+                    "The Python code `--python` runs on a match; what it prints is a log \
+                     row (`subscription`).",
+                    false,
+                    Some("code"),
+                    CompletionSource::None,
+                ),
             ],
+        },
+        CommandSpec {
+            target: CommandTarget::Server,
+            name: "del_subscribe".into(),
+            description: "Drop one named subscription the caller session armed.".into(),
+            args: vec![pos(
+                "subscription",
+                "The name it was armed by.",
+                true,
+                Some("name"),
+                CompletionSource::None,
+            )],
+        },
+        CommandSpec {
+            target: CommandTarget::Server,
+            name: "trigger_event".into(),
+            description: "Publish one event under a chosen name, so the subscriptions whose \
+                      pattern matches it fire. The row lands in the event log like any \
+                      other, which is how a matcher sees it."
+                .into(),
+            args: vec![pos(
+                "event",
+                "The name the event is published under; a subscription's pattern is \
+                 matched against it.",
+                true,
+                Some("name"),
+                CompletionSource::None,
+            )],
         },
         CommandSpec {
             target: CommandTarget::Server,
@@ -486,21 +558,22 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                      Each row arrives as the event it was published as, before the result."
                 .into(),
             args: vec![
-                arg(
+                pos(
                     "session",
                     "Session to read.",
                     true,
                     Some("name"),
                     CompletionSource::Sessions,
                 ),
-                arg(
+                pos(
                     "range",
-                    "Which rows, as a closed range of sequence numbers: `-1` the newest row, \
-                     `-5:` the newest five, `5:10` rows 5 through 10, `:10` the first ten, `5:` \
-                     from 5 on. A negative number counts from the end; both ends inclusive, and \
-                     a range past the end is just the rows that exist.",
-                    true,
-                    Some("slice"),
+                    "Which rows, as a closed range of sequence numbers: `-1` the newest \
+                     row, `-5:` the newest five, `5:10` rows 5 through 10, `:10` the first \
+                     ten, `5:` from 5 on. A negative number counts from the end; both ends \
+                     inclusive, a missing end means the newest, and a range past the end is \
+                     just the rows that exist. Omitted is the whole transcript.",
+                    false,
+                    Some("begin:end"),
                     CompletionSource::None,
                 ),
             ],
@@ -508,6 +581,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
     ]
 }
 
+/// A flag argument, spelled `--name <value>`.
 fn arg(
     name: &str,
     description: &str,
@@ -516,7 +590,21 @@ fn arg(
     completions: CompletionSource,
 ) -> protocol::ArgSpec {
     sticky_arg(
-        arg_spec(name, description, required, value_hint, completions),
+        arg_spec(name, description, required, false, value_hint, completions),
+        false,
+    )
+}
+
+/// A positional argument, spelled `<name>` in the spec's own order.
+fn pos(
+    name: &str,
+    description: &str,
+    required: bool,
+    value_hint: Option<&str>,
+    completions: CompletionSource,
+) -> protocol::ArgSpec {
+    sticky_arg(
+        arg_spec(name, description, required, true, value_hint, completions),
         false,
     )
 }
@@ -525,6 +613,7 @@ fn arg_spec(
     name: &str,
     description: &str,
     required: bool,
+    positional: bool,
     value_hint: Option<&str>,
     completions: CompletionSource,
 ) -> protocol::ArgSpec {
@@ -532,6 +621,7 @@ fn arg_spec(
         name: name.into(),
         description: description.into(),
         required,
+        positional,
         value_hint: value_hint.map(str::to_string),
         completions,
         sticky: false,
@@ -570,6 +660,13 @@ pub async fn dispatch(d: &Dispatch, name: &str, args: &Args, caller: Option<&str
         "get_messages" => get_messages(d, args).await,
         "events" => events(d, args).await,
         "subscribe" => subscribe(d, args, caller).await,
+        "del_subscribe" => del_subscribe(d, args, caller).await,
+        "trigger_event" => trigger_event(d, args).await,
+        // Every tool is a command: the registry decides what exists, so a tool
+        // added there is runnable the moment the greeting names it.
+        name if d.agent.tools.get(name).is_some() => {
+            crate::tool_cmd::dispatch_tool(d, name, args).await
+        }
         // Published as a server command but unhandled: a catalog bug, named.
         other => Outcome::err(format!(
             "{other} is published as a server command but has no handler"
@@ -618,6 +715,7 @@ impl Dispatch {
     /// Every command offered, from all three sources: the only list there is.
     pub async fn catalog(&self) -> Vec<CommandSpec> {
         let mut all = server_catalog(&self.sessions.remote_names());
+        all.extend(crate::tool_cmd::catalog(&self.agent.tools));
         all.extend(protocol::client_commands());
         all.extend(self.scripts.commands().await);
         all
@@ -1176,10 +1274,15 @@ async fn get_messages(d: &Dispatch, args: &Args) -> Outcome {
         Ok(v) => v,
         Err(e) => return Outcome::err(e.to_string()),
     };
-    let raw = args["range"].as_str();
-    let window = match parse_seq_slice(raw, last_seq) {
-        Ok(w) => w,
-        Err(e) => return Outcome::err(e),
+    let window = match args.get("range") {
+        None => SeqWindow {
+            first: 1,
+            last: last_seq.max(1),
+        },
+        Some(raw) => match parse_seq_slice(raw, last_seq) {
+            Ok(w) => w,
+            Err(e) => return Outcome::err(e),
+        },
     };
     // No size judgement: the channel says so if the answer cannot be carried.
     let t = match d
@@ -1201,10 +1304,18 @@ async fn get_messages(d: &Dispatch, args: &Args) -> Outcome {
 /// is deliberate -- a subscription with no addressee would match, fire, and tell
 /// nobody, which is the one failure a registry cannot notice by itself.
 async fn subscribe(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
-    let pattern = args.get("event").map(String::as_str).unwrap_or("").trim();
+    let name = args
+        .get("subscription")
+        .map(String::as_str)
+        .unwrap_or("")
+        .trim();
+    if name.is_empty() {
+        return Outcome::err("subscribe needs a name: `subscribe <name> <pattern>`");
+    }
+    let pattern = args.get("pattern").map(String::as_str).unwrap_or("").trim();
     if pattern.is_empty() {
         return Outcome::err(
-            "subscribe needs --event: a pattern over event names, e.g. `turn_end`",
+            "subscribe needs a pattern over event names, e.g. `turn_end`".to_string(),
         );
     }
     let Some(caller) = caller.filter(|name| !name.trim().is_empty()) else {
@@ -1230,21 +1341,54 @@ async fn subscribe(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
             }
         },
     };
-    match d.subscriptions.arm(caller, pattern, persistent).await {
+    let action = match (args.get("bash"), args.get("cmd"), args.get("python"), args.get("code"))
+    {
+        (Some(_), _, Some(_), _) | (_, Some(_), _, Some(_)) => {
+            return Outcome::err("subscribe takes one of --bash/--cmd or --python/--code")
+        }
+        (Some(bash), Some(cmd), None, None) => Some(crate::subscriptions::Action::Bash {
+            name: bash.clone(),
+            cmd: cmd.clone(),
+        }),
+        (None, None, Some(python), Some(code)) => Some(crate::subscriptions::Action::Python {
+            name: python.clone(),
+            code: code.clone(),
+        }),
+        (Some(bash), None, None, None) => {
+            return Outcome::err(format!(
+                "--bash names the shell; --cmd is what runs in it: `subscribe {name}                  <pattern> --bash {bash} --cmd <cmd>`"
+            ))
+        }
+        (None, None, Some(python), None) => {
+            return Outcome::err(format!(
+                "--python names the interpreter; --code is what runs in it: `subscribe                  {name} <pattern> --python {python} --code <code>`"
+            ))
+        }
+        (None, None, None, None) => None,
+        // --cmd/--code without the interpreter they run in.
+        _ => {
+            return Outcome::err("subscribe: --cmd needs --bash, and --code needs --python")
+        }
+    };
+    match d
+        .subscriptions
+        .arm(caller, name, pattern, persistent, action)
+        .await
+    {
         Ok(row) => {
             tracing::info!(
-                session = %caller, subscription = row.id, pattern = %pattern,
+                session = %caller, subscription = row.id, name, pattern = %pattern,
                 persistent, "subscribed"
             );
             Outcome::ok_with(
                 format!(
-                    "subscription {} armed: {caller} hears about `{pattern}`{}",
-                    row.id,
+                    "subscription `{name}` armed: {caller} hears about `{pattern}`{}",
                     if persistent { ", every time" } else { " once" }
                 ),
                 json!({
                     "id": row.id,
                     "session": caller,
+                    "subscription": name,
                     "event": pattern,
                     "persistant": persistent,
                 }),
@@ -1252,6 +1396,37 @@ async fn subscribe(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
         }
         Err(e) => Outcome::err(e),
     }
+}
+
+/// Drops one named subscription; the caller drops its own, never another session's.
+async fn del_subscribe(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
+    let name = args
+        .get("subscription")
+        .map(String::as_str)
+        .unwrap_or("")
+        .trim();
+    let Some(caller) = caller.filter(|name| !name.trim().is_empty()) else {
+        return Outcome::err(
+            "del_subscribe drops what a session armed, and this client did not say which: \
+             run it from a session's shell, where `$GONGGA_SESSION` is set",
+        );
+    };
+    match d.subscriptions.disarm_name(caller, name).await {
+        Ok(0) => Outcome::err(format!("no subscription named {name:?} for {caller}")),
+        Ok(n) => Outcome::ok(format!("subscription `{name}` dropped ({n})")),
+        Err(e) => Outcome::err(e),
+    }
+}
+
+/// Publishes one event under a chosen name: a log row, so every matcher -- and
+/// `events` afterwards -- reads it like any other thing that happened.
+async fn trigger_event(d: &Dispatch, args: &Args) -> Outcome {
+    let event = args.get("event").map(String::as_str).unwrap_or("").trim();
+    if event.is_empty() {
+        return Outcome::err("trigger_event needs a name: `trigger_event <event>`");
+    }
+    d.agent.log_event(None, event, &json!({}));
+    Outcome::ok(format!("event `{event}` published"))
 }
 
 /// The log, after a cursor: what a subscriber reads, and what a watcher polls.

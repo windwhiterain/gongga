@@ -58,10 +58,12 @@ log row matched, and printed it.
 
 It is gone, and the gap it left is filled on the two sides it belonged to:
 
-* **`subscribe --event <pattern>`** is a *server* command now. It registers and
+* **`subscribe <name> <pattern>`** is a *server* command now. It registers and
   answers at once, and a match becomes a message to the session the command was run
   from -- so the news outlives the process that asked for it, and reaches a session
-  rather than a terminal. See `docs/notes/server-subscriptions.md`.
+  rather than a terminal. It may carry `--bash`/`--python` to run on each match;
+  `trigger_event` publishes a named event to fire it by hand. See
+  `docs/notes/server-subscriptions.md`.
 * **`wait`** is a *tool* the agent calls inside a turn, to stay put until something
   lands for its session. See `docs/notes/server-tools-mod.md`.
 

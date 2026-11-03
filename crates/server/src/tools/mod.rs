@@ -304,6 +304,11 @@ impl ToolRegistry {
         self
     }
 
+    /// Every tool, in registration order: the catalog generator's one source.
+    pub fn iter(&self) -> impl Iterator<Item = &dyn Tool> {
+        self.tools.iter().map(|tool| tool.as_ref())
+    }
+
     pub fn get(&self, name: &str) -> Option<&dyn Tool> {
         self.tools
             .iter()

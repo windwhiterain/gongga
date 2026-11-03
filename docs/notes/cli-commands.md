@@ -30,14 +30,14 @@ remember its defaults is still usable, and refusing to start over a corrupt
 
 ## Shown
 
-`set_render_session --session <name> [--show true|false]` is the client's answer to
+`set_render_session <name> [true|false]` is the client's answer to
 SPEC's UI section, in `cli.toml` beside the sticky arguments: one flag per session
 name, `true` for a session with a window beside the list.
 
-The flag is a *reading*, never a deletion. `false` keeps every block the session ever
-carried, so `--show true` after it brings the whole history back -- which is the
-property the old session filter did not have, because it dropped the lines on the way
-in.
+The argument is a *reading*, never a deletion. `false` keeps every block the session
+ever carried, so `true` after it brings the whole history back -- which is the
+property the old session filter did not have, because it dropped the lines on the
+way in.
 
 A session nobody set is shown. SPEC does not name a default; a window that opens on
 nothing, with no line saying why, reads as a broken server, so the default is the one
@@ -129,14 +129,26 @@ on purpose; `session=main` does not hide the list.
 
 ## parse_args
 
-The value is whatever follows its flag, *including* a token that starts with
+One parser binds a line to the published spec: a bare word fills the next unfilled
+positional argument in the spec's own order, and `--flag value` / `--flag=value`
+name the rest. The spec is the only syntax the client knows -- the transparent
+wrapper keeps no command list -- so a `--word` that names nothing in it is a typo
+said as such, and a bare word beyond the last positional is "takes <signature>".
+
+Typed arguments win over sticky ones: the binding happens first, and
+`Sticky::fill` afterwards fills only slots still empty, which is the rule the flag
+spelling already had. The pure-text expansion is the one case that names the
+session explicitly (`send_message <session> <text>`), because a bare message read
+as a positional would land on the session argument.
+
+The flag value is whatever follows its flag, *including* a token that starts with
 `--`. Refusing those made the one thing a message flag exists for impossible:
 `--message "--version"` was read as a missing value, and the only way through
 was `--message=--version`, which nothing advertises.
 
 The cost is the other direction: a forgotten value swallows the next flag, which
-then fails on whatever follows it -- `--session --message hi` reads `--message`
-as the value of `--session`, and `hi` is what fails.
+then fails on whatever follows it -- `send_message --message --session hi` reads
+`--session` as the value of `--message`, and `hi` is what fails.
 
 ## installed_skills
 

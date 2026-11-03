@@ -40,9 +40,11 @@ it arrives in the greeting's `ServerInfo`, which already existed.
 
 Resolved once per completion, before the popup looks at any value: the machine
 `--remote` names, then the machine the line's session runs on, then this one --
-and the directory, which is the session's when the line has one. A message names
-no session on the line, which is why `words` is empty for one: prose containing
-`--session` is prose, and the session it goes to is the sticky one.
+and the directory, which is the session's when the line has one. The session a
+command names may be its first positional (`send_message <session> <message>`) or
+a flag (an older server's spelling), and `session_named` reads both. A message
+names no session on the line, which is why `words` is empty for one: prose
+containing `--session` is prose, and the session it goes to is the sticky one.
 
 ## remote_paths, wanted, inflight, fail_paths
 
@@ -105,19 +107,25 @@ Command names, while the command has not been written yet. A space *after* it is
 not a command name any more: offering the whole list there reopened the popup
 over a line whose first word was settled.
 
-## Catalog::complete — flag values
+## Catalog::complete — values
 
-Past the command name: only a flag's value, and only when the spec says where
-the candidates come from. The flag sits one word back when the value has not
-been started yet, and two when it has: `--session <TAB>` and `--session sc<TAB>`
-both complete the same list.
+Past the command name, a word completes one of two things. A flag's value, when
+it follows a flag: the flag sits one word back when the value has not been
+started yet, and two when it has: `--remote <TAB>` and `--remote lo<TAB>`
+complete the same list. Or the next unfilled positional argument, counted from
+the bare words on the line (`positional_tokens` steps over flags and their
+values): `/set_session <TAB>` offers sessions, and with a session on the line the
+next Tab offers models. A slot whose source is `None` offers nothing, which is
+how `send_message <session> <text>` stops completing after the session.
 
 ## resolve
 
 `depth` exists for the single case that points back into the catalog: a value
-completed the way another argument's values are. One hop is enough for the shape
-the client actually declares; the second is allowed only so a chain that names
-itself is cut off rather than followed forever.
+completed the way another argument's values are. The named argument is the line's
+first positional -- `set_sticky <type> <value>` completes the value as the type
+names -- or, on an older server's spelling, the value of `--name`. One hop is
+enough for the shape the client actually declares; the second is allowed only so
+a chain that names itself is cut off rather than followed forever.
 
 ## flags_on_line
 

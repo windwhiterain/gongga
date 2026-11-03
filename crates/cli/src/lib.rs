@@ -863,7 +863,10 @@ impl Client {
                 self.results.insert(id, window.clone());
                 // No `$`: SPEC's `cmd` item carries a symbol, and the mark
                 // that says "this is a command" is the front-end's to draw.
-                let line = format!("{name}{}", render_args(&args));
+                let line = format!(
+                    "{name}{}",
+                    render_args(&args, self.catalog.command(&name).as_ref())
+                );
                 // SPEC's row is `last cmd | cmd_result`: a command of no
                 // session replaces the one before.
                 if session.is_none() {
@@ -1137,13 +1140,44 @@ impl Client {
         })
     }
 
-    /// Sends one line of prose as one argument of `send_message`.
+    /// Sends one line of prose: SPEC's UI expands it to `send_message`, the
+    /// session being the sticky one.
+    ///
+    /// # Invariant
+    ///
+    /// The expansion is built from the published spec, like any other line:
+    /// a positional `send_message` names the sticky session explicitly --
+    /// typed words bind to positionals from the first slot, so a bare message
+    /// would land on the session argument -- while a flag-spelled one (an
+    /// older server) keeps the flag spelling. No sticky session is said so,
+    /// not sent as a message to nobody.
     pub fn message(&mut self, text: &str, sink: &mut dyn Sink) -> Submission {
-        let tokens = vec![
-            "send_message".to_string(),
-            "--message".to_string(),
-            text.to_string(),
-        ];
+        let positional = self
+            .catalog
+            .command("send_message")
+            .map(|spec| spec.args.iter().any(|a| a.positional))
+            .unwrap_or(true);
+        let tokens = if !positional {
+            vec![
+                "send_message".to_string(),
+                "--message".to_string(),
+                text.to_string(),
+            ]
+        } else {
+            let Some(session) = self.sticky.get("session") else {
+                self.row(
+                    sink,
+                    LineKind::Error,
+                    "no session to send to: set one with `/set_sticky session                      <name>`, or start the line with `/` and name the command",
+                );
+                return Submission::Rejected;
+            };
+            vec![
+                "send_message".to_string(),
+                session.to_string(),
+                text.to_string(),
+            ]
+        };
         self.submit_tokens(tokens, sink, Echo::Message(text))
     }
 
@@ -1227,34 +1261,18 @@ impl Client {
             return Submission::Rejected;
         };
 
-        // One validation, by the published spec: `remote` picks the path.
-        let mut args = match parse_args(&tokens[1..]) {
+        // One validation, by the published spec: `remote` picks the path, and
+        // a token that names nothing in it is a typo, said so before anything
+        // is sent or filled.
+        let mut args = match parse_args(&tokens[1..], Some(&spec)) {
             Ok(a) => a,
             Err(e) => {
                 self.row(sink, LineKind::Error, &e.to_string());
                 return Submission::Rejected;
             }
         };
-        // A flag the command does not take is a typo, not decoration; checked
-        // before `fill`, so only what was typed is judged.
-        let unknown: Vec<String> = args
-            .keys()
-            .filter(|k| !spec.args.iter().any(|a| a.name == **k))
-            .map(|k| format!("--{k}"))
-            .collect();
-        if !unknown.is_empty() {
-            let known: Vec<String> = spec.args.iter().map(|a| format!("--{}", a.name)).collect();
-            self.row(
-                sink,
-                LineKind::Error,
-                &format!(
-                    "{head} has no argument {}; it takes {}",
-                    unknown.join(", "),
-                    known.join(", ")
-                ),
-            );
-            return Submission::Rejected;
-        }
+        // Typed arguments win: a sticky fills only a slot still empty, the
+        // same rule the flag spelling had.
         self.sticky.fill(Some(&spec), &mut args);
         let missing: Vec<&str> = spec
             .args
@@ -1273,8 +1291,9 @@ impl Client {
                 sink,
                 LineKind::Error,
                 &format!(
-                    "{head} is missing required argument(s): {}",
-                    missing.join(", ")
+                    "{head} is missing required argument(s): {}; it takes {}",
+                    missing.join(", "),
+                    commands::signature(Some(&spec)),
                 ),
             );
             return Submission::Rejected;
@@ -1359,7 +1378,7 @@ impl Client {
 
     /// Runs one client command, whose args the spec already validated.
     fn run_client_command(&mut self, name: &str, args: &protocol::Args, sink: &mut dyn Sink) {
-        let arg_name = args.get("name").cloned().unwrap_or_default();
+        let arg_name = args.get("type").cloned().unwrap_or_default();
         match name {
             "connect_server" => self.remember_server(args, sink),
             // The process is the server: a window cannot draw it, so say
@@ -1376,7 +1395,14 @@ impl Client {
             "set_render_session" => self.run_render_session(args, sink),
             "set_sticky" => {
                 let Some(value) = args.get("value").cloned() else {
-                    self.row(sink, LineKind::Error, "set_sticky requires --value");
+                    self.row(
+                        sink,
+                        LineKind::Error,
+                        &format!(
+                            "set_sticky is missing required argument(s): value; it takes {}",
+                            commands::signature(self.catalog.command("set_sticky").as_ref()),
+                        ),
+                    );
                     return;
                 };
                 // A sticky value no command reads never takes effect, so it is refused
@@ -1736,7 +1762,10 @@ pub fn server_address(ip: Option<&str>, port: &str) -> anyhow::Result<SocketAddr
 
 /// `connect_server`: remember where the next command goes, then prove it answers.
 async fn connect_elsewhere(args: &Args, command: &[String]) -> anyhow::Result<()> {
-    let parsed = parse_args(&command[1..])?;
+    let spec = protocol::client_commands()
+        .into_iter()
+        .find(|c| c.name == "connect_server");
+    let parsed = parse_args(&command[1..], spec.as_ref())?;
     let port = parsed.get("port").map(String::as_str).unwrap_or_default();
     let addr = server_address(parsed.get("ip").map(String::as_str), port)?;
     // Saved before dialing: a refusal then leaves the client pointed where
@@ -1903,24 +1932,10 @@ pub async fn list_commands(args: &Args) -> anyhow::Result<()> {
             command.name,
             target,
             command.description,
-            signature(&command.args),
+            commands::signature(Some(&command)),
         );
     }
     Ok(())
-}
-
-/// `--a (required), --b (optional)`, or `nothing` when a command takes none.
-fn signature(args: &[protocol::ArgSpec]) -> String {
-    if args.is_empty() {
-        return "nothing".to_string();
-    }
-    args.iter()
-        .map(|a| {
-            let needed = if a.required { "required" } else { "optional" };
-            format!("--{} ({needed})", a.name)
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 // Connection

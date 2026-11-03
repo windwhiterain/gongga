@@ -213,7 +213,7 @@ fn report(
         ));
     }
     out.push_str(&format!(
-        "\nRead it back with:\n\n    gongga-cli get_messages --session {name} --range -40:-1\n",
+        "\nRead it back with:\n\n    gongga-cli get_messages {name} -40:-1\n",
         name = failure.name,
     ));
     out.push_str(

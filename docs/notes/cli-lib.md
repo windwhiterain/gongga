@@ -11,7 +11,7 @@ as a built-in, and none of them needs a client rebuild.
 It does not own the *input line*. Whether a line is a `/command` or prose for
 the agent is the interactive front-end's decision (`Client::command` and
 `Client::message` are the two things that decision can ask for), so the
-one-shot path -- `gongga-cli send_message --message hi` -- never has to guess: its
+one-shot path -- `gongga-cli send_message main hi` -- never has to guess: its
 argv is already tokens.
 
 It knows nothing about terminals. That is the point of the split: anything that
@@ -292,9 +292,10 @@ number as if the server were still there.
 ## Echo
 
 Both halves of the grammar reach the same code; the only difference the operator
-should see is that a command looks like a command (`/set_session --session main`)
-and a message looks like what they wrote. The wire never sees this distinction:
-a message is `send_message --message <text>`.
+should see is that a command looks like a command (`/set_session main`) and a
+message looks like what they wrote. The wire never sees this distinction: a
+message is `send_message <session> <text>`, the session being the sticky one,
+named explicitly so the text never lands on the session argument.
 
 ## Client::handle_bytes
 
@@ -361,9 +362,9 @@ them rather than three commands with one name. Two rules make that legible:
 
 ## Client::run_render_session and Client::follow_shown
 
-`set_render_session` writes `Shown` and answers with the flag it wrote, or -- with no
-`--show` -- the flag that session has now. It is a view change: the blocks are
-untouched, so `--show true` after `--show false` brings the whole history back.
+`set_render_session` writes `Shown` and answers with the value it wrote, or -- with
+no `true|false` -- the value that session has now. It is a view change: the blocks
+are untouched, so `true` after `false` brings the whole history back.
 
 SPEC hangs two more facts off the click that sends this command, and they live here
 rather than in the window so a typed `/set_render_session` behaves the same: showing a
@@ -455,8 +456,7 @@ stays in `Sticky`, so there is one place that knows it.
 ## Client::settle_follow
 
 SPEC's `set_session` carries a second sentence: it also sets the sticky `session`,
-which is what keeps `send_message --message ...` from needing `--session` said
-every time. It runs on the acknowledgement, never on the submission, because a
+which is what keeps `send_message` from needing the session named every time. It runs on the acknowledgement, never on the submission, because a
 refused `set_session` must leave the client pointed where it was: following a
 session that `--model nosuch/model` refused to create is the kind of wrong that
 reads as "the log stopped".
@@ -492,7 +492,7 @@ better argument for not moving it somewhere else: what that line said is now on 
 screen itself. Which session is the sticky one is the mark its name carries in the
 list and its box around the window it scrolls; whether a session is shown is the
 window beside the list; and a sticky value shows up in the echo of every command it
-fills (`$ send_message --message "…" --session main`).
+fills (`$ send_message main "…"`).
 
 Nothing is lost that a reader could not see: every session has a row in the list,
 and a shown one has its own window beside it. The one thing the line carried that the
@@ -501,8 +501,7 @@ canvas does not is `block_size`, and that is a setting read back through
 
 ## Client::command
 
-This is the whole interface of the one-shot path (`gongga-cli send_message --message
-hi`). There is no grammar here on purpose: a command line arrives tokenised by
+This is the whole interface of the one-shot path (`gongga-cli send_message main hi`). There is no grammar here on purpose: a command line arrives tokenised by
 the shell that started the process, so there is nothing left to decide. `/name`
 is the *interactive* input line's syntax and prose is not a command; splitting a
 string back into tokens only to re-derive an intention would let the two paths
@@ -666,7 +665,7 @@ before any server speaks, which is why nothing a window keeps depends on a greet
 
 Runs one command against the server, prints the events, exits.
 
-`gongga-cli send_message --message hi --session main`. One command per process is the
+`gongga-cli send_message main hi`. One command per process is the
 whole interface: there is no `exec` to wrap it in, and nothing to configure
 about the wait -- the command returns when the server answers, which for
 `send_message` is the moment the message is accepted, not the moment the turn

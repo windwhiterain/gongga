@@ -628,19 +628,21 @@ pub fn client_commands() -> Vec<CommandSpec> {
     [
         (
             "set_sticky",
-            "Set a sticky argument, applied to every later command.",
+            "Set a sticky argument, applied to every later command that takes one.",
             vec![
                 spec_arg(
-                    "name",
+                    "type",
                     "Argument name, e.g. `session`.",
+                    true,
                     true,
                     Some("name"),
                     CompletionSource::Arguments,
                 ),
                 spec_arg(
                     "value",
-                    "Value to apply when the flag is omitted. Completes the way the named \
-                     argument does.",
+                    "Value to apply when the argument is omitted. Completes the way the \
+                     named argument does.",
+                    true,
                     true,
                     Some("value"),
                     CompletionSource::OfNamedArgument,
@@ -651,8 +653,9 @@ pub fn client_commands() -> Vec<CommandSpec> {
             "del_sticky",
             "Remove a sticky argument.",
             vec![spec_arg(
-                "name",
+                "type",
                 "Argument name to remove.",
+                true,
                 true,
                 Some("name"),
                 CompletionSource::StickyArguments,
@@ -668,6 +671,7 @@ pub fn client_commands() -> Vec<CommandSpec> {
                      many wrapped rows and keeps the newest of them, so a long stream \
                      scrolls inside its own block instead of pushing other blocks away.",
                     false,
+                    false,
                     Some("lines"),
                     CompletionSource::Static(BLOCK_SIZES.iter().map(|m| m.to_string()).collect()),
                 ),
@@ -677,6 +681,7 @@ pub fn client_commands() -> Vec<CommandSpec> {
                      right: a wheel over that margin scrolls the window, and one over the \
                      box scrolls the box. `0` draws the box edge to edge.",
                     false,
+                    false,
                     Some("columns"),
                     CompletionSource::Static(BOX_EDGES.iter().map(|m| m.to_string()).collect()),
                 ),
@@ -684,11 +689,12 @@ pub fn client_commands() -> Vec<CommandSpec> {
         ),
         (
             "set_render_session",
-            "Whether one session is shown beside the list; with no `--show`, what it is now.",
+            "Whether one session is shown beside the list; with no <show>, what it is now.",
             vec![
                 spec_arg(
                     "session",
                     "The session whose window this shows or hides.",
+                    true,
                     true,
                     Some("name"),
                     CompletionSource::Sessions,
@@ -698,6 +704,7 @@ pub fn client_commands() -> Vec<CommandSpec> {
                     "`true` gives the session a header and its events beside the list; \
                      `false` leaves it as a name in the list.",
                     false,
+                    true,
                     Some("true|false"),
                     CompletionSource::Static(SHOW_VALUES.iter().map(|m| m.to_string()).collect()),
                 ),
@@ -711,6 +718,7 @@ pub fn client_commands() -> Vec<CommandSpec> {
                     "ip",
                     "Where the server is; localhost when omitted.",
                     false,
+                    false,
                     Some("ip"),
                     CompletionSource::None,
                 ),
@@ -718,6 +726,7 @@ pub fn client_commands() -> Vec<CommandSpec> {
                     "port",
                     "The UDP port it listens on.",
                     true,
+                    false,
                     Some("port"),
                     CompletionSource::None,
                 ),
@@ -726,13 +735,24 @@ pub fn client_commands() -> Vec<CommandSpec> {
         (
             "serve",
             "Run a server for this home in this process, in the foreground.",
-            vec![spec_arg(
-                "port",
-                "The UDP port to listen on, on localhost.",
-                true,
-                Some("port"),
-                CompletionSource::None,
-            )],
+            vec![
+                spec_arg(
+                    "port",
+                    "The UDP port to listen on, on localhost.",
+                    true,
+                    true,
+                    Some("port"),
+                    CompletionSource::None,
+                ),
+                spec_arg(
+                    "home",
+                    "The harness home to serve; this client's own home when omitted.",
+                    false,
+                    false,
+                    Some("path"),
+                    CompletionSource::Paths,
+                ),
+            ],
         ),
     ]
     .into_iter()
@@ -750,6 +770,7 @@ fn spec_arg(
     name: &str,
     description: &str,
     required: bool,
+    positional: bool,
     value_hint: Option<&str>,
     completions: CompletionSource,
 ) -> ArgSpec {
@@ -757,6 +778,7 @@ fn spec_arg(
         name: name.into(),
         description: description.into(),
         required,
+        positional,
         value_hint: value_hint.map(str::to_string),
         completions,
         sticky: false,
@@ -769,6 +791,15 @@ pub struct ArgSpec {
     pub name: String,
     pub description: String,
     pub required: bool,
+    /// Bound by position, in the order published, not by a `--flag`.
+    ///
+    /// # Invariant
+    ///
+    /// SPEC's command lines spell these `<name>`; the flag arguments stay `--name`.
+    /// The declaration order in `args` is the binding order, so a spec's list is
+    /// its syntax.
+    #[serde(default)]
+    pub positional: bool,
     /// Shown as the value placeholder during completion.
     pub value_hint: Option<String>,
     /// Where the CLI should source completion candidates.

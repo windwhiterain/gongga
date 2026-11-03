@@ -527,7 +527,7 @@ impl Agent {
     /// the model's provider's, never another model's. This machine's own lifetime
     /// applies only when its config states one, and a provider that states neither
     /// leaves it at zero, which the plan reads as "never expires".
-    fn rates(&self, model: &str) -> crate::prefix_cache::Rates {
+    pub(crate) fn rates(&self, model: &str) -> crate::prefix_cache::Rates {
         let entry = self.providers.place(model);
         let stated = entry
             .as_ref()

@@ -36,6 +36,7 @@ mod signal;
 mod store;
 mod subscriptions;
 pub mod supervise;
+mod tool_cmd;
 mod tools;
 mod transcript;
 mod transport;
@@ -284,11 +285,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         tracing::warn!(problem = %problem, "a script could not be read");
     }
 
-    // Read from the database, so a restart resumes what was asked for.
-    let subscriptions = crate::subscriptions::Subscriptions::load(store.clone(), bus.clone());
-
-    let dispatch = Arc::new(Dispatch {
-        agent: Arc::new(Agent {
+    let agent = Arc::new(Agent {
             store: store.clone(),
             providers: providers::Handle,
             model_config: cfg.model.clone(),
@@ -305,9 +302,21 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                 .then(|| cfg.agent.cache_ttl_secs.saturating_mul(1_000)),
             index_change_tolerance: cfg.agent.index_change_tolerance,
             context_limit_percent: cfg.agent.context_limit_percent,
-            output_dir: output_dir.clone(),
-            detached: detached.clone(),
-        }),
+        output_dir: output_dir.clone(),
+        detached: detached.clone(),
+    });
+
+    // Read from the database, so a restart resumes what was asked for; the
+    // actions it runs take the agent's tools, so they arrive together.
+    let subscriptions = crate::subscriptions::Subscriptions::load(
+        store.clone(),
+        bus.clone(),
+        agent.clone(),
+        sessions.clone(),
+    );
+
+    let dispatch = Arc::new(Dispatch {
+        agent,
         sessions: sessions.clone(),
         store: store.clone(),
         bus: bus.clone(),

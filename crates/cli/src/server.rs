@@ -34,9 +34,14 @@ fn log_path(home: &Path) -> PathBuf {
 /// localhost, this home, no link -- and the console that started it belongs to
 /// the server from here, exit code included.
 pub fn serve(args: &Args, tokens: &[String]) -> anyhow::Result<()> {
-    let parsed = parse_args(tokens)?;
+    // SPEC: `serve <port> [--home <path>]`, from the same published spec a
+    // front-end completes against.
+    let spec = protocol::client_commands()
+        .into_iter()
+        .find(|c| c.name == "serve");
+    let parsed = parse_args(tokens, spec.as_ref())?;
     let Some(port) = parsed.get("port") else {
-        anyhow::bail!("serve needs --port <port>");
+        anyhow::bail!("serve needs a port: `{} serve <port>`", crate::typed_name());
     };
     let port: u16 = port
         .parse()

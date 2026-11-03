@@ -112,14 +112,14 @@ cli=("$bin/gongga-cli.exe" --home "$home" --server "127.0.0.1:$port")
 
 # A session in the repository, whose rules file names SPEC.md and a skill. The model
 # is named: this home's roster has one provider, and the built-in default is not it.
-created=$("${cli[@]}" set_session --session reader --cwd "$root" --model fake/flash-fake 2>&1)
+created=$("${cli[@]}" set_session reader --cwd "$root" --model fake/flash-fake 2>&1)
 [[ "$created" == *'"ok":true'* ]]
 ok "a session is created in the repository" $?
 # The message names two references: a skill (resolved through the home) and a file by
 # a *relative* path, whose meaning is the thing a `cd` used to change. A report always
 # names one, which is also what keeps the index from being empty.
-sent=$("${cli[@]}" send_message --session reader \
-  --message "@skill: self-control @file: docs/notes/tui-main.md — move the shell, then answer" 2>&1)
+sent=$("${cli[@]}" send_message reader \
+  "@skill: self-control @file: docs/notes/tui-main.md — move the shell, then answer" 2>&1)
 [[ "$sent" == *'"ok":true'* ]]
 ok "its turn is accepted" $?
 for _ in $(seq 1 120); do grep -q 'turn end session=reader' "$log" && break; sleep 0.5; done

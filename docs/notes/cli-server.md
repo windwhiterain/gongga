@@ -6,7 +6,7 @@ SPEC: `server` and `cli` are two programs. So "start a server" is one of this
 binary's own client commands, run in a console the server takes over:
 
 ```sh
-gongga --home ~/.gongga serve --port 9700
+gongga --home ~/.gongga serve 9700
 ```
 
 It is a *client* command and not a hidden flag, because the command layer is where
@@ -20,7 +20,7 @@ puts *both* programs in the home's `bin` (`install_commands`, below): the one
 moment when the home, this command layer and the server it is about to run are all
 known for certain.
 
-`--port` is required and the address is localhost: a server that listened on every
+`<port>` is required and the address is localhost: a server that listened on every
 interface would need the operator to think about keys and firewalls, which is a
 decision for the config file, not for a one-keystroke start.
 

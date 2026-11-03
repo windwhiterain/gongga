@@ -203,23 +203,23 @@ server_pid=$(child_pid)
 cli=("$cli_bin" --home "$home" --server "127.0.0.1:$port")
 
 # `local` is not a remote name: naming it is refused, and the refusal says `none`.
-refused=$("${cli[@]}" set_session --session probe --remote local --model fake/flash-fake 2>&1)
+refused=$("${cli[@]}" set_session probe --remote local --model fake/flash-fake 2>&1)
 [[ "$refused" == *"no remote called \`local\`"* && "$refused" == *"none"* ]]
 ok "naming \`local\` is refused, and the answer names \`none\`" $?
 
-created=$("${cli[@]}" set_session --session probe --remote "$peer_name" --model fake/flash-fake 2>&1)
+created=$("${cli[@]}" set_session probe --remote "$peer_name" --model fake/flash-fake 2>&1)
 [[ "$created" == *'"ok":true'* ]]
 ok "a session is created on $peer_name" $?
 
 # The boundary: a remote left in the home's `config.toml` is refused, not honoured --
 # it is the merged file, and a host name in it would be published by a pin move.
-probe=$("${cli[@]}" set_session --session probe --remote ghost --model fake/flash-fake 2>&1)
+probe=$("${cli[@]}" set_session probe --remote ghost --model fake/flash-fake 2>&1)
 [[ "$probe" == *'no remote named "ghost"'* ]]
 ok "a remote named only in config.toml does not exist" $?
 grep -q 'these remotes are in config.toml' "$log"
 ok "and startup says so, with the migrator that moves them" $?
 
-"${cli[@]}" send_message --session probe --message "@skill: self-control make the scratch" >/dev/null 2>&1
+"${cli[@]}" send_message probe "@skill: self-control make the scratch" >/dev/null 2>&1
 wait_turn probe; say_turn probe
 
 # The peer's own path, in the spelling its own shell gave, and the file it wrote.
@@ -240,12 +240,12 @@ peer_home=$(sed -n 2p <<<"$printed_paths")
 ok "remote_bash made the peer's scratch and named it in Windows spelling ($peer_scratch)" $?
 
 # The session moves to that directory: what its references are read against.
-moved=$("${cli[@]}" set_session --session probe --cwd "$peer_scratch" 2>&1)
+moved=$("${cli[@]}" set_session probe --cwd "$peer_scratch" 2>&1)
 [[ "$moved" == *'"ok":true'* ]]
 ok "the session moves to $peer_scratch" $?
 
 fake_up "" "{}"
-"${cli[@]}" send_message --session probe --message "now say which machine you are on" >/dev/null 2>&1
+"${cli[@]}" send_message probe "now say which machine you are on" >/dev/null 2>&1
 wait_turn probe; say_turn probe
 
 python - "$home" "$marker" <<'INNER'
@@ -264,11 +264,11 @@ INNER
 ok "the prompt's index carries the peer's own AGENTS.md" $?
 
 fake_up bash "{\"command\":\"pwd\",\"name\":\"here\",\"task\":\"prove this machine\"}"
-"${cli[@]}" send_message --session probe --message "and a shell here" >/dev/null 2>&1
+"${cli[@]}" send_message probe "and a shell here" >/dev/null 2>&1
 wait_turn probe; say_turn probe
 
 fake_up list_bash "{}"
-"${cli[@]}" send_message --session probe --message "which shells do you have" >/dev/null 2>&1
+"${cli[@]}" send_message probe "which shells do you have" >/dev/null 2>&1
 wait_turn probe; say_turn probe
 
 python - "$home" "$peer_scratch" <<'INNER'
@@ -315,12 +315,12 @@ ok "a session with a remote is offered both tools" $?
 
 # Out of the scratch before it goes: a move ends every shell, so nothing on the peer
 # is standing in the directory the next command removes.
-back=$("${cli[@]}" set_session --session probe --cwd "$peer_home" 2>&1)
+back=$("${cli[@]}" set_session probe --cwd "$peer_home" 2>&1)
 [[ "$back" == *'"ok":true'* ]]
 ok "the session moves out of its scratch" $?
 
 fake_up remote_bash "{\"command\":\"rm -rf \\\"\$HOME/$tag\\\" && echo peer-clean\",\"name\":\"cleanup\",\"task\":\"remove the peer scratch\"}"
-"${cli[@]}" send_message --session probe --message "clean up the peer" >/dev/null 2>&1
+"${cli[@]}" send_message probe "clean up the peer" >/dev/null 2>&1
 wait_turn probe; say_turn probe
 python - "$home" <<'INNER'
 import json, sqlite3, sys
@@ -333,7 +333,7 @@ INNER
 ok "the peer's scratch is removed" $?
 
 # A remote session comes home by naming `none`: no shells remain on the peer at all.
-back=$("${cli[@]}" set_session --session probe --remote none 2>&1)
+back=$("${cli[@]}" set_session probe --remote none 2>&1)
 [[ "$back" == *'"ok":true'* ]]
 ok "a session comes home by naming \`none\`" $?
 python - "$home" <<'INNER'
