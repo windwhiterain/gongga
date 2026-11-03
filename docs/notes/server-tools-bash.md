@@ -26,6 +26,20 @@ The command had not finished when its deadline passed. It is *still running in
 this shell* -- nothing was killed -- and the rest of its output can be
 collected with [`BashShell::finish_outstanding`].
 
+It says nothing about whether the shell is alive: that stopped being a guess when
+[`ShellEnded`] became the answer for a shell that cannot send its sentinel. A
+deadline that passes and a shell that dies are now different returns, so a slow
+command and a lost one are never reported the same way.
+
+## ShellEnded
+
+Both pipes carry the sentinel, so a shell that exits mid-command is seen twice:
+`drain` records EOF, `run` reports this instead of an outcome with no exit code.
+The tool names it and replaces the shell (`replace_shell`), because a shell whose
+place is lost must not be asked another command. Measured: `exit` in a session's
+`bash` answered *"the shell on this machine ended before the command finished;
+`default` has been replaced"*, and the call after it answered `alive-after-replacement`.
+
 ## BashShell::pending
 
 Shared rather than owned so the tailing task can append without holding the
@@ -80,7 +94,7 @@ False after a pipe ended without its sentinel: the shell holds a command
 boundary it cannot find again, so a command sent to it would be answered with
 somebody else's output. Whoever owns the shell has to replace it.
 
-## BashShell::run
+## BashShell::run (and run_until_settled)
 
 The deadline is a deadline on *waiting*, not on the command. When it passes the
 shell is left exactly as it is -- the command keeps running, keeps its place in

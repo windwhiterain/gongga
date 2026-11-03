@@ -61,6 +61,24 @@ pub struct BackgroundEnd {
 /// `docs/notes/server-tools-bash.md`.
 pub type BackgroundNotifier = Arc<dyn Fn(BackgroundEnd) + Send + Sync>;
 
+/// The shell ended while a command was running: no sentinel can follow.
+///
+/// # Invariant
+///
+/// A run that ends this way reports this, never an outcome with no exit code:
+/// "the shell died" and "the command finished without a status" are different
+/// facts, and only the clock used to tell them apart.
+#[derive(Debug)]
+pub struct ShellEnded(pub String);
+
+impl std::fmt::Display for ShellEnded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for ShellEnded {}
+
 /// One pipe's resumable state, kept in the shell: a cancelled wait loses neither
 /// output nor a seen sentinel.
 #[derive(Default)]
@@ -70,6 +88,8 @@ struct DrainState {
     buf: Vec<u8>,
     code: Option<i32>,
     settled: bool,
+    /// The pipe ended before its sentinel: the shell is gone.
+    ended: bool,
 }
 
 pub struct BashShell {
@@ -92,6 +112,8 @@ pub struct BashShell {
     next_job: u64,
     /// A pipe ended without its sentinel, so output no longer lines up with commands.
     out_of_sync: bool,
+    /// One of the shell's pipes reached EOF: it is gone, and no sentinel can follow.
+    ended: bool,
     /// Every process the shell starts, so ending it ends the tree; kept last for `Drop`.
     #[cfg(windows)]
     job: Option<crate::tools::job::ProcessJob>,
@@ -164,6 +186,7 @@ impl BashShell {
             jobs: Arc::new(AtomicUsize::new(0)),
             next_job: 0,
             out_of_sync: false,
+            ended: false,
             #[cfg(windows)]
             job,
         })
@@ -235,19 +258,54 @@ impl BashShell {
         timeout: std::time::Duration,
         sink: Option<&mpsc::Sender<BashChunk>>,
     ) -> anyhow::Result<BashOutcome> {
+        self.run_bounded(command, Some(timeout), sink).await
+    }
+
+    /// Runs one command and waits until it answers, however long that takes.
+    ///
+    /// # Invariant
+    ///
+    /// No clock: this returns when the sentinel arrives or the shell ends, so a
+    /// caller that has nothing to gain from a partial answer never guesses.
+    pub async fn run_until_settled(&mut self, command: &str) -> anyhow::Result<BashOutcome> {
+        self.run_bounded(command, None, None).await
+    }
+
+    async fn run_bounded(
+        &mut self,
+        command: &str,
+        timeout: Option<std::time::Duration>,
+        sink: Option<&mpsc::Sender<BashChunk>>,
+    ) -> anyhow::Result<BashOutcome> {
         self.write_command(command).await?;
 
         // Bound first, so the statement owning the borrow of `self` has ended.
-        let pumped = tokio::time::timeout(timeout, Self::pump_both(self, sink)).await;
+        let pumped = match timeout {
+            Some(limit) => tokio::time::timeout(limit, Self::pump_both(self, sink))
+                .await
+                // A deadline that passed is not a shell that died: it is a command
+                // still running, and this says so.
+                .map_err(|_| ()),
+            None => Ok(Self::pump_both(self, sink).await),
+        };
         match pumped {
+            Ok(..) if self.ended => Err(anyhow::Error::new(ShellEnded(
+                "the shell on this machine ended before the command finished".to_string(),
+            ))),
             Ok((stdout, stderr, exit_code)) => {
                 // A shell that lost its place is not asked: `pwd` would read the
                 // leftovers. See `docs/notes/server-tools-bash.md`.
                 if self.usable() {
-                    match tokio::time::timeout(timeout, self.pwd()).await {
+                    let asked = match timeout {
+                        Some(limit) => tokio::time::timeout(limit, self.pwd())
+                            .await
+                            .map_err(|_| ()),
+                        None => Ok(self.pwd().await),
+                    };
+                    match asked {
                         Ok(Ok(pwd)) => self.set_cwd(PathBuf::from(pwd)),
                         Ok(Err(_)) => {}
-                        Err(_) => self.out_of_sync = true,
+                        Err(()) => self.out_of_sync = true,
                     }
                 }
                 Ok(BashOutcome {
@@ -257,7 +315,7 @@ impl BashShell {
                     still_running: false,
                 })
             }
-            Err(_) => {
+            Err(()) => {
                 let (stdout, stderr) = self.take_partial_output();
                 Ok(BashOutcome {
                     exit_code: None,
@@ -362,6 +420,11 @@ impl BashShell {
         if !self.stdout_state.settled || !self.stderr_state.settled {
             self.out_of_sync = true;
         }
+        // A pipe that reached EOF is the shell's death, which no sentinel can follow.
+        if self.stdout_state.ended || self.stderr_state.ended {
+            self.out_of_sync = true;
+            self.ended = true;
+        }
         let stdout = std::mem::take(&mut self.stdout_state.text);
         let stderr = std::mem::take(&mut self.stderr_state.text);
         self.stdout_state = DrainState::default();
@@ -387,7 +450,12 @@ impl BashShell {
         // keeps a half line across a cancelled future.
         loop {
             match reader.read_until(b'\n', &mut state.buf).await {
-                Ok(0) => break, // EOF: the shell died
+                Ok(0) => {
+                    // EOF: the shell died. Recorded so the caller is told, rather
+                    // than left to infer it from a missing exit code.
+                    state.ended = true;
+                    break;
+                }
                 Ok(_) => {}
                 Err(e) => {
                     if !state.text.is_empty() {

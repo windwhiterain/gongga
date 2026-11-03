@@ -408,15 +408,27 @@ Measured, killing the `ssh` under a live listing shell and asking for the next o
 | before | **361 seconds**, and no error until the socket finally gave up |
 | after | **184 milliseconds**, on a fresh transport |
 
-The flakiness did not disappear -- this machine's tunnel is 750-1030ms per ssh and
-occasionally stalls past the 8s listing deadline -- but a stall is now a bounded,
-recoverable event instead of a connection nothing can detect and nothing can wake.
+The flakiness did not disappear -- this machine's tunnel is 750-1030ms per ssh --
+but a stall is now a recoverable event instead of a connection nothing can detect
+and nothing can wake.
 
-### A stalled link is bounded, and the shell is dropped
+### Waiting is not dying, so a listing keeps no clock
 
-A listing that has not answered in 8s is reported as a stall, not as a directory
-the peer refused. The shell is then **dropped** rather than drained: the stall is
-the link, and a shell kept for the next question would hold every later listing
-behind the same stall. Measured before this: one unlucky call took **394 seconds**
-and the calls after it queued behind it. Measured after: that call costs its 8s
-deadline, the next one dials again (1.6s), and the ones after are back to 120ms.
+A listing used to give up after 8s and call that a stall. That budget was the only
+thing telling "still working" from "gone", and it was wrong in both directions: a
+cold listing of `C:/Windows/System32` measured **6.6-8.7s** and was cut off while
+it was working, and a shell whose peer had gone was reported as a stall rather than
+as a death.
+
+The two are different values now, not different durations. `RemoteShell::pump`
+answers `Ok` only when both sentinels arrived, and an error when this shell can send
+no sentinel ever again: its queue ended (the connection went), the peer said `End`,
+or it never connected. `ShellEnded` carries that to the tool, which names it and
+replaces the shell. A command that is merely slow is neither: `sleep 12` measured
+`run_until_settled` returning after 12.75s with exit 0, and the same command under a
+3s deadline still answers `still_running` -- that deadline is the caller's own
+(`bash --timeout_ms`), not this one's guess.
+
+So `list_paths` waits until the peer answers or the shell is gone, and a shell it
+lost is redialled once. Measured on the deadline-free listing: six consecutive
+listings of `C:/Windows/System32`, 6.6s cold then 1.7s each, none cut off.

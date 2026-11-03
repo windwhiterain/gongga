@@ -1109,10 +1109,25 @@ impl Tool for BashTool {
                 }
                 Err(e) => {
                     // The write failed, so stdin may hold half a line; `healthy` is what says so.
-                    if !healthy {
-                        ctx.replace_shell(self.machine, name, &handle);
+                    let ended = e.is::<crate::tools::bash::ShellEnded>();
+                    let replaced = !healthy && ctx.replace_shell(self.machine, name, &handle);
+                    if !ended {
+                        ToolOutcome::err(format!("{e}"))
+                    } else {
+                        // Named as a death, and what became of the shell is said.
+                        ToolOutcome::err(format!(
+                            "{e}; {}",
+                            if replaced {
+                                format!(
+                                    "`{name}` has been replaced with a fresh shell in the \
+                                     session's working directory, so `cd` and exports from \
+                                     earlier calls are gone"
+                                )
+                            } else {
+                                format!("`{name}` could not be replaced")
+                            }
+                        ))
                     }
-                    ToolOutcome::err(format!("{e}"))
                 }
             }
         })

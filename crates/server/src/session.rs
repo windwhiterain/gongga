@@ -1019,18 +1019,16 @@ impl SessionManager {
                     .await?
             }
         };
-        // A listing the peer did not answer in time is not a directory it refused:
-        // saying so would send a reader looking for a path that is there. The shell is
-        // dropped rather than drained, because a stalled link is what this is, and a
-        // shell kept for the next question would hold it behind the same stall.
-        if outcome.still_running {
-            self.forget_listing_shell(&name);
+        // A listing reports a status or it did not answer at all: waiting has no
+        // deadline, so a missing status is a shell that died -- and `listing_run`
+        // has already forgotten it.
+        let Some(status) = outcome.exit_code else {
             anyhow::bail!(
-                "remote {name:?} did not answer while listing {directory:?}; \
-                 the connection may have stalled, so the shell was dropped"
+                "remote {name:?} did not answer while listing {directory:?}, and its shell \
+                 never reported a status"
             );
-        }
-        if outcome.exit_code != Some(0) {
+        };
+        if status != 0 {
             anyhow::bail!(
                 "remote {name:?} cannot list {directory:?}: {}",
                 outcome.stderr.trim()
@@ -1084,12 +1082,11 @@ impl SessionManager {
         };
         let command = listing_script(&directory);
         // Measured: 1.7s for the first listing on a fresh remote (ssh, the runner and
-        // a shell), 0.17-0.21s for every one after. The deadline is well above that
-        // and well below the half minute a stalled link once cost -- and a listing
-        // does not follow with `pwd`, because nothing here reads the shell's directory.
-        let outcome = shell
-            .run_without_cwd(&command, std::time::Duration::from_secs(8))
-            .await;
+        // a shell), 0.17-0.21s for every one after, and 6.6s for a cold `System32`
+        // -- which is why there is no deadline here. A listing also does not follow
+        // with `pwd`: nothing here reads the shell's directory.
+        // Asked and waited for: this ends when the peer answers or its shell ends.
+        let outcome = shell.run_until_settled(&command).await;
         if outcome.is_err() {
             drop(shell);
             self.forget_listing_shell(name);

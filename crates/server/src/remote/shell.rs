@@ -17,6 +17,11 @@ use crate::tools::bash::{BashChunk, BashOutcome, BashStream};
 /// The one command that says where a peer's shell is, in its own machine's spelling.
 const PWD: &str = "command pwd -W 2>/dev/null || command pwd";
 
+/// Why a shell on the endpoint can send no sentinel again.
+const ENDED_NO_CONNECTION: &str = "this shell never connected to the endpoint";
+const ENDED_QUEUE: &str = "the endpoint's connection ended before the command did";
+const ENDED_SHELL: &str = "the shell on the endpoint ended before the command did";
+
 /// How long a caller waits for another one's close to report its outcome.
 const CLOSE_WAIT: Duration = Duration::from_secs(30);
 
@@ -348,7 +353,18 @@ impl RemoteShell {
         timeout: Duration,
         sink: Option<&mpsc::Sender<BashChunk>>,
     ) -> anyhow::Result<BashOutcome> {
-        self.run_tracking_cwd(command, timeout, sink, true).await
+        self.run_tracking_cwd(command, Some(timeout), sink, true)
+            .await
+    }
+
+    /// Runs one command and waits until it answers, however long that takes.
+    ///
+    /// # Invariant
+    ///
+    /// No clock: this returns when both sentinels arrive or the shell is gone, so a
+    /// caller with nothing to gain from a partial answer never guesses.
+    pub async fn run_until_settled(&mut self, command: &str) -> anyhow::Result<BashOutcome> {
+        self.run_tracking_cwd(command, None, None, false).await
     }
 
     /// Runs one command without the `pwd` that keeps the directory in step.
@@ -363,20 +379,30 @@ impl RemoteShell {
         command: &str,
         timeout: Duration,
     ) -> anyhow::Result<BashOutcome> {
-        self.run_tracking_cwd(command, timeout, None, false).await
+        self.run_tracking_cwd(command, Some(timeout), None, false)
+            .await
     }
 
     async fn run_tracking_cwd(
         &mut self,
         command: &str,
-        timeout: Duration,
+        timeout: Option<Duration>,
         sink: Option<&mpsc::Sender<BashChunk>>,
         track_cwd: bool,
     ) -> anyhow::Result<BashOutcome> {
         self.write_command(command).await?;
-        let pumped = tokio::time::timeout(timeout, self.pump(sink)).await;
+        let pumped = match timeout {
+            Some(limit) => tokio::time::timeout(limit, self.pump(sink))
+                .await
+                .map_err(|_| ()),
+            None => Ok(self.pump(sink).await),
+        };
         match pumped {
-            Ok(()) => {
+            // The shell can send no sentinel: there is no outcome to report.
+            Ok(Err(ended)) => Err(anyhow::Error::new(crate::tools::bash::ShellEnded(
+                ended.to_string(),
+            ))),
+            Ok(Ok(())) => {
                 // Taken before `pwd`, which resets both states for its own command.
                 let stdout = std::mem::take(&mut self.stdout_state.text);
                 let stderr = std::mem::take(&mut self.stderr_state.text);
@@ -384,10 +410,16 @@ impl RemoteShell {
                 self.stdout_state = DrainState::default();
                 self.stderr_state = DrainState::default();
                 if track_cwd && self.usable() {
-                    match tokio::time::timeout(timeout, self.pwd()).await {
+                    let asked = match timeout {
+                        Some(limit) => tokio::time::timeout(limit, self.pwd())
+                            .await
+                            .map_err(|_| ()),
+                        None => Ok(self.pwd().await),
+                    };
+                    match asked {
                         Ok(Ok(pwd)) => self.set_cwd(PathBuf::from(pwd)),
                         Ok(Err(_)) => {}
-                        Err(_) => self.out_of_sync = true,
+                        Err(()) => self.out_of_sync = true,
                     }
                 }
                 Ok(BashOutcome {
@@ -397,7 +429,7 @@ impl RemoteShell {
                     still_running: false,
                 })
             }
-            Err(_) => {
+            Err(()) => {
                 let (stdout, stderr) = self.take_partial_output();
                 Ok(BashOutcome {
                     exit_code: None,
@@ -431,8 +463,8 @@ impl RemoteShell {
 
     /// Reads until the command that outlived its deadline finishes.
     pub async fn finish_outstanding(&mut self) -> (String, String, Option<i32>) {
-        let settled = tokio::time::timeout(Duration::from_secs(600), self.pump(None)).await;
-        if settled.is_err() {
+        // No deadline: this ends when the sentinel arrives or the shell does.
+        if self.pump(None).await.is_err() {
             self.out_of_sync = true;
         }
         let code = self.stdout_state.code.or(self.stderr_state.code);
@@ -479,7 +511,10 @@ impl RemoteShell {
     /// this side can store.
     pub async fn pwd(&mut self) -> anyhow::Result<String> {
         self.write_command(PWD).await?;
-        self.pump(None).await;
+        // A shell that ended cannot answer; that is the caller's to hear.
+        if let Err(ended) = self.pump(None).await {
+            anyhow::bail!("{ended}");
+        }
         if !self.stdout_state.settled || !self.stderr_state.settled {
             self.out_of_sync = true;
             anyhow::bail!("could not read the shell's working directory on the endpoint");
@@ -509,8 +544,14 @@ impl RemoteShell {
         shell.write(script.as_bytes()).await
     }
 
-    /// Drains both streams to their sentinels; a timeout leaves the state resumable.
-    async fn pump(&mut self, sink: Option<&mpsc::Sender<BashChunk>>) {
+    /// Drains both streams to their sentinels.
+    ///
+    /// # Invariant
+    ///
+    /// Ok means both sentinels arrived. Err means this shell can send no sentinel
+    /// ever again -- its queue ended, or the peer said it ended -- which is a death
+    /// to report, not a wait to keep taking. Nothing here decides either by a clock.
+    async fn pump(&mut self, sink: Option<&mpsc::Sender<BashChunk>>) -> anyhow::Result<()> {
         let marker = self.marker.clone();
         let Self {
             connection,
@@ -521,7 +562,7 @@ impl RemoteShell {
         } = self;
         let Some((_, shell)) = connection else {
             *out_of_sync = true;
-            return;
+            anyhow::bail!("{}", ENDED_NO_CONNECTION);
         };
         while !stdout_state.settled || !stderr_state.settled {
             let event = match shell.next_event().await {
@@ -529,14 +570,14 @@ impl RemoteShell {
                 None => {
                     // The peer's channel ended: no sentinel can follow.
                     *out_of_sync = true;
-                    return;
+                    anyhow::bail!("{}", ENDED_QUEUE);
                 }
             };
             match event {
                 Event::Out { stream, data, .. } => {
                     let Some(bytes) = event_bytes(&data) else {
                         *out_of_sync = true;
-                        return;
+                        anyhow::bail!("the endpoint sent output this build cannot read");
                     };
                     let state = match stream {
                         crate::remote::protocol::Stream::Stdout => &mut *stdout_state,
@@ -552,11 +593,12 @@ impl RemoteShell {
                 Event::End { .. } => {
                     // The shell ended: what is left is not a command's output.
                     *out_of_sync = true;
-                    return;
+                    anyhow::bail!("{}", ENDED_SHELL);
                 }
                 Event::Hello { .. } => {}
             }
         }
+        Ok(())
     }
 }
 

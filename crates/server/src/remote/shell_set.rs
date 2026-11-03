@@ -112,6 +112,19 @@ impl Shell {
         }
     }
 
+    /// Runs one command and waits until it answers.
+    ///
+    /// # Invariant
+    ///
+    /// No clock: it ends when the sentinel arrives or the shell does, so a caller
+    /// with nothing to gain from a partial answer never guesses.
+    pub async fn run_until_settled(&mut self, command: &str) -> anyhow::Result<BashOutcome> {
+        match self {
+            Shell::Local(shell) => shell.run_until_settled(command).await,
+            Shell::Remote(shell) => shell.run_until_settled(command).await,
+        }
+    }
+
     /// Runs one command without following it with a `pwd`, for a caller that does
     /// not read the directory afterwards.
     pub async fn run_without_cwd(
