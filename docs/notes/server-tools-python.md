@@ -32,6 +32,32 @@ asked politely to give it back.
 program, and with neither set the server takes `python3`, then `python`, from
 PATH. `timeout_ms` and `max_output_chars` are the same knobs as bash's.
 
+## background, and why the counters live outside the lock
+
+`python` and `remote_python` take `background` exactly as `bash` does, and
+`check_python` is `check_bash`'s collector for them. But an interpreter answers one
+call at a time, which changes two things a shell never had to face:
+
+- **a foreground call while the name is busy would read the other call's answer.**
+  The driver pairs replies with requests by order, not by id, so the second request's
+  reply lands on the first reader and both results are silently wrong. So the name is
+  refused instead, and the message says to read the running one with `check_python`.
+  Measured: the refusal arrives at once, and the background answer still belongs to
+  its own call.
+- **what decides that must not take the interpreter's lock**, because a background
+  call holds it for as long as the code runs. `Interpreter` keeps `jobs`, `pending`
+  and the stop handle beside the lock, and `Facts` (machine, pid, program, cwd) is
+  fixed at spawn. Measured the wrong way first: reading `machine` through the lock
+  made the busy check wait for the running call and then report the name idle, so a
+  foreground call went through and 928ms later answered from the wrong request.
+
+`del_python` stops an interpreter through `Control`, never the lock: measured at 6ms
+while a `sleep 60` call was running.
+
+The notice is the shell's, reused: `notice_background_end` is one function for both
+tools, told what to call the work and where to read it. Measured: *"The background job
+1 you started with `remote_python` in `default` has finished successfully after 3.0s."*
+
 ## remote_python
 
 The same driver on the session's peer. One `Repl` enum holds either side, so a name is

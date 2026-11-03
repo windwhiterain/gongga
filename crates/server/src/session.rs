@@ -15,7 +15,7 @@ use crate::remote::endpoint::Endpoint;
 use crate::remote::shell_set::ShellSet;
 use crate::store::{SessionRow, Store};
 use crate::tools::detached::DetachedRegistry;
-use crate::tools::python::Repl;
+
 use std::collections::HashMap as PythonMap;
 
 /// The name of the shell every session starts with.
@@ -458,7 +458,7 @@ struct SessionInner {
     /// This machine's shells, and the remote's when the session names one.
     shells: Arc<Mutex<Shells>>,
     /// The persistent Python interpreters, named like shells.
-    pythons: Arc<AsyncMutex<PythonMap<String, Arc<AsyncMutex<Repl>>>>>,
+    pythons: Arc<AsyncMutex<PythonMap<String, Arc<crate::tools::interpreter::Interpreter>>>>,
     cancel: Mutex<CancellationToken>,
     /// How many times the operator has cancelled; a queued turn compares it across the wait.
     cancels: AtomicU64,
@@ -513,7 +513,9 @@ impl SessionHandle {
         self.inner.shells.clone()
     }
 
-    pub fn pythons(&self) -> Arc<AsyncMutex<PythonMap<String, Arc<AsyncMutex<Repl>>>>> {
+    pub fn pythons(
+        &self,
+    ) -> Arc<AsyncMutex<PythonMap<String, Arc<crate::tools::interpreter::Interpreter>>>> {
         self.inner.pythons.clone()
     }
 

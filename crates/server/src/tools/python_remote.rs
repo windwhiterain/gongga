@@ -33,6 +33,8 @@ const PROBE: &str = "1 + 1";
 pub struct RemoteRepl {
     /// Taken by `kill`, so a stopped interpreter cannot be written to again.
     handle: Option<ShellHandle>,
+    /// The same shell, stoppable while a call holds this one.
+    control: crate::remote::transport::ShellControl,
     cwd: PathBuf,
     /// Standard output the endpoint has sent and this side has not consumed.
     line: Vec<u8>,
@@ -62,8 +64,10 @@ impl RemoteRepl {
                 missing.push(format!("{program}: it did not start"));
                 continue;
             };
+            let control = handle.control();
             let mut repl = Self {
                 pid: Some(handle.pid),
+                control,
                 handle: Some(handle),
                 cwd: cwd.to_path_buf(),
                 line: Vec::new(),
@@ -118,6 +122,16 @@ impl RemoteRepl {
             ),
             Ok(reply) => reply,
         }
+    }
+
+    /// How this interpreter is stopped without taking its lock.
+    pub fn control(&self) -> crate::tools::interpreter::Control {
+        crate::tools::interpreter::Control::Remote(self.control.clone())
+    }
+
+    /// Runs one call with no clock, for a background job.
+    pub async fn run_untimed(&mut self, request: &serde_json::Value) -> anyhow::Result<Reply> {
+        self.ask(request).await
     }
 
     /// One request and its answer, with no clock.
@@ -208,7 +222,7 @@ impl RemoteRepl {
         }
     }
 
-    /// Ends the interpreter; the next call starts a fresh namespace.
+    /// Ends the interpreter from inside its own lock, when the caller holds it.
     pub async fn kill(&mut self) {
         if let Some(handle) = self.handle.take() {
             let _ = handle.close().await;

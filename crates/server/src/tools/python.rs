@@ -128,7 +128,9 @@ for line in sys.stdin:
 
 /// One live interpreter, started in the session's directory.
 pub struct PythonRepl {
-    child: Child,
+    /// Behind its own lock, so stopping this interpreter never waits for the call
+    /// that is running in it.
+    child: Arc<AsyncMutex<Child>>,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     program: PathBuf,
@@ -158,7 +160,7 @@ impl PythonRepl {
         let stdin = child.stdin.take().expect("stdin piped");
         let stdout = BufReader::new(child.stdout.take().expect("stdout piped"));
         Ok(Self {
-            child,
+            child: Arc::new(AsyncMutex::new(child)),
             stdin,
             stdout,
             program,
@@ -166,8 +168,13 @@ impl PythonRepl {
         })
     }
 
+    pub fn control(&self) -> crate::tools::interpreter::Control {
+        crate::tools::interpreter::Control::Local(self.child.clone())
+    }
+
     pub fn pid(&self) -> Option<u32> {
-        self.child.id()
+        let child = self.child.try_lock();
+        child.ok().and_then(|child| child.id())
     }
 
     pub fn program(&self) -> &Path {
@@ -184,20 +191,7 @@ impl PythonRepl {
         request: &Value,
         timeout: Duration,
     ) -> anyhow::Result<Reply> {
-        let request = request.to_string();
-        self.stdin
-            .write_all(request.as_bytes())
-            .await
-            .map_err(|e| anyhow::anyhow!("writing to the Python driver: {e}"))?;
-        self.stdin
-            .write_all(b"\n")
-            .await
-            .map_err(|e| anyhow::anyhow!("writing to the Python driver: {e}"))?;
-        self.stdin
-            .flush()
-            .await
-            .map_err(|e| anyhow::anyhow!("writing to the Python driver: {e}"))?;
-
+        self.send(request).await?;
         let mut line = String::new();
         let read = tokio::time::timeout(timeout, self.stdout.read_line(&mut line)).await;
         match read {
@@ -215,10 +209,40 @@ impl PythonRepl {
         }
     }
 
+    /// Writes one request line to the driver.
+    async fn send(&mut self, request: &Value) -> anyhow::Result<()> {
+        let request = request.to_string();
+        self.stdin
+            .write_all(request.as_bytes())
+            .await
+            .map_err(|e| anyhow::anyhow!("writing to the Python driver: {e}"))?;
+        self.stdin
+            .write_all(b"\n")
+            .await
+            .map_err(|e| anyhow::anyhow!("writing to the Python driver: {e}"))?;
+        self.stdin
+            .flush()
+            .await
+            .map_err(|e| anyhow::anyhow!("writing to the Python driver: {e}"))
+    }
+
+    /// Runs one call with no clock: a background job is stopped, never timed out.
+    pub async fn run_untimed(&mut self, request: &Value) -> anyhow::Result<Reply> {
+        self.send(request).await?;
+        let mut line = String::new();
+        match self.stdout.read_line(&mut line).await {
+            Ok(0) => anyhow::bail!("the Python interpreter exited"),
+            Ok(_) => Ok(serde_json::from_str::<Reply>(line.trim())
+                .map_err(|e| anyhow::anyhow!("a malformed Python reply: {e}"))?),
+            Err(e) => anyhow::bail!("reading from the Python driver: {e}"),
+        }
+    }
+
     /// Ends the interpreter; the next call starts a fresh namespace.
     pub async fn kill(&mut self) {
-        let _ = self.child.kill().await;
-        let _ = self.child.wait().await;
+        let mut child = self.child.lock().await;
+        let _ = child.kill().await;
+        let _ = child.wait().await;
     }
 }
 
@@ -273,10 +297,19 @@ impl Repl {
         }
     }
 
-    pub async fn kill(&mut self) {
+    /// Runs one call with no clock, for a background job.
+    pub async fn run_untimed(&mut self, request: &Value) -> anyhow::Result<Reply> {
         match self {
-            Repl::Local(repl) => repl.kill().await,
-            Repl::Remote(repl) => repl.kill().await,
+            Repl::Local(repl) => repl.run_untimed(request).await,
+            Repl::Remote(repl) => repl.run_untimed(request).await,
+        }
+    }
+
+    /// How an interpreter is stopped without taking its lock.
+    pub fn control(&self) -> crate::tools::interpreter::Control {
+        match self {
+            Repl::Local(repl) => repl.control(),
+            Repl::Remote(repl) => repl.control(),
         }
     }
 }
@@ -290,6 +323,13 @@ pub struct Reply {
     pub stderr: String,
 }
 
+impl Reply {
+    /// The status a background notice reports: a block either finished or raised.
+    pub fn code(&self) -> Option<i32> {
+        Some(if self.ok { 0 } else { 1 })
+    }
+}
+
 fn detect_python() -> anyhow::Result<PathBuf> {
     for candidate in ["python3", "python"] {
         if let Ok(path) = which::which(candidate) {
@@ -299,16 +339,13 @@ fn detect_python() -> anyhow::Result<PathBuf> {
     anyhow::bail!("no python3 or python on PATH; set GONGGA_PYTHON or [tools.python] program")
 }
 
-const DESCRIPTION: &str = "Run Python in a persistent interpreter on this machine. \
-    Each `name` is one interpreter: imports, variables, functions and open files \
-    survive between calls to that name, and only `restart`, `del_python`, or a \
-    timeout replaces it. Omit `name` for `default`. The interpreter is the \
-    environment's own python, with no shell in between, so write the program as \
-    ordinary Python and use `open()` / `Path.write_text()` for files; there is no \
-    quoting to escape. Standard output and standard error are returned; an exception \
-    is returned as a traceback and the namespace keeps the state it had reached. Use \
-    `timeout_ms` for a long computation, and `list_python` / `del_python` to see and \
-    end interpreters the way `list_bash` / `del_bash` do.";
+const DESCRIPTION: &str = "`bash` with Python instead of a shell, on this machine. \
+    Everything `bash` says about `name`, `description`, `timeout_ms` and `background` \
+    holds here unchanged; `code` takes the place of `command`, and `restart` stops this \
+    name's interpreter so the call starts a fresh namespace. State survives between \
+    calls to one name because it is one process, so write ordinary Python -- there is \
+    no shell quoting to escape. Standard output and standard error come back; an \
+    exception comes back as a traceback and the namespace keeps what it had reached.";
 
 /// What `remote_python` says it is: the same interpreter, on the session's peer.
 ///
@@ -316,16 +353,10 @@ const DESCRIPTION: &str = "Run Python in a persistent interpreter on this machin
 ///
 /// It names the machine a path belongs to, because the one thing a model gets wrong
 /// here is writing to this machine's file while meaning the peer's.
-const REMOTE_DESCRIPTION: &str = "Run Python in a persistent interpreter on this \
-    session's remote endpoint -- the machine `set_session --remote` named. Same \
-    `code`, `name`, `timeout_ms` and `restart` as `python`, and the same name space: a \
-    name the other machine already holds is refused rather than quietly becoming a \
-    second interpreter. State survives between calls to one name because it is one \
-    process on that machine. Paths \
-    are that machine's: `open()` in this interpreter reads and writes the peer's files, \
-    while `read_file`, `write_file` and `replace` are this machine's. Standard output \
-    and standard error come back the same way, and `list_python` / `del_python` cover \
-    both machines and say which one an interpreter is on.";
+const REMOTE_DESCRIPTION: &str = "`python` on the session's remote endpoint, exactly \
+    as `remote_bash` is `bash`: same arguments, same name space, same results. Paths are \
+    that machine's, so `open()` here reads and writes the peer's files -- while \
+    `read_file`, `write_file` and `replace` stay this machine's.";
 
 impl PythonTool {
     /// Starts one interpreter on this tool's machine.
@@ -420,6 +451,12 @@ impl Tool for PythonTool {
                     "type": "boolean",
                     "description": "Stop this name's current interpreter and start a fresh \
                                      one for this call, discarding its namespace."
+                },
+                "background": {
+                    "type": "boolean",
+                    "description": "Start the call and return at once, as `bash`'s \
+                                    `background` does: `check_python` collects what it \
+                                    printed, and this session is told when it ends."
                 }
             },
             "required": ["code"]
@@ -448,6 +485,7 @@ impl Tool for PythonTool {
                 .map(Duration::from_millis)
                 .unwrap_or(self.timeout);
             let restart = args["restart"].as_bool().unwrap_or(false);
+            let background = args["background"].as_bool().unwrap_or(false);
             let description = args
                 .get("description")
                 .and_then(|v| v.as_str())
@@ -457,19 +495,29 @@ impl Tool for PythonTool {
             if restart {
                 let old = ctx.pythons.lock().await.remove(name);
                 if let Some(old) = old {
-                    old.lock().await.kill().await;
+                    old.kill().await;
                 }
             }
             // A name is one interpreter: the other tool's is refused, not borrowed.
             let existing = ctx.pythons.lock().await.get(name).cloned();
             if let Some(handle) = existing {
-                let owner = handle.lock().await.machine();
+                // Read without the lock: a busy interpreter holds it for the whole call.
+                let owner = handle.facts().machine;
                 if owner != self.machine {
                     return ToolOutcome::err(format!(
                         "`{name}` is already a Python on {}: a name is one interpreter, and \
                          `python` and `remote_python` share the names. Name this one \
                          otherwise, or `del_python name_regex: \"^{name}$\"` first.",
                         owner.named()
+                    ));
+                }
+                // Nothing here may read the answer to a call it did not make.
+                if handle.jobs() > 0 {
+                    return ToolOutcome::err(format!(
+                        "`{name}` is running a background call, and this interpreter answers \
+                         one call at a time: a foreground call now would read that one's \
+                         answer. Read it with `check_python` (or `wait_ms`), or use another \
+                         name."
                     ));
                 }
             }
@@ -487,36 +535,41 @@ impl Tool for PythonTool {
                                 ));
                             }
                         };
-                        let handle = Arc::new(AsyncMutex::new(repl));
+                        let control = repl.control();
+                        let facts = crate::tools::interpreter::Facts {
+                            machine: repl.machine(),
+                            pid: repl.pid(),
+                            program: repl.program(),
+                            cwd: repl.cwd().to_path_buf(),
+                        };
+                        let handle =
+                            crate::tools::interpreter::Interpreter::new(repl, control, facts);
                         pythons.insert(name.to_string(), handle.clone());
                         handle
                     }
                 }
             };
 
-            let mut repl = handle.lock().await;
-            match repl.run_request(&json!({ "code": code }), timeout).await {
+            let request = json!({ "code": code });
+            if background {
+                let notify = crate::tools::python_notifier(ctx, self.name(), name);
+                handle.spawn_background(request, Some(notify));
+                return ToolOutcome::ok(format!(
+                    "started a background {} call in `{name}`; run `check_python` to collect \
+                     what it printed, and this session is told when it ends",
+                    self.name()
+                ));
+            }
+            let mut repl = handle.inner.lock().await;
+            match repl.run_request(&request, timeout).await {
                 Ok(reply) => {
-                    let mut text = reply.stdout;
-                    if !reply.stderr.is_empty() {
-                        if !text.is_empty() && !text.ends_with('\n') {
-                            text.push('\n');
-                        }
-                        text.push_str(&reply.stderr);
-                    }
-                    if !reply.ok && !text.contains("Traceback") {
-                        text.push_str("\n(the block raised)");
-                    }
+                    let text = crate::tools::interpreter::reply_text(&reply);
                     let text =
                         ctx.cap(self.machine, name, description, text, self.max_output_chars);
-                    ToolOutcome::ok(if text.is_empty() {
-                        "(no output)".to_string()
-                    } else {
-                        text
-                    })
+                    ToolOutcome::ok(text)
                 }
                 Err(e) => {
-                    repl.kill().await;
+                    handle.kill().await;
                     drop(repl);
                     let mut pythons = ctx.pythons.lock().await;
                     if pythons
@@ -526,11 +579,87 @@ impl Tool for PythonTool {
                         pythons.remove(name);
                     }
                     ToolOutcome::err(format!(
-                        "{e}. Interpreter {name:?} was stopped; the next `python` call to that \
-                         name starts with a fresh namespace."
+                        "{e}. Interpreter {name:?} was stopped; the next `{}` call to that \
+                         name starts with a fresh namespace.",
+                        self.name()
                     ))
                 }
             }
+        })
+    }
+}
+
+/// The collector for interpreters: `check_bash`'s shape, for `python`.
+pub struct CheckPythonTool;
+
+impl Tool for CheckPythonTool {
+    fn name(&self) -> &'static str {
+        "check_python"
+    }
+
+    fn description(&self) -> &'static str {
+        "What `check_bash` is to a shell, for an interpreter: the output a finished \
+         `python` or `remote_python` background call printed, which reading clears. A name \
+         names one interpreter on whichever machine holds it."
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Interpreter to read. Defaults to `default`."
+                },
+                "wait_ms": {
+                    "type": "integer",
+                    "description": "If this interpreter has background calls running, wait \
+                                    up to this many milliseconds for them to finish before \
+                                    reading. A timeout returns what is there and leaves them \
+                                    running. Defaults to 0."
+                }
+            },
+            "additionalProperties": false
+        })
+    }
+
+    fn run<'a>(
+        &'a self,
+        args: Value,
+        ctx: &'a ToolContext,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            let name = args["name"]
+                .as_str()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .unwrap_or(DEFAULT_NAME);
+            let Some(handle) = ctx.pythons.lock().await.get(name).cloned() else {
+                return ToolOutcome::err(format!(
+                    "no interpreter named {name}; `list_python` says which names exist"
+                ));
+            };
+            let wait = args["wait_ms"]
+                .as_u64()
+                .map(Duration::from_millis)
+                .unwrap_or(Duration::ZERO)
+                .min(Duration::from_secs(600));
+            if !wait.is_zero() {
+                handle.wait_idle(wait, &ctx.cancel).await;
+            }
+            let text = handle.take_pending();
+            let jobs = handle.jobs();
+            let where_it_is = format!("{name} on {}", handle.facts().machine.label());
+            if text.is_empty() {
+                return ToolOutcome::ok(if jobs == 0 {
+                    format!("{where_it_is}: no unread output")
+                } else {
+                    format!("{where_it_is}: {jobs} call(s) still running, no output yet")
+                });
+            }
+            ToolOutcome::ok(format!(
+                "{text}\n[{where_it_is}: {jobs} call(s) still running]"
+            ))
         })
     }
 }
@@ -543,11 +672,9 @@ impl Tool for DelPythonTool {
     }
 
     fn description(&self) -> &'static str {
-        "Delete the Python interpreters of this session whose name matches a regex. \
-         The process is stopped; naming it again starts a fresh interpreter in the \
-         session's working directory, with no variables, imports or open files from \
-         before. Use it when an interpreter is wedged or polluted, and to clean up \
-         names a long session invented."
+        "What `del_bash` is to a shell: the interpreters of this session whose name \
+         matches a regex are stopped, and naming one again starts fresh -- no variables, \
+         imports or open files from before, and any call it was running is gone with it."
     }
 
     fn parameters(&self) -> Value {
@@ -588,7 +715,7 @@ impl Tool for DelPythonTool {
                     .filter(|name| regex.is_match(name))
                     .cloned()
                     .collect();
-                let handles: Vec<Arc<AsyncMutex<Repl>>> = names
+                let handles: Vec<Arc<crate::tools::interpreter::Interpreter>> = names
                     .iter()
                     .filter_map(|name| pythons.remove(name))
                     .collect();
@@ -598,7 +725,8 @@ impl Tool for DelPythonTool {
                 return ToolOutcome::ok(format!("no python matches {pattern:?}"));
             }
             for handle in handles {
-                handle.lock().await.kill().await;
+                // Stopped without its lock: a name may be busy with a background call.
+                handle.kill().await;
             }
             ToolOutcome::ok(format!("discarded python(s) {}", names.join(", ")))
         })
@@ -613,10 +741,9 @@ impl Tool for ListPythonTool {
     }
 
     fn description(&self) -> &'static str {
-        "List the Python interpreters of this session: their names, the machine each \
-         runs on, pids, the program each was started from, and the directory each is \
-         standing in. `name_regex` narrows the answer to the names that match, which is \
-         how one name's state is asked about."
+        "What `list_bash` is to a shell: each interpreter's name, the machine it runs \
+         on, pid, program, directory, running calls and whether anything unread is \
+         waiting. `name_regex` narrows it."
     }
 
     fn parameters(&self) -> Value {
@@ -655,7 +782,7 @@ impl Tool for ListPythonTool {
                     }
                 },
             };
-            let handles: Vec<(String, Arc<AsyncMutex<Repl>>)> = {
+            let handles: Vec<(String, Arc<crate::tools::interpreter::Interpreter>)> = {
                 let pythons = ctx.pythons.lock().await;
                 pythons
                     .iter()
@@ -671,13 +798,16 @@ impl Tool for ListPythonTool {
             }
             let mut rows = Vec::new();
             for (name, handle) in handles {
-                let repl = handle.lock().await;
+                // Nothing here takes the interpreter's lock: it may be mid-call.
+                let facts = handle.facts();
                 rows.push(json!({
                     "name": name,
-                    "machine": repl.machine().label(),
-                    "pid": repl.pid(),
-                    "program": repl.program(),
-                    "cwd": repl.cwd().display().to_string(),
+                    "machine": facts.machine.label(),
+                    "pid": facts.pid,
+                    "program": facts.program,
+                    "cwd": facts.cwd.display().to_string(),
+                    "jobs": handle.jobs(),
+                    "unread": !handle.take_pending().is_empty(),
                 }));
             }
             ToolOutcome::ok(

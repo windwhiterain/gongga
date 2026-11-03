@@ -18,6 +18,20 @@ index; `with_python` adds the persistent interpreter and the three file verbs
 described in `server-tools-python.md`; `check_bash` carries the optional wait,
 so there is no `wait_bash`.
 
+## Descriptions point at `bash` instead of repeating it
+
+Every tool's description rides every request, so a sentence said twice is paid on
+every turn. The non-local tools therefore state only their difference: `remote_bash`
+is `bash` on the peer with two things not offered, `python` is `bash` with `code` in
+place of `command`, `remote_python` is `python` as `remote_bash` is `bash`, and
+`check_python` / `del_python` / `list_python` name their shell counterparts in one
+clause. Measured: the four sentences that describe the two machines went from 3391 to
+2269 characters, with `check_python` added rather than dropped.
+
+The trade is a reference the model must resolve across the tool list. It can, because
+every tool is visible in the same request; what it cannot do is follow a pointer into
+a note, so no description defers to prose that is not itself a tool.
+
 ## ToolContext::detached
 
 Deliberately not part of a shell: a detached job outlives its shell, its

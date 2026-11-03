@@ -24,6 +24,7 @@ use crate::tools::detached::DetachedRegistry;
 pub mod bash;
 pub mod detached;
 pub mod index_skill;
+pub mod interpreter;
 #[cfg(windows)]
 pub mod job;
 pub mod python;
@@ -39,11 +40,8 @@ pub struct ToolContext {
     /// on its remote. See `crate::session::Shells`.
     pub shells: Arc<StdMutex<Shells>>,
     /// The session's interpreters, named like shells: one name, one interpreter.
-    pub pythons: Arc<
-        tokio::sync::Mutex<
-            std::collections::HashMap<String, Arc<tokio::sync::Mutex<python::Repl>>>,
-        >,
-    >,
+    pub pythons:
+        Arc<tokio::sync::Mutex<std::collections::HashMap<String, Arc<interpreter::Interpreter>>>>,
     /// The connection this session's references are read through, when its
     /// directory is on a remote.
     pub reader: Option<Arc<crate::remote::Reader>>,
@@ -266,6 +264,7 @@ impl ToolRegistry {
                 Box::new(DelBashTool),
                 Box::new(ListBashTool),
                 Box::new(index_skill::IndexSkillTool),
+                Box::new(python::CheckPythonTool),
                 Box::new(python::DelPythonTool),
                 Box::new(python::ListPythonTool),
             ],
@@ -473,10 +472,32 @@ fn json_type(value: &Value) -> &'static str {
 /// an idle one is woken for it (`commands::nudge_inboxes`). See
 /// `docs/notes/server-tools-mod.md`.
 fn background_notifier(ctx: &ToolContext, shell: &str) -> bash::BackgroundNotifier {
+    let what = format!("in shell `{shell}`");
+    let where_to_read = format!("`check_bash` with name `{shell}` collects it");
+    notice_background_end(ctx, what, where_to_read)
+}
+
+/// The same notice for an interpreter.
+fn python_notifier(ctx: &ToolContext, tool: &str, name: &str) -> bash::BackgroundNotifier {
+    let what = format!("with `{tool}` in `{name}`");
+    let where_to_read = format!("`check_python` with name `{name}` collects it");
+    notice_background_end(ctx, what, where_to_read)
+}
+
+/// One notice, whichever tool started the work.
+///
+/// # Invariant
+///
+/// Queued as an `inject` marked `background`, and never raised while the session is
+/// closing or gone: this is the server speaking, and a deleted session owes nothing.
+fn notice_background_end(
+    ctx: &ToolContext,
+    what: String,
+    where_to_read: String,
+) -> bash::BackgroundNotifier {
     let store = ctx.store.clone();
     let session = ctx.session.clone();
     let closing = ctx.closing.clone();
-    let shell = shell.to_string();
     Arc::new(move |end: bash::BackgroundEnd| {
         let status = match end.code {
             Some(0) => "finished successfully".to_string(),
@@ -487,9 +508,8 @@ fn background_notifier(ctx: &ToolContext, shell: &str) -> bash::BackgroundNotifi
         // How long it ran is the one thing the call that started it could not say.
         let ran = crate::agent::spent(end.ran.as_millis() as u64);
         let message = format!(
-            "The background job {job} you started in shell `{shell}` has {status} after \
-             {ran}. What it printed is in that shell's unread buffer: `check_bash` with \
-             name `{shell}` collects it."
+            "The background job {job} you started {what} has {status} after {ran}. \
+             What it printed is kept until you read it: {where_to_read}."
         );
         // A deleted session owes nothing, and its rows would be stranded.
         if matches!(store.get_session(&session), Ok(None)) {
@@ -507,7 +527,7 @@ fn background_notifier(ctx: &ToolContext, shell: &str) -> bash::BackgroundNotifi
             &json!({"session": session, "message": message, "notice": "background"}),
         ) {
             tracing::warn!(
-                session = %session, shell = %shell, job,
+                session = %session, job,
                 error = %e, "could not notice a finished background job"
             );
         }
@@ -686,19 +706,13 @@ const LOCAL_BASH_DESCRIPTION: &str = "Run a shell command in a persistent Git Ba
      `check_bash`.";
 
 /// What `remote_bash` says it is: the same thing, on the session's remote endpoint.
-const REMOTE_BASH_DESCRIPTION: &str = "Run a shell command in a persistent shell on this \
-     session's remote endpoint -- the machine `set_session --remote` named, over SSH, and \
-     where this session's directory is. Same `name`, `description` and `timeout_ms` as \
-     `bash`, and the same name space: `default` is here when the session's directory is \
-     here, and a name the other machine already holds is refused. `cd`, exports and shell \
-     functions survive between calls because it is one process on that machine. `target` \
-     may be written and names that same machine; it takes no other value, because a \
-     session has one directory on one machine. With `background`, the job runs in that \
-     shell, `check_bash` collects what it printed, and this session is told when it ends. \
-     `detached` is not offered here, because a detached process belongs to this machine's \
-     registry. Paths are that machine's: \
-     a path this machine has is not necessarily a path there. Output is capped; a cut is \
-     not spilled to a file, because the file would be here and the reader is there.";
+const REMOTE_BASH_DESCRIPTION: &str = "`bash` on the session's remote endpoint -- \
+     the machine `set_session --remote` named. Same `command`, `name`, `description`, \
+     `timeout_ms` and `background`, and the same name space: a name the other machine \
+     already holds is refused rather than becoming a second shell. Paths are that \
+     machine's, and output a cut truncates is not spilled to a file. Two things are not \
+     offered here: `detached`, whose process belongs to this machine's registry, and a \
+     `target` that is not this session's peer.";
 
 pub struct BashTool {
     /// Which machine this tool drives. One implementation, two names.
@@ -1157,14 +1171,11 @@ impl Tool for CheckBashTool {
     }
 
     fn description(&self) -> &'static str {
-        "Collect the output a shell has produced but you have not seen yet: \
-         everything printed by commands started with `background`, plus \
-         anything the shell emitted while nobody was reading. Reading it \
-         clears it, so each chunk is returned exactly once. Empty output means \
-         the job has not printed anything yet -- wait and ask again, or set \
-         `wait_ms` and this call waits for the current background jobs. A name \
-         names one shell on whichever machine holds it (`bash` or `remote_bash`), \
-         and the answer says which."
+        "What a shell printed that you have not read: everything its `background` \
+         commands wrote, plus anything it printed while nobody was reading. Reading \
+         clears it, so each chunk comes back once. Empty means nothing yet -- ask \
+         again, or set `wait_ms` to wait for the running jobs. A name is one shell on \
+         whichever machine holds it, and the answer says which."
     }
 
     fn parameters(&self) -> Value {
