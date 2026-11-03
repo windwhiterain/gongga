@@ -23,8 +23,7 @@ all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, l
 
 ## LLM API
 standard OpenAI Response API.
-- images: File API, gated by the roster's modalities.
-- auto recover invalid transcript (only append, no drop).
+- images: File API, gated by - auto recover invalid transcript (only append, no drop).
 
 ### Invarian
 - everything must store and send.
@@ -35,18 +34,23 @@ path, rendered in hierarchy.
 all tool has optional `description` argument.
 
 use `which("bash")` as bash.
-- bash{command, name = "default", background = false, detached = false, time_out = <timeout>}:
+- bash{command, name = "default", background = false, detached = false, time_out = <time_out>}:
   cwd is session's cwd if session has no remote.
-  runs in the persistent shell `name`, or starts a detached bash of that name.
+  runs in the persistent shell `name`
   - key = {session_name, bash_name}.
-  - background bash ended will notice its session.
+  - background bash ended will notice its session, background bash has no timeout.
+- python{code, ...}: mirror bash, persistant REPL.
 - list_bash{name_regex}: list matched bash with the caller session's name in key.
+- list_python{...}: mirror list_bash.
 - check_bash{name = "default", wait_ms = 0}: return bash's output that hasn't been read by the caller session. With `wait_ms > 0` and background jobs still running, wait until they finish or the wait expires, then return the unread output: a timeout leaves the jobs running.
+- check_python{...}: mirror check_bash.
 - del_bash{name_regex}: delete matched bash with the caller sessions' name in key. 
-- remote_bash{command, name, target = session's remote, background = false, time_out = <timeout>}:
+- del_python{...}: mirror del_bash.
+- remote_bash{command, name, target = <session's remote>, background = false, time_out = <time_out>}:
   cwd is session's cwd if session's remote is target.
-  reference the remote skill.
-- wait{time_out = <timeout>}
+  non-meta reference the remote skill.
+- remote_python{code, ...}: mirror remote_bash.
+- wait{time_out = <time_out>}
 
 File tools run through the Python tool's interpreter on the session's machine, so
 file content is a JSON field and never a shell command or Python source:
@@ -130,32 +134,35 @@ for the first user message to a empty session, find all meta references recursiv
 
 ## Cmd
 - server:
-  - `set_session --session (sticky) <name> --model (sticky) <provider/model> [--thinking_effort <level>](initial: highest in supported or default if unkown) [--context_limit <n%>](initial: "70%") [--cwd <path>](initial: ".") [--remote <none|name>](initial: none) [--must_create <bool>](initial: false)`:
+  - `set_session <session>(sticky) <model>(sticky) [--thinking_effort <level>](initial: highest in supported or default if unkown) [--context_limit <n%>](initial: "70%") [--cwd <path>](initial: ".") [--remote <none|name>](initial: none) [--must_create <bool>](initial: false)`:
     - plus `set_sticky_cmd_argument --name session --value <session>`
     - `--must_create true` refuses the command when the session already exists: a caller
       that starts its own session must not join another one's transcript by reusing a name.
-  - `del_session --session <name>`: also delete all bash with the session name in key.
-  - `send_message --session <name> --message <string>`: inject message instantly, turn waiting bash to backgound.
-  - `interrupt_session --session <name>`
+  - `del_session <session>`: also delete all bash with the session name in key.
+  - `send_message <session> <message>`: inject message instantly, turn waiting bash to backgound.
+  - `interrupt_session <session>`
   - `cancel`: not instantly, but finish every task that can't be serialized to data, then store the pending tasks into data, the exit. next start will auto pick up those tasks.  
-  - `subscribe --event <pattern> [--persistant]`:
-    notice the caller session when event pattern matched.
+  - `trigger_event <event>`
+  - `subscribe <subscription> <pattern> [--persistant] [--bash <cmd>] [--python <code>]`:
+    run bash cmd or python code in persistant bash or python interpreter.
+  - `del_subscribe <subscription>`
 - server_script: that registered by external python scripts
-  - `get_messages --session <name> --range <begin:end>`: return the rows in that closed range `range` (negative number to count from end).
+  - `get_messages <session> [<begin>]:[<end>]`: return the items in closed range <begin>:<end> (negative number count from end, missing number means boundary).
   - `skill <name> [args...]` | `skill ls` | `skill which <name>` | `skill run <name>`:
     run the entry a skill declares, resolved by the roots above. argv is passed through
     unparsed, the entry's exit code is this command's, and neither needs a server nor a
     runtime -- an entry is a file on this disk. `run` reaches a skill whose own name is
     `ls` or `which`.
 - client:
-  - `set_sticky --name <name> --value <value>`:
-  - `del_sticky --name <name>`
-  - `set_render [--block_size <n>](initial: 8) [--box_edge <n>](initial: 2)`:    - `block_size`: max line count of non-output block, auto scroll.
+  - `set_sticky <type> <value>`:
+  - `del_sticky <type>`
+  - `set_render [--block_size <n>](initial: 8) [--box_edge <n>](initial: 2)`:
+    - `block_size`: max line count of non-output block, auto scroll.
     - `box_edge`: columns at each side of an opened block where the wheel scrolls the
       events instead of the block; the block is drawn there like anywhere else.
-  - `set_render_session --session <name> [--show <bool>]`
+  - `set_render_session <session> true|false`
   - `connect_server [--ip <ip>](default: localhost) --port <port>`
-  - `serve --port <port> [--home <path>](default: "~/.gongga")`
+  - `serve <port> [--home <path>](default: "~/.gongga")`
 
 ## Skill
 a skill is a directory holding `SKILL.md`: `name`, `description`, and what its body needs.
