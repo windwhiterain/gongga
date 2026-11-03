@@ -78,7 +78,12 @@ cleanup() {
 keep=""; [[ "${1:-}" == "--keep" ]] && keep=keep
 trap 'cleanup "$keep"' EXIT
 
+# A home a previous run's server still holds cannot be removed, and the run would
+# then measure that old database with its `probe` rows. Stop instead of measuring it.
+for pid in $(serving_home) "$server_pid"; do alive "$pid" && taskkill //PID "$pid" //T //F >/dev/null 2>&1; done
 rm -rf "$home" "$project" "$log" "$work/subagent-dump.jsonl"
+[[ -f "$home/gongga.db" ]] && hard "a previous run still holds $home"
+
 mkdir -p "$home" "$project" "$project/.agents/skills/late"
 printf 'EARLY file named by the brief.\n' > "$project/early.md"
 printf 'LATE file named by a later message.\n' > "$project/late.md"
