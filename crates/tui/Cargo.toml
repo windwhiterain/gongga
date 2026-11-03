@@ -34,3 +34,5 @@ unicode-width = "0.2"
 # tokenised by whoever started the process.
 shell-words = "1"
 pulldown-cmark = { version = "0.13.6", default-features = false }
+# The toast's script travels as `-EncodedCommand` wants it: UTF-16LE, base64.
+base64 = "0.23"

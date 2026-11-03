@@ -101,6 +101,7 @@ note is a bug.
 | [`tui-input.md`](tui-input.md) | `crates/tui/src/input.rs` |
 | [`tui-log.md`](tui-log.md) | `crates/tui/src/log.rs` |
 | [`tui-markdown.md`](tui-markdown.md) | `crates/tui/src/markdown.rs` |
+| [`tui-notice.md`](tui-notice.md) | `crates/tui/src/notice.rs` |
 | [`tui-panes.md`](tui-panes.md) | `crates/tui/src/panes.rs` |
 | [`tui-render.md`](tui-render.md) | `crates/tui/src/render.rs` |
 | [`tui-table.md`](tui-table.md) | `crates/tui/src/table.rs` |

@@ -597,6 +597,7 @@ fn draw_list(f: &mut Frame, s: &mut Screen, area: Rect) {
 fn status_mark(mark: crate::tree::Mark) -> (&'static str, Style) {
     match mark {
         crate::tree::Mark::Running => ("\u{25cf}", Style::default().fg(Color::Green)),
+        crate::tree::Mark::Stopped => ("\u{25cf}", Style::default().fg(Color::Yellow)),
         crate::tree::Mark::Error => (
             "\u{2715}",
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),

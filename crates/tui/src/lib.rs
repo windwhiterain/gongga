@@ -11,6 +11,7 @@ mod fold;
 mod input;
 mod log;
 mod markdown;
+mod notice;
 mod panes;
 pub mod program;
 mod render;
@@ -628,6 +629,31 @@ impl Tui {
     /// How the events area is divided, as the command layer last said.
     pub fn set_layout(&mut self, layout: &Layout) {
         self.screen.panes.layout(layout);
+        self.dirty = true;
+    }
+
+    /// A session stopped: its turn ended, and the window says so.
+    ///
+    /// # Invariant
+    ///
+    /// The toast is outside the window, and the mark is inside it: a session that
+    /// stops while it is not drawn is the one the operator would not notice.
+    /// See `docs/notes/tui-lib.md`.
+    pub fn stopped(&mut self, session: &str, failed: bool) {
+        if !self.screen.panes.is_shown(session) {
+            self.screen.panes.mark_unseen(session);
+        }
+        let body = if failed {
+            "the turn failed"
+        } else {
+            "the turn ended"
+        };
+        if let Err(e) = crate::notice::toast(session, body) {
+            self.say(
+                LineKind::Error,
+                format!("the toast could not be shown: {e}"),
+            );
+        }
         self.dirty = true;
     }
 

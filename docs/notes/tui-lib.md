@@ -281,6 +281,13 @@ announcement and says so, because the name can come back. The pane and its block
 with the name; the status line and the sticky session are the command layer's, so
 neither is touched here -- a sticky session naming a deleted session scrolls nothing.
 
+## Tui::stopped
+
+A session's turn ended, and the window says so twice: once outside the window, as a
+toast on the desktop (`docs/notes/tui-notice.md`), and once inside it, as the mark of a
+session that stopped while it was not drawn (`docs/notes/tui-panes.md`,
+`docs/notes/tui-tree.md`).
+
 ## Tui::draw — the frame is under a net
 
 Drawing runs on every event, so a panic inside it is not a bug report: it takes the

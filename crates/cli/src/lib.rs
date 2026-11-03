@@ -470,6 +470,14 @@ pub trait Sink {
     /// The session the sticky `session` names: what the keys scroll and what a
     /// click sets. See `docs/notes/cli-lib.md`.
     fn sticky_session(&mut self, _name: Option<&str>) {}
+    /// A session stopped: its turn ended, and it waits for the operator.
+    ///
+    /// # Invariant
+    ///
+    /// Told once per turn that ended, and never for a turn that is still
+    /// running: a front-end that shows it and one that ignores it hear the same
+    /// fact. See `docs/notes/cli-lib.md`.
+    fn stopped(&mut self, _session: &str, _failed: bool) {}
 }
 
 /// The one-shot mode's sink: it prints nothing, but it remembers what went
@@ -944,6 +952,11 @@ impl Client {
                     LineKind::System,
                     &format!("{prefix}{label}{suffix}"),
                 );
+                // A turn that ended is a stop, and a stop is what the window
+                // outside this one is told about.
+                if status != SessionStatus::Running {
+                    sink.stopped(&session, status == SessionStatus::Error);
+                }
                 self.refresh(sink);
             }
             // SPEC's three numbers for a full pane's title: a delta, so a view

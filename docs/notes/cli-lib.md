@@ -104,6 +104,21 @@ The label is kept *out* of the text and printed on the block's top visible row, 
 block that grew past its cap still says what it is. It used to be the block's first
 row, which meant a capped block showed its newest rows and no label at all.
 
+## Sink::stopped
+
+A turn that ended is told to the front-end once, on the same path as every other
+fact: `Event::Status` with a status that is not `running` is a stop, and the sink
+is told the session's name and whether it failed.
+
+It is a hook of its own because a stop is the one fact a window cannot draw: the
+session's own line says "idle" in a window the operator may not be reading. A
+front-end that wants to say so outside its window -- the TUI's toast -- needs the
+fact, not the line that carries it; a front-end that does not care ignores it, and
+the one-shot mode, which prints the events themselves, never hears it.
+
+Told once per turn that ended, and never for a turn that is still running: a
+session that is working has not stopped.
+
 ## Client::handle_response
 
 Who is speaking belongs on that prefix, not in the text: a session tag in the
@@ -345,6 +360,11 @@ The gate was also lopsided, which is how it stayed invisible: it asked
 `Event::session`, and a `cmd` or a `cmd_result` answers `None` there -- its window is
 the session its *arguments* name. So a hidden session kept the operator's command
 lines and every answer to them, and lost exactly the conversation in between.
+
+One event is more than a line: a `Status` that is not `running` is a stop, and it
+reaches `Sink::stopped` as well (see `Sink::stopped` above). What a hidden session did
+while the operator was not looking is exactly what the operator cannot read from the
+window, so the fact travels on its own.
 
 `run_once` is on this path too, and needs nothing extra: the sink it hands over draws
 nothing, and which events reach a pipe is `prints`, decided after this.

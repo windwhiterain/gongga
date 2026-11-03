@@ -24,6 +24,8 @@ pub enum Mark {
     Idle,
     /// At least one session under this row is working.
     Running,
+    /// A session under this row stopped while it was not shown.
+    Stopped,
     /// At least one session under this row stopped with an error.
     Error,
 }
@@ -107,12 +109,12 @@ struct Node {
 /// Siblings stand in the announcement's order, which is the order a name was first
 /// seen: a group therefore appears where its first session is, and never elsewhere.
 /// A folded name keeps its rows, so unfolding it costs no data.
-pub fn rows(listed: &[Listed], folded: &BTreeSet<String>) -> Vec<Row> {
+pub fn rows(listed: &[Listed], folded: &BTreeSet<String>, unseen: &BTreeSet<String>) -> Vec<Row> {
     let mut nodes: Vec<Node> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut roots: Vec<usize> = Vec::new();
     for listed in listed {
-        let mark = Mark::of(&listed.status);
+        let mark = mark_of(listed, unseen);
         let mut prefix = String::new();
         let mut parent: Option<usize> = None;
         for (depth, segment) in listed.name.split('/').enumerate() {
@@ -169,4 +171,18 @@ pub fn rows(listed: &[Listed], folded: &BTreeSet<String>) -> Vec<Row> {
         stack.extend(node.children.iter().rev().copied());
     }
     rows
+}
+
+/// The mark of one session: what it is doing, or that it stopped unseen.
+///
+/// # Invariant
+///
+/// An error keeps its own mark: the failure is the stronger fact, and it is
+/// already the loudest mark in the column. See `docs/notes/tui-tree.md`.
+fn mark_of(listed: &Listed, unseen: &BTreeSet<String>) -> Mark {
+    let mark = Mark::of(&listed.status);
+    if mark == Mark::Idle && unseen.contains(&listed.name) {
+        return Mark::Stopped;
+    }
+    mark
 }

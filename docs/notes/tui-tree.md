@@ -23,9 +23,15 @@ list lying about how many sessions exist, and dropping either would make one of 
 two gestures unreachable.
 
 `mark` is the strongest status of everything under the row, and `Mark`'s order is
-that strength: error, running, idle. A folded group therefore still says whether
-something inside it needs attention -- the one thing a fold is expected to hide and
-must not.
+that strength: error, stopped, running, idle. A folded group therefore still says
+whether something inside it needs attention -- the one thing a fold is expected to
+hide and must not.
+
+`stopped` sits below `error` and above `running`: it is a session that finished while
+the operator was not looking at it, which asks for a look, but it is not a failure and
+it is not work in progress. A group that holds both a running session and one that
+stopped unseen says `stopped`, because the one that needs the operator is the one that
+is done.
 
 ## marker, marker_column, indent
 
@@ -57,6 +63,11 @@ enclosing group.
 
 The projection: one pass over the announcement, building nodes keyed by full name,
 then a depth-first walk that skips a folded node's children.
+
+The unseen set is the third thing the projection reads: a session that stopped while it
+was not drawn is marked `stopped` instead of `idle`, so the list says that something
+finished where the operator was not looking. An error keeps its own mark -- the failure
+is the stronger fact, and it is already the loudest mark in the column (`mark_of`).
 
 Siblings keep the announcement's order -- newest session first, as the store lists
 them -- which makes a group appear where its first session is. The alternative,

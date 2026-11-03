@@ -85,6 +85,10 @@ impl Sink for TuiSink<'_> {
     fn sticky_session(&mut self, name: Option<&str>) {
         self.0.set_sticky_session(name);
     }
+
+    fn stopped(&mut self, session: &str, failed: bool) {
+        self.0.stopped(session, failed);
+    }
 }
 
 impl TuiSink<'_> {

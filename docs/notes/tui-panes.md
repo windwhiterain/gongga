@@ -107,6 +107,20 @@ would be "the marker does nothing".
 session: `session_at_row` answers with a name, and only the row knows whether the name
 is a session or just a group.
 
+## Panes::is_shown and Panes::mark_unseen
+
+Two questions about one session: is it drawn beside the list, and did it stop while it
+was not. The first is the layout's own answer -- a session with a `Shown` pane is
+drawn, and `Shown` is what `set_render_session` writes -- and the second is what the
+window remembers, because the stop is told once and the layout that follows says
+nothing about it.
+
+`unseen` is a view, like `folded`: a name stays until the session is shown again, and a
+name the server has forgotten stays as one string that matches nothing. It is cleared in
+`layout`, where the announcement says which sessions are drawn now -- a session that is
+shown again is seen again, and its mark goes back to what the session is doing. The rows
+are rebuilt there too, because the mark is drawn from them and not beside them (`tui-tree.md`).
+
 ## Panes::forget
 
 The one thing here that empties the log, and it is not a layout change: the command

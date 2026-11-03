@@ -228,12 +228,12 @@ click: a shown session is still a row, because that row is where it is hidden ag
 
 Two facts, one column each, and each look means one of them:
 
-- **the status mark**: `●` running (green), `✕` error (red, bold), `○` anything else
-  (chrome) -- `status_mark`. It is what the announcement says the session is doing,
-  which used to be announced and dropped, so "is it running?" could only be answered
-  by reading that session's events. A group row carries the strongest mark under it
-  (`tree::Mark`, error over running over idle), so a folded group still says whether
-  something inside it needs attention.
+- **the status mark**: `●` running (green), `●` stopped unseen (yellow), `✕` error (red,
+  bold), `○` anything else (chrome) -- `status_mark`. It is what the announcement says
+  the session is doing, which used to be announced and dropped, so "is it running?"
+  could only be answered by reading that session's events. A group row carries the
+  strongest mark under it (`tree::Mark`, error over stopped over running over idle), so
+  a folded group still says whether something inside it needs attention.
 - **the name's brightness**: bright when the session has a window beside the list, dim
   when it does not. The right-hand split states the same fact, said again where it is
   clicked.

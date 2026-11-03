@@ -122,6 +122,14 @@ pub struct Panes {
     /// A view, never a deletion: folding a name keeps every block under it, and a
     /// name that is gone leaves its entry here as one string that matches nothing.
     folded: std::collections::BTreeSet<String>,
+    /// The sessions that stopped while they were not shown.
+    ///
+    /// # Invariant
+    ///
+    /// A view, never a deletion: the name stays until the session is shown again,
+    /// and a name that is gone leaves its entry here as one string that matches
+    /// nothing.
+    unseen: std::collections::BTreeSet<String>,
     /// SPEC's `active_quota` row, as the command layer spelled it.
     quota: Option<crate::QuotaRow>,
     /// The windows this frame drew, so the rest can let their bodies go.
@@ -136,6 +144,7 @@ impl Panes {
             listed: Vec::new(),
             list_rows: Vec::new(),
             folded: std::collections::BTreeSet::new(),
+            unseen: std::collections::BTreeSet::new(),
             quota: None,
             drawn: Vec::new(),
         }
@@ -149,6 +158,7 @@ impl Panes {
             listed: Vec::new(),
             list_rows: Vec::new(),
             folded: std::collections::BTreeSet::new(),
+            unseen: std::collections::BTreeSet::new(),
             quota: None,
             drawn: Vec::new(),
         }
@@ -262,7 +272,31 @@ impl Panes {
 
     /// The rows of the list, as the announcement and the folded names make them.
     fn rebuild_rows(&mut self) {
-        self.list_rows = tree::rows(&self.listed, &self.folded);
+        self.list_rows = tree::rows(&self.listed, &self.folded, &self.unseen);
+    }
+
+    /// Whether this session has a window beside the list.
+    ///
+    /// # Invariant
+    ///
+    /// The layout's own answer: a session nobody set is shown, and a session that
+    /// was hidden has no window. See `docs/notes/tui-panes.md`.
+    pub fn is_shown(&self, name: &str) -> bool {
+        self.panes
+            .iter()
+            .any(|pane| pane.kind == Kind::Shown && pane.name == name)
+    }
+
+    /// Says this session stopped while it was not shown, so the list marks it.
+    ///
+    /// # Invariant
+    ///
+    /// The rows are rebuilt here rather than in the frame: the mark is what the
+    /// operator reads, and the click reads the same rows. See `docs/notes/tui-panes.md`.
+    pub fn mark_unseen(&mut self, name: &str) {
+        if self.unseen.insert(name.to_string()) {
+            self.rebuild_rows();
+        }
     }
 
     /// What the announcement says this session is doing, empty when it is not in it.
@@ -282,6 +316,11 @@ impl Panes {
     /// always last of the panes: it is drawn under everything else.
     pub fn layout(&mut self, layout: &Layout) {
         self.listed = layout.listed.clone();
+        // A session that is shown again is seen again: the mark it left goes back
+        // to what the session is doing.
+        let shown: std::collections::BTreeSet<&str> =
+            layout.shown.iter().map(|name| name.as_str()).collect();
+        self.unseen.retain(|name| !shown.contains(name.as_str()));
         self.rebuild_rows();
         self.quota = layout.quota.clone();
         let mut panes = vec![Pane::of("", Kind::List)];
