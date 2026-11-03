@@ -410,15 +410,16 @@ impl Agent {
         });
     }
 
-    /// The prose this session sends, read now and stored when it differs.
+    /// The prose this session sends: stamped once, and the same bytes for ever.
     ///
     /// # Invariant
     ///
-    /// What a request carries is immutable once sent: a row is appended, never
-    /// rewritten, and the row's own facts (the tail) are stamped with the first row
-    /// and replayed from the store after that. So the prose can follow an edited
-    /// template, and the timestamp cannot follow the clock.
-    /// See `docs/notes/server-agent.md`.
+    /// The head is part of the prefix the provider caches, so it is written once and
+    /// read from the store after that -- a template edit, a moved directory, a
+    /// rewritten `AGENTS.md` and a re-planned index all used to re-render it, and
+    /// each one invalidated the whole transcript behind it. What the references say
+    /// is still read every step, but a change is a row appended to the transcript,
+    /// never a head that moves. See `docs/notes/server-agent.md`.
     async fn prompt_in_force(
         &self,
         session: &SessionHandle,
@@ -427,6 +428,9 @@ impl Agent {
         cwd: &std::path::Path,
         source: crate::meta::Source<'_>,
     ) -> anyhow::Result<crate::store::Prompt> {
+        if let Some(kept) = self.store.prompt(id)? {
+            return Ok(kept);
+        }
         // All three "where"s come from the session itself: the name, the placement a
         // move stated, and the peer whose shells are there now.
         let name = session.name();
@@ -434,79 +438,45 @@ impl Agent {
         let placed = placed.as_deref();
         let remote = session.remote_name();
         let remote = remote.as_deref();
-        let stored = self.store.prompt(id)?;
         let prompts = crate::prompts::shared();
         // The session's own name is the one value in the prose: a model asked what it
         // is called has to be able to answer without a tool call.
         let instructions = prompts.system(name);
-        // Where this session belongs: the placement, which only a move changes. A
-        // `cd` moves a shell and not a session, so it is not a rewrite of what was
-        // already sent; a move is, because the map in the prompt would otherwise keep
-        // pointing at a directory the session has left.
         let here = match placed {
             Some(path) => Self::stated(path),
-            None => match &stored {
-                Some(kept) if !kept.cwd.is_empty() => kept.cwd.clone(),
-                _ => Self::stated(cwd),
-            },
+            None => Self::stated(cwd),
         };
         let home = std::path::PathBuf::from(&here);
-        // Where it stands is two facts, and either one moving is a move: a directory
-        // on this machine and the same spelling on a peer are not the same workspace.
-        let moved = stored.as_ref().is_some_and(|kept| {
-            (!kept.cwd.is_empty() && kept.cwd != here) || kept.remote.as_deref() != remote
-        });
-        let tail = match &stored {
-            // A moved session is a new row, and the card says where it now stands: the
-            // old row keeps the old one, which is what "already sent" means.
-            Some(kept) if !moved => kept.tail.clone(),
-            _ => Some(prompts.render(
-                // One shape per fact a card states, because a template has no
-                // conditional: where the workspace is, and whether its path is known.
-                match (remote, here.is_empty()) {
-                    (Some(_), false) => crate::prompts::TAIL_REMOTE,
-                    (Some(_), true) => crate::prompts::TAIL_REMOTE_UNSTATED,
-                    (None, _) => crate::prompts::TAIL,
-                },
-                &[
-                    ("session", name),
-                    ("build", protocol::BUILD),
-                    ("now", &crate::clock::now()),
-                    ("cwd", &here),
-                    ("remote", remote.unwrap_or_default()),
-                ],
-            )),
-        };
-        // Built from what the references say now, so an edited body reaches the model.
+        let tail = Some(prompts.render(
+            // One shape per fact a card states, because a template has no
+            // conditional: where the workspace is, and whether its path is known.
+            match (remote, here.is_empty()) {
+                (Some(_), false) => crate::prompts::TAIL_REMOTE,
+                (Some(_), true) => crate::prompts::TAIL_REMOTE_UNSTATED,
+                (None, _) => crate::prompts::TAIL,
+            },
+            &[
+                ("session", name),
+                ("build", protocol::BUILD),
+                ("now", &crate::clock::now()),
+                ("cwd", &here),
+                ("remote", remote.unwrap_or_default()),
+            ],
+        ));
+        // The index is where the references of the whole conversation stand now, read
+        // and planned exactly once because this is the one request that will carry it.
         let (index, rooted) = match self.index_of(id, name, model, &home, source).await {
             Some((index, rooted)) => (Some(index), rooted),
-            None => match &stored {
-                Some(kept) => (kept.index.clone(), kept.rooted.clone()),
-                None => (None, Vec::new()),
-            },
+            None => (None, Vec::new()),
         };
         let prompt = crate::store::Prompt {
             instructions,
             index,
             tail,
             rooted,
-            // Where the request said the shell stood, which is the stored row's
-            // answer once there is one: a later move is not a rewrite.
-            cwd: here.clone(),
+            cwd: here,
             remote: remote.map(str::to_string),
         };
-        // Only the texts that go on the wire are compared; `cwd` is a record.
-        if let Some(kept) = stored
-            .clone()
-            .filter(|kept| !kept.rewritten_by(&prompt) && !moved)
-        {
-            return Ok(kept);
-        }
-        // Rewritten prose is a real event: the prefix the provider cached is gone
-        // from here, and the ledger will show the miss.
-        if stored.is_some() {
-            tracing::info!(session = %name, "the prompt in force changed: a new row is sent");
-        }
         self.store.append_prompt(id, &prompt)?;
         Ok(prompt)
     }
@@ -1112,6 +1082,10 @@ impl Agent {
         let started_at = crate::store::now_millis();
         let started = std::time::Instant::now();
         if cancel.is_cancelled() {
+            // A call with no answer is not a shape a provider takes back, and the
+            // request is no longer the place that fills one in: the gap is closed
+            // here, by appending the row that was never written.
+            self.answer_interrupted(id, &call_id, step);
             return true;
         }
         let model = llm.model().to_string();
@@ -1234,6 +1208,28 @@ impl Agent {
             }),
         );
         false
+    }
+
+    /// Answers a call that will never run, so no stored call is left unanswered.
+    ///
+    /// # Invariant
+    ///
+    /// Every `tool_call` row is followed by exactly one `tool_result` row for its
+    /// id. A request used to invent the missing one while writing the body, which
+    /// meant the same transcript could go out as two different byte sequences; the
+    /// missing answer is a row now, written once.
+    fn answer_interrupted(&self, id: i64, call_id: &str, step: u32) {
+        let _ = self.store.append_message(
+            id,
+            "tool_result",
+            &json!({
+                "call_id": call_id,
+                "output": crate::store::interrupted_call(),
+                "images": [],
+                "step": step,
+                "ok": false,
+            }),
+        );
     }
 
     /// Reports a failure, and leaves the reason somewhere it can be read later.
