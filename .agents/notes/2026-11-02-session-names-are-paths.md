@@ -208,3 +208,38 @@ marker folds it away」）；不想要的话，替代方案是只给会话+分�
 踩到的两个小坑，记下来免得下次重付：`messages.content` 是 JSON，��文在里面是 `\uXXXX`，
 按原文子串搜会假失败（要 `json.loads` 再比）；`send_message` 发的第一课会被服务端写回
 learner，所以第二次 handover 的档案行数不等于「我插了几行」。
+
+## 后续四：heir 去掉 `--session`（用户指出）
+
+用户直接问：「heir 脚本不是可以读环境变量获得调用者的 session name 吗，为什么要给参数？」
+
+对。查过三件事：
+
+1. `GONGGA_SESSION` 由 `session.rs::session_env` 注入给**每个会话的每个本地 shell**，
+   detached 作业也有（`detached.rs:341`）。
+2. 远端 shell **拿不到**它（`shell_set.rs`：本地走 `BashShell::spawn(..., &self.env)`，
+   远端走 `RemoteShell::new(endpoint, cwd, door)`，env 丢了），`GONGGA_HOME` 同样丢，
+   所以 heir 在远端 shell 里本来就跑不起来。
+3. 于是 `--session` 的唯一实际作用是让调用方**指定别人**——实测 `heir --session @monitor`
+   真删掉了 harness 收件箱的 2 行。参数本身就是洞。
+
+改法（不是加检查，是把参数删掉）：
+
+- `read` / `heir` 都没有 `--session` 了；`GONGGA_SESSION` 取不到就拒绝。
+- `--mentor` 保留（它命名的是**档案**，不是被读的 transcript），但**必须**在
+  `<caller>/` 之下。结构性规则，不需要知道哪些名字保留：`--mentor @monitor`、
+  `--mentor peer`、`--mentor meh`、`--mentor main`（本身）全拒；
+  而 `@monitor` 培养继承人时 `@monitor/mentor` 合法——它是自己的子节点。
+- `cmd_heir` 里"mentor 不能是自己"的那条死检查删了（现在不可能）。
+
+验证：
+
+- `python ship/skills/heir/test_heir.py`：7 条全绿。`run()` 改成注入 `GONGGA_SESSION`，
+  `test_guards` 现在断言两条新拒绝（缺变量、mentor 在子树外），换掉了原来那条
+  "mentor 与自身同名"的断言。
+- **L2 变异**：撤掉子树检查 → 1 条红；撤掉缺变量检查 → 1 条红；恢复 → 0 条。两条门都真的守着东西。
+- **真进程**（装好的那份 `$HOME/skills/heir/transcript`，`GONGGA_KEY` 显式传、
+  临时 home、内核分配端口）：7/7 PASS —— `--session` 变 unrecognized、缺变量被拒、
+  三个越界 mentor 全拒且 @monitor/peer 一行未少、默认落 `main/mentor`、
+  `@monitor` 落 `@monitor/mentor`。
+- 已发版：`ship` `0c127db` → pin `0c127db`（`ship.sh --check` exit=0），本仓库 `0b46d51` 已 push。
