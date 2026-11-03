@@ -1277,7 +1277,8 @@ impl Store {
         let mut tail: Vec<(String, bool)> = Vec::new();
         for row in rows {
             let (kind, display) = row?;
-            let user = kind == "text" && is_user_row(&display);
+            // The mark is a boundary too: it goes out as a user row.
+            let user = kind == "thinking_mark" || (kind == "text" && is_user_row(&display));
             tail.push((kind, user));
             if user {
                 break;
