@@ -13,9 +13,24 @@ use serde::{Deserialize, Serialize};
 /// # Invariant
 ///
 /// `0` caps nothing, and it is the only way to say so: a front-end never has to
-/// recognise a sentinel mode or a magic mode name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// recognise a sentinel mode or a magic mode name. Any other number is a cap, and
+/// a fresh home starts at [`DEFAULT_BLOCK_SIZE`] -- SPEC's `initial: 8`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlockSize(pub usize);
+
+/// What `set_render --block_size` is before anyone says otherwise.
+///
+/// # Invariant
+///
+/// This is the only default: `cli.toml` absent, unreadable, or holding rubbish all
+/// answer this, so a home never starts with a cap nobody typed.
+pub const DEFAULT_BLOCK_SIZE: usize = 8;
+
+impl Default for BlockSize {
+    fn default() -> Self {
+        Self(DEFAULT_BLOCK_SIZE)
+    }
+}
 
 impl BlockSize {
     /// A size, or the way to name one; there is no silent default.

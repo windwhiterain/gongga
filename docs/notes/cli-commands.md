@@ -86,9 +86,15 @@ both reads and resets depending on how much you type is the kind of thing an ope
 learns the hard way.
 
 An unparseable value is refused with the way to say one, and an unknown value
-already in the file falls back to `0` -- a hand-edited file is not a reason for a
-client to refuse to start. Its own parse failure is different from the file's: the
-first is someone typing, the second is damage.
+already in the file falls back to `DEFAULT_BLOCK_SIZE` -- a hand-edited file is not a
+reason for a client to refuse to start. Its own parse failure is different from the
+file's: the first is someone typing, the second is damage.
+
+`DEFAULT_BLOCK_SIZE` is 8, which is SPEC's `initial: 8` for `set_render --block_size`.
+It is the answer for a home whose `cli.toml` says nothing, holds rubbish, or is not
+there at all, so `BlockSize::default()` and the fallback are one number rather than
+two. Before this it was `0`, which meant a fresh home capped nothing while SPEC said
+8 -- a default nobody could see and no `cli.toml` could change.
 
 ## Sticky::fill
 

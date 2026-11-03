@@ -52,8 +52,10 @@ pub struct LlmClient {
     idle_timeout: Duration,
     /// Extra attempts after a failure or an empty response.
     max_retries: u32,
-    /// First retry delay; doubled per attempt up to [`MAX_RETRY_DELAY`].
+    /// First retry delay; doubled per attempt up to `retry_ceiling`.
     retry_base: Duration,
+    /// The longest one retry delay may grow to.
+    retry_ceiling: Duration,
     /// Provider-side tools, in the provider's own spelling; sent verbatim.
     builtin_tools: Vec<String>,
     /// What the roster says this model takes in; empty is "unstated".
@@ -135,6 +137,7 @@ impl LlmClient {
             idle_timeout: cfg.idle_timeout,
             max_retries: cfg.max_retries,
             retry_base: cfg.retry_base,
+            retry_ceiling: cfg.retry_ceiling,
             builtin_tools: cfg.builtin_tools.clone(),
             modalities: cfg.modalities.clone(),
         })
@@ -215,6 +218,7 @@ impl LlmClient {
         // goes to, and nothing about the model.
         let uploader = self.uploader();
         let retry_base = self.retry_base;
+        let retry_ceiling = self.retry_ceiling;
 
         tokio::spawn(async move {
             let mut attempt: u32 = 0;
@@ -343,7 +347,7 @@ impl LlmClient {
                 }
 
                 attempt += 1;
-                let delay = backoff(retry_base, attempt);
+                let delay = backoff(retry_base, retry_ceiling, attempt);
                 let reason = retry_reason(&failure, completed, produced);
                 tracing::warn!(
                     attempt,
@@ -677,17 +681,19 @@ fn event_produced(event: &LlmEvent) -> bool {
         )
 }
 
-/// Cap on one retry delay. Doubling is meant to wait out a provider's bad
-/// minute, not to add a silent one of our own.
-const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
-
 /// Delay before attempt `attempt` (1-based): the base doubled each time, capped
-/// at [`MAX_RETRY_DELAY`].
-fn backoff(base: Duration, attempt: u32) -> Duration {
+/// at `ceiling`.
+///
+/// # Invariant
+///
+/// Doubling is meant to wait out a provider's bad minute, not to add a silent one
+/// of our own, so the cap arrives from the config rather than from here: a home
+/// that wants to give up sooner says so, and this function has no opinion.
+fn backoff(base: Duration, ceiling: Duration, attempt: u32) -> Duration {
     let factor = 1u32
         .checked_shl(attempt.saturating_sub(1))
         .unwrap_or(u32::MAX);
-    base.saturating_mul(factor).min(MAX_RETRY_DELAY)
+    base.saturating_mul(factor).min(ceiling)
 }
 
 /// Whether another attempt is worth making.

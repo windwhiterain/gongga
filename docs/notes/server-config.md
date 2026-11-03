@@ -25,10 +25,23 @@ Compress once a single request would carry more than this many input tokens.
 Only a fallback for a model whose context window the roster does not state;
 otherwise the threshold is a share of the window itself.
 
-## DEFAULT_KEEP_RECENT
+## DEFAULT_CONTEXT_LIMIT_PERCENT
 
-Messages kept verbatim after a compression: enough that the model still has the
-last few steps in full, not just a paraphrase of them.
+The share of a model's window a `--context_limit` percentage defaults to: SPEC's
+`initial: "70%"`. The rest of the window is headroom for one step's output.
+
+It used to be a constant in `agent.rs`, which made SPEC's initial unreachable: a
+home could not change the one number every session started at. It is
+`[agent] context_limit_percent` now, and both readers of it -- the notice budget and
+the `context_limit` a `session_info` reports -- ask the config, so the title and the
+request cannot disagree about it the way they once did about a level.
+
+## DEFAULT_RETRY_CEILING_MS
+
+The longest one retry delay may grow to. Doubling is meant to wait out a
+provider's bad minute, not to add a silent one of this server's own, so the cap is
+`[model] retry_ceiling_ms` rather than a constant in `llm.rs`: a home that would
+rather give up sooner says so.
 
 ## ModelConfig::provider
 
@@ -77,7 +90,7 @@ at all. `0` is no ceiling: retry until the turn is cancelled.
 
 ## ModelConfig::retry_base
 
-First retry delay; every further attempt doubles it, capped at `MAX_RETRY_DELAY`,
+First retry delay; every further attempt doubles it, up to `retry_ceiling`,
 so a provider having a bad minute is waited out rather than hammered.
 
 ## BashConfig::timeout

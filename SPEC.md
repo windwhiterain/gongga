@@ -31,7 +31,6 @@ standard OpenAI Response API.
 
 ## Session name
 path, rendered in hierarchy.
-
 ## Tool
 all tool has optional `description` argument.
 
@@ -67,7 +66,6 @@ after the system prompt, before the first user message, inject one message with 
 
 ### Invariant
 transcript is append only, transcript that has been sent must not be change.
-
 ## Meta
 preprocess before saving to transcripts.
 - `@image: <path>` , append id to it `@image: <path> (id)`.
@@ -152,8 +150,7 @@ for the first user message to a empty session, find all meta references recursiv
 - client:
   - `set_sticky --name <name> --value <value>`:
   - `del_sticky --name <name>`
-  - `set_render [--block_size <n>](initial: 8) [--box_edge <n>](initial: 2)`:
-    - `block_size`: max line count of non-output block, auto scroll.
+  - `set_render [--block_size <n>](initial: 8) [--box_edge <n>](initial: 2)`:    - `block_size`: max line count of non-output block, auto scroll.
     - `box_edge`: columns at each side of an opened block where the wheel scrolls the
       events instead of the block; the block is drawn there like anywhere else.
   - `set_render_session --session <name> [--show <bool>]`

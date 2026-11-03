@@ -213,22 +213,46 @@ impl Entry {
     ///
     /// # Invariant
     ///
-    /// The answer is only ever a level this model publishes, so a stored level is
-    /// always one its request can carry: `stored` while this model publishes it,
-    /// else this model's default, else nothing. A model publishing no level answers
-    /// `None`: its `reasoning_default` is then a mode, and sending that would be
-    /// this server inventing a value. See `docs/notes/server-providers.md`.
+    /// `stored` while this model publishes it, else the highest it publishes, else
+    /// its `reasoning_default` -- and always a level this model publishes, so a
+    /// stored level is always one its request can carry.
+    /// See `docs/notes/server-providers.md`.
     pub fn level_in_force(&self, stored: Option<&str>) -> Option<String> {
         let published = |level: &str| self.reasoning_levels.iter().any(|known| known == level);
-        match stored {
-            Some(level) if published(level) => Some(level.to_string()),
-            _ => self
-                .reasoning_default
+        if let Some(level) = stored.filter(|level| published(level)) {
+            return Some(level.to_string());
+        }
+        self.highest_published().or_else(|| {
+            self.reasoning_default
                 .as_deref()
                 .filter(|level| published(level))
-                .map(str::to_string),
-        }
+                .map(str::to_string)
+        })
     }
+
+    /// The hardest level this model publishes, when [`LEVELS`] can rank any of them.
+    fn highest_published(&self) -> Option<String> {
+        self.reasoning_levels
+            .iter()
+            .filter_map(|level| Some((rank(level)?, level)))
+            .max_by_key(|(rank, _)| *rank)
+            .map(|(_, level)| level.clone())
+    }
+}
+
+/// How hard an agent is being asked to think, weakest first.
+///
+/// # Invariant
+///
+/// The one order this server knows, so `highest in supported` and the completion
+/// list cannot disagree. A roster entry is free to publish a spelling of its own
+/// (`on`, `off`): [`rank`] then answers `None` rather than inventing a position,
+/// and nothing is capped on that model's behalf.
+pub const LEVELS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/// Where `level` sits in [`LEVELS`], or `None` for a spelling that is not a rung.
+pub fn rank(level: &str) -> Option<usize> {
+    LEVELS.iter().position(|known| *known == level)
 }
 
 /// An [`Entry`] plus the key that resolved for it.

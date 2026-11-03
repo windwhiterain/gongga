@@ -305,6 +305,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             cache_ttl_ms: (cfg.agent.cache_ttl_secs > 0)
                 .then(|| cfg.agent.cache_ttl_secs.saturating_mul(1_000)),
             index_change_tolerance: cfg.agent.index_change_tolerance,
+            context_limit_percent: cfg.agent.context_limit_percent,
             output_dir: output_dir.clone(),
             detached: detached.clone(),
         }),
