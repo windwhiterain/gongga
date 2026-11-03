@@ -176,8 +176,8 @@ impl Agent {
 
         // No step ceiling: it ends on a stop, a cancel or a failure, and every break sets it.
         let mut step: u32 = 0;
-        // Whether this turn has already answered a refusal with a row.
-        let mut repaired = false;
+        // The step whose refusal was already answered with a row.
+        let mut repaired: Option<u32> = None;
 
         let outcome = loop {
             // A `cancel` ends the turn here, where it can be stored whole.
@@ -232,8 +232,11 @@ impl Agent {
                 Ok(StepResult::RanTools) => {}
                 Ok(StepResult::Stopped) => break (TurnOutcome::Cancelled, step),
                 // A refusal a row can answer is answered once, then asked again.
-                Err(e) if !repaired && crate::llm::thinking_refusal(&format!("{e:#}")) => {
-                    repaired = true;
+                Err(e)
+                    if repaired != Some(step)
+                        && crate::llm::thinking_refusal(&format!("{e:#}")) =>
+                {
+                    repaired = Some(step);
                     self.append_thinking_mark(id, &name);
                     continue;
                 }
