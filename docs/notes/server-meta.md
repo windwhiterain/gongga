@@ -6,12 +6,13 @@ something different:
 | written | becomes |
 | --- | --- |
 | `@image: <path>` | an attachment: the reference leaves the text, the picture rides the row |
-| `@skill: <name>` | the metadata of that skill: its description and where its `SKILL.md` is |
+| `@skill: <name>` | its spelling kept, with the `SKILL.md` it names: `@skill: <name> (<path>)` |
 | `@file: <path>` | nothing: a mention, left exactly as written |
 
-The third is the point of having a spelling at all. Without it, `@file: x` would
-have to be guessed at, and a message about a picture would attach a picture the
-user only meant to talk about. The prefix decides, not the file's extension.
+Keeping the spelling is what makes the index work, and it is why `@file:` is left
+alone entirely: without a spelling to match on, `@file: x` would have to be guessed
+at, and a message about a picture would attach a picture the user only meant to talk
+about. The prefix decides, not the file's extension.
 
 ## indexed on the first turn: the root set
 
@@ -25,8 +26,9 @@ literal spelling is the key into the index.
 The reason is the prefix cache. Whatever is in the system instructions is charged once
 and then reused by every later request of that conversation; whatever is inline in a
 message is re-sent as part of the transcript from that point on. A skill body is the
-one thing whose size makes that difference matter, and SPEC already asks for the body
-(`replaced as skill content with wrapper`) rather than a line of metadata.
+one thing whose size makes that difference matter: SPEC asks for the metadata to be
+appended in place (`append path metadata to it`) and for the body to ride the index,
+so `@skill:` expands to a pointer rather than to prose.
 
 ## the rules file is a root, not a message
 
@@ -122,7 +124,7 @@ for the three kinds. Measured against a fake provider (`.dev/index-reach/probe.s
 | named in | `@file:` | `@skill:` |
 | --- | --- | --- |
 | the session's first user message | in the index, mention stays literal | in the index, mention stays literal |
-| a later message | in the index from the next rebuild on (one new prompt row) | expanded inline at delivery, so it is never in the index |
+| a later message | in the index from the next rebuild on (one new prompt row) | the same: the mention keeps its spelling, so the next rebuild reads the body in |
 | the `Context notice`, before it is even delivered | -- the queue is read too, so its `@skill:` joins at the next rebuild | same |
 
 One more row, because skills name each other: a root's own mentions are walked, so a
@@ -130,10 +132,11 @@ first message naming `@skill:chain` whose body says `@skill:leaf` carries both b
 That is what lets the shipped chapter `ship/skills/prefix-cache` be referenced from four
 other places without being copied into them.
 
-The asymmetry on `@skill:` is `expand`'s, not the index's: a mention whose spelling the
-index does not already carry is replaced by a line of metadata before it is stored, so
-the text that would have keyed an index entry is gone. `@file:` mentions are never
-replaced, which is why a later one still arrives.
+The two behave alike, and the reason is `expand`'s: it appends the metadata and leaves
+the mention in the row, so the spelling that keys the index survives for a later
+rebuild. Until 2026-11-03 it replaced the mention with prose instead, so a skill named
+after the first message never reached the index and the row kept a description that
+went stale the moment the skill changed.
 
 What a reader should take from this is a writing rule, not a limitation: name what the
 work needs in the first message. `ship/skills/prefix-cache` holds that rule, the
@@ -175,13 +178,19 @@ See `.agents/notes/2026-11-02-a-session-has-two-machines.md`.
 
 `expand` runs in `commands::deliver`, before the row is written. The stored row
 therefore never carries a reference a later request would resolve differently: a
-skill that was installed when the message was sent keeps the description it had,
-and an image keeps the file id it was uploaded as.
+skill keeps the `SKILL.md` path the name resolved to (what that file says may change
+afterwards, exactly as it may for `@file:`), and an image keeps the file id it was
+uploaded as.
 
 That is also what makes the pending-inject path carry the same thing: the payload
 holds the expanded text and the pictures (`Expanded::to_json`), so a message
 queued behind a running turn arrives as it was sent, not as the machine looks
 when the turn gets round to it.
+
+Only a replacement that stands for nothing takes the space before it with it: an
+image leaves a hole, so the sentence closes up around it, while a mention that keeps
+text keeps the space it had. Eating that one glues the previous word to the
+reference -- `and @skill: late` was stored as `andskill` before 2026-11-03.
 
 ## a reference that cannot be resolved stays text
 

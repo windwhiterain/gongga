@@ -332,9 +332,11 @@ pub async fn expand(
                 None => continue,
             },
         };
-        // A reference that stood on its own takes one space with it, so the
-        // sentence does not close up around a hole.
-        let from = if mention.start > cursor && text[cursor..mention.start].ends_with(' ') {
+        // Only a hole closes up: eating the space before a kept mention glues words.
+        let closes_hole = replacement.is_empty()
+            && mention.start > cursor
+            && text[cursor..mention.start].ends_with(' ');
+        let from = if closes_hole {
             mention.start - 1
         } else {
             mention.start
@@ -353,16 +355,21 @@ pub async fn expand(
     out
 }
 
-/// What `@skill: <name>` stands for: one row of `index_skill`'s table.
+/// What `@skill: <name>` becomes: the spelling it keeps, and the `SKILL.md` it names.
+///
+/// # Invariant
+///
+/// The spelling survives, so the index keys the entry a message wrote: the body is
+/// charged once in the prompt's index and the row keeps a pointer to it. See
+/// `docs/notes/server-meta.md`.
 fn skill_metadata(home: &Path, machine: crate::session::Machine, name: &str) -> Option<String> {
     let found = crate::tools::index_skill::installed_for(home, machine)
         .into_iter()
         .find(|skill| skill.name == name)?;
     Some(format!(
-        "skill `{}` ({}) {}; SKILL.md: {}",
+        "{} {} ({})",
+        Reference::Skill.prefix(),
         found.name,
-        found.bucket.as_str(),
-        found.description,
         found.path.display()
     ))
 }
