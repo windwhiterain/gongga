@@ -12,33 +12,29 @@ The connection is behind a mutex and used synchronously. Every statement here is
 a sub-millisecond local write, so the simplification costs nothing in practice;
 if that stops being true the fix is `spawn_blocking`, not a redesign.
 
-## Prompt::rewritten_by
+## Prompt -- written once, never compared
 
-One rule decides whether a request needs a new prompt row, and it is the only place
-that decision is made: compare what a request *sends*. `instructions`, `index` and
-`tail` go on the wire; `cwd` and `remote` are records of where the turn happened.
+The head of a request is `instructions`, `index` and `tail`, and it is stamped with the
+session's first prompt row and read from the store after that. There is no comparison,
+because there is nothing to compare it against: a second rendering would be a second set
+of bytes for a prefix the provider has already cached, and everything behind it would be
+billed again.
 
-The distinction is not cosmetic. A live home wrote nine prompt rows in ninety seconds
-with `cwd` the only difference -- the shell had moved, and a move is not prose. Every
-row costs a comparison and, worse, the log line that says the prefix was re-billed. So
-`cwd` is also recorded as what the request said, not where the shell is now: a later
-move cannot rewrite a row that has already been sent.
-
-`remote` is the same kind of record for the other half of "where": the template the
-tail was rendered from is chosen by it, so it has to be compared to notice a move.
-`--remote none` in the directory the session left changes only this field, and a row
-that says "a directory on remote `x`" must not outlive the shells that were there.
+This replaced `Prompt::rewritten_by`, which compared the three wire texts at every step
+and appended a row whenever they differed. The rule was right about `cwd` -- a shell
+reports one directory under several spellings and a spelling is not prose -- and wrong
+about the rest, because "the text differs" and "a new row is cheap" cannot both hold
+when the text is the front of everything the model has read
 
 ## interrupted_call
 
 Written as an observation rather than an error: the command may well have run to
 completion, and the model should verify rather than assume.
 
-A template, asked for at read time rather than a constant stored with the row.
-The difference matters for an old session: the placeholder is composed while the
-history is being assembled, so a wording fix reaches a conversation that started
-months ago -- and nothing in the database changes, which is the part a stored
-sentence could never do.
+It is composed when a call is known to have no answer -- the turn was cancelled -- and
+appended as that call's `function_call_output`, so the pair is completed in the
+transcript rather than while a request is being written. A request that invents the
+missing answer is a request that can invent a different one later.
 
 ## wire_item
 
@@ -48,14 +44,19 @@ those bytes and parses none of them, which is what lets it stream.
 
 `None` is not "no item yet" but "no request is built from this row": a notice, the
 prompt in force, a reasoning entry whose encrypted blob was never recorded, a
-provider tool item whose binary payload was stripped on the way in. Deciding that at
-write time is why the read path has no drop rules of its own.
+provider tool item whose payload could not be kept. Deciding that at write time is why
+the read path has no drop rules of its own -- and a drop rule in the read path is a
+silent rewrite of every item behind the one it drops.
+
+Pictures and provider payloads are spent here too: `with_file_ids` and
+`image::content_part` turn a row's `@image:` mentions into the content array a request
+carries, and a `builtin_call`'s payload is read back from its blob. A blob that cannot
+be read makes the item non-replayable now, at the insert, not at the tenth replay.
 
 Providers reject a `function_call` with no `function_call_output`, and a transcript
-that reaches a request that way fails the same way on every later turn -- the same
-`call_id` returning minutes apart with only a new `request_id` to tell the attempts
-apart. Nothing here closes such a gap: the request builder says what happened at the
-moment it writes (`docs/notes/server-body.md`), so the transcript keeps what did.
+that reaches a request that way fails the same way on every later turn. Nothing here
+closes such a gap -- `agent::answer_interrupted` does, when the answer is known to be
+missing -- so the transcript keeps what did.
 
 ## migrate
 

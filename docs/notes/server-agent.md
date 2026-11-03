@@ -313,50 +313,30 @@ It is a threshold for *asking*, not for acting: zero turns the notice off.
 
 ## prompt_in_force
 
-The prose a session sends is read from the config as it is *now* -- the instructions
-verbatim, the notes rendered -- compared with the stored row, and appended only when it
-differs. So the row always holds
-exactly what the last request carried, and an edit is in effect on the very next
-step: a template, an edited file the index names, a directory.
+The head is stamped once and read from the store after that, without comparison:
+if a row exists, that row is what this session sends, for ever. Prose, index and card
+are rendered exactly once, for the one request that will carry them.
 
-The earlier rule kept the store's row and only re-rendered at a boundary -- the first
-step of a turn, a moved note, a changed directory -- so a template edit waited for the
-next turn (「重读只重读新入库的，入库的不改」). The user superseded that half on
-2026-11-01: 每次读都必须读的是最新的. What survives is the half that was about the
-store: rows are append-only and the row sent is the row stored, so a request is never
-a rendering nobody recorded.
+The earlier rule re-rendered at every step and appended a new row whenever the text
+differed, so that "每次读都必须读的是最新的" held -- an edited template, an edited file the
+index named, and a directory all reached the model on the very next step. That rule is
+what this file used to defend, and it was wrong in the way that matters most here: the
+head is a *byte prefix*. Any edit to it invalidates every token behind it, and behind it
+is the whole transcript. Measured on this machine, before the change:
 
-The cache cost is one missed hit, once, at the edit: prose sits in front of the whole
-transcript in the provider's cached prefix, and measured against the fake an edit costs
-the boundary step its hit (99% to 35%) with the next step recovering it. Steady state
-costs nothing, because an unchanged render is byte-identical to the stored row and
-writes nothing. `scripts/replay_audit.py` asserts the other half: for every request
-sent, each input item is a stored row or the stored note, and each distinct
-`instructions` the provider saw is a `system` row.
+- 24k characters of index, edited by one line of `AGENTS.md`, cost session `hierarchy`
+  292,992 cached tokens. The next request had a 849-byte common prefix with the one
+  before it.
+- A card re-rendered because a shell reported `C:\resource\lichen-vm` where the row said
+  `C:\c\resource\lichen-vm` cost session `lichen-vm` 315,008.
+- The prose was re-rendered at *every* step, so a template edit was never the only thing
+  that could move it.
 
-## the prompt is prose, an index, and a separate item for this turn
-
-`llm::build_head` composes `instructions` from the prose (`prompts::SYSTEM`, with the
-session's own name filled -- the one placeholder, see `server-prompts.md`) and the index
-(`index_of`). The start
-card (`dynamic_tail`: session, harness build, the first turn's minute, its cwd) is
-**not** in that value: it is the request's first `input` item, ahead of a fold's note and
-of every row, which is where SPEC puts it and the only place that is both outside the
-prose and stable across steps.
-
-Both halves were measured, and the second one cost a live session a turn. Inside
-`instructions`: 1.2% cached when the minute changed. As its own item after the
-transcript: 98.2% -- but read as a new message on every step, which that session spent 45
-steps answering. As the *first* item, stamped once: 99.7%, and nothing to read as an
-injection. What the move bought is not cache -- a change inside `instructions` keeps the
-bytes before it (`server-prefix-cache.md`) -- but the transcript's own reading: a message
-that follows it is a new message, however identical its bytes, and that cost a live
-session a turn.
-
-The stronger rule sits above the cache one: **what a request has sent is never
-rewritten.** That is why the card is stamped rather than refreshed -- a prompt row is
-appended, never edited, and a value that would differ every turn is not re-derived at
-all. See `docs/notes/server-body.md`.
+The freshest text is still what the model reads; it now arrives as a row appended to the
+transcript instead of as a rewritten prefix (`server-body.md`). A stale index entry is
+the price, and it is one the reader can see and correct, unlike a bill for every token
+already sent. `scripts/prompt_selftest.sh` holds the surviving half: a `cd` writes no new
+prompt row, and the row that exists names the session, the rules file and every root.
 
 ## stated
 
@@ -366,67 +346,31 @@ reports, so one turn said `C:\...` and the next `C:/...`, which rewrote the tail
 the whole prefix -- 2462 tokens of context, 189 cached. One directory now renders one
 string, and a re-spelling is no longer a reason to re-bill.
 
-## index_of, rebuilt rather than remembered
+## index_of, built once instead of rebuilt
 
-Rewritten on 2026-11-02, because rebuilding it from the wrong directory broke SPEC's
-invariant. `prompt_in_force` used to pass the process's live `cwd` -- which is
-`SessionHandle::cwd()`, the shell's reported directory, refreshed with a `pwd` after
-every command. One `cd` inside a tool call therefore rebuilt the index somewhere else
-and appended a new system row: the map vanished exactly when the session started
-exploring (`cd ~/.gongga` → `AGENTS.md` gone, 21,400 → 12,017 characters), and the
-prefix the provider had cached was lost with it.
+The index is the first prompt row's second half: the `AGENTS.md` the session's directory
+carries, the text of every reference its messages name, and everything those name in
+turn -- walked recursively, ordered by `prefix_cache::plan`, appended to the instructions
+as one string. The rules file is seeded by `meta::roots` rather than named by a message,
+so a session is under its directory's rules without having to ask for them. One string
+rather than an item per entry: the entries are one thing to plan, a chain in
+`prefix_cache`, and measured, an item per node re-uses slightly less at steady state
+(94.5% against 97.7%), not more.
 
-The index now reads everything in one directory: `home`, the one the prompt row itself
-records, which a later move does not change. That covers the seeded `AGENTS.md`, whatever
-it names, and the references a *message* names -- a relative path in a message means the
-same file for the life of the session, which is what "already sent" has to mean for a map
-that is part of what was sent. `scripts/prompt_selftest.sh` holds it: a turn whose tool
-call `cd`s into `/tmp` must write no second prompt row, with both a skill and a relative
-`@file:` in the message.
+It runs on the request that writes the row, and never again. Two arguments had to be
+settled for that to be the right answer, and both were settled by measurement:
 
-The first attempt at this fix kept the live `cwd` for message-named references, on the
-theory that a message should be read where it was written. It failed its own probe: a
-message naming `@file: docs/notes/tui-main.md` lost that root as soon as the shell `cd`d
-away, which is the same rewrite through a narrower door.
+- **Rebuilding is not free, it is the most expensive thing this server can do.** Each
+  rebuild that differed shipped a different prefix, and a different prefix is the entire
+  transcript re-billed. `prefix_cache::plan` exists to shave the *tail*; a moving head
+  throws away everything that plan saves.
+- **Everything is read in one directory**: `home`, the one the prompt row itself records.
+  `prompt_in_force` used to pass the process's live `cwd`, so a single `cd` inside a tool
+  call rebuilt the index somewhere else and appended a new row -- the map vanished exactly
+  when the session started exploring (`cd ~/.gongga` → `AGENTS.md` gone, 21,400 → 12,017
+  characters), and the cached prefix went with it.
 
-One fallback is worth knowing about, because it hid this for a while: when the walk
-finds nothing at all, `index_of` returns `None` and `prompt_in_force` replays the
-stored row. A moved shell whose message named no references therefore looked harmless
--- the regression only shows when the message names one, which a monitor report always
-does.
 
-The first prompt row's second half: the `AGENTS.md` the session's directory carries,
-the text of every reference its messages name, and everything those name in turn --
-walked recursively, ordered by `prefix_cache::plan`, appended to the instructions as one
-string. The rules file is seeded by `meta::roots` rather than named by a message, so a
-session is under its directory's rules without having to ask for them. One string rather than an item per entry: the entries are one thing to
-plan, a chain in `prefix_cache`, and measured, an item per node re-uses slightly less at
-steady state (94.5% against 97.7%), not more.
-
-It runs on **every** request, not once at the first row. An index frozen at the first
-turn would keep answering with the bytes a file had then, so an edited `SKILL.md` would
-never reach the session that indexed it -- stale text, silently, forever. Rebuilding
-costs a read of the files the index already names and nothing else: a build that matches
-the stored row writes no row, and `prompt_in_force` compares before appending, so only a
-real edit re-bills the prefix. That re-bill is the price of the edit being true.
-
-An edit within `Agent::index_tolerance` does not rewrite the entry: `prefix_cache` keeps
-the item it already emitted and answers with that text plus a patch, and this is where
-the patch is spliced in -- one template after the index's own, each block under the
-spelling it corrects, so the two lists stay one-to-one by name. That is what keeps the
-edit's cost to the tail: the entry above is still the bytes the provider cached, and the
-change is said once, at the end. Without the `reference_revision` template nothing is
-patched and the entry is re-sent, because a patch nobody introduced is an unexplained
-second copy of the entry.
-
-An edit within `Agent::index_tolerance` does not rewrite the entry: `prefix_cache` keeps
-the item it already emitted and answers with that text plus a patch, and this is where
-the patch is spliced in -- one template after the index's own, each block under the
-spelling it corrects, so the two lists stay one-to-one by name. That is what keeps an
-edit's cost to the tail: the entry above is still the bytes the provider cached, and the
-change is said once, at the end. Without the `reference_revision` template nothing is
-patched and the entry is re-sent, because a patch nobody introduced is an unexplained
-second copy of the entry.
 
 Two facts are decided here and used everywhere after: the order (the cache's, not the
 message's) and `rooted`, the spellings the index carries. `meta::expand` leaves exactly
