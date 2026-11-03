@@ -27,86 +27,60 @@ Both halves of where it goes are load-bearing, and I got the second one wrong fi
   replayed. A value that must never be re-derived does not belong inside a value that is
   composed again on every turn.
 
-  The cache is *not* the reason, though this section said it was. A change inside
-  `instructions` keeps everything before it and costs only what follows (measured, see
-  `server-prefix-cache.md`); the 1.2% that was read as "the whole prefix is gone" is what
-  a prompt the provider has not seen answers with, whatever changed.
+  The cache *is* the reason, and this section had it wrong once. A change inside
+  `instructions` does keep everything before it -- there is nothing before it -- and
+  costs everything that follows, which is the index and the whole transcript. That is
+  the entire prompt. Measured: 24k characters of index edited by one line cost a
+  session 292k cached tokens (`server-prefix-cache.md`).
 
 The card itself is stamped once, with the session's first prompt row, and replayed
 verbatim from the store after that: the minute it says is the session's start, not the
-current time. A request that has been sent is never rewritten, and a session whose row
-predates the card gets one exactly once.
+current time. `prompt_in_force` returns that row and never re-renders it -- it used to
+re-render on a "move", which a shell reporting its directory under another spelling was
+enough to trigger, and each one threw the transcript away.
 
 The rule for any future prose: a value that changes every turn goes last among the
 *stable* things and never after the transcript; a value that never changes goes first.
 
-## auto-recovering an invalid transcript
+## a valid transcript is made valid on the way in
 
 SPEC asks for three things at once: everything in a message is stored and sent, a
 transcript that has been sent is not changed, and an invalid transcript is recovered
 automatically. The provider's own rule is the one that decides what "valid" means, and
-it is positional: **a `function_call` is answered by the item after it.** So a step is
-one block — its reasoning, then its calls, then one output each, in that order — and
-nothing may land inside it.
+it is positional: **a `function_call` is answered by the item after it.**
 
-Read that way, "recover" is not a rewrite of the rows. It is choosing the block:
+For a year this module resolved that at request time, by buffering a step and
+reordering it: results moved up beside their calls, unanswered calls got a placeholder,
+rows whose payload had gone were skipped, a picture's File ID was substituted on the way
+out. Every one of those is a way for the same transcript to leave as two different byte
+sequences, and a provider caches a *byte prefix*, so each one invalidated everything
+behind the point it landed. Measured on this machine: one session lost 292k cached
+tokens when an indexed file was edited, another lost 315k because a card was
+re-rendered for a new spelling of a directory.
 
-- **A call nobody answered** — the turn was cancelled, the process died — gets a
-  placeholder when its block is written, saying the outcome is unknown. This is the
-  auto-fill: the pair is completed at request time, in the request only.
-- **A row that is not half of this block** ends the block. An assistant message or a
-  reasoning item that arrives while a call is still unanswered belongs to the next step
-  and cannot be held in this one, because holding it puts a message between the call and
-  its output — which the provider reports as `No tool output found for tool call`. That
-  is exactly what a live `config` session got back.
-- **A result whose call is not in this block** cannot be placed beside its call, and
-  alone it is the item a provider rejects, so it is left out of the request and logged.
-  The row stays in the store; leaving a message out of a request is not the same thing
-  as changing it.
+Recovery therefore happens where the row is written, not where the request is built:
 
-## Step — the one buffer
+- **A call nobody answered** -- the turn was cancelled -- is answered by
+  `agent::answer_interrupted` at the moment the answer is known to be missing. The row
+  says the outcome is unknown, and it is a row like any other.
+- **A step is stored in the order the provider takes it**, because a tool call is
+  written when it arrives and its result when it returns, and a result is only ever
+  appended after its own call. Nothing has to be reordered to make that true.
+- **A result whose call is missing** cannot arise from this server any more; if one
+  does, it is a row it did not write, and it is sent as stored. Leaving a row out of a
+  request is a silent rewrite of every item behind it.
 
-A provider reads a `function_call` as answered by the input item directly after it,
-while the rows are stored in completion order: a step that asked for two tools
-stores whichever result came back first. Replayed in that order, the slower call
-has its answer three items away from it, and the request is rejected as an
-unanswered call. Because the transcript is replayed whole on every turn, the
-session cannot recover from that on its own -- the same `call_id` fails again
-minutes later, with only a new `request_id` to tell the attempts apart.
+## the sent shape is decided once
 
-Pairing is therefore by position, not by membership, and it happens here. A step is
-over when its last open call is answered -- the model cannot ask for the next one
-before it hears about these -- so the buffer holds one step and is then written out
-with each result moved up beside its own call. That is what keeps the memory bound
-O(step): a reorder that looked across the whole transcript would need the whole
-transcript.
+`store::wire_item` is the only place a row's request shape exists. It runs inside the
+insert, so the `content` column holds the exact bytes every later request carries:
+pictures already turned into a content array (with each `@image:` `(id)` replaced by the
+File ID the provider minted, while the `display` column keeps what the reader wrote),
+and a provider-side item's payload already read back from its blob. A blob that cannot
+be read makes the item non-replayable *then*, not at the tenth replay.
 
-## the two ways a pair is broken
-
-A call with no result at the end of the transcript -- the process died inside the
-tool -- gets a placeholder saying so. It is the last thing the walk can do, because
-only there is "no more rows" known.
-
-A result whose call is not in the same step is left out, logged. A call and its result
-belong to one step, so this is decidable inside the step's own buffer without
-remembering what was already sent; it names a row whose partner was deleted from
-under it, and sent alone it is the request a provider rejects. See above for why
-leaving it out is not the same as changing it.
-
-## with_pictures — which field a picture rides in
-
-A row with pictures stops being a string once it reaches the request: the text
-becomes a content array with the pictures behind it. The field it replaces
-depends on the kind, and only on the kind -- `content` for a message, `output`
-for a result -- because those are the fields those two kinds keep their text in.
-Everything else goes out byte for byte as stored.
-
-The text is also where a picture's id becomes a File ID: `meta::with_file_ids`
-walks the mentions of that field and rewrites the `(id)` a message appended into the
-id the provider minted. It is a walk over mentions rather than a replace of
-`(<id>)`, because a row may say `(7)` about something else and SPEC's substitution
-is about a reference. A tool result carries no id in its text -- its output is the
-command's words -- so only the pictures on it change shape.
+`Transcript` is the consequence: a walk that yields the stored items in `seq` order.
+`body.rs` writes them between the head and `]}`, comma-separated, and does nothing else.
 
 ## RequestSource — what a retry replays
 

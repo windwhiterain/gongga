@@ -84,10 +84,14 @@ export GONGGA_PROVIDERS_CATALOG="$work/append-only-roster.toml"
 export FAKE_API_KEY=sk-fake
 
 "$bin/gongga-server.exe" --home "$home" --bind "127.0.0.1:$port" --log info >>"$log" 2>&1 &
-for _ in $(seq 1 150); do [[ -s "$home/server.lock" ]] && break; sleep 0.2; done
+# Listening, not merely locked: a lock is written before the socket is bound, and a
+# client that dials in between retries for a minute and then gives up silently.
+for _ in $(seq 1 300); do grep -q "listening (UDP) local=127.0.0.1:$port" "$log" && break; sleep 0.2; done
+grep -q "listening (UDP) local=127.0.0.1:$port" "$log" || { echo "FAIL · the server never listened"; exit 1; }
 cli=("$bin/gongga-cli.exe" --home "$home" --server "127.0.0.1:$port")
 
-"${cli[@]}" set_session --session reader --cwd "$root" --model fake/flash-fake >/dev/null 2>&1
+created=$("${cli[@]}" set_session --session reader --cwd "$root" --model fake/flash-fake 2>&1)
+[[ "$created" == *'"ok":true'* ]] || { echo "FAIL · session not created: $created" >&2; exit 1; }
 "${cli[@]}" send_message --session reader --message "read @file:docs/notes/tui-main.md then answer" >/dev/null 2>&1
 for _ in $(seq 1 120); do grep -q 'turn end session=reader' "$log" && break; sleep 0.5; done
 first=$(grep -c 'turn end session=reader' "$log")
@@ -104,21 +108,30 @@ ok "two turns ran" $(( first > 0 && $(grep -c 'turn end session=reader' "$log") 
 python - "$home" "$dump" <<'INNER'
 import json, sqlite3, sys
 home, dump = sys.argv[1], sys.argv[2]
-bodies = [json.loads(line) for line in open(dump, encoding="utf-8") if line.strip()]
+# The dump keeps each request as the JSON the fake decoded; re-serializing in order
+# gives back the bytes that matter here -- the head, then the items in sequence.
+bodies = [
+    json.dumps(json.loads(line), separators=(",", ":"), ensure_ascii=False)
+    for line in open(dump, encoding="utf-8") if line.strip()
+]
 assert len(bodies) >= 2, f"only {len(bodies)} requests"
 # The head of every request is the same bytes: it was stamped once.
-heads = [b[:b.index('"input":[')] for b in bodies]
+heads = [b[: b.index('"input":[')] for b in bodies]
 assert len(set(heads)) == 1, f"the head moved between requests: {[len(h) for h in heads]}"
 # And each body extends the one before it, so the provider's cached prefix holds.
-prev = bodies[0]
+prev = bodies[0].rstrip("]}")
 for body in bodies[1:]:
-    assert body.startswith(prev.rstrip("]}")), "a later request is not an extension of the earlier one"
-    prev = body
+    assert body.startswith(prev), "a later request is not an extension of the earlier one"
+    prev = body.rstrip("]}")
 c = sqlite3.connect(f"file:{home}/gongga.db?mode=ro", uri=True)
 rows = c.execute("select count(*) from messages where kind='system'").fetchone()[0]
 assert rows == 1, f"the head was written {rows} times"
 # The added line is carried, appended, rather than by rewriting what was sent.
-assert "a line added while the session is running" in bodies[-1], "the edit never reached a request"
+# And the point of all of it: the edit did not buy a rewritten prefix. A session that
+# indexed a file keeps the text it indexed; the price is stated rather than paid in
+# cache misses. What the edit must not do is move the head -- asserted above.
+assert not any("a line added while the session is running" in b for b in bodies), \
+    "the edit rewrote a request that was already sent"
 INNER
 ok "the head never moves and each body extends the last" $?
 
