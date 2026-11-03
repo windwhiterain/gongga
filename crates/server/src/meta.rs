@@ -374,13 +374,13 @@ fn skill_metadata(home: &Path, machine: crate::session::Machine, name: &str) -> 
     ))
 }
 
-/// The picture `@image: <path>` names: copied into this home, then uploaded.
+/// The picture `@image: <path>` names, copied into this home.
 ///
 /// # Invariant
 ///
-/// The upload is what a request carries and the copy is what a stored row keeps, so
-/// one without the other is still a message: an upload that failed costs a bigger
-/// request, and `image::content_part` inlines the bytes of the copy.
+/// The copy is the whole record, and the upload happens later: a request resolves the
+/// copy to whatever file the provider holds then, and inlines the bytes when it holds
+/// none. A picture named here is therefore never lost to a Files API that is down.
 async fn picture(
     store: &crate::store::Store,
     source: Source<'_>,
@@ -397,55 +397,9 @@ async fn picture(
         return None;
     }
     let mut reference = ImageRef::new(path, media);
-    // The copy first: a stored row keeps it whatever the File API answers.
+    // The copy is the whole record: no upload happens here. The file a request names
+    // this picture by is resolved when the request is written, because the provider
+    // deletes its files and a message may be sent again months later.
     reference.copy = crate::image::pictures::remember(store, &reference.path, media, &bytes).ok();
-    match llm
-        .upload_bytes(&reference.path, &reference.media_type, &bytes)
-        .await
-    {
-        Ok(id) => reference.file_id = Some(id),
-        Err(e) => tracing::warn!(
-            path = %reference.path,
-            error = %e,
-            "could not mint a file id; the picture is sent from its copy instead"
-        ),
-    }
     Some(reference)
-}
-
-/// `text` as a request sends it: each mention names the provider's file instead.
-///
-/// # Invariant
-///
-/// Only the `(id)` a mention carries is rewritten, and only for a picture this row
-/// recorded: a row keeps the copy it was sent with, and a request carries the id the
-/// provider was given. See `docs/notes/server-meta.md`.
-pub fn with_file_ids(text: &str, images: &[ImageRef]) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut cursor = 0;
-    for mention in mentions(text) {
-        if mention.kind != Reference::Image || mention.start < cursor {
-            continue;
-        }
-        let Some(rest) = text[mention.end..].strip_prefix(" (") else {
-            continue;
-        };
-        let digits = rest.chars().take_while(char::is_ascii_digit).count();
-        let Ok(copy) = rest[..digits].parse::<i64>() else {
-            continue;
-        };
-        if !rest[digits..].starts_with(')') {
-            continue;
-        }
-        let id = images
-            .iter()
-            .find(|image| image.copy == Some(copy))
-            .and_then(|image| image.file_id.as_deref());
-        let Some(id) = id else { continue };
-        out.push_str(&text[cursor..mention.end]);
-        out.push_str(&format!(" ({id})"));
-        cursor = mention.end + digits + 3;
-    }
-    out.push_str(&text[cursor..]);
-    out
 }

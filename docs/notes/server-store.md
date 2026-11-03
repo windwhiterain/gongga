@@ -48,10 +48,11 @@ provider tool item whose payload could not be kept. Deciding that at write time 
 the read path has no drop rules of its own -- and a drop rule in the read path is a
 silent rewrite of every item behind the one it drops.
 
-Pictures and provider payloads are spent here too: `with_file_ids` and
-`image::content_part` turn a row's `@image:` mentions into the content array a request
-carries, and a `builtin_call`'s payload is read back from its blob. A blob that cannot
-be read makes the item non-replayable now, at the insert, not at the tenth replay.
+A provider payload is spent here: a `builtin_call`'s payload is read back from its blob,
+and one that cannot be read makes the item non-replayable now, at the insert, not at the
+tenth replay. A picture is not: its text is stored exactly as the reader wrote it, and the
+file the provider holds is resolved when a request is written, because that file expires
+(`docs/notes/server-pictures.md`).
 
 Providers reject a `function_call` with no `function_call_output`, and a transcript
 that reaches a request that way fails the same way on every later turn. Nothing here
@@ -154,7 +155,7 @@ and lets the same picture be looked at again only when a request actually needs
 it.
 
 The file is no longer the state, and that changed on 2026-11-03: the bytes are
-copied into `<home>/pictures` when the row is written, and `image::content_part`
+copied into `<home>/pictures` when the row is written, and `image::files`
 reads that copy. A working directory that is cleaned or a branch that is switched
 now costs nothing, and a file rewritten at the same path does not turn an old
 message into a new picture. `docs/notes/server-pictures.md` has the reasoning;

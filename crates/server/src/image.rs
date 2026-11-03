@@ -1,6 +1,16 @@
 //! Pictures: formats, media types, and what a provider will accept.
 
+pub(crate) mod files;
 pub(crate) mod pictures;
+pub(crate) mod uploads;
+
+/// What the provider answered when it took one picture: the file, and when it goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Uploaded {
+    pub id: String,
+    /// When the provider stops serving it, in millis since the epoch.
+    pub expires_at: i64,
+}
 
 use std::path::{Path, PathBuf};
 
@@ -28,13 +38,6 @@ pub struct ImageRef {
     /// The bytes shown to a model come from this copy, never from the path: a
     /// picture a user has since overwritten is still the picture that was sent.
     pub copy: Option<i64>,
-    /// A provider-side id, once one has been minted for this file.
-    ///
-    /// # Invariant
-    ///
-    /// The recorded request carries the id, not the bytes: a transcript replayed
-    /// ten times must not carry ten copies of a screenshot.
-    pub file_id: Option<String>,
 }
 
 impl ImageRef {
@@ -43,7 +46,6 @@ impl ImageRef {
             path: path.into(),
             media_type: media_type.into(),
             copy: None,
-            file_id: None,
         }
     }
 
@@ -53,13 +55,11 @@ impl ImageRef {
         if let Some(copy) = self.copy {
             row["copy"] = json!(copy);
         }
-        if let Some(id) = &self.file_id {
-            row["file_id"] = json!(id);
-        }
         row
     }
 
-    /// Reads one back, tolerating a row written before `file_id` existed.
+    /// Reads one back. A row written by an older build that carried `file_id` reads as
+    /// the copy it also recorded: the id is forgotten, not trusted.
     pub fn from_json(value: &Value) -> Option<Self> {
         Some(Self {
             path: value.get("path")?.as_str()?.to_string(),
@@ -69,10 +69,6 @@ impl ImageRef {
                 .unwrap_or("application/octet-stream")
                 .to_string(),
             copy: value.get("copy").and_then(serde_json::Value::as_i64),
-            file_id: value
-                .get("file_id")
-                .and_then(|i| i.as_str())
-                .map(str::to_string),
         })
     }
 }
@@ -116,35 +112,4 @@ pub fn media_type(path: &Path, bytes: &[u8]) -> Option<&'static str> {
         return Some("image/bmp");
     }
     None
-}
-
-/// One picture as a request content part.
-///
-/// # Invariant
-///
-/// The id beats the bytes, and the transcript's copy beats the path; a picture
-/// nothing can read degrades to a note, never to a failed turn.
-pub fn content_part(image: &ImageRef) -> Value {
-    if let Some(id) = &image.file_id {
-        return json!({"type": "input_image", "file_id": id});
-    }
-    // The copy first: a path says where a picture came from, not what was sent.
-    let kept = image
-        .copy
-        .and_then(crate::image::pictures::read)
-        .or_else(|| std::fs::read(&image.path).ok());
-    match kept {
-        Some(bytes) => json!({
-            "type": "input_image",
-            "image_url": format!("data:{};base64,{}", image.media_type, crate::base64::encode(&bytes)),
-        }),
-        None => json!({
-            "type": "input_text",
-            "text": format!(
-                "[the image at {} is no longer readable and this home holds no copy, so \
-                 whatever it showed cannot be recovered]",
-                image.path
-            ),
-        }),
-    }
 }

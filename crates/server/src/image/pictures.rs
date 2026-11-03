@@ -25,6 +25,19 @@ fn dir() -> Option<&'static Path> {
     DIR.get().map(PathBuf::as_path)
 }
 
+/// The copy a row recorded, when it recorded one; otherwise the bytes at its path.
+///
+/// # Invariant
+///
+/// A copy beats a path: a picture the user has since overwritten is still the picture
+/// that was sent. The path is read only for a row written before copies were kept.
+pub fn read_missing(image: &crate::image::ImageRef) -> Option<Vec<u8>> {
+    image
+        .copy
+        .and_then(read)
+        .or_else(|| std::fs::read(&image.path).ok())
+}
+
 /// The copy `id` names, or nothing when this home holds none.
 pub fn read(id: i64) -> Option<Vec<u8>> {
     let bytes = std::fs::read(dir()?.join(id.to_string())).ok()?;

@@ -200,6 +200,19 @@ CREATE TABLE IF NOT EXISTS pictures (
     media_type TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS pictures_path ON pictures(path);
+
+-- The provider file a copy was uploaded as, and when that file expires. The row a
+-- request is built from never holds a provider id: it holds the copy, and the id is
+-- looked up here, because a provider deletes its files and a transcript may not.
+-- See `docs/notes/server-pictures.md`.
+CREATE TABLE IF NOT EXISTS uploads (
+    scope      TEXT NOT NULL,
+    copy       INTEGER NOT NULL REFERENCES pictures(id) ON DELETE CASCADE,
+    file_id    TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    PRIMARY KEY (scope, copy)
+);
+CREATE INDEX IF NOT EXISTS uploads_by_id ON uploads(file_id);
 "#;
 
 /// What a character is assumed to cost before anything is measured.
@@ -415,6 +428,16 @@ impl Store {
             conn: Arc::new(Mutex::new(conn)),
             path: path.to_path_buf(),
         })
+    }
+
+    /// The connection every picture and upload row is read and written through.
+    ///
+    /// # Invariant
+    ///
+    /// One handle, because `image::uploads` writes the table `pictures` rows are keyed
+    /// by and the two have to agree about a copy that was just made.
+    pub fn picture_conn(&self) -> Arc<Mutex<Connection>> {
+        self.conn.clone()
     }
 
     fn lock(&self) -> MutexGuard<'_, Connection> {
@@ -1040,6 +1063,7 @@ impl Store {
             db_path: self.path.clone(),
             session_id,
             upto_seq: self.last_seq(session_id)?,
+            store: self.clone(),
         })
     }
 
@@ -1244,6 +1268,21 @@ impl Store {
         let id = tx.last_insert_rowid();
         tx.commit()?;
         Ok(id)
+    }
+
+    /// The media type one copy was stored with.
+    ///
+    /// A copy's own row answers: a rewritten file mints a new copy, so the type that
+    /// goes with an id is that id's, never the path's newest.
+    pub fn picture_media_type(&self, id: i64) -> Option<String> {
+        let conn = self.lock();
+        conn.query_row(
+            "SELECT media_type FROM pictures WHERE id = ?1",
+            params![id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .ok()?
     }
 
     /// Forgets a copy that could not be written, so no row names a missing picture.
@@ -1661,27 +1700,16 @@ fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value>
             .unwrap_or_default()
             .to_string()
     };
-    // A row's pictures and its provider-minted file ids are spent here, once: what
-    // comes back is the exact item every later request will carry, so replaying a
-    // transcript cannot depend on a file that may since have gone.
-    let with_pictures = |field: &str| -> serde_json::Value {
-        let images = images_of(value);
-        let text = text_of(field);
-        if images.is_empty() {
-            return json!(text);
-        }
-        let text = crate::meta::with_file_ids(&text, &images);
-        let mut parts = vec![json!({"type": "input_text", "text": text})];
-        parts.extend(images.iter().map(crate::image::content_part));
-        serde_json::Value::Array(parts)
-    };
+    // A row's text is stored as written: the pictures it named stay in `display`, and
+    // the provider's file for each is resolved when a request is built. A file id here
+    // would be a row that stops working when the provider deletes the file.
     match kind {
         "text" => {
             let role = text_of("role");
             Some(if role == "assistant" {
                 json!({"role": "assistant", "content": [{"type": "output_text", "text": text_of("text")}]})
             } else {
-                json!({"role": role, "content": with_pictures("text")})
+                json!({"role": role, "content": text_of("text")})
             })
         }
         "reasoning" => {
@@ -1705,7 +1733,7 @@ fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value>
         "tool_result" => Some(json!({
             "type": "function_call_output",
             "call_id": text_of("call_id"),
-            "output": with_pictures("output"),
+            "output": text_of("output"),
         })),
         "builtin_call" => {
             let item = value.get("item")?;
