@@ -50,10 +50,24 @@ wrapper, do not know server cmd". Completion must stay powerful.
 - ship skills with old syntax: subagent (SKILL+spawn.py), heir (SKILL+transcript.py),
   monitor, self-control, remote, prefix-cache → publish via scripts/ship.sh.
 
-## Status
-- [ ] protocol
-- [ ] cli
-- [ ] server
-- [ ] docs
-- [ ] ship skills + publish
-- [ ] verify: build, fmt, comments-check, test-layout, cargo test --workspace, ship check
+## Status (done, 3 commits + ship 3fe2d2c)
+- [x] protocol: ArgSpec.positional; client_commands positional
+- [x] cli: spec-aware parse_args (positionals + flags + diagnosis), signature(),
+      message() expansion, positional completion + OfNamedArgument via first
+      positional, session_named, serve <port>
+- [x] server: server_catalog positional + subscribe/del_subscribe/trigger_event,
+      get_messages range optional, tool_cmd.rs (registry-generated tool cmds,
+      shared runner), subscriptions named actions in the session's interpreters,
+      store columns name/bash/cmd/python/code
+- [x] docs: cli-commands, cli-catalog, cli-lib, cli-server, cli-bin-gongga,
+      protocol-message, server-commands, server-subscriptions, server-tool-cmd.md
+- [x] ship skills + publish (3fe2d2c): subagent spawn.py + SKILL, heir
+      transcript.py + SKILL, monitor, self-control, remote, prefix-cache
+- [x] verify: build/fmt/comments(0)/test-layout(0)/skill_contract/ship --check all
+      green; L3: cmd_selftest PASS 16, subagent_selftest PASS 27, prompt PASS 5.
+      Recorded in .dev/verify/<sha>-cmd.json.
+
+## Follow-ups (noted, not done)
+- SPEC lists per-call `max_output` on every tool; tools still cap at the
+  registry-level config. The tunnel/catalog work does not depend on it.
+- Tool schemas name the timeout argument `timeout_ms`; SPEC spells it `time_out`.
