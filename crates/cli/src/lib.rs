@@ -141,8 +141,8 @@ pub enum Sub {
 
 /// Parses the command line, one way for both binaries, each naming itself.
 pub fn parse_argv(name: &'static str, about: &'static str) -> Args {
-    // `bin_name` is the word clap prints in `Usage:`, and it defaults to argv[0]:
-    // without this a bundle's `gongga cli --help` answers as `gongga-cli.exe`.
+    // `bin_name` is the word clap prints in `Usage:`; without it a bundle's help
+    // answers as `gongga-cli.exe`.
     let matches = Args::command()
         .name(name)
         .bin_name(name)
@@ -154,16 +154,15 @@ pub fn parse_argv(name: &'static str, about: &'static str) -> Args {
 
 /// The subcommand a program that *carries* the command layer answers to for it.
 ///
-/// `gongga-tui cli get_messages ...` is `gongga get_messages ...`: one program
-/// was installed, and this is the word that says which half of it is meant. A
-/// program that *is* the command layer has no such word to add -- see
-/// `docs/notes/tui-main.md`.
+/// See `docs/notes/tui-main.md`.
 pub const CLI: &str = "cli";
 
 /// The name a shell types, and the name this program answers to in a home's `bin`.
 ///
-/// The crate's own name, not a short form of it: one name for the package, the
-/// program and the link, so what a reader finds in `Cargo.toml` is what they type.
+/// # Invariant
+///
+/// The crate's own name, not a short form: one name for the package, the program
+/// and the link.
 pub const COMMAND: &str = "gongga-cli";
 
 /// The name this process was started as, which is what a reader can type back.
@@ -438,8 +437,8 @@ pub trait Sink {
     fn layout(&mut self, _layout: &Layout) {}
     /// Replaces the whole text of a block: a call's structure, once known.
     fn rewrite(&mut self, _window: &str, _key: &str, _text: &str) {}
-    /// Describes a call with structured fields for a front-end that can show them.
-    /// Other front-ends keep the compact detail text.
+    /// Describes a call with structured fields for a front-end that shows them.
+    /// Other front-ends keep the detail text.
     fn tool_call(&mut self, window: &str, key: &str, head: &protocol::Head, streamed: bool) {
         if streamed {
             self.rewrite(window, key, &head.detail());
@@ -789,9 +788,8 @@ impl Client {
                 self.connected = true;
                 self.attempts = 0;
                 self.draining = server.draining;
-                // The facts are the announcement: "offline — reconnecting"
-                // becomes the model and the session count. A warning about this
-                // machine belongs beside them, not in place of them.
+                // The announcement is the facts: the model and the session count.
+                // A warning belongs beside them.
                 self.build_note = (!server.build.is_empty() && server.build != protocol::BUILD)
                     .then(|| format!("build {}", server.build));
                 let mine = self.sticky.home();
@@ -803,10 +801,8 @@ impl Client {
                 sink.note(LineKind::Error, &format!("connection refused: {reason}"));
             }
             ServerMessage::Event(event) => self.handle_event(event, sink),
-            // A kind this build does not know. Saying so is the whole point: the
-            // alternative is a front-end that dies because the server learned a
-            // new word. The tag is what a reader needs to see -- the payload is
-            // the sending side's business.
+            // A kind this build does not know: the tag is what a reader needs;
+            // the payload is the sending side's business.
             ServerMessage::Unknown { event, .. } => {
                 let kind = event
                     .get("t")
@@ -965,8 +961,7 @@ impl Client {
                 }
             }
             // A log row is data, not conversation: the window draws what was said,
-            // and `events` is how a reader asks for the rest. Drawing these live
-            // would put `step_timing` next to the model's answer.
+            // and `events` is how a reader asks for the rest.
             Event::Record { .. } => {}
             Event::Log { level, message } => {
                 let kind = match level {
@@ -1119,9 +1114,8 @@ impl Client {
         self.catalog.paths_version()
     }
 
-    /// Asks the server what one directory on a remote holds, for `--cwd`
-    /// completion. `None` when there is nothing to ask: a client that is offline,
-    /// or a server from a build without the command.
+    /// Asks the server what one directory on a remote holds, for `--cwd`; `None`
+    /// when there is nothing to ask.
     ///
     /// # Invariant
     ///
@@ -1385,8 +1379,8 @@ impl Client {
                     self.row(sink, LineKind::Error, "set_sticky requires --value");
                     return;
                 };
-                // A sticky nothing would ever read is a setting that never takes
-                // effect, so it is refused while the caller is still looking.
+                // A sticky value no command reads never takes effect, so it is refused
+                // while the caller is still looking.
                 if self.catalog.fills_sticky(&arg_name) == Some(false) {
                     self.row(
                         sink,
@@ -1627,8 +1621,8 @@ fn quota_row(quota: &protocol::Quota) -> QuotaRow {
     } else {
         format!("{} · {}", quota.provider, parts.join(" · "))
     };
-    // A row that only names its provider and a complaint is a failure to read;
-    // one with figures carries a note beside them and stays a fact.
+    // A row naming only its provider and a complaint is a failure to read;
+    // figures make it a fact.
     let kind = match (&quota.note, parts.len()) {
         (Some(_), 1) => LineKind::Error,
         _ => LineKind::System,
@@ -1691,10 +1685,6 @@ impl Link {
 }
 
 /// Runs one command line, with the runtime each command needs.
-///
-/// `forward` is the subcommand a shell has to type to reach the command layer
-/// through this program -- `Some(CLI)` from the window, `None` from `gongga`
-/// itself. It only decides what the server installs for its own shells.
 ///
 /// # Invariant
 ///
@@ -1822,11 +1812,8 @@ async fn run_once(client: &mut Client, link: &mut Link, command: &[String]) -> a
         ClientMessage::Command { id, .. } => *id,
         other => anyhow::bail!("{command:?} produced {other:?}, expected a command"),
     };
-    // The session this command speaks about, if it names one. Its events are this
-    // process's output and another session's stream is not: the connection hears
-    // every session on the server, so a `get_messages` piped into `jq` would
-    // otherwise carry lines the answer never mentioned -- and its own count would
-    // disagree with what was printed. See `docs/notes/cli-bin-gongga.md`.
+    // This command's own session, if it names one: another session's stream is
+    // not this process's output.
     let watched = match &msg {
         ClientMessage::Command { args, .. } => args.get("session").cloned(),
         _ => None,
@@ -1843,9 +1830,8 @@ async fn run_once(client: &mut Client, link: &mut Link, command: &[String]) -> a
         };
         let event = match decode_server(&bytes)? {
             ServerMessage::Event(event) => event,
-            // A kind this build does not know: printed as it arrived and never
-            // attributed to a session, because this build cannot read which one
-            // it names. `--json` gets the bytes, so a script can decide.
+            // A kind this build does not know: printed as it arrived, never
+            // attributed to a session; `--json` gets the bytes.
             ServerMessage::Unknown { event, .. } => {
                 println!("{}", serde_json::to_string(&event)?);
                 continue;
@@ -1883,12 +1869,9 @@ async fn run_once(client: &mut Client, link: &mut Link, command: &[String]) -> a
 /// # Invariant
 ///
 /// A command that named a session prints that session's events and the ones that
-/// name no session; another session's stream is not its answer. The connection
-/// hears every session on the server, so without this a `get_messages` piped into
-/// `jq` carries lines the answer never mentioned -- and the count in its result
-/// disagrees with what was printed. A command that named no session keeps
-/// printing everything: there is nothing to tell its answer apart from.
-/// See `docs/notes/cli-bin-gongga.md`.
+/// name no session; another session's stream is not its answer, and its count
+/// would disagree with what was printed. A command that named no session prints
+/// everything. See `docs/notes/cli-bin-gongga.md`.
 fn prints(watched: Option<&str>, event: &Event) -> bool {
     watched.is_none_or(|name| event.session().is_none_or(|s| s == name))
 }
@@ -1981,8 +1964,8 @@ pub fn endpoint(args: &Connection) -> anyhow::Result<Endpoint> {
 pub enum DialFailure {
     /// Asking again cannot help: wrong key, malformed address.
     Fatal(anyhow::Error),
-    /// The address refused the datagram: nothing is listening there. This is the
-    /// one failure starting a server is an answer to.
+    /// The address refused the datagram: nothing is listening there -- the one
+    /// failure a server start answers.
     NoListener(anyhow::Error),
     /// Worth retrying: the server is not listening right now.
     Temporary(anyhow::Error),
@@ -2095,8 +2078,8 @@ impl Greeting {
         }
     }
 
-    /// The window that server follows, when one does: this client compares it
-    /// with its own pid to learn whether it is the window in charge.
+    /// The window that server follows: a client compares it with its own pid to
+    /// learn whether it is in charge.
     pub fn owner(&self) -> Option<u32> {
         match &self.0 {
             ServerMessage::Hello { server, .. } => server.owner,
@@ -2235,9 +2218,8 @@ pub(crate) fn key_of(home: &Path) -> Option<String> {
     process_env("GONGGA_KEY").or_else(|| key_from_home(home))
 }
 
-/// What a home itself says its key is: `server.key` first, because a server that
-/// minted one wrote it there, then a `[server] key` a home written before that
-/// still has.
+/// What a home says its key is: `server.key` first, then a `[server] key` a home
+/// written before that still has.
 ///
 /// # Invariant
 ///

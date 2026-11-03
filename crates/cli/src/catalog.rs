@@ -117,8 +117,8 @@ impl Catalog {
 
     /// Replaces the catalog with the one the greeting carried.
     pub fn set_commands(&self, commands: Vec<CommandSpec>) {
-        // Any argument named `remote` publishes exactly the names a config holds,
-        // so the client reads them off the catalog instead of the config file.
+        // An argument named `remote` publishes the names a config holds: the
+        // client reads them off the catalog.
         let names: HashSet<String> = commands
             .iter()
             .flat_map(|command| command.args.iter())
@@ -333,7 +333,7 @@ impl Catalog {
 }
 
 /// What a value may be completed against, snapshotted so no lock is held --
-/// except the listing cache, which is read on the one branch that needs it.
+/// except the listing cache.
 struct Ctx<'a> {
     sessions: &'a [SessionInfo],
     sticky: &'a [String],

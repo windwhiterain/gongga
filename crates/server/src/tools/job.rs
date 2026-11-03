@@ -37,11 +37,8 @@ impl ProcessJob {
             }
 
             let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-            // Both flags, and the pair is the whole point: a child stays in the job and
-            // dies with the shell unless it asks to leave with CREATE_BREAKAWAY_FROM_JOB.
-            // `BREAKAWAY_OK` rather than `SILENT_BREAKAWAY_OK` because `SILENT` puts every
-            // child outside the job, and a session that cannot take its own processes
-            // with it is a promise this server makes. See `docs/notes/server-tools-job.md`.
+            // Both flags: a child stays in the job and dies with the shell
+            // unless it asks to leave.
             info.BasicLimitInformation.LimitFlags =
                 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
             let sized = SetInformationJobObject(

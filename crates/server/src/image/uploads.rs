@@ -1,15 +1,13 @@
-//! The provider file a copy was uploaded as, and when that file stops being usable.
+//! The provider file a copy was uploaded as, and when it stops being usable.
 //!
 //! See `docs/notes/server-pictures.md`.
 //!
 //! # Invariant
 //!
-//! A row never records a provider's file id. It records the copy (`pictures.id`), which
-//! is this home's own and never expires, and the id is resolved from `uploads` when a
-//! request is written. A provider deletes its files -- by expiry, by quota, by another
-//! key on the same account -- and an id baked into a transcript would be a transcript
-//! that can never be sent again. What is stored stays true; what the provider answers is
-//! looked up.
+//! A row never records a provider's file id. It records the copy (`pictures.id`),
+//! which is this home's own and never expires, and the id is resolved from
+//! `uploads` when a request is written: a provider deletes its files, and an id
+//! baked into a transcript could never be sent again.
 
 use rusqlite::{OptionalExtension, params};
 
@@ -17,9 +15,10 @@ use crate::store::Store;
 
 /// How long an upload is asked to live: DeepSeek's maximum is 30 days.
 ///
-/// Stated rather than omitted. Omitting `expires_after` makes the file permanent, which
-/// sounds better and is worse: permanent files accumulate against the account's file
-/// count and storage, and a file that never expires can only ever be deleted by hand.
+/// # Invariant
+///
+/// Stated rather than omitted: omitting `expires_after` makes the file permanent,
+/// and permanent files accumulate against the account's file count and storage.
 pub const EXPIRES_AFTER_SECS: i64 = 7 * 24 * 60 * 60;
 
 /// How much life one has to have left to be reused, so a file cannot expire mid-request.
@@ -60,8 +59,10 @@ impl Upload {
 
 /// The upload this home already made for `copy` at `scope`, valid or not.
 ///
-/// Returned even when stale: the caller needs the id either way -- to reuse it, or to
-/// forget it before asking for a new one.
+/// # Invariant
+///
+/// Returned even when stale: the caller needs the id either way -- to reuse it, or
+/// to forget it before asking for a new one.
 pub fn of(store: &Store, scope: &str, copy: i64) -> anyhow::Result<Option<Upload>> {
     let conn = store.picture_conn();
     let guard = conn.lock().unwrap_or_else(|e| e.into_inner());

@@ -88,6 +88,10 @@ oldest-expiring first, because that file was about to be unusable anyway. `forge
 a refused id stops being an answer, and `forget_scope` is the hammer for a refusal that
 did not name which file.
 
+`expires_after` is stated rather than omitted. Omitting it makes the file permanent,
+which sounds better and is worse: permanent files accumulate against the account's file
+count and storage, and a file that never expires can only ever be deleted by hand.
+
 ## files.rs
 
 `Files` is per request: it memoises what it resolved, so a transcript naming one picture

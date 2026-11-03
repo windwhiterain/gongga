@@ -27,8 +27,8 @@ pub const TAIL: &str = "dynamic_tail";
 /// named by the code. See `docs/notes/server-prompts.md`.
 pub const TAIL_REMOTE: &str = "dynamic_tail_remote";
 
-/// The same card when the peer's directory is not known: stating it is optional, and
-/// the first card is the one a session keeps.
+/// The same card when the peer's directory is not known: stating it is optional.
+/// See `docs/notes/server-prompts.md`.
 pub const TAIL_REMOTE_UNSTATED: &str = "dynamic_tail_remote_unstated";
 
 /// The system instructions: the prose, with the session's own name in it.

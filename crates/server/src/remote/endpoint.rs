@@ -94,14 +94,8 @@ impl Endpoint {
                 let mut command = Command::new("ssh");
                 // Host key checking stays ssh's own; BatchMode only stops a hang.
                 command.arg("-o").arg("BatchMode=yes");
-                // # Invariant
-                //
-                // An idle connection must be able to be found dead. Without these,
-                // a dropped tunnel is silent -- nothing sends, nothing notices, and
-                // `ssh` stays blocked on a socket the peer will never answer; the
-                // reads that wait on it then wait forever. Three unanswered probes
-                // a quarter minute apart end the connection, which is what lets the
-                // transport report it. Measured: a listing hung over five minutes.
+                // An idle connection must be found dead: three unanswered
+                // probes a quarter minute apart end it.
                 command
                     .arg("-o")
                     .arg("ServerAliveInterval=15")

@@ -1,11 +1,6 @@
 //! Bringing a home's database up to the version this build expects.
 //!
-//! A home records the version it was last migrated to in `<home>/version`, and a
-//! migrator moves it one step. The migrators are the one thing the install pass
-//! does not place: they live in the shipped content under `migrate/<from>-to-<to>.py`
-//! and are fetched by path when they are needed, because a home that is two
-//! versions behind asks for the step it is missing, not for whatever the current
-//! pin happens to carry. See `docs/notes/server-migrate.md`.
+//! See `docs/notes/server-migrate.md`.
 //!
 //! # Invariant
 //!
@@ -21,8 +16,12 @@ use anyhow::{Context, bail};
 /// The version this build reads and writes.
 pub const VERSION: u32 = 4;
 
-/// The file that says what version a home is at. Missing means 0: a home this
-/// server has never migrated is the one it was created by.
+/// The file that says what version a home is at.
+///
+/// # Invariant
+///
+/// Missing means 0: a home this server has never migrated is the one it was
+/// created by.
 const STAMP: &str = "version";
 
 /// Where fetched migrators land, so the next start runs the same bytes.
@@ -114,9 +113,8 @@ fn blob(home: &Path, path: &str) -> anyhow::Result<Option<Vec<u8>>> {
     Ok(fork.blob(commit, path))
 }
 
-/// The path as the newest commit in the cache has it: the resolved content may
-/// predate a step a newer install already knows, and a home stuck behind it needs the file, not
-/// the argument about which pin is current.
+/// The path as the newest commit in the cache has it: a home behind needs the
+/// file, not the argument about the pin.
 fn newest_blob(home: &Path, path: &str) -> Option<Vec<u8>> {
     let fork = crate::fork::Fork::at(&crate::ship::checkout(home));
     if !fork.exists() {
@@ -177,8 +175,10 @@ fn run(script: &Path, home: &Path, db: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The interpreter this machine has: `python3`, then `python`, because Windows
-/// installs the second name and Unix the first.
+/// The interpreter this machine has: `python3`, then `python` -- Windows
+/// installs the second name, Unix the first.
+///
+/// # Invariant
 ///
 /// Found by asking, not by looking: Windows ships an execution alias named
 /// `python3.exe` that exists on PATH and exits 9009 when the Store app behind it

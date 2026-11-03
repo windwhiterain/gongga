@@ -114,13 +114,14 @@ pub enum UiEvent {
     Submit(String),
     /// Alt+Q: leave.
     Quit,
-    /// Nothing to submit: the completion asked for something only the
-    /// connection can answer, so the loop has to go round to send it.
+    /// Nothing to submit: the completion asked for something only the connection
+    /// can answer.
     ///
     /// # Invariant
     ///
-    /// A keystroke whose ask is never returned leaves it unsent: the loop owns the
-    /// connection and runs only when `next_event` returns.
+    /// The loop has to go round to send it, and a keystroke whose ask is never
+    /// returned leaves it unsent: the loop owns the connection and runs only when
+    /// `next_event` returns.
     Recomplete,
 }
 
@@ -851,7 +852,7 @@ impl Tui {
         };
         self.dirty = true;
         // A completion that asked for a peer's directory has to reach the loop,
-        // which owns the connection; the ask is taken there.
+        // which owns the connection.
         action.or_else(|| self.completer.wants().then_some(UiEvent::Recomplete))
     }
 

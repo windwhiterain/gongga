@@ -89,9 +89,8 @@ fn spawn_turn(d: &Dispatch, work: TurnWork) {
         agent
             .run_turn(&work.session, work.tasks, work.epoch, work.gate)
             .await;
-        // What the turn queued behind itself is this turn's to finish, and this is
-        // the one moment the gate is free without being taken: `set_session` from
-        // the agent's own shell lands here.
+        // What the turn queued behind itself is this turn's to finish, and the
+        // gate is free here without being taken.
         if session.has_move() {
             if let Some(gate) = session.try_claim() {
                 match sessions.apply_queued_move(&session).await {
@@ -668,9 +667,8 @@ async fn expand_message(
     session: &crate::session::SessionHandle,
     message: String,
 ) -> Result<crate::meta::Expanded, String> {
-    // Where this message's references are read: the machine the session stands on.
-    // A session with a remote and no connection yet says so, rather than answering
-    // from this machine's disk with a path that means something else there.
+    // Where this message's references are read: the machine the session stands on;
+    // a remote with no connection says so.
     let reader = session.reader();
     let source = match (&reader, session.owner()) {
         (Some(reader), crate::session::Machine::Remote) => crate::meta::Source::Remote(reader),
@@ -754,8 +752,8 @@ pub(crate) async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcom
 
 async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     let name = args["session"].clone();
-    // A leading `@` is the harness's own namespace: SPEC's monitor lives there,
-    // and a name a person could take is a name the harness cannot trust.
+    // A leading `@` is the harness's own namespace: a name a person could take
+    // is a name the harness cannot trust.
     if let Some(refusal) = crate::monitor::reserved(&name) {
         return Outcome::err(refusal);
     }
@@ -763,8 +761,8 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     if let Some(refusal) = crate::session::checked_name(&name) {
         return Outcome::err(refusal);
     }
-    // A caller that means to start its own session says so: selecting another one's
-    // transcript is the one outcome a name collision must never produce.
+    // A caller that means to start its own session says so: a name collision
+    // must never select another one's transcript.
     match args.get("must_create") {
         None => {}
         Some(raw) => match parse_flag(raw) {
@@ -800,8 +798,8 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             None => {
                 let stated_default = crate::config::DEFAULT_SESSION_MODEL;
                 if stated_default.is_empty() {
-                    // Same sentence the catalog would give a missing argument: this
-                    // is `--model`, required only when nothing else names a model.
+                    // The catalog's sentence for a missing argument: `--model`, needed
+                    // only when nothing else names a model.
                     return Outcome::err(missing_arguments("set_session", &["model".to_string()]));
                 }
                 match resolve_model(d, stated_default) {
@@ -827,9 +825,8 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             entry.model
         ));
     }
-    // A session that exists can be moved; one that does not is created where it
-    // says. Asking for where it already is costs nothing: no shell is torn down for
-    // a `--cwd` that names the directory it is standing in.
+    // A session that exists is moved; one that does not is created where it says.
+    // Asking where it already is costs nothing.
     let stated_cwd = args.get("cwd").map(String::as_str);
     // Three answers, not two: the flag was left out, it names this machine, or it
     // names a remote. See `session::RemoteAsk`.
@@ -973,8 +970,8 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     // Confirms the write and stops: what the session runs on is its pane's title.
     let message = match &moved {
         None => format!("session is now {name}"),
-        // Waiting for the turn is the normal answer for the one caller that wants a
-        // move at all -- the agent, inside the turn it is moving out of.
+        // Waiting for the turn answers the one caller that wants a move: the
+        // agent, in the turn it is moving out of.
         Some(crate::session::MoveOutcome::Queued(request)) => format!(
             "session {name} will move to {} {} when its turn ends",
             request
@@ -993,8 +990,8 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
                 0 => String::new(),
                 n => format!("; {n} shell(s) may still be running on the machine it left"),
             };
-            // A moved remote shell has not connected yet, so there is no directory
-            // to name; saying "at" and then nothing would read as a failure.
+            // A moved remote shell has not connected yet: no directory to name,
+            // and "at" and nothing would read as a failure.
             let where_now = if cwd.as_os_str().is_empty() {
                 "where its endpoint starts".to_string()
             } else {
@@ -1036,9 +1033,8 @@ fn same_directory(spelled: &std::path::Path, actual: &std::path::Path) -> bool {
     if spelled == actual {
         return true;
     }
-    // A canonicalising comparison would answer "no" for a path that does not
-    // exist, so this flattens what the platform ignores: separators, and case
-    // where the filesystem ignores it.
+    // A canonicalising comparison answers "no" for a path that does not exist;
+    // this flattens what the platform ignores.
     fn flatten(path: &std::path::Path) -> String {
         let text = path
             .to_string_lossy()
@@ -1058,8 +1054,8 @@ fn same_directory(spelled: &std::path::Path, actual: &std::path::Path) -> bool {
 fn resolve_model(d: &Dispatch, model: &str) -> Result<crate::providers::Entry, String> {
     match d.providers.resolve(model) {
         Ok(choice) => Ok(choice.entry),
-        // A bare name is not an error the roster should answer twice: the second
-        // search is only reached when the first found no such pair.
+        // A bare name is not an error the roster answers twice: the second
+        // search runs only when the first found no pair.
         Err(e) => d
             .providers
             .resolve_by_name(model)
@@ -1068,7 +1064,6 @@ fn resolve_model(d: &Dispatch, model: &str) -> Result<crate::providers::Entry, S
     }
 }
 
-/// `30%`, `30`, or `0` for "never notice"; anything else is refused, not rounded.
 /// `--must_create` as a value, or what is wrong with it: never a silent default.
 fn parse_flag(raw: &str) -> Result<bool, String> {
     match raw.trim() {
@@ -1081,6 +1076,7 @@ fn parse_flag(raw: &str) -> Result<bool, String> {
     }
 }
 
+/// `30%`, `30`, or `0` for "never notice"; anything else is refused, not rounded.
 fn parse_percent(raw: &str) -> Result<u8, String> {
     let trimmed = raw.trim().trim_end_matches('%').trim();
     let value: u16 = trimmed
@@ -1297,9 +1293,8 @@ async fn events(d: &Dispatch, args: &Args) -> Outcome {
         Ok(rows) => rows,
         Err(e) => return Outcome::err(e.to_string()),
     };
-    // Names for the rows that have one: a reader should not have to hold the
-    // session table in its head to know whose `turn_end` it just read. Read once,
-    // as a map: a page is up to `limit` rows and one query per row would be silly.
+    // Names for the rows that have one, read once as a map: one query per row
+    // would be silly.
     let names: std::collections::HashMap<i64, String> = match d.sessions.list() {
         Ok(list) => list.into_iter().map(|r| (r.id, r.name)).collect(),
         Err(_) => std::collections::HashMap::new(),
@@ -1461,8 +1456,8 @@ async fn finish_delete(d: &Dispatch, name: &str, was_busy: bool, dropped: usize)
     }
     match d.sessions.delete(name) {
         Ok(true) => {
-            // What it learnt about its own prefix goes with it: a new session of the
-            // same name is a new conversation, and must not be warmed by the old.
+            // What it learnt about its own prefix goes with it: a new session of
+            // the same name is a new conversation.
             if let Err(e) = d.store.forget_prefix_layout(name) {
                 tracing::warn!(session = %name, error = %e, "could not forget the prefix layout");
             }
@@ -1574,9 +1569,8 @@ async fn cancel(d: &Dispatch) -> Outcome {
         pending,
         detached
     );
-    // Said on the event stream as well as in the result: the result is one line to
-    // whoever asked, and this is what every attached window needs, because the drain
-    // that follows looks like silence and silence reads as a disconnection.
+    // Said on the event stream too: the drain that follows reads as a
+    // disconnection, and every attached window needs this.
     let notice = format!(
         "the server is stopping: it keeps answering until the {} running turn(s) finish",
         running.len()
@@ -1603,15 +1597,20 @@ fn recovery_groups(
 
 /// Whether this row is the server speaking rather than a person waiting.
 ///
-/// A notice about a background job is news for a session that is already working;
-/// on its own it must not cost an idle session a turn. See
-/// `docs/notes/server-commands.md`.
+/// # Invariant
+///
+/// A notice about a background job is news for a working session; on its own it
+/// must not cost an idle session a turn. See `docs/notes/server-commands.md`.
 fn is_notice(task: &PendingTask) -> bool {
     task.payload.get("notice").is_some()
 }
 
-/// The rows a session owes a *turn* for: an operator message, or a turn already
-/// begun. A notice alone is delivered at the next step boundary instead.
+/// The rows a session owes a *turn* for.
+///
+/// # Invariant
+///
+/// An operator message or a turn begun; a notice alone waits for the next step
+/// boundary.
 fn owes_a_turn(tasks: &[PendingTask]) -> bool {
     tasks
         .iter()
@@ -1645,15 +1644,13 @@ pub fn nudge_inboxes(d: &Dispatch) -> usize {
     started
 }
 
-/// Replays interrupted work with exactly one recovery owner per session.
-/// Keeps what a stream had said when the process stopped mid-answer, in every session.
+/// Replays interrupted work with one recovery owner per session.
 ///
 /// # Invariant
 ///
-/// Every draft becomes a row marked `interrupted`, so half a message is half a message
-/// in the transcript rather than nothing at all. Run with the same eagerness as
-/// [`answer_open_calls`]: before anything serves, because the next request is built
-/// from these rows. See `docs/notes/server-store.md`.
+/// Every draft becomes a row marked `interrupted`, so half a message is half a
+/// message rather than nothing at all. Run before anything serves, because the
+/// next request is built from these rows. See `docs/notes/server-store.md`.
 pub fn settle_drafts(d: &Dispatch) -> usize {
     let Ok(sessions) = d.store.list_sessions() else {
         return 0;
@@ -1682,12 +1679,10 @@ pub fn settle_drafts(d: &Dispatch) -> usize {
 ///
 /// # Invariant
 ///
-/// Run before anything may build a request, and for every session rather than only the
-/// ones with owed work: a turn is not the only thing a dead run leaves behind, and a
-/// transcript with an unanswered call is a session that fails every turn until somebody
-/// looks at it. Appends the answer rather than inventing one while writing the body --
-/// the difference is that this row is stored, so it is the same answer for every later
-/// request instead of a fresh guess each time. See `docs/notes/server-store.md`.
+/// Run before anything may build a request, and for every session: a transcript
+/// with an unanswered call fails every turn until somebody looks at it. The
+/// answer is appended, not invented while writing the body, so it is the same
+/// answer for every later request. See `docs/notes/server-store.md`.
 pub fn answer_open_calls(d: &Dispatch) -> usize {
     let Ok(sessions) = d.store.list_sessions() else {
         return 0;
@@ -1735,8 +1730,8 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
             }
             continue;
         };
-        // A notice about a shell the last run took with it names a buffer nothing
-        // can read now: delivering it would be a turn spent on stale news.
+        // A notice about a shell the last run took names a buffer nothing can
+        // read: delivering it is a turn on stale news.
         let mut kept = Vec::with_capacity(tasks.len());
         let mut dropped = 0;
         for task in tasks {
@@ -1821,7 +1816,7 @@ pub fn session_info(d: &Dispatch, row: &crate::store::SessionRow) -> protocol::S
         .as_deref()
         .and_then(|model| d.providers.place(model));
     // The roster's spelling, else the name the session itself gave. Never the
-    // server's own: that is not a model any session runs on.
+    // server's own: no session runs on that.
     let model = entry
         .as_ref()
         .map(|e| e.model.clone())

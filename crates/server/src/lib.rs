@@ -96,10 +96,11 @@ impl Default for Args {
 
 /// The shape of one log line.
 ///
-/// `json` exists because everything a benchmark wants to know -- a step, a
-/// request's latency, a retry, a turn's outcome -- was already in the log and
-/// only reachable by matching prose that carries colour escapes. A tool should
-/// never have to parse that.
+/// # Invariant
+///
+/// `json` exists because a benchmark wants a step, a latency, a retry or a
+/// turn's outcome, and the text log carries them only as prose with colour
+/// escapes. See `docs/notes/server-lib.md`.
 #[derive(Debug, Clone, Copy, Default, clap::ValueEnum)]
 pub enum LogFormat {
     #[default]
@@ -138,9 +139,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             .json()
             .with_env_filter(filter)
             .init(),
-        // Colour only for a terminal. Written to a file, the escapes landed
-        // inside the tokens, and a reader matching `outcome=Done` saw a
-        // finished turn as one that never ended.
+        // Colour only for a terminal: written to a file, the escapes landed
+        // inside the tokens.
         LogFormat::Text => tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_ansi(std::io::stdout().is_terminal())
@@ -160,18 +160,17 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         }
     }
 
-    // Before anything is spawned: what the supervisor said about *this* process
-    // must not travel into the shells and scripts this process starts.
+    // Before anything is spawned: what the supervisor said about this process
+    // must not travel into what it starts.
     supervise::remember();
     let cfg = config_from(&args)?;
     // Claim the home before opening the database: one server per home.
     let _instance = instance::InstanceLock::acquire(&cfg.home)?;
-    // Off this thread before anything reads a roster: the community copy may not
-    // be here yet, and no start waits for a network. See `docs/notes/server-agents.md`.
+    // Off this thread before anything reads a roster: no start waits for a
+    // network. See `docs/notes/server-agents.md`.
     agents::start();
-    // Before anything reads this home: which content this start installs, and one
-    // migrator per version step for a home that is behind. Resolved once, so the
-    // migrator and the install cannot disagree about which commit is current.
+    // Before anything reads this home: the content this start installs and the
+    // migrator, resolved once so they agree.
     ship::prepare(&cfg.home);
     let migrated = migrate::bring_forward(&cfg.home, &cfg.db_path)?;
     if !migrated.steps.is_empty() {
@@ -215,15 +214,11 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     );
 
     let store = store::Store::open(&cfg.db_path)?;
-    // A home with no usable model refuses here rather than on a first turn, and
-    // what checks it is building the client. Sessions build their own from the
-    // same config, so this one is only the check.
+    // A home with no usable model refuses here, not on a first turn; sessions
+    // build their own client.
     drop(LlmClient::new(&cfg.model)?);
-    // A script drives this server by the same name a shell does: `gongga`, which
-    // is this program under the command's name in the home's `bin`.
-    // Before any shell exists: the command it types has to be there, and a
-    // server started by something other than the command layer has none beside
-    // it. Best effort -- a server with no command still serves, and says so.
+    // A script drives this server by the name a shell types: `gongga`. The
+    // command has to be there before any shell exists.
     let command = shell_command::ensure_pair(&cfg.home);
     if command.is_none() {
         shell_command::warn_missing_command(&cfg.home);
@@ -232,16 +227,16 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         ("GONGGA_SERVER".to_string(), cfg.bind.to_string()),
         ("GONGGA_HOME".to_string(), cfg.home.display().to_string()),
     ];
-    // Named and absolute, so a script or a launcher does not have to resolve it
-    // through a `PATH` that a shell may have rewritten.
+    // Named and absolute, so a script does not resolve it through a `PATH` a
+    // shell may have rewritten.
     if let Some(command) = &command {
         base_env.push((
             "GONGGA_CLI".to_string(),
             command.to_string_lossy().into_owned(),
         ));
     }
-    // A script's interpreter reads a native `PATH`; a shell this server starts
-    // reads a POSIX one. Both begin with the same directory.
+    // A script's interpreter reads a native `PATH`; a shell reads a POSIX one.
+    // Both begin with the same directory.
     let mut script_env = base_env.clone();
     script_env.push((
         "PATH".to_string(),
@@ -324,8 +319,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         shutdown: CancellationToken::new(),
     });
 
-    // Before any turn: a run that died inside a tool leaves a call no request can
-    // carry, and the answer is a row rather than an invention at request time.
+    // Before any turn: a run that died inside a tool leaves a call no request
+    // can carry, and the answer is a row.
     let answered = commands::answer_open_calls(&dispatch);
     if answered > 0 {
         tracing::info!(answered, "transcript repaired before serving");

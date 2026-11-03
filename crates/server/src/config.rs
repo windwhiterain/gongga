@@ -20,15 +20,12 @@ pub const DEFAULT_API_KEY_ENV: &str = "MINIMAX_CN_API_KEY";
 ///
 /// # Invariant
 ///
-/// A session's model belongs to the session: `set_session --model` writes it, and
-/// nothing re-derives it from the `[model]` section above. That section says what
-/// *the server itself* thinks with, never what a session runs on.
+/// A session's model belongs to the session: `set_session --model` writes it,
+/// and nothing re-derives it from the `[model]` section above.
 ///
-/// This is a constant, not a config key, because a config key would be a server
-/// setting quietly deciding what every session runs on. A build that leaves it
-/// empty makes `set_session` require `--model` instead: a session with no model
-/// cannot send a request at all, and refusing at the command beats failing at the
-/// first turn.
+/// A constant, not a config key: a config key would decide what every session
+/// runs on. An empty one makes `set_session` require `--model`: refusing at the
+/// command beats failing at the first turn.
 pub const DEFAULT_SESSION_MODEL: &str = "deepseek-official/deepseek-flash";
 
 /// Tool output larger than this is capped and spilled to disk, keeping `cat`s out
@@ -39,12 +36,18 @@ pub const DEFAULT_COMPRESS_ABOVE_TOKENS: u64 = 40_000;
 
 /// How often a prefix the provider once held is assumed to be gone.
 ///
-/// A hyperparameter, not a measurement: it turns the roster's rates into what a warm
-/// item is *expected* to be worth. See `docs/notes/server-prefix-cache.md`.
+/// # Invariant
+///
+/// A hyperparameter, not a measurement: it turns the roster's rates into what a
+/// warm item is expected to be worth. See `docs/notes/server-prefix-cache.md`.
 pub const DEFAULT_CACHE_INVALID_RATE: f64 = 0.0;
 
-/// The lifetime a cached prefix gets when this machine states none; `0` means the
-/// roster decides, and a provider it says nothing about is left never expiring.
+/// The lifetime a cached prefix gets when this machine states none.
+///
+/// # Invariant
+///
+/// `0` means the roster decides, and a provider it says nothing about is left
+/// never expiring.
 pub const DEFAULT_CACHE_TTL_SECS: u64 = 0;
 
 /// The share of an indexed entry's lines that may change before it is re-sent.

@@ -75,6 +75,7 @@ note is a bug.
 | [`server-tools-detached.md`](server-tools-detached.md) | `crates/server/src/tools/detached.rs` |
 | [`server-tools-index-skill.md`](server-tools-index-skill.md) | `crates/server/src/tools/index_skill.rs` |
 | [`server-tools-job.md`](server-tools-job.md) | `crates/server/src/tools/job.rs` |
+| [`server-transcript.md`](server-transcript.md) | `crates/server/src/transcript.rs` |
 
 ### cli
 

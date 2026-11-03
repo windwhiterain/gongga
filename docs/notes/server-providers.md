@@ -290,9 +290,13 @@ is the one this server actually speaks.
 
 ## credential
 
-The environment wins over the literal: a file that names both is a file waiting
-for the literal to be rotated out, and an exported variable is the operator's
-most recent word on the subject.
+The keystore wins over the environment variable. A variable is copied into a
+process once, at creation, so a stale one would shadow every edit to the file
+and make a rotation need a restart; the keystore is read again on every roster
+generation, so an edit takes effect on the next request.
+
+The environment is the second source: for a one-off (`FOO_KEY=... cmd`) or a
+machine that has not written a keystore.
 
 ## tokens_for_percent
 

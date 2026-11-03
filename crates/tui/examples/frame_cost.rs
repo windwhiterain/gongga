@@ -84,10 +84,13 @@ fn main() {
 
 /// One frame as the window draws it: the sessions' panes, then the command line.
 ///
+/// # Invariant
+///
 /// The columns above are one window read at one width, which a frame is not: the
 /// command area is as wide as the window and a session's pane is not, so a log with
-/// one width for all of them lays itself out once per pane and per frame. This is
-/// the measurement that keeps that from coming back.
+/// one width for all of them lays itself out once per pane and per frame.
+///
+/// See `docs/notes/tui-frame_cost.md`.
 fn frame_of_two_panes(width: usize, height: usize) {
     let frames = 100;
     for count in [100usize, 1_000, 5_000, 20_000] {

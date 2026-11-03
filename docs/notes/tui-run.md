@@ -175,3 +175,7 @@ server's, so `whose_server` and `stops_a_server` accept either match. With only 
 greeting's pid, a window would print its own server as `adopted #…`, and the way
 out would cancel a server it believed it had not started. See
 `server-supervise.md`.
+
+Pids and not an address: a `connect_server` can move the window onto a server it
+did not start, and an address would then say the wrong thing -- the window would
+read another build's answers as if they were its own.

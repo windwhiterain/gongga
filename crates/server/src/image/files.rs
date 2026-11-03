@@ -23,8 +23,10 @@ pub struct Files {
     scope: String,
     /// Resolved this request: a copy is asked about once, however often it is named.
     ///
-    /// Shared rather than copied, so the clone a pending future carries adds nothing to
-    /// what the next row asks and everything to what it does not have to ask twice.
+    /// # Invariant
+    ///
+    /// Shared rather than copied, so the clone a pending future carries adds nothing
+    /// to what the next row asks and everything to what it need not ask twice.
     resolved: std::sync::Arc<std::sync::Mutex<HashMap<i64, Option<String>>>>,
 }
 
@@ -94,8 +96,8 @@ impl Files {
         {
             return Some(upload.file_id);
         }
-        // Not reusable: either it expired, or there was never one. The old row is
-        // replaced by the new one, so a stale id cannot come back.
+        // Not reusable: it expired, or there was never one. The old row is
+        // replaced, so a stale id cannot come back.
         let bytes = crate::image::pictures::read(copy)?;
         let media_type = self.media_type(copy)?;
         let uploaded = match self.upload(copy, &media_type, &bytes).await {
@@ -143,7 +145,7 @@ impl Files {
     }
 
     /// Deletes up to `limit` of this endpoint's files, oldest-expiring first, and
-    /// forgets each one it managed to delete. Returns how many went.
+    /// forgets each one it deleted.
     async fn reclaim(&self, limit: usize) -> usize {
         let Ok(candidates) = uploads::oldest(&self.store, &self.scope, limit) else {
             return 0;

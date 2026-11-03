@@ -19,8 +19,8 @@ static OWNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new
 /// The pid that owns it, once one does; 0 is nobody.
 static OWNER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-/// The pid this server follows. The greeting carries it, so a client can say
-/// whether it is the window in charge. See `docs/notes/server-signal.md`.
+/// The pid this server follows: the greeting carries it, so a client can say
+/// whether it is the window in charge.
 pub fn owner() -> Option<u32> {
     match OWNER.load(Ordering::SeqCst) {
         0 => None,
@@ -91,8 +91,8 @@ pub fn adopt(pid: u32) -> bool {
     claimed
 }
 
-/// Takes `pid` as the owner whatever the claim flag says: `--parent` is decided
-/// before any connection, so it wins by arriving first rather than by asking.
+/// Takes `pid` as the owner whatever the flag says: `--parent` is decided before
+/// any connection, so it wins by arriving.
 fn adopt_pid(pid: u32) {
     OWNED.store(true, Ordering::SeqCst);
     OWNER.store(pid, Ordering::SeqCst);

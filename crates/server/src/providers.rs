@@ -24,8 +24,8 @@ pub struct Provider {
     /// lifetime nobody stated is not one to invent. See
     /// `docs/notes/server-prefix-cache.md`.
     pub cache_ttl_secs: Option<u64>,
-    // No `key` here on purpose: a roster is a git checkout, and a key in one is a
-    // key in git. Keys come from `~/.agents/keys.toml` (see `credential`).
+    // No `key` here: a roster is a git checkout, and a key in one is a key in
+    // git. Keys come from `~/.agents/keys.toml`.
     /// The variable that should hold the key instead, if one is named.
     key_env: Option<String>,
     /// How to read what is left, in the roster's own order of preference.
@@ -176,8 +176,8 @@ pub struct Entry {
     pub builtin_tools: Vec<String>,
     /// What the roster says this model charges, for the prefix cache's arithmetic.
     pub price: Option<Price>,
-    /// How long a cached prefix lives in the tier a request naming no cache mode lands
-    /// in; `None` when the provider states none.
+    /// How long a cached prefix lives in the tier a request without a cache mode
+    /// lands in; `None` if it states none.
     pub cache_ttl_secs: Option<u64>,
     /// The roster's tier for this model, as written.
     pub tier: Option<String>,
@@ -365,12 +365,8 @@ impl Catalog {
     ///
     /// A provider whose credential resolves takes part; one that names a key this
     /// machine does not have is left out, because offering it would offer a model
-    /// on which every request fails. See `docs/notes/server-providers.md`.
-    ///
-    /// "Resolves" means the same thing here as in `resolve`: the keystore first,
-    /// then the variable. Reading only the environment -- which is what this did
-    /// -- offered the two providers a shell happened to export and hid every key
-    /// a machine keeps in `~/.agents/keys.toml`, which is where they live now.
+    /// on which every request fails. "Resolves" means the keystore first, then
+    /// the variable. See `docs/notes/server-providers.md`.
     pub fn models(&self) -> Vec<String> {
         self.models_with_kept(&lookup_env, &|id| self.keys.get(id).cloned())
     }
@@ -553,8 +549,8 @@ impl Catalog {
             model_title: found.name.clone(),
             base_url: endpoint.base_url.trim_end_matches('/').to_string(),
             api_key_env: provider.key_env.clone(),
-            // The keystore's answer, not a roster field: what the server falls back
-            // to for its own model, and what `credential` already prefers.
+            // The keystore's answer, not a roster field: what the server falls
+            // back to for its own model.
             key: self.keys.get(&provider.id).cloned(),
             context: found.context,
             reasoning_levels: found.reasoning_levels.clone(),
@@ -587,32 +583,20 @@ fn openai_endpoint(provider: &Provider) -> Option<&Endpoint> {
         })
 }
 
-/// The key, and what to call it in a message.
+/// The key, and what to call it in a message: a provider's key, from the one
+/// place a key may live.
 ///
 /// # Invariant
 ///
-/// An exported environment variable wins over a literal key in the file.
+/// Two sources, and the keystore wins: `~/.agents/keys.toml`, which git does
+/// not track, and the variable `key_env` names.
+///
+/// A variable is copied into a process once, so a stale one would shadow
+/// every edit to the file.
+///
+/// A `key` in the roster is **ignored**: the roster is a git checkout.
 ///
 /// See `docs/notes/server-providers.md`.
-/// A provider's key, from the one place a key may live.
-///
-/// # Invariant
-///
-/// Only two sources, and the keystore wins:
-///
-/// 1. `~/.agents/keys.toml` -- a file git does not track, stamped with the roster
-///    so an edit re-reads the catalog and takes effect on the next request.
-/// 2. the environment variable `key_env` names -- for a one-off (`FOO_KEY=... cmd`)
-///    or a machine that has not written a keystore.
-///
-/// The keystore must beat the environment, not the other way round: a variable is
-/// copied into a process once, at creation, so a stale one would shadow every edit
-/// to the file and make rotation require a restart -- which is the defect this
-/// ordering removes.
-///
-/// A `key` written in the roster is **ignored**. The roster is a git checkout, and
-/// a secret in one is a secret in git; leaving that path open invites exactly the
-/// leak this design exists to prevent.
 fn credential(
     provider: &Provider,
     lookup: &dyn Fn(&str) -> Option<String>,
@@ -852,8 +836,8 @@ struct Live {
     read: bool,
     stamps: Vec<Option<Stamp>>,
     catalog: Arc<Catalog>,
-    /// The last read that parsed, kept so an edit that breaks the TOML leaves
-    /// running sessions on the roster they were already using.
+    /// The last read that parsed: a broken edit leaves running sessions on the
+    /// roster they already use.
     last_good: Option<Arc<Catalog>>,
 }
 
@@ -894,10 +878,7 @@ static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::
 /// # Invariant
 ///
 /// `[keys]` maps a provider id to its key: `<id> = "sk-..."`. It is read on every
-/// roster generation, so editing it hot-updates the credential without a restart
-/// -- which is the whole reason it is not the environment: Windows copies a
-/// process's environment once, at creation, and `setx` can never reach a server
-/// that is already running.
+/// roster generation, so an edit hot-updates the credential without a restart.
 ///
 /// It is never committed: `~/.agents/` is not a repository, and the file is
 /// created `0600` where the platform honours that.
@@ -934,8 +915,8 @@ fn roster_paths() -> Vec<PathBuf> {
 }
 
 impl Live {
-    /// Whether the roster on hand still matches the files it came from -- the
-    /// roster, and the keystore beside it, since a key is a file edit too.
+    /// Whether the roster on hand still matches the files it came from: the
+    /// roster, and the keystore beside it.
     fn is_fresh(&self, paths: &[PathBuf]) -> bool {
         self.read && self.stamps == stamps(paths)
     }
@@ -971,9 +952,8 @@ pub fn roster() -> Arc<Catalog> {
             last_good: None,
         })
     });
-    // The keystore is watched as a file of its own: rotating a key is an edit to
-    // it and nothing else, so leaving it out here would make the one operation
-    // this exists for the one operation that needs a restart.
+    // The keystore is watched as a file of its own: rotating a key is an edit
+    // to it and nothing else.
     let mut paths = roster_paths();
     paths.push(keys_path());
     if let Ok(guard) = live.read() {
@@ -982,10 +962,8 @@ pub fn roster() -> Arc<Catalog> {
         }
     }
     let fresh = Arc::new(read_fresh(&paths));
-    // A file that stops parsing is an edit in flight, not a machine that has no
-    // providers: the list a session was already running on is still the best
-    // answer there is, and the alternative is every turn failing until somebody
-    // notices the conflict markers.
+    // A file that stops parsing is an edit in flight: the last good list is
+    // still the best answer there is.
     let previous = live.read().ok().and_then(|guard| guard.last_good.clone());
     let fallback = match (fresh.problem(), previous) {
         (Some(problem), Some(good)) => Some(Arc::new(good.blaming(problem.to_string()))),
@@ -999,9 +977,8 @@ pub fn roster() -> Arc<Catalog> {
         guard.read = true;
         guard.stamps = stamps(&paths);
         guard.catalog = catalog.clone();
-        // Only a read that parsed may become the fallback. A copy that is
-        // already blaming the file must not replace the roster it was made
-        // from, or the next failure would serve a list no edit ever produced.
+        // Only a read that parsed may become the fallback: a blaming copy must
+        // not replace the roster it came from.
         if catalog.problem().is_none() {
             guard.last_good = Some(catalog.clone());
         }

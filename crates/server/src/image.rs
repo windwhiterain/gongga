@@ -58,8 +58,8 @@ impl ImageRef {
         row
     }
 
-    /// Reads one back. A row written by an older build that carried `file_id` reads as
-    /// the copy it also recorded: the id is forgotten, not trusted.
+    /// Reads one back. A row from an older build that carried `file_id` reads as
+    /// the copy: the id is forgotten, not trusted.
     pub fn from_json(value: &Value) -> Option<Self> {
         Some(Self {
             path: value.get("path")?.as_str()?.to_string(),

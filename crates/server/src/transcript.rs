@@ -12,11 +12,10 @@ use rusqlite::{Connection, OpenFlags, params};
 ///
 /// What comes back is the stored item, byte for byte: the request's shape was
 /// decided when the row was appended, so a walk cannot disagree with an earlier
-/// request about what a row is. It holds its own connection rather than the
-/// store's: a request reads while it is writing to the network, and the shared
-/// connection has to stay free for the turn waiting on it. `upto_seq` is fixed
-/// when the walk is made, so every row was stored before the request began --
-/// which is what lets a retry replay one window.
+/// request about what a row is.
+///
+/// It holds its own connection rather than the store's, and `upto_seq` is fixed
+/// when the walk is made. See `docs/notes/server-transcript.md`.
 pub struct Transcript {
     conn: Connection,
     session_id: i64,
@@ -66,8 +65,8 @@ impl Iterator for Transcript {
             Err(e) => return Some(Err(e.into())),
         };
         self.after_seq = seq;
-        // The pictures ride in `display`, which is what the row recorded when it was
-        // written: an item names a copy, and the copy is read when a request is built.
+        // The pictures ride in `display`, what the row recorded: a copy is read
+        // when a request is built.
         let pictures = match kind.as_str() {
             "tool_result" | "text" => {
                 let value = serde_json::from_str(&display).unwrap_or_default();

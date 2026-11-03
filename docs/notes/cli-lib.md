@@ -25,6 +25,11 @@ Wire encoding stays here too: `Link` is the only thing that speaks the
 protocol, which is what lets a front-end hold a link without learning what a
 frame is.
 
+`parse_argv` names the program twice, as clap's `name` and as its `bin_name`,
+because `bin_name` is the word clap prints in `Usage:` and it defaults to
+`argv[0]`: without it a bundle's `gongga cli --help` answers as
+`gongga-cli.exe`.
+
 ## Connection
 
 The parts of the command line that say *where* to connect.

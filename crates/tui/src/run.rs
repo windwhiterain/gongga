@@ -113,14 +113,12 @@ fn classified(line: &str) -> Option<Result<Vec<String>, String>> {
 }
 
 /// One input line, handed to the command layer or sent as a message.
-/// Sends what the completion asked for, and reports whether the popup is now out
-/// of date.
 ///
 /// # Invariant
 ///
-/// Outside the key handler, because a completion is answered synchronously and a
-/// peer's directory cannot be: the popup shows what has arrived, and this is what
-/// goes and gets the rest. See `docs/notes/tui-run.md`.
+/// Sends what the completion asked for, and reports whether the popup is out of
+/// date. It runs outside the key handler, because a completion is answered
+/// synchronously and a peer's directory cannot be.
 async fn answer_completion(
     client: &mut cli::Client,
     link: Option<&cli::Link>,
@@ -188,16 +186,16 @@ fn starts_a_server(client_only: bool) -> bool {
 
 /// Whether the window on the way out stops the server it started.
 ///
+/// See `docs/notes/tui-run.md`.
+///
 /// # Invariant
 ///
 /// Only the *process* this window spawned: a home somebody else already serves
 /// refuses the lock, so this window's child exits at once and the pid answering
-/// the dial is somebody else's. Comparing pids is what makes that answerable —
-/// an address would say the wrong thing, because a `connect_server` can move the
-/// window onto a server it did not start.
-/// `spawned` is what `spawn` answered, which is the watchdog's pid when the
-/// server runs under one, so either pid matching means this window started it.
-/// See `docs/notes/tui-run.md`.
+/// the dial is somebody else's: comparing pids is what makes it answerable.
+///
+/// `spawned` is what `spawn` answered: the watchdog's pid when the server runs
+/// under one, so either pid means this window started it.
 fn stops_a_server(spawned: Option<u32>, answering: Answering) -> bool {
     let Some(ours) = spawned else {
         return false;
@@ -278,9 +276,8 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
     let mut next_try = tokio::time::Instant::now();
     let mut backoff = RECONNECT_MIN;
     let mut attempts: u32 = 0;
-    // Started once, before any dial; what it spawned is its to stop. A window
-    // that starts a server owns the address, so whatever serves it now is stopped
-    // first -- otherwise this window would silently read another build's answers.
+    // Started once, before any dial; what it spawned is its to stop, so the
+    // server on the address is stopped first.
     let spawned: Option<u32> = match starts_a_server(args.client_only) {
         true => match cli::server_of(&args.conn) {
             Ok(addr) => {
@@ -383,10 +380,8 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                 if let Err(e) = client.handle_bytes(&bytes, &mut TuiSink(&mut ui)) {
                     TuiSink(&mut ui).say(LineKind::Error, &format!("bad message: {e}"));
                 }
-                // Everything already waiting goes in before the next frame is drawn:
-                // one paint per burst, not per delta. Painting per message is what
-                // let a stream outrun the loop, and a reader that stops reading
-                // collapses the link's window and stalls every command behind it.
+                // Everything waiting goes in before the next frame: one paint
+                // per burst, not per delta.
                 if let Some(open) = link.as_mut() {
                     while let Some(more) = open.try_recv() {
                         if let Err(e) = client.handle_bytes(&more, &mut TuiSink(&mut ui)) {
@@ -450,8 +445,8 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                 }
             }
         }
-        // After the step, never during it: a key handler answers completion
-        // synchronously, and a peer's directory is not synchronous.
+        // After the step, never during it: a peer's directory is not a
+        // synchronous answer.
         answer_completion(&mut client, link.as_ref(), &mut ui, &mut drawn_listings).await;
     };
 

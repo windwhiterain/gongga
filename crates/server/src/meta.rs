@@ -397,9 +397,8 @@ async fn picture(
         return None;
     }
     let mut reference = ImageRef::new(path, media);
-    // The copy is the whole record: no upload happens here. The file a request names
-    // this picture by is resolved when the request is written, because the provider
-    // deletes its files and a message may be sent again months later.
+    // The copy is the whole record: no upload happens here. The provider's file
+    // is resolved when the request is written.
     reference.copy = crate::image::pictures::remember(store, &reference.path, media, &bytes).ok();
     Some(reference)
 }

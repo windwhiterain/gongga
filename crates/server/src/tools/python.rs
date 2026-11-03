@@ -1,11 +1,10 @@
 //! Persistent Python interpreters, named like the persistent shells.
 //!
-//! The interpreter is the environment's own: nothing is embedded. A small driver
-//! on the far side reads one JSON request per line and answers with one JSON line,
-//! so the protocol never depends on prompts, markers or shell quoting. State lives
-//! in the driver's namespace between calls.
+//! # Invariant
 //!
-//! See `docs/notes/server-tools-python.md`.
+//! The interpreter is the environment's own: nothing is embedded. A driver on the
+//! far side reads one JSON request per line and answers with one JSON line, so
+//! the protocol never depends on prompts, markers or shell quoting.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -817,8 +816,8 @@ impl Tool for ListPythonTool {
     }
 }
 
-/// One file operation: a fresh driver, one request, one answer. File state is the
-/// file, not a namespace, so a process that outlives the call would buy nothing.
+/// One file operation: a fresh driver, one request, one answer. File state is
+/// the file, not a namespace.
 async fn one_shot(
     program: Option<&Path>,
     args: &[String],

@@ -511,9 +511,8 @@ fn layout_input(text: &str, cursor: usize, width: usize) -> InputLayout {
 }
 
 fn draw_header(f: &mut Frame, s: &Screen, area: Rect) {
-    // The bar spans the row: a coloured strip that stops where the text stops reads
-    // as a selection, not as a header.
-    // The server comes first: whose build is answering explains the status beside it.
+    // The bar spans the row: a strip that stops where the text stops reads as
+    // a selection. The server comes first.
     let mut title = match &s.server {
         Some(server) => format!(" gongga · {} · {} ", server.label(), s.status),
         None => format!(" gongga · {} ", s.status),

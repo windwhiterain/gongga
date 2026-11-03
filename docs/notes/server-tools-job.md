@@ -18,6 +18,16 @@ miss.
 Only Windows needs this. On unix the shell is spawned into its own process
 group and `kill -TERM -<pid>` already means the tree.
 
+## the limit flags
+
+Two flags, and the pair is the whole point: `KILL_ON_JOB_CLOSE` ends the tree when
+the handle closes, and `BREAKAWAY_OK` lets a child ask to leave the job. Without
+the second, a process that must outlive its shell could not survive at all.
+
+`BREAKAWAY_OK` rather than `SILENT_BREAKAWAY_OK`: `SILENT` puts every child
+outside the job whether it asks or not, and a session that cannot take its own
+processes with it breaks a promise this server makes.
+
 ## ProcessJob
 
 Dropping it terminates the shell and every process the shell started, which is

@@ -362,9 +362,7 @@ impl Entry {
             return;
         }
         self.starts.clear();
-        // The top border owns the label. A structured body starts immediately
-        // inside the left border, not behind another copy of the mark's padding.
-        // Symbols and labels are title chrome, never a hanging indent on the body.
+        // The top border owns the label; the body starts inside the left border.
         let mut wrap = Wrap { width, col: 0 };
         // The first row of any block exists before a character is wrapped into it.
         self.starts.push(0);
@@ -475,8 +473,8 @@ impl Entry {
             };
             return Cow::Owned(format!("{label}{summary}"));
         }
-        // The title is one horizontal unit: symbol, label, then body. The
-        // title alone is clipped, never the body's wrapping or its continuation.
+        // The title is one horizontal unit: symbol, label, then body. Only the
+        // title is clipped.
         let row = self.row(row);
         match labelled {
             false => Cow::Borrowed(row),
@@ -1226,8 +1224,8 @@ impl Log {
     /// and so leaves nothing inside to scroll -- moves nothing. No other number is
     /// consulted, so one cell behaves the same way whatever the cap is.
     pub fn scroll_block(&mut self, at: usize, rows: i64) -> bool {
-        // Use the row offsets of the frame the pointer actually landed on.
-        // Reflowing a resized window before the next draw would move the hit.
+        // The row offsets of the frame the pointer landed on: reflowing before
+        // the next draw would move the hit.
         let Some(entry) = self.entries.get(at) else {
             return false;
         };
@@ -1665,7 +1663,7 @@ impl Log {
                 let body = entry.rows().min(cap);
                 let boxed = entry.boxed();
                 // A box keeps the row the operator left it on; any other capped
-                // block keeps its newest rows. See `docs/notes/tui-log.md`.
+                // block keeps its newest rows.
                 let head = match boxed {
                     true => entry.inside(cap),
                     false => entry.rows().saturating_sub(body),

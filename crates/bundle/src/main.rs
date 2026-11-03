@@ -89,8 +89,8 @@ fn wanted_program() -> (String, usize) {
     (DEFAULT.to_string(), 0)
 }
 
-/// The words this file answers to. `serve` is absent: it is the layer's own.
-/// `runner` is what a peer's `ssh` runs, so a peer needs only this same file.
+/// The words this file answers to: `serve` is the layer's own, `runner` is what
+/// a peer's `ssh` runs.
 const WORDS: [(&str, &str); 5] = [
     ("cli", "gongga-cli"),
     ("tui", "gongga-tui"),

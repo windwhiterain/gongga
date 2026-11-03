@@ -143,7 +143,7 @@ pub fn path(home: &Path) -> String {
             .map(|entry| skill::shell_path(entry)),
     );
     // A shell hands its own `PATH` to the next server, which would add these
-    // entries again on every handover: kept once, the first name still wins.
+    // entries again on every handover.
     unique(parts).join(":")
 }
 
@@ -206,7 +206,9 @@ fn canonical(entry: &str) -> String {
 
 /// This home's `bin`, then whatever this process inherited, without empty entries.
 ///
-/// SPEC: a shell reads an empty `PATH` entry as "the current directory", and a
+/// # Invariant
+///
+/// SPEC: a shell reads an empty `PATH` entry as "the current directory", so a
 /// shell that resolves commands out of wherever it happens to be is an accident
 /// waiting for a file named `gongga`.
 fn entries(home: &Path) -> Vec<PathBuf> {
