@@ -21,8 +21,14 @@ peer's entry.
 
 ## serve (accept loop)
 
-`cancel` stops acceptance; the loop below then waits for the turns that are
-already running so nothing is cut off mid-tool-call.
+`cancel` stops *acceptance* -- `Dispatch::shutting_down` refuses to start another
+turn -- and nothing else. The socket stays open and the loop keeps answering while
+the turns that are already running finish, because the drain can take minutes and a
+window attached to this server has to be able to ask what is happening. It used to
+break out of the loop on the shutdown token, which left the socket bound but unread:
+every datagram a window sent went nowhere, so the window saw silence, called it a
+disconnection, and printed "reconnecting" for the whole of a cancel that was in fact
+going fine.
 
 ## serve (recv error)
 
@@ -64,12 +70,13 @@ result when it expired lost that work. Nothing needs the deadline either,
 because the wait has a real end -- `cancel` hands every running turn the same
 token, and a turn checks it at every point where it waits (model stream, tool
 call, retry delay) and leaves at its step boundary with its rows already
-written. So the loop below spins until the count reaches zero, and if a turn ever
-fails to do that, the count is what says so: it is printed while we wait rather
-than papered over by an exit.
+written. So the loop waits until the count reaches zero, one [`DRAIN_TICK`] at a time, and
+if a turn ever fails to do that the process simply stays up, still answering --
+which is a state a reader can see, rather than an exit that hides it.
 
-Every ten seconds the wait names the fact that something is still holding the
-process open. Observability, not a cutoff.
+The wait is inside the accept loop, not after it, and that is the whole point: a
+draining server still serves. `cancel` says so on the event stream as well as in its
+own result, and `ServerInfo::draining` says it to a window that dials mid-drain.
 
 ## handle_connection (commands run elsewhere)
 

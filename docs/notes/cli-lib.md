@@ -705,6 +705,15 @@ started for a window still stops when that window closes. A one-shot command lea
 it `None`, and the resolution path never invents one: the process that typed the
 command is gone before the answer arrives.
 
+## Client::draining, and the status line
+
+"offline — reconnecting" is a claim about the *link*, and it was being made for a
+server that was neither offline nor lost: a `cancel` drains for minutes, and while it
+drained the server answered nothing, so the window said the only thing it could. The
+greeting now states `draining`, and the line says "stopping — the server keeps
+answering until its turns finish" while it is true. The two states are not the same
+fact, and a reader deciding whether to close a window needs the difference.
+
 ## DialFailure::Fatal
 
 The key is wrong, the address is malformed. Retrying would only hide the reason

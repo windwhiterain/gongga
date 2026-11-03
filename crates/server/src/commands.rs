@@ -1451,13 +1451,26 @@ async fn cancel(d: &Dispatch) -> Outcome {
         tokio::time::sleep(SHUTDOWN_NOTICE).await;
         shutdown.cancel();
     });
-    Outcome::ok(format!(
+    let said = format!(
         "cancelling {} session(s); {} pending task(s) will be picked up on the next start; {} \
          detached bash(es) keep running -- they outlive the server, stop them with `del_bash`",
         running.len(),
         pending,
         detached
-    ))
+    );
+    // Said on the event stream as well as in the result: the result is one line to
+    // whoever asked, and this is what every attached window needs, because the drain
+    // that follows looks like silence and silence reads as a disconnection.
+    let notice = format!(
+        "the server is stopping: it keeps answering until the {} running turn(s) finish",
+        running.len()
+    );
+    tracing::warn!(running = running.len(), "{notice}");
+    d.bus.publish(Event::Log {
+        level: protocol::LogLevel::Warn,
+        message: notice,
+    });
+    Outcome::ok(said)
 }
 
 fn recovery_groups(

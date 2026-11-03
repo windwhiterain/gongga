@@ -558,6 +558,8 @@ pub struct Client {
     attempts: u32,
     /// Set by `connect_server`; the front-end reads it and dials again.
     server_changed: bool,
+    /// The server said it is finishing a `cancel`. See `docs/notes/cli-lib.md`.
+    draining: bool,
     /// Another build or home: part of the facts, which no note can wipe.
     build_note: Option<String>,
     home_note: Option<String>,
@@ -712,6 +714,7 @@ impl Client {
             quiet: HashMap::new(),
             connected: false,
             attempts: 0,
+            draining: false,
             server_changed: false,
             build_note: None,
             home_note: None,
@@ -788,6 +791,7 @@ impl Client {
                 // sessions, so a redial comes up like a fresh client.
                 self.connected = true;
                 self.attempts = 0;
+                self.draining = server.draining;
                 // The facts are the announcement: "offline — reconnecting"
                 // becomes the model and the session count. A warning about this
                 // machine belongs beside them, not in place of them.
@@ -1077,7 +1081,11 @@ impl Client {
         sink.box_edge(self.box_edge.0);
         sink.layout(&self.layout());
         sink.sticky_session(self.sticky.get("session"));
-        let mut facts = if self.connected {
+        let mut facts = if self.connected && self.draining {
+            // Connected and stopping: the one thing the reader cannot work out
+            // from silence, said outright.
+            "stopping — the server keeps answering until its turns finish".to_string()
+        } else if self.connected {
             format!("{} session(s)", self.sessions.len())
         } else if self.attempts == 0 {
             "offline — connecting…".to_string()

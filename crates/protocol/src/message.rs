@@ -109,6 +109,16 @@ pub struct ServerInfo {
     /// that kills the answering process alone would be undone by a restart.
     #[serde(default)]
     pub supervisor: Option<u32>,
+    /// Whether this server is finishing a `cancel`: it answers, and it will not
+    /// start a new turn.
+    ///
+    /// # Invariant
+    ///
+    /// Stated so a window can tell "the server is draining" from "the server is
+    /// gone". Both look like silence on a wire, and a reader who has to guess
+    /// guesses wrong -- a cancel that takes a minute looked exactly like a crash.
+    #[serde(default)]
+    pub draining: bool,
 }
 
 /// The `events[]` stream from the SPEC.

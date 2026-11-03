@@ -272,6 +272,19 @@ allowed -- the same reasoning as `BLOCK_SIZES`. The starting value comes first, 
 `DEFAULT_BOX_EDGE` and not `0`: a box drawn edge to edge leaves a window with nothing to
 grab under it, and `0` is a shape an operator picks rather than the absence of one.
 
+## `draining`
+
+`ServerInfo::draining` is true when the server is finishing a `cancel`: it is still
+answering, and it will not start another turn. `serde(default)`, so a greeting from a
+build without it reads as "not draining".
+
+The field exists because both states look like silence on a wire. A `cancel` hands every
+running turn the same token, and the drain that follows can run for minutes while the
+socket answers nothing a window asked before -- a reader who has to guess between "it is
+stopping" and "it is gone" guesses wrong, and the guess it made was to print
+"reconnecting" for a whole cancel that was going fine. `cli::Client` carries it into the
+status line: "stopping — the server keeps answering until its turns finish".
+
 ## `supervisor`
 
 `ServerInfo::supervisor` is the watchdog a server runs under, when it runs under
