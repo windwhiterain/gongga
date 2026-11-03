@@ -271,16 +271,18 @@ send becomes `previous_response_id` plus only the new items, which is a change t
 `docs/notes/server-store.md` for why the item is stored verbatim in the first
 place.
 
-## image_content
+## the picture part: `image::content_part`
 
-The one place a stored picture becomes bytes. A row keeps a path and a media
-type; the file is read when the request is built, and encoded as a data URL in an
-`input_image` part inside the `function_call_output`'s content array.
+The one place a stored picture becomes a request part, called by
+`body::with_pictures`. A row keeps a path, a media type and the id of the copy in
+this home; the File ID wins when there is one, the copy is read when there is not,
+and the path is the last resort for a row written before copies existed. When
+nothing can be read, the part degrades to an `input_text` naming the path. A turn
+that has lost a screenshot is still a turn; failing the whole request over one
+deleted temp file would make the session unusable until someone recreated it.
 
-When the file is gone, the part degrades to an `input_text` saying which path is
-missing and that what it showed cannot be recovered. A turn that has lost a
-screenshot is still a turn; failing the whole request over one deleted temp file
-would make the session unusable until someone recreated it.
+The `upload_bytes` doc comment that used to sit here was a stale copy of one that
+moved to that function: this file no longer builds a picture part at all.
 
 ## ItemMeta::text
 
