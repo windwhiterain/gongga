@@ -1713,12 +1713,21 @@ fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value>
             })
         }
         "reasoning" => {
-            let encrypted = value.get("encrypted").and_then(|v| v.as_str())?;
-            let mut item = json!({
-                "type": "reasoning",
-                "summary": [],
-                "encrypted_content": encrypted,
-            });
+            let mut item = json!({"type": "reasoning", "summary": []});
+            match value.get("encrypted").and_then(|v| v.as_str()) {
+                // The blob is the whole thought; the summary beside it is for humans,
+                // and sending both would put every thought in twice.
+                Some(encrypted) => item["encrypted_content"] = json!(encrypted),
+                // No blob -- an interrupted thought. The text is all there is, so it
+                // is replayed as what it says rather than dropped.
+                None => {
+                    let text = value.get("summary").and_then(|v| v.as_str())?;
+                    if text.trim().is_empty() {
+                        return None;
+                    }
+                    item["summary"] = json!([{"type": "summary_text", "text": text}]);
+                }
+            }
             if let Some(id) = value.get("item_id").and_then(|v| v.as_str()) {
                 item["id"] = json!(id);
             }

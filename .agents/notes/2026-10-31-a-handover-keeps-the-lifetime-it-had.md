@@ -39,7 +39,7 @@ unix 读 `/proc/<pid>/cmdline`），带引号感知地分词，一个 token 一�
 
 **为什么这样不违反 SPEC 的 cancel**：pending 行是 `commands::deliver` 在**起 turn 之前**
 写的（`begin_turn`），turn 结束时 `finish_turn(preserve=false)` 删；`cancel` 走
-`cancel_and_preserve` → `finish_turn(preserve=true)` 保留。丢工作的唯一途径是「没跑完却删了
+`request_stop` (then `cancel_and_preserve`) → `finish_turn(preserve=true)` 保留。丢工作的唯一途径是「没跑完却删了
 行」，退出路径不做这件事。实测那次 14:11:04 的 `replaying work left pending` 就是证据。
 
 ## 实测（临时 home + 随机端口，跑完即删）

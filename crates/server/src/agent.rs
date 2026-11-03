@@ -185,7 +185,8 @@ impl Agent {
         let mut step: u32 = 0;
 
         let outcome = loop {
-            if cancel.is_cancelled() {
+            // A `cancel` ends the turn here, where it can be stored whole.
+            if cancel.is_cancelled() || session.stop_requested() {
                 break (TurnOutcome::Cancelled, step);
             }
             // Step boundary: a user line between a call and its result is rejected, so inject here.
@@ -712,6 +713,9 @@ impl Agent {
         // The items whose content the reader has already seen, so the failure line
         // can say that fragment is being withdrawn.
         let mut said: std::collections::HashSet<String> = Default::default();
+        // Chunks that no completion event will store. See `docs/notes/server-agent.md`.
+        let mut streamed: std::collections::HashMap<String, (ResponsePart, String)> =
+            Default::default();
         let mut ran_tools = false;
         let mut failure: Option<String> = None;
         let mut saw_completion = false;
@@ -739,6 +743,11 @@ impl Agent {
                     let call_id = calls.get(&item_id).cloned();
                     began.insert((item_id.clone(), part));
                     said.insert(item_id.clone());
+                    streamed
+                        .entry(item_id.clone())
+                        .or_insert_with(|| (part, String::new()))
+                        .1
+                        .push_str(&text);
                     self.bus.publish(Event::Response(ResponseEvent {
                         session: name.to_string(),
                         turn,
@@ -771,14 +780,18 @@ impl Agent {
                     }
                     payload["item_id"] = json!(item_id);
                     said.insert(item_id.clone());
+                    streamed.remove(&item_id);
                     let _ = self.store.append_message(id, "reasoning", &payload);
                 }
                 // The provider executed this one; keeping the item verbatim is
                 // what lets the next request carry the same transcript.
                 LlmEvent::BuiltinCall {
-                    item, replayable, ..
+                    item_id,
+                    item,
+                    replayable,
                 } => {
-                    said.insert(item["id"].as_str().unwrap_or_default().to_string());
+                    said.insert(item_id.clone());
+                    streamed.remove(&item_id);
                     let _ = self.store.append_message(
                         id,
                         "builtin_call",
@@ -801,7 +814,8 @@ impl Agent {
                         .store
                         .append_message(id, "notice", &json!({"text": text}));
                 }
-                LlmEvent::Output { text, .. } => {
+                LlmEvent::Output { item_id, text } => {
+                    streamed.remove(&item_id);
                     if !text.trim().is_empty() {
                         let _ = self.store.append_message(
                             id,
@@ -813,11 +827,13 @@ impl Agent {
                 // Run it here, not after the stream: the call in flight is then
                 // always the last row.
                 LlmEvent::ToolCall {
+                    item_id,
                     call_id,
                     name: tool,
                     arguments,
-                    ..
                 } => {
+                    // Its own text is the arguments, which this event stores.
+                    streamed.remove(&item_id);
                     // Before it runs: this id is what the result carries, which
                     // is how a front-end holds a call and its output as one item.
                     self.bus.publish(Event::ToolCall(protocol::ToolCallEvent {
@@ -939,7 +955,10 @@ impl Agent {
                         message: retry_warning(&name, attempt, max, delay, &reason),
                     });
                 }
+                // SPEC: nothing a cancel interrupts is lost. The chunks were
+                // already handed to the reader, so the store gets them too.
                 LlmEvent::Cancelled => {
+                    self.keep_streamed(id, &name, turn, &mut streamed, &calls);
                     return Ok(StepResult::Stopped);
                 }
             }
@@ -979,6 +998,7 @@ impl Agent {
             anyhow::bail!("model stream ended without completing");
         }
         if cancel.is_cancelled() {
+            self.keep_streamed(id, &name, turn, &mut streamed, &calls);
             return Ok(StepResult::Stopped);
         }
         if !ran_tools {
@@ -1064,10 +1084,10 @@ impl Agent {
         let started_at = crate::store::now_millis();
         let started = std::time::Instant::now();
         if cancel.is_cancelled() {
-            // A call with no answer is not a shape a provider takes back, and the
-            // request is no longer the place that fills one in: the gap is closed
-            // here, by appending the row that was never written.
-            self.answer_interrupted(id, &call_id, step);
+            // Its row exists and a provider wants it answered; the helper writes
+            // that row, and the window hears the call end. A row the request would
+            // otherwise invent while writing the body is a row written once instead.
+            self.answer_interrupted(id, name, &call_id, &tool, step);
             return true;
         }
         let model = llm.model().to_string();
@@ -1199,19 +1219,76 @@ impl Agent {
     /// Every `tool_call` row is followed by exactly one `tool_result` row for its
     /// id. A request used to invent the missing one while writing the body, which
     /// meant the same transcript could go out as two different byte sequences; the
-    /// missing answer is a row now, written once.
-    fn answer_interrupted(&self, id: i64, call_id: &str, step: u32) {
+    /// missing answer is a row now, written once -- and the window is told, because a
+    /// block left open is a block the reader cannot tell from a running tool.
+    fn answer_interrupted(&self, id: i64, name: &str, call_id: &str, tool: &str, step: u32) {
+        let said = crate::store::interrupted_call();
         let _ = self.store.append_message(
             id,
             "tool_result",
             &json!({
                 "call_id": call_id,
-                "output": crate::store::interrupted_call(),
+                "output": said,
                 "images": [],
                 "step": step,
                 "ok": false,
+                "elapsed_ms": 0,
             }),
         );
+        let _ = self.store.finish_tool_call(id, call_id, &said, "cancelled");
+        self.bus.publish(Event::ToolAnswer(ToolAnswerEvent {
+            session: name.to_string(),
+            call_id: call_id.to_string(),
+            tool: tool.to_string(),
+            stream: ToolStream::Stdout,
+            text: String::new(),
+            done: true,
+            head: Some(result_head(false, 0)),
+        }));
+    }
+
+    /// Stores what a cancelled item had already said, and closes its block.
+    ///
+    /// # Invariant
+    ///
+    /// Only rows no completion event wrote, so a stored item is never restated; and
+    /// what is stored is what a request may send. See `docs/notes/server-agent.md`.
+    fn keep_streamed(
+        &self,
+        id: i64,
+        name: &str,
+        turn: u64,
+        streamed: &mut std::collections::HashMap<String, (ResponsePart, String)>,
+        calls: &std::collections::HashMap<String, String>,
+    ) {
+        for (item_id, (part, text)) in streamed.drain() {
+            if !text.trim().is_empty() {
+                let stored = match part {
+                    ResponsePart::Output => Some((
+                        "text",
+                        json!({"role": "assistant", "text": text, "interrupted": true}),
+                    )),
+                    ResponsePart::Reasoning => Some((
+                        "reasoning",
+                        json!({"summary": text, "item_id": item_id.clone(),
+                               "interrupted": true}),
+                    )),
+                    // A call's text is its arguments; an activity is progress.
+                    ResponsePart::ToolCall | ResponsePart::Activity => None,
+                };
+                if let Some((kind, payload)) = stored {
+                    let _ = self.store.append_message(id, kind, &payload);
+                }
+            }
+            self.bus.publish(Event::Response(ResponseEvent {
+                session: name.to_string(),
+                turn,
+                part,
+                text: String::new(),
+                done: true,
+                call_id: calls.get(&item_id).cloned(),
+            }));
+        }
     }
 
     /// Reports a failure, and leaves the reason somewhere it can be read later.

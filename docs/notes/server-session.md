@@ -102,10 +102,21 @@ yet would stop the one it is supposed to be waiting behind.
 The turn is dropped, not deferred: whoever cleans up after it clears its pending
 row, so the next start does not owe it anything.
 
-## SessionHandle::cancel_and_preserve
+## SessionHandle::request_stop
 
-This is what `cancel` (the command) does: it stops work to shut down, not to
-throw the work away.
+This is what `cancel` (the command) does: it stops work to shut down, not to throw
+the work away.
+
+It is not `cancel`. SPEC says a `cancel` finishes every task that cannot be
+serialized before it stores and exits, and a running tool is exactly such a task: a
+command killed mid-flight is stored as a sentence about being stopped, not as the
+work it did. So `request_stop` sets a flag and leaves the token alone; the turn ends
+at the next step boundary, where every call already has its result. Only
+`interrupt_session` and `del_session` cancel the token, because those mean "stop
+now" rather than "stop cleanly".
+
+`cancels` is still bumped, so a turn that is queued and has not started is dropped
+instead of running into a shutdown.
 
 ## SessionHandle::cwd
 

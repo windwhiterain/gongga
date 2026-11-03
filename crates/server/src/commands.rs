@@ -1391,7 +1391,7 @@ fn interrupt(d: &Dispatch, name: &str) -> (bool, usize) {
     // Read before the cancel: afterwards there is nothing left to ask.
     let was_busy = session.busy();
     session.cancel();
-    // Not `cancel_and_preserve`: aborting is deliberate, so the work is not owed.
+    // Not `request_stop`: aborting is deliberate, so the work is not owed.
     let dropped = d.store.clear_pending_tasks(name).unwrap_or(0);
     (was_busy, dropped)
 }
@@ -1440,8 +1440,8 @@ async fn cancel(d: &Dispatch) -> Outcome {
     d.shutting_down.store(true, Ordering::SeqCst);
     let running = d.sessions.live_sessions();
     for session in &running {
-        // Preserve, not cancel: "cancel, restart, continue" is the point of this.
-        session.cancel_and_preserve();
+        // A stop, not a kill: SPEC finishes what cannot be serialized first.
+        session.request_stop();
     }
     let detached = d.sessions.detached().count().await;
     let pending = d.store.pending_tasks().map(|t| t.len()).unwrap_or(0);

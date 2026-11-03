@@ -4,7 +4,8 @@
 # The pieces already exist, they were just never wired together:
 #
 #   * `cancel` stops the server but *keeps* the running turn as a pending task
-#     (`commands.rs::cancel_and_preserve`), and the next start replays it;
+#     (`session.rs::request_stop`), finishing any command already in flight so its
+#     output is stored rather than reported as stopped, and the next start replays it;
 #   * a detached job outlives the server that started it, which is what lets a
 #     successor wait outside the process it is about to replace;
 #   * `server.lock` is a pid file, so the home is handed over rather than

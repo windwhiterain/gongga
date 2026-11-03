@@ -376,7 +376,7 @@ the delete wait for however long that turn takes -- twenty minutes, if that is
 how long the turn takes. So delete interrupts first and only then waits, which is
 a wait measured in milliseconds.
 
-Not `cancel_and_preserve`. Aborting is deliberate, so this work is not what the
+Not `request_stop`. Aborting is deliberate, so this work is not what the
 next start owes -- and clearing the rows is what makes that true for the turns
 queued behind the running one as well, since they give up once they reach the
 front.

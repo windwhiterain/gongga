@@ -464,6 +464,8 @@ struct SessionInner {
     deleted: AtomicBool,
     /// Set by a shutdown's `cancel`: the turn stops but its pending row stays.
     resumable: AtomicBool,
+    /// Set by `cancel`: stop at the next storable point. See `request_stop`.
+    stopping: AtomicBool,
     /// Set before the shells are ended: a command that stops now was stopped, and
     /// a notice about it would be news about the server's own exit.
     closing: Arc<AtomicBool>,
@@ -682,6 +684,9 @@ impl SessionHandle {
         guard.cancel();
         let token = CancellationToken::new();
         *guard = token.clone();
+        // A new turn is not a stopping one: a shutdown that asked the last turn to
+        // stop has no claim on this one.
+        self.inner.stopping.store(false, Ordering::SeqCst);
         let turn = self.inner.turns.fetch_add(1, Ordering::Relaxed) + 1;
         (turn, token)
     }
@@ -718,10 +723,21 @@ impl SessionHandle {
         self.inner.cancels.load(Ordering::SeqCst)
     }
 
-    /// Cancels the turn but keeps its pending row for the next start to resume.
-    pub fn cancel_and_preserve(&self) {
+    /// Asks the running turn to stop where it can be stored whole.
+    ///
+    /// # Invariant
+    ///
+    /// The token is left alone: a tool killed mid-flight would be stored as a
+    /// sentence about being stopped. See `docs/notes/server-session.md`.
+    pub fn request_stop(&self) {
         self.inner.resumable.store(true, Ordering::SeqCst);
-        self.cancel();
+        self.inner.stopping.store(true, Ordering::SeqCst);
+        self.inner.cancels.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Whether a shutdown asked this turn to stop at its next boundary.
+    pub fn stop_requested(&self) -> bool {
+        self.inner.stopping.load(Ordering::SeqCst)
     }
 
     /// Remembers a move for whoever holds this session next.
@@ -1563,6 +1579,7 @@ impl SessionManager {
                 }),
                 deleted: AtomicBool::new(false),
                 resumable: AtomicBool::new(false),
+                stopping: AtomicBool::new(false),
                 closing: Arc::new(AtomicBool::new(false)),
                 reader: Mutex::new(reader),
                 placed: Mutex::new((!row_cwd.trim().is_empty()).then(|| PathBuf::from(&row_cwd))),
