@@ -55,9 +55,18 @@ file the provider holds is resolved when a request is written, because that file
 (`docs/notes/server-pictures.md`).
 
 Providers reject a `function_call` with no `function_call_output`, and a transcript
-that reaches a request that way fails the same way on every later turn. Nothing here
-closes such a gap -- `agent::answer_interrupted` does, when the answer is known to be
-missing -- so the transcript keeps what did.
+that reaches a request that way fails the same way on every later turn. Two places close
+that gap, and both append: `agent::answer_interrupted` when a turn is cancelled while a
+call is in flight, and `answer_open_calls` at every start, for a run that died before it
+could answer. The second is SPEC's "auto recover invalid transcript (only append, no
+drop)", and it is why the request builder no longer has to invent anything.
+
+`open_calls` answers "what would a provider find unpaired" from the rows themselves, by
+`call_id`, because that is what a provider pairs on. Measured over this machine's
+transcripts: of 2,870 calls, two had no following row at all -- both from a run killed
+inside a tool -- and **none** was followed by something other than its own output. That
+is what makes positional reordering unnecessary rather than merely dropped: a tool runs
+inline as its call arrives, so the rows are already in the order a provider takes.
 
 ## migrate
 

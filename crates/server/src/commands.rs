@@ -1646,6 +1646,40 @@ pub fn nudge_inboxes(d: &Dispatch) -> usize {
 }
 
 /// Replays interrupted work with exactly one recovery owner per session.
+/// Answers every call the last run left open, in every session.
+///
+/// # Invariant
+///
+/// Run before anything may build a request, and for every session rather than only the
+/// ones with owed work: a turn is not the only thing a dead run leaves behind, and a
+/// transcript with an unanswered call is a session that fails every turn until somebody
+/// looks at it. Appends the answer rather than inventing one while writing the body --
+/// the difference is that this row is stored, so it is the same answer for every later
+/// request instead of a fresh guess each time. See `docs/notes/server-store.md`.
+pub fn answer_open_calls(d: &Dispatch) -> usize {
+    let Ok(sessions) = d.store.list_sessions() else {
+        return 0;
+    };
+    let mut answered = 0;
+    for row in sessions {
+        match d.store.answer_open_calls(row.id) {
+            Ok(0) => {}
+            Ok(count) => {
+                tracing::info!(
+                    session = %row.name, count,
+                    "answered calls a run that died inside a tool left open"
+                );
+                answered += count;
+            }
+            Err(e) => tracing::warn!(
+                session = %row.name, error = %e,
+                "could not answer the calls a dead run left open"
+            ),
+        }
+    }
+    answered
+}
+
 pub async fn resume_pending(d: &Dispatch) -> usize {
     let Ok(tasks) = d.store.pending_tasks() else {
         return 0;

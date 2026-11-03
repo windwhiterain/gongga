@@ -946,6 +946,74 @@ impl Store {
         self.append_message(session_id, "system", &payload)
     }
 
+    /// Every call in `session` whose answer a request would look for and not find.
+    ///
+    /// # Invariant
+    ///
+    /// Read from the rows themselves, by `call_id`, because that is what a provider
+    /// pairs on. A call with no result is a transcript a provider rejects, and it is
+    /// only ever left by a run that died inside a tool: a turn writes its own answer
+    /// before it ends. See `docs/notes/server-store.md`.
+    pub fn open_calls(&self, session_id: i64) -> anyhow::Result<Vec<(String, String, u32)>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT c.call_id, c.display FROM messages c
+              WHERE c.session_id = ?1 AND c.kind = 'tool_call' AND c.call_id IS NOT NULL
+                AND NOT EXISTS (
+                    SELECT 1 FROM messages r
+                     WHERE r.session_id = c.session_id AND r.kind = 'tool_result'
+                       AND r.call_id = c.call_id)
+              ORDER BY c.seq",
+        )?;
+        let rows = stmt.query_map(params![session_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (call_id, display) = row?;
+            let value: serde_json::Value = serde_json::from_str(&display).unwrap_or_default();
+            let name = value
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let step = value
+                .get("step")
+                .and_then(|v| v.as_u64())
+                .unwrap_or_default() as u32;
+            out.push((call_id, name, step));
+        }
+        Ok(out)
+    }
+
+    /// Answers a call nothing answered: what the tool that died is said to have done.
+    ///
+    /// # Invariant
+    ///
+    /// Appended, never rewritten, and written once: a second pass finds the result it
+    /// wrote and leaves the row alone. That is what makes this safe to run at every
+    /// start rather than only after a crash the last run knew about.
+    pub fn answer_open_calls(&self, session_id: i64) -> anyhow::Result<usize> {
+        let open = self.open_calls(session_id)?;
+        for (call_id, name, step) in &open {
+            self.append_message(
+                session_id,
+                "tool_result",
+                &json!({
+                    "call_id": call_id,
+                    "output": interrupted_call(),
+                    "images": [],
+                    "step": step,
+                    "ok": false,
+                    "elapsed_ms": 0,
+                    "tool": name,
+                }),
+            )?;
+            self.finish_tool_call(session_id, call_id, &interrupted_call(), "cancelled")?;
+        }
+        Ok(open.len())
+    }
+
     /// The text of every message waiting in the inbox, oldest first.
     pub fn queued_texts(&self, session: &str) -> anyhow::Result<Vec<String>> {
         let conn = self.lock();

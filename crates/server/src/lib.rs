@@ -324,6 +324,12 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         shutdown: CancellationToken::new(),
     });
 
+    // Before any turn: a run that died inside a tool leaves a call no request can
+    // carry, and the answer is a row rather than an invention at request time.
+    let answered = commands::answer_open_calls(&dispatch);
+    if answered > 0 {
+        tracing::info!(answered, "transcript repaired before serving");
+    }
     // Whatever was in flight when the server last stopped is owed work.
     let resumed = commands::resume_pending(&dispatch).await;
     if resumed > 0 {
