@@ -176,6 +176,8 @@ impl Agent {
 
         // No step ceiling: it ends on a stop, a cancel or a failure, and every break sets it.
         let mut step: u32 = 0;
+        // Whether this turn has already answered a refusal with a row.
+        let mut repaired = false;
 
         let outcome = loop {
             // A `cancel` ends the turn here, where it can be stored whole.
@@ -230,6 +232,12 @@ impl Agent {
                 }
                 Ok(StepResult::RanTools) => {}
                 Ok(StepResult::Stopped) => break (TurnOutcome::Cancelled, step),
+                // A refusal a row can answer is answered once, then asked again.
+                Err(e) if !repaired && crate::llm::thinking_refusal(&format!("{e:#}")) => {
+                    repaired = true;
+                    self.append_thinking_mark(id, &name);
+                    continue;
+                }
                 Err(e) => {
                     self.error(id, &name, "model request", e);
                     break (TurnOutcome::Failed, step);
@@ -676,10 +684,6 @@ impl Agent {
             .prompt_in_force(session, id, llm.model(), cwd, source)
             .await?;
         phases.prompt_ms = phase_started.elapsed().as_millis() as u64;
-        // See `docs/notes/server-agent.md` for why this appends a row rather than rewriting.
-        if thinks(effort) && !definitions.is_empty() {
-            self.mark_thinking_start(id, name);
-        }
         // Pinned here, so every retry of this request replays the window that was
         // current when it started.
         let phase_started = std::time::Instant::now();
@@ -1327,23 +1331,13 @@ impl Agent {
     /// from. An `Event::Log` alone is broadcast and forgotten: "why did that
     /// turn fail" was unanswerable a minute later, and the failure of the
     /// *first* attempt of a request exists nowhere else at all.
-    /// Appends the row that lets thinking mode continue what was written without it.
+    /// Appends the row that answers a refusal to continue a step written without thinking.
     ///
     /// # Invariant
     ///
-    /// At most one row per step, and only when the transcript asks for it, so a session
-    /// that never leaves thinking mode never carries one.
-    fn mark_thinking_start(&self, id: i64, session: &str) {
-        let needed = match self.store.thinking_mark_needed(id) {
-            Ok(needed) => needed,
-            Err(e) => {
-                tracing::warn!(session = %session, error = %e, "cannot read the transcript's tail");
-                return;
-            }
-        };
-        if !needed {
-            return;
-        }
+    /// Called only after the provider refused, so a session the provider accepts never
+    /// carries one; see `docs/notes/server-agent.md`.
+    fn append_thinking_mark(&self, id: i64, session: &str) {
         match self.store.append_message(
             id,
             "thinking_mark",
@@ -1351,7 +1345,7 @@ impl Agent {
         ) {
             Ok(_) => tracing::info!(
                 session = %session,
-                "appended a turn boundary: thinking mode cannot continue a step written without it"
+                "appended a turn boundary: the provider refused the transcript without one"
             ),
             Err(e) => {
                 tracing::warn!(session = %session, error = %e, "cannot append the thinking marker")
@@ -1415,11 +1409,6 @@ impl TurnOutcome {
             Self::Failed => "failed",
         }
     }
-}
-
-/// Whether a level asks the model to think: `none` is the one level that does not.
-fn thinks(effort: Option<&str>) -> bool {
-    effort.is_some_and(|level| level != "none")
 }
 
 /// What a panicking task carries, as text.

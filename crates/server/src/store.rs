@@ -1258,43 +1258,6 @@ impl Store {
         Ok(())
     }
 
-    /// Whether a thinking-mode request cannot continue this transcript as it stands.
-    ///
-    /// # Invariant
-    ///
-    /// Only rows after the last user row are read: that is the window a provider checks.
-    pub fn thinking_mark_needed(&self, session_id: i64) -> anyhow::Result<bool> {
-        let conn = self.lock();
-        let mut stmt = conn.prepare(
-            "SELECT kind, display FROM messages
-              WHERE session_id = ?1 AND content IS NOT NULL
-              ORDER BY seq DESC",
-        )?;
-        let rows = stmt.query_map(params![session_id], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })?;
-        // Backwards, so the walk stops at this turn's first row.
-        let mut tail: Vec<(String, bool)> = Vec::new();
-        for row in rows {
-            let (kind, display) = row?;
-            // The mark is a boundary too: it goes out as a user row.
-            let user = kind == "thinking_mark" || (kind == "text" && is_user_row(&display));
-            tail.push((kind, user));
-            if user {
-                break;
-            }
-        }
-        tail.reverse();
-        let mut boundary = true;
-        for (kind, user) in tail {
-            if boundary && !user && kind != "reasoning" {
-                return Ok(true);
-            }
-            boundary = user || kind == "tool_result";
-        }
-        Ok(false)
-    }
-
     /// Every operator message this session has stored, oldest first.
     pub fn user_texts(&self, session_id: i64) -> anyhow::Result<Vec<String>> {
         let conn = self.lock();
@@ -2024,18 +1987,6 @@ impl MessageRow {
         }
         row
     }
-}
-
-/// Whether a `text` row is the reader speaking, rather than the model.
-///
-/// # Invariant
-///
-/// A row that does not parse is not a user row: it is a row no request is built from, and
-/// calling it a turn boundary would cut a request short instead of closing a turn.
-fn is_user_row(display: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(display)
-        .ok()
-        .is_some_and(|value| value.get("role").and_then(serde_json::Value::as_str) == Some("user"))
 }
 
 /// The pictures a stored `tool_result` row recorded, by path.

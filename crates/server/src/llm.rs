@@ -698,6 +698,11 @@ fn backoff(base: Duration, ceiling: Duration, attempt: u32) -> Duration {
     base.saturating_mul(factor).min(ceiling)
 }
 
+/// Whether the provider refused a transcript it wrote without thinking.
+pub fn thinking_refusal(message: &str) -> bool {
+    message.contains("reasoning_text") && message.contains("thinking mode")
+}
+
 /// Whether another attempt is worth making.
 ///
 /// # Invariant
