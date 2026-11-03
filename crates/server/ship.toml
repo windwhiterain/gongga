@@ -1,28 +1,18 @@
-# What this build of gongga ships from: the content repository whose config and
-# skills the server installs into a home. The pin is data, so changing what a
-# machine runs is an edit to this file and a rebuild -- not something that
-# drifted into a user's directory.
+# Where this build's content comes from, and which content protocol it speaks.
 #
-# `commit` is a full sha: a short one names a different commit in a repository
-# that keeps growing, and the whole point is knowing which content this binary
-# installed.
+# Nothing here names a commit. The server asks `branch` for its newest commit that
+# speaks `protocol`, so a content change -- a skill's prose, a new skill, a path
+# retired -- reaches a machine by a restart: no edit to this file, no rebuild.
+#
+# `protocol` is the one thing a content change can require here, and only when the
+# *shape* of the content moves in a way this build cannot read. The content
+# declares the same number in its own `ship.toml`, beside the mapping (where the
+# config and the skills live) that a reader of that protocol needs.
+#
+# A build that reads an older protocol still installs: it takes the newest commit
+# of `branch` that speaks its own, so an upstream that has moved on leaves it the
+# prose it was tested with instead of a server that cannot start.
 [ship]
 url = "https://github.com/windwhiterain/gongga-ship.git"
-commit = "0c127db833a987b61ce45d862dad4e3e84edf8aa"
-# Which path in that repository is the home's config.
-config = "config/config.toml"
-
-# The skills this repository owns, flat: one directory per skill, and the home's
-# `skills/<name>` is the same name. The machine's skills are not here -- they are
-# the community clone's (`agents::link_skills`), which is where a machine's skills
-# are edited without a pin moving.
-[ship.skills]
-harness = "skills"
-
-# What an older pin installed on the machine and this one does not. The path is
-# gone from the repository, so nothing lands there any more; naming it is what
-# lets the install recognise the copies it left and remove them, instead of
-# letting them shadow the community skill of the same name forever.
-[[ship.skills.retired]]
-path = "skills/general"
-root = "machine"
+branch = "main"
+protocol = 1

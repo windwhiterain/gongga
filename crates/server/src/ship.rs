@@ -8,9 +8,20 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
-/// The pin compiled into this binary: which repository, which commit, what means
-/// what there.
+/// What this build expects of the content: where it comes from, which branch is
+/// current, and which protocol that content speaks.
+///
+/// # Invariant
+///
+/// No commit is named here. The server asks the branch for its newest commit that
+/// speaks this protocol, so a content change -- a skill's prose, a new skill, a
+/// path retired -- reaches a machine by a restart. `protocol` moves only when the
+/// *shape* of the content moves in a way this build cannot read, and that is the
+/// one content change which needs a new build.
 const MANIFEST: &str = include_str!("../ship.toml");
+
+/// The file the content declares itself in, at the commit it is read from.
+const DECLARATION: &str = "ship.toml";
 
 /// The file naming the content a root was last reconciled against.
 const PIN_FILE: &str = ".ship-pin";
@@ -20,20 +31,46 @@ const CACHE: &str = "ship.git";
 
 #[derive(Debug, Deserialize)]
 struct Manifest {
-    ship: Ship,
+    ship: Link,
 }
 
-/// One pinned version of the shipped content.
+/// Where the content comes from, and which protocol this build reads.
 #[derive(Debug, Clone, Deserialize)]
-pub struct Ship {
+pub struct Link {
     /// Where to fetch: any git URL, or a local checkout while developing.
     pub url: String,
-    /// A full sha, so the name cannot slide to a later commit.
-    pub commit: String,
+    /// The branch whose newest matching commit is current.
+    pub branch: String,
+    /// The content protocol this build reads.
+    pub protocol: u32,
+}
+
+/// What the content says about itself: which protocol it is, and where its parts
+/// belong in a home.
+///
+/// # Invariant
+///
+/// The mapping is content, not code. A retired path or a renamed skills root is a
+/// fact about this repository's own history, and keeping it in the binary would
+/// mean a rebuild for exactly the kind of edit this design exists to make free.
+#[derive(Debug, Clone, Deserialize)]
+struct Declared {
+    /// The protocol this content speaks, which is how a commit is chosen.
+    protocol: u32,
     /// The repository path that becomes a home's `config.toml`.
-    pub config: String,
+    config: String,
     #[serde(default)]
     skills: SkillRoots,
+}
+
+/// One commit of the content, with what it declares.
+#[derive(Debug, Clone)]
+pub struct Content {
+    /// The full sha a home reconciles against, and what `.ship-pin` records.
+    pub commit: String,
+    /// Whether the repository answered for this resolve.
+    pub fetched: bool,
+    declared: Declared,
 }
 
 /// Where each bucket of skills belongs.
@@ -41,7 +78,7 @@ pub struct Ship {
 struct SkillRoots {
     /// Where this repository keeps the skills it owns, one dir per skill.
     harness: String,
-    /// Paths an older pin installed and this one does not, so their copies go.
+    /// Paths an older commit installed and this one does not, so their copies go.
     ///
     /// # Invariant
     ///
@@ -66,13 +103,22 @@ enum RetiredRoot {
     Machine,
 }
 
-/// The pin this build ships. A manifest that does not parse is a build bug, not
-/// a runtime condition.
-pub fn pinned() -> &'static Ship {
-    static PIN: OnceLock<Ship> = OnceLock::new();
-    PIN.get_or_init(|| match toml::from_str::<Manifest>(MANIFEST) {
-        Ok(m) => m.ship,
-        Err(e) => panic!("crates/server/ship.toml does not parse: {e}"),
+/// The manifest this build carries. A manifest that does not parse is a build
+/// bug, not a runtime condition.
+pub fn link() -> &'static Link {
+    static LINK: OnceLock<Link> = OnceLock::new();
+    LINK.get_or_init(|| {
+        let mut link = match toml::from_str::<Manifest>(MANIFEST) {
+            Ok(m) => m.ship,
+            Err(e) => panic!("crates/server/ship.toml does not parse: {e}"),
+        };
+        // A scratch repository is how a release is verified without publishing
+        // one, and how a person develops against a local checkout. Same shape as
+        // the roster's `GONGGA_PROVIDERS_CATALOG`: it names the one remote.
+        if let Some(url) = std::env::var_os("GONGGA_SHIP_URL") {
+            link.url = url.to_string_lossy().into_owned();
+        }
+        link
     })
 }
 
@@ -117,11 +163,11 @@ pub struct Report {
     pub written: usize,
     /// Files upstream moved and nobody locally had touched.
     pub updated: usize,
-    /// Files their own copy of another pin had installed, so upstream replaced them.
+    /// Files their own copy of another commit had installed, so upstream replaced them.
     pub rebased: Vec<String>,
     /// Files whose local edits and upstream changes merged cleanly.
     pub merged: usize,
-    /// Files already identical to the pinned content.
+    /// Files already identical to the installed content.
     pub current: usize,
     /// Files upstream dropped that nobody had edited.
     pub removed: usize,
@@ -130,115 +176,239 @@ pub struct Report {
     /// Files the reader authored where upstream also has one: not ours to
     /// touch, and no root with one counts reconciled.
     pub kept: Vec<String>,
-    /// The pin the roots are now reconciled against.
+    /// The content commit the roots are now reconciled against.
     pub pin: String,
-    /// Whether the pinned content arrived from the repository this run.
+    /// Whether the repository answered this start.
     pub fetched: bool,
 }
+
+/// The content this start installs, resolved once for the whole process.
+///
+/// # Invariant
+///
+/// One answer for one start: the migrator, the install and the prompt defaults
+/// all read this commit, so a fetch landing mid-start cannot make them disagree
+/// about what "the content" is.
+pub fn content(home: &Path) -> anyhow::Result<&'static Content> {
+    match CONTENT.get_or_init(|| resolve(home).map_err(|e| format!("{e:#}"))) {
+        Ok(content) => Ok(content),
+        // The failure is cached too: every caller in this start asks the same
+        // repository the same question, and one answer is enough.
+        Err(e) => anyhow::bail!("{e}"),
+    }
+}
+
+/// The commit this start resolved, when it resolved one.
+pub fn resolved_commit() -> Option<&'static str> {
+    CONTENT
+        .get()
+        .and_then(|resolved| resolved.as_ref().ok())
+        .map(|content| content.commit.as_str())
+}
+
+/// One resolve per process, kept even when it failed.
+static CONTENT: OnceLock<Result<Content, String>> = OnceLock::new();
 
 /// Makes this home answerable to a lookup before anything is installed.
 ///
 /// # Invariant
 ///
-/// The fetch is best effort, and that is the point: a migrator has to be
-/// findable before the content that ships in the same commit is installed, so a
-/// network that answers nothing must not be what strands a home's data. No
-/// network leaves the lookup to the caller, which names what it could not find.
+/// The resolve is best effort here, and that is the point: a migrator has to be
+/// findable before the content that ships beside it is installed, so a network
+/// that answers nothing must not be what strands a home's data. Whatever it could
+/// not find is `install`'s to report, in the terms of what a home needs.
 pub fn prepare(home: &Path) {
-    let roots = Roots::of(home);
-    let _ = ROOTS.set(roots);
+    let _ = ROOTS.set(Roots::of(home));
+    let _ = content(home);
 }
 
-/// Fetches the pinned content only if this home cannot answer for itself.
-///
-/// # Invariant
-///
-/// Called by a caller that has already found out whether anything needs the
-/// cache: a home at this build's version migrates nothing, so nothing it starts
-/// needs a commit it does not have. See `migrate::needs_content`.
-pub fn prepare_for_migration(home: &Path) {
-    let cache = Roots::of(home).home.join(CACHE);
-    if !have(&cache, &pinned().commit)
-        && let Err(e) = fetch(&cache, &pinned().url)
-    {
-        tracing::warn!(error = %e, "cannot reach the content repository yet");
-    }
-}
-
-/// Fetches the pinned content and reconciles it into both roots.
+/// Fetches the content and reconciles it into both roots.
 pub fn install(home: &Path) -> anyhow::Result<Report> {
-    install_at(&Roots::of(home), pinned())
+    let content = content(home)?;
+    install_at(&Roots::of(home), content)
 }
 
-/// The same, with the roots and the pin named: what a test drives, so it never
+/// The same, with the roots and the content named: what a test drives, so it never
 /// writes into a real `~/.agents`.
-pub fn install_at(roots: &Roots, ship: &Ship) -> anyhow::Result<Report> {
+pub fn install_at(roots: &Roots, content: &Content) -> anyhow::Result<Report> {
     let cache = roots.home.join(CACHE);
-    // A pin is immutable: a fetch of a repository that has it adds nothing, and
-    // it is a round trip in front of every start.
-    let cached = have(&cache, &ship.commit);
-    let fetched = if cached {
-        false
-    } else {
-        // Ask the cache for the commit, not git for its exit status. `fetch`
-        // succeeds whenever the remote answers, and the remote answers with what
-        // it has *now*: a pin that was never pushed is simply not in it. Believing
-        // the exit status let `reconcile` run against a commit the cache does not
-        // hold -- it wrote nothing, reported success, and the home came up with no
-        // `config.toml` at all, to fail much later as "no prompt templates".
-        let _ = fetch(&cache, &ship.url);
-        if !has_commit(&cache, &ship.commit) {
-            anyhow::bail!(
-                "the shipped content is not installed here and cannot be fetched; \
-                 pin {} from {} -- there is no prompt to run a turn on without it",
-                ship.commit,
-                ship.url
-            );
-        }
-        true
-    };
-    let _ = ROOTS.set(roots.clone());
+    // Resolved content is in this cache by construction. A caller that names a
+    // commit nobody fetched is told so: believing a fetch's exit status instead
+    // is how a home once came up with no `config.toml` at all, to fail much later
+    // as "no prompt templates".
+    if !has_commit(&cache, &content.commit) {
+        anyhow::bail!(
+            "the content commit {} is not in {}, so nothing can be installed from it",
+            content.commit,
+            cache.display()
+        );
+    }
     let mut report = Report {
-        pin: ship.commit.clone(),
-        fetched,
+        pin: content.commit.clone(),
+        fetched: content.fetched,
         ..Default::default()
     };
-    for (root, mappings, retired) in plans(roots, ship) {
-        reconcile(&cache, &root, &mappings, &retired, ship, &mut report)?;
+    for (root, mappings, retired) in plans(roots, content) {
+        reconcile(&cache, &root, &mappings, &retired, content, &mut report)?;
     }
     Ok(report)
 }
 
-/// The pinned config's own text, read from this home's cache.
+/// The content's own config, as the resolved commit has it.
 ///
 /// # Invariant
 ///
-/// This is where the prompt defaults come from: the prose is not copied into
-/// this binary, so a home whose config never mentions `[prompts]` still gets the
-/// pinned text, and one whose cache cannot answer gets nothing and says so.
+/// This is where the prompt defaults come from: the prose is not copied into this
+/// binary, so a home whose config never mentions `[prompts]` still gets the
+/// shipped text, and one whose content was never resolved gets nothing and says
+/// so.
 pub fn config_text() -> Option<String> {
-    let ship = pinned();
-    blob(&roots().home.join(CACHE), &ship.commit, &ship.config)
-        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+    let content = content(&roots().home).ok()?;
+    blob(
+        &roots().home.join(CACHE),
+        &content.commit,
+        &content.declared.config,
+    )
+    .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Resolves the branch's newest commit that speaks this build's protocol.
+///
+/// # Invariant
+///
+/// Protocol drift walks *back*, never forward: a content repository that has
+/// moved to a protocol this build cannot read still serves this build the last
+/// commit it could read. The alternative is a machine that cannot start because
+/// somebody else's repository advanced.
+fn resolve(home: &Path) -> anyhow::Result<Content> {
+    let link = link();
+    let cache = home.join(CACHE);
+    // Best effort: a repository that does not answer leaves the cache answering,
+    // because being offline is not being broken. A cache with nothing usable in
+    // it is the one case that stops a start.
+    let fetched = match fetch(&cache, &link.url) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!(error = %e, "cannot reach the content repository");
+            false
+        }
+    };
+    let tip = branch_tip(&cache, link)?;
+    let commit = newest_for(&cache, &tip, link)?;
+    let declared = declared_at(&cache, &commit)?;
+    Ok(Content {
+        commit,
+        fetched,
+        declared,
+    })
+}
+
+/// The commit a branch points at in the cache.
+fn branch_tip(cache: &Path, link: &Link) -> anyhow::Result<String> {
+    let out = Command::new(git())
+        .arg("--git-dir")
+        .arg(cache)
+        .args(["rev-parse", "--verify", "--quiet"])
+        .arg(format!("refs/heads/ship/{}^{{commit}}", link.branch))
+        .output()?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "{} has no branch {} to take content from, so protocol {} cannot be installed \
+             (the cache is {})",
+            link.url,
+            link.branch,
+            link.protocol,
+            cache.display()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// The newest commit on the branch, following first parents, that speaks the
+/// protocol this build reads.
+fn newest_for(cache: &Path, tip: &str, link: &Link) -> anyhow::Result<String> {
+    // The common case is the tip itself: one read instead of a walk.
+    if protocol_at(cache, tip)? == Some(link.protocol) {
+        return Ok(tip.to_string());
+    }
+    let out = Command::new(git())
+        .arg("--git-dir")
+        .arg(cache)
+        .args(["rev-list", "--first-parent", tip])
+        .output()?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "cannot read the history of {}: {}",
+            link.url,
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    for commit in String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        if protocol_at(cache, commit)? == Some(link.protocol) {
+            return Ok(commit.to_string());
+        }
+    }
+    anyhow::bail!(
+        "no commit on {} speaks protocol {}; the newest one speaks {} and this build reads \
+         {}. Build a server that reads the new protocol, or publish content for this one",
+        link.branch,
+        link.protocol,
+        protocol_at(cache, tip)?
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| "nothing this build can parse".to_string()),
+        link.protocol
+    )
+}
+
+/// The protocol one commit declares, when it declares one this build can parse.
+fn protocol_at(cache: &Path, commit: &str) -> anyhow::Result<Option<u32>> {
+    let Some(bytes) = blob(cache, commit, DECLARATION) else {
+        return Ok(None);
+    };
+    match toml::from_str::<Declared>(&String::from_utf8_lossy(&bytes)) {
+        Ok(declared) => Ok(Some(declared.protocol)),
+        Err(e) => {
+            tracing::warn!(commit = %commit, error = %e, "the content declaration does not parse; skipped");
+            Ok(None)
+        }
+    }
+}
+
+/// What one commit declares about itself.
+fn declared_at(cache: &Path, commit: &str) -> anyhow::Result<Declared> {
+    let bytes = blob(cache, commit, DECLARATION).ok_or_else(|| {
+        anyhow::anyhow!(
+            "commit {commit} of {} does not carry {DECLARATION}, so it cannot say where its \
+             content belongs",
+            link().url
+        )
+    })?;
+    toml::from_str(&String::from_utf8_lossy(&bytes))
+        .map_err(|e| anyhow::anyhow!("{DECLARATION} at {commit} does not parse: {e}"))
 }
 
 /// Each root, with the repository paths that belong under it now and the ones an
-/// older pin put there.
-fn plans(roots: &Roots, ship: &Ship) -> Vec<(PathBuf, Vec<Mapping>, Vec<Mapping>)> {
+/// older commit put there.
+fn plans(roots: &Roots, content: &Content) -> Vec<(PathBuf, Vec<Mapping>, Vec<Mapping>)> {
+    let declared = &content.declared;
     let home = vec![
         Mapping {
-            source: ship.config.clone(),
+            source: declared.config.clone(),
             target: PathBuf::from("config.toml"),
             tree: false,
         },
         Mapping {
-            source: ship.skills.harness.clone(),
+            source: declared.skills.harness.clone(),
             target: PathBuf::from("skills"),
             tree: true,
         },
     ];
     // Nothing lands on the machine now; the retired paths still reconcile.
-    let retired = ship
+    let retired = declared
         .skills
         .retired
         .iter()
@@ -269,7 +439,7 @@ fn reconcile(
     root: &Path,
     mappings: &[Mapping],
     retired: &[Mapping],
-    ship: &Ship,
+    content: &Content,
     report: &mut Report,
 ) -> anyhow::Result<()> {
     // The report is shared by both roots, so this root judges only what it adds.
@@ -281,10 +451,10 @@ fn reconcile(
     let mut kept: Vec<String> = read_kept(root);
     // Already at this pin, so upstream cannot have moved: one file read replaces
     // a `git` per installed file.
-    if old.as_deref() == Some(ship.commit.as_str()) {
+    if old.as_deref() == Some(content.commit.as_str()) {
         return Ok(());
     }
-    let new = collect(cache, &ship.commit, mappings, root);
+    let new = collect(cache, &content.commit, mappings, root);
     // Retired paths come from the old pin only: this one has no such tree.
     let before = match old.as_deref() {
         Some(pin) => {
@@ -296,7 +466,7 @@ fn reconcile(
     };
 
     for file in &new {
-        let Some(theirs) = blob(cache, &ship.commit, &file.source) else {
+        let Some(theirs) = blob(cache, &content.commit, &file.source) else {
             continue;
         };
         let ours = std::fs::read(&file.dest).ok();
@@ -317,7 +487,7 @@ fn reconcile(
             )
             && ours
                 .as_deref()
-                .is_some_and(|ours| is_a_past_install(cache, &ship.commit, &file.source, ours));
+                .is_some_and(|ours| is_a_past_install(cache, &content.commit, &file.source, ours));
         let decision = match decision {
             _ if reinstalled => {
                 report.rebased.push(file.source.clone());
@@ -385,7 +555,7 @@ fn reconcile(
     // A conflict holds the base and asks again. A kept file is written down, so
     // it does not freeze the pin.
     if report.conflicts.len() == conflicts_at {
-        write_pin(root, &ship.commit, &kept)?;
+        write_pin(root, &content.commit, &kept)?;
     }
     Ok(())
 }
@@ -696,11 +866,6 @@ fn fetch(cache: &Path, url: &str) -> anyhow::Result<()> {
         );
     }
     Ok(())
-}
-
-/// Whether the cache already holds this pin, so no network is needed for it.
-pub fn have(cache: &Path, commit: &str) -> bool {
-    cache.is_dir() && has_commit(cache, commit)
 }
 
 fn has_commit(cache: &Path, commit: &str) -> bool {

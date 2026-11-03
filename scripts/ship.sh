@@ -1,29 +1,27 @@
 #!/usr/bin/env bash
-# Publish the shipped content and record the commit it now pins, in one step.
+# Publish the shipped content, and say whether this build can read it.
 #
-#   scripts/ship.sh -m "heir: name the mentor in the guide"        # commit, push, pin
-#   scripts/ship.sh --check                                         # does anything disagree?
-#   scripts/ship.sh --dry-run -m "..."                              # what would happen
-#   scripts/ship.sh -m "..." --push-main                            # and commit the pin here
+#   scripts/ship.sh -m "heir: name the mentor in the guide"   # commit + push ship/
+#   scripts/ship.sh --check                                   # do the two sides agree?
+#   scripts/ship.sh --check --local                           # the same, minus the remote
+#   scripts/ship.sh --dry-run -m "..."                        # what would happen
 #
-# Why a script and not a habit: `crates/server/ship.toml` is what a server installs
-# and `ship/` is what a person edits. Two names for one commit drift the moment
-# somebody forgets the second half, and the failure is silent -- a home installs the
-# old prose and the log line says everything is fine.
+# Nothing is written into this repository any more. The pin was two names for one
+# commit, so a wording fix in a skill cost an edit here and a rebuild; a server now
+# asks the content's branch for the newest commit that speaks the protocol it was
+# built to read (`crates/server/ship.toml`). Publishing content is therefore one
+# push, and the content declares where its own parts belong (`ship/ship.toml`).
 #
-# So this publishes, then insists that three things agree: the submodule's HEAD, the
-# manifest, and what the remote answers for refs/heads/main. The last one is the
-# point of a pin: a fresh machine has to be able to fetch that commit, so a sha that
-# only exists in this working tree is not a release.
+# What is left for this script is the one thing a push cannot state: that the
+# content on the branch speaks the protocol this build reads. `--check` answers it,
+# and answers with four codes, because "they disagree" and "I could not tell" are
+# different facts a caller has to be able to act on:
 #
-# `--check` answers with four codes, because "they disagree" and "I could not tell"
-# are different facts and a caller has to be able to act on both:
-#
-#   0  in agreement
-#   1  they disagree -- a real drift, refuse it
+#   0  the content speaks this build's protocol, and is published
+#   1  it does not -- a real disagreement, refuse it
 #   2  usage
-#   3  the remote could not be reached, so the one thing still in question is
-#      whether the pin is fetchable. Nothing else disagreed.
+#   3  the remote could not be reached, so whether that commit is fetchable is
+#      still the open question. Nothing else disagreed.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -35,6 +33,7 @@ remote=${GONGGA_SHIP_REMOTE:-origin}
 branch=${GONGGA_SHIP_BRANCH:-main}
 message=""
 mode=ship
+local_only=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -44,9 +43,19 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --check)   mode=check; shift ;;
+    # The half of the question a commit can answer without a network: pre-commit
+    # refuses a commit whose content this build cannot read, and says nothing about
+    # whether that content is published -- nothing here names a commit any more.
+    --local)   local_only=1; shift ;;
     --dry-run) mode=dry; shift ;;
-    --push-main) push_main=1; shift ;;
-    -h | --help) sed -n '2,20p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    --push-main)
+      # The flag named the half of the old flow that no longer exists: there is no
+      # pin here for a main-branch commit to carry, so accepting it would only
+      # teach a caller that it still does something.
+      echo "--push-main is gone: content is published, not pinned (see the header)" >&2
+      exit 2
+      ;;
+    -h | --help) sed -n '2,32p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "unknown argument: $1 (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -55,83 +64,115 @@ done
   echo "no ship/ here: git submodule update --init" >&2
   exit 1
 }
-
-# What the remote thinks main is, if it answers at all.
-remote_sha=$(git -C "$ship" ls-remote "$remote" "refs/heads/$branch" 2>/dev/null | cut -f1 || true)
-local_sha=$(git -C "$ship" rev-parse HEAD)
-dirty=$(git -C "$ship" status --porcelain)
+[[ -f "$manifest" ]] || { echo "no $manifest to read" >&2; exit 1; }
 
 say() { printf '  %s\n' "$*"; }
+disagree() { printf '  %s\n' "$*" >&2; }
 
-report() {
-  say "ship HEAD   $local_sha"
-  say "remote $branch  ${remote_sha:-<nothing advertised>}"
-  say "manifest    $(sed -n 's/^commit = "\([0-9a-f]*\)"/\1/p' "$manifest")"
-  [[ -n "$dirty" ]] && { say "uncommitted in ship/:"; printf '%s\n' "$dirty" | sed 's/^/      /'; }
-  say "this repo   $(git -C "$root" status --porcelain -- ship crates/server/ship.toml | head -3 | tr '\n' ' ')"
+# The field this script reads out of a `ship.toml`: one at the manifest (where the
+# server says what it reads) and one in the content (where the content says what it
+# is). A missing field is empty, which every comparison below treats as a refusal.
+field() { # file, key
+  sed -n "s/^$2 = \"\{0,1\}\([^\"[:space:]]*\)\"\{0,1\}$/\1/p" "$1" 2>/dev/null | head -1
 }
 
-pinned=$(sed -n 's/^commit = "\([0-9a-f]*\)"/\1/p' "$manifest")
-agree=1
-# Whether the third name was actually asked for. A remote that does not answer
-# leaves the question open; it does not answer "no". See the exit codes above.
-reachable=1
-[[ "$local_sha" == "$pinned" ]] || { echo "  MISMATCH ship HEAD is not what ship.toml pins" >&2; agree=0; }
-if [[ -n "$remote_sha" ]]; then
-  if [[ "$remote_sha" != "$local_sha" ]]; then
-    if git -C "$ship" merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
-      echo "  NOT PUBLISHED ship HEAD is ahead of $remote/$branch: run this without --check" >&2
-    else
-      echo "  MISMATCH $remote/$branch has commits ship/ does not -- diverged, do not publish over it" >&2
-    fi
-    agree=0
-  fi
-else
-  echo "  UNVERIFIED $remote did not answer for $branch: cannot tell whether the pin is fetchable" >&2
-  reachable=0; agree=0
+local_protocol=$(field "$manifest" protocol)
+local_branch=$(field "$manifest" branch)
+# The file a person just edited answers first: a `--check` before the commit has to
+# see what is about to be published, not what was published last.
+content_protocol=$(field "$ship/ship.toml" protocol)
+if [[ -z "$content_protocol" ]] && git -C "$ship" cat-file -e HEAD:ship.toml 2>/dev/null; then
+  content_protocol=$(git -C "$ship" show HEAD:ship.toml | field /dev/stdin protocol || true)
 fi
+local_sha=$(git -C "$ship" rev-parse HEAD)
+dirty=$(git -C "$ship" status --porcelain)
+branch_sha=$(git -C "$ship" symbolic-ref -q --short HEAD || true)
+
+say "ship HEAD   $local_sha (${branch_sha:-detached})"
+say "protocol    content ${content_protocol:-<none>}, this build ${local_protocol:-<none>}"
+say "branch      this build reads ${local_branch:-<none>}, publishing to $branch"
+[[ -n "$dirty" ]] && { say "uncommitted in ship/:"; printf '%s\n' "$dirty" | sed 's/^/      /'; }
+
+# Whether the content is published is a question for the remote, and a remote that
+# does not answer leaves it open rather than answering no. See the exit codes.
+remote_sha=$(git -C "$ship" ls-remote "$remote" "refs/heads/$branch" 2>/dev/null | cut -f1 || true)
+
+verify() { # prints what disagrees; returns 0 agree, 1 disagree, 3 remote silent
+  local agree=0 reachable=1
+  if [[ -z "$content_protocol" ]]; then
+    disagree "MISMATCH the content does not declare a protocol (ship/ship.toml: protocol = <n>)"
+    agree=1
+  elif [[ "$content_protocol" != "$local_protocol" ]]; then
+    disagree "MISMATCH the content speaks protocol $content_protocol; this build reads $local_protocol"
+    disagree "         a server would walk back to the newest commit it can read, or refuse to start"
+    agree=1
+  fi
+  if [[ -n "$local_branch" && "$local_branch" != "$branch" ]]; then
+    disagree "MISMATCH this build reads branch $local_branch; publishing here goes to $branch"
+    agree=1
+  fi
+  if [[ $local_only == 1 ]]; then
+    :
+  elif [[ -z "$remote_sha" ]]; then
+    disagree "UNVERIFIED $remote did not answer for $branch: cannot tell whether the content is published"
+    reachable=0; agree=1
+  elif ! git -C "$ship" merge-base --is-ancestor "$local_sha" "$remote_sha" 2>/dev/null; then
+    if git -C "$ship" merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+      disagree "NOT PUBLISHED $remote/$branch is behind ship HEAD: run this without --check"
+    else
+      disagree "MISMATCH $remote/$branch and ship/ have diverged: this script never force-pushes"
+    fi
+    agree=1
+  fi
+  if [[ $agree == 0 ]]; then
+    say "in agreement"
+    return 0
+  fi
+  # Unreachable only counts as "cannot tell" when nothing else disagreed.
+  if [[ $reachable == 0 && $agree == 1 ]] && protocol_agrees; then
+    return 3
+  fi
+  return 1
+}
+
+# The comparison that does not need a network, so an offline clone can still tell a
+# real disagreement from an unreachable remote.
+protocol_agrees() {
+  [[ -n "$content_protocol" && "$content_protocol" == "$local_protocol" ]] &&
+    [[ -z "$local_branch" || "$local_branch" == "$branch" ]]
+}
 
 if [[ $mode == check ]]; then
-  report
-  if [[ $agree == 1 ]]; then
-    echo "  in agreement"
-    exit 0
-  fi
-  # Unreachable only counts as "cannot tell" when nothing else disagreed: a
-  # manifest that names some other commit is wrong with or without a network.
-  if [[ $reachable == 0 && "$local_sha" == "$pinned" ]]; then
-    exit 3
-  fi
-  exit 1
+  code=0
+  verify || code=$?
+  exit "$code"
 fi
 
 if [[ $mode == dry ]]; then
-  report
-  if [[ -z "$message" ]]; then echo "  (no -m: nothing would be committed)"; fi
-  if [[ -n "$dirty" && -n "$message" ]]; then
-    echo "  would commit those changes, push $branch to $remote, write the sha into ship.toml"
-  elif [[ -z "$dirty" ]]; then
-    echo "  nothing to commit in ship/; the pin would only be rewritten if it disagrees"
+  if [[ -z "$dirty" ]]; then
+    say "nothing to commit in ship/; the push would publish $(git -C "$ship" rev-parse --short HEAD)"
+  elif [[ -n "$message" ]]; then
+    say "would commit those changes and push $branch to $remote"
+  else
+    say "(no -m: nothing would be committed)"
   fi
   exit 0
 fi
 
-# A submodule is cloned detached at the pin, so "the branch" may not exist yet.
-if ! git -C "$ship" symbolic-ref -q "HEAD"; then
-  echo "  ship/ is detached at the pin; working on a new $branch" >&2
+# A submodule is cloned detached at the commit it was pinned to, so "the branch" may
+# not exist here yet.
+if [[ -z "$branch_sha" ]]; then
+  say "ship/ is detached; working on a new $branch"
   git -C "$ship" checkout -B "$branch" >/dev/null
-  local_sha=$(git -C "$ship" rev-parse HEAD)
-fi
-current=$(git -C "$ship" symbolic-ref --short HEAD)
-if [[ "$current" != "$branch" ]]; then
-  echo "  ship/ is on '$current', not '$branch'; switch first -- this script does not guess which branch is the release" >&2
+elif [[ "$branch_sha" != "$branch" ]]; then
+  echo "  ship/ is on '$branch_sha', not '$branch'; switch first -- this script does not guess which branch is the release" >&2
   exit 1
 fi
 
 # Never push over something nobody pulled: a rejected push mid-script leaves the
-# commit made and the manifest unwritten, which is exactly the drift this is for.
+# commit made and the branch unmoved, which is the drift this script exists to avoid.
 if [[ -n "$remote_sha" && "$remote_sha" != "$local_sha" ]] &&
-   ! git -C "$ship" merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+   ! git -C "$ship" merge-base --is-ancestor "$remote_sha" "$(git -C "$ship" rev-parse HEAD)" 2>/dev/null; then
   echo "  $remote/$branch has commits ship/ does not; pull or rebase first (this script never force-pushes)" >&2
   exit 1
 fi
@@ -147,36 +188,20 @@ fi
 
 local_sha=$(git -C "$ship" rev-parse HEAD)
 if [[ "$local_sha" != "${remote_sha:-}" ]]; then
-  pushed=$(git -C "$ship" push "$remote" "HEAD:refs/heads/$branch" 2>&1) || {
-    printf '%s
-' "$pushed" | sed 's/^/    /' >&2
-    echo "  the push failed, so ship.toml still names the last published commit" >&2
+  if ! pushed=$(git -C "$ship" push "$remote" "HEAD:refs/heads/$branch" 2>&1); then
+    printf '%s\n' "$pushed" | sed 's/^/    /' >&2
+    echo "  the push failed; nothing in this repository names a commit, so a failure here only means the content did not move" >&2
     exit 1
-  }
+  fi
   echo "  pushed $branch to $remote ($(printf '%s' "$pushed" | tail -1 | tr -s ' '))"
 fi
 
-# Now the manifest, and only the manifest's value: the file's comments and the url
-# are not this script's business.
-sed -i "s|^commit = \"[0-9a-f]*\"|commit = \"$local_sha\"|" "$manifest"
-[[ $(sed -n "s/^commit = \"$local_sha\"/ok/p" "$manifest" | grep -c ok) == 1 ]] || {
-  echo "  ship.toml does not read back as pinning $local_sha" >&2
-  exit 1
-}
-git -C "$root" add -- ship crates/server/ship.toml
-echo "  pinned $local_sha (ship.toml + the submodule commit are staged here)"
-
-if [[ ${push_main:-0} == 1 ]]; then
-  if git -C "$root" diff --cached --quiet -- ship crates/server/ship.toml; then
-    echo "  nothing staged in this repo; no commit made"
-  else
-    git -C "$root" commit -q -m "ship: pin ${local_sha:0:10}"
-    git -C "$root" push
-    echo "  committed and pushed this repo's pin"
-  fi
-else
-  echo "  not pushed here: the pin is staged; commit it with the work that needed it, or rerun with --push-main"
-fi
-
-# The pin only reaches a running server through a rebuild: it is compiled in.
-echo "  reminder: ship.toml is include_str! -- build -p gongga-server (and evolve, to run on it)"
+# A publish proves itself: ask the remote again, with what it now says.
+remote_sha=$(git -C "$ship" ls-remote "$remote" "refs/heads/$branch" 2>/dev/null | cut -f1 || true)
+code=0
+verify || code=$?
+# A server installs at its start, so the content reaches a running machine through a
+# restart -- `evolve` is how one replaces itself. The build only has to be redone when
+# this build's own protocol changed, which is a source edit, not a content edit.
+echo "  reminder: a running server installs the content at its next start (evolve), not now"
+exit "$code"

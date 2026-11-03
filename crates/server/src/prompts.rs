@@ -222,8 +222,9 @@ pub fn install(config: &Path) -> Vec<&'static str> {
         Some(text) => read_table(&text).0,
         None => {
             tracing::warn!(
-                commit = %crate::ship::pinned().commit,
-                "the pinned ship config is not readable here; only this home's [prompts] stand"
+                content = crate::ship::resolved_commit().unwrap_or("nothing resolved"),
+                protocol = crate::ship::link().protocol,
+                "the shipped config is not readable here; only this home's [prompts] stand"
             );
             BTreeMap::new()
         }

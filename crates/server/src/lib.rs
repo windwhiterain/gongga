@@ -167,13 +167,10 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     // Off this thread before anything reads a roster: the community copy may not
     // be here yet, and no start waits for a network. See `docs/notes/server-agents.md`.
     agents::start();
-    // Before anything reads this home: one migrator per version step, and only
-    // for a home that is behind.
-    if migrate::needs_content(&cfg.home, &cfg.db_path) {
-        ship::prepare_for_migration(&cfg.home);
-    } else {
-        ship::prepare(&cfg.home);
-    }
+    // Before anything reads this home: which content this start installs, and one
+    // migrator per version step for a home that is behind. Resolved once, so the
+    // migrator and the install cannot disagree about which commit is current.
+    ship::prepare(&cfg.home);
     let migrated = migrate::bring_forward(&cfg.home, &cfg.db_path)?;
     if !migrated.steps.is_empty() {
         tracing::info!(

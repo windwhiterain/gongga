@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
-# Refuse a commit whose pinned content and published content disagree.
+# Refuse a commit whose content this build could not install.
 #
-# A pin is two names for one commit: `ship/` is the content a person edits, and
-# `crates/server/ship.toml` is what a server installs. `scripts/ship.sh` keeps
-# them equal -- but nothing stopped a commit from carrying a pin whose commit was
-# never pushed. A fresh machine cannot fetch that commit, and the install used to
-# report success while writing no file at all, so the failure surfaced on somebody
-# else's first start as "no prompt templates", pointing at the wrong thing.
+# `crates/server/ship.toml` names the protocol this build reads; a server asks
+# ship's branch for the newest commit that speaks it, so nothing here names a
+# commit and pushing content needs no commit over there. What a commit *can* still
+# get wrong is the protocol itself: publish content one protocol ahead of the build
+# that reads it and every machine silently keeps installing the last commit it can
+# read -- a wording fix that never arrives, which is the failure this refuses.
 #
 # Invariant
 #
-# A commit never depends on the network. `--check` answers 3 for "could not tell",
-# and this lets that through with the line printed: unreachable is a warning to
-# read, not a reason to be unable to work. A real disagreement is refused, because
-# that is a fact about the commit being made, not about the link.
+# A commit never depends on the network: `--check --local` asks the two manifests
+# and nothing else, so a clone with no link still knows whether its own content is
+# readable by its own build.
 #
 # Tracked here rather than in `.git/hooks` so it is the same for every checkout;
 # install it once per clone:
@@ -58,7 +57,7 @@ WHY
   fi
 fi
 
-# Nothing about the pin is being committed: no round trip, no opinion.
+# Nothing about the content's protocol is being committed: no round trip, no opinion.
 if ! git diff --cached --name-only | grep -qxE 'ship|crates/server/ship\.toml'; then
 	exit 0
 fi
@@ -67,35 +66,35 @@ fi
 # more). The check reads the submodule's *own* index, and inheriting this one makes it
 # read the parent's: it reported the parent's HEAD as the content's, and the parent's
 # whole tree as deleted in `ship/`. So the check runs with that environment cleared.
+#
+# `--local`: a commit cannot depend on the network, and there is nothing here for the
+# network to answer -- no commit is named anywhere, so whether the content is pushed
+# yet only decides when the next start installs it, not whether this commit is sound.
 out=$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
-  -u GIT_PREFIX bash scripts/ship.sh --check 2>&1)
+  -u GIT_PREFIX bash scripts/ship.sh --check --local 2>&1)
 code=$?
 case $code in
 0) exit 0 ;;
-3)
-	printf 'ship: cannot verify the pin -- the remote did not answer.\n' >&2
-	printf '%s\n' "$out" | sed 's/^/  /' >&2
-	printf 'ship: committing anyway; run scripts/ship.sh --check when back online.\n' >&2
-	exit 0
-	;;
 *)
 	printf '%s\n' "$out" | sed 's/^/  /' >&2
 	cat >&2 <<'WHY'
 
-ship: this commit carries a pin that disagrees with the shipped content.
+ship: this commit ships content that does not speak this build's protocol.
 
-  The pin is `crates/server/ship.toml`; the content is `ship/`. A fresh machine
-  has to be able to fetch that exact commit -- a sha that exists only in this
-  working tree installs nothing.
+  `crates/server/ship.toml` names the protocol this build reads; `ship/ship.toml`
+  says which the content is. A server installs the newest commit of ship's branch
+  that speaks its own protocol, so a mismatch means the content it just shipped is
+  invisible -- or that an older build silently keeps installing the last commit it
+  could read.
 
-  Publish first, then commit:
+  Cut one side over at a time:
 
-      scripts/ship.sh -m "what changed"   # commits ship/, pushes, writes the pin
-      git commit                          # now the names agree
+      # content moves first, and builds read it after
+      scripts/ship.sh -m "protocol 2: ..."    # commits ship/ and pushes it
+      # then raise `protocol` in crates/server/ship.toml and build
 
-  Committing something else while the pin is in flux? Leave it out:
-
-      git restore --staged ship crates/server/ship.toml
+  A wording fix, a new skill, a retired path -- none of those is a protocol change,
+  and none of them needs this file touched.
 WHY
 	exit 1
 	;;

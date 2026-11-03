@@ -45,12 +45,6 @@ pub fn version(home: &Path) -> u32 {
         .unwrap_or(0)
 }
 
-/// Whether a migrator has to be found: not for a home at this version, nor for
-/// a first start.
-pub fn needs_content(home: &Path, db: &Path) -> bool {
-    version(home) < VERSION && (db.is_file() || home.join(STAMP).is_file())
-}
-
 /// Runs every step between this home's version and [`VERSION`].
 pub fn bring_forward(home: &Path, db: &Path) -> anyhow::Result<Report> {
     let mut report = Report {
@@ -94,9 +88,9 @@ fn fetch(home: &Path, from: u32) -> anyhow::Result<PathBuf> {
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "this home is at version {from} and needs `{path}`, which is neither in the \
-                 pinned content (pin {}) nor anywhere else this server can reach: upgrade the \
-                 pin, or start the server where the shipped content lives",
-                crate::ship::pinned().commit
+                 shipped content ({}) nor anywhere else this server can reach: start the server \
+                 where the content repository answers, or ship the step",
+                crate::ship::resolved_commit().unwrap_or("nothing resolved this start")
             )
         })?;
     if let Some(parent) = target.parent() {
@@ -108,21 +102,20 @@ fn fetch(home: &Path, from: u32) -> anyhow::Result<PathBuf> {
     Ok(target)
 }
 
-/// The path as the pinned commit has it.
+/// The path as the content this start resolved has it.
 fn blob(home: &Path, path: &str) -> anyhow::Result<Option<Vec<u8>>> {
     let cache = home.join("ship.git");
+    let Some(commit) = crate::ship::resolved_commit() else {
+        return Ok(None);
+    };
     if !cache.is_dir() {
         return Ok(None);
     }
-    Ok(crate::ship::blob(
-        &cache,
-        &crate::ship::pinned().commit,
-        path,
-    ))
+    Ok(crate::ship::blob(&cache, commit, path))
 }
 
-/// The path as the newest commit in the cache has it: the pin may predate a step
-/// a newer install already knows, and a home stuck behind it needs the file, not
+/// The path as the newest commit in the cache has it: the resolved content may
+/// predate a step a newer install already knows, and a home stuck behind it needs the file, not
 /// the argument about which pin is current.
 fn newest_blob(home: &Path, path: &str) -> Option<Vec<u8>> {
     let cache = home.join("ship.git");
@@ -152,7 +145,7 @@ fn newest_blob(home: &Path, path: &str) -> Option<Vec<u8>> {
 
 /// A local checkout the pin names: `url` may be a path rather than a remote.
 fn checkout_copy(home: &Path, path: &str) -> Option<Vec<u8>> {
-    let url = PathBuf::from(&crate::ship::pinned().url);
+    let url = PathBuf::from(&crate::ship::link().url);
     let _ = home;
     url.join(path)
         .is_file()
