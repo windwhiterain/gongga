@@ -555,6 +555,8 @@ impl Agent {
     /// the model's provider's, never another model's. This machine's own lifetime
     /// applies only when its config states one, and a provider that states neither
     /// leaves it at zero, which the plan reads as "never expires".
+    /// Nothing follows an index nobody measured a request for, which is the truth for
+    /// a tool result: no payload of the request is behind it.
     fn rates(&self, model: &str) -> crate::prefix_cache::Rates {
         let entry = self.providers.place(model);
         let stated = entry
@@ -565,6 +567,7 @@ impl Agent {
             price: entry.as_ref().and_then(|entry| entry.price),
             invalid: self.cache_invalid_rate,
             ttl_ms: self.cache_ttl_ms.or(stated).unwrap_or(0),
+            following_tokens: 0,
         }
     }
 
@@ -596,15 +599,23 @@ impl Agent {
         if roots.is_empty() {
             return None;
         }
-        let rates = self.rates(model);
         let wanted: Vec<crate::prefix_cache::Wanted> = roots
             .iter()
             .map(|root| crate::prefix_cache::Wanted {
                 key: root.spelling.as_str(),
                 text: root.content.as_str(),
-                tokens: self.tokens_on(&model, &root.content),
+                tokens: self.tokens_on(model, &root.content),
             })
             .collect();
+        // The provider's own count for this session's last request, less the index:
+        // what sits behind it, the prose ahead of it included because the two cannot
+        // be told apart from that one number. Leaving it unpriced let a reordered
+        // index spend a whole context's hit to save a few thousand tokens of its own.
+        let measured = usize::try_from(self.store.context_tokens(id).unwrap_or(0)).unwrap_or(0);
+        let rates = crate::prefix_cache::Rates {
+            following_tokens: measured.saturating_sub(wanted.iter().map(|want| want.tokens).sum()),
+            ..self.rates(model)
+        };
         let planned = crate::prefix_cache::plan(
             &self.store,
             name,
