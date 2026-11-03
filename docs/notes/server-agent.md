@@ -531,3 +531,47 @@ The notice is a decision the server made, so it is recorded as
 `events.kind = context_notice` with the numbers it quoted. Counting the
 injected sentence instead made the count depend on the template's wording.
 
+
+## Comments moved out of the code
+
+The checker holds a preamble to 120 characters and an `# Invariant` to 400, so the
+argument behind a short claim lives here.
+
+**The head is stamped once.** It is part of the prefix the provider caches, so it is
+written once and read from the store after that. A template edit, a moved directory, a
+rewritten `AGENTS.md` and a re-planned index all used to re-render it, and each one
+invalidated the whole transcript behind it. What the references say is still read every
+step, but a change is a row appended to the transcript, never a head that moves.
+
+**The index.** The order is `prefix_cache`'s, which is a permutation of what it was
+given: no entry is invented for a reference that could not be read, and the spellings
+returned are exactly the ones the index carries, so `meta::expand` leaves those mentions
+literal. Everything is read in `home`, the session's own directory: a `cd` in its shell
+must not rewrite what was already sent.
+
+**A failed attempt's window.** The pinned `upto_seq` is also where a failed attempt's
+rows end: the retry inside `llm.stream` sends that window, so what the failed attempt
+wrote after it is dropped before the next one is sent.
+
+**Three "where"s.** The prose states where a session is three ways -- its name, the
+placement a move stated, and the peer whose shells are there now -- because a template
+has no conditional. The session's own name is the one value in the prose, so a model
+asked what it is called can answer without a tool call.
+
+**Streamed fragments.** The parts already handed to a front-end as blocks are tracked
+because a refusal can land mid-item: a block left open there would take the next answer's
+text for its own. Nothing follows a failure, since `llm.stream` retries what another
+attempt could fix, so what is left said the request itself is wrong and the fragments
+this attempt streamed are not its answer.
+
+**Drafts.** Each item's draft is written at most once per `DRAFT_FLUSH`, so a fast
+stream is not one disk write per chunk; what a kill may lose is at most that much text.
+A part's text is worth keeping before the item finishes when it is an activity --
+progress toward an answer not yet given. A call's text is its arguments, which the call
+row carries once it is complete.
+
+**Pictures.** A picture's name is read on the machine that printed it: a `bash` call's
+picture is here, a `remote_bash` call's is there. The row keeps the text as the command's
+words and the copy as the record; nothing is uploaded when the row is written, because
+the provider's file is resolved when a request is built, so a replay months later still
+has something to name.

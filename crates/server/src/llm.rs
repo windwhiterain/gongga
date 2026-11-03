@@ -15,8 +15,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::store::{activity_detail, activity_name};
 
-/// A connect that takes this long is a broken route, not a slow provider: the
-/// answer itself is bounded by `headers_timeout` and `idle_timeout`.
+/// A connect this slow is a broken route, not a slow provider.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The name this harness gives a provider: every request's `User-Agent`. See
@@ -39,16 +38,10 @@ pub struct LlmClient {
     temperature: Option<f32>,
     max_output_tokens: Option<u32>,
     store: bool,
-    /// How long the provider may take to answer with response headers.
-    ///
-    /// Nothing about the body: an answer that is still arriving is never cut
-    /// by a wall clock, only by [`Self::idle_timeout`].
+    /// How long the provider may take to send response headers: not about the body,
+    /// which only [`Self::idle_timeout`] bounds.
     headers_timeout: Duration,
-    /// Silence of *content* that counts as a broken stream.
-    ///
-    /// Chunks that carry no event -- keep-alives, comments -- do not move this
-    /// clock, so a provider holding the socket open with nothing to say is as
-    /// silent as one sending no bytes at all.
+    /// Silence of *content* that counts as a broken stream: keep-alives do not move it.
     idle_timeout: Duration,
     /// Extra attempts after a failure or an empty response.
     max_retries: u32,
@@ -76,14 +69,12 @@ pub struct RequestSource {
     pub db_path: std::path::PathBuf,
     pub session_id: i64,
     pub upto_seq: i64,
-    /// Where the pictures of this transcript are kept. Owned, because the body outlives
-    /// the call that built it and reads that store while the turn writes to it.
+    /// Where the pictures are kept: owned, because the body outlives the call.
     pub store: crate::store::Store,
 }
 
 impl RequestSource {
-    /// Opens the window as a body. `uploader` is the connection this request goes
-    /// through, and it is the only thing a body may use it for.
+    /// Opens the window as a body; `uploader` is the only handle it may use.
     fn open(
         &self,
         head: &[u8],
@@ -109,14 +100,7 @@ impl LlmClient {
                 cfg.api_key_env
             );
         }
-        // No client-wide deadline on purpose: a wall clock covers the body
-        // too, and a body that is still producing is the one thing an answer
-        // of any length is entitled to do. What is left needs bounds that
-        // know what they are bounding -- [`CONNECT_TIMEOUT`] for the socket,
-        // `headers_timeout` for the answer, `idle_timeout` for the content.
-        //
-        // The identity is the client's, not one request's: every call to a
-        // provider goes through this client.
+        // No client-wide deadline on purpose: three bounds know what they bound.
         let http = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .user_agent(HARNESS_AGENT)
@@ -180,13 +164,9 @@ impl LlmClient {
     ///
     /// # Invariant
     ///
-    /// A failed, timed-out, or empty attempt is retried with a doubling delay:
-    /// the caller always sees one stream, and each retry is announced as
-    /// [`LlmEvent::Retrying`]. A panic inside one attempt is that attempt's
-    /// failure and enters the same loop, so it never ends this stream by
-    /// unwinding past it. How far an attempt got is not a reason to stop: only
-    /// the provider saying the request itself is wrong ends this stream. See
-    /// `docs/notes/server-llm.md`.
+    /// A failed, timed-out or empty attempt is retried with a doubling delay, so the
+    /// caller sees one stream; only the provider saying the request is wrong ends it.
+    /// See `docs/notes/server-llm.md`.
     pub fn stream(
         &self,
         instructions: &str,
@@ -222,10 +202,7 @@ impl LlmClient {
 
         tokio::spawn(async move {
             let mut attempt: u32 = 0;
-            // A dead file id is answered once by forgetting it and sending again. Not
-            // through `retryable`, which counts attempts against a configured ceiling:
-            // this failure is not a bad minute, and its fix is not another try of the
-            // same bytes.
+            // A dead file id is answered once by forgetting it, not through `retryable`.
             let mut recovered_file = false;
             loop {
                 // Opened again for every attempt: a body is read once, and a retry
@@ -313,8 +290,7 @@ impl LlmClient {
                 if !completed && failure.is_none() {
                     failure = Some((retry_reason(&None, false, produced), true));
                 }
-                // A file the provider no longer holds is forgotten, and the request is
-                // built again: the next body resolves a fresh one from the copy.
+                // A file the provider no longer holds is forgotten and the body rebuilt.
                 if !recovered_file
                     && failure
                         .as_ref()
@@ -393,9 +369,8 @@ impl LlmClient {
             "stream": true,
             "store": self.store,
         });
-        // The index joins the prose because it changes only when a file does. The card does
-        // not: the prose follows an edited template and the card is stamped once, so the
-        // two lifetimes cannot share one value.
+        // The index joins the prose: both change only when a file does. The card is
+        // stamped once, so the two lifetimes differ.
         let mut instructions = instructions.to_string();
         if let Some(index) = index.filter(|index| !index.is_empty()) {
             if !instructions.is_empty() {
@@ -530,8 +505,7 @@ impl Uploader {
                 body.chars().take(200).collect::<String>()
             )
         })?;
-        // The provider's own statement when it makes one, an assumption counted from
-        // now when it does not: either way the row records when this stops working.
+        // The provider's own statement, or an assumption counted from now.
         let expires_at = value["expires_at"]
             .as_i64()
             .map(|secs| secs * 1000)
@@ -674,8 +648,7 @@ fn event_content(event: &LlmEvent) -> bool {
     )
 }
 
-/// Any content means this attempt said something. An activity beat counts too:
-/// a completed response may hold nothing else.
+/// Any content means this attempt said something; an activity beat counts too.
 fn event_produced(event: &LlmEvent) -> bool {
     event_content(event)
         || matches!(
@@ -1003,9 +976,8 @@ async fn read_stream_inner(
     // item_id -> output item metadata, so deltas can be attributed.
     let mut items: HashMap<String, ItemMeta> = HashMap::new();
     let mut out = Outbox::new(tx);
-    // Silence of content is failure: no error, no EOF, nothing else wakes the
-    // turn. It is deliberately not "time since the request started", which
-    // would cut a long answer in the middle of writing it.
+    // Silence of content is failure: not "time since the request started", which would
+    // cut a long answer mid-sentence.
     let idle = tokio::time::sleep(idle_timeout);
     tokio::pin!(idle);
 
@@ -1049,10 +1021,7 @@ async fn read_stream_inner(
                                 probe.process(process_started.elapsed());
                             }
                         }
-                        // Only content moves the clock. A chunk that held a
-                        // keep-alive said nothing, and a provider that keeps the
-                        // socket warm while saying nothing is the stall this
-                        // bound is for.
+                        // Only content moves the clock; a keep-alive said nothing.
                         if out.take_content() {
                             idle.as_mut().reset(tokio::time::Instant::now() + idle_timeout);
                         }
@@ -1277,10 +1246,7 @@ fn provider_phase(event_name: &str) -> Option<(&str, &str)> {
     is_provider_call(item_type).then_some((item_type, phase))
 }
 
-/// The event channel, plus whether content has gone out since anyone asked.
-///
-/// It exists so the idle clock can be moved by what the model *said* rather
-/// than by what the socket carried: see [`crate`]'s note on `idle_timeout`.
+/// The event channel, plus whether content went out: what the idle clock measures.
 struct Outbox<'a> {
     tx: &'a mpsc::Sender<LlmEvent>,
     content: bool,
@@ -1470,11 +1436,8 @@ async fn handle(
             };
             match kind {
                 ItemKind::Reasoning => {
-                    // The provider's summary wins when it sends one; the
-                    // accumulated deltas are the fallback when it does not.
-                    // One summary part is one paragraph, so the parts are joined
-                    // with a newline: `join("")` glued them into a single line,
-                    // and a reader lost every break the model made.
+                    // The provider's summary wins; the deltas are the fallback. Parts are
+                    // paragraphs, so they join with a newline.
                     let mut summary = item["summary"]
                         .as_array()
                         .map(|parts| {

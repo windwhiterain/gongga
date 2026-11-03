@@ -375,3 +375,35 @@ With the encrypted blob, that is the whole item: the blob *is* the thought, so t
 Without a blob -- a thought a cancel interrupted, kept by `keep_streamed` -- the text
 is all there is, so it is replayed as `summary`. Dropping it instead was the older
 rule, and it made a cancel lose the half of the turn the reader had already watched.
+
+## Comments moved out of the code
+
+The checker holds a preamble to 120 characters and an `# Invariant` to 400, so the
+argument behind a short claim lives here.
+
+**Three bounds, knowingly.** There is no client-wide deadline on purpose: a wall clock
+would cover the body too, and a body still producing is the one thing an answer of any
+length is entitled to do. What is left needs bounds that know what they are bounding:
+`CONNECT_TIMEOUT` for the socket, `headers_timeout` for the answer, `idle_timeout` for
+the content. The identity is the client's, not one request's -- every call to a provider
+goes through this client.
+
+**`idle_timeout` measures content, not bytes.** Chunks that carry no event (keep-alives,
+comments) do not move the clock, so a provider holding the socket open with nothing to
+say is as silent as one sending no bytes at all. It is deliberately not "time since the
+request started", which would cut a long answer in the middle of writing it.
+
+**A dead file id.** Answered once by forgetting the id and sending again, and *not*
+through `retryable`: that counts attempts against a configured ceiling, and this failure
+is not a bad minute -- its fix is not another try of the same bytes.
+
+**The stream's invariant, in full.** A failed, timed-out, or empty attempt is retried
+with a doubling delay: the caller always sees one stream, and each retry is announced as
+`LlmEvent::Retrying`. A panic inside one attempt is that attempt's failure and enters
+the same loop, so it never ends this stream by unwinding past it. How far an attempt got
+is not a reason to stop: only the provider saying the request itself is wrong ends this
+stream.
+
+**Two lifetimes in `build_head`.** The index joins the prose because both change only
+when a file does. The card does not: the prose follows an edited template while the card
+is stamped once.

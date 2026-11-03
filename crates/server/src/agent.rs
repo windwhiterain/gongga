@@ -115,8 +115,8 @@ impl Agent {
                 (TurnOutcome::Failed, 0)
             }
         };
-        // The turn's outcome as a row, not only as a line: a reader that has the
-        // database should not have to match prose to learn why a run stopped.
+        // The turn's outcome as a row, not only a line: a reader with the database need
+        // not match prose.
         self.log_event(
             Some(session.id()),
             "turn_end",
@@ -186,9 +186,8 @@ impl Agent {
             }
             // Step boundary: a user line between a call and its result is rejected, so inject here.
             self.deliver_inbox(id, &name);
-            // Everything a request is built from is read here, every step: a
-            // `set_session` that lands while this turn runs is meant for the next
-            // request, and one step is the longest anything may lag behind it.
+            // Read here every step: a `set_session` landing mid-turn is meant for the
+            // next request.
             let (llm, effort, budget) = match self.settings(&name, session) {
                 Ok(settings) => settings,
                 Err(e) => {
@@ -343,8 +342,8 @@ impl Agent {
     /// Moves the session's inbox into the transcript in one durable transaction.
     fn deliver_inbox(&self, id: i64, name: &str) -> usize {
         match self.store.deliver_pending(id, name) {
-            // `waited` is the number an operator reads as "no answer yet": a message
-            // written while this turn was mid-step lands only here.
+            // `waited` is the "no answer yet" number: a message written mid-step lands
+            // only here.
             Ok((delivered, waited_ms)) => {
                 if delivered > 0 {
                     tracing::info!(
@@ -421,12 +420,9 @@ impl Agent {
     ///
     /// # Invariant
     ///
-    /// The head is part of the prefix the provider caches, so it is written once and
-    /// read from the store after that -- a template edit, a moved directory, a
-    /// rewritten `AGENTS.md` and a re-planned index all used to re-render it, and
-    /// each one invalidated the whole transcript behind it. What the references say
-    /// is still read every step, but a change is a row appended to the transcript,
-    /// never a head that moves. See `docs/notes/server-agent.md`.
+    /// The head is part of the cached prefix: written once, then read from the store.
+    /// What the references say is read every step, but a change is a row appended, never
+    /// a head that moves. See `docs/notes/server-agent.md`.
     async fn prompt_in_force(
         &self,
         session: &SessionHandle,
@@ -438,16 +434,16 @@ impl Agent {
         if let Some(kept) = self.store.prompt(id)? {
             return Ok(kept);
         }
-        // All three "where"s come from the session itself: the name, the placement a
-        // move stated, and the peer whose shells are there now.
+        // All three "where"s come from the session: its name, a stated placement, the
+        // peer.
         let name = session.name();
         let placed = session.placed();
         let placed = placed.as_deref();
         let remote = session.remote_name();
         let remote = remote.as_deref();
         let prompts = crate::prompts::shared();
-        // The session's own name is the one value in the prose: a model asked what it
-        // is called has to be able to answer without a tool call.
+        // The session's own name is the one value in the prose, so a model asked its
+        // name can answer without a tool call.
         let instructions = prompts.system(name);
         let here = match placed {
             Some(path) => Self::stated(path),
@@ -455,8 +451,7 @@ impl Agent {
         };
         let home = std::path::PathBuf::from(&here);
         let tail = Some(prompts.render(
-            // One shape per fact a card states, because a template has no
-            // conditional: where the workspace is, and whether its path is known.
+            // One shape per fact a card states: a template has no conditional.
             match (remote, here.is_empty()) {
                 (Some(_), false) => crate::prompts::TAIL_REMOTE,
                 (Some(_), true) => crate::prompts::TAIL_REMOTE_UNSTATED,
@@ -470,8 +465,8 @@ impl Agent {
                 ("remote", remote.unwrap_or_default()),
             ],
         ));
-        // The index is where the references of the whole conversation stand now, read
-        // and planned exactly once because this is the one request that will carry it.
+        // Where the conversation's references stand now, planned once, for the one
+        // request that carries it.
         let (index, rooted) = match self.index_of(id, name, model, &home, source).await {
             Some((index, rooted)) => (Some(index), rooted),
             None => (None, Vec::new()),
@@ -545,17 +540,14 @@ impl Agent {
         }
     }
 
-    /// The index this request carries: the text every reference its messages name
-    /// says now, in the order the cache pays least for.
+    /// The index this request carries: what every reference says now, cheapest first.
     ///
     /// # Invariant
     ///
-    /// The order is `prefix_cache`'s, which is a permutation of what it was given: no
-    /// entry is invented for a reference that could not be read, and the spellings
-    /// returned are exactly the ones the index carries, so `meta::expand` leaves
-    /// those mentions literal.
-    /// Everything is read in `home`, the session's own directory: a `cd` in its shell
-    /// must not rewrite what was already sent. See `docs/notes/server-agent.md`.
+    /// The order is `prefix_cache`'s, a permutation of what it was given: no entry is
+    /// invented for a reference that could not be read, and the spellings returned are the
+    /// ones the index carries, so `meta::expand` leaves those mentions literal. Everything
+    /// is read in `home`, the session's directory. See `docs/notes/server-agent.md`.
     async fn index_of(
         &self,
         id: i64,
@@ -564,8 +556,8 @@ impl Agent {
         home: &std::path::Path,
         source: crate::meta::Source<'_>,
     ) -> Option<(String, Vec<String>)> {
-        // The queue as well as the transcript: a message delivered before this row
-        // was left literal on the promise that the row would carry it.
+        // The queue as well as the transcript: a message delivered before this row was
+        // left literal on that promise.
         let mut texts = self.store.user_texts(id).ok()?;
         texts.extend(self.store.queued_texts(name).unwrap_or_default());
         let borrowed: Vec<&str> = texts.iter().map(String::as_str).collect();
@@ -689,12 +681,10 @@ impl Agent {
         let phase_started = std::time::Instant::now();
         let source = self.store.request_source(id)?;
         phases.source_ms = phase_started.elapsed().as_millis() as u64;
-        // The same number is where a failed attempt's rows end: the retry inside
-        // `llm.stream` sends this window, so what a failed attempt wrote after it
-        // is dropped before the next one. See `docs/notes/server-agent.md`.
+        // Where a failed attempt's rows end: the retry inside `llm.stream` sends this
+        // window. See `docs/notes/server-agent.md`.
         let window = source.upto_seq;
-        // One number for "how long the model took": the whole stream, retries
-        // inside it included, because that is what the wall clock paid.
+        // One number for "how long the model took": the whole stream, retries included.
         let requested = std::time::Instant::now();
         // SPEC's ttft and tps both count from the first token: the wait for it,
         // then what came out over the time after.
@@ -712,9 +702,8 @@ impl Agent {
 
         // Which call each streamed item is, so its chunks are addressed by call id.
         let mut calls: std::collections::HashMap<String, String> = Default::default();
-        // The parts already handed to the front-end as blocks. A refusal can land
-        // mid-item, and a block left open there would take the next answer's text
-        // for its own.
+        // The parts already handed out as blocks: a refusal mid-item must not take the
+        // next answer's text.
         let mut began: std::collections::HashSet<(String, ResponsePart)> = Default::default();
         // The items whose content the reader has already seen, so the failure line
         // can say that fragment is being withdrawn.
@@ -722,8 +711,7 @@ impl Agent {
         // Chunks that no completion event will store. See `docs/notes/server-agent.md`.
         let mut streamed: std::collections::HashMap<String, (ResponsePart, String)> =
             Default::default();
-        // When each item's draft was last written, so a fast stream is not one disk
-        // write per chunk: what a kill may lose is at most DRAFT_FLUSH of text.
+        // When each draft was last written, so a fast stream is not one write per chunk.
         let mut drafted: std::collections::HashMap<String, std::time::Instant> = Default::default();
         let mut ran_tools = false;
         let mut failure: Option<String> = None;
@@ -886,8 +874,8 @@ impl Agent {
                 }
                 LlmEvent::Completed { usage } => {
                     saw_completion = true;
-                    // The provider answered this request, so the index it carried is
-                    // warm again -- and only that one. See `docs/notes/server-prefix-cache.md`.
+                    // The index it carried is warm again -- and only that one. See
+                    // `docs/notes/server-prefix-cache.md`.
                     crate::prefix_cache::confirm(&self.store, name, "prompt index", &prompt.rooted);
                     // Outside the guard: a provider with no counts still took the time.
                     let ttft_ms =
@@ -984,9 +972,7 @@ impl Agent {
             }
         }
 
-        // Nothing follows a failure: `llm.stream` retries what another attempt
-        // could fix, so what is left here said the request itself is wrong and
-        // the fragments this attempt streamed are not its answer.
+        // Nothing follows a failure: `llm.stream` retried what another attempt could fix.
         if let Some(message) = failure {
             for (item_id, part) in began {
                 let call_id = calls.get(&item_id).cloned();
@@ -1006,8 +992,8 @@ impl Agent {
                     0
                 }
             };
-            // One line for the operator, in the voice the retries already use: a
-            // refusal is news, and taken-for-an-answer text is never resumed.
+            // One line for the operator, in the retries' voice; taken-for-an-answer text
+            // is never resumed.
             self.bus.publish(Event::Log {
                 level: LogLevel::Warn,
                 message: failed_warning(&name, &message, &said, discarded),
@@ -1042,8 +1028,8 @@ impl Agent {
         output: &str,
     ) -> Vec<crate::image::ImageRef> {
         let mut out = Vec::new();
-        // The bytes are on the machine that printed the name, which is not always
-        // the one this server reads. See `docs/notes/server-meta.md`.
+        // The bytes are on the machine that printed the name. See
+        // `docs/notes/server-meta.md`.
         let named = crate::meta::mentions(output)
             .into_iter()
             .filter(|m| m.kind == protocol::Reference::Image)
@@ -1055,8 +1041,8 @@ impl Agent {
             (_, crate::session::Machine::Local) => crate::meta::Source::Local,
         };
         for given in named {
-            // The name is read on the machine that printed it: a picture a `bash` call
-            // shows is here, and one a `remote_bash` call shows is there.
+            // Read on the machine that printed it: a `bash` picture here, a `remote_bash`
+            // one there.
             let path = source.spelling(&ctx.dir(printed_on), &given);
             let bytes = match source.read(&ctx.dir(printed_on), &given).await {
                 Some(b) => b,
@@ -1077,9 +1063,8 @@ impl Agent {
                 continue;
             }
             let mut image = crate::image::ImageRef::new(path, media);
-            // Stored too: the text stays the command's words, the copy is the record.
-            // Nothing is uploaded here: the provider's file is resolved when a request
-            // is written, so a replay months later still has something to name.
+            // Stored too: nothing is uploaded here, the provider's file is resolved per
+            // request.
             image.copy =
                 crate::image::pictures::remember(&self.store, &image.path, media, &bytes).ok();
             out.push(image);
@@ -1104,9 +1089,8 @@ impl Agent {
         let started_at = crate::store::now_millis();
         let started = std::time::Instant::now();
         if cancel.is_cancelled() {
-            // Its row exists and a provider wants it answered; the helper writes
-            // that row, and the window hears the call end. A row the request would
-            // otherwise invent while writing the body is a row written once instead.
+            // Its row exists and a provider wants it answered; a row the body would
+            // otherwise invent is written once instead.
             self.answer_interrupted(id, name, &call_id, &tool, step);
             return true;
         }
@@ -1156,8 +1140,8 @@ impl Agent {
         let outcome = self.tools.run(&tool, arguments, &ctx).await;
         let run_ms = run_started.elapsed().as_millis() as u64;
         let attach_started = std::time::Instant::now();
-        // Whose pictures these are: the shell that printed them, not where the
-        // session happens to stand. See `docs/notes/server-remote.md`.
+        // Whose pictures these are: the shell that printed them. See
+        // `docs/notes/server-remote.md`.
         let printed_on = self.tools.machine_of(&tool, &ctx);
         let scanned = self
             .attach_references(&ctx, printed_on, &outcome.output)
@@ -1632,8 +1616,7 @@ mod tests {
         assert!(said.contains("retry 1 of 3"), "{said}");
     }
 
-    /// The notice names the two numbers it is talking about and nothing it cannot
-    /// know: the measured size and the budget. There is no boundary to quote.
+    /// The notice names the two numbers it can know: the measured size and the budget.
     #[test]
     fn the_notice_names_the_size_and_the_budget() {
         let notice = context_notice(&notice_prompts(), "main", 10, 20);
@@ -1679,8 +1662,7 @@ fn description_of(value: &serde_json::Value) -> &str {
 /// summary leaves out is here, so opening needs no request.
 fn call_fields(tool: &str, value: &serde_json::Value) -> Vec<protocol::Field> {
     let summary = summary_keys(tool);
-    // SPEC's `toolcall{tool_name, ...}`: the name rides on the head, where it is
-    // the one part of the summary that is always there.
+    // SPEC's `toolcall{tool_name, ...}`: the name rides on the head.
     let mut fields = Vec::new();
     // The detail first, so opening the item leads with what was run.
     if let Some(command) = value.get("command").and_then(|v| v.as_str()) {
@@ -1796,16 +1778,11 @@ fn with_time(output: String, run_ms: u64) -> String {
     }
 }
 
-/// How often a streaming item's draft is written to disk.
-///
-/// A bound on what a kill can lose, not on how fast a stream may run: one write per
-/// item per interval, however many chunks arrive between them.
+/// How often a streaming item's draft is written: one write per item per interval.
 const DRAFT_FLUSH: std::time::Duration = std::time::Duration::from_millis(250);
 
-/// Whether a part's text is worth keeping before the item finishes.
-///
-/// A call's text is its arguments, which the call row carries once it is complete;
-/// an activity is progress toward an answer that has not been given.
+/// Whether a part's text is worth keeping before the item finishes: a call's text is
+/// its arguments.
 fn text_worth_keeping(part: ResponsePart) -> bool {
     matches!(part, ResponsePart::Output | ResponsePart::Reasoning)
 }
