@@ -395,9 +395,8 @@ pub fn roots(home: &Path, project: Option<&Path>) -> skill::Roots {
     )
 }
 
-/// Binds one line's tokens to a published spec: a bare word fills the next
-/// unfilled positional argument in the spec's own order; `--flag value` and
-/// `--flag=value` name the rest.
+/// Binds a line's tokens to a published spec: bare words fill the
+/// positional slots; `--flag value` names the rest.
 ///
 /// # Invariant
 ///
@@ -469,9 +468,7 @@ fn insert_once(args: &mut Args, name: &str, value: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The one-line syntax of a command, as SPEC spells it: `<name>` for a
-/// required positional, `[<name>]` for an optional one, `--name <hint>` for a
-/// flag. A command with neither is `nothing`.
+/// The one-line syntax of a command: `<name>`, `[<name>]`, `--name <hint>`.
 pub fn signature(spec: Option<&CommandSpec>) -> String {
     let Some(spec) = spec else {
         return "nothing".to_string();
@@ -513,11 +510,7 @@ pub fn render_args(args: &Args, spec: Option<&CommandSpec>) -> String {
     }
     for (k, v) in args.iter() {
         if spec
-            .map(|s| {
-                s.args
-                    .iter()
-                    .any(|a| a.positional && a.name == *k)
-            })
+            .map(|s| s.args.iter().any(|a| a.positional && a.name == *k))
             .unwrap_or(false)
         {
             continue;

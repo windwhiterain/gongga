@@ -203,17 +203,17 @@ server_pid=$(child_pid)
 cli=("$cli_bin" --home "$home" --server "127.0.0.1:$port")
 
 # `local` is not a remote name: naming it is refused, and the refusal says `none`.
-refused=$("${cli[@]}" set_session probe --remote local --model fake/flash-fake 2>&1)
+refused=$("${cli[@]}" set_session probe fake/flash-fake --remote local 2>&1)
 [[ "$refused" == *"no remote called \`local\`"* && "$refused" == *"none"* ]]
 ok "naming \`local\` is refused, and the answer names \`none\`" $?
 
-created=$("${cli[@]}" set_session probe --remote "$peer_name" --model fake/flash-fake 2>&1)
+created=$("${cli[@]}" set_session probe fake/flash-fake --remote "$peer_name" 2>&1)
 [[ "$created" == *'"ok":true'* ]]
 ok "a session is created on $peer_name" $?
 
 # The boundary: a remote left in the home's `config.toml` is refused, not honoured --
 # it is the merged file, and a host name in it would be published by a pin move.
-probe=$("${cli[@]}" set_session probe --remote ghost --model fake/flash-fake 2>&1)
+probe=$("${cli[@]}" set_session probe fake/flash-fake --remote ghost 2>&1)
 [[ "$probe" == *'no remote named "ghost"'* ]]
 ok "a remote named only in config.toml does not exist" $?
 grep -q 'these remotes are in config.toml' "$log"

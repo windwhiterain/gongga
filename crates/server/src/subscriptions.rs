@@ -1,5 +1,4 @@
-//! SPEC's `subscribe`: a named watch over the event stream, armed for the
-//! session that asked, running what it carries each time it fires.
+//! SPEC's `subscribe`: a named watch over the event stream.
 //!
 //! See `docs/notes/server-subscriptions.md`.
 //!
@@ -16,9 +15,8 @@ use crate::bus::EventBus;
 use crate::session::SessionManager;
 use crate::store::{Store, SubscriptionRow};
 
-/// What a subscription runs when its pattern matches: one command in the
-/// session's own named shell, or one program in its named interpreter -- the
-/// same persistent interpreters the session's tools use, keyed {session, name}.
+/// What a subscription runs on a match, in the session's own named
+/// interpreter -- the same one the session's tools use.
 #[derive(Debug, Clone)]
 pub enum Action {
     Bash { name: String, cmd: String },
@@ -67,8 +65,8 @@ impl Subscriptions {
         })
     }
 
-    /// Arms `name` for `session`, which the caller has already checked; a name
-    /// already armed is replaced, so re-arming is one well-defined move.
+    /// Arms `name` for `session`, which the caller has already checked;
+    /// arming a name again replaces the row it held.
     ///
     /// # Invariant
     ///
@@ -114,10 +112,7 @@ impl Subscriptions {
     /// Drops what one session asked to be told about; a deleted session owes none.
     pub async fn forget_session(&self, session: &str) -> usize {
         let dropped = self.store.clear_subscriptions(session).unwrap_or(0);
-        self.armed
-            .lock()
-            .await
-            .retain(|a| a.row.session != session);
+        self.armed.lock().await.retain(|a| a.row.session != session);
         dropped
     }
 
@@ -163,25 +158,18 @@ impl Subscriptions {
         }
     }
 
-    /// Runs what one fired row carries, in the session's own named interpreter,
-    /// and writes the outcome where `events` reads it.
+    /// Runs what one fired row carries, and writes the outcome where `events`
+    /// reads it.
     ///
     /// # Invariant
     ///
     /// Runs take the tool path a model's call takes, so a subscription and the
-    /// session meet in the same persistent shell: `cd` in one is seen by the
-    /// other. The notice to the session is queued before the action runs, so a
-    /// session is woken by the match itself even when its watcher is slow.
+    /// session meet in the same persistent shell. The notice is queued first,
+    /// so a slow watcher never delays the wake.
     async fn run_action(self: Arc<Self>, row: SubscriptionRow, action: Action, event: String) {
         let (tool, args) = match &action {
-            Action::Bash { name, cmd } => (
-                "bash",
-                json!({"name": name, "command": cmd}),
-            ),
-            Action::Python { name, code } => (
-                "python",
-                json!({"name": name, "code": code}),
-            ),
+            Action::Bash { name, cmd } => ("bash", json!({"name": name, "command": cmd})),
+            Action::Python { name, code } => ("python", json!({"name": name, "code": code})),
         };
         let outcome = crate::tool_cmd::run(
             &self.agent,
@@ -217,8 +205,14 @@ impl Subscriptions {
             .ok()
             .flatten()
             .map(|session| session.id);
-        let Ok(event) = self.store.append_event_row(session_id, "subscription", payload) else {
-            tracing::warn!(subscription = row.id, "could not write a subscription outcome");
+        let Ok(event) = self
+            .store
+            .append_event_row(session_id, "subscription", payload)
+        else {
+            tracing::warn!(
+                subscription = row.id,
+                "could not write a subscription outcome"
+            );
             return;
         };
         self.bus.publish(protocol::Event::Record {
@@ -280,8 +274,7 @@ impl Action {
                 name: name.clone(),
                 code: code.clone(),
             }),
-            // A row half-written by an older build names an interpreter and no
-            // code: there is nothing to run, so it is not an action.
+            // A half-written row names an interpreter and no code.
             _ => None,
         }
     }

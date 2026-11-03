@@ -6,11 +6,15 @@ SPEC's `subscribe`, as one registry and one matcher.
 
 ## What a subscription is
 
-Two facts: a *pattern*, and the *session* that hears about a match. The pattern is a
-regex, matched against an event's name -- which for a log row is its `kind`, and for
-any other event is its own (`status`, `usage`, `sessions`, `log`, ...). When the
-event is about a session, the pattern is matched against `name:session` too, so
-`turn_end:child/2` is one session's turn ending and `^turn_end$` is any session's.
+Three facts: a *name*, a *pattern*, and the *session* that hears about a match. It
+is armed as `subscribe <name> <pattern>`, re-arming a name replaces what the name
+held, and `del_subscribe <name>` drops it -- a name is one subscription, so the two
+verbs are always one well-defined row. The pattern is a regex, matched against an
+event's name -- which for a log row is its `kind`, and for any other event is its
+own (`status`, `usage`, `sessions`, `log`, ...). When the event is about a session,
+the pattern is matched against `name:session` too, so `turn_end:child/2` is one
+session's turn ending and `^turn_end$` is any session's. `trigger_event <name>`
+publishes an event under a chosen name, so a subscription can be fired by hand.
 
 The same language `del_bash` and `list_bash` speak, for the same reason: a name
 filter that is a regex needs no lookup table, and an unanchored match is the
@@ -43,6 +47,20 @@ one command where the two are different questions. A client that names no sessio
 a window, a bridge -- is refused rather than armed with no addressee: a subscription
 that fires and tells nobody cannot be noticed by the registry.
 
+## A match can also run something
+
+`--bash <name> --cmd <cmd>` (or `--python <name> --code <code>`) carries an action:
+on a match, the command runs in the session's *own* persistent interpreter of that
+name -- the same shell the `bash` tool uses under the same key, so a subscription
+and its session see each other's `cd` and exports. The name is the interpreter's,
+not the subscription's: the subscription already has one name, and the interpreter
+it runs in is a place, not a label. The outcome is written as an event-log row of
+kind `subscription` -- stdout, stderr and exit code -- so `events` reads what the
+watcher saw. Running the action takes the same `tool_cmd::run` path the tool
+commands use, which is what keeps a subscription's run and a model's call from
+drifting apart. The session notice below still fires either way: an action adds
+what runs, it does not replace who hears.
+
 ## A match is a message, not a notice
 
 The row a match writes is an ordinary `inject`, not one of the marked notices. That
@@ -57,6 +75,9 @@ The row carries `subscription: <id>` so the tool that reports arrivals can say a
 
 - `--persistant true` keeps it armed after it fires; without it one match is the
   whole subscription, and the row is deleted as it fires.
+- A row carries the action it was armed with, so a restart resumes both the
+  watching and the running; the named interpreters it runs in are the session's
+  own, which resume with the session.
 - `del_session` drops a session's subscriptions: a deleted session has nobody left
   to tell, and a later session of the same name must not inherit them.
 - There is no deadline and no cancel verb. A subscription is a statement about what

@@ -84,7 +84,7 @@ for _ in $(seq 1 300); do grep -q "listening (UDP) local=127.0.0.1:$port" "$log"
 grep -q "listening (UDP) local=127.0.0.1:$port" "$log" || { echo "FAIL · the server never listened"; exit 1; }
 
 cli=("$bin/gongga-cli.exe" --home "$home" --server "127.0.0.1:$port")
-created=$("${cli[@]}" set_session sleeper --cwd "$work" --model fake/flash-fake 2>&1)
+created=$("${cli[@]}" set_session sleeper fake/flash-fake --cwd "$work" 2>&1)
 [[ "$created" == *'"ok":true'* ]] || { echo "FAIL · session not created: $created" >&2; exit 1; }
 
 # A turn that is still running when `cancel` lands: that is what makes a drain.

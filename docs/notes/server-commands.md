@@ -14,11 +14,12 @@ only way to get a default is the client's `persistant_cmd_argument`, which is
 filled in before the command ever reaches the wire.
 
 The catalog is the only list, and it is published to clients at connect time.
-It has three parts -- the server's own commands, the client's (published so no
-front-end keeps a copy), and whatever scripts registered -- and one `target`
-field on each entry says who runs it. Dispatch reads that field; so does the
-CLI. A command nobody implemented is not "unknown" but a catalog entry with no
-handler, which the answer says outright.
+It has four parts -- the server's own commands, the tool commands (one per
+tool, generated from the registry; see `docs/notes/server-tool-cmd.md`), the
+client's (published so no front-end keeps a copy), and whatever scripts
+registered -- and one `target` field on each entry says who runs it. Dispatch
+reads that field; so does the CLI. A command nobody implemented is not
+"unknown" but a catalog entry with no handler, which the answer says outright.
 
 ## Dispatch::resolve
 

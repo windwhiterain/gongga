@@ -91,7 +91,7 @@ start() {
 start "$log"
 grep -q "listening (UDP) local=127.0.0.1:$port" "$log" || { echo "FAIL · the server never listened"; exit 1; }
 cli=("$bin/gongga-cli.exe" --home "$home" --server "127.0.0.1:$port")
-"${cli[@]}" set_session writer --cwd "$work" --model fake/flash-fake >/dev/null 2>&1
+"${cli[@]}" set_session writer fake/flash-fake --cwd "$work" >/dev/null 2>&1
 "${cli[@]}" send_message writer "say something long" >/dev/null 2>&1
 
 # Both a thought and an answer have to be in flight before the kill: that is what makes

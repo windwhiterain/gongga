@@ -87,6 +87,17 @@ rm -rf "$home" "$project" "$log" "$work/subagent-dump.jsonl"
 [[ -f "$home/gongga.db" ]] && hard "a previous run still holds $home"
 
 mkdir -p "$home" "$project" "$project/.agents/skills/late"
+# The content repo, seeded from this checkout: startup never touches the network.
+# A submodule's .git is a file pointing at the outer repo; give the copy its own.
+cp -r "$root/ship" "$home/ship" 2>/dev/null
+if [[ -f "$root/.git/modules/ship/HEAD" ]]; then
+  mkdir -p "$home/ship"
+  cp -r "$root/.git/modules/ship" "$home/ship/.git-real"
+  printf 'gitdir: .git-real\n' > "$home/ship/.git"
+  # The copied config still points at the outer checkout's worktree; git itself
+  # cannot run against it, so the file is edited where it stands.
+  sed -i '/^\tworktree = /d' "$home/ship/.git-real/config"
+fi
 printf 'EARLY file named by the brief.\n' > "$project/early.md"
 printf 'LATE file named by a later message.\n' > "$project/late.md"
 cat > "$project/.agents/skills/late/SKILL.md" <<'EOF'
@@ -107,6 +118,8 @@ port=$(free_port); fake_port=$(free_port); wait_port=$(free_port)
 # `gongga-cli` resolves both from `GONGGA_SERVER` / `GONGGA_HOME` before any default.
 export GONGGA_HOME="$home"
 export GONGGA_SERVER="127.0.0.1:$port"
+# `spawn` finds `gongga-cli` on PATH: it must be this build, not an installed one.
+export PATH="$bin:$PATH"
 export FAKE_LLM_TOOL=bash
 export FAKE_LLM_TOOL_ARGS='{"command":"echo hi","name":"default"}'
 export FAKE_LLM_DUMP="$work/subagent-dump.jsonl"
@@ -189,7 +202,7 @@ cli=("$bin/gongga-cli.exe")
 await() { local n; for _ in $(seq 1 240); do n=$(grep -cE "turn end session=$1( |$)" "$log"); [[ $n -ge $2 ]] && return 0; sleep 0.5; done; echo "  note: $1 has $n turn end(s), wanted $2" >&2; return 1; }
 turns_of() { grep -cE "turn end session=$1( |$)" "$log"; }
 
-"${cli[@]}" set_session probe --cwd "$project" --model fake/flash-fake --context_limit 20% >"$work/parent.out" 2>&1
+"${cli[@]}" set_session probe fake/flash-fake --cwd "$project" --context_limit 20% >"$work/parent.out" 2>&1
 
 # The parent speaks first, and this one message is what its head will carry for
 # ever: `prompt_in_force` writes prose and index once and returns the row after.
@@ -298,7 +311,7 @@ ok "K and its child session is still there, now unheard" $?
 # --- L: `wait` waits for the NEXT thing, and no subscription means it sits ------
 # 2.5 s is the bound the fake asks for, so a timeout is 2.5 s of wall clock and an
 # early answer is not: the two are told apart by time as well as by the words.
-"${cli[@]}" set_session alone --model waitfake/wait-fake >"$work/alone.out" 2>&1
+"${cli[@]}" set_session alone waitfake/wait-fake >"$work/alone.out" 2>&1
 started=$(date +%s%3N)
 "${cli[@]}" send_message alone 'open by waiting' >"$work/alone-msg.out" 2>&1
 await alone 1 || hard "the waiting session's turn never ended"

@@ -90,7 +90,7 @@ for _ in $(seq 1 300); do grep -q "listening (UDP) local=127.0.0.1:$port" "$log"
 grep -q "listening (UDP) local=127.0.0.1:$port" "$log" || { echo "FAIL · the server never listened"; exit 1; }
 cli=("$bin/gongga-cli.exe" --home "$home" --server "127.0.0.1:$port")
 
-created=$("${cli[@]}" set_session reader --cwd "$root" --model fake/flash-fake 2>&1)
+created=$("${cli[@]}" set_session reader fake/flash-fake --cwd "$root" 2>&1)
 [[ "$created" == *'"ok":true'* ]] || { echo "FAIL · session not created: $created" >&2; exit 1; }
 "${cli[@]}" send_message reader "read @file:docs/notes/tui-main.md then answer" >/dev/null 2>&1
 for _ in $(seq 1 120); do grep -q 'turn end session=reader' "$log" && break; sleep 0.5; done

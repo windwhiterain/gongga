@@ -1750,8 +1750,7 @@ impl Store {
             None => (None, None, None, None),
         };
         let conn = self.lock();
-        // One name is one subscription: arming it again replaces what it held,
-        // so `del_subscribe <name>` is always one well-defined row.
+        // One name is one subscription: arming replaces the row it held.
         conn.execute(
             "DELETE FROM subscriptions WHERE session = ?1 AND name = ?2",
             params![session, name],
@@ -1761,7 +1760,15 @@ impl Store {
                  (session, name, pattern, persistent, bash, cmd, python, code, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
-                session, name, pattern, persistent, bash, cmd, python, code, now_millis()
+                session,
+                name,
+                pattern,
+                persistent,
+                bash,
+                cmd,
+                python,
+                code,
+                now_millis()
             ],
         )?;
         Ok(SubscriptionRow {

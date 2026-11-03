@@ -77,6 +77,15 @@ would be completed: `--name session --value <TAB>` offers sessions. The client
 needs this because the shape of the value depends on which argument it is going
 to fill.
 
+## ArgSpec::positional
+
+SPEC's command lines bind arguments by position -- `send_message <session>
+<message>` -- or by flag -- `set_session ... --cwd <path>`. The one field says
+which a value is, and the declaration order in `args` is the binding order, so
+a spec's list is its syntax. A front-end parses and completes every command
+from the catalog alone; it keeps no list of its own, which is the "transparent
+wrapper, does not know server cmd" half of the crate's contract.
+
 ## CommandSpec::target
 
 Who runs a command, published rather than assumed. `server` means the server
@@ -98,7 +107,9 @@ before it existed, so an older catalog decodes with its meaning intact.
 ## connect_server, serve
 
 The two client commands that name a process rather than the client's own state.
-`connect_server` takes `--ip`/`--port`, `serve` takes `--port`.
+`connect_server` takes `--ip`/`--port`; `serve` takes `<port>` positionally, with
+an optional `--home` -- a port is what the command is *about*, so it reads as
+the sentence's object.
 
 `serve` is the one command a front-end cannot run *for* you -- it takes the whole
 process -- so the window answers it with where to type it, and the command line

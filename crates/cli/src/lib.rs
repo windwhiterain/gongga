@@ -1261,9 +1261,8 @@ impl Client {
             return Submission::Rejected;
         };
 
-        // One validation, by the published spec: `remote` picks the path, and
-        // a token that names nothing in it is a typo, said so before anything
-        // is sent or filled.
+        // Validation by the published spec; `remote` picks the path. A
+        // token it does not name is a typo, said before sending.
         let mut args = match parse_args(&tokens[1..], Some(&spec)) {
             Ok(a) => a,
             Err(e) => {

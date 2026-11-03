@@ -1,16 +1,6 @@
-//! The tool commands: every tool the model can call is also a command an
-//! operator can type, because a tool is a tunnel into a command, not a second
-//! surface.
+//! The tool commands: every tool is also a command an operator can type.
 //!
 //! See `docs/notes/server-tool-cmd.md`.
-//!
-//! # Invariant
-//!
-//! The command is the source of truth and the tool is one way to reach it: the
-//! agent's structured arguments pass through without escaping, the session
-//! being the caller's own. One runner builds the context a command names, so
-//! the cmd dispatch, a subscription's action, and the model's own call cannot
-//! drift into three behaviors.
 
 use protocol::Args;
 use serde_json::{Value, json};
@@ -20,15 +10,13 @@ use crate::commands::{Dispatch, Outcome};
 use crate::session::SessionManager;
 use crate::store::Store;
 
-/// Runs one tool for one session, wherever a command needs it: the tool cmds
-/// themselves, and a subscription's `--bash`/`--python` action.
+/// Runs one tool for one session: the tool cmds, and a subscription's action.
 ///
 /// # Invariant
 ///
-/// No turn exists on this path, so nothing here streams: `events` is `None` and
-/// the whole outcome is the answer. The session's own shells and interpreters
-/// are used, keyed as the tools key them ({session, name}), so a command and
-/// the model meet in the same persistent shell.
+/// Nothing here streams: `events` is `None` and the whole outcome is the
+/// answer. The session's own shells are used, keyed as the tools key them, so
+/// a command and the model meet in the same persistent shell.
 pub async fn run(
     agent: &crate::agent::Agent,
     sessions: &SessionManager,
@@ -72,15 +60,13 @@ pub async fn run(
     }
 }
 
-/// The commands the tools publish: one entry per tool, `<session>` first, then
-/// the tool's own arguments in its schema's order. Positional spelling is the
-/// table's, because the schema says what a value means, not how a line reads.
+/// The commands the tools publish: one entry per tool, `<session>` first.
 ///
 /// # Invariant
 ///
-/// Generated from the registry, not written twice: the model's view and the
-/// operator's view of one tool are one definition. A tool added to the registry
-/// is a command the next greeting names.
+/// Generated from the registry: the model's view and the operator's view of
+/// one tool are one definition. Positional spelling is the table's, not the
+/// schema's.
 pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec> {
     tools
         .iter()
@@ -137,8 +123,7 @@ pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec>
         .collect()
 }
 
-/// Which of a tool's arguments its command spells positionally, in order: the
-/// values a caller thinks of as the sentence's object, not its switches.
+/// Which arguments a command spells positionally: the object, not switches.
 fn positional_of(tool: &str) -> &'static [&'static str] {
     match tool {
         "bash" | "remote_bash" => &["command"],
@@ -151,14 +136,12 @@ fn positional_of(tool: &str) -> &'static [&'static str] {
     }
 }
 
-/// Turns a command's string arguments into the JSON a tool reads: booleans and
-/// numbers are typed by the tool's own schema, everything else stays text.
+/// Types a command's string arguments by the tool's own schema.
 ///
 /// # Invariant
 ///
-/// The tunnel's whole point: an agent's structured call and an operator's line
-/// reach the same tool with the same shapes, so a value that means a number is
-/// a number on both paths.
+/// The tunnel's point: an agent's call and an operator's line reach the same
+/// shapes, so a number is a number on both paths.
 fn coerce(tool: &dyn crate::tools::Tool, args: &Args) -> Value {
     let properties = tool
         .parameters()

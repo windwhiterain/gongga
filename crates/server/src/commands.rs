@@ -662,8 +662,7 @@ pub async fn dispatch(d: &Dispatch, name: &str, args: &Args, caller: Option<&str
         "subscribe" => subscribe(d, args, caller).await,
         "del_subscribe" => del_subscribe(d, args, caller).await,
         "trigger_event" => trigger_event(d, args).await,
-        // Every tool is a command: the registry decides what exists, so a tool
-        // added there is runnable the moment the greeting names it.
+        // Every tool is a command: the registry decides what exists.
         name if d.agent.tools.get(name).is_some() => {
             crate::tool_cmd::dispatch_tool(d, name, args).await
         }
@@ -1341,10 +1340,14 @@ async fn subscribe(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
             }
         },
     };
-    let action = match (args.get("bash"), args.get("cmd"), args.get("python"), args.get("code"))
-    {
+    let action = match (
+        args.get("bash"),
+        args.get("cmd"),
+        args.get("python"),
+        args.get("code"),
+    ) {
         (Some(_), _, Some(_), _) | (_, Some(_), _, Some(_)) => {
-            return Outcome::err("subscribe takes one of --bash/--cmd or --python/--code")
+            return Outcome::err("subscribe takes one of --bash/--cmd or --python/--code");
         }
         (Some(bash), Some(cmd), None, None) => Some(crate::subscriptions::Action::Bash {
             name: bash.clone(),
@@ -1357,18 +1360,16 @@ async fn subscribe(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
         (Some(bash), None, None, None) => {
             return Outcome::err(format!(
                 "--bash names the shell; --cmd is what runs in it: `subscribe {name}                  <pattern> --bash {bash} --cmd <cmd>`"
-            ))
+            ));
         }
         (None, None, Some(python), None) => {
             return Outcome::err(format!(
                 "--python names the interpreter; --code is what runs in it: `subscribe                  {name} <pattern> --python {python} --code <code>`"
-            ))
+            ));
         }
         (None, None, None, None) => None,
         // --cmd/--code without the interpreter they run in.
-        _ => {
-            return Outcome::err("subscribe: --cmd needs --bash, and --code needs --python")
-        }
+        _ => return Outcome::err("subscribe: --cmd needs --bash, and --code needs --python"),
     };
     match d
         .subscriptions
@@ -1418,8 +1419,7 @@ async fn del_subscribe(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outco
     }
 }
 
-/// Publishes one event under a chosen name: a log row, so every matcher -- and
-/// `events` afterwards -- reads it like any other thing that happened.
+/// Publishes one event under a chosen name, as a log row every matcher sees.
 async fn trigger_event(d: &Dispatch, args: &Args) -> Outcome {
     let event = args.get("event").map(String::as_str).unwrap_or("").trim();
     if event.is_empty() {

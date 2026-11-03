@@ -164,7 +164,7 @@ refusal=$("${cli[@]}" set_session '@mine' 2>&1)
 [[ "$refusal" == *"names beginning with"* ]]
 ok "a person cannot take a name in the harness's namespace" $?
 
-"${cli[@]}" set_session broken --model dead/flash-dead >/dev/null 2>&1
+"${cli[@]}" set_session broken dead/flash-dead >/dev/null 2>&1
 "${cli[@]}" send_message broken "say hello" >/dev/null 2>&1
 for _ in $(seq 1 100); do grep -q 'turn end session=broken' "$log" && break; sleep 0.5; done
 grep -q 'turn end session=broken outcome=Failed' "$log"
