@@ -800,6 +800,29 @@ impl Store {
         )?)
     }
 
+    /// The rows a request for this session carries, as `(seq, chars)`.
+    ///
+    /// # Invariant
+    ///
+    /// The same filter the walk uses: a row with `content IS NULL` is never sent, so it
+    /// is not something a provider can hold. See `crates/server/src/transcript.rs`.
+    pub fn sendable_rows(&self, session_id: i64, upto_seq: i64) -> anyhow::Result<Vec<(i64, u64)>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT seq, length(content) FROM messages
+              WHERE session_id = ?1 AND seq > 0 AND seq <= ?2 AND content IS NOT NULL
+              ORDER BY seq",
+        )?;
+        let rows = stmt.query_map(params![session_id, upto_seq], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?.max(0) as u64))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     /// Rows in an inclusive `seq` window, oldest first. See `docs/notes/server-store.md`.
     pub fn messages_between(
         &self,

@@ -59,6 +59,18 @@ pub struct Wanted<'a> {
     pub tokens: usize,
 }
 
+/// Something the request carries behind what this module orders: one transcript row.
+///
+/// # Invariant
+///
+/// Carried in the order given, never reordered and never emitted by this module. It is
+/// here so its node exists: the provider holds that prefix, and only a node can say so.
+pub struct Carried<'a> {
+    /// The row this is, which is what the provider's prefix through it is keyed by.
+    pub key: &'a str,
+    pub tokens: usize,
+}
+
 /// What to emit: each entry's name and the text to send under it, and the patches
 /// that catch up what changed.
 ///
@@ -83,6 +95,7 @@ pub fn plan(
     session: &str,
     purpose: &str,
     wanted: &[Wanted<'_>],
+    carried: &[Carried<'_>],
     rates: Rates,
     tolerance: Option<f64>,
 ) -> Plan {
@@ -93,6 +106,7 @@ pub fn plan(
     let planned = layout.plan(
         purpose,
         wanted,
+        carried,
         rates,
         tolerance,
         crate::store::now_millis() as u64,
@@ -122,6 +136,9 @@ pub struct Rates {
     /// it holds is a miss for every byte behind it, not only for the index.
     pub following_tokens: usize,
 }
+
+/// The purpose under which the rows a request carries are kept.
+const CARRIED: &str = "request tail";
 
 /// What a cached token is worth when the roster states no rate: a stand-in.
 pub const DEFAULT_MISS_RATIO: f64 = 10.0;
@@ -163,6 +180,9 @@ pub struct Item {
     /// The text this item puts in its place: an edit within tolerance keeps the text
     /// the provider holds.
     pub text: String,
+    /// Carried after what this module orders, so it is never an ordering choice.
+    #[serde(default)]
+    pinned: bool,
     /// One node per order this item has ended.
     nodes: Vec<NodeId>,
     /// What sending it costs: tokens the provider counted, not bytes estimated here.
@@ -234,6 +254,7 @@ impl Layout {
         &mut self,
         purpose: &str,
         wanted: &[Wanted<'_>],
+        carried: &[Carried<'_>],
         rates: Rates,
         tolerance: Option<f64>,
         now: u64,
@@ -275,11 +296,15 @@ impl Layout {
                 tail = Some(self.add(id, tail, now));
             }
         }
+        // Behind every ordering: the rows this request carries, which sit after it.
+        tail = self.carry(tail, carried, now);
         let entries = self.order(tail);
         self.last = self.sequence(tail, &ids);
         // After the plan, never before: forgetting first would renumber the items
         // these ids name.
         self.forget_unwanted(purpose, &ids);
+        let carried_ids = self.carried_ids(carried);
+        self.forget_unwanted(CARRIED, &carried_ids);
         Plan {
             revisions: self.place(&entries, revisions),
             entries,
@@ -326,7 +351,7 @@ impl Layout {
     fn cold_chains(&self, ids: &[usize], scale: f64) -> Vec<Option<f64>> {
         let mut allowed = vec![true; self.nodes.len()];
         for id in 0..self.items.len() {
-            if ids.contains(&id) {
+            if ids.contains(&id) || self.items[id].pinned {
                 continue;
             }
             for node in self.subtree(id) {
@@ -362,12 +387,86 @@ impl Layout {
         carried
     }
 
-    /// The item ids an emission under `chain` would carry, in order.
+    /// The items `carried` names, creating what is new.
+    fn carried_ids(&self, carried: &[Carried<'_>]) -> Vec<usize> {
+        carried
+            .iter()
+            .filter_map(|row| {
+                self.named
+                    .get(&(CARRIED.to_string(), row.key.to_string()))
+                    .copied()
+            })
+            .collect()
+    }
+
+    /// Extends the emission with the rows this request carries, touching each.
+    ///
+    /// # Invariant
+    ///
+    /// A row already hanging under this chain is reused rather than re-added, and every
+    /// node on the way to it is touched: the provider holds each of those prefixes again.
+    fn carry(&mut self, tail: Option<NodeId>, carried: &[Carried<'_>], now: u64) -> Option<NodeId> {
+        let mut tail = tail;
+        for row in carried {
+            let name = (CARRIED.to_string(), row.key.to_string());
+            let id = match self.named.get(&name) {
+                Some(&id) => {
+                    if self.items[id].tokens != row.tokens {
+                        self.items[id].tokens = row.tokens;
+                        self.recost();
+                    }
+                    id
+                }
+                None => {
+                    let id = self.items.len();
+                    self.items.push(Item {
+                        purpose: CARRIED.to_string(),
+                        key: row.key.to_string(),
+                        text: String::new(),
+                        pinned: true,
+                        nodes: Vec::new(),
+                        tokens: row.tokens,
+                    });
+                    self.named.insert(name, id);
+                    id
+                }
+            };
+            let reused = tail.and_then(|parent| {
+                self.nodes[parent.0]
+                    .children
+                    .iter()
+                    .find(|child| self.nodes[child.0].item == id)
+                    .copied()
+            });
+            tail = Some(match reused {
+                Some(node) => {
+                    let mut walk = Some(node);
+                    while let Some(node) = walk {
+                        self.nodes[node.0].touched = now;
+                        walk = self.nodes[node.0].parent;
+                    }
+                    node
+                }
+                None => self.add(id, tail, now),
+            });
+        }
+        tail
+    }
+
+    /// The index items an emission under `chain` would carry, in order.
+    ///
+    /// # Invariant
+    ///
+    /// Index only: a carried row grows every step, and a question about what the index
+    /// costs must not change its answer because the transcript did.
     fn sequence(&self, chain: Option<NodeId>, ids: &[usize]) -> Vec<usize> {
         let mut carried: Vec<usize> = Vec::new();
         let mut walk = chain;
         while let Some(node) = walk {
-            carried.push(self.nodes[node.0].item);
+            let item = self.nodes[node.0].item;
+            if !self.items[item].pinned {
+                carried.push(item);
+            }
             walk = self.nodes[node.0].parent;
         }
         carried.reverse();
@@ -446,6 +545,7 @@ impl Layout {
                             purpose: purpose.to_string(),
                             key: want.key.to_string(),
                             text: want.text.to_string(),
+                            pinned: false,
                             nodes: Vec::new(),
                             tokens: want.tokens,
                         });
@@ -647,7 +747,10 @@ impl Layout {
         let mut walk = tail;
         while let Some(node) = walk {
             let item = &self.items[self.nodes[node.0].item];
-            entries.push((item.key.clone(), item.text.clone()));
+            // What this module orders is the index: a carried row is somebody else's.
+            if !item.pinned {
+                entries.push((item.key.clone(), item.text.clone()));
+            }
             walk = self.nodes[node.0].parent;
         }
         entries.reverse();

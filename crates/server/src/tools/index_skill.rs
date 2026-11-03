@@ -137,7 +137,8 @@ fn ordered(
         })
         .collect();
     // No tolerance: a row is json, and a diff of one is not something a reader reads.
-    let planned = crate::prefix_cache::plan(store, session, "skill table", &wanted, rates, None);
+    let planned =
+        crate::prefix_cache::plan(store, session, "skill table", &wanted, &[], rates, None);
     let mut by_key: HashMap<String, Value> =
         rows.into_iter().map(|(key, _, row)| (key, row)).collect();
     planned
