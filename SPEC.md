@@ -181,10 +181,7 @@ table and `@skill:` expansion, by the command layer's completion, and by the ent
 A second walk is a second answer to "which file does this name open".
 
 ## Git Managed Config
-### Ship: Reconcile
-remote merge to local, conflict use local change, lefting unsolved.
-### Community: Rebase
-personal change always rebase on official.
+personal(local) change always rebase on official(remote).
 
 
 ## Skill: Self Control
