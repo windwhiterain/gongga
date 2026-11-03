@@ -264,6 +264,32 @@ The write itself failed, which can leave the shell with half a command line in
 its stdin. `healthy` is what says so; dropping it here is how the next call
 ends up reading this one's leftovers.
 
+## WaitTool
+
+SPEC's `wait`. It waits for whatever the session has waiting -- a background job's
+report, a `subscribe` match, a person's message -- and it consumes none of it.
+
+That last part is the whole design. A tool that drained the inbox would become a
+second delivery path: the same news would arrive once in a tool result and once as
+the message it really is, and the step boundary's `deliver_pending` would find a row
+already read or, worse, missing. One road, so `wait` only reports *that* something
+landed, names it in a few words, and lets the boundary deliver it.
+
+Two sources, because neither is enough. A person's message bumps the session's
+`InboxSignal`, which a queued row does not; a background job's notice and a
+subscription's news are rows in the inbox, which the signal does not see. Polling
+both is cheap -- one indexed read per `INBOX_POLL` -- and it is the only place where
+"what has arrived" and "what has been delivered" can be told apart.
+
+Only `inject` rows count. A `turn` row is the turn's own obligation: written before
+it starts, deleted when it finishes. Counting it would make `wait` return at once,
+every time, on a session that is simply working -- which is exactly the bug the first
+version of this tool had.
+
+The ceiling it defaults to is `bash`'s, because that is this harness's one answer to
+"how long may a tool hold a turn"; the deadline passing is not an error, and the news
+is not lost. A cancelled turn ends the wait the way it ends any other call.
+
 ## ListBashTool::run (detached rows)
 
 Detached jobs belong to the session, not to a shell, so they are listed on

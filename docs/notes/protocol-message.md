@@ -148,6 +148,22 @@ window sets it -- a one-shot command and a bridge send nothing -- because the se
 follows that pid, and a process that exits in milliseconds would take the server down
 with it. Absent is the normal case: `None` is not `Some(0)`.
 
+## ClientInfo — session
+
+`session` is the session this process was started from, read off `$GONGGA_SESSION` by
+the client and sent as `#[serde(default)]` so a bridge, a window, and a server that
+never heard of it all keep working. Only the process knows it: a command's `--session`
+names who it *acts on*, and `subscribe` is the one command where the two questions are
+different -- a pattern names what to watch, the caller is who hears about it.
+
+## Event::name
+
+The name a `subscribe --event` pattern is matched against: a log row's own `kind`, and
+every other event's variant (`status`, `usage`, `sessions`, `log`, `cmd`, ...). Not a
+second dispatch table -- a new row kind needs no entry, which is the same reason
+`Record` carries its kind as data -- and the reason a pattern can spell a kind the
+server has never heard of.
+
 ## SessionInfo — model, thinking_effort, context_limit
 
 SPEC's `full` pane title lists them beside the measurements, so they travel with the

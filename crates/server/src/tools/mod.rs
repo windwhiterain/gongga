@@ -260,6 +260,9 @@ impl ToolRegistry {
                     max_output_chars,
                 }),
                 Box::new(CheckBashTool { max_output_chars }),
+                Box::new(WaitTool {
+                    timeout: bash_timeout,
+                }),
                 Box::new(DelBashTool),
                 Box::new(ListBashTool),
                 Box::new(index_skill::IndexSkillTool),
@@ -1247,6 +1250,119 @@ impl Tool for CheckBashTool {
                 jobs
             ))
         })
+    }
+}
+
+// ----------------------------------- wait -----------------------------------
+
+/// SPEC's `wait`: stay in this turn until something lands for this session.
+///
+/// # Invariant
+///
+/// It consumes nothing it waited for: every arrival is delivered at the next step
+/// boundary, so a tool result is never a second copy of a message.
+pub struct WaitTool {
+    /// The ceiling one call waits, when the call names none.
+    pub timeout: Duration,
+}
+
+impl Tool for WaitTool {
+    fn name(&self) -> &'static str {
+        "wait"
+    }
+
+    fn description(&self) -> &'static str {
+        "Stay in this turn until something arrives for this session: the report of \
+         a background job that finished, the news of a `subscribe` whose pattern \
+         matched, or a message from a person. It consumes nothing -- whatever \
+         arrived is delivered at the next step boundary, the same way every other \
+         queued message is -- so this call is how an agent waits without giving up \
+         its turn, and without polling. With no `timeout_ms` it waits for the same \
+         ceiling a `bash` call gets; when that passes it says nothing arrived, which \
+         is not an error."
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "timeout_ms": {
+                    "type": "integer",
+                    "description": "Give up after this many milliseconds. This is a \
+                                    limit on waiting, not on the news: passing it \
+                                    returns what has not arrived, and nothing is lost."
+                }
+            },
+            "additionalProperties": false
+        })
+    }
+
+    fn run<'a>(
+        &'a self,
+        args: Value,
+        ctx: &'a ToolContext,
+    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            let wait = args
+                .get("timeout_ms")
+                .and_then(Value::as_u64)
+                .map(Duration::from_millis)
+                .unwrap_or(self.timeout)
+                .max(Duration::from_millis(100));
+            let deadline = std::time::Instant::now() + wait;
+            loop {
+                // A person's message is the one arrival no row shows yet.
+                if ctx.inbox.arrived() {
+                    return ToolOutcome::ok(
+                        "a message arrived for this session while this call waited; it is \
+                         delivered at the next step boundary",
+                    );
+                }
+                match ctx.store.pending_injects_of(&ctx.session) {
+                    Ok(rows) if !rows.is_empty() => {
+                        let mut what: Vec<String> = rows.iter().map(arrival).collect();
+                        what.dedup();
+                        return ToolOutcome::ok(format!(
+                            "{} row(s) arrived while this call waited ({}); they are \
+                             delivered at the next step boundary",
+                            rows.len(),
+                            what.join(", ")
+                        ));
+                    }
+                    Ok(_) => {}
+                    // An unreadable inbox is said, not waited out: the retry would
+                    // see the same failure for the whole ceiling.
+                    Err(e) => return ToolOutcome::err(format!("could not read the inbox: {e}")),
+                }
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    return ToolOutcome::ok(format!(
+                        "nothing arrived within {}; `wait` again, or get on with the work                          and this session will be told when it is",
+                        crate::agent::spent(wait.as_millis() as u64)
+                    ));
+                }
+                tokio::select! {
+                    _ = tokio::time::sleep(remaining.min(WAIT_POLL)) => {}
+                    _ = ctx.cancel.cancelled() => {
+                        return ToolOutcome::err("wait stopped: this turn was cancelled");
+                    }
+                }
+            }
+        })
+    }
+}
+
+/// What one queued row is, in the few words a summary can carry.
+fn arrival(row: &crate::store::PendingTask) -> String {
+    if row.payload.get("subscription").is_some() {
+        return "a `subscribe` match".to_string();
+    }
+    match row.payload.get("notice").and_then(Value::as_str) {
+        Some(kind) => format!("notice `{kind}`"),
+        None => match row.payload.get("context_notice") {
+            Some(_) => "a context notice".to_string(),
+            None => "a message".to_string(),
+        },
     }
 }
 

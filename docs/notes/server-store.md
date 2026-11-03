@@ -315,6 +315,21 @@ must be either still in the inbox or already in the transcript, never both
 transcript -- it was written when the turn began -- so handing it back here would
 append the operator's line a second time.
 
+## Store::pending_injects_of
+
+A read, not a delivery: the `wait` tool asks what has arrived, and what a step
+boundary does with it is `deliver_pending`'s call. Only `inject` rows -- a `turn`
+row is the turn's own obligation and is pending for as long as the turn runs, so
+counting it would report news on every call of a session that is merely working.
+
+## Store::add_subscription and friends
+
+A subscription is data like any other: the row survives the process, so a restart
+resumes what sessions asked to be told about, and `del_session` drops a session's
+rows because there is nobody left to tell. `created_at` is written and never read --
+it is when the session asked, which is what an operator reading the table by hand
+wants to know.
+
 ## Store::add_detached_job
 
 Written before the job is handed to the model, so a crash in between leaves a row

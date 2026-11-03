@@ -42,6 +42,17 @@ pub struct ClientInfo {
     /// See `docs/notes/protocol-message.md`.
     #[serde(default)]
     pub owner: Option<u32>,
+    /// The session whose shell started this client, when one did.
+    ///
+    /// # Invariant
+    ///
+    /// Read from the caller's own environment (`$GONGGA_SESSION`), never guessed
+    /// from a name the command typed: a command that names a session acts on that
+    /// one, while the *caller* is the session it was run from -- and only the
+    /// process knows which. `subscribe` is what needs it: it notices the session
+    /// that subscribed, not the one the pattern mentions.
+    #[serde(default)]
+    pub session: Option<String>,
 }
 
 // Server -> client
@@ -199,6 +210,30 @@ impl Event {
             Event::Record { session, .. } => session.as_deref(),
             Event::Cmd { .. } | Event::CmdResult { .. } | Event::Sessions { .. } => None,
             Event::Log { .. } | Event::Quota(_) => None,
+        }
+    }
+
+    /// The name a `subscribe --event` pattern is matched against.
+    ///
+    /// # Invariant
+    ///
+    /// A log row is named by its own `kind`, every other event by its variant:
+    /// that is the whole vocabulary a pattern can spell. It is not a second
+    /// dispatch table -- a new row kind needs no entry here, which is the same
+    /// reason [`Event::Record`] carries its kind as data.
+    pub fn name(&self) -> &str {
+        match self {
+            Event::Record { kind, .. } => kind.as_str(),
+            Event::Cmd { .. } => "cmd",
+            Event::CmdResult { .. } => "cmd_result",
+            Event::Response(_) => "response",
+            Event::ToolCall(_) => "tool_call",
+            Event::ToolAnswer(_) => "tool_answer",
+            Event::Sessions { .. } => "sessions",
+            Event::Status { .. } => "status",
+            Event::Log { .. } => "log",
+            Event::Usage(_) => "usage",
+            Event::Quota(_) => "quota",
         }
     }
 }
@@ -618,30 +653,6 @@ pub fn client_commands() -> Vec<CommandSpec> {
                     true,
                     Some("value"),
                     CompletionSource::OfNamedArgument,
-                ),
-            ],
-        ),
-        (
-            "wait",
-            "Print the next row of the event log with this kind, then exit. A primitive, \
-             not a policy: it does not know whether a turn has already finished, how long \
-             is too long, or what a failed turn means. Bound it with `timeout` and decide \
-             the rest in the caller.",
-            vec![
-                spec_arg(
-                    "kind",
-                    "The log row kind to wait for, e.g. `turn_end`, `test_failed`.",
-                    true,
-                    Some("kind"),
-                    CompletionSource::None,
-                ),
-                spec_arg(
-                    "session",
-                    "Only a row about this session. A text filter: a name that does not \
-                     exist is a filter that never matches, not an error.",
-                    false,
-                    Some("name"),
-                    CompletionSource::Sessions,
                 ),
             ],
         ),

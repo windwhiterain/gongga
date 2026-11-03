@@ -108,6 +108,14 @@ so a session holding an undelivered message gets a turn started for it. Checked
 rather than pushed: the row is durable, so a miss here costs a couple of seconds,
 not the message.
 
+## run (the subscription matcher)
+
+One task for every armed pattern, subscribed to the bus. Event publishing does not
+consult the registry: every `log_event`, every status change and every streamed chunk
+would then pay for a feature most of them never meet. The registry is loaded from the
+database before the matcher starts, so a restart resumes what sessions asked to be
+told about. See `docs/notes/server-subscriptions.md`.
+
 ## run (roster line)
 
 Which roster was read, and whether it was readable at all: "no --model worked" is

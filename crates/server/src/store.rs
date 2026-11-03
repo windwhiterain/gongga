@@ -192,6 +192,18 @@ CREATE TABLE IF NOT EXISTS prefix_layout (
     layout  TEXT NOT NULL
 );
 
+-- What a session asked to be told about: a pattern over the event stream, and
+-- who hears about a match. `persistent` decides whether a subscription survives
+-- its own match. See `docs/notes/server-subscriptions.md`.
+CREATE TABLE IF NOT EXISTS subscriptions (
+    id         INTEGER PRIMARY KEY,
+    session    TEXT NOT NULL,
+    pattern    TEXT NOT NULL,
+    persistent INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS subscriptions_by_session ON subscriptions(session);
+
 -- The pictures a message named, copied into this home: the row names the copy by
 -- id, and the bytes live beside the database. See `docs/notes/server-pictures.md`.
 CREATE TABLE IF NOT EXISTS pictures (
@@ -1417,6 +1429,35 @@ impl Store {
         Ok(rows)
     }
 
+    /// The messages one session has waiting for it, oldest first.
+    ///
+    /// # Invariant
+    ///
+    /// Only `inject` rows: a `turn` row is the turn's own obligation, written
+    /// before the turn starts and deleted when it finishes, so counting it would
+    /// report news on every call of a session that is simply working. A read, not
+    /// a delivery -- what a step boundary does with these is `deliver_pending`'s
+    /// call. See `docs/notes/server-store.md`.
+    pub fn pending_injects_of(&self, session: &str) -> anyhow::Result<Vec<PendingTask>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, session, kind, payload, created_at FROM pending_tasks
+              WHERE session = ?1 AND kind = 'inject' ORDER BY id",
+        )?;
+        let rows = stmt
+            .query_map(params![session], |r| {
+                let payload: String = r.get(3)?;
+                Ok(PendingTask {
+                    id: r.get(0)?,
+                    session: r.get(1)?,
+                    kind: r.get(2)?,
+                    payload: serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null),
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     /// Drops the pending work of one session, i.e. the turn finished.
     pub fn clear_pending_tasks(&self, session: &str) -> anyhow::Result<usize> {
         Ok(self.lock().execute(
@@ -1486,6 +1527,85 @@ impl Store {
             .execute("DELETE FROM detached_jobs WHERE id = ?1", params![id])?;
         Ok(())
     }
+
+    // -- subscriptions ------------------------------------------------------
+
+    /// Arms one subscription, and answers with the row that is now durable.
+    ///
+    /// # Invariant
+    ///
+    /// `created_at` is written and never read: it is when the session asked, which
+    /// is what an operator needs to read a home's table by hand.
+    pub fn add_subscription(
+        &self,
+        session: &str,
+        pattern: &str,
+        persistent: bool,
+    ) -> anyhow::Result<SubscriptionRow> {
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO subscriptions (session, pattern, persistent, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![session, pattern, persistent, now_millis()],
+        )?;
+        Ok(SubscriptionRow {
+            id: conn.last_insert_rowid(),
+            session: session.to_string(),
+            pattern: pattern.to_string(),
+            persistent,
+        })
+    }
+
+    /// Every armed subscription, oldest first, so a matcher can keep one list.
+    pub fn subscriptions(&self) -> anyhow::Result<Vec<SubscriptionRow>> {
+        let conn = self.lock();
+        let mut stmt =
+            conn.prepare("SELECT id, session, pattern, persistent FROM subscriptions ORDER BY id")?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(SubscriptionRow {
+                    id: r.get(0)?,
+                    session: r.get(1)?,
+                    pattern: r.get(2)?,
+                    persistent: r.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Drops one subscription, whether it fired, expired or was removed.
+    pub fn delete_subscription(&self, id: i64) -> anyhow::Result<()> {
+        self.lock()
+            .execute("DELETE FROM subscriptions WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// Everything one session asked to be told about; a deleted session owes none.
+    pub fn clear_subscriptions(&self, session: &str) -> anyhow::Result<usize> {
+        Ok(self.lock().execute(
+            "DELETE FROM subscriptions WHERE session = ?1",
+            params![session],
+        )?)
+    }
+}
+
+/// What one session asked to be told about, as the database keeps it.
+///
+/// # Invariant
+///
+/// The row is the record and the matcher's list is a copy of it: a subscription
+/// outlives the process that armed it, so a restart resumes from here rather than
+/// from what a previous run happened to hold in memory.
+#[derive(Debug, Clone)]
+pub struct SubscriptionRow {
+    pub id: i64,
+    /// Who hears about a match.
+    pub session: String,
+    /// The pattern, as it was typed.
+    pub pattern: String,
+    /// Whether it stays armed after it fires.
+    pub persistent: bool,
 }
 
 /// A row of unfinished work, replayed on the next start.

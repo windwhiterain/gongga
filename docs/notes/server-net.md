@@ -129,6 +129,16 @@ result before this task ends.
 
 Named for what it is at the moment it is created, not for what it is doing.
 
+`caller` is the session the connection was started from, copied off the greeting so
+that every command on it is run as that session -- once per connection, not once per
+command, because who dialled is not a per-command question.
+
+## authenticate
+
+It answers with the `ClientInfo` it read, not with a boolean: the client's own account
+of itself is what the commands on this connection are run as, and the greeting is the
+only place it is ever said.
+
 ## handle_connection
 
 Authenticate before revealing anything: an unauthenticated peer must not even

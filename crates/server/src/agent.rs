@@ -65,15 +65,9 @@ impl Agent {
     ///
     /// # Invariant
     ///
-    /// The log is the source of truth and the bus is its notification: the row is
-    /// on disk before anybody is told it exists, so a subscriber that reacts to
-    /// `Record` can always read what it was told about, and a process that died
-    /// between the two loses a notification rather than a fact.
-    ///
-    /// Every row the agent writes goes through here. Before this, seven call
-    /// sites appended to the table and published nothing -- so a `wait --kind
-    /// turn_end` had no event to wait for, and the log was a place only a poller
-    /// could find out about. A row nobody can subscribe to is a row half-written.
+    /// The log is the source of truth and the bus its notification: the row is on
+    /// disk before anybody is told, and every row the agent writes goes through
+    /// here, so a subscriber can always read what it was told about.
     ///
     /// A failed write is a warning, not a panic: the turn is what matters, and a
     /// log that refuses a row must not take the conversation with it.
@@ -1673,7 +1667,7 @@ fn summary_keys(tool: &str) -> &'static [&'static str] {
     match tool {
         // SPEC lists bash's own set; another tool is summarised by nothing yet,
         // which still reads better than a wall of JSON.
-        "bash" => &["name", "background", "detached", "timeout"],
+        "bash" => &["name", "background", "detached", "time_out"],
         _ => &[],
     }
 }
@@ -1692,7 +1686,7 @@ fn owns_row(key: &str) -> bool {
 /// The name the tool's own schema uses, where SPEC spells it otherwise.
 fn tool_key(name: &str) -> &str {
     match name {
-        "timeout" => "timeout_ms",
+        "time_out" => "timeout_ms",
         other => other,
     }
 }
@@ -1700,7 +1694,7 @@ fn tool_key(name: &str) -> &str {
 /// The name SPEC gives an argument, where the tool's own schema spells it otherwise.
 fn spec_name(key: &str) -> &str {
     match key {
-        "timeout_ms" => "timeout",
+        "timeout_ms" => "time_out",
         other => other,
     }
 }

@@ -49,39 +49,33 @@ A caller that wants the machine-readable form asks for a command and reads its
 `cmd_result`; this output is for whoever is standing at a shell, and it is what the
 agent reads to learn what it may say next.
 
-## `wait` is a primitive, and deliberately a small one
+## There is no blocking read here any more
 
 A one-shot command answers as soon as its acknowledgement arrives -- `send_message`
-returns in about 70 ms while the turn it started is still running. `wait` is how a
-script says "and then":
+returns in about 70 ms while the turn it started is still running. This crate used
+to carry one exception: `wait --kind K --session NAME` read the connection until a
+log row matched, and printed it.
 
-```
-wait --kind K [--session NAME]
-```
+It is gone, and the gap it left is filled on the two sides it belonged to:
 
-It prints the next row of the event log with that kind, as JSON, and exits. That
-is the whole command.
+* **`subscribe --event <pattern>`** is a *server* command now. It registers and
+  answers at once, and a match becomes a message to the session the command was run
+  from -- so the news outlives the process that asked for it, and reaches a session
+  rather than a terminal. See `docs/notes/server-subscriptions.md`.
+* **`wait`** is a *tool* the agent calls inside a turn, to stay put until something
+  lands for its session. See `docs/notes/server-tools-mod.md`.
 
-It needs nothing from the server. Every connection already receives every event on
-the bus, so waiting is a read loop with a predicate rather than a poll.
+What the two keep from the old command is the split the old command was built on:
+the pattern is a filter with no opinion, and every judgement about *when* to ask --
+whether a turn already finished, how long is too long, what a failure means --
+belongs to whoever is doing the work. `ship/skills/subagent/wait_turn` is one such
+caller: it reads the status, answers at once if the session is already idle, and
+otherwise asks the log (`events`) from a cursor, with a bound on each round so a
+turn that ended in the gap is caught by the next read instead of waited out.
 
-**What it deliberately does not do**, each because the decision belongs where the
-work is, not in a binary that needs a rebuild to change its mind:
-
-* **no name validation** -- `--session` is a text filter. A name that does not
-  exist is a filter that never matches, exactly as `grep` would treat it. Whether a
-  typo should be an error is a judgement about the caller's intent.
-* **no memory of what already happened** -- it hears what is published after it
-  connects. A turn that finished before this process started left an event nobody
-  here heard, and only the caller knows whether that matters or which turn it was.
-* **no status interpretation** -- the row says `done`, `cancelled` or `failed` in
-  its payload. What a failure means for the script is the script's business.
-* **no timeout** -- `timeout(1)` bounds any command and already leaves with 124.
-
-The skill that spawns subagents (`ship/skills/subagent`) wraps this into
-`wait_turn`, which is where those judgements live: read the session's status, answer
-at once if it is already idle, otherwise wait and re-read, with a bound on each wait
-so a turn ending in the gap is caught by the next read instead of waited out.
+The client does still carry the one fact only it knows: `$GONGGA_SESSION`, sent as
+`ClientInfo::session`. A server cannot tell which session's shell a command came
+from, and `subscribe` is the command that needs it.
 
 ## Naming itself
 
