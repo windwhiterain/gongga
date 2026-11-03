@@ -39,8 +39,7 @@ struct Queued {
     id: u64,
     name: String,
     args: Args,
-    /// The session this connection was started from, if it named one: see
-    /// [`protocol::ClientInfo::session`].
+    /// The session this connection was started from, if it named one.
     caller: Option<String>,
     /// When the datagram was read: the wait a slow answer is told apart by.
     arrived: std::time::Instant,
@@ -345,11 +344,7 @@ async fn run_commands(
     }
 }
 
-/// Waits for the client's `Hello` and checks its key.
-///
-/// `None` means the connection is closed. What comes back is the client's own
-/// account of itself, which the commands on this connection are then run as: who
-/// dialled is not a per-command question.
+/// Waits for the client's `Hello` and checks its key; `None` means it closed.
 async fn authenticate(
     sink: &protocol::ChannelSink,
     stream: &mut protocol::ChannelStream,

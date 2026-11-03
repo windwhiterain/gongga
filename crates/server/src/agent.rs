@@ -66,15 +66,9 @@ impl Agent {
     ///
     /// # Invariant
     ///
-    /// The log is the source of truth and the bus is its notification: the row is
-    /// on disk before anybody is told it exists, so a subscriber that reacts to
-    /// `Record` can always read what it was told about, and a process that died
-    /// between the two loses a notification rather than a fact.
-    ///
-    /// Every row the agent writes goes through here. Before this, seven call
-    /// sites appended to the table and published nothing -- so a reader waiting
-    /// for a `turn_end` had no event to wait for, and the log was a place only a
-    /// poller could find. A row nobody can subscribe to is a row half-written.
+    /// The log is the source of truth and the bus its notification: the row is on
+    /// disk before anybody is told, and every row the agent writes goes through
+    /// here, so a subscriber can always read what it was told about.
     ///
     /// A failed write is a warning, not a panic: the turn is what matters, and a
     /// log that refuses a row must not take the conversation with it.

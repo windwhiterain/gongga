@@ -2138,8 +2138,7 @@ fn client_info(owner: Option<u32>) -> ClientInfo {
         build: protocol::BUILD.to_string(),
         label: format!("cli/pid-{}", std::process::id()),
         owner,
-        // Which session this process was started from: the server cannot know it,
-        // and `subscribe` is what needs it. See [`ClientInfo::session`].
+        // Only this process knows whose shell it is: `subscribe` needs it.
         session: calling_session(),
     }
 }
@@ -2148,9 +2147,8 @@ fn client_info(owner: Option<u32>) -> ClientInfo {
 ///
 /// # Invariant
 ///
-/// The environment only, never a sticky argument: a sticky `session` is the one a
-/// command *acts on*, and the caller is the one it was run from. Confusing the two
-/// would make `subscribe` notice whoever was named last.
+/// The environment only, never a sticky argument: `--session` names who a command
+/// acts on, and this is who ran it.
 fn calling_session() -> Option<String> {
     std::env::var("GONGGA_SESSION")
         .ok()

@@ -1257,14 +1257,10 @@ impl Tool for CheckBashTool {
 ///
 /// # Invariant
 ///
-/// It waits for *anything* the session has waiting -- a background job's report, a
-/// subscription's news, a person's message -- and it consumes none of it. What
-/// arrived is delivered the way every other queued message is, at the next step
-/// boundary, so there is one delivery path and no second copy in a tool result.
+/// It consumes nothing it waited for: every arrival is delivered at the next step
+/// boundary, so a tool result is never a second copy of a message.
 pub struct WaitTool {
-    /// How long to wait when the call names no deadline: the same ceiling a `bash`
-    /// call gets, because that is this harness's one answer to "how long may a
-    /// tool hold a turn".
+    /// The ceiling one call waits, when the call names none.
     pub timeout: Duration,
 }
 
@@ -1313,8 +1309,7 @@ impl Tool for WaitTool {
                 .max(Duration::from_millis(100));
             let deadline = std::time::Instant::now() + wait;
             loop {
-                // A person's message is news whether or not anything was queued
-                // before this call: the signal is the one thing a poll cannot see.
+                // A person's message is the one arrival no row shows yet.
                 if ctx.inbox.arrived() {
                     return ToolOutcome::ok(
                         "a message arrived for this session while this call waited; it is \

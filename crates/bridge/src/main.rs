@@ -649,8 +649,7 @@ async fn dial(
             label: format!("bridge/pid-{}", std::process::id()),
             // A bridge is a relay, not a window: it owns nothing.
             owner: None,
-            // Nor is it a session's: it speaks for whoever wrote to it, and the
-            // server reads that from each message, not from the relay.
+            // Nor is it a session's: it speaks for whoever wrote to it.
             session: None,
         },
         key,

@@ -4,17 +4,8 @@
 //!
 //! # Invariant
 //!
-//! Subscribing registers, and nothing else. The command answers at once -- it does
-//! not hold the caller open waiting for a match, because a command that waited
-//! would be a wait with a command's name on it: the caller could not do anything
-//! else meanwhile, and the pattern would only be observed while someone happened
-//! to be listening. The agent's side of "wait for the news" is the `wait` tool,
-//! which costs a turn rather than a process.
-//!
-//! A match becomes an inbox row for the session that subscribed, which is the same
-//! road `send_message` takes: an idle session is woken by it, and a busy one reads
-//! it at its next step boundary. That is deliberate -- a subscription whose news
-//! never wakes anybody is a subscription nobody reads.
+//! Subscribing registers and answers at once; the news becomes an inbox row for the
+//! session that asked, so an idle one is woken by it.
 
 use std::sync::Arc;
 
@@ -129,8 +120,7 @@ impl Subscriptions {
 
     /// Queues the news for the session that asked for it.
     async fn notice(&self, row: &SubscriptionRow, event: &protocol::Event) {
-        // A name that no longer exists is a subscription nothing can hear: the
-        // session was deleted while it was armed, and its rows are gone with it.
+        // A session that is gone has nobody left to tell.
         match self.store.get_session(&row.session) {
             Ok(Some(_)) => {}
             Ok(None) => {
@@ -142,8 +132,7 @@ impl Subscriptions {
                 return;
             }
         }
-        // Deliberately not marked as a notice: a notice is news for a session that
-        // is already working, and this one is news somebody asked to be woken by.
+        // Not marked as a notice: this one is meant to wake an idle session.
         if let Err(e) = self.store.add_pending_task(
             &row.session,
             "inject",
@@ -209,8 +198,7 @@ fn said(row: &SubscriptionRow, event: &protocol::Event) -> String {
     )
 }
 
-/// The body on one line: a notice rides the transcript, and an indented dump of
-/// JSON would spend the session's context on punctuation.
+/// The body on one line: it rides the transcript, so punctuation is not free.
 fn compact(value: &serde_json::Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| value.to_string())
 }
@@ -219,9 +207,7 @@ fn compiled(store: &Store, row: SubscriptionRow) -> Option<Armed> {
     match regex::Regex::new(&row.pattern) {
         Ok(pattern) => Some(Armed { row, pattern }),
         Err(e) => {
-            // A row a previous build wrote and this one cannot compile is dropped,
-            // here and in the database: a pattern that cannot match would be read
-            // again on every start and fail on every event.
+            // Dropped here and in the database: it can never match.
             tracing::warn!(
                 subscription = row.id, pattern = %row.pattern, error = %e,
                 "dropping a subscription whose pattern does not compile"

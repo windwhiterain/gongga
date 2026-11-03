@@ -289,8 +289,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         tracing::warn!(problem = %problem, "a script could not be read");
     }
 
-    // The armed subscriptions come back with the database, so a restart resumes
-    // what sessions asked to be told about rather than dropping it.
+    // Read from the database, so a restart resumes what was asked for.
     let subscriptions = crate::subscriptions::Subscriptions::load(store.clone(), bus.clone());
 
     let dispatch = Arc::new(Dispatch {
@@ -341,8 +340,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         "detached jobs adopted from the previous run"
     );
 
-    // One matcher for every armed pattern: a match becomes an inbox row for the
-    // session that asked for it. See `docs/notes/server-subscriptions.md`.
+    // One matcher for every pattern. See `docs/notes/server-subscriptions.md`.
     let watching = subscriptions.clone();
     let stop_watching = dispatch.shutdown.clone();
     tokio::spawn(async move { watching.watch(stop_watching).await });
