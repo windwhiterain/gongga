@@ -25,6 +25,7 @@ _Post Modern Agent Harness_
 - Message/notice/interruption will wake the waiting agent immediately, turn the waited process into background.
 - Provider quota update in realtime. 
 - Reasoning abstraction show both first line and second line so you know the reaction of the agents, and what it gonna do.
+- Vscode terminal compatible.
 
 ## Environment Requirement
 

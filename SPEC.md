@@ -136,27 +136,31 @@ for the first user message to a empty session, find all meta references recursiv
   - Alt+C: copy the selection.
   - Shift+Up: last cmd input.
 
+## Sticky
+- stikcy argument will auto fill corresponding arguments in cmd if missing and not optional.
+- sticky argument bundle will auto fill all corresponding arguments in cmd if all missing and any of them is not optional.
+
 
 ## Cmd
+all named argument's name can be ommited via argument order.
+
 - server:
-  - `set_session <session>(sticky) <model>(sticky) [--thinking_effort <level>](initial: highest in supported or default if unkown) [--context_limit <n%>](initial: "70%") [--cwd <path>](initial: ".") [--remote <none|name>](initial: none) [--must_create <bool>](initial: false)`:
-    - plus `set_sticky_cmd_argument --name session --value <session>`
+  - `set_session --name <session>(sticky) --model <model> [--thinking <thinking>](default: highest in supported or default if unkown) [--ctx_limit <ctx_limit%>](default: "70%") [--remote <remote>](default: none) [--cwd <cwd>](default: ".") [--must_create <bool>](default: false)`:
+    - plus set session sticky.
+    - (model, thinking, ctx_limit) is sticky bundle.
+    - (remote, cwd) is sticky bundle.
     - `--must_create true` refuses the command when the session already exists: a caller
       that starts its own session must not join another one's transcript by reusing a name.
-  - `del_session <session>`: also delete all bash with the session name in key.
-  - `send_message <session> <message>`: inject message instantly, turn waiting bash to backgound.
+  - `del_session --name <session>`: also delete all bash with the session name in key.
+  - `send_message --name <session> --message <message>`: inject message instantly, turn waiting bash to backgound.
   - `interrupt_session <session>`
   - `cancel`: not instantly, but finish every task that can't be serialized to data, then store the pending tasks into data, the exit. next start will auto pick up those tasks.  
   - `trigger_event <event>`
   - `subscribe <subscription> <pattern> [--persistant] [--bash <bash> --cmd <cmd>] [--python <python> --code <code>]`:
     when pattern matched triggered event, run bash cmd or python code in persistant bash or python interpreter.
-    the pattern is a regex over the event's name and, for a session event, `name:session`
-    (the language del_bash/list_bash speak): `^turn_end:main/impl$` is one session's turn end,
-    `^(turn_end|turn_failed):main/-(impl|review)$` composes several sessions and outcomes;
-    a match lands as a message in the calling session's transcript, carrying the event.
   - `del_subscribe <subscription>`
 - server_script: that registered by external python scripts
-  - `get_messages <session> [<begin>]:[<end>]`: return the items in closed range <begin>:<end> (negative number count from end, missing number means boundary).
+  - `get_messages [<begin>]:[<end>] --session <session>`: return the items in closed range <begin>:<end> (negative number count from end, missing number means boundary).
   - `skill <name> [args...]` | `skill ls` | `skill which <name>` | `skill run <name>`:
     run the entry a skill declares, resolved by the roots above. argv is passed through
     unparsed, the entry's exit code is this command's, and neither needs a server nor a
@@ -169,7 +173,7 @@ for the first user message to a empty session, find all meta references recursiv
     - `block_size`: max line count of non-output block, auto scroll.
     - `box_edge`: columns at each side of an opened block where the wheel scrolls the
       events instead of the block; the block is drawn there like anywhere else.
-  - `set_render_session <session> true|false`
+  - `set_render_session <bool> --session <session>`
   - `connect_server [--ip <ip>](default: localhost) --port <port>`
   - `serve <port> [--home <path>](default: "~/.gongga")`
 
@@ -226,9 +230,7 @@ roles:
 - advisor (sota): plan, proposal
   - present plan for implementation to the justice.
   - present proposal of changes to the spec.
-- no HR: start creates advisor/premier and arms one subscribe pattern over their turn_end for justice
-  (a role ends its turn with the record id as the answer, the notice carries it); a failed role
-  session is handed to the server's monitor, which repairs quota/harness failures.
+- HR (flash): create justice/premier/advisor session, monitor their situation, fix harness errors (quota, ...).
 
 record:
 - proposal{example, expected, actual, actual_spec, expected_spec}
