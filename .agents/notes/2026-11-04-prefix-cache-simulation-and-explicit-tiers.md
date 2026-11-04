@@ -191,14 +191,14 @@ Responses 是否对每个模型生效、`prompt_cache_key` 是否真提升命中
 | `test-layout-check` | 0 violations | |
 | `scripts/skill_contract.sh` | PASS 8 skills | 在主 checkout 跑。worktree 没初始化 `ship` 子模块，那里只报 1 skill，等于空跑，不算数 |
 | `scripts/ship.sh --check` | exit 0 `in agreement` | 同样在主 checkout 跑；worktree 里那次输出 `no ship/ here`，是跳过 |
-| L3 `scripts/prompt_selftest.sh` | `PASS · prompt · 99355ea` | 真服务端 + fake LLM。`FAKE_LLM_DUMP` 里 2 个请求都带 `prompt_cache_key="reader"`；`prompt_cache_options` 按设计缺席（fake roster 没声明任何 tier，过滤器正确挡住） |
+| L3 `scripts/prompt_selftest.sh` | `PASS · prompt · 99355ea` | 真服务端 + fake LLM。`FAKE_LLM_DUMP` 里 2 个请求都带 `prompt_cache_key="reader"`；`prompt_cache_options` 缺席，因为这一轮没设 `GONGGA_CACHE_TIER`（当时的 fake roster 也没声明档位）。缺口在第三轮补上 |
 
 `cargo build --workspace` 在这台机器上没跑通：`crates/bundle/build.rs` 把嵌套
 target 写死成 `../../target/bundle-payload`，与主 checkout 的 exe 锁相撞
 （`os error 5`）。不是本轮改动引入，没有绕开、没有改 build.rs，如实记在这里。
-`prompt_cache_options` 的服务端注入没有独立的 L3 断言：真 provider 那一侧由
-`cache_probe.py` 验证字段被接受，服务端这一侧靠 `cargo check` + L3 里
-`prompt_cache_key` 走的是同一条 `build_head` 路径。
+`prompt_cache_options` 的服务端注入当时没有独立的 L3 断言：真 provider 那一侧
+由 `cache_probe.py` 验证字段被接受，服务端这一侧只有 `cargo check`。这是本轮
+的验证缺口，第三轮补齐。
 
 测试 home 与它 spawn 的进程都已收干净（按 pid 查过，无残留）。
 
@@ -240,7 +240,7 @@ sleep 之后的 3 个 repeat 没发出，省下了。**Q3 对照实验取消，�
 `read_stream` → `read_stream_inner` 到请求头，默认关。本地 L3
 （`prompt_selftest.sh`，真服务端 + fake LLM，零网络）验证两个请求都带
 `X-Session-ID: reader`，body 里 `prompt_cache_key` 同为 `reader`；
-`prompt_cache_options` 按设计缺席（fake roster 没声明 tier）。
+`prompt_cache_options` 同样缺席，原因见第三轮 —— 不是设计使然。
 
 ### 第二轮的门禁
 
@@ -257,4 +257,36 @@ exit 0（只有 Windows 增量锁的无害 warning）、`cargo fmt --all -- --ch
 - `ship/config/config.toml` 里 `cache_invalid_rate` 那句错注释：改 ship 会
   触发发布流程，没动。
 - L0 结构化 tier 与 L3 自动选档：Q3 的前提没量化之前不做。
+
+## 第三轮（14:45）：「为什么缺席」—— 把缺的 L3 补上
+
+User 追问 `prompt_cache_options` 为什么在 L3 里没出现。前两轮我都写成
+「按设计缺席（fake roster 没声明 tier）」，**这个说法只挑了体面的那一半**。
+真正是两道闸门，当时两道都没开：
+
+1. `llm.rs:138` 的 filter 之前，`cfg.cache_tier` 得先是 `Some`。L3 当轮只设了
+   `GONGGA_CACHE_AFFINITY` 和 `GONGGA_CACHE_SESSION_HEADER`，**没设
+   `GONGGA_CACHE_TIER`**，所以 `build_head`（`llm.rs:400`）那个分支根本没进。
+   这是首要原因，跟 roster 无关。
+2. 就算设了 `1h`，`prompt_selftest.sh` 自己写的 fake roster 里没有
+   `cache_ttl_tiers`，`cfg.cache_tiers` 为空，filter 仍会把档位挡掉。
+
+所以这是**漏了验证**，不是设计使然：真 provider 那一侧由 `cache_probe.py`
+证明字段被接受，服务端这一侧此前只有 `cargo check`。
+
+补法（零真请求）：给 `prompt_selftest.sh` 的 fake roster 加一行
+`cache_ttl_tiers = { "1h" = 3600 }`，让 fixture 声明一个档；同一脚本跑两遍，
+只切 `GONGGA_CACHE_TIER`：
+
+| 场景 | dump 里的 `prompt_cache_options`（2 个请求） |
+| --- | --- |
+| 不设 tier | `[None, None]` |
+| `GONGGA_CACHE_TIER=1h` | `[{"mode":"implicit","ttl":"1h"}, {"mode":"implicit","ttl":"1h"}]` |
+
+B 组 `prompt_cache_key` 为 `[None, None]`，说明两个开关彼此独立。
+`bash -n` 通过，L3 `PASS · prompt · af7e7fc`。至此服务端注入有了端到端证据：
+`config → for_entry → LlmClient → build_head → wire` 整条链走通，且
+「只发 roster 声明过的档」这条 invariant 由 A 组反证。
+
+这一轮改的文件只有 `scripts/prompt_selftest.sh` 的一行 fixture 和本笔记。
 

@@ -83,11 +83,14 @@ if ! wait_tcp "$fake_port"; then
 fi
 
 # One model, the fake, so nothing here depends on the machine's roster.
+# One declared tier lets a configured GONGGA_CACHE_TIER reach the wire; without
+# it the client filters the directive out and the dumped body has nothing to show.
 cat > "$work/prompt-roster.toml" <<TOML
 [[provider]]
 id = "fake"
 name = "Fake"
 key_env = "FAKE_API_KEY"
+cache_ttl_tiers = { "1h" = 3600 }
 
   [[provider.endpoint]]
   id = "openai"
