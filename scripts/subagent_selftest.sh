@@ -202,7 +202,7 @@ cli=("$bin/gongga-cli.exe")
 await() { local n; for _ in $(seq 1 240); do n=$(grep -cE "turn end session=$1( |$)" "$log"); [[ $n -ge $2 ]] && return 0; sleep 0.5; done; echo "  note: $1 has $n turn end(s), wanted $2" >&2; return 1; }
 turns_of() { grep -cE "turn end session=$1( |$)" "$log"; }
 
-"${cli[@]}" set_session probe fake/flash-fake --cwd "$project" --context_limit 20% >"$work/parent.out" 2>&1
+"${cli[@]}" set_session probe fake/flash-fake --cwd "$project" --ctx_limit 20% >"$work/parent.out" 2>&1
 
 # The parent speaks first, and this one message is what its head will carry for
 # ever: `prompt_in_force` writes prose and index once and returns the row after.
