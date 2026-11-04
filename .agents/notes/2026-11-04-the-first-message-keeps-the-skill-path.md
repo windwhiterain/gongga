@@ -73,12 +73,24 @@ Gates, run in `.worktrees/cache-fix` on `feature/skill-path-in-index`:
 - `scripts/ship.sh --check` (from the main worktree, whose `ship/` is the checkout) --
   `protocol content 1, this build 1`, exit 0
 
+## The content that described the old behaviour
+
+`ship` commit `fcb7668` (published to `main`; `scripts/ship.sh --check` exit 0) carries
+the prose half of this change and two corrections found beside it:
+
+- `prefix-cache`: the first message's `@skill:` row now says the mention carries
+  `(<path>)`, and the later-message row says both kinds stay out of the index.
+- `prefix-cache`: the section that said the index is rebuilt on every step says it is
+  written once and never re-rendered -- what `prompt_in_force` and `subagent` already
+  said, and what session `polity` shows (one `system` row).
+- `heir`, `image`, `remote`, `self-control`, `subagent`: they found their own directory
+  through the old `SKILL.md: <path>` expansion form; the path is the parenthesised one
+  now.
+
+A running server installs it at its next start, not with this build.
+
 ## Not done
 
-- `ship/skills/prefix-cache/SKILL.md` still describes the first message as "消息里保持字面"
-  for `@skill:`, and a later message as "被就地替换成一行 metadata". Both are content
-  (the `ship` submodule), so they need a `scripts/ship.sh -m …` release, not a change
-  here. The 2026-11-03 note left the same paragraphs open.
 - SPEC's `@image:` clause still says the mention keeps the path and gains the id; the
   code keeps the mention and the copy's id, not the payload. Untouched.
 
