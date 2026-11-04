@@ -5,7 +5,11 @@ The roster and `docs/reference/prefix-cache.md` state what a vendor *says*; this
 script records what the endpoint answers. It is a measurement, not a test: it
 asserts nothing about correctness and always reports what it observed.
 
-    python scripts/cache_probe.py
+This sends real requests against a paid endpoint. For policy work, prefer the
+local simulator in `scripts/fake_llm.py` with its `FAKE_LLM_CACHE_*` knobs, or
+pass `--dry-run` here to see the request shapes without sending anything.
+
+    python scripts/cache_probe.py --dry-run
     python scripts/cache_probe.py --ttl-wait 330
     python scripts/cache_probe.py --base-url https://api.kimi.com/coding/v1 \
         --model kimi-for-coding --key-env KIMI_CODING_API_KEY
@@ -57,8 +61,18 @@ def prefix(blocks: int, salt: str = "") -> str:
     return "\n".join(lines)
 
 
+DRY_RUN = False
+
+
 def call(base: str, key: str, path: str, body: dict, timeout: float) -> dict:
     """One request and everything worth keeping about its answer."""
+    if DRY_RUN:
+        return {
+            "status": None,
+            "error": "dry run: not sent",
+            "body_keys": sorted(body.keys()),
+            "elapsed_ms": 0,
+        }
     started = time.monotonic()
     request = urllib.request.Request(
         base.rstrip("/") + path,
@@ -193,22 +207,26 @@ def scenario_ttl(base: str, key: str, model: str, timeout: float, gap: int) -> d
     """Does the long tier still answer a hit after the short tier's window."""
     if gap <= 0:
         return {"skipped": "pass --ttl-wait <seconds> to measure"}
-    # Both tiers are written first and then read after one shared wait, so the
-    # two measurements cost one window rather than two.
-    cold = {}
-    for tier in ("5m", "1h"):
-        directive = {"mode": "implicit", "ttl": tier}
-        system = prefix(10, f"ttl-{tier}")
-        cold[tier] = call(base, key, "/responses",
-                          responses_body(model, system, directive, 8), timeout)
-    time.sleep(gap)
+    # Every case is written first and then read after one shared wait. The
+    # control sends no directive at all: it separates "the ttl field changed the
+    # lifetime" from "the default tier already outlives the short one".
+    cases = [
+        ("5m", {"mode": "implicit", "ttl": "5m"}, prefix(10, "ttl-5m")),
+        ("1h", {"mode": "implicit", "ttl": "1h"}, prefix(10, "ttl-1h")),
+        ("control", None, prefix(10, "ttl-control")),
+    ]
+    cold = {
+        label: call(base, key, "/responses",
+                    responses_body(model, system, directive, 8), timeout)
+        for label, directive, system in cases
+    }
+    if not DRY_RUN:
+        time.sleep(gap)
     out = {}
-    for tier in ("5m", "1h"):
-        directive = {"mode": "implicit", "ttl": tier}
-        system = prefix(10, f"ttl-{tier}")
+    for label, directive, system in cases:
         second = call(base, key, "/responses",
                       responses_body(model, system, directive, 8), timeout)
-        out[tier] = {"cold": brief(cold[tier]), f"after_{gap}s": brief(second)}
+        out[label] = {"cold": brief(cold[label]), f"after_{gap}s": brief(second)}
     return out
 
 
@@ -224,12 +242,17 @@ def main() -> int:
     parser.add_argument("--only", choices=("shape", "write", "ttl"),
                         help="run just one scenario")
     parser.add_argument("--output", default="", help="override the .dev/verify JSON path")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="show the request shapes without sending anything")
     args = parser.parse_args()
 
+    global DRY_RUN
+    DRY_RUN = args.dry_run
     key = os.environ.get(args.key_env)
-    if not key:
+    if not key and not args.dry_run:
         print(f"no credential: set {args.key_env}", file=sys.stderr)
         return 1
+    key = key or ""
 
     started = time.monotonic()
     scenarios = {}
@@ -240,6 +263,10 @@ def main() -> int:
     if args.only in (None, "ttl"):
         scenarios["ttl"] = scenario_ttl(args.base_url, key, args.model,
                                         args.timeout, args.ttl_wait)
+
+    if DRY_RUN:
+        print(json.dumps(scenarios, ensure_ascii=False, indent=2))
+        return 0
 
     output = args.output or (
         ".dev/verify/cache-probe-"

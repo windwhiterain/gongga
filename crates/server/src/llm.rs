@@ -62,6 +62,8 @@ pub struct LlmClient {
     cache_tier: Option<String>,
     /// Route affinity, off unless a machine states its endpoint accepts it.
     cache_affinity: bool,
+    /// Pin the inference instance with an `X-Session-ID` header.
+    cache_session_header: bool,
 }
 
 /// Where a request's input comes from: one session's transcript, up to a seq pinned
@@ -138,6 +140,7 @@ impl LlmClient {
                 .clone()
                 .filter(|tier| cfg.cache_tiers.contains_key(tier)),
             cache_affinity: cfg.cache_affinity,
+            cache_session_header: cfg.cache_session_header,
         })
     }
 
@@ -201,6 +204,7 @@ impl LlmClient {
         let (tx, rx) = mpsc::channel(256);
         let build_started = Instant::now();
         let head = self.build_head(instructions, index, tail, session, tools, effort);
+        let session_header = self.cache_session_header.then(|| session.to_string());
         // Owned, because the attempt below records it after this body is gone.
         let effort_sent = effort.map(str::to_string);
         let build_head_ms = build_started.elapsed().as_millis() as u64;
@@ -260,6 +264,7 @@ impl LlmClient {
                     idle_timeout,
                     cancel.clone(),
                     probe,
+                    session_header.clone(),
                 )
                 .await;
                 let mut produced = false;
@@ -845,6 +850,7 @@ async fn stream_once(
     idle_timeout: Duration,
     cancel: CancellationToken,
     probe: crate::probe::AttemptProbe,
+    session_header: Option<String>,
 ) -> mpsc::Receiver<LlmEvent> {
     let (tx, rx) = mpsc::channel(256);
     let url = url.to_string();
@@ -864,6 +870,7 @@ async fn stream_once(
             &cancel,
             &tx,
             probe,
+            session_header,
         ))
         .catch_unwind()
         .await;
@@ -893,6 +900,7 @@ async fn read_stream(
     cancel: &CancellationToken,
     tx: &mpsc::Sender<LlmEvent>,
     mut probe: crate::probe::AttemptProbe,
+    session_header: Option<String>,
 ) {
     let outcome = AssertUnwindSafe(read_stream_inner(
         http,
@@ -905,6 +913,7 @@ async fn read_stream(
         cancel,
         tx,
         &mut probe,
+        session_header,
     ))
     .catch_unwind()
     .await;
@@ -936,17 +945,21 @@ async fn read_stream_inner(
     cancel: &CancellationToken,
     tx: &mpsc::Sender<LlmEvent>,
     probe: &mut crate::probe::AttemptProbe,
+    session_header: Option<String>,
 ) {
     let started = Instant::now();
     tracing::info!(%url, "model request: sending");
     // The count is known only afterwards. The type must be stated: a provider
     // answers 415 for a streamed body without it.
-    let request = http
+    let mut request = http
         .post(url)
         .header("Accept", "text/event-stream")
         .header("Content-Type", "application/json")
-        .bearer_auth(api_key)
-        .body(reqwest::Body::wrap_stream(body));
+        .bearer_auth(api_key);
+    if let Some(session) = session_header {
+        request = request.header("X-Session-ID", session);
+    }
+    let request = request.body(reqwest::Body::wrap_stream(body));
 
     let response = match tokio::time::timeout(headers_timeout, request.send()).await {
         Ok(Ok(r)) => r,

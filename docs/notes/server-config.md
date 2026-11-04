@@ -272,3 +272,8 @@ tier `docs/reference/prefix-cache.md` allows a plan to price.
 the session name. It is off by default: the key creates no cache, costs nothing,
 and only raises the chance a request lands where its prefix already is, but not
 every endpoint accepts the field.
+
+`[model] cache_session_header` (or `GONGGA_CACHE_SESSION_HEADER`) adds an
+`X-Session-ID` header with the same name, for endpoints that pin an inference
+instance that way. It is a separate switch: an unknown header is not the same
+risk as an unknown body field, and a provider may want one without the other.

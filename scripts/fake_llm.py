@@ -10,11 +10,28 @@ Knobs, all environment variables:
 
 - `FAKE_LLM_DUMP=<path>`: append every request body received to that file, one
   JSON object per line. This is how the smoke test shows what the server sent.
+- `FAKE_LLM_HEADERS_DUMP=<path>`: the same for request headers, so an
+  `X-Session-ID` affinity header can be checked without a real endpoint.
 - `usage`: token counts are measured off the request, and `cached_tokens` is
-  modelled the way a prefix cache works -- the leading units (tools, instructions,
-  then input items) that are byte-identical to the previous request. So a prose or
-  schema change shows up as a lost hit, which is the only way to see it at all.
-  `FAKE_LLM_INPUT_TOKENS` overrides the measured input count.
+  modelled as the leading token blocks of the *whole request* that are identical
+  to what this endpoint holds. A real provider caches a token prefix quantized to
+  its own block, not a sequence of units; see
+  `docs/notes/server-prefix-cache.md`. `FAKE_LLM_INPUT_TOKENS` overrides the
+  measured input count.
+
+  Cache knobs, all environment variables:
+  - `FAKE_LLM_CACHE_MODEL`: `token-prefix` (default) or `units` (the old model,
+    kept so a change can be compared against it).
+  - `FAKE_LLM_CACHE_BLOCK_TOKENS`: block size, default 128.
+  - `FAKE_LLM_CACHE_TTL_SECS`: lifetime, 0 means no expiry.
+  - `FAKE_LLM_CACHE_RENEWAL`: `renewing` (a hit resets the clock), `deadline`
+    (the clock starts at the write), or `evicted` (no TTL to obey).
+  - `FAKE_LLM_CACHE_MIN_TOKENS`: shortest prefix the endpoint will hold, 0 by
+    default. A partial trailing block is never served from cache.
+  - `FAKE_LLM_CACHE_TIERS`: JSON object keyed by `prompt_cache_options.ttl`, each
+    value may override `ttl`, `renewal` and `minimum`.
+  - `FAKE_LLM_CACHE_EVICT_PROBABILITY` / `FAKE_LLM_CACHE_SEED`: only for the
+    `evicted` mode, which otherwise has no clock to obey.
 - `FAKE_LLM_TOOL=<name>`: emit one function call for that tool on the first
   request of a run, then a plain message. `FAKE_LLM_TOOL_ARGS` is its arguments.
 - `FAKE_LLM_WEB=1`: emit a provider-side `web_search_call` item plus a citation,
@@ -32,14 +49,16 @@ request calls a tool, the second answers" works without any real logic.
 """
 
 import json
-import re
-import time
 import os
+import random
+import re
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 DUMP = os.environ.get("FAKE_LLM_DUMP")
+HEADERS_DUMP = os.environ.get("FAKE_LLM_HEADERS_DUMP")
 TOOL_NAME = os.environ.get("FAKE_LLM_TOOL")
 TOOL_ARGS = os.environ.get("FAKE_LLM_TOOL_ARGS") or '{"command":"echo hi-from-fake"}'
 WEB = os.environ.get("FAKE_LLM_WEB") == "1"
@@ -47,12 +66,26 @@ WEB = os.environ.get("FAKE_LLM_WEB") == "1"
 FAIL_MODEL = os.environ.get("FAKE_LLM_FAIL_MODEL") or ""
 # What the fake claims the request cost, so a threshold can be crossed on purpose.
 INPUT_TOKENS = int(os.environ.get("FAKE_LLM_INPUT_TOKENS") or 0)
-# What the previous request was made of, so "cached" can mean something.
+
+CACHE_MODEL = os.environ.get("FAKE_LLM_CACHE_MODEL") or "token-prefix"
+CACHE_BLOCK_TOKENS = max(1, int(os.environ.get("FAKE_LLM_CACHE_BLOCK_TOKENS") or 128))
+CACHE_TTL_SECS = float(os.environ.get("FAKE_LLM_CACHE_TTL_SECS") or 0)
+CACHE_RENEWAL = os.environ.get("FAKE_LLM_CACHE_RENEWAL") or "renewing"
+CACHE_MIN_TOKENS = int(os.environ.get("FAKE_LLM_CACHE_MIN_TOKENS") or 0)
+CACHE_TIERS = json.loads(os.environ.get("FAKE_LLM_CACHE_TIERS") or "{}")
+CACHE_EVICT_PROBABILITY = float(os.environ.get("FAKE_LLM_CACHE_EVICT_PROBABILITY") or 0)
+_RNG = random.Random(int(os.environ.get("FAKE_LLM_CACHE_SEED") or 0))
+
+# What this endpoint holds: complete token blocks of the last request, and the
+# two clocks a tier's renewal semantics read.
+_held_blocks = []
+_written_at = 0.0
+_touched_at = 0.0
 _previous_units = []
 
 
 def units(raw):
-    """A request as the provider's prefix sees it: tools, instructions, then items."""
+    """The request's parts, in the order its prefix puts them on the wire."""
     try:
         body = json.loads(raw.decode("utf-8", "replace"))
     except ValueError:
@@ -68,17 +101,79 @@ def units(raw):
     return out
 
 
-def measure(units_now):
-    """(input tokens, cached tokens) for this request, versus the previous one."""
-    global _previous_units
+def cache_option(raw):
+    """The cache directive this request named, if it named one."""
+    try:
+        body = json.loads(raw.decode("utf-8", "replace"))
+    except ValueError:
+        return {}
+    option = body.get("prompt_cache_options")
+    return option if isinstance(option, dict) else {}
+
+
+def measure(units_now, option=None):
+    """(input, cached, written) against what this endpoint holds.
+
+    A provider caches a token prefix of the whole request, quantized to complete
+    blocks: a change keeps everything before it and nothing after it.
+    """
+    global _held_blocks, _written_at, _touched_at, _previous_units
     chars = sum(len(u) for u in units_now)
-    hit = 0
-    for a, b in zip(_previous_units, units_now):
+    input_tokens = INPUT_TOKENS or max(chars // 4, 1)
+
+    if CACHE_MODEL == "units":
+        hit = 0
+        for a, b in zip(_previous_units, units_now):
+            if a != b:
+                break
+            hit += len(a)
+        _previous_units = units_now
+        return (input_tokens, hit // 4, 0)
+
+    settings = CACHE_TIERS.get((option or {}).get("ttl", "default"), {})
+    ttl = float(settings.get("ttl", CACHE_TTL_SECS))
+    renewal = settings.get("renewal", CACHE_RENEWAL)
+    minimum = int(settings.get("minimum", CACHE_MIN_TOKENS))
+
+    now = time.monotonic()
+    width = CACHE_BLOCK_TOKENS * 4
+    whole = "".join(units_now)
+    request_blocks = [whole[i:i + width] for i in range(0, len(whole), width)]
+    # A partial trailing block is not in the cache and cannot be served from it.
+    if request_blocks and len(request_blocks[-1]) < width:
+        request_blocks.pop()
+
+    expired = False
+    if ttl > 0 and _held_blocks and renewal == "deadline":
+        expired = now - _written_at > ttl
+    if ttl > 0 and _held_blocks and renewal == "renewing":
+        expired = now - _touched_at > ttl
+    if renewal == "evicted" and CACHE_EVICT_PROBABILITY > 0:
+        expired = expired or _RNG.random() < CACHE_EVICT_PROBABILITY
+    if expired:
+        _held_blocks = []
+
+    common = 0
+    for a, b in zip(_held_blocks, request_blocks):
         if a != b:
             break
-        hit += len(a)
-    _previous_units = units_now
-    return (INPUT_TOKENS or max(chars // 4, 1)), (hit // 4)
+        common += 1
+    cached = common * CACHE_BLOCK_TOKENS
+    written = 0
+
+    if input_tokens >= minimum:
+        written = max(0, len(request_blocks) - common) * CACHE_BLOCK_TOKENS
+        fresh = not _held_blocks
+        if fresh:
+            _written_at = now
+            _touched_at = now
+        elif renewal == "renewing" and cached:
+            _touched_at = now
+        _held_blocks = list(request_blocks)
+    else:
+        _held_blocks = []
+
+    return (input_tokens, cached, written)
 IMAGE_GEN = os.environ.get("FAKE_LLM_IMAGE_GEN") == "1"
 
 _lock = threading.Lock()
@@ -97,7 +192,7 @@ SLOW_REASONING = (os.environ.get("FAKE_LLM_SLOW_REASONING") or "").split("|") \
     if os.environ.get("FAKE_LLM_SLOW_REASONING") else []
 
 
-def events(with_tool: bool, with_web: bool, with_image: bool, usage=(0, 0)):
+def events(with_tool: bool, with_web: bool, with_image: bool, usage=(0, 0, 0)):
     seq = iter(range(1, 100000))
 
     def ev(kind, **payload):
@@ -206,8 +301,13 @@ def events(with_tool: bool, with_web: bool, with_image: bool, usage=(0, 0)):
                 "usage": {
                     "input_tokens": usage[0],
                     # Nested exactly as the Responses API spells it, because that is
-                    # the shape the harness has to read.
-                    "input_tokens_details": {"cached_tokens": usage[1]},
+                    # the shape the harness has to read. A real Responses endpoint
+                    # reports zero here even on a cold write; the fake reports the
+                    # tokens it wrote so a cost model can be exercised offline.
+                    "input_tokens_details": {
+                        "cached_tokens": usage[1],
+                        "cache_write_tokens": usage[2],
+                    },
                     "output_tokens": 1,
                     "total_tokens": usage[0] + 1,
                 },
@@ -321,6 +421,10 @@ class Handler(BaseHTTPRequestHandler):
             with _lock:
                 with open(DUMP, "a", encoding="utf-8") as f:
                     f.write(raw.decode("utf-8", "replace").replace("\n", " ") + "\n")
+        if HEADERS_DUMP:
+            with _lock:
+                with open(HEADERS_DUMP, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(dict(self.headers)) + "\n")
         with _lock:
             _requests += 1
             first = _requests == 1
@@ -328,7 +432,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
-        for e in events(first and bool(TOOL_NAME), WEB, IMAGE_GEN, measure(units(raw))):
+        for e in events(first and bool(TOOL_NAME), WEB, IMAGE_GEN,
+                        measure(units(raw), cache_option(raw))):
             if e["event"] == "fake.pause":
                 # Not a protocol event: a delay, so a client can be killed mid-stream.
                 time.sleep(float(e["data"]["seconds"]))
