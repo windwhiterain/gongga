@@ -214,14 +214,15 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
             name: "send_message".into(),
             description: "Send a message to a session and run a turn.".into(),
             args: vec![
-                pos(
-                    "session",
+                kind_arg(
+                    "name",
                     "Target session. Required: there is no implicit default.",
                     true,
+                    "session",
                     Some("name"),
                     CompletionSource::Sessions,
                 ),
-                pos(
+                arg(
                     "message",
                     "The message text.",
                     true,
@@ -238,34 +239,44 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                       it. Settings omitted now are left as they are."
                     .into(),
             args: vec![
-                pos(
-                    "session",
-                    "Session to create or reconfigure.",
-                    true,
-                    Some("name"),
-                    CompletionSource::Sessions,
-                ),
-                // SPEC: `<model>(sticky)`, so a model set once is a mode rather
-                // than a repetition in every command.
+                // SPEC: `--name <session>(sticky)` -- the name is this command's to
+                // choose; what a sticky entry keys on is the kind, `session`
+                // wherever the argument appears.
                 sticky_arg(
-                    arg_spec(
-                        "model",
-                        "The model to run this session's turns on, as <provider>/<model \
-                         name>. Remembered: a later `set_session` that names none uses it.",
-                        false,
+                    kind_arg(
+                        "name",
+                        "Session to create or reconfigure.",
                         true,
-                        Some("model"),
-                        CompletionSource::Static(crate::providers::roster().models()),
+                        "session",
+                        Some("name"),
+                        CompletionSource::Sessions,
                     ),
                     true,
                 ),
-                arg(
-                    "thinking_effort",
+                // SPEC: `{--model <model> [--thinking <thinking>] [--ctx_limit \
+                //   <ctx_limit%>]}(sticky)` -- the tuning bundle: a mode set once
+                // and applied as a unit, so a partially typed bundle is left
+                // alone rather than half filled.
+                bundle_arg(
+                    "model",
+                    "The model to run this session's turns on, as <provider>/<model \
+                     name>. Required: name it, or set the sticky entry once -- a \
+                     successful set_session writes it back.",
+                    true,
+                    "model",
+                    "tuning",
+                    Some("model"),
+                    CompletionSource::Static(crate::providers::roster().models()),
+                ),
+                bundle_arg(
+                    "thinking",
                     "How hard the model should think, in the roster's spelling (`low`, \
                      `high`, `xhigh`, ...). Mapped onto what the model actually accepts \
                      and checked against it, so a level it does not take fails here. \
                      Defaults to the model's own.",
                     false,
+                    "thinking",
+                    "tuning",
                     Some("level"),
                     // The one vocabulary the server ranks by, so the list offered
                     // here and `highest in supported` cannot drift apart.
@@ -276,13 +287,15 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                             .collect(),
                     ),
                 ),
-                arg(
-                    "context_limit",
-                    "The context level at which this session gets a `Context notice`, e.g. \
-                     `30%`. 0 never notices. Defaults to a share of the \
+                bundle_arg(
+                    "ctx_limit",
+                    "The context level at which this session gets a `Context notice`, \
+                     e.g. `30%`. 0 never notices. Defaults to a share of the \
                      model's context window, or the server's token budget when the \
                      window is unknown.",
                     false,
+                    "ctx_limit",
+                    "tuning",
                     Some("n%"),
                     // Any 0-100 is accepted; the list is the points worth
                     // offering, not the ones allowed.
@@ -295,18 +308,9 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                         .collect(),
                     ),
                 ),
-                arg(
-                    "cwd",
-                    "Working directory for the session: where a new one is created, and \
-                     where an existing one is moved to. It must be a directory that \
-                     exists on the machine it names -- this one, or the remote's -- or \
-                     the command is refused; completion reads that machine's directories.",
-                    false,
-                    Some("path"),
-                    // The client lists the filesystem it sits on, which is a hint only.
-                    CompletionSource::Paths,
-                ),
-                arg(
+                // SPEC: `{[--remote <remote>](default: none) --cwd <cwd>}(sticky)` --
+                // the place bundle: where the session lives, as a unit.
+                bundle_arg(
                     "remote",
                     "Which machine this session's shells run on, named by a `[remotes.<name>]` \
                      table in this machine's `~/.agents/remotes.toml`. Omit for this \
@@ -317,6 +321,8 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                      paths and skills there, so what completes for it is what it can \
                      open.",
                     false,
+                    "remote",
+                    "place",
                     Some("name"),
                     // Exactly the tables this server was started with: `local` is
                     // what omitting the flag means, and naming it is refused.
@@ -327,6 +333,20 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                         names.extend(remotes.to_vec());
                         names
                     }),
+                ),
+                bundle_arg(
+                    "cwd",
+                    "Working directory for the session: where a new one is created, and \
+                     where an existing one is moved to. It must be a directory that \
+                     exists on the machine it names -- this one, or the remote's -- or \
+                     the command is refused; completion reads that machine's \
+                     directories. Required: name it, or set the sticky entry once.",
+                    true,
+                    "cwd",
+                    "place",
+                    Some("path"),
+                    // The client lists the filesystem it sits on, which is a hint only.
+                    CompletionSource::Paths,
                 ),
                 arg(
                     "must_create",
@@ -374,10 +394,11 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
             target: CommandTarget::Server,
             name: "del_session".into(),
             description: "Delete a session, its shells and its transcript.".into(),
-            args: vec![pos(
-                "session",
+            args: vec![kind_arg(
+                "name",
                 "Session to delete.",
                 true,
+                "session",
                 Some("name"),
                 CompletionSource::Sessions,
             )],
@@ -389,13 +410,18 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 "Stop the turn one session is running. The turn is dropped, not resumed on \
                       the next start. Detached jobs keep running."
                     .into(),
-            args: vec![pos(
-                "session",
-                "Session whose turn should stop.",
-                true,
-                Some("name"),
-                CompletionSource::Sessions,
-            )],
+            args: vec![{
+                let mut spec = pos(
+                    "session",
+                    "Session whose turn should stop.",
+                    true,
+                    Some("name"),
+                    CompletionSource::Sessions,
+                );
+                // Of the sticky entry `session`, like every session argument.
+                spec.kind = Some("session".into());
+                spec
+            }],
         },
         CommandSpec {
             target: CommandTarget::Server,
@@ -559,13 +585,6 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 .into(),
             args: vec![
                 pos(
-                    "session",
-                    "Session to read.",
-                    true,
-                    Some("name"),
-                    CompletionSource::Sessions,
-                ),
-                pos(
                     "range",
                     "Which rows, as a closed range of sequence numbers: `-1` the newest \
                      row, `-5:` the newest five, `5:10` rows 5 through 10, `:10` the first \
@@ -575,6 +594,14 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     false,
                     Some("begin:end"),
                     CompletionSource::None,
+                ),
+                kind_arg(
+                    "session",
+                    "Session to read.",
+                    true,
+                    "session",
+                    Some("name"),
+                    CompletionSource::Sessions,
                 ),
             ],
         },
@@ -590,7 +617,7 @@ fn arg(
     completions: CompletionSource,
 ) -> protocol::ArgSpec {
     sticky_arg(
-        arg_spec(name, description, required, false, value_hint, completions),
+        arg_spec(name, description, required, false, None, None, value_hint, completions),
         false,
     )
 }
@@ -604,8 +631,51 @@ fn pos(
     completions: CompletionSource,
 ) -> protocol::ArgSpec {
     sticky_arg(
-        arg_spec(name, description, required, true, value_hint, completions),
+        arg_spec(name, description, required, true, None, None, value_hint, completions),
         false,
+    )
+}
+
+/// A named argument a sticky entry fills: `kind` is the entry's key.
+fn kind_arg(
+    name: &str,
+    description: &str,
+    required: bool,
+    kind: &str,
+    value_hint: Option<&str>,
+    completions: CompletionSource,
+) -> protocol::ArgSpec {
+    arg_spec(
+        name,
+        description,
+        required,
+        false,
+        Some(kind),
+        None,
+        value_hint,
+        completions,
+    )
+}
+
+/// A bundle member: judged as a unit with the other members of `bundle`.
+fn bundle_arg(
+    name: &str,
+    description: &str,
+    required: bool,
+    kind: &str,
+    bundle: &str,
+    value_hint: Option<&str>,
+    completions: CompletionSource,
+) -> protocol::ArgSpec {
+    arg_spec(
+        name,
+        description,
+        required,
+        false,
+        Some(kind),
+        Some(bundle),
+        value_hint,
+        completions,
     )
 }
 
@@ -614,6 +684,8 @@ fn arg_spec(
     description: &str,
     required: bool,
     positional: bool,
+    kind: Option<&str>,
+    bundle: Option<&str>,
     value_hint: Option<&str>,
     completions: CompletionSource,
 ) -> protocol::ArgSpec {
@@ -622,6 +694,8 @@ fn arg_spec(
         description: description.into(),
         required,
         positional,
+        kind: kind.map(str::to_string),
+        bundle: bundle.map(str::to_string),
         value_hint: value_hint.map(str::to_string),
         completions,
         sticky: false,
@@ -744,9 +818,10 @@ async fn send_message(d: &Dispatch, args: &Args) -> Outcome {
     let Some(message) = args.get("message").cloned() else {
         return Outcome::err("send_message requires a message");
     };
-    let Some(name) = args.get("session").cloned() else {
+    let Some(name) = args.get("name").cloned() else {
         return Outcome::err(
-            "send_message requires a session; set a sticky `session` to avoid typing it",
+            "send_message requires a session; set the sticky `session` entry to avoid \
+             typing it",
         );
     };
     deliver(d, &name, message).await
@@ -839,7 +914,7 @@ pub(crate) async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcom
 }
 
 async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
-    let name = args["session"].clone();
+    let name = args["name"].clone();
     // A leading `@` is the harness's own namespace: a name a person could take
     // is a name the harness cannot trust.
     if let Some(refusal) = crate::monitor::reserved(&name) {
@@ -897,7 +972,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             }
         },
     };
-    let threshold = match args.get("context_limit") {
+    let threshold = match args.get("ctx_limit") {
         None => None,
         Some(raw) => match parse_percent(raw) {
             Ok(v) => Some(v),
@@ -908,7 +983,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     let context = entry.context.or(d.agent.default_context);
     if let (Some(percent), None) = (threshold, context) {
         return Outcome::err(format!(
-            "--context_limit {percent}% needs a context window to be a percentage of, and \
+            "--ctx_limit {percent}% needs a context window to be a percentage of, and \
              {} is not in the roster with a `context`",
             entry.model
         ));
@@ -1018,7 +1093,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     let mut changed = false;
     // Resolved here and stored, never inferred at display time, so the title and
     // the request read one word.
-    let level = match args.get("thinking_effort") {
+    let level = match args.get("thinking") {
         // Checked against the model this session runs on, so typos fail now.
         Some(raw) => match entry.reasoning_effort(raw) {
             Ok(level) => Some(level),
@@ -1169,10 +1244,10 @@ fn parse_percent(raw: &str) -> Result<u8, String> {
     let trimmed = raw.trim().trim_end_matches('%').trim();
     let value: u16 = trimmed
         .parse()
-        .map_err(|_| format!("--context_limit takes a percentage like `30%`, got {raw:?}"))?;
+        .map_err(|_| format!("--ctx_limit takes a percentage like `30%`, got {raw:?}"))?;
     if value > 100 {
         return Err(format!(
-            "--context_limit is a percentage of the context window, so it cannot exceed 100%; \
+            "--ctx_limit is a percentage of the context window, so it cannot exceed 100%; \
              got {raw}"
         ));
     }
@@ -1653,7 +1728,7 @@ async fn finish_delete(d: &Dispatch, name: &str, was_busy: bool, dropped: usize)
 }
 
 async fn del_session(d: &Dispatch, args: &Args) -> Outcome {
-    let name = args["session"].clone();
+    let name = args["name"].clone();
     let (was_busy, dropped) = prepare_delete(d, &name);
     finish_delete(d, &name, was_busy, dropped).await
 }

@@ -88,6 +88,8 @@ pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec>
                 description: "The session the tool runs as; its shells, its directory.".into(),
                 required: true,
                 positional: true,
+                kind: None,
+                bundle: None,
                 value_hint: Some("name".into()),
                 completions: protocol::CompletionSource::Sessions,
                 sticky: false,
@@ -103,6 +105,8 @@ pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec>
                         .to_string(),
                     required: required.contains(&name.as_str()),
                     positional: is_positional,
+                    kind: None,
+                    bundle: None,
                     value_hint: Some(
                         spec.get("type")
                             .and_then(Value::as_str)
