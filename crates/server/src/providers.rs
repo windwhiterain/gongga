@@ -24,6 +24,8 @@ pub struct Provider {
     /// lifetime nobody stated is not one to invent. See
     /// `docs/notes/server-prefix-cache.md`.
     pub cache_ttl_secs: Option<u64>,
+    /// Tiers this provider accepts on the wire, by the endpoint's spelling.
+    pub cache_ttl_tiers: HashMap<String, u64>,
     // No `key` here: a roster is a git checkout, and a key in one is a key in
     // git. Keys come from `~/.agents/keys.toml`.
     /// The variable that should hold the key instead, if one is named.
@@ -179,6 +181,8 @@ pub struct Entry {
     /// How long a cached prefix lives in the tier a request without a cache mode
     /// lands in; `None` if it states none.
     pub cache_ttl_secs: Option<u64>,
+    /// Tiers this provider accepts on the wire; empty means none selectable.
+    pub cache_ttl_tiers: HashMap<String, u64>,
     /// The roster's tier for this model, as written.
     pub tier: Option<String>,
 }
@@ -560,6 +564,7 @@ impl Catalog {
             builtin_tools: found.builtin_tools.clone(),
             price: found.price,
             cache_ttl_secs: provider.cache_ttl_secs,
+            cache_ttl_tiers: provider.cache_ttl_tiers.clone(),
             tier: found.tier.clone(),
         })
     }
@@ -652,6 +657,9 @@ struct FileProvider {
     /// How long a cached prefix survives at this provider, in seconds.
     #[serde(default)]
     cache_ttl_secs: Option<u64>,
+    /// Tiers that can be asked for on the wire, by the endpoint's spelling.
+    #[serde(default)]
+    cache_ttl_tiers: HashMap<String, u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -764,6 +772,7 @@ fn parse_value(value: toml::Value) -> Result<Vec<Provider>, toml::de::Error> {
                 id: p.id,
                 name,
                 cache_ttl_secs: p.cache_ttl_secs,
+                cache_ttl_tiers: p.cache_ttl_tiers,
                 key_env: p.key_env,
             }
         })

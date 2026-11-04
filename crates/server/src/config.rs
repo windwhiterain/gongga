@@ -1,5 +1,6 @@
 //! Configuration resolution: config file, then environment, then defaults.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -98,6 +99,12 @@ pub struct ModelConfig {
     pub measure: Option<crate::store::Store>,
     /// What the roster says this model charges, for the prefix cache's plan.
     pub price: Option<crate::providers::Price>,
+    /// The cache tier to ask for; `None` sends no directive.
+    pub cache_tier: Option<String>,
+    /// Tiers the roster says this provider accepts, by its API's spelling.
+    pub cache_tiers: HashMap<String, u64>,
+    /// Send a stable route affinity key, for a provider known to accept one.
+    pub cache_affinity: bool,
     /// Ask the API not to retain server-side state; we replay the transcript.
     pub store: bool,
     /// How long the provider may take to answer with response headers, the
@@ -271,6 +278,8 @@ struct FileModel {
     temperature: Option<f32>,
     max_output_tokens: Option<u32>,
     store: Option<bool>,
+    cache_tier: Option<String>,
+    cache_affinity: Option<bool>,
     headers_timeout_ms: Option<u64>,
     idle_timeout_ms: Option<u64>,
     max_retries: Option<u32>,
@@ -434,6 +443,15 @@ impl Config {
             api_key,
             measure: None,
             price: None,
+            cache_tier: env_or("GONGGA_CACHE_TIER").or(model_file.cache_tier),
+            cache_tiers: entry
+                .as_ref()
+                .map(|e| e.cache_ttl_tiers.clone())
+                .unwrap_or_default(),
+            cache_affinity: env_or("GONGGA_CACHE_AFFINITY")
+                .and_then(|v| v.parse().ok())
+                .or(model_file.cache_affinity)
+                .unwrap_or(false),
             temperature: model_file.temperature,
             max_output_tokens: model_file.max_output_tokens,
             store: model_file.store.unwrap_or(false),
@@ -667,6 +685,8 @@ impl ModelConfig {
         cfg.modalities = entry.modalities.clone();
         // And so does what it charges: the plan is priced by the model in use.
         cfg.price = entry.price;
+        // A tier belongs to the provider, not to the machine's default model.
+        cfg.cache_tiers = entry.cache_ttl_tiers.clone();
         cfg
     }
 }

@@ -53,6 +53,15 @@ pub struct LlmClient {
     builtin_tools: Vec<String>,
     /// What the roster says this model takes in; empty is "unstated".
     modalities: Vec<String>,
+    /// The cache tier to ask for, already checked against the roster's tiers.
+    ///
+    /// # Invariant
+    ///
+    /// `None` unless the roster states this provider can be asked for that tier:
+    /// a field the endpoint ignores would price the plan for the wrong tier.
+    cache_tier: Option<String>,
+    /// Route affinity, off unless a machine states its endpoint accepts it.
+    cache_affinity: bool,
 }
 
 /// Where a request's input comes from: one session's transcript, up to a seq pinned
@@ -124,6 +133,11 @@ impl LlmClient {
             retry_ceiling: cfg.retry_ceiling,
             builtin_tools: cfg.builtin_tools.clone(),
             modalities: cfg.modalities.clone(),
+            cache_tier: cfg
+                .cache_tier
+                .clone()
+                .filter(|tier| cfg.cache_tiers.contains_key(tier)),
+            cache_affinity: cfg.cache_affinity,
         })
     }
 
@@ -141,6 +155,12 @@ impl LlmClient {
     /// Whether the roster says this model can look at a picture.
     pub fn accepts_image(&self) -> bool {
         crate::config::accepts_image(&self.modalities)
+    }
+
+    /// The cache tier this request will ask for, when one was configured and the
+    /// roster says the provider offers it.
+    pub fn cache_tier(&self) -> Option<&str> {
+        self.cache_tier.as_deref()
     }
 
     /// The Files API for this connection: what a request body uploads its pictures to.
@@ -173,13 +193,14 @@ impl LlmClient {
         index: Option<&str>,
         tail: Option<&str>,
         source: &RequestSource,
+        session: &str,
         tools: &[ToolDefinition],
         effort: Option<&str>,
         cancel: CancellationToken,
     ) -> mpsc::Receiver<LlmEvent> {
         let (tx, rx) = mpsc::channel(256);
         let build_started = Instant::now();
-        let head = self.build_head(instructions, index, tail, tools, effort);
+        let head = self.build_head(instructions, index, tail, session, tools, effort);
         // Owned, because the attempt below records it after this body is gone.
         let effort_sent = effort.map(str::to_string);
         let build_head_ms = build_started.elapsed().as_millis() as u64;
@@ -361,6 +382,7 @@ impl LlmClient {
         instructions: &str,
         index: Option<&str>,
         card: Option<&str>,
+        session: &str,
         tools: &[ToolDefinition],
         effort: Option<&str>,
     ) -> Vec<u8> {
@@ -369,6 +391,14 @@ impl LlmClient {
             "stream": true,
             "store": self.store,
         });
+        // Invariant: only a tier the roster names may be sent.
+        if let Some(tier) = &self.cache_tier {
+            body["prompt_cache_options"] = json!({"mode": "implicit", "ttl": tier});
+        }
+        // A session name is stable; a random id would scatter the requests.
+        if self.cache_affinity {
+            body["prompt_cache_key"] = json!(session);
+        }
         // The index joins the prose: both change only when a file does. The card is
         // stamped once, so the two lifetimes differ.
         let mut instructions = instructions.to_string();
@@ -1068,6 +1098,9 @@ pub struct Usage {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct InputTokens {
     pub cached_tokens: Option<u64>,
+    /// Often zero even on a cold write; see `docs/notes/server-llm.md`.
+    #[serde(default)]
+    pub cache_write_tokens: Option<u64>,
 }
 
 impl Usage {
@@ -1077,6 +1110,16 @@ impl Usage {
         self.input_tokens_details
             .as_ref()
             .and_then(|d| d.cached_tokens)
+    }
+
+    /// Tokens billed at the fresh rate: the part a write is charged on.
+    ///
+    /// # Invariant
+    ///
+    /// Both counts must come from the same answer; a provider that reports one
+    /// and not the other gives no measurement rather than half of one.
+    pub fn uncached_tokens(&self) -> Option<u64> {
+        Some(self.input_tokens?.saturating_sub(self.cached_tokens()?))
     }
 }
 

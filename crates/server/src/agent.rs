@@ -559,9 +559,16 @@ impl Agent {
             .as_ref()
             .and_then(|entry| entry.cache_ttl_secs)
             .map(|secs| secs.saturating_mul(1_000));
+        // A measured rate wins; the configured one answers until there is a row.
+        let observed = self
+            .store
+            .cache_hit_posterior(model)
+            .ok()
+            .flatten()
+            .map(|rate| rate.clamp(0.0, 1.0));
         crate::prefix_cache::Rates {
             price: entry.as_ref().and_then(|entry| entry.price),
-            invalid: self.cache_invalid_rate,
+            invalid: observed.unwrap_or(self.cache_invalid_rate),
             ttl_ms: self.cache_ttl_ms.or(stated).unwrap_or(0),
         }
     }
@@ -721,6 +728,7 @@ impl Agent {
             prompt.index.as_deref(),
             prompt.tail.as_deref(),
             &source,
+            name,
             &definitions,
             effort,
             cancel.clone(),
@@ -913,6 +921,21 @@ impl Agent {
                     };
                     if let Some(u) = &usage {
                         let cached = u.cached_tokens();
+                        // Read before this answer is stored: the last input is
+                        // the largest prefix this one could hit.
+                        let expected = self.store.context_tokens(id).ok();
+                        let gap_ms =
+                            self.store.last_usage_at(id).ok().flatten().map(|at| {
+                                crate::store::now_millis().saturating_sub(at).max(0) as u64
+                            });
+                        let hit_ratio = match (cached, expected) {
+                            (Some(hit), Some(size)) if size > 0 => Some(hit as f64 / size as f64),
+                            _ => None,
+                        };
+                        let cache_write = u
+                            .input_tokens_details
+                            .as_ref()
+                            .and_then(|d| d.cache_write_tokens);
                         tracing::info!(
                             session = %name,
                             input = u.input_tokens.unwrap_or(0),
@@ -932,6 +955,12 @@ impl Agent {
                                 "latency_ms": requested.elapsed().as_millis() as u64,
                                 "input": u.input_tokens,
                                 "cached": cached,
+                                "uncached": u.uncached_tokens(),
+                                "expected": expected,
+                                "hit_ratio": hit_ratio,
+                                "gap_ms": gap_ms,
+                                "cache_tier": llm.cache_tier(),
+                                "cache_write": cache_write,
                                 "output": u.output_tokens,
                                 "total": u.total_tokens,
                                 "ttft_ms": ttft_ms,

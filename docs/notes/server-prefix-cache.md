@@ -186,6 +186,25 @@ When the roster states no usable pair, the scale falls back to
 plan made at `1.0` never chooses a warm chain, so every call would append a node and
 the layout would grow a branch per request while warming nothing.
 
+## a measured `invalid` replaces the hyperparameter
+
+`cache_invalid_rate` was the only claim in `Rates` that came from this machine
+rather than the roster: a guess about how often any provider drops a prefix.
+`Agent::rates()` now asks `Store::cache_hit_posterior(model)` first, averaging
+`1 - hit_ratio` over this home's own `usage` event rows. A row counts only when it
+has both a cached count and a non-zero expected prefix -- the previous answer's
+`input_tokens`, which is the largest prefix this one could hit because the
+transcript only grows and the prompt row is replayed verbatim. With no such row the
+configured value still answers, so a new home's first request is priced exactly as
+before. The formula above is unchanged; only the source of `p` moved.
+
+Those rows also carry `uncached`, `gap_ms`, `cache_tier` and `cache_write`, so a
+tier's window can be checked against the gaps it actually had to cover. No
+automatic tier choice reads them yet: a 5m tier was measured still hitting in full
+after 330 seconds on one provider, so the "short tier re-sends the prefix" term in
+an expected-cost comparison has no observed probability to use. See
+`.agents/notes/2026-11-04-prefix-cache-simulation-and-explicit-tiers.md`.
+
 ## the size is real tokens, not bytes
 
 `Item::tokens` is what the provider counted, and it comes from the provider: every

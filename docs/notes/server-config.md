@@ -258,3 +258,17 @@ the reader's" is enforced by the same rule that governs the skills. The historic
 qualifier -- a first start minted a key into config.toml, so the file that had to
 explain the fields always looked already-answered -- died with the key moving next
 door to `server.key`.
+
+## cache_tier / cache_affinity
+
+`[model] cache_tier` (or `GONGGA_CACHE_TIER`) names the cache tier to ask for. It
+is a request, not a command: `LlmClient::new` keeps it only when the roster's
+`cache_ttl_tiers` says this provider offers it, because a field an endpoint ignores
+would price the plan for a tier that was never in force. Absent means no cache
+directive at all, which lands in the provider's default tier -- still the only
+tier `docs/reference/prefix-cache.md` allows a plan to price.
+
+`[model] cache_affinity` (or `GONGGA_CACHE_AFFINITY`) sends `prompt_cache_key` with
+the session name. It is off by default: the key creates no cache, costs nothing,
+and only raises the chance a request lands where its prefix already is, but not
+every endpoint accepts the field.
