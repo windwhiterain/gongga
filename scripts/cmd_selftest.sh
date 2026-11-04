@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The cmd surface per the latest SPEC, on real processes: positional binding,
-# diagnosis, the tool commands, and a subscription that runs code in the
+# The cmd surface per the latest SPEC, on real processes: binding by order and
+# flag, diagnosis, the tool commands, and a subscription that runs code in the
 # session's own named interpreter.
 #
 # One line of verdict at the end; `-v` prints each check.
@@ -107,20 +107,20 @@ ok "send_message main <message> (both positional)" $?
 
 # 3. Diagnosis: an unknown flag names the command's syntax.
 bad=$("${cli[@]}" send_message main hi --mesage x 2>&1)
-[[ "$bad" == *"has no argument --mesage"* && "$bad" == *"<session> <message>"* ]]
+[[ "$bad" == *"has no argument --mesage"* && "$bad" == *"--name <name> --message <text>"* ]]
 ok "unknown flag diagnosed with the signature" $?
 say "$bad"
 
 # 4. Diagnosis: an extra word is refused with the signature.
 extra=$("${cli[@]}" del_session main stray 2>&1)
-[[ "$extra" == *"unexpected argument \"stray\""* && "$extra" == *"<session>"* ]]
-ok "extra positional diagnosed" $?
+[[ "$extra" == *"unexpected argument \"stray\""* && "$extra" == *"--name <name>"* ]]
+ok "extra word diagnosed" $?
 say "$extra"
 
-# 5. get_messages with a positional range reads the transcript back.
-got=$("${cli[@]}" get_messages main 2>&1)
+# 5. get_messages names its session and reads the transcript back.
+got=$("${cli[@]}" get_messages --session main 2>&1)
 [[ "$got" == *'hello there'* ]]
-ok "get_messages main (omitted range is the whole transcript)" $?
+ok "get_messages --session main (omitted range is the whole transcript)" $?
 
 # 6. The bash tool as a command, in the session's persistent shell.
 ran=$("${cli[@]}" bash main "echo from-cmd > cmd-selftest.txt" 2>&1)
@@ -184,14 +184,14 @@ say "$inter"
 
 # 15. The operation the window's gestures use crosses the wire: the protocol
 #     carries it beside the commands, and the server answers it like one.
-"${cli[@]}" set_session doomed --cwd "$root" >/dev/null 2>&1
+"${cli[@]}" set_session doomed fake/flash-fake --cwd "$root" >/dev/null 2>&1
 probe=$(python "$root/scripts/operation_probe.py" --port "$port" --key "$(cat "$home/server.key")" delete_session --session doomed 2>&1)
 [[ "$probe" == *'"ok":true'* ]]
 ok "the delete_session operation is answered" $?
 say "$probe"
 
 # 16. The session it deleted is gone.
-left=$("${cli[@]}" get_messages doomed 2>&1)
+left=$("${cli[@]}" get_messages --session doomed 2>&1)
 [[ "$left" == *"no session"* || "$left" == *'"ok":false'* ]]
 ok "the session the operation deleted is gone" $?
 
