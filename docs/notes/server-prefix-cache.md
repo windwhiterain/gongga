@@ -198,12 +198,12 @@ transcript only grows and the prompt row is replayed verbatim. With no such row 
 configured value still answers, so a new home's first request is priced exactly as
 before. The formula above is unchanged; only the source of `p` moved.
 
-Those rows also carry `uncached`, `gap_ms`, `cache_tier` and `cache_write`, so a
-tier's window can be checked against the gaps it actually had to cover. No
-automatic tier choice reads them yet: a 5m tier was measured still hitting in full
-after 330 seconds on one provider, so the "short tier re-sends the prefix" term in
-an expected-cost comparison has no observed probability to use. See
-`.agents/notes/2026-11-04-prefix-cache-simulation-and-explicit-tiers.md`.
+Those rows also carry `uncached`, `gap_ms`, `cache_tier` and `cache_write`. The
+per-request tier choice in `cache_tier::choose` reads the gaps to price a window,
+and reads `cache_tier` back with `hit_ratio` to replace the roster's stated window
+with an observed `P(hit | tier, gap)` once this home has rows for that bucket.
+Until then a tier's window is the roster's number used as a hard step, never a
+grace period invented here. See `docs/notes/server-cache-tier.md`.
 
 ## the size is real tokens, not bytes
 

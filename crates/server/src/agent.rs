@@ -51,6 +51,8 @@ pub struct Agent {
     pub default_context: Option<u64>,
     pub tools: Arc<ToolRegistry>,
     pub bus: EventBus,
+    /// Sessions whose next turn is the one long-tier keepalive.
+    pub keepalive: std::sync::Mutex<std::collections::HashSet<String>>,
     /// How often a cached prefix is assumed to be gone: the plan's hyperparameter.
     pub cache_invalid_rate: f64,
     /// This machine's own lifetime for a cached prefix, in millis; `None` leaves the
@@ -201,6 +203,8 @@ impl Agent {
         let mut step: u32 = 0;
         // The step whose refusal was already answered with a row.
         let mut repaired: Option<u32> = None;
+        // Taken once, so every step of a keepalive turn sends the long tier.
+        let keepalive = self.take_keepalive(&name);
 
         let outcome = loop {
             // A `cancel` ends the turn here, where it can be stored whole.
@@ -242,6 +246,7 @@ impl Agent {
                 llm: &llm,
                 effort: effort.as_deref(),
                 cwd: &cwd,
+                keepalive,
             };
             match self.step(session, id, &name, turn, &cancel, &attempt).await {
                 Ok(StepResult::Finished) => {
@@ -545,6 +550,120 @@ impl Agent {
         (text.len() as f64 * ratio).round().max(1.0) as usize
     }
 
+    /// Whether the turn about to start is the one long-tier keepalive.
+    pub(crate) fn is_keepalive(&self, session: &str) -> bool {
+        self.keepalive
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(session)
+    }
+
+    /// Marks a session's next turn as the long-tier keepalive.
+    pub(crate) fn mark_keepalive(&self, session: &str) {
+        self.keepalive
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session.to_string());
+    }
+
+    /// Drops a keepalive mark whose message could not be delivered.
+    pub(crate) fn unmark_keepalive(&self, session: &str) {
+        self.keepalive
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(session);
+    }
+
+    /// Takes the one long-tier keepalive mark for a session, if it is there.
+    fn take_keepalive(&self, session: &str) -> bool {
+        self.keepalive
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(session)
+    }
+
+    /// The tier this turn sends: the shortest declared window, or the longest
+    /// for the one keepalive turn.
+    ///
+    /// # Invariant
+    ///
+    /// A machine that named its own tier keeps it. Otherwise only a tier the
+    /// roster declares may be sent, so an ignored wire field is never priced.
+    fn cache_tier(&self, llm: &LlmClient, long: bool) -> Option<String> {
+        if let Some(tier) = llm.cache_tier() {
+            return Some(tier.to_string());
+        }
+        let entry = self.providers.place(llm.model());
+        let tiers = entry.as_ref().map(|entry| &entry.cache_ttl_tiers)?;
+        let picked = if long {
+            tiers.iter().max_by_key(|(_, secs)| **secs)
+        } else {
+            tiers.iter().min_by_key(|(_, secs)| **secs)
+        }?;
+        Some(picked.0.clone())
+    }
+
+    /// How far into the short tier's window the interrupt and keepalive fire.
+    ///
+    /// # Invariant
+    ///
+    /// The margin is a share of the stated window, not an invented grace period:
+    /// firing at the last instant would let lazy eviction win the race.
+    pub(crate) fn cache_fire_after_ms(&self, model: &str) -> u64 {
+        let window = self.cache_ttl_ms.or_else(|| {
+            self.providers
+                .place(model)
+                .as_ref()
+                .and_then(|entry| entry.cache_ttl_secs)
+                .map(|secs| secs.saturating_mul(1_000))
+        });
+        let pct = 100_u64.saturating_sub(self.model_config.cache_margin_pct as u64);
+        window.unwrap_or(0).saturating_mul(pct) / 100
+    }
+
+    /// Runs one tool only until the short tier's window is nearly spent.
+    ///
+    /// # Invariant
+    ///
+    /// The interrupt cancels a child token, never the turn: a tool that was
+    /// waiting returns with its background jobs still running, and the next
+    /// request goes out while the prefix is still warm. See SPEC, `check_bash`.
+    async fn run_before_cache_expiry(
+        &self,
+        name: &str,
+        args: serde_json::Value,
+        ctx: &crate::tools::ToolContext,
+        cancel: &tokio_util::sync::CancellationToken,
+        model: &str,
+        session_id: i64,
+    ) -> crate::tools::ToolOutcome {
+        let fire_after = self.cache_fire_after_ms(model);
+        if fire_after == 0 || !self.model_config.cache_keepalive {
+            return self.tools.run(name, args, ctx).await;
+        }
+        let since = self
+            .store
+            .last_usage_at(session_id)
+            .ok()
+            .flatten()
+            .map(|at| crate::store::now_millis().saturating_sub(at).max(0) as u64)
+            .unwrap_or(0);
+        let remaining = fire_after.saturating_sub(since);
+        let run = self.tools.run(name, args, ctx);
+        tokio::pin!(run);
+        if remaining == 0 {
+            cancel.cancel();
+            return run.await;
+        }
+        tokio::select! {
+            outcome = &mut run => outcome,
+            _ = tokio::time::sleep(std::time::Duration::from_millis(remaining)) => {
+                cancel.cancel();
+                run.await
+            }
+        }
+    }
+
     /// What a plan for `model` is priced at.
     ///
     /// # Invariant
@@ -695,6 +814,7 @@ impl Agent {
             llm,
             effort,
             cwd,
+            keepalive,
         } = *attempt;
         let generation = self.store.context_generation(id)?;
         let phase_started = std::time::Instant::now();
@@ -723,6 +843,8 @@ impl Agent {
         // then what came out over the time after.
         let mut first_token: Option<std::time::Instant> = None;
         phases.llm_started = Some(requested);
+        // Short for every request, long for the one keepalive turn. See SPEC.
+        let tier = self.cache_tier(llm, keepalive);
         let mut rx = llm.stream(
             &prompt.instructions,
             prompt.index.as_deref(),
@@ -731,6 +853,7 @@ impl Agent {
             name,
             &definitions,
             effort,
+            tier.as_deref(),
             cancel.clone(),
         );
 
@@ -959,7 +1082,7 @@ impl Agent {
                                 "expected": expected,
                                 "hit_ratio": hit_ratio,
                                 "gap_ms": gap_ms,
-                                "cache_tier": llm.cache_tier(),
+                                "cache_tier": tier.as_deref(),
                                 "cache_write": cache_write,
                                 "output": u.output_tokens,
                                 "total": u.total_tokens,
@@ -1170,6 +1293,8 @@ impl Agent {
         });
 
         let machine = session.owner();
+        // SPEC: a timed-out tool leaves its job running; only the wait is dropped.
+        let tool_cancel = cancel.child_token();
         let ctx = ToolContext {
             session: name.to_string(),
             call_id: call_id.clone(),
@@ -1181,13 +1306,13 @@ impl Agent {
             remote: session.remote_name(),
             detached: self.detached.clone(),
             events: Some(tx),
-            cancel: cancel.clone(),
+            cancel: tool_cancel.clone(),
             store: self.store.clone(),
             cwd: session.cwd(),
             vision: llm.vision(crate::prompts::shared()),
             inbox: session.inbox_signal(),
             rates: self.rates(&model),
-            model,
+            model: model.clone(),
             closing: session.closing_signal(),
         };
         let run_started = std::time::Instant::now();
@@ -1199,7 +1324,9 @@ impl Agent {
             .get("max_output")
             .and_then(serde_json::Value::as_u64)
             .map(|max| max as usize);
-        let outcome = self.tools.run(&tool, arguments, &ctx).await;
+        let outcome = self
+            .run_before_cache_expiry(&tool, arguments, &ctx, &tool_cancel, &model, id)
+            .await;
         let run_ms = run_started.elapsed().as_millis() as u64;
         let attach_started = std::time::Instant::now();
         // Whose pictures these are: the shell that printed them. See
@@ -1450,6 +1577,8 @@ enum StepResult {
 struct Attempt<'a> {
     number: u32,
     llm: &'a LlmClient,
+    /// The one long-tier keepalive turn, so every step sends the same tier.
+    keepalive: bool,
     /// How hard the model should think, when the session asked for a level.
     effort: Option<&'a str>,
     /// Where the session's shell stands, which the row records so a move is seen.

@@ -575,3 +575,17 @@ picture is here, a `remote_bash` call's is there. The row keeps the text as the 
 words and the copy as the record; nothing is uploaded when the row is written, because
 the provider's file is resolved when a request is built, so a replay months later still
 has something to name.
+
+**The short tier's deadline.** `run_before_cache_expiry` gives every tool a child
+of the turn's cancel token and waits only until `window * (100 - margin_pct) / 100`
+since the last usage row. At that point it cancels the *child*, never the turn:
+`check_bash` and `wait` stop waiting and return with their background jobs still
+running, and the next request goes out before the prefix goes cold. This is SPEC's
+`check_bash` timeout, applied to every tool rather than only to a shell. A roster
+that states no window leaves `fire_after` at zero and the tool runs as before.
+
+`cache_tier` picks the shortest declared tier for every step and the longest for
+the one keepalive turn; a machine's explicit `cache_tier` wins over both. The
+chosen spelling is passed into `llm.stream`, and the `usage` row records what was
+actually sent -- not the client's static setting -- so the observation layer sees
+the tier that was in force.

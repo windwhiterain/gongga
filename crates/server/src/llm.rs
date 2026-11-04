@@ -64,6 +64,8 @@ pub struct LlmClient {
     cache_affinity: bool,
     /// Pin the inference instance with an `X-Session-ID` header.
     cache_session_header: bool,
+    /// Tiers the roster names; the last check before a directive goes on the wire.
+    cache_tiers: Vec<String>,
 }
 
 /// Where a request's input comes from: one session's transcript, up to a seq pinned
@@ -141,6 +143,7 @@ impl LlmClient {
                 .filter(|tier| cfg.cache_tiers.contains_key(tier)),
             cache_affinity: cfg.cache_affinity,
             cache_session_header: cfg.cache_session_header,
+            cache_tiers: cfg.cache_tiers.keys().cloned().collect(),
         })
     }
 
@@ -199,11 +202,20 @@ impl LlmClient {
         session: &str,
         tools: &[ToolDefinition],
         effort: Option<&str>,
+        cache_tier: Option<&str>,
         cancel: CancellationToken,
     ) -> mpsc::Receiver<LlmEvent> {
         let (tx, rx) = mpsc::channel(256);
         let build_started = Instant::now();
-        let head = self.build_head(instructions, index, tail, session, tools, effort);
+        let head = self.build_head(
+            instructions,
+            index,
+            tail,
+            session,
+            tools,
+            effort,
+            cache_tier,
+        );
         let session_header = self.cache_session_header.then(|| session.to_string());
         // Owned, because the attempt below records it after this body is gone.
         let effort_sent = effort.map(str::to_string);
@@ -390,14 +402,18 @@ impl LlmClient {
         session: &str,
         tools: &[ToolDefinition],
         effort: Option<&str>,
+        cache_tier: Option<&str>,
     ) -> Vec<u8> {
         let mut body = json!({
             "model": self.model_name,
             "stream": true,
             "store": self.store,
         });
-        // Invariant: only a tier the roster names may be sent.
-        if let Some(tier) = &self.cache_tier {
+        // Invariant: only a roster-declared tier may be sent; per-request wins.
+        let directive = cache_tier
+            .or(self.cache_tier.as_deref())
+            .filter(|tier| self.cache_tiers.iter().any(|name| name.as_str() == *tier));
+        if let Some(tier) = directive {
             body["prompt_cache_options"] = json!({"mode": "implicit", "ttl": tier});
         }
         // A session name is stable; a random id would scatter the requests.

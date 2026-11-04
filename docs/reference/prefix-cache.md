@@ -137,9 +137,13 @@ The same shape answers the other two:
 
 ## What this server buys today
 
-It sends **no cache directive**: no `cache_control`, no `caching`, no `expire_at`, no
-`prompt_cache_options`, no `prompt_cache_key`. So the tier in force is always the
-provider's default, and that is the only tier a plan may price:
+It used to send **no cache directive**. It now sends the shortest tier the roster
+declares on every request, and one long-tier keepalive when a turn's short window
+is nearly spent; `cache_ttl_tiers` is the only list it may choose from. Tool calls
+are interrupted before that window ends rather than priced after it, and the
+affinity key and `X-Session-ID` are separate opt-in switches. See
+`docs/notes/server-commands.md`. The table below describes what each tier costs
+and what a provider leaves on the table, not a per-model decision this server makes:
 
 | provider | tier in force | paid | left on the table |
 | --- | --- | --- | --- |
