@@ -144,6 +144,14 @@ pub enum Event {
     ToolAnswer(ToolAnswerEvent),
     /// The set of sessions changed.
     Sessions { sessions: Vec<SessionInfo> },
+    /// The models a request could run on here, or what one of them takes, changed.
+    ///
+    /// # Invariant
+    ///
+    /// The whole table, never a delta: the roster is one file a person edits, and
+    /// a reader that applied differences would have to know what it missed while
+    /// it was away.
+    Models { models: Vec<ModelInfo> },
     /// A session's run state changed.
     Status {
         session: String,
@@ -194,7 +202,10 @@ impl Event {
             Event::Status { session, .. } => Some(session.as_str()),
             Event::Usage(e) => Some(e.session.as_str()),
             Event::Record { session, .. } => session.as_deref(),
-            Event::Cmd { .. } | Event::CmdResult { .. } | Event::Sessions { .. } => None,
+            Event::Cmd { .. }
+            | Event::CmdResult { .. }
+            | Event::Sessions { .. }
+            | Event::Models { .. } => None,
             Event::Log { .. } | Event::Quota(_) => None,
         }
     }
@@ -216,6 +227,7 @@ impl Event {
             Event::ToolCall(_) => "tool_call",
             Event::ToolAnswer(_) => "tool_answer",
             Event::Sessions { .. } => "sessions",
+            Event::Models { .. } => "models",
             Event::Status { .. } => "status",
             Event::Log { .. } => "log",
             Event::Usage(_) => "usage",

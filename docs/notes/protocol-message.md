@@ -258,6 +258,18 @@ model.
 shell says it is, not where the session was placed, because a tool reads that
 directory and a front-end completing a value has to read the same one.
 
+## Event::Models
+
+The roster a client completes from, republished when the file changes. The whole table
+travels, never a difference: `providers.toml` is one file a person edits, and a reader
+applying deltas would have to know what it missed while it was away -- there is no such
+state on the wire.
+
+It is sent after the greeting, which already carries the same list, for the window that
+stays connected while the file is edited. Nothing else in the client changes: the
+`--model` and `--thinking` completions read the table, so the next completion offers what
+the file says now.
+
 ## Quota
 
 SPEC's `active_quota` row on the wire: the provider, the three window shares, a

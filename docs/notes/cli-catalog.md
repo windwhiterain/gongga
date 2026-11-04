@@ -137,8 +137,11 @@ offers models. A slot whose source is `None` offers nothing, which is how
 ## models, sticky_model, and the two sources that read them
 
 `Catalog::set_models` keeps the greeting's table as published, and `sticky_model` holds
-the sticky `model` value -- both set on every greeting, and the sticky one again on
-every sticky change, beside the names `sync_sticky` already refreshes. A tuning value is
+the sticky `model` value -- both set on every greeting, the sticky one again on every
+sticky change beside the names `sync_sticky` already refreshes, and the table again
+whenever the server republishes it (`Event::Models`, sent when `providers.toml` is
+edited). So a window that stays open completes from the roster as it is now, not as it
+was when the window connected. A tuning value is
 worth nothing on its own: `--thinking high` means one thing on a model that publishes
 three levels and another on one that publishes five, so the value's list has to ask
 which model the line runs on.
