@@ -108,7 +108,16 @@ join an existing one.
 SPEC's two bullets are one rule here: a missing non-optional argument is
 filled from its entry, and a missing optional argument takes the entry as its
 initial value. Each argument fills independently -- `--model` named leaves the
-sticky `thinking` in place, where a bundle would have dropped it. An argument
+sticky `thinking` in place, where a bundle would have dropped it.
+
+One entry does not always fit. A level remembered for one model is not a level
+another model takes: `longcat/LongCat-2.5` publishes `on`/`off`, so a sticky
+`thinking = low` would fail every `set_session` that names it -- a command with
+nothing wrong with it, refused over a value the caller did not type here. So the
+client drops a filled value the model refuses and says so in one line; a value
+the caller *did* type is sent as typed and judged by the server, because that one
+is a statement rather than a remembered default. See `refused_by_model` in
+`docs/notes/cli-catalog.md`. An argument
 no entry names keeps the command's own initial, applied where the command
 runs (SPEC spells the initials: `--cwd` defaults to `.`, `--ctx_limit` to a
 70% share, and so on), and a required argument with neither is left for the

@@ -157,6 +157,24 @@ sent, so nothing in the union can be refused, and a popup that offered nothing w
 this client inventing a restriction the roster never stated. `THINKING_DEFAULT` goes on
 the end of either list.
 
+## refused_by_model
+
+A sticky entry is a remembered default, and a default that cannot apply is not
+applied: the same rule `Entry::level_in_force` already follows on the server, where
+a stored level the model no longer publishes is ignored rather than refused. The
+client can ask it now because the greeting carries the model table --
+`refused_by_model` resolves the argument the way the popup would, reports the values
+the model does not take, and the command path drops exactly those it filled.
+
+Measured only where the source *is* the accepted set. `ModelLevels` publishes what
+the model takes and nothing else, so absence means refusal; every other source says
+what is worth offering rather than what is allowed -- the `ctx_limit` list is ten
+percentages, while `50` is a perfectly good value -- and gating a fill on one of
+those would drop values the server accepts.
+
+A value the caller typed never reaches this: it is the difference between a
+remembered default and a statement, and only the statement is worth a refusal.
+
 ## resolve
 
 `depth` exists for the single case that points back into the catalog: a value

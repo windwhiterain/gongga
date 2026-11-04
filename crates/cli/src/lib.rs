@@ -1277,7 +1277,22 @@ impl Client {
         };
         // Typed arguments win: a sticky fills only a slot still empty, the
         // same rule the flag spelling had.
+        let typed: Vec<String> = args.keys().cloned().collect();
         self.sticky.fill(Some(&spec), &mut args);
+        // A filled value the model refuses is left out: a default, not a statement.
+        let line = format!("/{}", tokens.join(" "));
+        for (name, value) in self.catalog.refused_by_model(&line, &args) {
+            if typed.contains(&name) {
+                continue;
+            }
+            args.remove(&name);
+            sink.note(
+                LineKind::System,
+                &format!(
+                    "sticky {name} = {value} is not one this model takes; left to the model's own"
+                ),
+            );
+        }
         let missing: Vec<&str> = spec
             .args
             .iter()

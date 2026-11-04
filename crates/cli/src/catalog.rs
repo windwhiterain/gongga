@@ -9,7 +9,7 @@ use std::sync::{Arc, RwLock};
 use crate::commands::installed_skills;
 use crate::complete::{Candidate, Completer, token_bounds};
 use protocol::{
-    ArgSpec, CommandSpec, CommandTarget, CompletionSource, ModelInfo, Reference, SessionInfo,
+    ArgSpec, Args, CommandSpec, CommandTarget, CompletionSource, ModelInfo, Reference, SessionInfo,
 };
 
 /// A catalog that can be swapped while the TUI holds a reference to it.
@@ -75,6 +75,7 @@ struct Inner {
 }
 
 /// Where one input line's relative values are read, and how.
+#[derive(Clone)]
 struct Place {
     /// The directory: the line's session's own, or the one the server runs in.
     dir: PathBuf,
@@ -247,6 +248,60 @@ impl Catalog {
         self.read().paths_version
     }
 
+    /// Everything a completion reads, for a line whose words are already split.
+    fn snapshot(&self, words: &[String]) -> Snapshot {
+        let (all, sessions, sticky, models, default_model, message_session) = {
+            let inner = self.read();
+            (
+                inner.all(),
+                inner.sessions.clone(),
+                inner.sticky_names.clone(),
+                inner.models.clone(),
+                inner.default_model.clone(),
+                inner.message_session.clone(),
+            )
+        };
+        Snapshot {
+            all,
+            sessions,
+            sticky,
+            models,
+            default_model,
+            message_session,
+            place: self.place(words),
+        }
+    }
+
+    /// The arguments of this line whose value the model it runs on would refuse.
+    ///
+    /// # Invariant
+    ///
+    /// Measured only where the source *is* the accepted set: `ModelLevels`
+    /// publishes exactly what a model takes, while every other source says what is
+    /// worth offering rather than what is allowed. See `docs/notes/cli-catalog.md`.
+    pub fn refused_by_model(&self, line: &str, args: &Args) -> Vec<(String, String)> {
+        let words: Vec<String> = shell_words::split(line).unwrap_or_default();
+        let snapshot = self.snapshot(&words);
+        let ctx = snapshot.ctx(self);
+        let Some(spec) = words
+            .first()
+            .map(|c| c.trim_start_matches('/'))
+            .and_then(|c| ctx.all.iter().find(|s| s.name == c))
+        else {
+            return Vec::new();
+        };
+        spec.args
+            .iter()
+            .filter(|a| matches!(a.completions, CompletionSource::ModelLevels))
+            .filter_map(|a| {
+                let value = args.get(&a.name)?;
+                let offered = resolve(&a.completions, "", &ctx, &words, 0);
+                let taken = offered.iter().any(|c| &c.insert == value);
+                (!taken).then(|| (a.name.clone(), value.clone()))
+            })
+            .collect()
+    }
+
     /// The sticky arguments that exist, for the source the server names.
     pub fn set_sticky_names(&self, names: &[String]) {
         self.write().sticky_names = names.to_vec();
@@ -396,6 +451,32 @@ struct Ctx<'a> {
     catalog: &'a Catalog,
 }
 
+/// Every source a completion reads, taken under the lock and held together.
+struct Snapshot {
+    all: Vec<CommandSpec>,
+    sessions: Vec<SessionInfo>,
+    sticky: Vec<String>,
+    models: Vec<ModelInfo>,
+    default_model: Option<String>,
+    message_session: Option<String>,
+    place: Place,
+}
+
+impl Snapshot {
+    fn ctx<'a>(&'a self, catalog: &'a Catalog) -> Ctx<'a> {
+        Ctx {
+            sessions: &self.sessions,
+            sticky: &self.sticky,
+            models: &self.models,
+            default_model: self.default_model.as_deref(),
+            message_session: self.message_session.as_deref(),
+            place: self.place.clone(),
+            all: &self.all,
+            catalog,
+        }
+    }
+}
+
 impl Completer for Catalog {
     fn wants(&self) -> bool {
         !self.read().wanted.is_empty()
@@ -403,17 +484,6 @@ impl Completer for Catalog {
 
     fn complete(&self, line: &str, cursor: usize) -> Vec<Candidate> {
         let (_, _, token) = token_bounds(line, cursor);
-        let (all, sessions, sticky, models, default_model, message_session) = {
-            let inner = self.read();
-            (
-                inner.all(),
-                inner.sessions.clone(),
-                inner.sticky_names.clone(),
-                inner.models.clone(),
-                inner.default_model.clone(),
-                inner.message_session.clone(),
-            )
-        };
         // `/` starts a command; a message completes only its `@` references.
         // See `docs/notes/cli-catalog.md`.
         let brief = !line.trim_start().starts_with('/');
@@ -423,16 +493,9 @@ impl Completer for Catalog {
         } else {
             shell_words::split(line).unwrap_or_default()
         };
-        let ctx = Ctx {
-            sessions: &sessions,
-            sticky: &sticky,
-            models: &models,
-            default_model: default_model.as_deref(),
-            message_session: message_session.as_deref(),
-            place: self.place(&words),
-            all: &all,
-            catalog: self,
-        };
+        let snapshot = self.snapshot(&words);
+        let all = &snapshot.all;
+        let ctx = snapshot.ctx(self);
         if brief {
             return reference(&ctx, line, cursor, &token);
         }
