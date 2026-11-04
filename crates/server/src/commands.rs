@@ -266,26 +266,22 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     "model",
                     "tuning",
                     Some("model"),
-                    CompletionSource::Static(crate::providers::roster().models()),
+                    // The greeting's model table, which is the same list with the
+                    // levels each model takes.
+                    CompletionSource::Models,
                 ),
                 bundle_arg(
                     "thinking",
                     "How hard the model should think, in the roster's spelling (`low`, \
-                     `high`, `xhigh`, ...). Mapped onto what the model actually accepts \
-                     and checked against it, so a level it does not take fails here. \
-                     Defaults to the model's own.",
+                     `high`, `max`, ...): what completes is exactly what the model this \
+                     session runs on takes. `default` names the level a model that is \
+                     told nothing uses, clearing one set earlier.",
                     false,
                     "thinking",
                     "tuning",
                     Some("level"),
-                    // The one vocabulary the server ranks by, so the list offered
-                    // here and `highest in supported` cannot drift apart.
-                    CompletionSource::Static(
-                        crate::providers::LEVELS
-                            .iter()
-                            .map(|s| s.to_string())
-                            .collect(),
-                    ),
+                    // What the model publishes on its roster entry, and nothing else.
+                    CompletionSource::ModelLevels,
                 ),
                 bundle_arg(
                     "ctx_limit",
@@ -1111,7 +1107,9 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     let mut changed = false;
     // Resolved here and stored, never inferred at display time, so the title and
     // the request read one word.
-    let level = match args.get("thinking") {
+    let level = match args.get("thinking").map(String::as_str) {
+        // Names no level: clears one earlier, rather than keeping it.
+        Some(protocol::THINKING_DEFAULT) => entry.level_in_force(None),
         // Checked against the model this session runs on, so typos fail now.
         Some(raw) => match entry.reasoning_effort(raw) {
             Ok(level) => Some(level),

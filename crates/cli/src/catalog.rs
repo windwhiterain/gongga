@@ -8,7 +8,9 @@ use std::sync::{Arc, RwLock};
 
 use crate::commands::installed_skills;
 use crate::complete::{Candidate, Completer, token_bounds};
-use protocol::{ArgSpec, CommandSpec, CommandTarget, CompletionSource, Reference, SessionInfo};
+use protocol::{
+    ArgSpec, CommandSpec, CommandTarget, CompletionSource, ModelInfo, Reference, SessionInfo,
+};
 
 /// A catalog that can be swapped while the TUI holds a reference to it.
 #[derive(Clone, Default)]
@@ -42,6 +44,10 @@ struct Inner {
     /// The client's sticky argument names, for the sources the server names
     /// but cannot fill in.
     sticky_names: Vec<String>,
+    /// The models a request could run on here, and what each of them takes.
+    models: Vec<ModelInfo>,
+    /// The sticky `model` value: the model a `--thinking` value would apply to.
+    sticky_model: Option<String>,
     /// The skills one directory offers, and what they were read from.
     skills: Option<Skills>,
     /// Directories a remote answered with, keyed by remote and directory, and
@@ -100,6 +106,8 @@ impl Default for Inner {
             home: PathBuf::new(),
             server_cwd: std::env::current_dir().unwrap_or_default(),
             sticky_names: Vec::new(),
+            models: Vec::new(),
+            sticky_model: None,
             skills: None,
             remote_paths: HashMap::new(),
             remotes: HashSet::new(),
@@ -216,6 +224,16 @@ impl Catalog {
     /// The sticky arguments that exist, for the source the server names.
     pub fn set_sticky_names(&self, names: &[String]) {
         self.write().sticky_names = names.to_vec();
+    }
+
+    /// The models a request could run on here, as the greeting published them.
+    pub fn set_models(&self, models: Vec<ModelInfo>) {
+        self.write().models = models;
+    }
+
+    /// The model the sticky arguments name: what a tuning value applies to.
+    pub fn set_sticky_model(&self, model: Option<&str>) {
+        self.write().sticky_model = model.map(str::to_string);
     }
 
     /// Where one input line's values are read, and which machine they are on.
@@ -338,6 +356,9 @@ impl Catalog {
 struct Ctx<'a> {
     sessions: &'a [SessionInfo],
     sticky: &'a [String],
+    /// The models a request could run on here, and the sticky one this line runs on.
+    models: &'a [ModelInfo],
+    sticky_model: Option<&'a str>,
     /// Where this line reads: its session's directory, and that machine.
     place: Place,
     all: &'a [CommandSpec],
@@ -351,12 +372,14 @@ impl Completer for Catalog {
 
     fn complete(&self, line: &str, cursor: usize) -> Vec<Candidate> {
         let (_, _, token) = token_bounds(line, cursor);
-        let (all, sessions, sticky) = {
+        let (all, sessions, sticky, models, sticky_model) = {
             let inner = self.read();
             (
                 inner.published.clone(),
                 inner.sessions.clone(),
                 inner.sticky_names.clone(),
+                inner.models.clone(),
+                inner.sticky_model.clone(),
             )
         };
         // `/` starts a command; a message completes only its `@` references.
@@ -371,6 +394,8 @@ impl Completer for Catalog {
         let ctx = Ctx {
             sessions: &sessions,
             sticky: &sticky,
+            models: &models,
+            sticky_model: sticky_model.as_deref(),
             place: self.place(&words),
             all: &all,
             catalog: self,
@@ -552,6 +577,15 @@ fn resolve(
         CompletionSource::StickyArguments => {
             pick(ctx.sticky.iter().map(String::as_str), token, "argument")
         }
+        CompletionSource::Models => pick(
+            ctx.models.iter().map(|model| model.model.as_str()),
+            token,
+            "model",
+        ),
+        CompletionSource::ModelLevels => {
+            let levels = level_choices(ctx, words);
+            pick(levels.iter().map(String::as_str), token, "level")
+        }
         CompletionSource::Skills => pick(
             ctx.catalog
                 .skill_names(&ctx.place)
@@ -640,6 +674,56 @@ fn session_named(inner: &Inner, words: &[String]) -> Option<String> {
         .and_then(|args| args.get(&arg.name).cloned())
         .or_else(|| flag_value(words, &arg.name).map(str::to_string))
         .or_else(|| inner.message_session.clone())
+}
+
+/// The model a line runs on: the one it names, else the sticky one.
+fn model_named(ctx: &Ctx<'_>, words: &[String]) -> Option<String> {
+    let spec = words
+        .first()
+        .map(|c| c.trim_start_matches('/'))
+        .and_then(|c| ctx.all.iter().find(|s| s.name == c))?;
+    let named = spec
+        .args
+        .iter()
+        .find(|a| a.kind.as_deref() == Some("model"))
+        .and_then(|arg| {
+            let mut tokens = vec![spec.name.clone()];
+            tokens.extend(words.iter().skip(1).cloned());
+            crate::commands::parse_args(&tokens, Some(spec))
+                .ok()
+                .and_then(|args| args.get(&arg.name).cloned())
+                .or_else(|| flag_value(words, &arg.name).map(str::to_string))
+        });
+    named.or_else(|| ctx.sticky_model.map(str::to_string))
+}
+
+/// The levels the line's model takes; every level some model here takes when
+/// the line names none.
+///
+/// # Invariant
+///
+/// A model the roster says nothing about accepts anything, so the union is what
+/// its completion offers: withholding the list would be this client's opinion.
+fn level_choices(ctx: &Ctx<'_>, words: &[String]) -> Vec<String> {
+    let stated = model_named(ctx, words)
+        .and_then(|model| ctx.models.iter().find(|info| info.model == model))
+        .map(|info| &info.levels)
+        .filter(|levels| !levels.is_empty());
+    // Unstated takes whatever it is sent, so every level some model here
+    // publishes is a fair guess.
+    let source: Box<dyn Iterator<Item = &String>> = match stated {
+        Some(levels) => Box::new(levels.iter()),
+        None => Box::new(ctx.models.iter().flat_map(|info| info.levels.iter())),
+    };
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut out: Vec<String> = Vec::new();
+    for level in source {
+        if seen.insert(level.as_str()) {
+            out.push(level.clone());
+        }
+    }
+    out.push(protocol::THINKING_DEFAULT.to_string());
+    out
 }
 
 /// The bare words of a command line, in order; `skip` is the cursor's

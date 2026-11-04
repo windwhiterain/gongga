@@ -133,6 +133,12 @@ still publishes it, else this model's roster default, else nothing. So a session
 command creates, and one whose model it changes, both come out with a level; a command
 that changes only `--context_limit` keeps the level the session had.
 
+`--thinking default` is not a level and never reaches the roster: it asks for exactly
+what a command that says nothing would leave in force, so a level set earlier is
+cleared rather than kept. That is the value the completion offers beside the model's
+own, so an operator who set `low` once can go back without recalling which rung this
+model tops out at.
+
 Two consequences worth naming. A model that publishes no level (MiniMax-M3 states
 `reasoning_default = "off"` and no levels) stores nothing, because `off` there is a
 mode rather than a level the request could carry. And resolution at write time is what

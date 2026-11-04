@@ -779,6 +779,7 @@ impl Client {
                 server,
                 commands,
                 sessions,
+                models,
                 ..
             } => {
                 self.model = server.model.clone();
@@ -786,6 +787,7 @@ impl Client {
                 // away leaves the list here too.
                 self.set_sessions(sessions, sink);
                 self.catalog.set_commands(commands);
+                self.catalog.set_models(models);
                 // Where a session with no directory of its own starts, and the
                 // directory a relative value is read from until one says.
                 self.catalog
@@ -1079,6 +1081,7 @@ impl Client {
     pub fn sync_sticky(&self) {
         self.catalog.set_sticky_names(&self.sticky.names());
         self.catalog.set_message_session(self.sticky.get("session"));
+        self.catalog.set_sticky_model(self.sticky.get("model"));
     }
 
     /// The status line: server facts only, never a "current session".

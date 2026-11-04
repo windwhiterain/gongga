@@ -222,6 +222,22 @@ async fn handle_connection(
                 .iter()
                 .map(|r| crate::commands::session_info(&d, r))
                 .collect(),
+            // The same list `--model` completes, each with what `--thinking`
+            // may name for it.
+            models: {
+                let roster = crate::providers::roster();
+                roster
+                    .models()
+                    .into_iter()
+                    .map(|model| protocol::ModelInfo {
+                        levels: roster
+                            .entry(&model)
+                            .map(|entry| entry.reasoning_levels)
+                            .unwrap_or_default(),
+                        model,
+                    })
+                    .collect()
+            },
         },
     )
     .await

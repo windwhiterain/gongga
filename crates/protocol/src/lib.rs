@@ -33,9 +33,9 @@ pub use channel::{
 pub use message::{
     ArgSpec, Args, BLOCK_SIZES, BOX_EDGES, ClientInfo, ClientMessage, CmdArg, CommandSpec,
     CommandTarget, CompletionSource, DEFAULT_BOX_EDGE, Event, Field, Head, HeadKind, LogLevel,
-    Operation, PROTOCOL_VERSION, Quota, REPLAY_TURN, ResponseEvent, ResponsePart, SHOW_VALUES,
-    ServerInfo, ServerMessage, SessionInfo, SessionStatus, ToolAnswerEvent, ToolCallEvent,
-    ToolStream, Usage, UsageEvent, client_commands, decode_client, decode_server, encode_client,
-    encode_server,
+    ModelInfo, Operation, PROTOCOL_VERSION, Quota, REPLAY_TURN, ResponseEvent, ResponsePart,
+    SHOW_VALUES, ServerInfo, ServerMessage, SessionInfo, SessionStatus, THINKING_DEFAULT,
+    ToolAnswerEvent, ToolCallEvent, ToolStream, Usage, UsageEvent, client_commands, decode_client,
+    decode_server, encode_client, encode_server,
 };
 pub use reference::Reference;
