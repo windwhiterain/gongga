@@ -546,9 +546,8 @@ pub struct Client {
     calls: HashSet<String>,
     /// Which window each accepted command's result belongs to, from its echo.
     results: HashMap<u64, String>,
-    /// A `set_session` waiting for its acknowledgement -- the sticky entries an
-    /// accepted one writes back, as (kind, value) pairs, so a refused one
-    /// writes nothing. See `docs/notes/cli-lib.md`.
+    /// A `set_session` awaiting acknowledgement: the pairs an accepted one
+    /// writes back, so a refusal writes nothing.
     follows: Vec<(u64, Vec<(String, String)>)>,
     sessions: Vec<SessionInfo>,
     model: String,
@@ -1286,8 +1285,8 @@ impl Client {
             .map(|a| a.name.as_str())
             .collect();
         if !missing.is_empty() {
-            // The window the error belongs to is the session the command names
-            // -- wherever its spec keeps the kind-`session` argument.
+            // The window the error belongs to is the session the command
+            // names, wherever its spec keeps the kind-`session` argument.
             let session = spec
                 .args
                 .iter()
@@ -1316,11 +1315,8 @@ impl Client {
         }
 
         let id = self.next_id();
-        // SPEC: the sticky follows what the server accepted, never a submission.
-        // What an accepted set_session writes back is decided here, from the
-        // bound arguments: every argument with a kind that the command carries,
-        // keyed by kind -- an argument the command did not name is not written,
-        // so a partial set_session never erases the entries it left alone.
+        // SPEC: the sticky follows what the server accepted; the write-back
+        // is decided here. See cli-lib.md.
         if head == "set_session" {
             let pairs: Vec<(String, String)> = spec
                 .args

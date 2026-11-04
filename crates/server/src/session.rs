@@ -1392,9 +1392,8 @@ impl SessionManager {
         let mut env = self.shell_env.clone();
         // A shell cannot learn its own session's name from the outside.
         env.push(("GONGGA_SESSION".to_string(), name.to_string()));
-        // ... nor its model or its machine: a script places a child from these
-        // rather than a flagless `set_session`, which sticky-filled arguments
-        // would turn from a read into a move.
+        // ... nor its model or machine: a child is placed from these,
+        // not a flagless `set_session`; sticky fill would move it.
         if let Some(row) = self.store.get_session(name).ok().flatten() {
             if !row.model.trim().is_empty() {
                 env.push(("GONGGA_MODEL".to_string(), row.model.clone()));

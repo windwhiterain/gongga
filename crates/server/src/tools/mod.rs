@@ -364,10 +364,14 @@ impl ToolRegistry {
     }
 }
 
-/// The adapter's general parameters: every tool may carry them, none declares
-/// them by hand. Injected into the model-facing schema in `definitions`, read
-/// back at the call layer (`description` titles the call, `max_output` caps its
-/// result); neither ever reaches the command surface, which reads
+/// The adapter's general parameters: every tool may carry them, none
+/// declares them by hand.
+///
+/// # Invariant
+///
+/// Injected into the model-facing schema in `definitions` (a declared
+/// property wins), read back at the call layer; they never reach the
+/// command surface, which reads `Tool::parameters` raw.
 /// `Tool::parameters` raw.
 pub const GENERAL_ARGS: &[&str] = &["description", "max_output"];
 
@@ -1618,10 +1622,13 @@ fn spill_label(session: &str, shell: &str, description: Option<&str>, call_id: &
     }
 }
 
-/// SPEC's per-call `max_output`, applied at the adapter: over the cap, the
-/// whole output spills to one file and the call answers with the file's
-/// metadata. `None` is "no cap applied" -- under the cap, unparseable, or on an
-/// endpoint session, where a file on this machine is not one its tools can open.
+/// SPEC's per-call `max_output`: over the cap the output spills, and the
+/// call answers with the file's metadata.
+///
+/// # Invariant
+///
+/// `None` is "no cap": under it, unparseable, or on an endpoint session,
+/// where a file here is not one its tools can open.
 pub(crate) fn cap_max_output(
     ctx: &ToolContext,
     tool: &str,

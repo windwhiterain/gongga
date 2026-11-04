@@ -240,9 +240,8 @@ impl Remembered {
     }
 }
 
-/// The sticky entries one client remembers, keyed by argument *kind* -- the
-/// `<session>`, `<model>` types the published catalog declares, never by an
-/// argument's name.
+/// The sticky entries one client remembers, keyed by argument *kind*.
+/// See `docs/notes/cli-commands.md`.
 pub struct Sticky {
     path: PathBuf,
     args: BTreeMap<String, String>,
@@ -307,17 +306,15 @@ impl Sticky {
         write_file(&self.path, &file)
     }
 
-    /// Fills what the caller omitted, from the entries the published spec
-    /// declares -- the spec decides which entries exist, and a value only
-    /// lands on an argument whose `kind` names it.
+    /// Fills what the caller omitted, from the entries the spec declares.
     ///
     /// # Invariant
     ///
-    /// SPEC's Sticky section, its two bullets in one rule: a missing
-    /// non-optional argument is filled from its entry, and a missing optional
-    /// argument takes the entry as its initial value. An argument no entry
-    /// names is left alone: absence keeps the command's own initial, applied
-    /// where the command runs.
+    /// A value lands only on an argument whose `kind` names it. SPEC's two
+    /// bullets are one rule: a missing non-optional argument is filled from
+    /// its entry, and a missing optional argument takes the entry as its
+    /// initial value. An argument no entry names is left alone: absence keeps
+    /// the command's own initial, applied where the command runs.
     pub fn fill(&self, spec: Option<&CommandSpec>, args: &mut Args) {
         let Some(spec) = spec else { return };
         for a in &spec.args {
@@ -410,32 +407,21 @@ pub fn roots(home: &Path, project: Option<&Path>) -> skill::Roots {
     )
 }
 
-/// Binds a line's tokens to a published spec: bare words fill the orderable
-/// slots; `--flag value` names the rest.
+/// Binds a line's tokens to a published spec. See `next_unfilled`.
 ///
 /// # Invariant
 ///
-/// The spec is the only syntax the caller knows: a command this client never
-/// heard of cannot be parsed, and a token that names nothing in the spec is a
-/// typo to report, not a shape to guess at. A value may start with `--` only
-/// in the `--flag=--value` spelling; a bare `--word` is read as a flag. Every
-/// argument a `--flag` names binds by that flag; a bare word binds the next
-/// unfilled argument that may be spelled by order -- a positional, or a
-/// required one (SPEC: "all non optional named argument's name can be ommited
-/// via argument order"). An optional argument keeps its flag.
+/// The spec is the only syntax the caller knows: an unknown command cannot
+/// be parsed, and a token naming nothing in it is a typo said as such, not a
+/// shape to guess at. A value may start with `--` only in the `--flag=--value`
+/// spelling. See `next_unfilled` for the guessing rule itself.
 pub fn parse_args(tokens: &[String], spec: Option<&CommandSpec>) -> anyhow::Result<Args> {
     let flags: Vec<&ArgSpec> = spec.map(|s| s.args.iter().collect()).unwrap_or_default();
-    let slots: Vec<&ArgSpec> = spec
-        .map(|s| {
-            s.args
-                .iter()
-                .filter(|a| a.positional || a.required)
-                .collect()
-        })
-        .unwrap_or_default();
     let takes = |name: &str| flags.iter().any(|a| a.name == name);
     let mut args = Args::new();
-    let mut next_slot = 0usize;
+    // Where the last bare word bound; the next guesses right after it
+    // (None: the declaration's first unfilled parameter).
+    let mut after: Option<usize> = None;
     let mut i = 0;
     while i < tokens.len() {
         let token = &tokens[i];
@@ -466,19 +452,40 @@ pub fn parse_args(tokens: &[String], spec: Option<&CommandSpec>) -> anyhow::Resu
                 i += 2;
             }
         } else {
-            let Some(slot) = slots.get(next_slot) else {
+            let Some(at) = spec.and_then(|s| next_unfilled(s, &args, after)) else {
                 anyhow::bail!(
                     "unexpected argument {token:?}; {} takes {}",
                     spec.map(|s| s.name.as_str()).unwrap_or("this command"),
                     signature(spec),
                 );
             };
-            insert_once(&mut args, &slot.name, token)?;
-            next_slot += 1;
+            let name = spec.map(|s| s.args[at].name.clone()).unwrap_or_default();
+            insert_once(&mut args, &name, token)?;
+            after = Some(at);
             i += 1;
         }
     }
     Ok(args)
+}
+
+/// The argument a bare word lands on: the first unfilled parameter after
+/// `after`; None starts at the declaration.
+///
+/// # Invariant
+///
+/// The guessing rule a nameless value binds by: it takes the parameter right
+/// after the one the previous nameless value took, optional ones included, so
+/// position reaches every parameter exactly where it is declared. Flags fill
+/// independently and are skipped, never rebound -- the one rule both the
+/// parser and completion walk, so what a popup offers is what a word lands on.
+pub fn next_unfilled(spec: &CommandSpec, bound: &Args, after: Option<usize>) -> Option<usize> {
+    let start = after.map(|a| a + 1).unwrap_or(0);
+    spec.args
+        .iter()
+        .enumerate()
+        .skip(start)
+        .find(|(_, a)| !bound.contains_key(&a.name))
+        .map(|(i, _)| i)
 }
 
 /// A repeated argument is a contradiction, whatever spellings it was given.

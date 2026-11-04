@@ -479,8 +479,7 @@ impl Completer for Catalog {
         let Some(spec) = cmd.and_then(|c| all.iter().find(|s| s.name == c)) else {
             return Vec::new();
         };
-        // A word completes the flag's value or the next orderable slot -- a
-        // positional or a required argument, whichever binds next.
+        // A word completes the flag's value or guesses the next parameter.
         // See `docs/notes/cli-catalog.md`.
         let flag_index = if token.is_empty() {
             position.checked_sub(1)
@@ -496,17 +495,27 @@ impl Completer for Catalog {
             };
             return resolve(&arg.completions, &token, &ctx, &words, 0);
         }
-        let filled = positional_tokens(&spec, &words, word_at_cursor).len();
-        let flag_bound: std::collections::HashSet<&str> = words
+        // The parser's own guessing rule, walked over the line's words, so
+        // the popup offers what the typed word would land on.
+        let mut bound: protocol::Args = protocol::Args::new();
+        for word in words
             .iter()
             .filter_map(|w| w.strip_prefix("--"))
             .filter_map(|f| f.split('=').next())
-            .collect();
-        spec.args
-            .iter()
-            .filter(|a| (a.positional || a.required) && !flag_bound.contains(a.name.as_str()))
-            .nth(filled)
-            .map(|arg| resolve(&arg.completions, &token, &ctx, &words, 0))
+        {
+            if spec.args.iter().any(|a| a.name == word) {
+                bound.insert(word.to_string(), String::new());
+            }
+        }
+        let mut after: Option<usize> = None;
+        for _word in positional_tokens(&spec, &words, word_at_cursor) {
+            if let Some(at) = crate::commands::next_unfilled(&spec, &bound, after) {
+                bound.insert(spec.args[at].name.clone(), String::new());
+                after = Some(at);
+            }
+        }
+        crate::commands::next_unfilled(&spec, &bound, after)
+            .map(|at| resolve(&spec.args[at].completions, &token, &ctx, &words, 0))
             .unwrap_or_default()
     }
 }
@@ -627,9 +636,8 @@ fn resolve(
             token,
             "skill",
         ),
-        // The type the line's first word names: a set_sticky whose type
-        // token completes its value the way that type's argument does.
-        // See `docs/notes/cli-catalog.md`.
+        // The type the first word names; its value completes like that
+        // type's argument. See `docs/notes/cli-catalog.md`.
         CompletionSource::OfNamedArgument if depth < 2 => {
             let named = first_positional(ctx, words);
             let Some(named) = named else {
@@ -692,8 +700,8 @@ fn session_on_line<'a>(
     sessions.iter().find(|s| s.name == name)
 }
 
-/// The session name a line carries: the value bound to its kind-`session`
-/// argument, wherever the spec keeps that argument and however it is spelled.
+/// The session a line acts on: the value of its kind-`session` argument.
+/// See `docs/notes/cli-catalog.md`.
 fn session_named(
     all: &[CommandSpec],
     message_session: Option<&str>,

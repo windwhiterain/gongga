@@ -307,9 +307,8 @@ pub async fn expand(
             Reference::File => continue,
             Reference::Skill => match skill_at(home, source.machine(), &mention.value) {
                 Some(skill) => {
-                    // Idempotent: stored text is expanded once, verbatim, forever.
-                    // A mention already carrying its ` (path)` suffix is left
-                    // alone, or a re-sent row grows another.
+                    // Idempotent: a mention already carrying its ` (path)`
+                    // suffix is left alone, or a re-sent row grows another.
                     if text[mention.end..].starts_with(&format!(" ({})", skill.path.display())) {
                         continue;
                     }
@@ -326,9 +325,8 @@ pub async fn expand(
                 None => continue,
             },
             Reference::Image => {
-                // Idempotent, the same rule by the copy's id: when the text
-                // already carries ` (id)` of the stored copy, nothing is copied
-                // or appended again.
+                // Idempotent, the same rule by the copy's id: text already
+                // carrying ` (id)` is not copied to or appended again.
                 let named = source.spelling(home, &mention.value);
                 let kept_copy = store
                     .picture_of(&named)

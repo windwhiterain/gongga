@@ -135,21 +135,25 @@ on purpose; `session=main` does not hide the list.
 
 ## parse_args
 
-One parser binds a line to the published spec: a bare word fills the next unfilled
-argument that may be spelled by order -- a positional, or a required one (SPEC:
-"all non optional named argument's name can be ommited via argument order") -- and
-`--flag value` / `--flag=value` name the rest; an optional argument keeps its
-flag. The spec is the only syntax the client knows -- the transparent wrapper
-keeps no command list of its own, and the client's own commands are the published
-one it does carry (`docs/notes/cli-catalog.md`) -- so a `--word` that names
-nothing in it is a typo said as such, and a bare word past the last orderable slot
-is "takes <signature>".
+One parser binds a line to the published spec: a bare word guesses the next
+unfilled parameter after the one the previous bare word took -- the first lands
+on the declaration's first unfilled one -- and `--flag value` / `--flag=value`
+name the rest. Optional parameters are reached by position exactly where they
+are declared, and a flag-bound parameter is skipped, never rebound, so
+`set_session main flash --cwd <path>` binds name and model while the flag
+takes the directory. The rule lives in `next_unfilled`, one function the
+parser and the completion both walk. The spec is the only syntax the client
+knows -- the transparent wrapper keeps no command list of its own, and the
+client's own commands are the published one it does carry
+(`docs/notes/cli-catalog.md`) -- so a `--word` that names nothing in it is a
+typo said as such, and a bare word with no parameter left to guess is "takes
+<signature>".
 
 Typed arguments win over sticky ones: the binding happens first, and
 `Sticky::fill` afterwards fills only slots still empty, which is the rule the flag
-spelling already had. The pure-text expansion is the one case that names the
-session explicitly (`send_message <session> <text>`), because a bare message read
-as a positional would land on the session argument.
+spelling already had. The pure-text expansion names only the message
+(`send_message --message <text>`): the session is the sticky entry's to fill,
+and a line that names neither is the server's refusal to answer.
 
 The flag value is whatever follows its flag, *including* a token that starts with
 `--`. Refusing those made the one thing a message flag exists for impossible:

@@ -93,7 +93,7 @@ pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec>
                 completions: protocol::CompletionSource::Sessions,
                 sticky: false,
             }];
-            for (name, spec) in &properties {
+            for (name, spec) in ordered_properties(&properties, positional) {
                 let is_positional = positional.contains(&name.as_str());
                 args.push(protocol::ArgSpec {
                     name: name.clone(),
@@ -123,6 +123,33 @@ pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec>
             }
         })
         .collect()
+}
+
+/// The properties a command lists in: the positional object first, then
+/// the rest in the schema's order.
+///
+/// # Invariant
+///
+/// A bare word binds the next unfilled parameter after the previous one, so
+/// this order is the order position reaches: `<session>`, then the object,
+/// then the switches. The schema's own order serves the model's keyword
+/// calls, where every name is spelled.
+fn ordered_properties<'a>(
+    properties: &'a serde_json::Map<String, serde_json::Value>,
+    positional: &[&str],
+) -> Vec<(&'a String, &'a serde_json::Value)> {
+    let mut out = Vec::with_capacity(properties.len());
+    for name in positional {
+        if let Some(entry) = properties.get_key_value(*name) {
+            out.push(entry);
+        }
+    }
+    out.extend(
+        properties
+            .iter()
+            .filter(|(name, _)| !positional.contains(&name.as_str())),
+    );
+    out
 }
 
 /// Which arguments a command spells positionally: the object, not switches.

@@ -1336,11 +1336,8 @@ impl Agent {
             .attach_references(&ctx, printed_on, &outcome.output)
             .await;
         let attach_ms = attach_started.elapsed().as_millis() as u64;
-        // SPEC's adapter-level `max_output`, read like `description` from
-        // whatever tool answered: over the cap (in chars, per SPEC) the whole
-        // output spills to one file and the model reads the file's metadata
-        // instead. Attachments above scanned the full output on purpose: a
-        // picture named there is kept even when the text is capped away.
+        // SPEC's `max_output`: over the cap the output spills, and the model
+        // reads the file's metadata.
         let capped = max_output
             .and_then(|max| {
                 crate::tools::cap_max_output(

@@ -138,12 +138,13 @@ arguments outright, optional arguments as their initial value.
 SPEC's command lines bind arguments by position -- `interrupt_session <session>`
 -- or by flag -- `set_session ... --cwd <path>`. The one field says which
 spelling the line documents, and the declaration order in `args` is the binding
-order, so a spec's list is its syntax. Every non-optional argument may also be
-spelled by order alone; an optional one needs its flag. A front-end parses and
-completes every server command from the catalog alone; it keeps no list of its
-own, which is the "transparent wrapper, does not know server cmd" half of the
-crate's contract. The client's own commands are the one list it does carry (the
-published `client_commands`), because they have to work before a server exists.
+order, so a spec's list is its syntax: a nameless value guesses the parameter
+right after the one the previous nameless value took, optional ones included.
+A front-end parses and completes every server command from the catalog alone;
+it keeps no list of its own, which is the "transparent wrapper, does not know
+server cmd" half of the crate's contract. The client's own commands are the one
+list it does carry (the published `client_commands`), because they have to work
+before a server exists.
 See `docs/notes/cli-catalog.md`.
 
 ## CommandSpec::target

@@ -127,11 +127,12 @@ over a line whose first word was settled.
 Past the command name, a word completes one of two things. A flag's value, when
 it follows a flag: the flag sits one word back when the value has not been
 started yet, and two when it has: `--remote <TAB>` and `--remote lo<TAB>`
-complete the same list. Or the next orderable slot -- a positional or a required
-argument, skipping ones a flag on the line already bound -- counted from the bare
-words on the line (`positional_tokens` steps over flags and their values):
+complete the same list. Or the parameter a bare word would guess -- the same
+rule the parser binds by (`next_unfilled`): flags first, then each bare word
+takes the next unfilled parameter after the previous one
+(`positional_tokens` steps over flags and their values):
 `/set_session <TAB>` offers sessions, and with a session on the line the next Tab
-offers models. A slot whose source is `None` offers nothing, which is how
+offers models. A parameter whose source is `None` offers nothing, which is how
 `send_message --name <name> --message <text>` stops completing after the session.
 
 ## models, default_model, and the two sources that read them

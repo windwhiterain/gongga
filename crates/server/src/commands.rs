@@ -260,9 +260,8 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     Some("text"),
                     CompletionSource::None,
                 ),
-                // SPEC writes `--message <message> --name <session>(sticky)`: the
-                // payload leads, and the declaration order is the order bare
-                // words bind in.
+                // SPEC writes `--message <message> --name <session>(sticky)`:
+                // the payload leads; declaration order is bare-word order.
                 kind_arg(
                     "name",
                     "Target session. Required: there is no implicit default.",
@@ -281,9 +280,8 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                       it. Settings omitted now are left as they are."
                     .into(),
             args: vec![
-                // SPEC: `--name <session>(sticky)` -- the name is this command's to
-                // choose; what a sticky entry keys on is the kind, `session`
-                // wherever the argument appears.
+                // SPEC: `--name <session>(sticky)`. A sticky entry keys on the
+                // kind `session`, wherever the argument appears.
                 sticky_arg(
                     kind_arg(
                         "name",
@@ -295,9 +293,8 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     ),
                     true,
                 ),
-                // SPEC: `[--model <model>](initial: none)` -- a session that
-                // names none keeps its model; a new one takes the configured
-                // default.
+                // SPEC: `[--model <model>](initial: none)` -- omitted keeps
+                // the session's model; a new one takes the configured default.
                 kind_arg(
                     "model",
                     "The model to run this session's turns on, as <provider>/<model \
