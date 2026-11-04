@@ -323,14 +323,19 @@ impl Sticky {
         let Some(spec) = spec else { return };
         let mut bundles: Vec<(&str, Vec<&ArgSpec>)> = Vec::new();
         for a in &spec.args {
-            let Some(bundle) = a.bundle.as_deref() else { continue };
+            let Some(bundle) = a.bundle.as_deref() else {
+                continue;
+            };
             match bundles.iter_mut().find(|(name, _)| *name == bundle) {
                 Some((_, members)) => members.push(a),
                 None => bundles.push((bundle, vec![a])),
             }
         }
         for (_, members) in &bundles {
-            let typed = members.iter().filter(|m| args.contains_key(&m.name)).count();
+            let typed = members
+                .iter()
+                .filter(|m| args.contains_key(&m.name))
+                .count();
             if typed > 0 && typed < members.len() {
                 continue;
             }
@@ -350,7 +355,9 @@ impl Sticky {
         if args.contains_key(&a.name) {
             return;
         }
-        let Some(kind) = a.kind.as_deref() else { return };
+        let Some(kind) = a.kind.as_deref() else {
+            return;
+        };
         if let Some(v) = self.args.get(kind) {
             args.insert(a.name.clone(), v.clone());
         }
@@ -444,7 +451,12 @@ pub fn roots(home: &Path, project: Option<&Path>) -> skill::Roots {
 pub fn parse_args(tokens: &[String], spec: Option<&CommandSpec>) -> anyhow::Result<Args> {
     let flags: Vec<&ArgSpec> = spec.map(|s| s.args.iter().collect()).unwrap_or_default();
     let slots: Vec<&ArgSpec> = spec
-        .map(|s| s.args.iter().filter(|a| a.positional || a.required).collect())
+        .map(|s| {
+            s.args
+                .iter()
+                .filter(|a| a.positional || a.required)
+                .collect()
+        })
         .unwrap_or_default();
     let takes = |name: &str| flags.iter().any(|a| a.name == name);
     let mut args = Args::new();

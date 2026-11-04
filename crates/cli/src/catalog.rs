@@ -627,7 +627,10 @@ fn session_named(inner: &Inner, words: &[String]) -> Option<String> {
         .first()
         .map(|c| c.trim_start_matches('/'))
         .and_then(|c| inner.published.iter().find(|s| s.name == c))?;
-    let arg = spec.args.iter().find(|a| a.kind.as_deref() == Some("session"))?;
+    let arg = spec
+        .args
+        .iter()
+        .find(|a| a.kind.as_deref() == Some("session"))?;
     // The one binder decides what the line says; a half-typed flag value still
     // names a session to complete for.
     let mut tokens = vec![spec.name.clone()];

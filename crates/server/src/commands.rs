@@ -617,7 +617,16 @@ fn arg(
     completions: CompletionSource,
 ) -> protocol::ArgSpec {
     sticky_arg(
-        arg_spec(name, description, required, false, None, None, value_hint, completions),
+        arg_spec(
+            name,
+            description,
+            required,
+            false,
+            None,
+            None,
+            value_hint,
+            completions,
+        ),
         false,
     )
 }
@@ -631,7 +640,16 @@ fn pos(
     completions: CompletionSource,
 ) -> protocol::ArgSpec {
     sticky_arg(
-        arg_spec(name, description, required, true, None, None, value_hint, completions),
+        arg_spec(
+            name,
+            description,
+            required,
+            true,
+            None,
+            None,
+            value_hint,
+            completions,
+        ),
         false,
     )
 }
