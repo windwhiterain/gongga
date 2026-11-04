@@ -15,6 +15,7 @@ bundle="$root/target/debug/gongga.exe"
 home="$root/.dev/selftest/bundle-home"
 log="$home/stdout.log"
 verbose=${1:-}
+started=$(date +%s)
 
 say() { [[ "$verbose" == "-v" ]] && printf '%s\n' "$*"; return 0; }
 fails=0
@@ -27,12 +28,7 @@ ok() { # name, condition-result
 [[ -x "$bundle" ]] || {
   echo "build first: cargo build -p gongga-bundle --features payload" >&2; exit 1; }
 
-# The kernel picks the port: two agents on one machine must not fight over one.
-free_port() {
-  python -c 'import socket
-s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.bind(("127.0.0.1",0))
-print(s.getsockname()[1]);s.close()'
-}
+alive() { [[ -n "${1:-}" ]] && tasklist //FI "PID eq $1" //NH 2>/dev/null | grep -q "$1"; }
 
 # Every process serving THIS home, whatever the run managed to remember: a
 # scenario that fails before its pid is recorded would otherwise leave a server
@@ -46,14 +42,44 @@ serving_home() {
     2>/dev/null | tr -d '\r' | tr '\n' ' '
 }
 
-# The window of this home, by the home in its command line: it is a window, and
-# it does not end by itself.
+# The window of this home, by the same identity: it is a window, and it does
+# not end by itself.
 window_pids() {
   local win; win=$(cygpath -w "$home" 2>/dev/null || echo "$home")
   local posix; posix=$(cygpath -m "$home" 2>/dev/null || echo "$home")
   powershell -NoProfile -Command \
     "Get-CimInstance Win32_Process -Filter \"Name='gongga-tui.exe'\" | Where-Object { \$_.CommandLine -like '*--home *$posix*' -or \$_.CommandLine -like '*--home *$win*' -or \$_.CommandLine -like '*--home *$home*' } | ForEach-Object { \$_.ProcessId }" \
     2>/dev/null | tr -d '\r' | tr '\n' ' '
+}
+
+cleanup() {
+  # The window first: the server it took as its owner stops with it, and the
+  # list below is the one that says what this run started.
+  for pid in $(window_pids); do
+    alive "$pid" && taskkill //PID "$pid" //T //F >/dev/null 2>&1
+  done
+  for pid in $(serving_home); do
+    alive "$pid" && taskkill //PID "$pid" //T //F >/dev/null 2>&1
+  done
+  sleep 1
+  # Busy files mean a process still holds the home; say so instead of hiding it.
+  rm -rf "$home" || echo "note: $home is still held by a process" >&2
+}
+trap cleanup EXIT
+
+left=$(serving_home)
+if [[ -n "${left// /}" ]]; then
+  echo "a previous run left $(echo $left) serving $home; stopping it" >&2
+  for pid in $left; do taskkill //PID "$pid" //T //F >/dev/null 2>&1; done
+  sleep 2
+fi
+rm -rf "$home"; mkdir -p "$home"
+
+# The kernel picks the port: two agents on one machine must not fight over one.
+free_port() {
+  python -c 'import socket
+s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.bind(("127.0.0.1",0))
+print(s.getsockname()[1]);s.close()'
 }
 
 # The marks of a server that was asked to stop: a cancel over the protocol, a
@@ -65,8 +91,6 @@ stopped() { grep -qE "the server is stopping|the server stopped without saying w
 scenario() {
   local client_only="$1" expect="$2"
   local port; port=$(free_port)
-  rm -rf "$home"
-  mkdir -p "$home"
 
   # The build lays its payload down; a copy of it stands for an older build.
   GONGGA_HOME="$home" "$bundle" --version >/dev/null 2>&1
@@ -75,6 +99,7 @@ scenario() {
     echo "the bundle placed no payload: build it with cargo build -p gongga-bundle --features payload" >&2
     return 1
   }
+  rm -rf "$home/payload/older"
   cp -r "$payload" "$home/payload/older"
 
   # A server of that older build, running on its own port.
@@ -100,21 +125,16 @@ scenario() {
   local alive=yes
   stopped "$log" && alive=no
   say "the older payload's server is $alive (wanted $expect)"
-
-  # Everything this scenario started, and nothing else: the window first, so the
-  # server it took as its owner is not stopped by its death but by this list.
-  for pid in $(window_pids); do taskkill //F //T //PID "$pid" >/dev/null 2>&1; done
-  for pid in $(serving_home); do taskkill //F //T //PID "$pid" >/dev/null 2>&1; done
   [[ "$alive" == "$expect" ]]
 }
 
 scenario yes yes; ok "a client-only window keeps the server it was told to use" $?
 scenario no no; ok "any other run replaces that server" $?
-rm -rf "$home"
 
+sha=$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)
+elapsed=$(($(date +%s) - started))
 if [[ $fails == 0 ]]; then
-  echo "PASS  the bundle stops a server only when the program about to run will replace it"
+  printf 'PASS · %ss · bundle-client-only · %s\n' "$elapsed" "$sha"
 else
-  echo "FAIL  $fails scenario(s) failed"
+  printf 'FAIL · %ss · bundle-client-only · %d scenario(s) · %s\n' "$elapsed" "$fails" "$sha"; exit 1
 fi
-exit $((fails > 0))
