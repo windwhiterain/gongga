@@ -53,8 +53,9 @@ window_pids() {
 }
 
 cleanup() {
-  # The window first: the server it took as its owner stops with it, and the
-  # list below is the one that says what this run started.
+  # The window first, then whatever still serves this home: a window that started
+  # no server of its own leaves the one it was pointed at running, so the list
+  # below is what says this run left nothing behind.
   for pid in $(window_pids); do
     alive "$pid" && taskkill //PID "$pid" //T //F >/dev/null 2>&1
   done

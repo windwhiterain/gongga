@@ -647,9 +647,7 @@ async fn dial(
             version: env!("CARGO_PKG_VERSION").to_string(),
             build: protocol::BUILD.to_string(),
             label: format!("bridge/pid-{}", std::process::id()),
-            // A bridge is a relay, not a window: it owns nothing.
-            owner: None,
-            // Nor is it a session's: it speaks for whoever wrote to it.
+            // Not a session's: it speaks for whoever wrote to it.
             session: None,
         },
         key,

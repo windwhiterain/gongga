@@ -48,26 +48,29 @@ that waited. A wait that outlives the stop must not be work `Runtime::drop` join
 nothing is lost by asking instead of waiting, because the pending row is written
 before a turn starts (`commands::deliver`), not when the server leaves.
 
-## signal::adopt -- the window that did not start it
+## Who owns a server: `--parent`, and nothing else
 
-`--parent` only covers a server the window started. A server can also arrive from
-somewhere else -- `evolve`'s successor is `exec`ed by a launcher nobody typed into a
-window -- and then nothing watched it: closing every window left it holding the port
-and the home lock, and the next window could not start a server of its own.
+`--parent` names the process whose lifetime this server shares. That is the whole
+of ownership, and it is decided before the server serves its first connection.
 
-So a window that connects to an *unowned* server takes it. `ClientInfo::owner` is
-the pid of a window and only of a window: a one-shot command sends nothing, because
-it exits in milliseconds and would take the server with it. The handshake claims it
-through `signal::adopt`, which is the same follower `--parent` uses, so the death is
-a stop request rather than a kill.
+A handover keeps it: `evolve`'s successor is `exec`ed by a launcher nobody typed
+into a window, and it carries the old server's argv -- `--parent` included -- so a
+server that arrives already running is still the one its window started, and
+nothing has to watch it on the window's behalf.
 
-The first claim wins and a second window is refused -- two owners would mean one
-window closing ends a server another is reading. A server started for a window was
-owned before any connection arrived, so `--parent` and a claim never both apply.
+There used to be a second way to acquire a server: `signal::adopt`, where the first
+window to connect to an *unowned* one took it, so that a server left by a handover
+would not outlive every window. It made every server somebody started by hand -- a
+`serve` in a terminal, the bundle's `server`, a command's `ensure` -- stop when the
+first window connected to it closed, which is the opposite of what an operator
+means by starting a server. The handover was the only case it was for, and
+`--parent` already covers it, so the claim is gone: a client reads, and a dial is
+not a way to come to own something.
 
-Two callers deliberately pass no parent. `cli serve` execs the server in its own
-console and watches it, and `ensure` starts one for a command that exits in
-milliseconds: both servers have to outlive the process that started them.
+A server started by hand therefore belongs to nobody, and outlives every window
+that reads it. Two callers deliberately pass no parent: `cli serve` execs the server
+in its own console and watches it, and `ensure` starts one for a command that exits
+in milliseconds -- both have to outlive the process that started them.
 
 ## What a signal cannot fix
 
@@ -84,5 +87,5 @@ source reaches it first.
 The server normally runs under a supervisor (`server-supervise.md`), and this path
 is unchanged by it: `--parent` still names the window, because the child gets the
 same argv, so the watcher below watches the window and not the supervisor. `cancel`
-and an adopted owner still end in exit code 0, which is what tells the supervisor
-not to start the server again.
+and a dead owner still end in exit code 0, which is what tells the supervisor not
+to start the server again.

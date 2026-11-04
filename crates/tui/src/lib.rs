@@ -178,29 +178,42 @@ struct PaneCell {
 ///
 /// # Invariant
 ///
-/// A window can only learn this from the greeting: `owner` is the pid the server
-/// follows, and this process's own pid is what makes it *our* server. See
-/// `docs/notes/tui-lib.md`.
+/// A server's lifetime belongs to whoever *started* it, never to whoever
+/// connects: dialling is reading. Two facts make one ours -- the pid `spawn`
+/// answered, and the pid the server follows (`--parent`) being this window's,
+/// which is how a handover keeps the lifetime it had. Anything else outlives the
+/// window. See `docs/notes/tui-run.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Server {
     /// This window started it, so it goes when the window does.
     Ours { pid: u32 },
-    /// It was already running; this window took it as its own, and it goes too.
-    Adopted { pid: u32 },
-    /// Another window owns it: this one reads and cannot stop it.
+    /// A handover of this window's server: a newer build in its place, carrying
+    /// the same `--parent`, so it goes too.
+    Handover { pid: u32 },
+    /// Another window started it: this one reads it and cannot stop it.
     Another { pid: u32 },
-    /// Nobody owns it: nothing will stop it when its windows close.
+    /// Nobody started it for a window: it outlives every window that reads it.
     Unowned { pid: u32 },
 }
 
 impl Server {
-    /// The words the header shows: two, because the status shares the row.
+    /// Whether closing this window stops this server.
+    ///
+    /// # Invariant
+    ///
+    /// One answer for two readers: the header draws it and the way out acts on
+    /// it, so the bar cannot promise a lifetime the window does not honour.
+    pub fn is_ours(self) -> bool {
+        matches!(self, Server::Ours { .. } | Server::Handover { .. })
+    }
+
+    /// The words the header shows: whether it is own, why, and then its pid.
     pub fn label(&self) -> String {
         match self {
             Server::Ours { pid } => format!("own #{pid}"),
-            Server::Adopted { pid } => format!("adopted #{pid}"),
-            Server::Another { pid } => format!("other #{pid}"),
-            Server::Unowned { pid } => format!("unowned #{pid}"),
+            Server::Handover { pid } => format!("own #{pid} (handover)"),
+            Server::Another { pid } => format!("not own #{pid} (another window)"),
+            Server::Unowned { pid } => format!("not own #{pid} (no owner)"),
         }
     }
 }

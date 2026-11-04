@@ -737,11 +737,12 @@ survives none of those.
 Resolved once per process, for the reason `Connection::endpoint` gives: two
 attempts of one reconnect must not mean two different servers.
 
-`Endpoint::owning` adds one thing to it: the pid of a window, sent as
-`ClientInfo::owner`. A window is the only client that sets it, so a server nobody
-started for a window still stops when that window closes. A one-shot command leaves
-it `None`, and the resolution path never invents one: the process that typed the
-command is gone before the answer arrives.
+An `Endpoint` carries an address and a key, and nothing about ownership: a dial is
+a read. There used to be `Endpoint::owning`, which put the window's pid in the hello
+so an unowned server would follow it -- and that made a server somebody had started
+by hand stop when the first window closed. A server's lifetime is set by whoever
+started it (`--parent`), so a client has nothing to say about it. See
+`docs/notes/server-signal.md`.
 
 ## Client::draining, and the status line
 

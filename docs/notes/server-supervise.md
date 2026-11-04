@@ -32,8 +32,8 @@ supervisor sees a stop rather than a crash. That is the whole of the
 supervisor's ignorance: it does not speak the protocol, send a signal, or need a
 second lifetime mechanism.
 
-The same holds for `signal::adopt`: a window that takes an unowned server stops it
-the same way, and it is also exit 0.
+Every stop reaches the same exit 0, whoever asked: `cancel`, a signal, the window
+the server follows, or a handover carrying that window's pid.
 
 ## The exit code says which ending it was
 
@@ -41,7 +41,7 @@ Every ending used to be anyhow's 0 or 1, which the supervisor cannot tell apart.
 
 | code | meaning | supervisor |
 | --- | --- | --- |
-| 0 | asked to stop: `cancel`, a signal, a dead window, an adopted owner | leaves with 0 |
+| 0 | asked to stop: `cancel`, a signal, a dead window, a handover of one | leaves with 0 |
 | 130 | a second, insistent ask (existing `asked()` path) | leaves with 130 |
 | 2 | refused to run, and said why: another server holds the home, the config will not parse, the migration failed, `net::serve` returned an error | leaves with 2 |
 | anything else | died without saying anything: a panic, a kill, `SIGKILL` | restarts it |
@@ -115,8 +115,8 @@ a second process breaks it in both directions:
 
 1. **The greeting carries the supervisor.** `ServerInfo.supervisor` is
    `GONGGA_SUPERVISOR`. A window compares the pid it spawned with either pid, and
-   `tui::run::whose_server` / `stops_a_server` accept both. Without it a window
-   reads its own server as somebody else's and prints `adopted #…`.
+   `tui::run::whose_server` accepts both. Without it a window reads its own server
+   as somebody else's and prints `not own #…`.
 2. **`cli::server::stop` kills the supervisor first.** `cancel` is asked for; if
    the server has not gone within five seconds it is killed -- and a server killed
    under a live supervisor is started again, which would make "stop what serves

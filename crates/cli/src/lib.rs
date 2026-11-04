@@ -58,11 +58,7 @@ impl Connection {
         let addr = resolve_server(self)?;
         let key = resolve_key(self)
             .ok_or_else(|| anyhow!("no connection key: pass --key or set GONGGA_KEY"))?;
-        Ok(Endpoint {
-            addr,
-            key,
-            owner: None,
-        })
+        Ok(Endpoint { addr, key })
     }
 }
 
@@ -1753,18 +1749,39 @@ impl Link {
         let _ = self.send(ClientMessage::Bye).await;
     }
 
-    /// Stops the server as SPEC's `cancel` does: a kill would lose the work it
-    /// stores for the next start.
-    pub async fn cancel(&self) {
-        let _ = self
+    /// Stops the server as `cancel` does, and answers whether it heard.
+    ///
+    /// # Invariant
+    ///
+    /// SPEC's stop, not a kill: a kill loses the work `cancel` stores for the next
+    /// start. The answer is what makes it a stop and not a wish -- `send` only
+    /// queues, and a window asking on its way out is one statement away from
+    /// dropping the runtime that would write it. See `docs/notes/cli-lib.md`.
+    pub async fn cancel(&mut self) -> bool {
+        let asked = self
             .send(ClientMessage::Command {
-                id: 0,
+                id: CANCEL_ID,
                 name: "cancel".to_string(),
                 args: Default::default(),
             })
             .await;
+        if asked.is_err() {
+            return false;
+        }
+        while let Some(bytes) = self.recv().await {
+            if let Ok(ServerMessage::Event(Event::CmdResult { id, .. })) = decode_server(&bytes)
+                && id == CANCEL_ID
+            {
+                return true;
+            }
+        }
+        false
     }
 }
+
+/// The id a way-out's `cancel` carries: nothing else is outstanding on a link
+/// that is closing.
+const CANCEL_ID: u64 = u64::MAX;
 
 /// Runs one command line, with the runtime each command needs.
 ///
@@ -1832,13 +1849,9 @@ async fn connect_elsewhere(args: &Args, command: &[String]) -> anyhow::Result<()
             "{addr} is remembered as this client's server, but there is no key to dial it              with: pass --key, set GONGGA_KEY, or start the server once to generate one"
         )
     })?;
-    let (link, greeting) = dial(Endpoint {
-        addr,
-        key,
-        owner: None,
-    })
-    .await
-    .map_err(|failure| failure.into_error())?;
+    let (link, greeting) = dial(Endpoint { addr, key })
+        .await
+        .map_err(|failure| failure.into_error())?;
     let mut client = build_client(args);
     greeting.apply(&mut client, &mut NullSink::default());
     println!(
@@ -1997,21 +2010,16 @@ pub async fn list_commands(args: &Args) -> anyhow::Result<()> {
 // Connection
 
 /// A resolved address and key, fixed for the life of the process.
+///
+/// # Invariant
+///
+/// What to dial, and nothing about who may stop the server: a client reads a
+/// server, and only the process that started one decides its lifetime. See
+/// `docs/notes/cli-lib.md`.
 #[derive(Clone)]
 pub struct Endpoint {
     addr: SocketAddr,
     key: String,
-    /// Who would own the server if it has no owner yet: see [`ClientInfo::owner`].
-    owner: Option<u32>,
-}
-
-impl Endpoint {
-    /// Says that this process is the window the server should follow when nobody
-    /// owns it. See `docs/notes/cli-lib.md`.
-    pub fn owning(mut self, pid: u32) -> Self {
-        self.owner = Some(pid);
-        self
-    }
 }
 
 /// The address this client would dial, without needing its key.
@@ -2023,11 +2031,7 @@ pub fn endpoint(args: &Connection) -> anyhow::Result<Endpoint> {
     let addr = resolve_server(args)?;
     let key = resolve_key(args)
         .ok_or_else(|| anyhow!("no connection key: pass --key or set GONGGA_KEY"))?;
-    Ok(Endpoint {
-        addr,
-        key,
-        owner: None,
-    })
+    Ok(Endpoint { addr, key })
 }
 
 /// Why a dial did not produce a link.
@@ -2081,7 +2085,7 @@ pub async fn dial(endpoint: Endpoint) -> Result<(Link, Greeting), DialFailure> {
     let (wire, mut stream) = channel.split();
 
     let hello = encode_client(&ClientMessage::Hello {
-        client: client_info(endpoint.owner),
+        client: client_info(),
         key: endpoint.key.clone(),
     })
     .map_err(|e| DialFailure::Fatal(e.into()))?;
@@ -2148,8 +2152,7 @@ impl Greeting {
         }
     }
 
-    /// The window that server follows: a client compares it with its own pid to
-    /// learn whether it is in charge.
+    /// The pid whose lifetime that server shares: closing it stops the server.
     pub fn owner(&self) -> Option<u32> {
         match &self.0 {
             ServerMessage::Hello { server, .. } => server.owner,
@@ -2192,13 +2195,17 @@ async fn connect(args: &Args) -> anyhow::Result<(Client, Link)> {
     Ok((client, link))
 }
 
-/// Identifies this client to the server, and says who owns it if nobody does.
-fn client_info(owner: Option<u32>) -> ClientInfo {
+/// Identifies this client to the server.
+///
+/// # Invariant
+///
+/// No lifetime of anybody's: a hello says who is reading the server, and never
+/// who may stop it. See `docs/notes/cli-lib.md`.
+fn client_info() -> ClientInfo {
     ClientInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
         build: protocol::BUILD.to_string(),
         label: format!("cli/pid-{}", std::process::id()),
-        owner,
         // Only this process knows whose shell it is: `subscribe` needs it.
         session: calling_session(),
     }

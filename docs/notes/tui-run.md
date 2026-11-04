@@ -121,16 +121,22 @@ whose server is three milliseconds behind was already saying "nothing is listeni
 it without asking. The home's instance lock is what arbitrates when two windows open
 at once: the loser's child exits and the winner serves.
 
-Which process is "ours" is answered by pid, not by address. `spawn` returns the pid
-of the child it started, the greeting carries the pid of whoever answers, and only a
-match is cancelled on the way out. An address would say the wrong thing in both
-directions: another window's server for the same home has the same address, and a
-`connect_server` can move this window onto a server it did not start.
+Which process is "ours" is answered by pid, not by address, and only two pids can
+answer it: the one `spawn` returned (this window started that process, or the
+watchdog above it) and the one the greeting carries as `owner` when it is this
+window's own. The second is how a handover stays ours: `evolve` starts the successor
+with the old server's argv, `--parent <window pid>` included, so a server that
+arrives already running is still the one this window started. An address would say
+the wrong thing in both directions: another window's server for the same home has
+the same address, and a `connect_server` can move this window onto a server it did
+not start.
 
-Every dial says which pid this window is, so a server nobody started for it takes
-this window as its owner and stops when the window does. That is what keeps an
-`evolve` successor under the window's control: it arrives already running, and
-without the claim nothing would ever stop it. See `docs/notes/server-signal.md`.
+Nothing on the wire claims a server. A dial used to carry the window's pid so that
+an unowned server would follow it, which kept a handover under control but made
+every server somebody had started by hand -- `serve`, the bundle's `server` -- die
+with the first window that connected to it. Ownership is decided before any
+connection now, so a window that merely reads a server leaves it running. See
+`docs/notes/server-signal.md`.
 
 Resolved before the terminal is taken over: a bad address is not fixed by retrying,
 and an error is far easier to read on the normal screen than after `restore()`
@@ -161,13 +167,17 @@ indistinguishable from a first start.
 Once per outage: the status line carries "attempt N", so repeating this every few
 hundred milliseconds would bury the log without adding information.
 
-A server this window started is stopped on the way out, through `cancel` rather
-than a kill: `cancel` is SPEC's stop -- it finishes what cannot be serialised and
-stores the rest, which a killed process cannot do. Only that server, and only
-while the window is still pointed at the address it started: one somebody else
-runs is not a window's to stop, and a `connect_server` that moved elsewhere must
-not take the old one down with it. Once the link is gone there is nothing to ask
-with, so the way out stops nothing.
+A server this window started -- or a handover of it -- is stopped on the way out,
+through `cancel` rather than a kill: `cancel` is SPEC's stop -- it finishes what
+cannot be serialised and stores the rest, which a killed process cannot do.
+
+# Invariant
+
+What is stopped is what the header drew: `Server::is_ours` is the one answer, read
+from the screen rather than recomputed, so `own #…` means "closing this stops it"
+and `not own #…` means "it keeps running". That is also what makes a
+`connect_server` safe: after one, the screen names no server, and once the link is
+gone there is nothing to ask with anyway.
 
 Best-effort goodbye: the server drops this connection now instead of waiting out
 its idle timeout. Worth nothing if it fails -- the window is already closing.
@@ -175,11 +185,22 @@ its idle timeout. Worth nothing if it fails -- the window is already closing.
 ## Two pids, one server
 
 The pid `spawn` answers is the watchdog's and the pid in the greeting is the
-server's, so `whose_server` and `stops_a_server` accept either match. With only the
-greeting's pid, a window would print its own server as `adopted #…`, and the way
-out would cancel a server it believed it had not started. See
-`server-supervise.md`.
+server's, so `whose_server` accepts either match. With only the greeting's pid, a
+window would print its own server as `not own #… (no owner)`, and the way out would
+leave a server it had started. See `server-supervise.md`.
 
 Pids and not an address: a `connect_server` can move the window onto a server it
 did not start, and an address would then say the wrong thing -- the window would
 read another build's answers as if they were its own.
+
+## The four labels
+
+The header says whether the server is own, and why, because the answer decides
+whether closing the window stops it:
+
+| label | meaning | closes with the window |
+| --- | --- | --- |
+| `own #pid` | the process `spawn` started | yes, by `cancel` |
+| `own #pid (handover)` | a newer build in its place, carrying `--parent` | yes, by `cancel` and by the follower |
+| `not own #pid (another window)` | started for another window | no |
+| `not own #pid (no owner)` | started by hand, for no window | no |

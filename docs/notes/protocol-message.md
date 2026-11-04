@@ -184,13 +184,15 @@ reads a greeting from a server that has never heard of them instead of failing t
 decode it: a window against an older server draws titles without numbers, which is
 what that server measured.
 
-## ClientInfo — owner
+## ClientInfo — no owner
 
-`label` says who is talking, for a log line. `owner` says something the server acts
-on: the pid of the window that would be this server's owner if it has none. Only a
-window sets it -- a one-shot command and a bridge send nothing -- because the server
-follows that pid, and a process that exits in milliseconds would take the server down
-with it. Absent is the normal case: `None` is not `Some(0)`.
+`label` says who is talking, for a log line. Nothing else here is acted on: a hello
+is a client saying it is reading, and a server's lifetime is decided by whoever
+started it. There used to be an `owner` field -- the pid a window claimed an
+unowned server with, so that server stopped when that window closed -- and it made
+every server somebody started by hand die with the first window that connected.
+`ServerInfo::owner` remains: it is the server *telling* a reader whose lifetime it
+shares (`--parent`), which is a fact, not a claim.
 
 ## ClientInfo — session
 

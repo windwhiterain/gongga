@@ -34,16 +34,6 @@ pub struct ClientInfo {
     pub build: String,
     /// Free-form label shown by the server in logs, e.g. `cli/pid-1234`.
     pub label: String,
-    /// The process that would own this server if nobody does.
-    ///
-    /// # Invariant
-    ///
-    /// A window sets it to its own pid, so a server it did not start still stops
-    /// when that window closes; a one-shot command never sets it, because it exits
-    /// in milliseconds and would take the server with it.
-    /// See `docs/notes/protocol-message.md`.
-    #[serde(default)]
-    pub owner: Option<u32>,
     /// The session whose shell started this client, when one did.
     ///
     /// # Invariant
@@ -103,8 +93,8 @@ pub struct ServerInfo {
     pub home: String,
     pub cwd: String,
     pub model: String,
-    /// The process this server follows: a reader compares it with its own pid. See
-    /// `docs/notes/protocol-message.md`.
+    /// The process this server's lifetime belongs to (`--parent`): closing it stops
+    /// the server.
     #[serde(default)]
     pub owner: Option<u32>,
     /// The watchdog this server runs under, when it runs under one.

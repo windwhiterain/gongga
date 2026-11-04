@@ -1533,8 +1533,14 @@ gongga-server …            <- supervisor：不建 runtime、不拿 server.lock
 抄 argv 不抄 env：写成 flag 会被抄进继任者的 argv，继任者于是成了自己的 supervisor。
 
 **子进程拿到同一份 argv，`--parent` 不动。** 窗口死 → 现有 `signal::follows` 软停 → turn
-存成 pending → 退出 0 → supervisor 看到的是「被叫停」而不是崩溃。`signal::adopt` 同理。
-supervisor 因此不需要懂协议、不需要发信号、不需要第二条生命周期。
+存成 pending → 退出 0 → supervisor 看到的是「被叫停」而不是崩溃。supervisor 因此不需要懂
+协议、不需要发信号、不需要第二条生命周期。
+
+**生命周期只由 `--parent` 决定。** 曾经还有一条 `signal::adopt`：第一个连上来的窗口可以
+「认领」一个无主服务端，靠的是换手之后继任者没人看着。代价是任何**手动起的**服务端
+（`serve`、bundle 的 `server`）都会在第一个连接它的窗口关闭时被 cancel——2026-11-04 用户
+报的就是这个。换手本身已经由 launcher 抄 `--parent` 解决，所以认领整条路径删掉了：连接
+只是读，不是获得所有权。
 
 **退出码是它唯一要懂的语言。** 0 被叫停、130 第二次坚持、**2 说出了理由**（启动拒绝、
 迁移失败、`net::serve` 返回 Err），其余（101 panic / 被 kill / 信号）重启。`2` 是唯一要永久
@@ -1544,7 +1550,7 @@ supervisor 因此不需要懂协议、不需要发信号、不需要第二条生
 退避 200ms 起、×2、上限 30s，子进程活过 60s 复位；**不设次数上限**（AGENTS 禁 budget）。
 
 **两处 pid 语义跟着改。** 窗口 spawn 到的是 supervisor 的 pid，greeting 里是服务端的 pid：
-`ServerInfo::supervisor` 让 `tui::run::whose_server` / `stops_a_server` 两个 pid 都认；
+`ServerInfo::supervisor` 让 `tui::run::whose_server` 两个 pid 都认；
 `cli::server::stop` 的 kill 兜底**先杀 supervisor**——否则刚被杀的服务端立刻被重新拉起，
 「停掉这个 home 的服务端」就不成立。
 

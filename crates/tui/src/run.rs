@@ -188,51 +188,21 @@ fn starts_a_server(client_only: bool) -> bool {
     !client_only
 }
 
-/// Whether the window on the way out stops the server it started.
-///
-/// See `docs/notes/tui-run.md`.
-///
-/// # Invariant
-///
-/// Only the *process* this window spawned: a home somebody else already serves
-/// refuses the lock, so this window's child exits at once and the pid answering
-/// the dial is somebody else's: comparing pids is what makes it answerable.
-///
-/// `spawned` is what `spawn` answered: the watchdog's pid when the server runs
-/// under one, so either pid means this window started it.
-fn stops_a_server(spawned: Option<u32>, answering: Answering) -> bool {
-    let Some(ours) = spawned else {
-        return false;
-    };
-    ours != 0 && (Some(ours) == answering.pid || Some(ours) == answering.supervisor)
-}
-
-/// What the greeting said about the server that answered.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct Answering {
-    /// The pid in the greeting, which is the server process itself.
-    pid: Option<u32>,
-    /// The watchdog that server runs under, when it runs under one.
-    supervisor: Option<u32>,
-}
-
 /// Whose server answered, from what this window knows about it.
 ///
 /// # Invariant
 ///
-/// Starting it is the only way to *be* its owner without asking: otherwise the
-/// greeting's `owner` decides, and this process's pid is what makes it ours. A
-/// server with no owner at all is nobody's, which is worth saying because nothing
-/// will stop it. See `docs/notes/tui-run.md`.
-fn whose_server(spawned: Option<u32>, answering: Answering, owner: Option<u32>, me: u32) -> Server {
-    let pid = answering.pid.unwrap_or(0);
-    if pid != 0 && (spawned == Some(pid) || answering.supervisor == spawned) {
+/// Being told is not owning: only two facts count, and both were decided before
+/// any dial -- the pid `spawn` answered (the server, or the watchdog above it),
+/// and the pid the server follows being this window's own, which a handover
+/// carries in `--parent`. See `docs/notes/tui-run.md`.
+fn whose_server(spawned: Option<u32>, greeting: &Greeting) -> Server {
+    let pid = greeting.pid();
+    if spawned.is_some() && (spawned == Some(pid) || spawned == greeting.supervisor()) {
         return Server::Ours { pid };
     }
-    match owner {
-        Some(pid) if pid == me => Server::Adopted {
-            pid: answering.pid.unwrap_or(0),
-        },
+    match greeting.owner() {
+        Some(owner) if owner == std::process::id() => Server::Handover { pid },
         Some(_) => Server::Another { pid },
         None => Server::Unowned { pid },
     }
@@ -254,12 +224,15 @@ fn wait_for(spawned: Option<u32>, attempts: u32, backoff: Duration) -> Duration 
 }
 
 /// One attempt, resolving afresh: `connect_server` moves the address.
+///
+/// # Invariant
+///
+/// Nothing of this window goes on the wire as a claim: a server's lifetime is
+/// decided by whoever started it, so a window that merely dials -- into a home
+/// somebody serves by hand, or onto a `connect_server` -- reads it and leaves it
+/// running when it closes. See `docs/notes/tui-run.md`.
 async fn dial_now(conn: cli::Connection) -> Result<(Link, Greeting), DialFailure> {
-    // The pid claims an unowned server, so it stops when this window does.
-    let endpoint = conn
-        .endpoint()
-        .map_err(DialFailure::Temporary)?
-        .owning(std::process::id());
+    let endpoint = conn.endpoint().map_err(DialFailure::Temporary)?;
     cli::dial(endpoint).await
 }
 
@@ -302,10 +275,6 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
         },
         false => None,
     };
-    // The server that answers the dial, which is not `spawned` when the home was
-    // already served by somebody else.
-    let mut answering = Answering::default();
-
     // The version of the listings already drawn, so a landed answer repaints once.
     let mut drawn_listings: u64 = 0;
     let result = loop {
@@ -426,16 +395,7 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                 drop(dialing.take());
                 match outcome {
                     Ok((open, greeting)) => {
-                        answering = Answering {
-                            pid: Some(greeting.pid()),
-                            supervisor: greeting.supervisor(),
-                        };
-                        ui.set_server(Some(whose_server(
-                            spawned,
-                            answering,
-                            greeting.owner(),
-                            std::process::id(),
-                        )));
+                        ui.set_server(Some(whose_server(spawned, &greeting)));
                         // Applying the greeting is the resync: catalog, sessions, model.
                         greeting.apply(&mut client, &mut TuiSink(&mut ui));
                         link = Some(open);
@@ -470,12 +430,12 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
         answer_completion(&mut client, link.as_ref(), &mut ui, &mut drawn_listings).await;
     };
 
-    // Nothing this window started is left behind: `cancel` is SPEC's stop, and
-    // it stores what cannot be serialised.
-    if stops_a_server(spawned, answering) {
-        if let Some(open) = link.as_ref() {
-            open.cancel().await;
-        }
+    // SPEC's stop, for the server the bar drew as own, and nothing for one that is
+    // somebody else's: one answer decides both.
+    if ui.screen().server.is_some_and(Server::is_ours)
+        && let Some(open) = link.as_mut()
+    {
+        open.cancel().await;
     }
     // Best-effort goodbye: saves the server its idle timeout; failure is harmless.
     if let Some(open) = link.take() {

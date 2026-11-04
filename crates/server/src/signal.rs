@@ -10,17 +10,15 @@ use tokio::sync::Notify;
 /// The asks so far: the first cancels, a second one leaves without waiting.
 static ASKS: AtomicUsize = AtomicUsize::new(0);
 
-/// The one notifier every ask reaches, and the one an adopted owner reaches too.
+/// The one notifier every ask reaches, and the one the followed process reaches
+/// too.
 static WAKE: std::sync::OnceLock<Arc<Notify>> = std::sync::OnceLock::new();
 
-/// Whether a process already owns this server, so nothing else may claim it.
-static OWNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// The pid that owns it, once one does; 0 is nobody.
+/// The pid this server follows, once it follows one; 0 is nobody.
 static OWNER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// The pid this server follows: the greeting carries it, so a client can say
-/// whether it is the window in charge.
+/// whether closing it would stop this server.
 pub fn owner() -> Option<u32> {
     match OWNER.load(Ordering::SeqCst) {
         0 => None,
@@ -40,14 +38,14 @@ where
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
     let wake = Arc::new(Notify::new());
-    // Before anything can connect: the handler and an adopted owner nudge one
+    // Before anything can connect: the handler and the followed process nudge one
     // notifier, whichever of them arrives first.
     let _ = WAKE.set(wake.clone());
     if !install(wake.clone()) {
         tracing::warn!("no signal handler: a Ctrl-C will not preserve the turn");
     }
     if let Some(pid) = parent {
-        adopt_pid(pid);
+        follow_pid(pid);
     }
     waiter(wake, stop);
 }
@@ -70,47 +68,19 @@ fn nudge(wake: &Notify) {
     wake.notify_one();
 }
 
-/// Takes the window that connected as this server's owner, if it has none.
+/// Follows `pid`, the process this server was started for.
 ///
 /// # Invariant
 ///
-/// The first window to say so owns it, and its death is a stop request on the
-/// same path a signal takes. A server started by `--parent` is owned already and
-/// refuses; so does a second window, because two owners would mean one of them
-/// closing ends a server the other is reading.
-/// See `docs/notes/server-signal.md`.
-pub fn adopt(pid: u32) -> bool {
-    let claimed = claim(WAKE.get().cloned(), &OWNED, pid);
-    if claimed {
-        OWNER.store(pid, Ordering::SeqCst);
-        tracing::info!(
-            owner = pid,
-            "no owner yet: following the window that connected"
-        );
-    }
-    claimed
-}
-
-/// Takes `pid` as the owner whatever the flag says: `--parent` is decided before
-/// any connection, so it wins by arriving.
-fn adopt_pid(pid: u32) {
-    OWNED.store(true, Ordering::SeqCst);
+/// `--parent` is the whole of it, decided before any connection: a client that
+/// dials reads this server and never becomes its owner, so a server somebody
+/// started by hand keeps running when the windows that read it close. A handover
+/// carries the flag over. See `docs/notes/server-signal.md`.
+fn follow_pid(pid: u32) {
     OWNER.store(pid, Ordering::SeqCst);
     if let Some(wake) = WAKE.get() {
         follows(pid, wake.clone());
     }
-}
-
-/// The decision, with the notifier and the flag handed in so a test can drive it.
-fn claim(wake: Option<Arc<Notify>>, owned: &std::sync::atomic::AtomicBool, pid: u32) -> bool {
-    let Some(wake) = wake else {
-        return false;
-    };
-    if owned.swap(true, Ordering::SeqCst) {
-        return false;
-    }
-    follows(pid, wake);
-    true
 }
 
 /// A signal, asked once or insisted on.

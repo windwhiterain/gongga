@@ -124,13 +124,7 @@ pub async fn stop(conn: &Connection, home: &Path, addr: SocketAddr) -> Option<u3
         return None;
     }
     let key = crate::resolve_key(conn).or_else(|| crate::key_of(home))?;
-    let (link, greeting) = dial(Endpoint {
-        addr,
-        key,
-        owner: None,
-    })
-    .await
-    .ok()?;
+    let (mut link, greeting) = dial(Endpoint { addr, key }).await.ok()?;
     let pid = greeting.pid();
     link.cancel().await;
     if waits_out(pid, CANCEL_GRACE).await {
@@ -225,13 +219,7 @@ async fn answers(home: &Path, addr: SocketAddr) -> bool {
     let Some(key) = crate::key_of(home) else {
         return false;
     };
-    match dial(Endpoint {
-        addr,
-        key,
-        owner: None,
-    })
-    .await
-    {
+    match dial(Endpoint { addr, key }).await {
         Ok((link, _)) => {
             link.goodbye().await;
             true

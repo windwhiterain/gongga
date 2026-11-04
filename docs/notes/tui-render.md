@@ -212,6 +212,12 @@ The bar spans the row and is painted by the status's kind: cyan for the server's
 facts, red for an error, green for a result. One colour for all three would make
 "copy failed" and "3 session(s)" look equally urgent.
 
+It carries two facts: whose lifetime the server shares (`own #1234`,
+`own #1234 (handover)`, `not own #1234 (another window)`, `not own #1234 (no
+owner)`) and the status. The first words are the answer to "does closing this
+window stop my server", which is why the bar exists at all -- the four labels are
+`tui-run.md`'s table, and `Server::label` is the only place they are spelled.
+
 ## draw_list
 
 SPEC's session list, on the left of the body: a tree, one row per prefix of a name.
