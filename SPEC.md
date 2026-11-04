@@ -137,30 +137,27 @@ for the first user message to a empty session, find all meta references recursiv
   - Shift+Up: last cmd input.
 
 ## Sticky
-- stikcy argument will auto fill corresponding arguments in cmd if missing and not optional.
-- sticky argument bundle will auto fill all corresponding arguments in cmd if all missing and any of them is not optional.
+- stikcy argument will auto fill corresponding arguments in cmd if missing.
+- sticky argument bundle will auto fill all corresponding arguments in cmd if all missing.
 
 
 ## Cmd
-all named argument's name can be ommited via argument order.
+all non optional named argument's name can be ommited via argument order.
 
 - server:
-  - `set_session --name <session>(sticky) --model <model> [--thinking <thinking>](default: highest in supported or default if unkown) [--ctx_limit <ctx_limit%>](default: "70%") [--remote <remote>](default: none) [--cwd <cwd>](default: ".") [--must_create <bool>](default: false)`:
-    - plus set session sticky.
-    - (model, thinking, ctx_limit) is sticky bundle.
-    - (remote, cwd) is sticky bundle.
+  - `set_session --name <session>(sticky) {--model <model> [--thinking <thinking>](default: highest in supported or default if unkown) [--ctx_limit <ctx_limit%>](default: "70%")}(sticky) {[--remote <remote>](default: none) --cwd <cwd>}(sticky) [--must_create <bool>](initial: false)`:
     - `--must_create true` refuses the command when the session already exists: a caller
       that starts its own session must not join another one's transcript by reusing a name.
-  - `del_session --name <session>`: also delete all bash with the session name in key.
-  - `send_message --name <session> --message <message>`: inject message instantly, turn waiting bash to backgound.
-  - `interrupt_session <session>`
+  - `del_session --name <session>(sticky)`: also delete all bash with the session name in key.
+  - `send_message --message <message> --name <session>(sticky)`: inject message instantly, turn waiting bash to backgound.
+  - `interrupt_session <session>(sticky)`
   - `cancel`: not instantly, but finish every task that can't be serialized to data, then store the pending tasks into data, the exit. next start will auto pick up those tasks.  
   - `trigger_event <event>`
   - `subscribe <subscription> <pattern> [--persistant] [--bash <bash> --cmd <cmd>] [--python <python> --code <code>]`:
     when pattern matched triggered event, run bash cmd or python code in persistant bash or python interpreter.
   - `del_subscribe <subscription>`
 - server_script: that registered by external python scripts
-  - `get_messages [<begin>]:[<end>] --session <session>`: return the items in closed range <begin>:<end> (negative number count from end, missing number means boundary).
+  - `get_messages [<begin>]:[<end>] --session <session>(sticky)`: return the items in closed range <begin>:<end> (negative number count from end, missing number means boundary).
   - `skill <name> [args...]` | `skill ls` | `skill which <name>` | `skill run <name>`:
     run the entry a skill declares, resolved by the roots above. argv is passed through
     unparsed, the entry's exit code is this command's, and neither needs a server nor a
@@ -173,9 +170,9 @@ all named argument's name can be ommited via argument order.
     - `block_size`: max line count of non-output block, auto scroll.
     - `box_edge`: columns at each side of an opened block where the wheel scrolls the
       events instead of the block; the block is drawn there like anywhere else.
-  - `set_render_session <bool> --session <session>`
+  - `set_render_session <bool> --session <session>(stikcy)`
   - `connect_server [--ip <ip>](default: localhost) --port <port>`
-  - `serve <port> [--home <path>](default: "~/.gongga")`
+  - `serve <port> [--home <home>](default: "~/.gongga")`
 
 ## Skill
 a skill is a directory holding `SKILL.md`: `name`, `description`, and what its body needs.
