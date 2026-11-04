@@ -12,9 +12,9 @@ all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, l
   - cmd fully documented and diagnosed, transparent server cmd wrapper, do not know server cmd.
 - tui: binary, transparent cli wrapper.
 - bundle: binary, bundle server/cli/tui's binary, route the cmd.
-  - `tui [--client_only]`: `bundle server` and connected to it, kill/exit will cancle the server it spawn.
+  - `tui [--client_only]`: `bundle server` and connected to it, kill/exit will cancel the server it spawn.
     - `--client_only`: suppress auto spawn server.
-  - `server (route to server: [--home <path>])`: extract server/cli into `<home>/bin/`, if previous binary exists and are running and version does not match, cancle server, skill cli, then replace.
+  - `server (route to server: [--home <path>])`: extract server/cli into `<home>/bin/`, if previous binary exists and are running and version does not match, cancel server, skill cli, then replace.
 - ...: more crates may be added, with the same naming and layout.
 
 ## Server Client Connection
@@ -31,9 +31,9 @@ standard OpenAI Response API.
 ## Session name
 path, rendered in hierarchy.
 ## Tool
-tool are wrapper of cmd that agents can directly call to avoid escape.
+tool are tunnel of cmd that agents can directly call to avoid escape.
 
-all tool has optional `description`, `max_output` argument.
+all tool has optional `description`, `max_output` argument that the tunnel consume.
 - `max_output`: in chars, if exeeded, save to temp file and return the file metadata {path, chars, line count}
 
 use `which("bash")` as bash.
@@ -54,7 +54,7 @@ use `which("bash")` as bash.
   non-meta reference the remote skill.
 - remote_python{code, ...}: mirror remote_bash.
 - read_file/write_file/replace
-- wait{timeout_ms = <timeout_ms>}
+- wait{timeout_ms = <timeout_ms>}: if interrupted, the call end.
 
 File tools run through the Python tool's interpreter on the session's machine, so
 file content is a JSON field and never a shell command or Python source:
