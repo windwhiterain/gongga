@@ -1819,6 +1819,17 @@ def read_ship_protocol():
     return None
 
 
+def branch_exists(git, checkout, ref):
+    """Whether this checkout has `ref`, asked of git rather than of a name."""
+    return (
+        subprocess.run(
+            [git, "-C", checkout, "rev-parse", "--verify", "--quiet", ref],
+            capture_output=True,
+        ).returncode
+        == 0
+    )
+
+
 def seed_ship_checkout(home):
     """Put the content in the home before the server asks for it.
 
@@ -1849,15 +1860,28 @@ def seed_ship_checkout(home):
                 checkout,
                 clone.stderr.decode("utf-8", "replace").strip(),
             )
+    # The server walks `main`, and a clone brings the source's *checked out* branch
+    # plus `origin/main`: a source left on `local` therefore has no local `main`, and
+    # the walk finds no commit to read. Naming it costs one command and is what the
+    # install is about to ask for anyway.
+    if not branch_exists(git, checkout, "refs/heads/main"):
+        base = (
+            "origin/main"
+            if branch_exists(git, checkout, "refs/remotes/origin/main")
+            else None
+        )
+        if not base:
+            return "cannot seed %s: neither main nor origin/main exists" % checkout
+        subprocess.run([git, "-C", checkout, "branch", "main", base], capture_output=True)
     head = subprocess.run(
-        [git, "-C", checkout, "rev-parse", "HEAD"], capture_output=True
+        [git, "-C", checkout, "rev-parse", "main"], capture_output=True
     )
     says = subprocess.run(
-        [git, "-C", checkout, "show", "HEAD:ship.toml"], capture_output=True
+        [git, "-C", checkout, "show", "main:ship.toml"], capture_output=True
     )
     speaks = "protocol = %s" % protocol
     verdict = "yes" if speaks in says.stdout.decode("utf-8", "replace") else "no"
-    return "seeded %s at %s, speaks %s: %s" % (
+    return "seeded %s at main %s, speaks %s: %s" % (
         checkout,
         head.stdout.decode("utf-8", "replace").strip()[:8],
         protocol,
