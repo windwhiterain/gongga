@@ -51,8 +51,6 @@ pub struct Agent {
     pub default_context: Option<u64>,
     pub tools: Arc<ToolRegistry>,
     pub bus: EventBus,
-    /// Sessions whose next turn is the one long-tier keepalive.
-    pub keepalive: std::sync::Mutex<std::collections::HashSet<String>>,
     /// How often a cached prefix is assumed to be gone: the plan's hyperparameter.
     pub cache_invalid_rate: f64,
     /// This machine's own lifetime for a cached prefix, in millis; `None` leaves the
@@ -203,8 +201,9 @@ impl Agent {
         let mut step: u32 = 0;
         // The step whose refusal was already answered with a row.
         let mut repaired: Option<u32> = None;
-        // Taken once, so every step of a keepalive turn sends the long tier.
-        let keepalive = self.take_keepalive(&name);
+        // Read once, so a turn sends one tier on every step; a set_session that
+        // lands mid-turn is meant for the next one.
+        let stated_tier = session.tuning().cache_tier;
 
         let outcome = loop {
             // A `cancel` ends the turn here, where it can be stored whole.
@@ -246,7 +245,7 @@ impl Agent {
                 llm: &llm,
                 effort: effort.as_deref(),
                 cwd: &cwd,
-                keepalive,
+                tier: stated_tier.as_deref(),
             };
             match self.step(session, id, &name, turn, &cancel, &attempt).await {
                 Ok(StepResult::Finished) => {
@@ -550,73 +549,46 @@ impl Agent {
         (text.len() as f64 * ratio).round().max(1.0) as usize
     }
 
-    /// Whether the turn about to start is the one long-tier keepalive.
-    pub(crate) fn is_keepalive(&self, session: &str) -> bool {
-        self.keepalive
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains(session)
-    }
-
-    /// Marks a session's next turn as the long-tier keepalive.
-    pub(crate) fn mark_keepalive(&self, session: &str) {
-        self.keepalive
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(session.to_string());
-    }
-
-    /// Drops a keepalive mark whose message could not be delivered.
-    pub(crate) fn unmark_keepalive(&self, session: &str) {
-        self.keepalive
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(session);
-    }
-
-    /// Takes the one long-tier keepalive mark for a session, if it is there.
-    fn take_keepalive(&self, session: &str) -> bool {
-        self.keepalive
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(session)
-    }
-
-    /// The tier this turn sends: the shortest declared window, or the longest
-    /// for the one keepalive turn.
+    /// The tier every request of this session sends.
     ///
     /// # Invariant
     ///
-    /// A machine that named its own tier keeps it. Otherwise only a tier the
-    /// roster declares may be sent, so an ignored wire field is never priced.
-    fn cache_tier(&self, llm: &LlmClient, long: bool) -> Option<String> {
+    /// A session that named its own tier keeps it; otherwise the server's
+    /// configured tier wins, and only then does the roster's shortest tier
+    /// answer. Only a tier the roster declares may be sent, so an ignored
+    /// wire field is never priced.
+    fn cache_tier(&self, llm: &LlmClient, stated: Option<&str>) -> Option<String> {
+        let entry = self.providers.place(llm.model());
+        let tiers = entry.as_ref().map(|entry| &entry.cache_ttl_tiers);
+        if let Some(tier) = stated.filter(|t| tiers.is_some_and(|m| m.contains_key(*t))) {
+            return Some(tier.to_string());
+        }
         if let Some(tier) = llm.cache_tier() {
             return Some(tier.to_string());
         }
-        let entry = self.providers.place(llm.model());
-        let tiers = entry.as_ref().map(|entry| &entry.cache_ttl_tiers)?;
-        let picked = if long {
-            tiers.iter().max_by_key(|(_, secs)| **secs)
-        } else {
-            tiers.iter().min_by_key(|(_, secs)| **secs)
-        }?;
+        let picked = tiers?.iter().min_by_key(|(_, secs)| **secs)?;
         Some(picked.0.clone())
     }
 
-    /// How far into the short tier's window the interrupt and keepalive fire.
+    /// How far into the tier's window the interrupt and the next heartbeat fire.
     ///
     /// # Invariant
     ///
     /// The margin is a share of the stated window, not an invented grace period:
-    /// firing at the last instant would let lazy eviction win the race.
-    pub(crate) fn cache_fire_after_ms(&self, model: &str) -> u64 {
-        let window = self.cache_ttl_ms.or_else(|| {
-            self.providers
-                .place(model)
-                .as_ref()
-                .and_then(|entry| entry.cache_ttl_secs)
-                .map(|secs| secs.saturating_mul(1_000))
-        });
+    /// firing at the last instant would let lazy eviction win the race. A session
+    /// that named its own tier times against that tier's own window.
+    pub(crate) fn cache_fire_after_ms(&self, model: &str, tier: Option<&str>) -> u64 {
+        let entry = self.providers.place(model);
+        let window = tier
+            .and_then(|name| entry.as_ref().and_then(|e| e.cache_ttl_tiers.get(name)))
+            .map(|secs| secs.saturating_mul(1_000))
+            .or(self.cache_ttl_ms)
+            .or_else(|| {
+                entry
+                    .as_ref()
+                    .and_then(|e| e.cache_ttl_secs)
+                    .map(|secs| secs.saturating_mul(1_000))
+            });
         let pct = 100_u64.saturating_sub(self.model_config.cache_margin_pct as u64);
         window.unwrap_or(0).saturating_mul(pct) / 100
     }
@@ -635,10 +607,11 @@ impl Agent {
         ctx: &crate::tools::ToolContext,
         cancel: &tokio_util::sync::CancellationToken,
         model: &str,
+        tier: Option<&str>,
         session_id: i64,
     ) -> crate::tools::ToolOutcome {
-        let fire_after = self.cache_fire_after_ms(model);
-        if fire_after == 0 || !self.model_config.cache_keepalive {
+        let fire_after = self.cache_fire_after_ms(model, tier);
+        if fire_after == 0 {
             return self.tools.run(name, args, ctx).await;
         }
         let since = self
@@ -814,7 +787,7 @@ impl Agent {
             llm,
             effort,
             cwd,
-            keepalive,
+            tier,
         } = *attempt;
         let generation = self.store.context_generation(id)?;
         let phase_started = std::time::Instant::now();
@@ -843,8 +816,8 @@ impl Agent {
         // then what came out over the time after.
         let mut first_token: Option<std::time::Instant> = None;
         phases.llm_started = Some(requested);
-        // Short for every request, long for the one keepalive turn. See SPEC.
-        let tier = self.cache_tier(llm, keepalive);
+        // One tier for the whole turn, settled before its first request.
+        let tier = self.cache_tier(llm, tier);
         let mut rx = llm.stream(
             &prompt.instructions,
             prompt.index.as_deref(),
@@ -1324,8 +1297,17 @@ impl Agent {
             .get("max_output")
             .and_then(serde_json::Value::as_u64)
             .map(|max| max as usize);
+        let stated_tier = session.tuning().cache_tier;
         let outcome = self
-            .run_before_cache_expiry(&tool, arguments, &ctx, &tool_cancel, &model, id)
+            .run_before_cache_expiry(
+                &tool,
+                arguments,
+                &ctx,
+                &tool_cancel,
+                &model,
+                stated_tier.as_deref(),
+                id,
+            )
             .await;
         let run_ms = run_started.elapsed().as_millis() as u64;
         let attach_started = std::time::Instant::now();
@@ -1574,8 +1556,8 @@ enum StepResult {
 struct Attempt<'a> {
     number: u32,
     llm: &'a LlmClient,
-    /// The one long-tier keepalive turn, so every step sends the same tier.
-    keepalive: bool,
+    /// The session's static tier, so every step sends the same one.
+    tier: Option<&'a str>,
     /// How hard the model should think, when the session asked for a level.
     effort: Option<&'a str>,
     /// Where the session's shell stands, which the row records so a move is seen.

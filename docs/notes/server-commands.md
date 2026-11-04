@@ -517,21 +517,23 @@ argv, so `--session '#monitor'` had to be quoted or written `--session=#monitor`
 `@skill:` and `@file:` match on a prefix that ends in a colon, so a bare `@monitor`
 is never read as one (`meta::mentions`).
 
-## one long-tier keepalive per turn
+## a session's own heartbeat
 
-`spawn_turn` reads the keepalive mark *before* `run_turn` starts, because the
-turn's first step consumes it. After the turn ends it starts one timer of
-`window * (100 - margin_pct) / 100`; when that fires it delivers
-`KEEPALIVE_MESSAGE` through the same `deliver` / `begin_turn` path an ordinary
-message takes. So the keepalive is a real turn whose whole trajectory sends the
-long tier, and its message lands at the tail of the transcript, where a new
-item does not disturb the prefix.
+`spawn_turn` reads `Tuning::cache_keepalive` before `run_turn` starts. A session
+that never asked for it starts no timer. One that did gets, at the end of every
+turn, a timer of `window * (100 - margin_pct) / 100`, where `window` is its own
+tier's declared lifetime. When the timer fires it delivers
+`(time notice: 2026-11-04 09:57 UTC)` -- `clock::now()`, the same spelling the
+prompt carries -- through the ordinary `deliver` / `begin_turn` path. The notice
+is a real message at the tail of the transcript, where a new item does not
+disturb the prefix.
 
-Two guards make it "at most once". A turn that was itself the keepalive never
-schedules another. And the timer checks `last_usage_at` against the turn's end
-and the session's busy flag: a request during the wait already refreshed the
-prefix, so the long tier would be a second write for nothing. If `deliver`
-refuses, the mark is dropped, otherwise a later real turn would inherit it.
+Every turn ends by scheduling the next notice, including a turn that was itself
+a notice, so the chain has no last one. Two guards keep the timers from piling
+up: the timer checks `last_usage_at` against the turn's end, so a request during
+the wait has already refreshed the prefix and the older timer retires; and it
+checks the session's busy flag, so a running turn owns the next timer. A session
+set to `cache_keepalive false` stops the chain at its next turn end.
 
-The timer is a task, not a process, and it ends with the message. A server that
-shuts down takes it with it; nothing survives the turn to be discovered later.
+The timer is a task, not a process. A server that shuts down takes it with it;
+nothing survives the turn to be discovered later.

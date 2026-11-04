@@ -366,3 +366,20 @@ exit 0、`cargo check -p gongga-server` exit 0、`cargo fmt --all -- --check` 0�
 `.dev/target-cache-tiers`（3.4G）后恢复 5.8G。`cargo build` / `check` 的
 `os error 5` 是 Windows 增量锁，用 `CARGO_INCREMENTAL=0` 绕开。
 
+
+### Fifth round: the tier and the heartbeat are session state
+
+The user rejected a per-request or per-turn decision entirely. The verdicts:
+
+- No dynamic split. A session decides its tier once; every request it sends uses
+  that spelling. No mark travels with a turn or a message.
+- Whether the prefix is kept warm is also session state. `true` means an
+  unbounded chain of notices, not "one at most".
+- The notice's whole text is `(time notice: <current time>)`, from `clock::now()`.
+
+So `sessions` carries `cache_tier` and `cache_keepalive`, both set through
+`set_session`. The `Agent.keepalive` set and its four methods are gone;
+`Attempt` carries the tier read once at turn start. Every turn end schedules the
+next notice, including a notice turn, which is what makes the chain unbounded.
+The global `[model] cache_keepalive` and `GONGGA_CACHE_KEEPALIVE` are gone: a
+machine cannot turn a heartbeat on for someone else's session.

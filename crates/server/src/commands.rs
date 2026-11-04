@@ -22,8 +22,10 @@ use crate::store::{MessageRow, PendingTask, Store, Transcript};
 /// still reaches whoever asked for it.
 const SHUTDOWN_NOTICE: Duration = Duration::from_millis(250);
 
-/// Sent once with the long tier, when the short tier's window is nearly spent.
-const KEEPALIVE_MESSAGE: &str = "检查一下有没有可以完善的地方";
+/// The heartbeat's whole content: a clock reading, so a warm prefix is all it buys.
+fn time_notice() -> String {
+    format!("(time notice: {})", crate::clock::now())
+}
 
 #[derive(Clone)]
 pub struct Dispatch {
@@ -88,11 +90,11 @@ fn spawn_turn(d: &Dispatch, work: TurnWork) {
     let bus = d.bus.clone();
     let active: ActiveGuard = ActiveGuard::new(d.active.clone());
     // Read before the turn starts: its first step consumes the mark.
-    let was_keepalive = d.agent.is_keepalive(work.session.name());
     let keepalive_agent = d.agent.clone();
     let keepalive_d = Arc::new(d.clone());
     let keepalive_session = work.session.clone();
     let keepalive_model = d.agent.model_config.model();
+    let keepalive_tuning = work.session.tuning();
     tokio::spawn(async move {
         let _active = active;
         let session = work.session.clone();
@@ -121,11 +123,12 @@ fn spawn_turn(d: &Dispatch, work: TurnWork) {
                 drop(gate);
             }
         }
-        // One long-tier keepalive near the window's end; it schedules no next one.
-        if was_keepalive || !keepalive_agent.model_config.cache_keepalive {
+        // Each turn schedules the next notice, so the chain has no last one.
+        if !keepalive_tuning.cache_keepalive {
             return;
         }
-        let wait_ms = keepalive_agent.cache_fire_after_ms(&keepalive_model);
+        let wait_ms = keepalive_agent
+            .cache_fire_after_ms(&keepalive_model, keepalive_tuning.cache_tier.as_deref());
         if wait_ms == 0 {
             return;
         }
@@ -144,11 +147,7 @@ fn spawn_turn(d: &Dispatch, work: TurnWork) {
             if refreshed || keepalive_session.busy() {
                 return;
             }
-            keepalive_agent.mark_keepalive(&name);
-            let outcome = deliver(keepalive_d.as_ref(), &name, KEEPALIVE_MESSAGE.to_string()).await;
-            if !outcome.ok {
-                keepalive_agent.unmark_keepalive(&name);
-            }
+            let _ = deliver(keepalive_d.as_ref(), &name, time_notice()).await;
         });
     });
 }
@@ -338,6 +337,26 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                         .map(|s| s.to_string())
                         .collect(),
                     ),
+                ),
+                kind_arg(
+                    "cache_tier",
+                    "The cache tier every request of this session sends, in the model's \
+                     roster spelling. Omit to keep what the session has; a session that \
+                     named none sends the shortest tier its model declares.",
+                    false,
+                    "cache_tier",
+                    Some("name"),
+                    CompletionSource::None,
+                ),
+                kind_arg(
+                    "cache_keepalive",
+                    "Whether a periodic `(time notice: ...)` message keeps this \
+                     session's prefix warm after every turn. `false` by default; \
+                     `true` keeps sending one per tier window with no last one.",
+                    false,
+                    "cache_keepalive",
+                    Some("true|false"),
+                    CompletionSource::Static(vec!["true".into(), "false".into()]),
                 ),
                 // SPEC: `[--remote <remote>](initial: none)`.
                 kind_arg(
@@ -949,7 +968,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     // must never select another one's transcript.
     match args.get("must_create") {
         None => {}
-        Some(raw) => match parse_flag(raw) {
+        Some(raw) => match parse_bool(raw) {
             Ok(false) => {}
             Ok(true) => {
                 if d.store.get_session(&name).ok().flatten().is_some() {
@@ -998,6 +1017,27 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         Some(raw) => match parse_percent(raw) {
             Ok(v) => Some(v),
             Err(e) => return Outcome::err(e),
+        },
+    };
+    // A tier the model does not declare fails here, not silently on the wire.
+    let cache_tier = match args.get("cache_tier").map(String::as_str) {
+        None => None,
+        Some(tier) => {
+            if !entry.cache_ttl_tiers.contains_key(tier) {
+                let known = entry.cache_ttl_tiers.keys().cloned().collect::<Vec<_>>();
+                return Outcome::err(format!(
+                    "--cache_tier {tier:?} is not a tier this model declares: {}",
+                    known.join(", ")
+                ));
+            }
+            Some(tier.to_string())
+        }
+    };
+    let cache_keepalive = match args.get("cache_keepalive").map(String::as_str) {
+        None => None,
+        Some(raw) => match parse_bool(raw) {
+            Ok(value) => Some(value),
+            Err(e) => return Outcome::err(format!("--cache_keepalive: {e}")),
         },
     };
     // A percentage needs a window; silently keeping the old budget would lie.
@@ -1137,7 +1177,14 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         tuning.context_limit = Some(percent);
         changed = true;
     }
-    if changed {
+    let cache_changed = cache_keepalive.is_some() || cache_tier.is_some();
+    if let Some(value) = cache_keepalive {
+        tuning.cache_keepalive = value;
+    }
+    if let Some(tier) = cache_tier {
+        tuning.cache_tier = Some(tier);
+    }
+    if changed || cache_changed {
         // Persist before applying: a restart must restore what turns here read.
         if let Err(e) = d.store.set_session_tuning(
             session.id(),
@@ -1147,6 +1194,15 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             &entry.model,
         ) {
             return Outcome::err(format!("could not save the session settings: {e}"));
+        }
+        if cache_changed {
+            if let Err(e) = d.store.set_session_cache(
+                session.id(),
+                tuning.cache_tier.as_deref(),
+                tuning.cache_keepalive,
+            ) {
+                return Outcome::err(format!("could not save the cache settings: {e}"));
+            }
         }
         session.set_tuning(tuning.clone());
     }
@@ -1250,13 +1306,13 @@ fn resolve_model(d: &Dispatch, model: &str) -> Result<crate::providers::Entry, S
     }
 }
 
-/// `--must_create` as a value, or what is wrong with it: never a silent default.
-fn parse_flag(raw: &str) -> Result<bool, String> {
+/// A flag's value, or what is wrong with it: never a silent default.
+fn parse_bool(raw: &str) -> Result<bool, String> {
     match raw.trim() {
         "true" => Ok(true),
         "false" => Ok(false),
         other => Err(format!(
-            "--must_create takes {}, not {other:?}",
+            "expected {}, not {other:?}",
             protocol::SHOW_VALUES.join(" or ")
         )),
     }
@@ -1417,7 +1473,7 @@ async fn subscribe(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
     }
     let persistent = match args.get("persistant") {
         None => false,
-        Some(raw) => match parse_flag(raw) {
+        Some(raw) => match parse_bool(raw) {
             Ok(value) => value,
             Err(_) => {
                 return Outcome::err(format!(
@@ -2051,6 +2107,8 @@ fn stated_tuning(
             model: (!row.model.is_empty()).then(|| row.model.clone()),
             context_limit: row.context_limit,
             thinking_effort: row.thinking_effort.clone(),
+            cache_tier: row.cache_tier.clone(),
+            cache_keepalive: row.cache_keepalive,
         },
     }
 }

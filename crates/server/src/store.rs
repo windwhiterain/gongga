@@ -109,7 +109,14 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- How many models a monitor turn has been switched through for the failure
     -- this session is in. Reset when the session stops being in error, so a new
     -- failure starts the search again.
-    monitor_attempts INTEGER NOT NULL DEFAULT 0
+    monitor_attempts INTEGER NOT NULL DEFAULT 0,
+    -- The tier every request of this session sends, in the roster's spelling.
+    -- NULL picks the shortest tier the roster declares, so a row written before
+    -- this column existed reads what a session that never asked reads.
+    cache_tier TEXT,
+    -- Whether a periodic time notice keeps this session's prefix warm. Off by
+    -- default: a session that never asked starts no timer of its own.
+    cache_keepalive INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS sessions_by_status ON sessions(status);
 
@@ -332,6 +339,14 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (
             "monitor_attempts",
             "ALTER TABLE sessions ADD COLUMN monitor_attempts INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "cache_tier",
+            "ALTER TABLE sessions ADD COLUMN cache_tier TEXT",
+        ),
+        (
+            "cache_keepalive",
+            "ALTER TABLE sessions ADD COLUMN cache_keepalive INTEGER NOT NULL DEFAULT 0",
         ),
     ] {
         add_column_if_missing(conn, "sessions", column, ddl)?;
@@ -648,7 +663,8 @@ impl Store {
                     s.created_at, s.updated_at,
                     (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS messages,
                     s.context_limit, s.thinking_effort,
-                    s.context_tokens, s.cached_tokens, s.tps, s.ttft_ms, s.remote
+                    s.context_tokens, s.cached_tokens, s.tps, s.ttft_ms, s.remote,
+                    s.cache_tier, s.cache_keepalive
              FROM sessions s";
 
     /// Every session in `error`, with what a monitor turn still owes it.
@@ -751,6 +767,8 @@ impl Store {
                 ttft_ms: r.get::<_, Option<i64>>(13)?.map(|ms| ms.max(0) as u64),
             },
             remote: r.get(14)?,
+            cache_tier: r.get(15)?,
+            cache_keepalive: r.get::<_, i64>(16)? != 0,
         })
     }
 
@@ -784,6 +802,24 @@ impl Store {
                 now_millis(),
                 id
             ],
+        )?;
+        Ok(())
+    }
+
+    /// The session's static tier and heartbeat switch, written apart from tuning.
+    pub fn set_session_cache(
+        &self,
+        id: i64,
+        tier: Option<&str>,
+        keepalive: bool,
+    ) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE sessions
+                SET cache_tier = ?1,
+                    cache_keepalive = ?2,
+                    updated_at = ?3
+              WHERE id = ?4",
+            params![tier, i64::from(keepalive), now_millis(), id],
         )?;
         Ok(())
     }
@@ -1966,6 +2002,11 @@ pub struct SessionRow {
     pub usage: protocol::Usage,
     /// The endpoint this session's shells run on, when it is not `local`.
     pub remote: Option<String>,
+    /// The tier every request sends, in the roster's spelling. `None` picks the
+    /// shortest declared tier.
+    pub cache_tier: Option<String>,
+    /// Whether a periodic time notice keeps this session's prefix warm.
+    pub cache_keepalive: bool,
 }
 
 /// One session that stopped with an error, as `Store::failures` reports it.

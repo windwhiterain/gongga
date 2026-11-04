@@ -441,6 +441,11 @@ pub struct Tuning {
     pub context_limit: Option<u8>,
     /// How hard to think, in the roster's spelling; `None` is a model publishing no level.
     pub thinking_effort: Option<String>,
+    /// The tier every request sends, in the roster's spelling. `None` picks the
+    /// shortest declared tier; this is a session's own, never per request.
+    pub cache_tier: Option<String>,
+    /// Whether a periodic time notice keeps this session's prefix warm.
+    pub cache_keepalive: bool,
 }
 
 /// A live session. Cheap to clone; the heavy parts are shared.
@@ -1307,6 +1312,8 @@ impl SessionManager {
                 // A session that just came into existence has measured nothing.
                 usage: protocol::Usage::default(),
                 remote: recorded.clone(),
+                cache_tier: None,
+                cache_keepalive: false,
             },
             &mut live,
         )
@@ -1585,6 +1592,8 @@ impl SessionManager {
                     ),
                     context_limit: row.context_limit,
                     thinking_effort: row.thinking_effort,
+                    cache_tier: row.cache_tier,
+                    cache_keepalive: row.cache_keepalive,
                 }),
                 deleted: AtomicBool::new(false),
                 resumable: AtomicBool::new(false),
