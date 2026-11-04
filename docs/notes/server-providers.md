@@ -361,3 +361,14 @@ file it just read. Nothing but SPEC's monitor reads it today (see
 `Catalog::speaks_responses` is the same test `default_entry` applies, asked about
 one named model. A caller choosing between models needs it: the roster knowing a
 model is not the same as this server being able to drive it.
+
+## cache_ttl_tiers
+
+`[[provider]] cache_ttl_tiers` is the roster's statement of which cache tiers a
+request can actually ask for, by the endpoint's own spelling. It used to be a
+field nobody read; `FileProvider` -> `Provider` -> `Entry` now carries it, and
+`ModelConfig::for_entry` hands it to the client so a configured tier is checked
+before it is sent. A provider that states none gets no cache directive, which is
+the default tier. The lifetime of that default is still `cache_ttl_secs`: one
+names which tiers exist, the other how long the one in force lives, and the two
+are not merged.

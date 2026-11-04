@@ -1355,6 +1355,33 @@ impl Store {
     /// A caller that wants to *announce* a row needs the row's own id and stamp,
     /// not a guess: the id is what a subscriber resumes from, and a number
     /// invented here would be a cursor into the wrong place.
+    /// The chance a warm prefix was gone, measured from this home's own answers.
+    ///
+    /// # Invariant
+    ///
+    /// A row counts only when it carries a hit ratio against a non-zero expected
+    /// prefix: a first request has nothing to hit, so it says nothing about a
+    /// provider dropping a cache. `None` is no such row yet.
+    pub fn cache_hit_posterior(&self, model: &str) -> anyhow::Result<Option<f64>> {
+        let conn = self.lock();
+        let mut statement = conn.prepare(
+            "SELECT AVG(1.0 - json_extract(payload, '$.hit_ratio')) FROM events \
+             WHERE kind = 'usage' AND json_extract(payload, '$.model') = ?1 \
+             AND json_extract(payload, '$.hit_ratio') IS NOT NULL \
+             AND json_extract(payload, '$.expected') > 0",
+        )?;
+        Ok(statement.query_row(params![model], |row| row.get::<_, Option<f64>>(0))?)
+    }
+
+    /// When this session last completed, in millis. See `server-prefix-cache.md`.
+    pub fn last_usage_at(&self, session_id: i64) -> anyhow::Result<Option<i64>> {
+        let conn = self.lock();
+        let mut statement = conn.prepare(
+            "SELECT MAX(created_at) FROM events WHERE session_id = ?1 AND kind = 'usage'",
+        )?;
+        Ok(statement.query_row(params![session_id], |row| row.get::<_, Option<i64>>(0))?)
+    }
+
     pub fn append_event_row(
         &self,
         session_id: Option<i64>,

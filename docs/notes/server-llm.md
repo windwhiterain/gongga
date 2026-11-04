@@ -311,11 +311,33 @@ Walking into another directory does not cost it any more. The row still records 
 the shell stood, but nothing is read off disk into the prose, so the prefix bytes are
 the same on either side of a move.
 
-The measurement is `scripts/fake_llm.py`, which models a hit rather than inventing
-one: it splits the body into the units a prefix sees (tools, instructions, then each
-input item), compares them with the previous request's, and reports the shared
-prefix as `cached_tokens`. "We did not break the prefix" is then a number, not a
-reading of code.
+`scripts/fake_llm.py` models a hit rather than inventing one: it splits the body
+into units (tools, instructions, then each input item), compares them with the
+previous request's, and reports the shared prefix as `cached_tokens`. That model
+is an approximation, not the provider's behaviour -- a real endpoint caches a
+token prefix of the whole request quantized to 128-token blocks, not a sequence
+of units (see `docs/notes/server-prefix-cache.md`, "measured, against a real
+provider"). The fake is useful for seeing that a change broke the prefix; it is
+not a measurement of what that change cost.
+
+`Usage::uncached_tokens()` is `input_tokens - cached_tokens`, both from the same
+answer. That is the base a write is charged on. `input_tokens_details` also
+carries `cache_write_tokens`, but a Responses endpoint was measured reporting
+zero even on a cold request that wrote a whole prefix, so the field is kept for
+the record and never used to price anything. See
+`docs/reference/prefix-cache.md` for the four rates that make up the bill.
+
+## cache directives on the wire
+
+`build_head` sends `prompt_cache_options` only when the configured tier appears
+in the roster's `cache_ttl_tiers` for that provider, and `prompt_cache_key` only
+when a machine explicitly enabled affinity. Neither field is sent by default:
+a tier the endpoint ignores would make the plan price a tier that was never in
+force, and not every endpoint accepts the affinity field. A tier's window is a
+claim about the provider, not a constant of this module; a measured 5m tier
+still answered a full hit after 330 seconds on one provider, which is why no
+automatic tier choice is made here. See
+`.agents/notes/2026-11-04-prefix-cache-simulation-and-explicit-tiers.md`.
 
 ## next_sse_block
 
