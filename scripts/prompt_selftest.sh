@@ -129,6 +129,11 @@ fi
 created=$("${cli[@]}" set_session reader "${session_args[@]}" 2>&1)
 [[ "$created" == *'"ok":true'* ]]
 ok "a session is created in the repository" $?
+# The tiers a completion would offer are the tiers the roster declares: a name
+# outside that list is refused here, and the refusal names the ones it has.
+refused=$("${cli[@]}" set_session reader --cache_tier no-such-tier 2>&1)
+[[ "$refused" == *"5m"* && "$refused" == *"1h"* ]]
+ok "a tier the model does not declare is refused, listing the ones it does" $?
 # The message names two references: a skill (resolved through the home) and a file by
 # a *relative* path, whose meaning is the thing a `cd` used to change. A report always
 # names one, which is also what keeps the index from being empty.

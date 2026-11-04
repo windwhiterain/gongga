@@ -346,7 +346,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     false,
                     "cache_tier",
                     Some("name"),
-                    CompletionSource::None,
+                    CompletionSource::ModelTiers,
                 ),
                 kind_arg(
                     "cache_keepalive",

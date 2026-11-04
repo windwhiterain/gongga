@@ -574,6 +574,10 @@ pub struct ModelInfo {
     /// The reasoning levels the roster publishes for this model, in its order.
     #[serde(default)]
     pub levels: Vec<String>,
+    /// The cache tiers it declares, shortest window first: the order a session
+    /// that names none walks from.
+    #[serde(default)]
+    pub tiers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -960,6 +964,13 @@ pub enum CompletionSource {
     /// The model is the one the line names, else the one the session it names
     /// already has, else the server's own -- what the command would really run on.
     ModelLevels,
+    /// Complete against the cache tiers that same model declares.
+    ///
+    /// # Invariant
+    ///
+    /// Same model resolution as [`Self::ModelLevels`]. Only a tier the roster
+    /// declares may be sent, so the list is exactly what the wire would accept.
+    ModelTiers,
     /// Complete against the skills the line's session can open.
     ///
     /// # Invariant

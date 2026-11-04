@@ -89,14 +89,19 @@ Complete this value the way arguments of the type the line names would be
 completed: `set_sticky session <TAB>` offers sessions. The client needs this
 because the shape of the value depends on which type it is going to fill.
 
-## CompletionSource::Models and ::ModelLevels
+## CompletionSource::Models, ::ModelLevels and ::ModelTiers
 
 `Models` completes `provider/model_name` from the greeting's table. `ModelLevels`
-completes what the model *that line runs on* takes: the model it names, else the one
-the session it names already has, else the server's own default -- the same three
-steps `set_session` takes when it resolves a model, so the list offered is the list
-that would run. Neither is `Static`: the list is a fact about this machine's roster,
-and the client holds no copy of it.
+and `ModelTiers` complete what the model *that line runs on* takes -- its reasoning
+levels and its cache tiers -- resolving the model the same way: the one the line
+names, else the one the session it names already has, else the server's own default.
+That is the same three steps `set_session` takes when it resolves a model, so the
+list offered is the list that would run. None is `Static`: the list is a fact about
+this machine's roster, and the client holds no copy of it.
+
+A tier list is ordered by window, shortest first, because that is the tier a
+session naming none would send. It carries no "default" sentinel: naming no tier
+and naming the shortest one are the same request.
 
 An empty level list is not an empty popup. A model the roster does not describe takes
 any spelling, so the client offers every level some model here publishes -- refusing to

@@ -628,6 +628,10 @@ fn resolve(
             let levels = level_choices(ctx, words);
             pick(levels.iter().map(String::as_str), token, "level")
         }
+        CompletionSource::ModelTiers => {
+            let tiers = tier_choices(ctx, words);
+            pick(tiers.iter().map(String::as_str), token, "tier")
+        }
         CompletionSource::Skills => pick(
             ctx.catalog
                 .skill_names(&ctx.place)
@@ -779,6 +783,32 @@ fn level_choices(ctx: &Ctx<'_>, words: &[String]) -> Vec<String> {
         }
     }
     out.push(protocol::THINKING_DEFAULT.to_string());
+    out
+}
+
+/// The cache tiers the line's model declares; every tier some model here
+/// declares when the line names none.
+///
+/// # Invariant
+///
+/// The list comes from the roster, never from this client: a tier it invented
+/// would be a value the wire silently ignores.
+fn tier_choices(ctx: &Ctx<'_>, words: &[String]) -> Vec<String> {
+    let stated = model_named(ctx, words)
+        .and_then(|model| ctx.models.iter().find(|info| info.model == model))
+        .map(|info| &info.tiers)
+        .filter(|tiers| !tiers.is_empty());
+    let source: Box<dyn Iterator<Item = &String>> = match stated {
+        Some(tiers) => Box::new(tiers.iter()),
+        None => Box::new(ctx.models.iter().flat_map(|info| info.tiers.iter())),
+    };
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut out: Vec<String> = Vec::new();
+    for tier in source {
+        if seen.insert(tier.as_str()) {
+            out.push(tier.clone());
+        }
+    }
     out
 }
 

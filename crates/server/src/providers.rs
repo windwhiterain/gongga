@@ -955,12 +955,28 @@ pub fn model_table() -> Vec<protocol::ModelInfo> {
     roster
         .models()
         .into_iter()
-        .map(|model| protocol::ModelInfo {
-            levels: roster
-                .entry(&model)
-                .map(|entry| entry.reasoning_levels)
-                .unwrap_or_default(),
-            model,
+        .map(|model| {
+            let entry = roster.entry(&model).ok();
+            let levels = entry
+                .as_ref()
+                .map(|entry| entry.reasoning_levels.clone())
+                .unwrap_or_default();
+            let mut tiers: Vec<(String, u64)> = entry
+                .as_ref()
+                .map(|entry| {
+                    entry
+                        .cache_ttl_tiers
+                        .iter()
+                        .map(|(name, secs)| (name.clone(), *secs))
+                        .collect()
+                })
+                .unwrap_or_default();
+            tiers.sort_by_key(|(_, secs)| *secs);
+            protocol::ModelInfo {
+                levels,
+                tiers: tiers.into_iter().map(|(name, _)| name).collect(),
+                model,
+            }
         })
         .collect()
 }
