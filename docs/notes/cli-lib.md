@@ -202,6 +202,14 @@ The whole `SessionInfo` goes to the completer, not just the name: a value comple
 a session belongs to that session's directory and machine, and the completer has no
 other place to learn them. See `docs/notes/cli-catalog.md`.
 
+## Event::Models — an edited roster
+
+A roster edit arrives as an event on the connection the window already holds, and the
+client answers it by replacing the catalog's table. Nothing is said in the log: the
+operator edited a file, the server noticed, and the next Tab differs from the last one.
+The popup itself is not recomputed here -- it is rebuilt from the catalog on the next
+keystroke, which is the same rule every other value follows.
+
 ## Client::sync_sticky
 
 The sticky arguments, and the session a bare message goes to. The second is what makes

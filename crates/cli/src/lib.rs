@@ -933,6 +933,8 @@ impl Client {
                 self.set_sessions(sessions, sink);
                 self.refresh(sink);
             }
+            // An edited roster: silent, because nobody asked and nothing failed.
+            Event::Models { models } => self.catalog.set_models(models),
             Event::Status {
                 session,
                 status,

@@ -944,6 +944,27 @@ fn read_fresh(paths: &[PathBuf]) -> Catalog {
     catalog
 }
 
+/// Every model a request could run on here, and the levels the roster publishes.
+///
+/// # Invariant
+///
+/// One list, whether it reaches a client in the greeting or in [`Event::Models`]
+/// after an edit: a completion is the same facts however late it learns them.
+pub fn model_table() -> Vec<protocol::ModelInfo> {
+    let roster = roster();
+    roster
+        .models()
+        .into_iter()
+        .map(|model| protocol::ModelInfo {
+            levels: roster
+                .entry(&model)
+                .map(|entry| entry.reasoning_levels)
+                .unwrap_or_default(),
+            model,
+        })
+        .collect()
+}
+
 /// The machine's roster, re-read whenever a file says it changed.
 ///
 /// # Invariant

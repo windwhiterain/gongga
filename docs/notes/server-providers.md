@@ -244,6 +244,16 @@ complaint: with two layers, the one that failed parsing is the one worth naming,
 and a list of three errors on one line reads as a broken roster rather than a
 broken file.
 
+## model_table
+
+[`Catalog::models`] with what each model publishes, as the wire spells it: the greeting
+carries it and [`Event::Models`] republishes it, and both read this one function so a
+client cannot be greeted with one table and refreshed with another.
+
+Levels travel with the model rather than as a table of their own because they are the
+same fact asked twice: `--model` completes the names, `--thinking` completes what the
+model named there takes, and a roster edit changes both at once.
+
 ## Catalog::models
 
 Every model a request could actually be sent on here, spelled `provider/model_name`

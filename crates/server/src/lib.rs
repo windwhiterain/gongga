@@ -361,11 +361,14 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let stop_watching = dispatch.shutdown.clone();
     tokio::spawn(async move { watching.watch(stop_watching).await });
 
-    // Undelivered messages get a turn, and unseen failures get handed over.
+    // Undelivered messages get a turn, unseen failures get handed over, and an
+    // edited roster is republished.
     let wake = dispatch.clone();
     let watch_home = cfg.home.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+        // The roster a client was last told about: an edit is news exactly once.
+        let mut published = providers::roster().generation();
         loop {
             tick.tick().await;
             let started = commands::nudge_inboxes(&wake);
@@ -373,6 +376,15 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                 tracing::info!(started, "woke sessions holding an undelivered message");
             }
             monitor::sweep(&wake, &watch_home).await;
+            // A client holds the table it was greeted with: hand it the edit.
+            let roster = providers::roster();
+            if roster.generation() != published {
+                published = roster.generation();
+                tracing::info!(generation = published, "provider roster republished");
+                wake.bus.publish(protocol::Event::Models {
+                    models: providers::model_table(),
+                });
+            }
         }
     });
 

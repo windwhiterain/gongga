@@ -112,6 +112,20 @@ so a session holding an undelivered message gets a turn started for it. Checked
 rather than pushed: the row is durable, so a miss here costs a couple of seconds,
 not the message.
 
+## run (roster republish)
+
+The tick that nudges inboxes also carries the roster to clients that are already
+connected. The server re-reads `providers.toml` on its own -- every path that
+resolves a model asks `providers::roster()`, which re-reads when a file's stamp moved --
+but a client holds the table it was greeted with, so the edit would never reach a
+running window. The same tick compares the roster's `generation`, which changes only
+when a read actually happened, and publishes `Event::Models` when it moved.
+
+A broken edit publishes nothing, and that is the point: a roster that stops parsing
+serves the last good list under the *old* generation, so clients keep the table they
+have until the file parses again. Silence here is "nothing changed", never "the
+roster is empty".
+
 ## run (the subscription matcher)
 
 One task for every armed pattern, subscribed to the bus. Event publishing does not
