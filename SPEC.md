@@ -130,22 +130,23 @@ for the first user message to a empty session, find all meta references recursiv
 - hot-key
   - Shift+Enter: new line in cmd_input.
   - PageUp/PageDown (Fn+Up/Down): scroll the sticky session.
-  - Shift+Down: scroll the sticky session to bottom.
+  - Alt+Down: scroll the sticky session to bottom.
   - Shift+Delete: delete sticky session.
   - Alt+V: paste (text/image).
   - Alt+C: copy the selection.
-  - Shift+Up: last cmd input.
+  - Shift+Up/Down: last/next cmd input.
 
 ## Sticky
-- stikcy argument will auto fill corresponding arguments in cmd if missing.
-- sticky argument bundle will auto fill all corresponding arguments in cmd if all missing.
+stikcy argument will auto fill:
+- non optional corresponding argument in cmd if missing.
+- optional corresponding argument's initial value (if it has).
 
 
 ## Cmd
-all non optional named argument's name can be ommited via argument order.
+all named argument's name can be ommited via argument order.
 
 - server:
-  - `set_session --name <session>(sticky) {--model <model> [--thinking <thinking>](default: highest in supported or default if unkown) [--ctx_limit <ctx_limit%>](default: "70%")}(sticky) {[--remote <remote>](default: none) --cwd <cwd>}(sticky) [--must_create <bool>](initial: false)`:
+  - `set_session --name <session>(sticky) [--model <model>](initial: none) [--thinking <thinking>](initial: default) [--ctx_limit <ctx_limit%>](initial: "70%") [--remote <remote>](initial: none) [--cwd <cwd>](initial: ".") [--must_create <bool>](initial: false)`:
     - `--must_create true` refuses the command when the session already exists: a caller
       that starts its own session must not join another one's transcript by reusing a name.
   - `del_session --name <session>(sticky)`: also delete all bash with the session name in key.
