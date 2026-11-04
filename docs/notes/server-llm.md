@@ -311,14 +311,18 @@ Walking into another directory does not cost it any more. The row still records 
 the shell stood, but nothing is read off disk into the prose, so the prefix bytes are
 the same on either side of a move.
 
-`scripts/fake_llm.py` models a hit rather than inventing one: it splits the body
-into units (tools, instructions, then each input item), compares them with the
-previous request's, and reports the shared prefix as `cached_tokens`. That model
-is an approximation, not the provider's behaviour -- a real endpoint caches a
-token prefix of the whole request quantized to 128-token blocks, not a sequence
-of units (see `docs/notes/server-prefix-cache.md`, "measured, against a real
-provider"). The fake is useful for seeing that a change broke the prefix; it is
-not a measurement of what that change cost.
+`scripts/fake_llm.py` models the shape a real endpoint was measured to have: the
+cache is a token prefix of the *whole* request, quantized to complete 128-token
+blocks, so a change inside `instructions` keeps every block before it and
+nothing after (see `docs/notes/server-prefix-cache.md`, "measured, against a
+real provider"). `FAKE_LLM_CACHE_*` sets the block size, the minimum cacheable
+prefix and one of the three lifetime semantics -- `renewing`, `deadline`,
+`evicted` -- and `FAKE_LLM_CACHE_TIERS` keyed by `prompt_cache_options.ttl`
+gives each tier its own numbers. `FAKE_LLM_CACHE_MODEL=units` restores the old
+unit-by-unit model for a comparison. The fake reports `cache_write_tokens` as
+the tokens it wrote, which is a simulation: a real Responses endpoint reports
+zero there, and `uncached_tokens()` below is what a bill is priced on. The point
+is that a tier policy can be exercised without sending a single paid request.
 
 `Usage::uncached_tokens()` is `input_tokens - cached_tokens`, both from the same
 answer. That is the base a write is charged on. `input_tokens_details` also
@@ -333,10 +337,13 @@ the record and never used to price anything. See
 in the roster's `cache_ttl_tiers` for that provider, and `prompt_cache_key` only
 when a machine explicitly enabled affinity. Neither field is sent by default:
 a tier the endpoint ignores would make the plan price a tier that was never in
-force, and not every endpoint accepts the affinity field. A tier's window is a
-claim about the provider, not a constant of this module; a measured 5m tier
-still answered a full hit after 330 seconds on one provider, which is why no
-automatic tier choice is made here. See
+force, and not every endpoint accepts the affinity field. A separate switch
+adds an `X-Session-ID` header with the same session name, for the endpoints
+that pin an inference instance that way; the header travels through
+`stream_once` -> `read_stream` -> `read_stream_inner` beside the key. A tier's
+window is a claim about the provider, not a constant of this module; a measured
+5m tier still answered a full hit after 330 seconds on one provider, which is
+why no automatic tier choice is made here. See
 `.agents/notes/2026-11-04-prefix-cache-simulation-and-explicit-tiers.md`.
 
 ## next_sse_block

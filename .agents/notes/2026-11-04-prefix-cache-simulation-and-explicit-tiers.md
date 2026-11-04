@@ -202,3 +202,59 @@ target 写死成 `../../target/bundle-payload`，与主 checkout 的 exe 锁相�
 
 测试 home 与它 spawn 的进程都已收干净（按 pid 查过，无残留）。
 
+## 第二轮（14:27）：「你给我省点钱吧」—— 验证全部搬回本地
+
+User 在 14:30 打断：「你给我省点钱吧」。当场停掉正在跑的 Q3 对照实验
+（后台任务 `6i0Ydn`，已跑 2m29s）。它已经发出 3 个 cold 请求，那部分钱收不回；
+sleep 之后的 3 个 repeat 没发出，省下了。**Q3 对照实验取消，结论仍然悬着** ——
+「ttl 字段没改变保留期」与「默认档本来就超过 5 分钟」还没分开。
+`cache_probe.py::scenario_ttl` 里的 `control` 组保留（设计有效），但别主动跑。
+
+省钱的正确落点不是少发几次探针，是把策略验证做成**零请求**的：
+- `cache_probe.py` 顶部写明它花真钱、优先用本地模拟器；新增 `--dry-run`
+  （不发请求、不需要 key、不落文件，只打印请求形状）。已验证：无 key 也能跑。
+- `fake_llm.py` 换掉被证伪的 unit-by-unit 模型。现在缓存是**整条请求的
+  token 前缀、按完整 128-token 块量化**，尾部不足一块不入缓存。
+  `FAKE_LLM_CACHE_*` 可调块大小、最小可缓存前缀、三种寿命
+  （`renewing` / `deadline` / `evicted`）、按 `prompt_cache_options.ttl`
+  分档的 `FAKE_LLM_CACHE_TIERS`，以及 `FAKE_LLM_CACHE_MODEL=units` 旧模型对照。
+  usage 增报 `cache_write_tokens`（模拟的写入量；真 Responses 面恒 0，
+  账单仍按 `input − cached`）。新增 `FAKE_LLM_HEADERS_DUMP`。
+- 全部自检都是本地 `python -c`，零网络、零花费：
+
+  | 场景 | (input, cached, written) |
+  | --- | --- |
+  | cold | (1509, 0, 1408) |
+  | repeat | (1509, 1408, 0) |
+  | `instructions` 中间改一个字符 | (1509, **640**, 768) |
+  | 改完再发一次 | (1509, 1408, 0) |
+
+  关键在第三行：改动点之前的 5 个完整块保住、之后全废，命中数始终是 128
+  的倍数 —— 这正是第八轮在真 provider 上量到的「按位置切分」，旧模型给不出。
+- 三种寿命（TTL=0.2s，cold → +0.15 → +0.30）：`renewing` 一直是 1408，
+  `deadline` 在 +0.30 掉到 0（中间命中也不续），`evicted` 一直是 1408。
+  与 `docs/reference/prefix-cache.md` 的三种语义一一对应。
+
+**X-Session-ID 接完了**：`cache_session_header` 从 `[model]` /
+`GONGGA_CACHE_SESSION_HEADER` 经 `LlmClient::stream` → `stream_once` →
+`read_stream` → `read_stream_inner` 到请求头，默认关。本地 L3
+（`prompt_selftest.sh`，真服务端 + fake LLM，零网络）验证两个请求都带
+`X-Session-ID: reader`，body 里 `prompt_cache_key` 同为 `reader`；
+`prompt_cache_options` 按设计缺席（fake roster 没声明 tier）。
+
+### 第二轮的门禁
+
+`cargo build -p server -p cli -p tui` exit 0、`cargo check -p gongga-server`
+exit 0（只有 Windows 增量锁的无害 warning）、`cargo fmt --all -- --check` 0、
+`comments-check` 13 条与主 checkout 基线逐行一致、`test-layout-check` 0、
+`skill_contract.sh` PASS 8、`ship.sh --check` in agreement（后两道在主 checkout
+真跑）、L3 `PASS · prompt · 183be3e`。Python 两文件 `py_compile` 通过。
+无残留进程。
+
+### 仍未做
+
+- Q3 对照实验（等一个不花钱的办法，或用户明确同意再花一次）。
+- `ship/config/config.toml` 里 `cache_invalid_rate` 那句错注释：改 ship 会
+  触发发布流程，没动。
+- L0 结构化 tier 与 L3 自动选档：Q3 的前提没量化之前不做。
+

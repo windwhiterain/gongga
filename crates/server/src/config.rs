@@ -105,6 +105,8 @@ pub struct ModelConfig {
     pub cache_tiers: HashMap<String, u64>,
     /// Send a stable route affinity key, for a provider known to accept one.
     pub cache_affinity: bool,
+    /// Pin the inference instance with an `X-Session-ID` header.
+    pub cache_session_header: bool,
     /// Ask the API not to retain server-side state; we replay the transcript.
     pub store: bool,
     /// How long the provider may take to answer with response headers, the
@@ -280,6 +282,7 @@ struct FileModel {
     store: Option<bool>,
     cache_tier: Option<String>,
     cache_affinity: Option<bool>,
+    cache_session_header: Option<bool>,
     headers_timeout_ms: Option<u64>,
     idle_timeout_ms: Option<u64>,
     max_retries: Option<u32>,
@@ -451,6 +454,10 @@ impl Config {
             cache_affinity: env_or("GONGGA_CACHE_AFFINITY")
                 .and_then(|v| v.parse().ok())
                 .or(model_file.cache_affinity)
+                .unwrap_or(false),
+            cache_session_header: env_or("GONGGA_CACHE_SESSION_HEADER")
+                .and_then(|v| v.parse().ok())
+                .or(model_file.cache_session_header)
                 .unwrap_or(false),
             temperature: model_file.temperature,
             max_output_tokens: model_file.max_output_tokens,
