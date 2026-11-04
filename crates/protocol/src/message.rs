@@ -607,7 +607,9 @@ impl Operation {
         match self {
             Operation::DeleteSession { session } => {
                 let mut args = Args::new();
-                args.insert("session".to_string(), session.clone());
+                // The spec's binding name (its flag is --name); what a sticky
+                // entry keys on is the kind, which is `session`.
+                args.insert("name".to_string(), session.clone());
                 Some(("del_session", args))
             }
             Operation::StickySession { .. } | Operation::RenderSession { .. } => None,
@@ -671,22 +673,25 @@ pub fn client_commands() -> Vec<CommandSpec> {
     [
         (
             "set_sticky",
-            "Set a sticky argument, applied to every later command that takes one.",
+            "Set one sticky entry, applied to every later command that declares its type.",
             vec![
                 spec_arg(
                     "type",
-                    "Argument name, e.g. `session`.",
+                    "Argument type -- the kind a published argument declares, e.g. \
+                     `session`. The catalog's kinds are the only entries there are.",
                     true,
                     true,
+                    None,
                     Some("name"),
                     CompletionSource::Arguments,
                 ),
                 spec_arg(
                     "value",
-                    "Value to apply when the argument is omitted. Completes the way the \
-                     named argument does.",
+                    "Value to apply when the argument is omitted. Completes the way an \
+                     argument of this type does.",
                     true,
                     true,
+                    None,
                     Some("value"),
                     CompletionSource::OfNamedArgument,
                 ),
@@ -697,9 +702,10 @@ pub fn client_commands() -> Vec<CommandSpec> {
             "Remove a sticky argument.",
             vec![spec_arg(
                 "type",
-                "Argument name to remove.",
+                "Argument type to remove, e.g. `session`.",
                 true,
                 true,
+                None,
                 Some("name"),
                 CompletionSource::StickyArguments,
             )],
@@ -715,6 +721,7 @@ pub fn client_commands() -> Vec<CommandSpec> {
                      scrolls inside its own block instead of pushing other blocks away.",
                     false,
                     false,
+                    None,
                     Some("lines"),
                     CompletionSource::Static(BLOCK_SIZES.iter().map(|m| m.to_string()).collect()),
                 ),
@@ -725,6 +732,7 @@ pub fn client_commands() -> Vec<CommandSpec> {
                      box scrolls the box. `0` draws the box edge to edge.",
                     false,
                     false,
+                    None,
                     Some("columns"),
                     CompletionSource::Static(BOX_EDGES.iter().map(|m| m.to_string()).collect()),
                 ),
@@ -732,24 +740,26 @@ pub fn client_commands() -> Vec<CommandSpec> {
         ),
         (
             "set_render_session",
-            "Whether one session is shown beside the list; with no <show>, what it is now.",
+            "Whether one session is shown beside the list.",
             vec![
-                spec_arg(
-                    "session",
-                    "The session whose window this shows or hides.",
-                    true,
-                    true,
-                    Some("name"),
-                    CompletionSource::Sessions,
-                ),
                 spec_arg(
                     "show",
                     "`true` gives the session a header and its events beside the list; \
                      `false` leaves it as a name in the list.",
-                    false,
                     true,
+                    true,
+                    None,
                     Some("true|false"),
                     CompletionSource::Static(SHOW_VALUES.iter().map(|m| m.to_string()).collect()),
+                ),
+                spec_arg(
+                    "session",
+                    "The session whose window this shows or hides.",
+                    true,
+                    false,
+                    Some("session"),
+                    Some("name"),
+                    CompletionSource::Sessions,
                 ),
             ],
         ),
@@ -762,6 +772,7 @@ pub fn client_commands() -> Vec<CommandSpec> {
                     "Where the server is; localhost when omitted.",
                     false,
                     false,
+                    None,
                     Some("ip"),
                     CompletionSource::None,
                 ),
@@ -770,6 +781,7 @@ pub fn client_commands() -> Vec<CommandSpec> {
                     "The UDP port it listens on.",
                     true,
                     false,
+                    None,
                     Some("port"),
                     CompletionSource::None,
                 ),
@@ -784,6 +796,7 @@ pub fn client_commands() -> Vec<CommandSpec> {
                     "The UDP port to listen on, on localhost.",
                     true,
                     true,
+                    None,
                     Some("port"),
                     CompletionSource::None,
                 ),
@@ -792,6 +805,7 @@ pub fn client_commands() -> Vec<CommandSpec> {
                     "The harness home to serve; this client's own home when omitted.",
                     false,
                     false,
+                    None,
                     Some("path"),
                     CompletionSource::Paths,
                 ),
@@ -814,6 +828,7 @@ fn spec_arg(
     description: &str,
     required: bool,
     positional: bool,
+    kind: Option<&str>,
     value_hint: Option<&str>,
     completions: CompletionSource,
 ) -> ArgSpec {
@@ -822,6 +837,8 @@ fn spec_arg(
         description: description.into(),
         required,
         positional,
+        kind: kind.map(str::to_string),
+        bundle: None,
         value_hint: value_hint.map(str::to_string),
         completions,
         sticky: false,
@@ -830,7 +847,13 @@ fn spec_arg(
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArgSpec {
-    /// Name without leading dashes, e.g. `message`.
+    /// Name without leading dashes, e.g. `message`. The binding key on the wire.
+    ///
+    /// # Invariant
+    ///
+    /// Free to change, and it does: `set_session --name <session>` and
+    /// `get_messages --session <session>` bind different names to one idea.
+    /// What a sticky entry keys on is `kind`, never this.
     pub name: String,
     pub description: String,
     pub required: bool,
@@ -840,23 +863,46 @@ pub struct ArgSpec {
     ///
     /// SPEC's command lines spell these `<name>`; the flag arguments stay `--name`.
     /// The declaration order in `args` is the binding order, so a spec's list is
-    /// its syntax.
+    /// its syntax. Every non-optional argument may also be spelled by order alone
+    /// (SPEC: "all non optional named argument's name can be ommited via argument
+    /// order"); an optional one needs its flag.
     #[serde(default)]
     pub positional: bool,
     /// Shown as the value placeholder during completion.
     pub value_hint: Option<String>,
-    /// Where the CLI should source completion candidates.
-    #[serde(default)]
-    pub completions: CompletionSource,
-    /// Whether a sticky value may fill this argument when the caller omits it.
+    /// The argument's type: the sticky entry that fills it.
     ///
     /// # Invariant
     ///
-    /// A required argument is filled from `Sticky` whether or not this is set, so
-    /// the flag exists for the optional ones a reader thinks of as a mode rather
-    /// than a fact about one command -- SPEC spells those `(sticky)`. Absence is
-    /// still a decision everywhere else: a filter that keeps what it had must not
-    /// be overwritten by a sticky value meant for a different command.
+    /// SPEC's `<session>`, `<model>` and so on. Two arguments of one kind share
+    /// one sticky entry wherever they appear, whatever their names spell; the
+    /// kinds the published catalog declares are the only sticky entries there
+    /// are, and an argument with no kind never fills from `Sticky`.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// The bundle this argument belongs to, named by the publisher.
+    ///
+    /// # Invariant
+    ///
+    /// A bundle fills as a unit or not at all: when the command types some but
+    /// not all of its members, `Sticky` leaves the rest alone; when it types
+    /// none, every member an entry holds fills (SPEC's Sticky section -- an
+    /// incomplete bundle is no bundle, the members fill one by one).
+    #[serde(default)]
+    pub bundle: Option<String>,
+    /// Where the CLI should source completion candidates.
+    #[serde(default)]
+    pub completions: CompletionSource,
+    /// SPEC's `(sticky)`: filled from the entry when omitted, and written back
+    /// to it when the command succeeds.
+    ///
+    /// # Invariant
+    ///
+    /// A required argument fills whether or not this is set; the flag exists
+    /// for the optional ones a reader thinks of as a mode rather than a fact
+    /// about one command. Absence is still a decision everywhere else: a filter
+    /// that keeps what it had must not be overwritten by an entry meant for a
+    /// different command.
     #[serde(default)]
     pub sticky: bool,
 }
