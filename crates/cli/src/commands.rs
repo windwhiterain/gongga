@@ -240,6 +240,9 @@ impl Remembered {
     }
 }
 
+/// The sticky entries one client remembers, keyed by argument *kind* -- the
+/// `<session>`, `<model>` types the published catalog declares, never by an
+/// argument's name.
 pub struct Sticky {
     path: PathBuf,
     args: BTreeMap<String, String>,
@@ -266,7 +269,7 @@ impl Sticky {
         self.args.keys().cloned().collect()
     }
 
-    /// `name` -> `value` pairs, for the status bar.
+    /// `kind` -> `value` pairs, for the status bar.
     pub fn pairs(&self) -> Vec<(String, String)> {
         self.args
             .iter()
@@ -274,18 +277,18 @@ impl Sticky {
             .collect()
     }
 
-    pub fn get(&self, name: &str) -> Option<&str> {
-        self.args.get(name).map(String::as_str)
+    pub fn get(&self, kind: &str) -> Option<&str> {
+        self.args.get(kind).map(String::as_str)
     }
 
-    pub fn set(&mut self, name: &str, value: &str) -> anyhow::Result<()> {
-        self.args.insert(name.to_string(), value.to_string());
+    pub fn set(&mut self, kind: &str, value: &str) -> anyhow::Result<()> {
+        self.args.insert(kind.to_string(), value.to_string());
         self.save()
     }
 
     /// Returns false when there was nothing to remove.
-    pub fn del(&mut self, name: &str) -> anyhow::Result<bool> {
-        match self.args.remove(name) {
+    pub fn del(&mut self, kind: &str) -> anyhow::Result<bool> {
+        match self.args.remove(kind) {
             Some(_) => self.save().map(|()| true),
             None => Ok(false),
         }
@@ -304,22 +307,52 @@ impl Sticky {
         write_file(&self.path, &file)
     }
 
-    /// Fills in an argument the caller omitted, when a sticky value stands for it.
+    /// Fills what the caller omitted, from the entries the published spec
+    /// declares -- the spec decides which entries exist, and a value only
+    /// lands on an argument whose `kind` names it.
     ///
     /// # Invariant
     ///
-    /// Only a required argument, or one the spec declares `sticky`, is filled --
-    /// SPEC spells those `(sticky)`. Every other optional argument is left alone,
-    /// because absence there is a decision: a filter that keeps what it had must
-    /// not be overwritten by a value meant for a different command.
+    /// SPEC's Sticky section. A bundle is judged as a unit: partly typed,
+    /// `Sticky` leaves the rest of it alone (all or nothing); wholly omitted,
+    /// every member an entry holds fills -- an incomplete bundle is no bundle,
+    /// the members fill one by one. Everything else with a kind fills when
+    /// omitted; absence where no entry names the argument is a decision, left
+    /// alone.
     pub fn fill(&self, spec: Option<&CommandSpec>, args: &mut Args) {
         let Some(spec) = spec else { return };
+        let mut bundles: Vec<(&str, Vec<&ArgSpec>)> = Vec::new();
         for a in &spec.args {
-            if (a.required || a.sticky) && !args.contains_key(&a.name) {
-                if let Some(v) = self.args.get(&a.name) {
-                    args.insert(a.name.clone(), v.clone());
-                }
+            let Some(bundle) = a.bundle.as_deref() else { continue };
+            match bundles.iter_mut().find(|(name, _)| *name == bundle) {
+                Some((_, members)) => members.push(a),
+                None => bundles.push((bundle, vec![a])),
             }
+        }
+        for (_, members) in &bundles {
+            let typed = members.iter().filter(|m| args.contains_key(&m.name)).count();
+            if typed > 0 && typed < members.len() {
+                continue;
+            }
+            for m in members {
+                self.fill_one(m, args);
+            }
+        }
+        for a in &spec.args {
+            if a.bundle.is_none() {
+                self.fill_one(a, args);
+            }
+        }
+    }
+
+    /// One argument, one entry: fill when omitted and an entry names its kind.
+    fn fill_one(&self, a: &ArgSpec, args: &mut Args) {
+        if args.contains_key(&a.name) {
+            return;
+        }
+        let Some(kind) = a.kind.as_deref() else { return };
+        if let Some(v) = self.args.get(kind) {
+            args.insert(a.name.clone(), v.clone());
         }
     }
 }
@@ -395,21 +428,23 @@ pub fn roots(home: &Path, project: Option<&Path>) -> skill::Roots {
     )
 }
 
-/// Binds a line's tokens to a published spec: bare words fill the
-/// positional slots; `--flag value` names the rest.
+/// Binds a line's tokens to a published spec: bare words fill the orderable
+/// slots; `--flag value` names the rest.
 ///
 /// # Invariant
 ///
 /// The spec is the only syntax the caller knows: a command this client never
 /// heard of cannot be parsed, and a token that names nothing in the spec is a
 /// typo to report, not a shape to guess at. A value may start with `--` only
-/// in the `--flag=--value` spelling; a bare `--word` is read as a flag.
+/// in the `--flag=--value` spelling; a bare `--word` is read as a flag. Every
+/// argument a `--flag` names binds by that flag; a bare word binds the next
+/// unfilled argument that may be spelled by order -- a positional, or a
+/// required one (SPEC: "all non optional named argument's name can be ommited
+/// via argument order"). An optional argument keeps its flag.
 pub fn parse_args(tokens: &[String], spec: Option<&CommandSpec>) -> anyhow::Result<Args> {
-    let flags: Vec<&ArgSpec> = spec
-        .map(|s| s.args.iter().filter(|a| !a.positional).collect())
-        .unwrap_or_default();
+    let flags: Vec<&ArgSpec> = spec.map(|s| s.args.iter().collect()).unwrap_or_default();
     let slots: Vec<&ArgSpec> = spec
-        .map(|s| s.args.iter().filter(|a| a.positional).collect())
+        .map(|s| s.args.iter().filter(|a| a.positional || a.required).collect())
         .unwrap_or_default();
     let takes = |name: &str| flags.iter().any(|a| a.name == name);
     let mut args = Args::new();
@@ -468,7 +503,7 @@ fn insert_once(args: &mut Args, name: &str, value: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The one-line syntax of a command: `<name>`, `[<name>]`, `--name <hint>`.
+/// The one-line syntax of a command: `<hint>`, `[<hint>]`, `--name <hint>`.
 pub fn signature(spec: Option<&CommandSpec>) -> String {
     let Some(spec) = spec else {
         return "nothing".to_string();
@@ -482,9 +517,9 @@ pub fn signature(spec: Option<&CommandSpec>) -> String {
             let hint = a.value_hint.as_deref().unwrap_or(&a.name);
             if a.positional {
                 if a.required {
-                    format!("<{}>", a.name)
+                    format!("<{hint}>")
                 } else {
-                    format!("[<{}>]", a.name)
+                    format!("[<{hint}>]")
                 }
             } else if a.required {
                 format!("--{} <{}>", a.name, hint)

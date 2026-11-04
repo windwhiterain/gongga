@@ -288,27 +288,28 @@ impl Catalog {
     ///
     /// `None` when no catalog has been published yet: that cannot prove a name
     /// wrong, and a client that has not connected must still store one.
-    pub fn fills_sticky(&self, name: &str) -> Option<bool> {
+    pub fn fills_sticky(&self, kind: &str) -> Option<bool> {
         let published = self.read().published.clone();
         if published.is_empty() {
             return None;
         }
-        Some(published.iter().any(|command| {
-            command
-                .args
+        // The catalog decides which entries exist: a type some published
+        // argument declares, never a name.
+        Some(
+            published
                 .iter()
-                .any(|a| a.name == name && (a.sticky || a.required))
-        }))
+                .flat_map(|command| command.args.iter())
+                .any(|a| a.kind.as_deref() == Some(kind)),
+        )
     }
 
-    /// The names a sticky value could ever fill, sorted, for a refusal to name.
+    /// The types a sticky entry could ever name, sorted, for a refusal to name.
     pub fn sticky_names(&self) -> Vec<String> {
         let published = self.read().published.clone();
         let mut names: Vec<String> = published
             .iter()
             .flat_map(|command| command.args.iter())
-            .filter(|a| a.sticky || a.required)
-            .map(|a| a.name.clone())
+            .filter_map(|a| a.kind.clone())
             .collect();
         names.sort_unstable();
         names.dedup();
@@ -420,7 +421,8 @@ impl Completer for Catalog {
         let Some(spec) = cmd.and_then(|c| all.iter().find(|s| s.name == c)) else {
             return Vec::new();
         };
-        // A word completes the flag's value or the next positional slot.
+        // A word completes the flag's value or the next orderable slot -- a
+        // positional or a required argument, whichever binds next.
         // See `docs/notes/cli-catalog.md`.
         let flag_index = if token.is_empty() {
             position.checked_sub(1)
@@ -437,9 +439,14 @@ impl Completer for Catalog {
             return resolve(&arg.completions, &token, &ctx, &words, 0);
         }
         let filled = positional_tokens(&spec, &words, word_at_cursor).len();
+        let flag_bound: std::collections::HashSet<&str> = words
+            .iter()
+            .filter_map(|w| w.strip_prefix("--"))
+            .filter_map(|f| f.split('=').next())
+            .collect();
         spec.args
             .iter()
-            .filter(|a| a.positional)
+            .filter(|a| (a.positional || a.required) && !flag_bound.contains(a.name.as_str()))
             .nth(filled)
             .map(|arg| resolve(&arg.completions, &token, &ctx, &words, 0))
             .unwrap_or_default()
@@ -525,14 +532,16 @@ fn resolve(
         ),
         CompletionSource::Static(values) => pick(values.iter().map(String::as_str), token, "value"),
         CompletionSource::Arguments => {
-            let mut names: Vec<&str> = ctx
+            // The types the catalog declares: the only sticky entries there are.
+            let mut kinds: Vec<&str> = ctx
                 .all
                 .iter()
-                .flat_map(|c| c.args.iter().map(|a| a.name.as_str()))
+                .flat_map(|c| c.args.iter())
+                .filter_map(|a| a.kind.as_deref())
                 .collect();
-            names.sort_unstable();
-            names.dedup();
-            pick(names.into_iter(), token, "argument")
+            kinds.sort_unstable();
+            kinds.dedup();
+            pick(kinds.into_iter(), token, "type")
         }
         // The line's session decides: its own directory here, a listing from the
         // peer when its shells run elsewhere.
@@ -551,10 +560,11 @@ fn resolve(
             token,
             "skill",
         ),
-        // The named argument is the line's first positional; older servers
-        // spell it `--name`. See `docs/notes/cli-catalog.md`.
+        // The type the line's first word names: a set_sticky whose type
+        // token completes its value the way that type's argument does.
+        // See `docs/notes/cli-catalog.md`.
         CompletionSource::OfNamedArgument if depth < 2 => {
-            let named = first_positional(ctx, words).or_else(|| flag_value(words, "name"));
+            let named = first_positional(ctx, words);
             let Some(named) = named else {
                 return Vec::new();
             };
@@ -563,7 +573,7 @@ fn resolve(
                 .iter()
                 .flat_map(|c| c.args.iter())
                 .filter(|a| {
-                    a.name == named
+                    a.kind.as_deref() == Some(named)
                         && !matches!(
                             a.completions,
                             CompletionSource::None | CompletionSource::OfNamedArgument
@@ -610,27 +620,23 @@ fn session_on_line<'a>(inner: &'a Inner, words: &[String]) -> Option<&'a Session
     inner.sessions.iter().find(|s| s.name == name)
 }
 
-/// The session name a line carries, wherever its spec keeps the argument.
-fn session_named<'a>(inner: &'a Inner, words: &'a [String]) -> Option<&'a str> {
-    if let Some(value) = positional_value(inner, words, "session") {
-        return Some(value);
-    }
-    flag_value(words, "session").or(inner.message_session.as_deref())
-}
-
-/// The value bound to the positional argument `name` on this line.
-fn positional_value<'a>(inner: &Inner, words: &'a [String], name: &str) -> Option<&'a str> {
+/// The session name a line carries: the value bound to its kind-`session`
+/// argument, wherever the spec keeps that argument and however it is spelled.
+fn session_named(inner: &Inner, words: &[String]) -> Option<String> {
     let spec = words
         .first()
         .map(|c| c.trim_start_matches('/'))
         .and_then(|c| inner.published.iter().find(|s| s.name == c))?;
-    let index = spec
-        .args
-        .iter()
-        .filter(|a| a.positional)
-        .position(|a| a.name == name)?;
-    let tokens = positional_tokens(spec, words, None);
-    tokens.get(index).copied()
+    let arg = spec.args.iter().find(|a| a.kind.as_deref() == Some("session"))?;
+    // The one binder decides what the line says; a half-typed flag value still
+    // names a session to complete for.
+    let mut tokens = vec![spec.name.clone()];
+    tokens.extend(words.iter().skip(1).cloned());
+    crate::commands::parse_args(&tokens, Some(spec))
+        .ok()
+        .and_then(|args| args.get(&arg.name).cloned())
+        .or_else(|| flag_value(words, &arg.name).map(str::to_string))
+        .or_else(|| inner.message_session.clone())
 }
 
 /// The bare words of a command line, in order; `skip` is the cursor's
@@ -650,7 +656,7 @@ fn positional_tokens<'a>(
         let word = &words[i];
         if let Some(flag) = word.strip_prefix("--") {
             let name = flag.split('=').next().unwrap_or(flag);
-            let known = spec.args.iter().any(|a| !a.positional && a.name == name);
+            let known = spec.args.iter().any(|a| a.name == name);
             i += if known && !flag.contains('=') { 2 } else { 1 };
         } else {
             out.push(word.as_str());

@@ -550,9 +550,10 @@ pub struct Client {
     calls: HashSet<String>,
     /// Which window each accepted command's result belongs to, from its echo.
     results: HashMap<u64, String>,
-    /// A `set_session` waiting for its acknowledgement, so a refused one writes
-    /// nothing. See `docs/notes/cli-lib.md`.
-    follows: Vec<(u64, String, Option<String>)>,
+    /// A `set_session` waiting for its acknowledgement -- the sticky entries an
+    /// accepted one writes back, as (kind, value) pairs, so a refused one
+    /// writes nothing. See `docs/notes/cli-lib.md`.
+    follows: Vec<(u64, Vec<(String, String)>)>,
     sessions: Vec<SessionInfo>,
     model: String,
     next_id: u64,
@@ -1161,40 +1162,28 @@ impl Client {
     ///
     /// # Invariant
     ///
-    /// The expansion is built from the published spec, like any other line:
-    /// a positional `send_message` names the sticky session explicitly --
-    /// typed words bind to positionals from the first slot, so a bare message
-    /// would land on the session argument -- while a flag-spelled one (an
-    /// older server) keeps the flag spelling. No sticky session is said so,
-    /// not sent as a message to nobody.
+    /// The expansion names only the message; the session argument fills from
+    /// the sticky `session` entry like any omitted argument, and the server
+    /// refuses a line that names neither -- the refusal says so. No sticky
+    /// session is still said here, not sent as a message to nobody.
     pub fn message(&mut self, text: &str, sink: &mut dyn Sink) -> Submission {
-        let positional = self
-            .catalog
-            .command("send_message")
-            .map(|spec| spec.args.iter().any(|a| a.positional))
-            .unwrap_or(true);
-        let tokens = if !positional {
+        if self.sticky.get("session").is_none() {
+            self.row(
+                sink,
+                LineKind::Error,
+                "no session to send to: set one with `/set_sticky session <name>`, or start the line with `/` and name the command",
+            );
+            return Submission::Rejected;
+        }
+        self.submit_tokens(
             vec![
                 "send_message".to_string(),
                 "--message".to_string(),
                 text.to_string(),
-            ]
-        } else {
-            let Some(session) = self.sticky.get("session") else {
-                self.row(
-                    sink,
-                    LineKind::Error,
-                    "no session to send to: set one with `/set_sticky session                      <name>`, or start the line with `/` and name the command",
-                );
-                return Submission::Rejected;
-            };
-            vec![
-                "send_message".to_string(),
-                session.to_string(),
-                text.to_string(),
-            ]
-        };
-        self.submit_tokens(tokens, sink, Echo::Message(text))
+            ],
+            sink,
+            Echo::Message(text),
+        )
     }
 
     /// The one path both entries take. `echo` only changes what is shown.
@@ -1296,12 +1285,15 @@ impl Client {
             .map(|a| a.name.as_str())
             .collect();
         if !missing.is_empty() {
-            self.show(
-                sink,
-                &echo,
-                &tokens,
-                args.get("session").map(String::as_str),
-            );
+            // The window the error belongs to is the session the command names
+            // -- wherever its spec keeps the kind-`session` argument.
+            let session = spec
+                .args
+                .iter()
+                .find(|a| a.kind.as_deref() == Some("session"))
+                .and_then(|a| args.get(&a.name))
+                .map(String::as_str);
+            self.show(sink, &echo, &tokens, session);
             self.row(
                 sink,
                 LineKind::Error,
@@ -1324,10 +1316,24 @@ impl Client {
 
         let id = self.next_id();
         // SPEC: the sticky follows what the server accepted, never a submission.
+        // What an accepted set_session writes back is decided here, from the
+        // bound arguments: the (sticky) session argument and every bundle member
+        // the command carries, keyed by kind -- a bundle member the command did
+        // not name is not written, so a partial set_session never erases the
+        // rest of a bundle.
         if head == "set_session" {
-            if let Some(session) = args.get("session") {
-                self.follows
-                    .push((id, session.clone(), args.get("model").cloned()));
+            let pairs: Vec<(String, String)> = spec
+                .args
+                .iter()
+                .filter(|a| (a.sticky || a.bundle.is_some()) && args.contains_key(&a.name))
+                .filter_map(|a| {
+                    a.kind
+                        .clone()
+                        .and_then(|kind| args.get(&a.name).map(|value| (kind, value.clone())))
+                })
+                .collect();
+            if !pairs.is_empty() {
+                self.follows.push((id, pairs));
             }
         }
         Submission::Send(ClientMessage::Command {
@@ -1373,19 +1379,20 @@ impl Client {
     /// It runs on the acknowledgement, not on the submission: a refused
     /// `set_session` must not retarget the next message.
     fn settle_follow(&mut self, id: u64, ok: bool, sink: &mut dyn Sink) {
-        let Some(at) = self.follows.iter().position(|(i, _, _)| *i == id) else {
+        let Some(at) = self.follows.iter().position(|(i, _)| *i == id) else {
             return;
         };
-        let (_, session, model) = self.follows.remove(at);
+        let (_, pairs) = self.follows.remove(at);
         if !ok {
             return;
         }
-        // Both are modes the next command inherits; no model named leaves it.
-        let saved = self
-            .sticky
-            .set("session", &session)
-            .and_then(|()| model.map_or(Ok(()), |model| self.sticky.set("model", &model)));
-        if let Err(e) = saved {
+        // Each pair is a mode the next command inherits: the session, and
+        // every bundle member the accepted command carried.
+        let saved = pairs
+            .iter()
+            .map(|(kind, value)| self.sticky.set(kind, value))
+            .find(|saved| saved.is_err());
+        if let Some(Err(e)) = saved {
             self.row(sink, LineKind::Error, &format!("could not save: {e}"));
         }
         self.after_sticky_change(sink);
@@ -1470,15 +1477,15 @@ impl Client {
                     );
                     return;
                 };
-                // A sticky value no command reads never takes effect, so it is refused
-                // while the caller is still looking.
+                // A sticky entry no argument declares never takes effect, so it
+                // is refused while the caller is still looking.
                 if self.catalog.fills_sticky(&arg_name) == Some(false) {
                     self.row(
                         sink,
                         LineKind::Error,
                         &format!(
-                            "no command argument named {arg_name:?} is filled from a sticky; it \
-                             takes: {}",
+                            "{arg_name:?} is not a type any published argument declares, so no \
+                             sticky entry can use it; the types are: {}",
                             self.catalog.sticky_names().join(", ")
                         ),
                     );
