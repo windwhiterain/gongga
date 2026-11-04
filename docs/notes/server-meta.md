@@ -22,19 +22,24 @@ is the only value in the body that is looked up rather than copied.
 
 ## indexed on the first turn: the root set
 
-The table above is what a reference becomes when it is expanded *in place*. It is not
-what the first turn does. A session's first prompt row carries an index: the `AGENTS.md`
+The table above is what a reference becomes when it is expanded *in place*. The first
+turn in addition builds an index: a session's first prompt row carries the `AGENTS.md`
 its directory keeps (`roots`'s `RULES`), every reference its messages name, and
 everything those name in turn, as `spelling` and the text it stands for, appended to the
-system instructions. Those mentions are then left literal in the message, because the
-literal spelling is the key into the index.
+system instructions.
 
 The reason is the prefix cache. Whatever is in the system instructions is charged once
 and then reused by every later request of that conversation; whatever is inline in a
 message is re-sent as part of the transcript from that point on. A skill body is the
 one thing whose size makes that difference matter: SPEC asks for the metadata to be
 appended in place (`append path metadata to it`) and for the body to ride the index,
-so `@skill:` expands to a pointer rather than to prose.
+so `@skill:` expands to a pointer rather than to prose, on the first turn too.
+
+That pointer is not a courtesy. The index carries a skill's body and nothing about
+where the file is, so a first message that kept only `@skill: <name>` sent the model
+hunting the three roots for the directory; measured on 2026-11-04 in one session, four
+`ls`/`index_skill` calls before it found `SKILL.md`. `@file:` is the opposite case: its
+spelling *is* its path, so it is left exactly as written and still keys the index.
 
 ## the rules file is a root, not a message
 
@@ -90,28 +95,25 @@ not text, or a skill this machine does not have -- is left out entirely rather t
 invented: its mention stays literal in the message, so the reader sees a name with
 nothing behind it, which is the truth.
 
-`literal` decides which mentions stay raw: the spellings the stored row's index
-carries, or -- for a message delivered before that row exists -- the spellings the row
-is about to carry, which is `roots` of the message. Everything outside that set is
-resolved as it always was, and that is not a detail: `@image:` is never indexed (a
-picture is not text), so it must still be uploaded and attached, or a first message
-that pointed at a screenshot would lose it. An unknown skill is the same shape -- no
-text to index, so it answers with its path instead of a hint about a file.
+`@image:` is never indexed (a picture is not text), so it is copied and attached
+wherever it is named, or a first message that pointed at a screenshot would lose it.
+An unknown skill is the same shape -- no text to index, so it answers with its path
+instead of a hint about a file. `@skill:` is neither: what the index holds is its
+body, and a body does not say where the file is.
 
 `spelling` is one function because it must be one spelling. The index carries it and
-`expand` matches against it, so two spellings of one reference would leave the message
-expanded *and* its text in the index. `@skill: heir` and `@skill:heir` are one
+`expand` writes it back into every `@skill:` mention, so a message naming a skill a
+second time keys the entry already there. `@skill: heir` and `@skill:heir` are one
 reference, and the canonical form is the one with no space.
 
 ## the queue, and why the index is not only the transcript
 
-A message delivered while the session has no prompt row yet is left literal, on the
-promise that the row about to be written will index it. That promise is only true if
-the row reads the inbox too, so `agent::index_of` takes `store.user_texts` (the
-transcript) *and* `store.queued_texts` (the messages still waiting there). Without the
-second, a message queued during the first turn would have been stored with a literal
-`@skill:` that no index entry ever backed -- the reader would see a name with nothing
-behind it.
+A message delivered while the session has no prompt row yet keeps its `@file:` mentions
+as written, on the promise that the row about to be written will index them. That
+promise is only true if the row reads the inbox too, so `agent::index_of` takes
+`store.user_texts` (the transcript) *and* `store.queued_texts` (the messages still
+waiting there). Without the second, a file queued during the first turn would be named
+by a message and carried by no entry.
 
 ## the index's prose is the config's
 
@@ -129,7 +131,7 @@ this named" decides whether it is in there at all:
 
 | named in | `@file:` | `@skill:` |
 | --- | --- | --- |
-| the session's first user message | in the index, mention stays literal | in the index, mention stays literal |
+| the session's first user message | in the index; the mention stays as written | in the index; the mention becomes `@skill: <name> (<path>)` |
 | a message already queued when that row was written | the queue is read too, so it is in the index as well | same |
 | any later message | nothing: the mention stays a literal path with no entry behind it | expanded to `@skill: <name> (<its SKILL.md>)`; the body is not in the index, so the reader opens the file itself |
 

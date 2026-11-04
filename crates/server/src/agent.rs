@@ -572,7 +572,7 @@ impl Agent {
     ///
     /// The order is `prefix_cache`'s, a permutation of what it was given: no entry is
     /// invented for a reference that could not be read, and the spellings returned are the
-    /// ones the index carries, so `meta::expand` leaves those mentions literal. Everything
+    /// ones the index carries, so a message naming one again keys the same entry. Everything
     /// is read in `home`, the session's directory. See `docs/notes/server-agent.md`.
     async fn index_of(
         &self,
@@ -582,8 +582,8 @@ impl Agent {
         home: &std::path::Path,
         source: crate::meta::Source<'_>,
     ) -> Option<(String, Vec<String>)> {
-        // The queue as well as the transcript: a message delivered before this row was
-        // left literal on that promise.
+        // The queue as well as the transcript: an early message left its `@file:`
+        // mentions for this row to index.
         let mut texts = self.store.user_texts(id).ok()?;
         texts.extend(self.store.queued_texts(name).unwrap_or_default());
         let borrowed: Vec<&str> = texts.iter().map(String::as_str).collect();

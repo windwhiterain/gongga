@@ -774,17 +774,8 @@ async fn expand_message(
     };
     let llm = d.agent.route(session.name(), &session.tuning()).ok();
     let llm = llm.as_ref().map(|(client, _)| client.as_ref());
-    let prompt = d.store.prompt(session.id()).ok().flatten();
     let home = session.cwd();
-    let indexed = crate::meta::literal(
-        source,
-        &home,
-        &message,
-        prompt.as_ref().map(|prompt| prompt.rooted.as_slice()),
-    )
-    .await;
-    let borrowed: Vec<&str> = indexed.iter().map(String::as_str).collect();
-    Ok(crate::meta::expand(&d.store, source, &home, &message, llm, &borrowed).await)
+    Ok(crate::meta::expand(&d.store, source, &home, &message, llm).await)
 }
 
 /// Puts `message` into `name`'s hands: a turn when it is free, an inbox row when not.

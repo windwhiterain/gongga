@@ -214,8 +214,8 @@ pub async fn roots(source: Source<'_>, home: &Path, texts: &[&str]) -> Vec<Root>
 /// # Invariant
 ///
 /// One spelling for one reference, whoever asks: the index carries these and
-/// `expand` matches mentions against them, so a second way of writing it would
-/// leave a message expanded and its text in the index twice.
+/// `expand` writes one back into every `@skill:` mention, so a second way of
+/// writing it would make the same file two entries.
 pub fn spelling(mention: &Mention) -> String {
     format!("{}{}", mention.kind.prefix(), mention.value)
 }
@@ -280,29 +280,12 @@ impl Expanded {
     }
 }
 
-/// The spellings `text` leaves literal. See `docs/notes/server-meta.md`.
-pub async fn literal(
-    source: Source<'_>,
-    home: &Path,
-    text: &str,
-    rooted: Option<&[String]>,
-) -> Vec<String> {
-    match rooted {
-        Some(rooted) => rooted.to_vec(),
-        None => roots(source, home, &[text])
-            .await
-            .into_iter()
-            .map(|root| root.spelling)
-            .collect(),
-    }
-}
-
 /// Resolves the references one message carries, before it is stored.
 ///
 /// # Invariant
 ///
-/// A spelling in `indexed` -- text the prompt's index already carries -- stays
-/// literal and keys that index. See `docs/notes/server-meta.md`.
+/// A `@skill:` mention keeps its spelling and gains the `SKILL.md` it names, even
+/// when the index already carries that body: a body never says where it lives.
 ///
 /// An unresolvable reference stays in the text verbatim: an unreadable picture or
 /// an unknown skill must still be a message. `llm` is `None` when no client
@@ -313,12 +296,11 @@ pub async fn expand(
     home: &Path,
     text: &str,
     llm: Option<&LlmClient>,
-    indexed: &[&str],
 ) -> Expanded {
     let mut out = Expanded::default();
     let mut cursor = 0;
     for mention in mentions(text) {
-        if mention.start < cursor || indexed.contains(&spelling(&mention).as_str()) {
+        if mention.start < cursor {
             continue;
         }
         let (replacement, image) = match mention.kind {
