@@ -1297,6 +1297,9 @@ impl Agent {
             .get("max_output")
             .and_then(serde_json::Value::as_u64)
             .map(|max| max as usize);
+        // Whose pictures these are: the machine the call's arguments name, if any.
+        // See `docs/notes/server-remote.md`.
+        let printed_on = self.tools.machine_of(&tool, &arguments, &ctx);
         let stated_tier = session.tuning().cache_tier;
         let outcome = self
             .run_before_cache_expiry(
@@ -1311,9 +1314,6 @@ impl Agent {
             .await;
         let run_ms = run_started.elapsed().as_millis() as u64;
         let attach_started = std::time::Instant::now();
-        // Whose pictures these are: the shell that printed them. See
-        // `docs/notes/server-remote.md`.
-        let printed_on = self.tools.machine_of(&tool, &ctx);
         let scanned = self
             .attach_references(&ctx, printed_on, &outcome.output)
             .await;

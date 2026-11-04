@@ -325,6 +325,20 @@ Still refused, each with a message and never a local fallback:
   machine, so the model is told the tail was dropped instead;
 - `remote_bash` with a `target` that is not this session's peer.
 
+## The file tools reach the peer
+
+`read_file`, `write_file` and `replace` run the Python driver on this machine by
+default, and on the session's remote when the call's `remote` names it -- the same
+one machine `remote_bash`'s `target` accepts, and for the same reason: a session's
+directory is on one peer, so a second name is refused rather than quietly becoming
+a file here. The remote driver is `remote_python`'s, started by name on the peer,
+so the three verbs need no protocol of their own and a peer without Python refuses
+the call rather than writing on this machine.
+
+The machine a call ran on is the machine its output's references are read from, so
+`Tool::machine` takes the call's arguments: a file read on the peer is expanded
+there, not here.
+
 ## A background job of a peer's shell
 
 `remote_bash` with `background` starts a job in the session's own shell on the

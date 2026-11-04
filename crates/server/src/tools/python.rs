@@ -354,8 +354,9 @@ const DESCRIPTION: &str = "`bash` with Python instead of a shell, on this machin
 /// here is writing to this machine's file while meaning the peer's.
 const REMOTE_DESCRIPTION: &str = "`python` on the session's remote endpoint, exactly \
     as `remote_bash` is `bash`: same arguments, same name space, same results. Paths are \
-    that machine's, so `open()` here reads and writes the peer's files -- while \
-    `read_file`, `write_file` and `replace` stay this machine's.";
+    that machine's, so `open()` here reads and writes the peer's files -- and \
+    `read_file`, `write_file` and `replace` reach the same machine when their `remote` \
+    names it.";
 
 impl PythonTool {
     /// Starts one interpreter on this tool's machine.
@@ -415,7 +416,7 @@ impl Tool for PythonTool {
         }
     }
 
-    fn machine(&self, _ctx: &ToolContext) -> Machine {
+    fn machine(&self, _args: &Value, _ctx: &ToolContext) -> Machine {
         self.machine
     }
 
@@ -842,6 +843,95 @@ fn reply_text(reply: &Reply) -> String {
     text
 }
 
+/// The remote a file call's `remote` names, when it names one.
+///
+/// # Invariant
+///
+/// `none` and an empty value are this machine, the same reading
+/// `crate::session::remote_request` gives a `--remote` everywhere else.
+fn stated_remote(args: &Value) -> Option<String> {
+    let stated = args.get("remote").and_then(Value::as_str).map(str::trim)?;
+    crate::session::remote_request(stated)
+}
+
+/// The machine a file call runs on: the session's remote when its `remote` names it.
+///
+/// # Invariant
+///
+/// A file tool's paths belong to the machine its `remote` names; a name that is not
+/// the session's own is refused in `run`, so this is the machine the call ran on.
+fn file_machine(args: &Value, ctx: &ToolContext) -> Machine {
+    match stated_remote(args) {
+        Some(name) if ctx.remote.as_deref() == Some(name.as_str()) => Machine::Remote,
+        _ => Machine::Local,
+    }
+}
+
+/// Whether a file call runs on the session's remote, and the refusal when its
+/// `remote` names another machine.
+///
+/// # Invariant
+///
+/// A session works on one machine: its directory is on the remote it names, and a
+/// second peer would have no directory to be in. See `docs/notes/server-remote.md`.
+fn file_remote(args: &Value, ctx: &ToolContext, tool: &str) -> Result<bool, String> {
+    let Some(stated) = stated_remote(args) else {
+        return Ok(false);
+    };
+    if ctx.remote.as_deref() == Some(stated.as_str()) {
+        return Ok(true);
+    }
+    Err(match &ctx.remote {
+        Some(here) => format!(
+            "`{tool}` ran nothing: this session's directory is on remote {here:?}, and its \
+             files are there -- {stated:?} is another machine, which this session has no \
+             directory on. A session works on one machine: `set_session --remote {stated}` \
+             moves it there, and ends these shells first."
+        ),
+        None => format!(
+            "`{tool}` ran nothing: this session names no remote, so it has no peer to work \
+             on, and {stated:?} is not one it can reach from here."
+        ),
+    })
+}
+
+/// The endpoint of the session's remote, for a file call that named it.
+fn remote_endpoint(ctx: &ToolContext) -> Option<crate::remote::Endpoint> {
+    ctx.shells
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .endpoint(Machine::Remote)
+}
+
+/// One file operation on the session's remote, through an interpreter there.
+///
+/// # Invariant
+///
+/// The same driver as this machine's, started by name on the peer: a path this
+/// machine holds is not evidence about one the peer has.
+async fn one_shot_remote(
+    endpoint: &crate::remote::Endpoint,
+    cwd: &Path,
+    request: Value,
+    timeout: Duration,
+) -> anyhow::Result<Reply> {
+    let mut repl = crate::tools::python_remote::RemoteRepl::spawn(endpoint, cwd, DRIVER).await?;
+    let reply = repl.run_request(&request, timeout).await;
+    repl.kill().await;
+    reply
+}
+
+/// The `remote` argument the file tools take: the session's remote, or this machine.
+fn remote_arg() -> Value {
+    json!({
+        "type": "string",
+        "description": "Which machine the file is on. Omit it, or name `none`, for this \
+                         machine and its own Python. Name the session's remote -- the \
+                         machine `set_session --remote` named -- to work on that machine's \
+                         file instead. Any other name is refused."
+    })
+}
+
 pub struct ReadFileTool {
     pub program: Option<PathBuf>,
     pub args: Vec<String>,
@@ -855,14 +945,15 @@ impl Tool for ReadFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Read a UTF-8 file through the Python tool's interpreter on this machine. \
-         `offset` and `limit` are lines, zero-based; `limit = 0` reads to the end. \
-         The content is a tool result, so it never passes through shell quoting. \
-         Use it instead of `cat` when the file's bytes matter."
+        "Read a UTF-8 file through the Python tool's interpreter on this machine, or on \
+         the session's remote when `remote` names it. `offset` and `limit` are lines, \
+         zero-based; `limit = 0` reads to the end. The content is a tool result, so it \
+         never passes through shell quoting. Use it instead of `cat` when the file's \
+         bytes matter."
     }
 
-    fn machine(&self, _ctx: &ToolContext) -> Machine {
-        Machine::Local
+    fn machine(&self, args: &Value, ctx: &ToolContext) -> Machine {
+        file_machine(args, ctx)
     }
 
     fn parameters(&self) -> Value {
@@ -870,6 +961,7 @@ impl Tool for ReadFileTool {
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "File to read."},
+                "remote": remote_arg(),
                 "offset": {
                     "type": "integer",
                     "description": "First line, zero-based. Defaults to 0."
@@ -896,6 +988,10 @@ impl Tool for ReadFileTool {
             let Some(path) = args["path"].as_str() else {
                 return ToolOutcome::err("read_file requires a string `path`");
             };
+            let on_remote = match file_remote(&args, ctx, "read_file") {
+                Ok(on_remote) => on_remote,
+                Err(why) => return ToolOutcome::err(why),
+            };
             let description = args
                 .get("description")
                 .and_then(Value::as_str)
@@ -907,15 +1003,30 @@ impl Tool for ReadFileTool {
                 "offset": args["offset"].as_u64().unwrap_or(0),
                 "limit": args["limit"].as_u64().unwrap_or(0),
             });
-            match one_shot(
-                self.program.as_deref(),
-                &self.args,
-                &ctx.cwd,
-                request,
-                self.timeout,
-            )
-            .await
-            {
+            let outcome = if on_remote {
+                let Some(endpoint) = remote_endpoint(ctx) else {
+                    return ToolOutcome::err(
+                        "read_file ran nothing: this session names a remote, but it has no \
+                         endpoint to reach",
+                    );
+                };
+                one_shot_remote(&endpoint, &ctx.dir(Machine::Remote), request, self.timeout).await
+            } else {
+                one_shot(
+                    self.program.as_deref(),
+                    &self.args,
+                    &ctx.dir(Machine::Local),
+                    request,
+                    self.timeout,
+                )
+                .await
+            };
+            let machine = if on_remote {
+                Machine::Remote
+            } else {
+                Machine::Local
+            };
+            match outcome {
                 Ok(reply) if reply.ok => {
                     let text = if reply.stdout.is_empty() {
                         "(empty file)".to_string()
@@ -923,7 +1034,7 @@ impl Tool for ReadFileTool {
                         reply.stdout
                     };
                     ToolOutcome::ok(ctx.cap(
-                        Machine::Local,
+                        machine,
                         "read_file",
                         description,
                         text,
@@ -950,15 +1061,15 @@ impl Tool for WriteFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Write a file through the Python tool's interpreter on this machine: \
-         `content` is a JSON field, so it is written exactly as given, with no \
-         shell or Python quoting layer. Missing parent directories are created and \
-         the replacement is atomic. Use this instead of a heredoc or `write_text` \
-         inside a `python` program."
+        "Write a file through the Python tool's interpreter on this machine, or on the \
+         session's remote when `remote` names it: `content` is a JSON field, so it is \
+         written exactly as given, with no shell or Python quoting layer. Missing parent \
+         directories are created and the replacement is atomic. Use this instead of a \
+         heredoc or `write_text` inside a `python` program."
     }
 
-    fn machine(&self, _ctx: &ToolContext) -> Machine {
-        Machine::Local
+    fn machine(&self, args: &Value, ctx: &ToolContext) -> Machine {
+        file_machine(args, ctx)
     }
 
     fn parameters(&self) -> Value {
@@ -966,6 +1077,7 @@ impl Tool for WriteFileTool {
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "File to write."},
+                "remote": remote_arg(),
                 "content": {
                     "type": "string",
                     "description": "The complete UTF-8 content; this is the file, not a program."
@@ -989,23 +1101,42 @@ impl Tool for WriteFileTool {
             else {
                 return ToolOutcome::err("write_file requires string `path` and `content`");
             };
+            let on_remote = match file_remote(&args, ctx, "write_file") {
+                Ok(on_remote) => on_remote,
+                Err(why) => return ToolOutcome::err(why),
+            };
             let description = args
                 .get("description")
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .filter(|s| !s.is_empty());
             let request = json!({"op": "write", "path": path, "content": content});
-            match one_shot(
-                self.program.as_deref(),
-                &self.args,
-                &ctx.cwd,
-                request,
-                self.timeout,
-            )
-            .await
-            {
+            let outcome = if on_remote {
+                let Some(endpoint) = remote_endpoint(ctx) else {
+                    return ToolOutcome::err(
+                        "write_file ran nothing: this session names a remote, but it has no \
+                         endpoint to reach",
+                    );
+                };
+                one_shot_remote(&endpoint, &ctx.dir(Machine::Remote), request, self.timeout).await
+            } else {
+                one_shot(
+                    self.program.as_deref(),
+                    &self.args,
+                    &ctx.dir(Machine::Local),
+                    request,
+                    self.timeout,
+                )
+                .await
+            };
+            let machine = if on_remote {
+                Machine::Remote
+            } else {
+                Machine::Local
+            };
+            match outcome {
                 Ok(reply) if reply.ok => ToolOutcome::ok(ctx.cap(
-                    Machine::Local,
+                    machine,
                     "write_file",
                     description,
                     reply_text(&reply),
@@ -1032,14 +1163,15 @@ impl Tool for ReplaceTool {
 
     fn description(&self) -> &'static str {
         "Replace one exact, literal piece of a UTF-8 file through the Python tool's \
-         interpreter on this machine. Without `all`, `old` must occur exactly once; \
-         any other count is an error, so a stale context cannot silently rewrite the \
-         wrong place. With `all`, every occurrence is replaced. The write is atomic. \
-         `old` and `new` are JSON fields, not shell or Python syntax."
+         interpreter on this machine, or on the session's remote when `remote` names \
+         it. Without `all`, `old` must occur exactly once; any other count is an error, \
+         so a stale context cannot silently rewrite the wrong place. With `all`, every \
+         occurrence is replaced. The write is atomic. `old` and `new` are JSON fields, \
+         not shell or Python syntax."
     }
 
-    fn machine(&self, _ctx: &ToolContext) -> Machine {
-        Machine::Local
+    fn machine(&self, args: &Value, ctx: &ToolContext) -> Machine {
+        file_machine(args, ctx)
     }
 
     fn parameters(&self) -> Value {
@@ -1047,6 +1179,7 @@ impl Tool for ReplaceTool {
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "File to edit."},
+                "remote": remote_arg(),
                 "old": {"type": "string", "description": "Exact text to replace."},
                 "new": {"type": "string", "description": "Replacement text."},
                 "all": {
@@ -1078,6 +1211,10 @@ impl Tool for ReplaceTool {
             if old.is_empty() {
                 return ToolOutcome::err("replace requires a non-empty `old`");
             }
+            let on_remote = match file_remote(&args, ctx, "replace") {
+                Ok(on_remote) => on_remote,
+                Err(why) => return ToolOutcome::err(why),
+            };
             let description = args
                 .get("description")
                 .and_then(Value::as_str)
@@ -1090,17 +1227,32 @@ impl Tool for ReplaceTool {
                 "new": new,
                 "all": args["all"].as_bool().unwrap_or(false),
             });
-            match one_shot(
-                self.program.as_deref(),
-                &self.args,
-                &ctx.cwd,
-                request,
-                self.timeout,
-            )
-            .await
-            {
+            let outcome = if on_remote {
+                let Some(endpoint) = remote_endpoint(ctx) else {
+                    return ToolOutcome::err(
+                        "replace ran nothing: this session names a remote, but it has no \
+                         endpoint to reach",
+                    );
+                };
+                one_shot_remote(&endpoint, &ctx.dir(Machine::Remote), request, self.timeout).await
+            } else {
+                one_shot(
+                    self.program.as_deref(),
+                    &self.args,
+                    &ctx.dir(Machine::Local),
+                    request,
+                    self.timeout,
+                )
+                .await
+            };
+            let machine = if on_remote {
+                Machine::Remote
+            } else {
+                Machine::Local
+            };
+            match outcome {
                 Ok(reply) if reply.ok => ToolOutcome::ok(ctx.cap(
-                    Machine::Local,
+                    machine,
                     "replace",
                     description,
                     reply_text(&reply),

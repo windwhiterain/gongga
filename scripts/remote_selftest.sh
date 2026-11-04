@@ -185,13 +185,29 @@ fake_up() {
 turns=0
 wait_turn() {
   turns=$((turns + 1))
+  local key="turn end session=$1"
+  local seen
+  seen=$(grep -c "$key" "$log" 2>/dev/null)
   for _ in $(seq 1 240); do
-    [[ "$(grep -c "turn end session=$1" "$log" 2>/dev/null)" -ge "$turns" ]] && return 0
+    [[ "$(grep -c "$key" "$log" 2>/dev/null)" -gt "$seen" ]] && return 0
     sleep 0.5
   done
   return 1
 }
 say_turn() { say "  -- turn $turns: $(grep "turn end session=$1" "$log" | tail -1)"; }
+
+# The output of the newest tool result, for a check that reads what a tool answered.
+last_tool() {
+  python - "$home" <<'INNER'
+import json, sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
+sid = c.execute("select id from sessions where name='probe'").fetchone()[0]
+row = c.execute(
+    "select display from messages where session_id=? and kind='tool_result' \
+     order by seq desc limit 1", (sid,)).fetchone()
+print(json.loads(row[0]).get("output", "") if row else "")
+INNER
+}
 
 fake_up remote_bash "{\"command\":\"mkdir -p \\\"\$HOME/$tag\\\" && printf '# $marker\\n' > \\\"\$HOME/$tag/AGENTS.md\\\" && cygpath -w \\\"\$HOME/$tag\\\" && cygpath -w \\\"\$HOME\\\"\",\"name\":\"peer\",\"task\":\"make the peer scratch\"}" || {
   echo "the stand-in never answered on 127.0.0.1:$fake_port" >&2; exit 1; }
@@ -219,7 +235,7 @@ ok "a remote named only in config.toml does not exist" $?
 grep -q 'these remotes are in config.toml' "$log"
 ok "and startup says so, with the migrator that moves them" $?
 
-"${cli[@]}" send_message probe "@skill: self-control make the scratch" >/dev/null 2>&1
+"${cli[@]}" send_message "@skill: self-control make the scratch" probe >/dev/null 2>&1
 wait_turn probe; say_turn probe
 
 # The peer's own path, in the spelling its own shell gave, and the file it wrote.
@@ -244,31 +260,106 @@ moved=$("${cli[@]}" set_session probe --cwd "$peer_scratch" 2>&1)
 [[ "$moved" == *'"ok":true'* ]]
 ok "the session moves to $peer_scratch" $?
 
+# The file tools reach the peer: write, read, replace, a second machine's refusal,
+# and the same three verbs on this machine.
+fake_up write_file "$(python - "$peer_scratch" "$peer_name" <<'PY'
+import json, sys
+print(json.dumps({"path": sys.argv[1] + "/from-tool.txt",
+                  "content": "hello from the tool",
+                  "remote": sys.argv[2]}))
+PY
+)"
+"${cli[@]}" send_message "write the file" probe >/dev/null 2>&1
+wait_turn probe
+[[ "$(last_tool)" == *"wrote"* ]]
+ok "write_file reached the peer" $?
+
+fake_up read_file "$(python - "$peer_scratch" "$peer_name" <<'PY'
+import json, sys
+print(json.dumps({"path": sys.argv[1] + "/from-tool.txt", "remote": sys.argv[2]}))
+PY
+)"
+"${cli[@]}" send_message "read the file" probe >/dev/null 2>&1
+wait_turn probe
+[[ "$(last_tool)" == *"hello from the tool"* ]]
+ok "read_file reached the peer" $?
+
+fake_up replace "$(python - "$peer_scratch" "$peer_name" <<'PY'
+import json, sys
+print(json.dumps({"path": sys.argv[1] + "/from-tool.txt",
+                  "old": "hello", "new": "goodbye", "remote": sys.argv[2]}))
+PY
+)"
+"${cli[@]}" send_message "replace in the file" probe >/dev/null 2>&1
+wait_turn probe
+[[ "$(last_tool)" == *"replaced 1 occurrence"* ]]
+ok "replace reached the peer" $?
+
+fake_up read_file "$(python - "$peer_scratch" "$peer_name" <<'PY'
+import json, sys
+print(json.dumps({"path": sys.argv[1] + "/from-tool.txt", "remote": sys.argv[2]}))
+PY
+)"
+"${cli[@]}" send_message "read the file again" probe >/dev/null 2>&1
+wait_turn probe
+[[ "$(last_tool)" == *"goodbye from the tool"* ]]
+ok "the replacement is what the peer holds" $?
+
+fake_up read_file '{"path":"/x","remote":"ghost"}'
+"${cli[@]}" send_message "try another machine" probe >/dev/null 2>&1
+wait_turn probe
+[[ "$(last_tool)" == *"ran nothing"* ]]
+ok "a second machine is refused" $?
+
+fake_up write_file "$(python - "$home" <<'PY'
+import json, sys
+print(json.dumps({"path": sys.argv[1] + "/from-tool-local.txt",
+                  "content": "local content"}))
+PY
+)"
+"${cli[@]}" send_message "write a local file" probe >/dev/null 2>&1
+wait_turn probe
+[[ "$(last_tool)" == *"wrote"* ]]
+ok "write_file still writes this machine" $?
+
+fake_up read_file "$(python - "$home" <<'PY'
+import json, sys
+print(json.dumps({"path": sys.argv[1] + "/from-tool-local.txt"}))
+PY
+)"
+"${cli[@]}" send_message "read the local file" probe >/dev/null 2>&1
+wait_turn probe
+[[ "$(last_tool)" == *"local content"* ]]
+ok "read_file still reads this machine" $?
+
 fake_up "" "{}"
-"${cli[@]}" send_message probe "now say which machine you are on" >/dev/null 2>&1
+"${cli[@]}" send_message "now say which machine you are on" probe >/dev/null 2>&1
 wait_turn probe; say_turn probe
 
+# A session placed where the rules file already is: its first prompt carries it.
+created2=$("${cli[@]}" set_session probe2 fake/flash-fake --remote "$peer_name" --cwd "$peer_scratch" 2>&1)
+[[ "$created2" == *'"ok":true'* ]]
+ok "a second session is placed on the peer" $?
+"${cli[@]}" send_message "hello" probe2 >/dev/null 2>&1
+wait_turn probe2
 python - "$home" "$marker" <<'INNER'
 import json, sqlite3, sys
 home, marker = sys.argv[1], sys.argv[2]
 c = sqlite3.connect(f"file:{home}/gongga.db?mode=ro", uri=True)
-sid = c.execute("select id from sessions where name='probe'").fetchone()[0]
-assert c.execute("select remote from sessions where id=?", (sid,)).fetchone()[0], "no remote recorded"
+sid = c.execute("select id from sessions where name='probe2'").fetchone()[0]
 last = [json.loads(d) for (d,) in c.execute(
     "select display from messages where session_id=? and kind='system' order by seq desc limit 1", (sid,))][0]
-# The rules file was read on the peer. This machine has no such directory, so a
-# local read would have left both the spelling and the marker out.
 assert "@file:AGENTS.md" in last["rooted"], last["rooted"]
 assert marker in (last["index"] or ""), (last["index"] or "")[:300]
 INNER
-ok "the prompt's index carries the peer's own AGENTS.md" $?
+ok "a placed session's first prompt carries the peer's own AGENTS.md" $?
 
 fake_up bash "{\"command\":\"pwd\",\"name\":\"here\",\"task\":\"prove this machine\"}"
-"${cli[@]}" send_message probe "and a shell here" >/dev/null 2>&1
+"${cli[@]}" send_message "and a shell here" probe >/dev/null 2>&1
 wait_turn probe; say_turn probe
 
 fake_up list_bash "{}"
-"${cli[@]}" send_message probe "which shells do you have" >/dev/null 2>&1
+"${cli[@]}" send_message "which shells do you have" probe >/dev/null 2>&1
 wait_turn probe; say_turn probe
 
 python - "$home" "$peer_scratch" <<'INNER'
@@ -320,7 +411,7 @@ back=$("${cli[@]}" set_session probe --cwd "$peer_home" 2>&1)
 ok "the session moves out of its scratch" $?
 
 fake_up remote_bash "{\"command\":\"rm -rf \\\"\$HOME/$tag\\\" && echo peer-clean\",\"name\":\"cleanup\",\"task\":\"remove the peer scratch\"}"
-"${cli[@]}" send_message probe "clean up the peer" >/dev/null 2>&1
+"${cli[@]}" send_message "clean up the peer" probe >/dev/null 2>&1
 wait_turn probe; say_turn probe
 python - "$home" <<'INNER'
 import json, sqlite3, sys
@@ -333,6 +424,9 @@ INNER
 ok "the peer's scratch is removed" $?
 
 # A remote session comes home by naming `none`: no shells remain on the peer at all.
+# The sticky `cwd` is this machine's argument, not the peer's, so a come-home move
+# must not inherit it.
+"${cli[@]}" del_sticky cwd >/dev/null 2>&1
 back=$("${cli[@]}" set_session probe --remote none 2>&1)
 [[ "$back" == *'"ok":true'* ]]
 ok "a session comes home by naming \`none\`" $?

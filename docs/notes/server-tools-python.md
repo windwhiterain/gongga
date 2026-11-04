@@ -102,6 +102,12 @@ text are JSON fields; no shell or Python source parses them. Each call starts a
 fresh driver and stops it afterwards -- file state is the file, so a persistent
 process buys nothing and a long-running interpreter must not block an edit.
 
+The driver runs on this machine, or on the session's remote when the call's
+`remote` names it -- the same choice `remote_python` makes, and the same one
+machine: a session's directory is on one peer, so a second name is refused. The
+remote driver is started by name there, exactly as `remote_python` starts it, so
+a peer without Python refuses the call rather than writing on this machine.
+
 Writes go to a temporary file in the target's directory and are moved into place
 with `os.replace`; the existing mode is kept. `replace` is literal and, unless
 `all` is set, requires exactly one occurrence, so a stale `old` is an error rather

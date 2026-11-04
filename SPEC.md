@@ -56,14 +56,16 @@ use `which("bash")` as bash.
 - read_file/write_file/replace
 - wait{timeout_ms = <timeout_ms>}: if interrupted, the call end.
 
-File tools run through the Python tool's interpreter on the session's machine, so
-file content is a JSON field and never a shell command or Python source:
-- read_file{path, offset = 0, limit = 0}: lines `offset..offset+limit`; `limit = 0`
-  reads to the end. Capped like other tool output.
-- write_file{path, content}: create parent directories and replace the file
-  atomically; `content` is written as UTF-8 bytes.
-- replace{path, old, new, all = false}: literal replacement; without `all`,
-  exactly one occurrence must match, and any other count is an error. Atomic.
+File tools run through the Python tool's interpreter, on this machine by default
+and on the session's remote when `remote` names it, so file content is a JSON field
+and never a shell command or Python source. A `remote` that names another machine is
+refused: a session's directory is on one peer.
+- read_file{path, offset = 0, limit = 0, remote = none}: lines `offset..offset+limit`;
+  `limit = 0` reads to the end. Capped like other tool output.
+- write_file{path, content, remote = none}: create parent directories and replace the
+  file atomically; `content` is written as UTF-8 bytes.
+- replace{path, old, new, all = false, remote = none}: literal replacement; without
+  `all`, exactly one occurrence must match, and any other count is an error. Atomic.
 
 
 ## Server State

@@ -226,8 +226,9 @@ pub trait Tool: Send + Sync {
     /// # Invariant
     ///
     /// A shell tool answers for the machine it drives; every other tool answers for
-    /// where the session stands. That is the whole of "whose file is this".
-    fn machine(&self, ctx: &ToolContext) -> Machine {
+    /// where the session stands, unless its own arguments name a machine. That is
+    /// the whole of "whose file is this".
+    fn machine(&self, _args: &Value, ctx: &ToolContext) -> Machine {
         ctx.machine
     }
 
@@ -317,9 +318,9 @@ impl ToolRegistry {
     }
 
     /// Which machine a named tool's paths belong to.
-    pub fn machine_of(&self, name: &str, ctx: &ToolContext) -> Machine {
+    pub fn machine_of(&self, name: &str, args: &Value, ctx: &ToolContext) -> Machine {
         match self.get(name) {
-            Some(tool) => tool.machine(ctx),
+            Some(tool) => tool.machine(args, ctx),
             None => ctx.machine,
         }
     }
@@ -783,7 +784,7 @@ impl Tool for BashTool {
         }
     }
 
-    fn machine(&self, _ctx: &ToolContext) -> Machine {
+    fn machine(&self, _args: &Value, _ctx: &ToolContext) -> Machine {
         self.machine
     }
 
