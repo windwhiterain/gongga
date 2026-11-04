@@ -372,6 +372,26 @@ An explicit `event:` still wins. With none, the name comes from `data.type`;
 a payload with neither stays unnamed and is ignored as before. `[DONE]` is
 resolved before the JSON parse and keeps its own name.
 
+## repair_arguments
+
+Providers emit arguments that are not JSON: LongCat writes `"description": List
+repo structure` with the value unquoted, and a model cut off mid-object can leave
+a key with no value. A provider reading its own output back rejects the whole
+request -- LongCat answers 500 `function_call arguments JSON parse error` -- and
+no retry helps, because the bad text is already the transcript.
+
+So arguments are repaired before they leave the stream parser, cheapest rule
+first, and each candidate is kept only if it parses:
+
+1. as sent, when it already parses;
+2. with a comma before `}` or `]` removed, outside strings;
+3. with a bare value after `:` wrapped in quotes -- the common case;
+4. quoted first, then that trailing comma dropped;
+5. cut back to the last complete pair and closed, when the tail is partial.
+
+Anything no rule fixes becomes `{}`: a provider can read that, and the tool
+result already says what was wrong with the call.
+
 ## handle (reasoning deltas)
 
 Not every provider emits `output_item.added` before the deltas, so create the

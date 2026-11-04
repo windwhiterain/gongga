@@ -1159,6 +1159,8 @@ struct ItemMeta {
     call_id: String,
     /// Text accumulated from deltas, the only place a readable summary exists.
     text: String,
+    /// Whether the call went out: providers differ on the event that ends it.
+    called: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1317,6 +1319,170 @@ fn parse_sse_block(block: &str) -> Option<SseEvent> {
     Some(SseEvent { name, data: parsed })
 }
 
+/// The arguments a provider sent, as JSON a later request can carry back.
+///
+/// # Invariant
+///
+/// Always parses: a payload no rule fixes becomes `{}`. Providers do emit
+/// arguments that are not JSON -- bare values, a trailing comma, a tail cut off
+/// mid-key -- and one that cannot read its own output rejects the whole next
+/// request. Only the cheapest rule that parses wins.
+fn repair_arguments(raw: &str) -> String {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return "{}".to_string();
+    }
+    if serde_json::from_str::<Value>(raw).is_ok() {
+        return raw.to_string();
+    }
+    let quoted = quote_bare_values(raw);
+    let mut candidates = vec![
+        drop_trailing_commas(raw),
+        quoted.clone(),
+        drop_trailing_commas(&quoted),
+    ];
+    candidates.extend(cut_incomplete_tail(&quoted));
+    for candidate in candidates {
+        if serde_json::from_str::<Value>(&candidate).is_ok() {
+            return candidate;
+        }
+    }
+    "{}".to_string()
+}
+
+/// The same text with commas before `}` or `]` removed, outside strings only.
+fn drop_trailing_commas(raw: &str) -> String {
+    let chars: Vec<char> = raw.chars().collect();
+    let mut out = String::with_capacity(raw.len());
+    let mut in_str = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if in_str {
+            out.push(c);
+            if c == '\\' {
+                if let Some(&next) = chars.get(i + 1) {
+                    out.push(next);
+                    i += 2;
+                    continue;
+                }
+            } else if c == '"' {
+                in_str = false;
+            }
+            i += 1;
+            continue;
+        }
+        if c == '"' {
+            in_str = true;
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        if c == ',' {
+            let mut j = i + 1;
+            while j < chars.len() && chars[j].is_whitespace() {
+                j += 1;
+            }
+            if j < chars.len() && (chars[j] == '}' || chars[j] == ']') {
+                i += 1;
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+/// The same text with a bare value after `:` wrapped in quotes, outside strings.
+fn quote_bare_values(raw: &str) -> String {
+    let chars: Vec<char> = raw.chars().collect();
+    let mut out = String::with_capacity(raw.len() + 16);
+    let mut in_str = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if in_str {
+            out.push(c);
+            if c == '\\' {
+                if let Some(&next) = chars.get(i + 1) {
+                    out.push(next);
+                    i += 2;
+                    continue;
+                }
+            } else if c == '"' {
+                in_str = false;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            '"' => {
+                in_str = true;
+                out.push(c);
+                i += 1;
+            }
+            ':' => {
+                out.push(c);
+                i += 1;
+                while i < chars.len() && chars[i].is_whitespace() {
+                    out.push(chars[i]);
+                    i += 1;
+                }
+                if i < chars.len() && !starts_json_value(&chars[i..]) {
+                    let start = i;
+                    while i < chars.len() && !matches!(chars[i], ',' | '}' | ']' | '\n' | '\r') {
+                        i += 1;
+                    }
+                    let token: String = chars[start..i].iter().collect();
+                    out.push('"');
+                    for ch in token.trim().chars() {
+                        match ch {
+                            '"' => out.push_str("\\\""),
+                            '\\' => out.push_str("\\\\"),
+                            _ => out.push(ch),
+                        }
+                    }
+                    out.push('"');
+                }
+            }
+            _ => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Whether the text at `rest` already begins a JSON value, so no quote is added.
+fn starts_json_value(rest: &[char]) -> bool {
+    match rest.first() {
+        Some('"' | '{' | '[' | '-' | '0'..='9') => true,
+        Some(_) => ["true", "false", "null"].iter().any(|word| {
+            let w: Vec<char> = word.chars().collect();
+            rest.len() >= w.len() && rest[..w.len()] == w[..]
+        }),
+        None => true,
+    }
+}
+
+/// The text cut back to its last complete pair and closed, when the tail is partial.
+fn cut_incomplete_tail(raw: &str) -> Option<String> {
+    if !raw.trim_start().starts_with('{') {
+        return None;
+    }
+    let mut end = raw.len();
+    while let Some(at) = raw[..end].rfind(',') {
+        let candidate = format!("{}}}", raw[..at].trim_end());
+        if serde_json::from_str::<Value>(&candidate).is_ok() {
+            return Some(candidate);
+        }
+        end = at;
+    }
+    None
+}
+
 /// `response.<type>.<phase>` for a provider tool's own progress beats.
 fn provider_phase(event_name: &str) -> Option<(&str, &str)> {
     let rest = event_name.strip_prefix("response.")?;
@@ -1389,6 +1555,7 @@ async fn handle(
                     name: item["name"].as_str().unwrap_or_default().to_string(),
                     call_id: item["call_id"].as_str().unwrap_or_default().to_string(),
                     text: String::new(),
+                    called: false,
                 },
             );
             match kind {
@@ -1485,15 +1652,61 @@ async fn handle(
         "response.function_call_arguments.delta" => {
             let item_id = d["item_id"].as_str().unwrap_or_default().to_string();
             let delta = d["delta"].as_str().unwrap_or_default().to_string();
-            items
-                .entry(item_id.clone())
-                .or_default()
-                .text
-                .push_str(&delta);
+            let meta = items.entry(item_id.clone()).or_default();
+            // Without `output_item.added`, the deltas are where the call appears.
+            let opens = meta.kind == ItemKind::Unknown;
+            if opens {
+                meta.kind = ItemKind::FunctionCall;
+            }
+            meta.text.push_str(&delta);
+            let call_id = opens
+                .then(|| meta.call_id.clone())
+                .filter(|c| !c.is_empty());
+            if opens {
+                out.send(LlmEvent::PartStart {
+                    part: ResponsePart::ToolCall,
+                    item_id: item_id.clone(),
+                    call_id,
+                })
+                .await?;
+            }
             out.send(LlmEvent::Delta {
                 part: ResponsePart::ToolCall,
                 item_id,
                 text: delta,
+            })
+            .await?;
+        }
+        "response.function_call_arguments.done" => {
+            // LongCat ends a call here, with no `output_item.done` and no `call_id`.
+            let item_id = d["item_id"].as_str().unwrap_or_default().to_string();
+            let arguments = repair_arguments(d["arguments"].as_str().unwrap_or("{}"));
+            let meta = items.entry(item_id.clone()).or_default();
+            if let Some(name) = d["name"].as_str().filter(|n| !n.is_empty()) {
+                meta.name = name.to_string();
+            }
+            meta.kind = ItemKind::FunctionCall;
+            let call_id = if meta.call_id.is_empty() {
+                item_id.clone()
+            } else {
+                meta.call_id.clone()
+            };
+            let name = meta.name.clone();
+            let already = meta.called;
+            meta.called = true;
+            if already {
+                return Ok(());
+            }
+            out.send(LlmEvent::ToolCall {
+                item_id: item_id.clone(),
+                call_id,
+                name,
+                arguments,
+            })
+            .await?;
+            out.send(LlmEvent::PartDone {
+                part: ResponsePart::ToolCall,
+                item_id,
             })
             .await?;
         }
@@ -1565,32 +1778,35 @@ async fn handle(
                     .await?;
                 }
                 ItemKind::FunctionCall => {
-                    // The closing bracket, then the call as the structure it is.
-                    let streamed = !meta.text.is_empty();
-                    let close = if streamed {
-                        ")".to_string()
-                    } else {
-                        let args = item["arguments"].as_str().unwrap_or("{}");
-                        format!("{}({args})", meta.name)
-                    };
-                    out.send(LlmEvent::Delta {
-                        part: ResponsePart::ToolCall,
-                        item_id: id.clone(),
-                        text: close,
-                    })
-                    .await?;
-                    out.send(LlmEvent::ToolCall {
-                        item_id: id.clone(),
-                        call_id: meta.call_id,
-                        name: meta.name,
-                        arguments: item["arguments"].as_str().unwrap_or("{}").to_string(),
-                    })
-                    .await?;
-                    out.send(LlmEvent::PartDone {
-                        part: ResponsePart::ToolCall,
-                        item_id: id,
-                    })
-                    .await?;
+                    // Already closed where `function_call_arguments.done` did it.
+                    if !meta.called {
+                        // The closing bracket, then the call as the structure it is.
+                        let streamed = !meta.text.is_empty();
+                        let close = if streamed {
+                            ")".to_string()
+                        } else {
+                            let args = repair_arguments(item["arguments"].as_str().unwrap_or("{}"));
+                            format!("{}({args})", meta.name)
+                        };
+                        out.send(LlmEvent::Delta {
+                            part: ResponsePart::ToolCall,
+                            item_id: id.clone(),
+                            text: close,
+                        })
+                        .await?;
+                        out.send(LlmEvent::ToolCall {
+                            item_id: id.clone(),
+                            call_id: meta.call_id,
+                            name: meta.name,
+                            arguments: repair_arguments(item["arguments"].as_str().unwrap_or("{}")),
+                        })
+                        .await?;
+                        out.send(LlmEvent::PartDone {
+                            part: ResponsePart::ToolCall,
+                            item_id: id,
+                        })
+                        .await?;
+                    }
                 }
                 ItemKind::ProviderCall => {
                     let (stored, replayable) = storable_activity(item);
