@@ -582,11 +582,16 @@ one pass cannot redial twice for one move.
 
 ## Client::submit_tokens — offline
 
-Offline, the catalog is whatever the last greeting said -- possibly nothing at
-all, on a client started before its server. Falling through to "unknown command"
-would then blame the operator for the server being down, so say what is really
-wrong. Client commands keep working from the last greeting, because they never
-leave this process.
+Offline, the catalog holds the client's own commands and whatever the last greeting
+said -- and a client started before its server has had no greeting at all.
+Falling through to "unknown command" would then blame the operator for the server
+being down, so the line says what is really wrong: `{head}: not connected to the
+server, nothing was sent`.
+
+A client command never leaves this process, so it runs offline like any other
+line: the six of them are in the catalog from the first frame
+(`docs/notes/cli-catalog.md`). What offline cannot do is parse a *server* command,
+whose spec only a greeting carries.
 
 ## Client::remember_server, Client::take_server_change
 

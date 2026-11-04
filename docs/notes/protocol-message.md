@@ -114,9 +114,11 @@ SPEC's command lines bind arguments by position -- `interrupt_session <session>`
 spelling the line documents, and the declaration order in `args` is the binding
 order, so a spec's list is its syntax. Every non-optional argument may also be
 spelled by order alone; an optional one needs its flag. A front-end parses and
-completes every command from the catalog alone; it keeps no list of its own,
-which is the "transparent wrapper, does not know server cmd" half of the crate's
-contract.
+completes every server command from the catalog alone; it keeps no list of its
+own, which is the "transparent wrapper, does not know server cmd" half of the
+crate's contract. The client's own commands are the one list it does carry (the
+published `client_commands`), because they have to work before a server exists.
+See `docs/notes/cli-catalog.md`.
 
 ## CommandSpec::target
 

@@ -15,9 +15,12 @@ use protocol::{ArgSpec, CommandSpec, CommandTarget, CompletionSource, Reference,
 pub struct Catalog(Arc<RwLock<Inner>>);
 
 struct Inner {
-    /// Everything the server published, as published: this client keeps no
-    /// command list of its own.
+    /// Everything the server published, as published; for a name both lists carry,
+    /// the server's spec wins.
     published: Vec<CommandSpec>,
+    /// This build's client commands: present before any greeting, so a window with
+    /// no server still runs.
+    client: Vec<CommandSpec>,
     /// The live sessions, as the server published them: the names a value
     /// completes against, and where each one works.
     ///
@@ -95,6 +98,7 @@ impl Default for Inner {
     fn default() -> Self {
         Self {
             published: Vec::new(),
+            client: protocol::client_commands(),
             sessions: Vec::new(),
             message_session: None,
             home: PathBuf::new(),
@@ -107,6 +111,28 @@ impl Default for Inner {
             inflight: HashMap::new(),
             paths_version: 0,
         }
+    }
+}
+
+impl Inner {
+    /// The command this line names: the server's, else the client's own.
+    fn find(&self, name: &str) -> Option<&CommandSpec> {
+        self.published
+            .iter()
+            .find(|c| c.name == name)
+            .or_else(|| self.client.iter().find(|c| c.name == name))
+    }
+
+    /// Every command this client completes: the server's, then the client's own.
+    fn all(&self) -> Vec<CommandSpec> {
+        let mut all = self.published.clone();
+        all.extend(
+            self.client
+                .iter()
+                .filter(|own| !self.published.iter().any(|c| c.name == own.name))
+                .cloned(),
+        );
+        all
     }
 }
 
@@ -270,15 +296,11 @@ impl Catalog {
     }
 
     pub fn commands(&self) -> Vec<CommandSpec> {
-        self.read().published.clone()
+        self.read().all()
     }
 
     pub fn command(&self, name: &str) -> Option<CommandSpec> {
-        self.read()
-            .published
-            .iter()
-            .find(|c| c.name == name)
-            .cloned()
+        self.read().find(name).cloned()
     }
 
     /// Whether some published command declares an argument by this name as one a
@@ -354,7 +376,7 @@ impl Completer for Catalog {
         let (all, sessions, sticky) = {
             let inner = self.read();
             (
-                inner.published.clone(),
+                inner.all(),
                 inner.sessions.clone(),
                 inner.sticky_names.clone(),
             )
@@ -626,7 +648,7 @@ fn session_named(inner: &Inner, words: &[String]) -> Option<String> {
     let spec = words
         .first()
         .map(|c| c.trim_start_matches('/'))
-        .and_then(|c| inner.published.iter().find(|s| s.name == c))?;
+        .and_then(|c| inner.find(c))?;
     let arg = spec
         .args
         .iter()

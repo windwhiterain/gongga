@@ -3,9 +3,21 @@
 ## catalog.rs
 
 The TUI supplies the token; this decides what could go there. There is one
-catalog, published at connect time, and this client keeps no list of its own:
-every command completes from the specs the greeting carried, including the
-client's own ones and whatever a script registered.
+catalog, and the server publishes it at connect time: every command completes from
+the specs the greeting carried, whatever a script registered included.
+
+The one exception is the client's own commands -- `connect_server`, `set_render`,
+`set_render_session`, `set_sticky`, `del_sticky`, `serve`. They come from the
+published spec SPEC gives them (`protocol::client_commands`, the same list `serve`
+parses against) and are in the catalog from the first frame, because a window with
+no server is still a window: the operator types them, completes them and has them
+run while the link is down. For a name both lists carry, the server's spec is the
+one the line is parsed with.
+
+# Invariant
+
+A command the *server* runs still needs a greeting: with no link there is no spec
+for it, and `submit_tokens` says "not connected" instead of "unknown command".
 
 What the client does own is the *state* those specs point at. `--name` for a
 sticky argument completes from the sticky arguments that exist, and `--name` for
