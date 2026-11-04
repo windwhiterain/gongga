@@ -27,8 +27,8 @@ same way `sessions` and `paths` already worked.
 
 Values complete from whatever the spec says can be enumerated -- the live
 session list, a fixed set, the argument types the catalog declares, the
-filesystem, client state, or another argument's list when the value is a type
-that chooses one.
+filesystem, client state, another argument's list when the value is a type that
+chooses one, or the greeting's model table when the value is about a model.
 
 ## Inner::sessions, message_session, server_cwd
 
@@ -133,6 +133,24 @@ words on the line (`positional_tokens` steps over flags and their values):
 `/set_session <TAB>` offers sessions, and with a session on the line the next Tab
 offers models. A slot whose source is `None` offers nothing, which is how
 `send_message --name <name> --message <text>` stops completing after the session.
+
+## models, sticky_model, and the two sources that read them
+
+`Catalog::set_models` keeps the greeting's table as published, and `sticky_model` holds
+the sticky `model` value -- both set on every greeting, and the sticky one again on
+every sticky change, beside the names `sync_sticky` already refreshes. A tuning value is
+worth nothing on its own: `--thinking high` means one thing on a model that publishes
+three levels and another on one that publishes five, so the value's list has to ask
+which model the line runs on.
+
+`model_named` answers that with the same binder `session_named` uses: the value bound to
+the line's kind-`model` argument, then the sticky one, because that is what the command
+would fill in when the flag is omitted. `level_choices` then reads that model's levels,
+or -- when the line names no model, names one the roster does not describe, or names one
+that publishes nothing -- every level some model here publishes. The union is not a
+guess at a default: such a model takes whatever it is sent, so nothing in the union can
+be refused, and a popup that offered nothing would be this client inventing a
+restriction the roster never stated. `THINKING_DEFAULT` goes on the end of either list.
 
 ## resolve
 

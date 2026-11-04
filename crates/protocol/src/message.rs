@@ -59,6 +59,9 @@ pub enum ServerMessage {
         server: ServerInfo,
         commands: Vec<CommandSpec>,
         sessions: Vec<SessionInfo>,
+        /// The models a request could run on here, and what each of them takes.
+        #[serde(default)]
+        models: Vec<ModelInfo>,
     },
     /// The key was wrong. The connection is closed right after this.
     Denied { reason: String },
@@ -545,6 +548,22 @@ pub struct SessionInfo {
     pub remote: Option<String>,
 }
 
+/// One model a request could run on here, and the levels it publishes.
+///
+/// # Invariant
+///
+/// `levels` is the roster's own spelling and nothing else; empty is a model the
+/// roster says nothing about, which takes whatever it is sent. The completion
+/// adds [`THINKING_DEFAULT`], because naming no level is always allowed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelInfo {
+    /// `provider/model_name`, as `--model` spells it.
+    pub model: String,
+    /// The reasoning levels the roster publishes for this model, in its order.
+    #[serde(default)]
+    pub levels: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LogLevel {
@@ -633,6 +652,14 @@ pub const BOX_EDGES: &[&str] = &["2", "0", "1", "3"];
 
 /// The values `set_render_session --show` takes.
 pub const SHOW_VALUES: &[&str] = &["true", "false"];
+
+/// The `--thinking` value that names no level: the level a model uses by itself.
+///
+/// # Invariant
+///
+/// One spelling: the completion offers it and `set_session` reads it, and no
+/// roster publishes it as a level of its own.
+pub const THINKING_DEFAULT: &str = "default";
 
 /// Where a command runs.
 ///
@@ -923,6 +950,15 @@ pub enum CompletionSource {
     /// Client state stays client-side: the server names the source, the client
     /// fills it in, so publishing a client command needs no knowledge of it.
     StickyArguments,
+    /// Complete against the models this server could send a request on.
+    Models,
+    /// Complete against the levels the model this line runs on takes.
+    ///
+    /// # Invariant
+    ///
+    /// The model is the one the line names, else the sticky one: the value the
+    /// command would fill in, never a model the caller did not choose.
+    ModelLevels,
     /// Complete against the skills the line's session can open.
     ///
     /// # Invariant

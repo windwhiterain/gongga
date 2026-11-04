@@ -40,6 +40,18 @@ relays messages, and an event it cannot read is not one of them.
 The server answers with `ServerMessage::Hello`, or `ServerMessage::Denied` when
 `key` does not match the one the server was started with.
 
+## ServerMessage::Hello — models
+
+The greeting carries the models a request could run on here, each with the levels the
+roster publishes for it, and that is the whole of what `--model` and `--thinking`
+complete from. They travel together because they are one question asked twice: the
+list of models is the same list, and a model and its levels cannot say different
+things if there is only one of each.
+
+`levels` is empty for a model the roster says nothing about, and that is a fact rather
+than a hole: such a model takes whatever it is sent. `#[serde(default)]`, so a
+greeting from a build without the table reads as a roster that publishes none.
+
 ## ResponsePart
 
 The SPEC models a response as `{session, reasoning, toolcall, output}`; the
@@ -76,6 +88,19 @@ client is one process that may be standing anywhere.
 Complete this value the way arguments of the type the line names would be
 completed: `set_sticky session <TAB>` offers sessions. The client needs this
 because the shape of the value depends on which type it is going to fill.
+
+## CompletionSource::Models and ::ModelLevels
+
+`Models` completes `provider/model_name` from the greeting's table. `ModelLevels`
+completes what the model *that line runs on* takes: the model it names, else the
+client's sticky one, which is the value `set_session` would fill in. Neither is
+`Static`: the list is a fact about this machine's roster, and the client holds no copy
+of it.
+
+An empty level list is not an empty popup. A model the roster does not describe takes
+any spelling, so the client offers every level some model here publishes -- refusing to
+guess would be the client stating an opinion the roster never had. `THINKING_DEFAULT`
+is appended in both cases, because naming no level is always allowed.
 
 ## Operation
 

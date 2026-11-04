@@ -223,8 +223,9 @@ Step 2 needs an order, and a roster entry need not have one: `["on", "off"]` des
 a switch, not a scale. `rank` answers `None` for a spelling that is not a rung, so such
 a model ranks none of its own payloads and falls through to step 3 -- which is the
 `or default if unkown` half of the SPEC line. This is why the order lives in one
-`LEVELS` table rather than in each caller's guess, and why the completion list
-`set_session --thinking_effort` offers is built from that same table.
+`LEVELS` table rather than in each caller's guess. The completion does not offer this
+table: `--thinking` completes the levels the model itself publishes, which is what
+`set_session` will check the value against.
 
 Called from `set_session`, which is what makes the stored level and the displayed one
 the same value. See `docs/notes/server-commands.md`.
