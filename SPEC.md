@@ -150,6 +150,10 @@ for the first user message to a empty session, find all meta references recursiv
   - `trigger_event <event>`
   - `subscribe <subscription> <pattern> [--persistant] [--bash <bash> --cmd <cmd>] [--python <python> --code <code>]`:
     when pattern matched triggered event, run bash cmd or python code in persistant bash or python interpreter.
+    the pattern is a regex over the event's name and, for a session event, `name:session`
+    (the language del_bash/list_bash speak): `^turn_end:main/impl$` is one session's turn end,
+    `^(turn_end|turn_failed):main/-(impl|review)$` composes several sessions and outcomes;
+    a match lands as a message in the calling session's transcript, carrying the event.
   - `del_subscribe <subscription>`
 - server_script: that registered by external python scripts
   - `get_messages <session> [<begin>]:[<end>]`: return the items in closed range <begin>:<end> (negative number count from end, missing number means boundary).
@@ -222,7 +226,9 @@ roles:
 - advisor (sota): plan, proposal
   - present plan for implementation to the justice.
   - present proposal of changes to the spec.
-- HR (flash): create justice/premier/advisor session, monitor their situation, fix harness errors (quota, ...).
+- no HR: start creates advisor/premier and arms one subscribe pattern over their turn_end for justice
+  (a role ends its turn with the record id as the answer, the notice carries it); a failed role
+  session is handed to the server's monitor, which repairs quota/harness failures.
 
 record:
 - proposal{example, expected, actual, actual_spec, expected_spec}
