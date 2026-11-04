@@ -131,9 +131,10 @@ be at all.
 The level a session runs at is resolved once, when `set_session` writes it, and stored:
 this command's `--thinking` mapped through the roster, else whatever
 `Entry::level_in_force` answers -- the level the session already had when this model
-still publishes it, else this model's roster default, else nothing. So a session this
-command creates, and one whose model it changes, both come out with a level; a command
-that changes only `--context_limit` keeps the level the session had.
+still publishes it, else the level the roster records as this model's own default,
+else the highest it publishes. So a session this command creates, and one whose model
+it changes, both come out with a level; a command that changes only `--context_limit`
+keeps the level the session had.
 
 `--thinking default` is not a level and never reaches the roster: it asks for exactly
 what a command that says nothing would leave in force, so a level set earlier is

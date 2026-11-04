@@ -208,22 +208,28 @@ back to the model list.
 ## Entry::level_in_force
 
 The level a session runs at when the command naming it does not say: SPEC's
-`initial: highest in supported or default if unkown`, tried in that order.
+`--thinking <thinking>(initial: default)`, where the initial is this model's own.
 
 1. the level the session already had, when this model still publishes it;
-2. the highest level this model publishes, ranked by [`LEVELS`];
-3. this model's `reasoning_default`.
+2. this model's `reasoning_default` -- the provider's own default, mapped through
+   `reasoning_mapping` like any other level, so a roster that states it in a caller's
+   spelling still answers with one the request can carry;
+3. the highest level this model publishes, ranked by [`LEVELS`].
 
 Every answer is filtered through `reasoning_levels`, so it is only ever a level a
 request can carry. A model that publishes no level answers `None` even when it states
 a default, because `reasoning_default = "off"` (as MiniMax-M3 does) is a mode rather
 than a level.
 
-Step 2 needs an order, and a roster entry need not have one: `["on", "off"]` describes
-a switch, not a scale. `rank` answers `None` for a spelling that is not a rung, so such
-a model ranks none of its own payloads and falls through to step 3 -- which is the
-`or default if unkown` half of the SPEC line. This is why the order lives in one
-`LEVELS` table rather than in each caller's guess. The completion does not offer this
+Step 2 is why `--thinking default` is a word worth offering: it says "whatever the
+vendor defaults to", which is not the same as the hardest rung -- DeepSeek publishes
+`none/low/high/max` and defaults to `high`, so answering `max` there would be the
+harness's opinion rather than the provider's.
+
+Step 3 needs an order, and a roster entry need not have one: `["on", "off"]` describes
+a switch, not a scale. `rank` answers `None` for a spelling that is not a rung, so a
+model that states no default and ranks none of its own payloads answers `None`. This
+is why the order lives in one `LEVELS` table rather than in each caller's guess. The completion does not offer this
 table: `--thinking` completes the levels the model itself publishes, which is what
 `set_session` will check the value against.
 

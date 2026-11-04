@@ -217,21 +217,35 @@ impl Entry {
     ///
     /// # Invariant
     ///
-    /// `stored` while this model publishes it, else the highest it publishes, else
-    /// its `reasoning_default` -- and always a level this model publishes, so a
-    /// stored level is always one its request can carry.
+    /// `stored` while this model publishes it, else the level the roster records as
+    /// this model's own default, else the highest it publishes -- and always a level
+    /// this model publishes, so a stored level is always one a request can carry.
     /// See `docs/notes/server-providers.md`.
     pub fn level_in_force(&self, stored: Option<&str>) -> Option<String> {
         let published = |level: &str| self.reasoning_levels.iter().any(|known| known == level);
         if let Some(level) = stored.filter(|level| published(level)) {
             return Some(level.to_string());
         }
-        self.highest_published().or_else(|| {
-            self.reasoning_default
-                .as_deref()
-                .filter(|level| published(level))
-                .map(str::to_string)
-        })
+        self.stated_default().or_else(|| self.highest_published())
+    }
+
+    /// The roster's default for this model, spelled the way this model publishes it.
+    ///
+    /// # Invariant
+    ///
+    /// The default travels through [`Self::reasoning_mapping`] like any other level,
+    /// so a roster that states it in a caller's spelling (`medium`) and publishes
+    /// another (`high`) still answers with one the request can carry.
+    fn stated_default(&self) -> Option<String> {
+        let default = self.reasoning_default.as_deref()?;
+        let mapped = self
+            .reasoning_mapping
+            .get(default)
+            .map_or(default, String::as_str);
+        self.reasoning_levels
+            .iter()
+            .find(|known| known.as_str() == mapped)
+            .cloned()
     }
 
     /// The hardest level this model publishes, when [`LEVELS`] can rank any of them.
