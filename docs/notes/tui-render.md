@@ -536,3 +536,8 @@ cut at it.
 The window follows the selection. `move_selection` walks the whole list, so drawing
 only the first screenful leaves the ninth candidate selected with nothing
 highlighted -- and Tab still inserts it.
+
+The title is the answer's `subject`: `--cache_tier` over a list of tiers,
+`completions` when the list is command names, flag names or references. A value
+popup and a flag popup are drawn the same way otherwise, so without it the reader
+has to look back at the input line to know what the list is for.

@@ -25,6 +25,19 @@ impl Candidate {
     }
 }
 
+/// What one completion is: the options, and what they are for.
+///
+/// # Invariant
+///
+/// `subject` names the argument whose value these complete (`--cache_tier`), and
+/// is `None` when they are a command name, a flag name or a reference: the popup
+/// says what it is asking for, so a value is never read as some other list.
+#[derive(Debug, Clone, Default)]
+pub struct Offered {
+    pub subject: Option<String>,
+    pub candidates: Vec<Candidate>,
+}
+
 /// The open completion popup: which token is replaced, and the options.
 /// See `docs/notes/cli-complete.md`.
 #[derive(Debug, Clone)]
@@ -32,6 +45,8 @@ pub struct Completion {
     /// Byte range of the token being replaced.
     pub start: usize,
     pub end: usize,
+    /// The argument being completed, for the popup's title.
+    pub subject: Option<String>,
     pub candidates: Vec<Candidate>,
     pub selected: usize,
 }
@@ -54,7 +69,7 @@ impl Completion {
 /// Supplies completion candidates for the token under the cursor; empty means
 /// offer nothing.
 pub trait Completer: Send + Sync {
-    fn complete(&self, line: &str, cursor: usize) -> Vec<Candidate>;
+    fn complete(&self, line: &str, cursor: usize) -> Offered;
 
     /// Whether the last completion asked for something only the connection can
     /// answer.

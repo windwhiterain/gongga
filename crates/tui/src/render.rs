@@ -1173,11 +1173,16 @@ fn draw_completion(f: &mut Frame, s: &Screen, input_area: Rect) {
         })
         .collect();
 
+    // The title names the argument: a value list is never read as another list.
+    let title = format!(
+        " {} ",
+        completion.subject.as_deref().unwrap_or("completions")
+    );
     f.render_widget(
         List::new(items).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" completions ")
+                .title(title)
                 .style(Style::default().fg(Color::Cyan)),
         ),
         area,

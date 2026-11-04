@@ -157,6 +157,16 @@ sent, so nothing in the union can be refused, and a popup that offered nothing w
 this client inventing a restriction the roster never stated. `THINKING_DEFAULT` goes on
 the end of either list.
 
+## tier_choices — an empty list is not "anything"
+
+A model publishes the cache tiers it takes on the wire, and the roster's own words
+for an empty table are "none selectable" -- so this list is exactly the model's, and
+a model that declares none offers nothing. Levels are the opposite: an empty
+`reasoning_levels` says the roster has no opinion, and a model it says nothing about
+accepts what it is sent, which is why `level_choices` falls back to every level some
+model publishes and this does not. Offering the union here offered `5m` for models
+that would refuse it, and the refusal arrived one command too late.
+
 ## refused_by_model
 
 A sticky entry is a remembered default, and a default that cannot apply is not

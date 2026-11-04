@@ -85,3 +85,16 @@ and the popup fills when the answer lands: a listing is never a reason to block 
 keystroke. Second, an answer stands for `REVALIDATE` before it is asked for again,
 because the repaint re-asks — an answer that were always stale would turn every
 repaint into another round-trip, and the refresh into a loop.
+
+## Offered — the candidates and what they are for
+
+A completer answers with both halves at once, because the second is only knowable
+where the first is decided: `subject` names the argument whose value the candidates
+complete (`--cache_tier`), and is `None` when the answer is a command name, a flag
+name or an `@` reference. The popup draws it as its title, so a list of values is
+never read as some other list -- `5m` under `--cache_tier` is a tier, and the same
+word under `--ctx_limit` would be a percentage.
+
+It travels inside the answer rather than as a second question, so a front-end asks
+the catalog once per keystroke: a separate `subject(line)` call would parse the line
+twice and could disagree with the list it labels.

@@ -1646,7 +1646,8 @@ fn edit_input(input: &mut InputLine, completion: &mut Option<Completion>, key: K
 
 /// The completer's answer for this input as a popup; bounds share its split.
 fn next_completion(input: &InputLine, completer: &SharedCompleter) -> Option<Completion> {
-    let candidates = completer.complete(input.text(), input.cursor());
+    let offered = completer.complete(input.text(), input.cursor());
+    let candidates = offered.candidates;
     if candidates.is_empty() {
         return None;
     }
@@ -1654,6 +1655,7 @@ fn next_completion(input: &InputLine, completer: &SharedCompleter) -> Option<Com
     Some(Completion {
         start,
         end,
+        subject: offered.subject,
         candidates,
         selected: 0,
     })
@@ -1676,8 +1678,8 @@ fn apply_and_continue(
 pub struct NoCompleter;
 
 impl Completer for NoCompleter {
-    fn complete(&self, _line: &str, _cursor: usize) -> Vec<Candidate> {
-        Vec::new()
+    fn complete(&self, _line: &str, _cursor: usize) -> cli::Offered {
+        cli::Offered::default()
     }
 }
 

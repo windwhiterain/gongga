@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use crate::commands::installed_skills;
-use crate::complete::{Candidate, Completer, token_bounds};
+use crate::complete::{Candidate, Completer, Offered, token_bounds};
 use protocol::{
     ArgSpec, Args, CommandSpec, CommandTarget, CompletionSource, ModelInfo, Reference, SessionInfo,
 };
@@ -482,7 +482,7 @@ impl Completer for Catalog {
         !self.read().wanted.is_empty()
     }
 
-    fn complete(&self, line: &str, cursor: usize) -> Vec<Candidate> {
+    fn complete(&self, line: &str, cursor: usize) -> Offered {
         let (_, _, token) = token_bounds(line, cursor);
         // `/` starts a command; a message completes only its `@` references.
         // See `docs/notes/cli-catalog.md`.
@@ -497,7 +497,10 @@ impl Completer for Catalog {
         let all = &snapshot.all;
         let ctx = snapshot.ctx(self);
         if brief {
-            return reference(&ctx, line, cursor, &token);
+            return Offered {
+                subject: None,
+                candidates: reference(&ctx, line, cursor, &token),
+            };
         }
         let position = line[..cursor.min(line.len())].split_whitespace().count();
         let cmd = words.first().map(|t| t.trim_start_matches('/'));
@@ -515,14 +518,17 @@ impl Completer for Catalog {
                 .map(|c| c.args.as_slice())
                 .unwrap_or(&[]);
             let used = flags_on_line(&words, word_at_cursor);
-            return args
-                .iter()
-                // A flag already on the line is not a candidate; listing it
-                // again hides the flags still missing.
-                .filter(|a| !used.contains(a.name.as_str()))
-                .filter(|a| a.name.starts_with(prefix))
-                .map(|a| Candidate::word(format!("--{}", a.name), a.description.clone()))
-                .collect();
+            return Offered {
+                subject: None,
+                candidates: args
+                    .iter()
+                    // A flag already on the line is not a candidate; listing it
+                    // again hides the flags still missing.
+                    .filter(|a| !used.contains(a.name.as_str()))
+                    .filter(|a| a.name.starts_with(prefix))
+                    .map(|a| Candidate::word(format!("--{}", a.name), a.description.clone()))
+                    .collect(),
+            };
         }
 
         // Command names, matched anywhere in the name: `/render` is `set_render`.
@@ -536,11 +542,14 @@ impl Completer for Catalog {
             // A prefix match is what the operator is most likely typing; stable,
             // so the catalog's order decides between equals.
             got.sort_by_key(|c| !c.insert.trim_start_matches('/').starts_with(typed));
-            return got;
+            return Offered {
+                subject: None,
+                candidates: got,
+            };
         }
 
         let Some(spec) = cmd.and_then(|c| all.iter().find(|s| s.name == c)) else {
-            return Vec::new();
+            return Offered::default();
         };
         // A word completes the flag's value or guesses the next parameter.
         // See `docs/notes/cli-catalog.md`.
@@ -554,9 +563,12 @@ impl Completer for Catalog {
             .and_then(|w| w.strip_prefix("--"))
         {
             let Some(arg) = spec.args.iter().find(|a| a.name == flag) else {
-                return Vec::new();
+                return Offered::default();
             };
-            return resolve(&arg.completions, &token, &ctx, &words, 0);
+            return Offered {
+                subject: Some(format!("--{}", arg.name)),
+                candidates: resolve(&arg.completions, &token, &ctx, &words, 0),
+            };
         }
         // The parser's own guessing rule, walked over the line's words, so
         // the popup offers what the typed word would land on.
@@ -578,7 +590,10 @@ impl Completer for Catalog {
             }
         }
         crate::commands::next_unfilled(&spec, &bound, after)
-            .map(|at| resolve(&spec.args[at].completions, &token, &ctx, &words, 0))
+            .map(|at| Offered {
+                subject: Some(format!("--{}", spec.args[at].name)),
+                candidates: resolve(&spec.args[at].completions, &token, &ctx, &words, 0),
+            })
             .unwrap_or_default()
     }
 }
@@ -849,30 +864,20 @@ fn level_choices(ctx: &Ctx<'_>, words: &[String]) -> Vec<String> {
     out
 }
 
-/// The cache tiers the line's model declares; every tier some model here
-/// declares when the line names none.
+/// The cache tiers the line's model declares, and nothing else.
 ///
 /// # Invariant
 ///
-/// The list comes from the roster, never from this client: a tier it invented
-/// would be a value the wire silently ignores.
+/// The list comes from the roster, never from this client, and an empty one is an
+/// answer: the roster's tier table says which spellings a provider takes on the
+/// wire, so a model that declares none takes none. Levels are the opposite --
+/// their empty list is "the roster has no opinion" -- which is why only this one
+/// has no union fallback. See `docs/notes/cli-catalog.md`.
 fn tier_choices(ctx: &Ctx<'_>, words: &[String]) -> Vec<String> {
-    let stated = model_named(ctx, words)
+    model_named(ctx, words)
         .and_then(|model| ctx.models.iter().find(|info| info.model == model))
-        .map(|info| &info.tiers)
-        .filter(|tiers| !tiers.is_empty());
-    let source: Box<dyn Iterator<Item = &String>> = match stated {
-        Some(tiers) => Box::new(tiers.iter()),
-        None => Box::new(ctx.models.iter().flat_map(|info| info.tiers.iter())),
-    };
-    let mut seen: HashSet<&str> = HashSet::new();
-    let mut out: Vec<String> = Vec::new();
-    for tier in source {
-        if seen.insert(tier.as_str()) {
-            out.push(tier.clone());
-        }
-    }
-    out
+        .map(|info| info.tiers.clone())
+        .unwrap_or_default()
 }
 
 /// The bare words of a command line, in order; `skip` is the cursor's

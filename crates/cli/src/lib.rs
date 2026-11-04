@@ -10,7 +10,9 @@ pub mod skill_command;
 
 pub use crate::catalog::Catalog;
 pub use crate::commands::{BlockSize, BoxEdge, Shown, Sticky};
-pub use crate::complete::{Candidate, Completer, Completion, SharedCompleter, token_bounds};
+pub use crate::complete::{
+    Candidate, Completer, Completion, Offered, SharedCompleter, token_bounds,
+};
 pub use crate::server::{ensure, spawn, starts_here, stop};
 pub use protocol;
 
