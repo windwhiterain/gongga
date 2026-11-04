@@ -27,8 +27,8 @@ use anyhow::Context;
 use crossterm::cursor::Show;
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    Event as TermEvent, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent,
-    MouseEventKind,
+    Event as TermEvent, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton,
+    MouseEvent, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -84,6 +84,8 @@ const MACHINE_RUN: usize = 3;
 enum ConsoleAction {
     /// Alt+Y: put the visible rows on the clipboard.
     Copy,
+    /// Alt+C: put the selected text on the clipboard.
+    CopySelection,
     /// Alt+M: toggle whether this app or the terminal owns the mouse.
     Mouse,
 }
@@ -510,6 +512,10 @@ pub struct Tui {
     /// A click on a session, as the command line it asks for, waiting for the loop
     /// to take it. See `docs/notes/tui-lib.md`.
     clicked: Option<cli::protocol::Operation>,
+    /// The input box as the last frame drew it: a click has to find it.
+    input_area: Rect,
+    /// Where a drag began, while the button is still down.
+    dragging: Option<usize>,
 }
 
 impl Tui {
@@ -560,6 +566,8 @@ impl Tui {
             history_pos: None,
             input_seen: None,
             clicked: None,
+            input_area: Rect::default(),
+            dragging: None,
             events: EventStream::new(),
             mouse_captured: true,
             restored: false,
@@ -765,7 +773,8 @@ impl Tui {
         self.input_seen = Some(seen);
         let frame = guarded(|| present(&mut self.terminal, &mut self.screen, typed));
         match frame {
-            Ok(painted) => painted?,
+            Ok(Ok(area)) => self.input_area = area,
+            Ok(Err(error)) => return Err(error),
             // Abandoned, not fatal: the screen is cleared, and the row says why.
             Err(payload) => {
                 let _ = self.terminal.clear();
@@ -907,6 +916,7 @@ impl Tui {
         }
         match key.code {
             KeyCode::Char('y' | 'Y') => Some(ConsoleAction::Copy),
+            KeyCode::Char('c' | 'C') => Some(ConsoleAction::CopySelection),
             KeyCode::Char('m' | 'M') => Some(ConsoleAction::Mouse),
             _ => None,
         }
@@ -1128,6 +1138,10 @@ impl Tui {
     /// The mouse points at a pane: a notch scrolls it three rows, Shift one. See
     /// `docs/notes/tui-lib.md`.
     fn handle_mouse(&mut self, mouse: MouseEvent) {
+        // The input box has a mouse of its own: the caret, and what a drag selects.
+        if self.input_mouse(&mouse) {
+            return;
+        }
         let rows = Self::wheel_rows(&mouse);
         let pressed = matches!(mouse.kind, MouseEventKind::Down(_));
         if rows.is_none() && !pressed {
@@ -1193,6 +1207,59 @@ impl Tui {
             }
             _ => {}
         }
+    }
+
+    /// What the pointer did to the input box, if that is where it was.
+    ///
+    /// # Invariant
+    ///
+    /// The box answers for its own rows only: a click that misses it belongs to
+    /// the window, and the session under the pointer keeps it.
+    fn input_mouse(&mut self, mouse: &MouseEvent) -> bool {
+        let area = self.input_area;
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                // A press ends the drag that was before it, wherever that was.
+                self.dragging = None;
+                let Some(offset) =
+                    render::input_offset(&self.screen, area, mouse.column, mouse.row)
+                else {
+                    return false;
+                };
+                // A click puts the caret where it landed, and ends the selection.
+                self.screen.input.set_cursor(offset);
+                self.close_completion();
+                self.dragging = Some(offset);
+                self.dirty = true;
+                true
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                let Some(anchor) = self.dragging else {
+                    return false;
+                };
+                let Some(offset) = self.clamped_offset(area, mouse.column, mouse.row) else {
+                    return false;
+                };
+                self.screen.input.select(anchor, offset);
+                self.dirty = true;
+                true
+            }
+            MouseEventKind::Up(_) => self.dragging.take().is_some(),
+            // Any other button ends the drag as well: the button that was down
+            // is not the one that is.
+            MouseEventKind::Down(_) => {
+                self.dragging = None;
+                false
+            }
+            _ => false,
+        }
+    }
+
+    /// Where a drag lands, with the pointer pulled back into the box.
+    fn clamped_offset(&self, area: Rect, column: u16, row: u16) -> Option<usize> {
+        let row = row.clamp(area.y, area.bottom().saturating_sub(1));
+        let column = column.clamp(area.x, area.right().saturating_sub(1));
+        render::input_offset(&self.screen, area, column, row)
     }
 
     /// Whether this row of the list names a session, and not only the ones below it.
@@ -1284,13 +1351,37 @@ impl Tui {
         self.dirty = true;
     }
 
-    /// Alt+Y copies what is on screen; Alt+M hands the mouse back to the terminal.
+    /// Alt+Y copies what is on screen, Alt+C the selection; Alt+M hands the
+    /// mouse back to the terminal.
     fn console(&mut self, action: ConsoleAction) {
         match action {
             ConsoleAction::Copy => self.copy_visible(),
+            ConsoleAction::CopySelection => self.copy_selection(),
             ConsoleAction::Mouse => self.toggle_mouse(),
         }
         self.dirty = true;
+    }
+
+    /// Copies the text the operator selected in the input box.
+    fn copy_selection(&mut self) {
+        let Some(chosen) = self.screen.input.selected_text().map(str::to_string) else {
+            self.say(LineKind::System, "copy: nothing is selected");
+            return;
+        };
+        match clipboard::copy(&chosen) {
+            clipboard::Copied::Ok { chars, tool } => self.say(
+                LineKind::System,
+                format!("copied {chars} characters ({tool})"),
+            ),
+            clipboard::Copied::Empty => self.say(LineKind::System, "copy: the selection is empty"),
+            clipboard::Copied::NoTool => self.say(
+                LineKind::Error,
+                "copy: no clipboard tool here; Alt+M frees the mouse so the terminal can select",
+            ),
+            clipboard::Copied::Failed(why) => {
+                self.say(LineKind::Error, format!("copy failed: {why}"))
+            }
+        }
     }
 
     /// Copies the rows the operator can see, which is what "copy that" means.
@@ -1435,7 +1526,7 @@ fn present<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     screen: &mut Screen,
     typed: bool,
-) -> anyhow::Result<()>
+) -> anyhow::Result<Rect>
 where
     B::Error: std::error::Error + Send + Sync + 'static,
 {
@@ -1460,7 +1551,7 @@ where
     }
     terminal.set_cursor_position(render::caret(screen, input))?;
     terminal.backend_mut().flush()?;
-    Ok(())
+    Ok(input)
 }
 
 /// Runs one frame, with a panic in it caught rather than thrown at the window.

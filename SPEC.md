@@ -133,6 +133,7 @@ for the first user message to a empty session, find all meta references recursiv
   - Shift+Down: scroll the sticky session to bottom.
   - Shift+Delete: delete sticky session.
   - Alt+V: paste (text/image).
+  - Alt+C: copy the selection.
   - Shift+Up: last cmd input.
 
 

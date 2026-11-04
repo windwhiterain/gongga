@@ -120,6 +120,10 @@ break, and a row that reaches `width` columns continues on the next one.
 The last row always exists, so an empty input -- or one that ends with a newline
 -- has somewhere for the cursor to sit.
 
+Each row also carries the bytes of the text it holds: the rows are the text, cut,
+and a selection is a range of bytes. Without the cut, a selection could not be
+drawn -- or found by a click.
+
 ## style_for — one look per kind
 
 Ten kinds of line, and no two look alike — colour *and* modifier, because a colour
@@ -508,6 +512,18 @@ the text would have started.
 
 A row that exactly fills the width puts the cursor one past its last column, which
 is outside the area: keep it on the edge.
+
+The selected bytes are drawn reversed, and only they: what the window shows
+highlighted is exactly what `Alt+C` copies.
+
+## input_offset
+
+Where a click in the input box lands, as a byte offset into the text.
+
+The pointer's column is a display column, so it is walked back through the row's
+characters until it finds the one that covers it; a character two columns wide is
+entered at its own start. The offset is a character boundary, because the text is
+cut at it.
 
 ## draw_completion
 

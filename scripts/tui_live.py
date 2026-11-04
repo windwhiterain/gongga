@@ -53,6 +53,8 @@ contain spaces. `#` starts a comment.
     resize <cols> <rows>     ResizePseudoConsole
     wheel up|down [n]        SGR wheel events, n clicks
     click <col> <row>        SGR press and release at that cell
+    drag <c1> <r1> <c2> <r2> press, motion, release: what a selection is made of
+    clipboard                read the clipboard now, and write it into the frame file
     sleep-until-frame [n] [ms]   wait for n more frames (default 1), giving up after ms
     settle [timeout_ms]      wait until the client stops writing
     expect <text> [ms]       wait until the grid contains <text>
@@ -1495,6 +1497,13 @@ class Driver:
             if len(parts) != 2:
                 raise RuntimeError("click wants <col> <row>")
             self.click(int(parts[0]), int(parts[1]))
+        elif command == "drag":
+            parts = argument.split()
+            if len(parts) != 4:
+                raise RuntimeError("drag wants <col1> <row1> <col2> <row2>")
+            self.drag(int(parts[0]), int(parts[1]), int(parts[2]), int(parts[3]))
+        elif command == "clipboard":
+            self.writer.note("clipboard: %r" % read_clipboard())
         elif command == "sleep-until-frame":
             parts = argument.split()
             how_many = int(parts[0]) if parts else 1
@@ -1547,6 +1556,23 @@ class Driver:
         self.wait_ms(25)
         self.send(mouse_sequence(0, col, row, press=False))
 
+    def drag(self, col1, row1, col2, row2):
+        """A press, a motion, and a release: what a selection is made of.
+
+        The motion carries the button bit (32), which is how a terminal says
+        "the button is still down"; without it the client is told the mouse
+        merely moved.
+        """
+        self.send(mouse_sequence(0, col1, row1))
+        self.wait_ms(25)
+        steps = max(abs(col2 - col1), abs(row2 - row1), 1)
+        for step in range(1, steps + 1):
+            col = col1 + (col2 - col1) * step // steps
+            row = row1 + (row2 - row1) * step // steps
+            self.send(mouse_sequence(32, col, row))
+            self.wait_ms(25)
+        self.send(mouse_sequence(0, col2, row2, press=False))
+
     def await_frames(self, how_many, limit_ms=None):
         """Wait for the client to repaint, and say out loud when it did not.
 
@@ -1589,6 +1615,30 @@ class Driver:
             "timed out after %dms waiting for %s%r on screen"
             % (timeout_ms, "" if want else "the absence of ", needle)
         )
+
+
+def read_clipboard():
+    """What the clipboard holds now, read the way Windows reads it.
+
+    `Get-Clipboard` prints a line of its own after the text, so the text is
+    taken from the clipboard itself: what is copied is what is read.
+    """
+    script = (
+        "Add-Type -AssemblyName System.Windows.Forms; "
+        "[Console]::Out.Write([System.Windows.Forms.Clipboard]::GetText())"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "<unreadable>"
+    if result.returncode != 0:
+        return "<unreadable: %s>" % result.stderr.strip()
+    return result.stdout
 
 
 def _number(text, default):

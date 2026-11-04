@@ -25,6 +25,7 @@ pub const HELP: &[&str] = &[
     "Shift+\u{2193} bottom",
     "Shift+Delete delete session",
     "Alt+V paste",
+    "Alt+C copy selection",
     "Shift+\u{2191} last cmd",
 ];
 
@@ -465,6 +466,8 @@ fn content_width(width: u16) -> usize {
 /// One row of the input as it will be drawn, plus where the cursor sits.
 struct InputLayout {
     rows: Vec<String>,
+    /// The bytes of the text each row holds: the rows are the text, cut.
+    spans: Vec<(usize, usize)>,
     cursor_row: usize,
     cursor_col: u16,
 }
@@ -479,7 +482,9 @@ fn layout_input(text: &str, cursor: usize, width: usize) -> InputLayout {
     let width = width.max(1);
     let cursor = cursor.min(text.len());
     let mut rows: Vec<String> = Vec::new();
+    let mut spans: Vec<(usize, usize)> = Vec::new();
     let mut row = String::new();
+    let mut row_start = 0usize;
     let mut used = 0usize;
     let mut at_cursor: Option<(usize, u16)> = None;
 
@@ -489,22 +494,28 @@ fn layout_input(text: &str, cursor: usize, width: usize) -> InputLayout {
         }
         if ch == '\n' {
             rows.push(std::mem::take(&mut row));
+            spans.push((row_start, index));
+            row_start = index + 1;
             used = 0;
             continue;
         }
         let advance = ch.width().unwrap_or(0);
         if used + advance > width && used > 0 {
             rows.push(std::mem::take(&mut row));
+            spans.push((row_start, index));
+            row_start = index;
             used = 0;
         }
         row.push(ch);
         used += advance;
     }
     rows.push(row);
+    spans.push((row_start, text.len()));
 
     let (cursor_row, cursor_col) = at_cursor.unwrap_or((rows.len() - 1, used as u16));
     InputLayout {
         rows,
+        spans,
         cursor_row,
         cursor_col,
     }
@@ -933,6 +944,7 @@ fn input_rows_of<'a>(s: &'a Screen, layout: &'a InputLayout, area: Rect) -> Vec<
     let height = area.height.max(1) as usize;
     // The box stops at its cap and scrolls, so the cursor never leaves the window.
     let first = (layout.cursor_row + 1).saturating_sub(height);
+    let selection = s.input.selection();
     layout
         .rows
         .iter()
@@ -943,16 +955,53 @@ fn input_rows_of<'a>(s: &'a Screen, layout: &'a InputLayout, area: Rect) -> Vec<
             let lead = if index == 0 { PREFIX } else { "  " };
             // The placeholder is not text, so it only fills the first row.
             let body = if index == 0 && s.input.is_empty() {
-                Span::styled(s.placeholder.clone(), dim())
+                vec![Span::styled(s.placeholder.clone(), dim())]
             } else {
-                Span::raw(row.clone())
+                input_body(row, layout, index, selection)
             };
-            Line::from(vec![
-                Span::styled(lead, Style::default().fg(Color::Cyan)),
-                body,
-            ])
+            let mut spans = vec![Span::styled(lead, Style::default().fg(Color::Cyan))];
+            spans.extend(body);
+            Line::from(spans)
         })
         .collect()
+}
+
+/// The text of one input row, with the selected part of it marked.
+///
+/// # Invariant
+///
+/// What is marked is the selection's bytes and nothing else, so what the
+/// window shows highlighted is exactly what `Alt+C` copies.
+fn input_body(
+    row: &str,
+    layout: &InputLayout,
+    index: usize,
+    selection: Option<(usize, usize)>,
+) -> Vec<Span<'static>> {
+    let plain = || vec![Span::raw(row.to_string())];
+    let Some((start, end)) = selection else {
+        return plain();
+    };
+    let Some(&(row_start, row_end)) = layout.spans.get(index) else {
+        return plain();
+    };
+    let from = start.max(row_start);
+    let to = end.min(row_end);
+    if from >= to {
+        return plain();
+    }
+    let mut spans = Vec::new();
+    if from > row_start {
+        spans.push(Span::raw(row[..from - row_start].to_string()));
+    }
+    spans.push(Span::styled(
+        row[from - row_start..to - row_start].to_string(),
+        Style::default().add_modifier(Modifier::REVERSED),
+    ));
+    if to < row_end {
+        spans.push(Span::raw(row[to - row_start..].to_string()));
+    }
+    spans
 }
 
 fn draw_input(f: &mut Frame, s: &Screen, area: Rect) {
@@ -1002,6 +1051,38 @@ fn draw_help(f: &mut Frame, area: Rect) {
         .map(|row| Line::from(Span::styled(row, dim())))
         .collect();
     f.render_widget(Paragraph::new(rows), area);
+}
+
+/// Where a click in the input box lands, as a byte offset into the text.
+///
+/// # Invariant
+///
+/// The offset is a character boundary: the text is cut at it, and a cut inside
+/// a character panics.
+pub fn input_offset(s: &Screen, area: Rect, column: u16, row: u16) -> Option<usize> {
+    if area.width == 0 || area.height == 0 {
+        return None;
+    }
+    if row < area.y || row >= area.bottom() || column < area.x || column >= area.right() {
+        return None;
+    }
+    let layout = layout_input(s.input.text(), s.input.cursor(), content_width(area.width));
+    let height = area.height.max(1) as usize;
+    let first = (layout.cursor_row + 1).saturating_sub(height);
+    let index = (row - area.y) as usize + first;
+    let (row_start, row_end) = *layout.spans.get(index)?;
+    let text = layout.rows.get(index)?;
+    // The prefix takes the first columns; the rest of the row is the text.
+    let target = column.saturating_sub(area.x + PREFIX_WIDTH) as usize;
+    let mut used = 0usize;
+    for (offset, ch) in text.char_indices() {
+        let advance = ch.width().unwrap_or(0);
+        if used + advance > target {
+            return Some(row_start + offset);
+        }
+        used += advance;
+    }
+    Some(row_end)
 }
 
 /// Where the caret goes for this input in this area.
