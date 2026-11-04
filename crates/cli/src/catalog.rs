@@ -49,8 +49,8 @@ struct Inner {
     sticky_names: Vec<String>,
     /// The models a request could run on here, and what each of them takes.
     models: Vec<ModelInfo>,
-    /// The sticky `model` value: the model a `--thinking` value would apply to.
-    sticky_model: Option<String>,
+    /// The model this server runs a session on when nothing names one.
+    default_model: Option<String>,
     /// The skills one directory offers, and what they were read from.
     skills: Option<Skills>,
     /// Directories a remote answered with, keyed by remote and directory, and
@@ -111,7 +111,7 @@ impl Default for Inner {
             server_cwd: std::env::current_dir().unwrap_or_default(),
             sticky_names: Vec::new(),
             models: Vec::new(),
-            sticky_model: None,
+            default_model: None,
             skills: None,
             remote_paths: HashMap::new(),
             remotes: HashSet::new(),
@@ -257,9 +257,10 @@ impl Catalog {
         self.write().models = models;
     }
 
-    /// The model the sticky arguments name: what a tuning value applies to.
-    pub fn set_sticky_model(&self, model: Option<&str>) {
-        self.write().sticky_model = model.map(str::to_string);
+    /// The model this server falls back to, for a line that names none and
+    /// belongs to no session yet.
+    pub fn set_default_model(&self, model: &str) {
+        self.write().default_model = Some(model.to_string());
     }
 
     /// Where one input line's values are read, and which machine they are on.
@@ -272,7 +273,12 @@ impl Catalog {
     /// `docs/notes/cli-catalog.md`.
     fn place(&self, words: &[String]) -> Place {
         let inner = self.read();
-        let session = session_on_line(&inner, words);
+        let session = session_on_line(
+            &inner.published,
+            inner.message_session.as_deref(),
+            &inner.sessions,
+            words,
+        );
         let peer = named_machine(&inner, words).or_else(|| session.and_then(|s| s.remote.clone()));
         let dir = session
             .map(|s| PathBuf::from(&s.cwd))
@@ -378,9 +384,12 @@ impl Catalog {
 struct Ctx<'a> {
     sessions: &'a [SessionInfo],
     sticky: &'a [String],
-    /// The models a request could run on here, and the sticky one this line runs on.
+    /// The models a request could run on here, and the server's own default.
     models: &'a [ModelInfo],
-    sticky_model: Option<&'a str>,
+    default_model: Option<&'a str>,
+    /// The session a bare message goes to, which a value completes against when
+    /// the line names none.
+    message_session: Option<&'a str>,
     /// Where this line reads: its session's directory, and that machine.
     place: Place,
     all: &'a [CommandSpec],
@@ -394,14 +403,15 @@ impl Completer for Catalog {
 
     fn complete(&self, line: &str, cursor: usize) -> Vec<Candidate> {
         let (_, _, token) = token_bounds(line, cursor);
-        let (all, sessions, sticky, models, sticky_model) = {
+        let (all, sessions, sticky, models, default_model, message_session) = {
             let inner = self.read();
             (
                 inner.all(),
                 inner.sessions.clone(),
                 inner.sticky_names.clone(),
                 inner.models.clone(),
-                inner.sticky_model.clone(),
+                inner.default_model.clone(),
+                inner.message_session.clone(),
             )
         };
         // `/` starts a command; a message completes only its `@` references.
@@ -417,7 +427,8 @@ impl Completer for Catalog {
             sessions: &sessions,
             sticky: &sticky,
             models: &models,
-            sticky_model: sticky_model.as_deref(),
+            default_model: default_model.as_deref(),
+            message_session: message_session.as_deref(),
             place: self.place(&words),
             all: &all,
             catalog: self,
@@ -671,18 +682,27 @@ const REVALIDATE: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// The session this line acts on: the one it names, else the one a bare
 /// message goes to. See `docs/notes/cli-catalog.md`.
-fn session_on_line<'a>(inner: &'a Inner, words: &[String]) -> Option<&'a SessionInfo> {
-    let name = session_named(inner, words)?;
-    inner.sessions.iter().find(|s| s.name == name)
+fn session_on_line<'a>(
+    all: &[CommandSpec],
+    message_session: Option<&str>,
+    sessions: &'a [SessionInfo],
+    words: &[String],
+) -> Option<&'a SessionInfo> {
+    let name = session_named(all, message_session, words)?;
+    sessions.iter().find(|s| s.name == name)
 }
 
 /// The session name a line carries: the value bound to its kind-`session`
 /// argument, wherever the spec keeps that argument and however it is spelled.
-fn session_named(inner: &Inner, words: &[String]) -> Option<String> {
+fn session_named(
+    all: &[CommandSpec],
+    message_session: Option<&str>,
+    words: &[String],
+) -> Option<String> {
     let spec = words
         .first()
         .map(|c| c.trim_start_matches('/'))
-        .and_then(|c| inner.find(c))?;
+        .and_then(|c| all.iter().find(|s| s.name == c))?;
     let arg = spec
         .args
         .iter()
@@ -695,10 +715,11 @@ fn session_named(inner: &Inner, words: &[String]) -> Option<String> {
         .ok()
         .and_then(|args| args.get(&arg.name).cloned())
         .or_else(|| flag_value(words, &arg.name).map(str::to_string))
-        .or_else(|| inner.message_session.clone())
+        .or_else(|| message_session.map(str::to_string))
 }
 
-/// The model a line runs on: the one it names, else the sticky one.
+/// The model a line runs on: the one it names, else the one the session it
+/// names already has, else the server's own.
 fn model_named(ctx: &Ctx<'_>, words: &[String]) -> Option<String> {
     let spec = words
         .first()
@@ -716,7 +737,12 @@ fn model_named(ctx: &Ctx<'_>, words: &[String]) -> Option<String> {
                 .and_then(|args| args.get(&arg.name).cloned())
                 .or_else(|| flag_value(words, &arg.name).map(str::to_string))
         });
-    named.or_else(|| ctx.sticky_model.map(str::to_string))
+    named
+        .or_else(|| {
+            session_on_line(ctx.all, ctx.message_session, ctx.sessions, words)
+                .and_then(|session| session.model.clone())
+        })
+        .or_else(|| ctx.default_model.map(str::to_string))
 }
 
 /// The levels the line's model takes; every level some model here takes when

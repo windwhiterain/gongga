@@ -957,8 +957,8 @@ pub enum CompletionSource {
     ///
     /// # Invariant
     ///
-    /// The model is the one the line names, else the sticky one: the value the
-    /// command would fill in, never a model the caller did not choose.
+    /// The model is the one the line names, else the one the session it names
+    /// already has, else the server's own -- what the command would really run on.
     ModelLevels,
     /// Complete against the skills the line's session can open.
     ///

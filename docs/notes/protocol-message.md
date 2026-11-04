@@ -92,10 +92,11 @@ because the shape of the value depends on which type it is going to fill.
 ## CompletionSource::Models and ::ModelLevels
 
 `Models` completes `provider/model_name` from the greeting's table. `ModelLevels`
-completes what the model *that line runs on* takes: the model it names, else the
-client's sticky one, which is the value `set_session` would fill in. Neither is
-`Static`: the list is a fact about this machine's roster, and the client holds no copy
-of it.
+completes what the model *that line runs on* takes: the model it names, else the one
+the session it names already has, else the server's own default -- the same three
+steps `set_session` takes when it resolves a model, so the list offered is the list
+that would run. Neither is `Static`: the list is a fact about this machine's roster,
+and the client holds no copy of it.
 
 An empty level list is not an empty popup. A model the roster does not describe takes
 any spelling, so the client offers every level some model here publishes -- refusing to

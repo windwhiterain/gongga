@@ -21,10 +21,11 @@
    `Static(roster().models())` 改成 `CompletionSource::Models`——一份数据一个来源，
    否则同一帧 greeting 里两份列表可能说两件事（roster 会在两次 `await` 之间重读）。
 2. **`CompletionSource::ModelLevels`**：补全"这一行跑的那个模型"接受的档。
-   模型 = 行上的 `kind = "model"` 参数值，否则粘性 `model` 值——正是
-   `set_session` 自己会填进去的那个，用的是同一个 `parse_args` 绑定器
-   （和 `session_named` 一个写法）。所以 `set_sticky thinking <TAB>` 也跟着
-   粘性模型走。
+   模型 = 行上的 `kind = "model"` 参数值，用同一个 `parse_args` 绑定器
+   （和 `session_named` 一个写法）。
+   *后续：`--model` 不再有粘性条目（见
+   `2026-11-04-thinking-follows-the-sessions-model.md`），那一级换成了"这个会话已有的
+   模型 → 服务端的默认"。*
 3. **`level_choices`**：模型没写档（roster 不描述它 / 它一个档都不发）时，
    补的是所有模型发过的档的并集。不写档的模型什么都收（`reasoning_effort`
    直接放行），所以并集里没有一个值会被拒；此时给空列表才是客户端在替 roster 立规矩。
