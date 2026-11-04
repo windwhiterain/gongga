@@ -160,11 +160,11 @@ cli=("$bin/gongga-cli.exe" --home "$home" --server "127.0.0.1:$port")
 
 # Captured, not piped into `grep -q`: grep exits on the match, the command layer
 # takes SIGPIPE writing the rest, and `pipefail` reports that instead.
-refusal=$("${cli[@]}" set_session '@mine' 2>&1)
+refusal=$("${cli[@]}" set_session '@mine' dead/flash-dead --cwd "$root" 2>&1)
 [[ "$refusal" == *"names beginning with"* ]]
 ok "a person cannot take a name in the harness's namespace" $?
 
-"${cli[@]}" set_session broken dead/flash-dead >/dev/null 2>&1
+"${cli[@]}" set_session broken dead/flash-dead --cwd "$root" >/dev/null 2>&1
 "${cli[@]}" send_message broken "say hello" >/dev/null 2>&1
 for _ in $(seq 1 100); do grep -q 'turn end session=broken' "$log" && break; sleep 0.5; done
 grep -q 'turn end session=broken outcome=Failed' "$log"
@@ -212,7 +212,7 @@ first = c.execute("""select m.display from messages m join sessions s on s.id = 
                      where s.name = '@monitor' and m.kind = 'text'
                      order by m.seq limit 1""").fetchone()[0]
 text = json.loads(first).get('text', '')
-assert text.startswith('@skill:monitor'), text[:80]
+assert text.startswith('@skill: monitor'), text[:80]
 assert 'A gongga session stopped with an error' in text
 assert 'session: broken' in text, 'the report names the session that failed'
 assert 'harness build:' in text and 'home:' in text
