@@ -10,7 +10,7 @@ local simulator in `scripts/fake_llm.py` with its `FAKE_LLM_CACHE_*` knobs, or
 pass `--dry-run` here to see the request shapes without sending anything.
 
     python scripts/cache_probe.py --dry-run
-    python scripts/cache_probe.py --ttl-wait 330
+    python scripts/cache_probe.py --only ttl --ttl-wait 1200
     python scripts/cache_probe.py --base-url https://api.kimi.com/coding/v1 \
         --model kimi-for-coding --key-env KIMI_CODING_API_KEY
 
@@ -22,7 +22,10 @@ Three questions, each its own scenario:
   shape   which surface accepts the request, and whether a cache directive is
           acknowledged at all (an unknown field is often silently ignored)
   write   whether a write is billed on the newly added tokens only
-  ttl     whether a gap longer than the short tier still hits the long tier
+  ttl     whether a gap longer than the short tier still hits the long tier.
+          Wait well past the window: 330s against a nominal 300s tier leaves
+          only 30s of margin, inside any lazy-eviction tolerance. The control
+          case is what separates the tier from the provider's default.
 
 Output: one JSON file under `.dev/verify/` and one verdict line. Exit 0 when
 every requested scenario got an answer (including a refusal), 1 on a bad

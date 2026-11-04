@@ -132,7 +132,7 @@ Responses 是否对每个模型生效、`prompt_cache_key` 是否真提升命中
   （1502 → 1502、1785 → 1785）。`hit_ratio = cached / prev_input` 这个分母
   在稳态等于 1.0，不是估的。
 
-**Q3 gap>5m 时 1h 是否真命中 —— 两档都命中，文档的前提被证伪。**
+**Q3 gap>5m 时 1h 是否真命中 —— 数据留存，结论已撤回。**
 
 `.dev/verify/cache-probe-20261104-140828.json`：两档各自冷写一次，共享等 330 秒
 （>5m），再各发一次同样的前缀：
@@ -142,13 +142,18 @@ Responses 是否对每个模型生效、`prompt_cache_key` 是否真提升命中
 | 5m | 0 | **1505** |
 | 1h | 0 | **1505** |
 
-短档没有像文档和 roster 说的那样在 5 分钟后失效、整段按全价重发。上一条判别
-实验排除了「字段没生效」这个解释。可能的解释：TTL 是懒惰清理 / 实际窗口比
-宣称长 / 「命中即续期」之外还有别的保留机制 —— **本轮没有区分它们**。
+此前写的「文档的前提被证伪」**在 14:58 被 User 推翻，撤回**：
 
-对策略的影响很直接：L3 那条 `P(短档超窗) × P × (input − hit)` 是整套分档
-算账里最大的一项，而它的概率在这把 key 上没被观测到。在这条被量化之前，
-**不要实现自动选档**；这正是选 C→A 而不是 B 的理由，现在有了实测依据。
+1. 330s 对 300s 只超 30s（10%）。provider 的 TTL 几乎肯定是后台惰性淘汰，
+   不是精确闹钟；30s 完全落在扫描间隔、时钟偏差或宽限期的实现容差里。
+2. 没有对照组。不带 directive 的冷请求同样等 330s 那一组按省钱要求取消了，
+   所以即使命中的其实是「默认隐式缓存本来就长」，这组数据也区分不出来。
+3. 判别实验只证明 `ttl` 被解析并校验（`bogus → 400`），没有证明时钟粒度。
+
+所以这组数据既不能证实、也不能证伪「短档超窗整段按全价重发」。把它写成
+「实证反驳」并据此缓做自动选档，是把一个无判别力的观察当成了结论，还扩散进
+三处 `docs/notes`。后续策略不拿这组数据当概率：改为不让请求间隔越过窗口，
+在工具执行和 turn end 两个时刻把档位定死（见第四轮）。
 
 ## 本轮落下的代码（A 的观测层 + 可手动指定的档）
 
@@ -289,4 +294,75 @@ B 组 `prompt_cache_key` 为 `[None, None]`，说明两个开关彼此独立。
 「只发 roster 声明过的档」这条 invariant 由 A 组反证。
 
 这一轮改的文件只有 `scripts/prompt_selftest.sh` 的一行 fixture 和本笔记。
+
+## 第四轮（15:41–）：User 定的固定档位规则，上一轮策略全部推翻
+
+User 对「330s vs 300s 只差 30s」的纠正：实验毫无可信度，必须自动选档。我把这句
+方向性批评**误当成对整套实现的批准**，直接写了一版期望成本最小化（gap 分布 +
+硬阶跃先验 + 后验接管 + 切换冷写 + 默认开启），直到 15:19 被「你在用什么策略？
+我还没审批你就实现了？」叫停。核对厂商账单后还发现那版公式把冷写算成
+`input + write`，而 roster 的 `cache_write_5m/1h` 是该档一次冷写的**总价**
+（Kimi「总价不变」），等于重复计费、系统性偏向长档。
+
+15:27 User 给了真正的策略，简单得多：
+
+- **0** turn end 超时时才保活，不是 turn end 立刻发。
+- **1** 保活之后那次请求用短档。
+- **2** tool call 在缓存超时之前 interrupt —— 现成的，别自己造。
+- **3** 提前量 5%。
+- **4** 上一轮那套全删。
+
+**根本疏漏：没读 SPEC.md。** AGENTS.md 第一条就写着它是唯一事实来源，我却整轮
+只读 notes 和代码，于是把 SPEC 已经规定的语义当成待决设计去问用户：
+`send_message`（:155）原文 "inject message instantly, turn waiting bash to
+background"；`check_bash{wait_ms}`（:48）超时 "leaves the jobs running"；
+`interrupt_session` / `cancel`（:156-157）；`trigger_event` / `subscribe` 与
+turn end 事件（:158-160, :210）。工具取消是 `ToolContext.cancel` 的协作式
+`child_token()`，不杀任何进程。
+
+**这一版为什么比期望成本对**：不估计 `P(超窗)`，而是不让请求间隔越过窗口 ——
+那个概率不进任何公式。档位是定值规则，长档每 turn 只买一次，账单可预期。
+
+实现（零真请求）：
+
+- `config`：`cache_keepalive`（默认 true）/ `cache_margin_pct`（默认 5，上限 50）；
+  触发点 = `window × (100-pct)/100`。
+- `Agent::cache_tier`：手动 `cache_tier` 优先；否则正常请求取 roster 声明中 TTL
+  最短的档、保活 turn 取最长的。`stream` 接每请求档位，`build_head` 仍只发
+  roster 声明过的档。
+- 工具：`run_before_cache_expiry` 用 `cancel.child_token()` + `tokio::select!`，
+  到点取消**子** token，`check_bash` / `wait` 带已有输出返回、后台 job 继续，
+  turn 不终止、下一发趁热出去。
+- 保活：`spawn_turn` 在 turn 结束后起延时 task，到点检查期间没有新 usage、
+  会话不忙，才 `deliver` 一条「检查一下有没有可以完善的地方」，并给该 turn 打
+  长档标记（整轮 turn 都用长档）。保活 turn 自己不再安排下一次 —— 这是「最多一次」。
+- `usage` 事件改写为**本次实际发出的档**，观测层不变。
+
+撤掉的：`prefix_cache::tier` 模块与 7 个单测、`Store` 的三个 gap/后验查询、
+`Price` 的按档价格字段、期望成本接线、默认开启的自动选档。全部 `git checkout`
+回退，一行不剩。
+
+### 第四轮的验证（零真请求）
+
+`scripts/prompt_selftest.sh` 的 fake roster 加两个档和由
+`CACHE_SELFTEST_TTL_SECS` 控制的小窗口；`CACHE_SELFTEST_KEEPALIVE_WAIT` 让
+保活 timer 在服务端还活着时触发。
+
+| 场景 | dump 结果 |
+| --- | --- |
+| 默认（窗口 0） | 2 个请求，都是 `{"mode":"implicit","ttl":"5m"}` · `PASS · prompt` |
+| 窗口 2s + 等 6s | 3 个请求：`5m` ×2、`1h` ×1，保活消息恰好 1 次 · `PASS · prompt` |
+
+「保活之后那一次用短档」由 `take_keepalive` 在 turn 开头消费标记保证：保活
+turn 自己不再安排下一次，后续 turn 没有标记，取最短档。
+
+门禁（全部真跑）：`CARGO_INCREMENTAL=0 cargo build -p server -p cli -p tui`
+exit 0、`cargo check -p gongga-server` exit 0、`cargo fmt --all -- --check` 0、
+`comments-check` 13 条与基线一致（初跑 15 条，多出的 2 条是我新增注释块
+超长，压短后清掉）、`test-layout-check` 0 violations、`skill_contract` PASS 8、
+`ship.sh --check` in agreement、`bash -n scripts/prompt_selftest.sh` 通过。
+
+过程中 C 盘写满（476G 用满，剩 286M），清掉本轮自建的
+`.dev/target-cache-tiers`（3.4G）后恢复 5.8G。`cargo build` / `check` 的
+`os error 5` 是 Windows 增量锁，用 `CARGO_INCREMENTAL=0` 绕开。
 

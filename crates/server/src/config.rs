@@ -103,6 +103,10 @@ pub struct ModelConfig {
     pub cache_tier: Option<String>,
     /// Tiers the roster says this provider accepts, by its API's spelling.
     pub cache_tiers: HashMap<String, u64>,
+    /// Interrupt a long tool call and send one long-tier keepalive at turn end.
+    pub cache_keepalive: bool,
+    /// Percent of the short tier's window left when either of the above fires.
+    pub cache_margin_pct: u8,
     /// Send a stable route affinity key, for a provider known to accept one.
     pub cache_affinity: bool,
     /// Pin the inference instance with an `X-Session-ID` header.
@@ -281,6 +285,8 @@ struct FileModel {
     max_output_tokens: Option<u32>,
     store: Option<bool>,
     cache_tier: Option<String>,
+    cache_keepalive: Option<bool>,
+    cache_margin_pct: Option<u8>,
     cache_affinity: Option<bool>,
     cache_session_header: Option<bool>,
     headers_timeout_ms: Option<u64>,
@@ -451,6 +457,15 @@ impl Config {
                 .as_ref()
                 .map(|e| e.cache_ttl_tiers.clone())
                 .unwrap_or_default(),
+            cache_keepalive: env_or("GONGGA_CACHE_KEEPALIVE")
+                .and_then(|v| v.parse().ok())
+                .or(model_file.cache_keepalive)
+                .unwrap_or(true),
+            cache_margin_pct: env_or("GONGGA_CACHE_MARGIN_PCT")
+                .and_then(|v| v.parse().ok())
+                .or(model_file.cache_margin_pct)
+                .unwrap_or(5)
+                .min(50),
             cache_affinity: env_or("GONGGA_CACHE_AFFINITY")
                 .and_then(|v| v.parse().ok())
                 .or(model_file.cache_affinity)

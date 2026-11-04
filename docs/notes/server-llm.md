@@ -341,10 +341,10 @@ force, and not every endpoint accepts the affinity field. A separate switch
 adds an `X-Session-ID` header with the same session name, for the endpoints
 that pin an inference instance that way; the header travels through
 `stream_once` -> `read_stream` -> `read_stream_inner` beside the key. A tier's
-window is a claim about the provider, not a constant of this module; a measured
-5m tier still answered a full hit after 330 seconds on one provider, which is
-why no automatic tier choice is made here. See
-`.agents/notes/2026-11-04-prefix-cache-simulation-and-explicit-tiers.md`.
+window is a claim about the provider, not a constant of this module: a probe
+330 seconds into a nominal 300-second tier has too little margin, and no
+control case, to say anything about it. See
+`docs/reference/prefix-cache.md`.
 
 ## next_sse_block
 
@@ -436,3 +436,9 @@ stream.
 **Two lifetimes in `build_head`.** The index joins the prose because both change only
 when a file does. The card does not: the prose follows an edited template while the card
 is stamped once.
+
+**The tier is a per-request argument.** `stream` takes the tier its caller chose and
+hands it to `build_head`, which writes `prompt_cache_options` only when the roster
+declared that spelling. A retry replays the same head bytes, so one stream cannot
+change tier halfway. The `usage` row records the tier actually sent, not the
+client's static setting. See `docs/notes/server-agent.md`.

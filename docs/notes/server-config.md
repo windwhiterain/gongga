@@ -277,3 +277,12 @@ every endpoint accepts the field.
 `X-Session-ID` header with the same name, for endpoints that pin an inference
 instance that way. It is a separate switch: an unknown header is not the same
 risk as an unknown body field, and a provider may want one without the other.
+
+`[model] cache_keepalive` (or `GONGGA_CACHE_KEEPALIVE`, on by default) and
+`cache_margin_pct` (or `GONGGA_CACHE_MARGIN_PCT`, 5 by default, capped at 50)
+drive the fixed tier rule. Every request sends the shortest tier the roster
+declares; a tool call is interrupted at `window * (100 - pct) / 100`, and one
+long-tier keepalive is sent at that same point after a turn ends. A machine
+that names `cache_tier` explicitly keeps it and neither rule changes it. With
+no declared tiers the window is zero and both rules are inert. See
+`docs/notes/server-commands.md`.

@@ -22,6 +22,10 @@ use crate::store::{MessageRow, PendingTask, Store, Transcript};
 /// still reaches whoever asked for it.
 const SHUTDOWN_NOTICE: Duration = Duration::from_millis(250);
 
+/// Sent once with the long tier, when the short tier's window is nearly spent.
+const KEEPALIVE_MESSAGE: &str = "检查一下有没有可以完善的地方";
+
+#[derive(Clone)]
 pub struct Dispatch {
     pub agent: Arc<Agent>,
     pub sessions: SessionManager,
@@ -83,6 +87,12 @@ fn spawn_turn(d: &Dispatch, work: TurnWork) {
     let sessions = d.sessions.clone();
     let bus = d.bus.clone();
     let active: ActiveGuard = ActiveGuard::new(d.active.clone());
+    // Read before the turn starts: its first step consumes the mark.
+    let was_keepalive = d.agent.is_keepalive(work.session.name());
+    let keepalive_agent = d.agent.clone();
+    let keepalive_d = Arc::new(d.clone());
+    let keepalive_session = work.session.clone();
+    let keepalive_model = d.agent.model_config.model();
     tokio::spawn(async move {
         let _active = active;
         let session = work.session.clone();
@@ -111,6 +121,35 @@ fn spawn_turn(d: &Dispatch, work: TurnWork) {
                 drop(gate);
             }
         }
+        // One long-tier keepalive near the window's end; it schedules no next one.
+        if was_keepalive || !keepalive_agent.model_config.cache_keepalive {
+            return;
+        }
+        let wait_ms = keepalive_agent.cache_fire_after_ms(&keepalive_model);
+        if wait_ms == 0 {
+            return;
+        }
+        let ended_at = crate::store::now_millis();
+        let session_id = keepalive_session.id();
+        let name = keepalive_session.name().to_string();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+            // Any request during the wait already refreshed the prefix.
+            let refreshed = keepalive_d
+                .store
+                .last_usage_at(session_id)
+                .ok()
+                .flatten()
+                .is_some_and(|at| at > ended_at);
+            if refreshed || keepalive_session.busy() {
+                return;
+            }
+            keepalive_agent.mark_keepalive(&name);
+            let outcome = deliver(keepalive_d.as_ref(), &name, KEEPALIVE_MESSAGE.to_string()).await;
+            if !outcome.ok {
+                keepalive_agent.unmark_keepalive(&name);
+            }
+        });
     });
 }
 

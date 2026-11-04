@@ -83,14 +83,16 @@ if ! wait_tcp "$fake_port"; then
 fi
 
 # One model, the fake, so nothing here depends on the machine's roster.
-# One declared tier lets a configured GONGGA_CACHE_TIER reach the wire; without
-# it the client filters the directive out and the dumped body has nothing to show.
+# Two declared tiers let the fixed rule pick a short and a long one. A zero
+# window keeps the keepalive inert for ordinary runs; CACHE_SELFTEST_TTL_SECS
+# makes it fire in seconds for the keepalive check.
 cat > "$work/prompt-roster.toml" <<TOML
 [[provider]]
 id = "fake"
 name = "Fake"
 key_env = "FAKE_API_KEY"
-cache_ttl_tiers = { "1h" = 3600 }
+cache_ttl_tiers = { "5m" = 300, "1h" = 3600 }
+cache_ttl_secs = ${CACHE_SELFTEST_TTL_SECS:-0}
 
   [[provider.endpoint]]
   id = "openai"
@@ -170,6 +172,12 @@ assert "Session `reader`" in card, card
 assert "harness gongga at `" in card and "in `" in card, card
 INNER
 ok "the prose and the card both name the session, with no placeholder left" $?
+
+# The keepalive is a timer inside the server, so give it a chance to fire while
+# the process is still here. Otherwise the ordinary run pays nothing.
+if [[ -n "${CACHE_SELFTEST_KEEPALIVE_WAIT:-}" ]]; then
+  sleep "$CACHE_SELFTEST_KEEPALIVE_WAIT"
+fi
 
 sha=$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)
 if [[ $fails == 0 ]]; then
