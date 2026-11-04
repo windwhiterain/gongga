@@ -137,11 +137,13 @@ The same shape answers the other two:
 
 ## What this server buys today
 
-It used to send **no cache directive**. It now sends the shortest tier the roster
-declares on every request, and one long-tier keepalive when a turn's short window
-is nearly spent; `cache_ttl_tiers` is the only list it may choose from. Tool calls
-are interrupted before that window ends rather than priced after it, and the
-affinity key and `X-Session-ID` are separate opt-in switches. See
+It used to send **no cache directive**. It now sends one tier per session on every
+request: the session's own `cache_tier` if it named one, otherwise the shortest
+tier the roster declares. `cache_ttl_tiers` is the only list it may choose from.
+A session that asked for `cache_keepalive` gets a `(time notice: ...)` turn each
+time that tier's window is nearly spent, and the chain has no last one; tool calls
+are interrupted before the window ends rather than priced after it. The affinity
+key and `X-Session-ID` are separate opt-in switches. See
 `docs/notes/server-commands.md`. The table below describes what each tier costs
 and what a provider leaves on the table, not a per-model decision this server makes:
 

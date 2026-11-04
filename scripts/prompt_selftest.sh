@@ -7,7 +7,7 @@
 set -uo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-bin="$root/target/debug"
+bin="${CACHE_SELFTEST_BIN:-$root/target/debug}"
 work="$root/.dev/selftest"
 home="$work/prompt-home"
 log="$work/prompt.log"
@@ -68,6 +68,8 @@ fi
 rm -rf "$home"; mkdir -p "$home"
 cp -r "$HOME/.gongga/ship" "$home/ship" 2>/dev/null
 : > "$log"
+export FAKE_LLM_DUMP="${FAKE_LLM_DUMP:-$work/requests.jsonl}"
+: > "$FAKE_LLM_DUMP"
 
 export FAKE_LLM_TOOL=bash
 export FAKE_LLM_TOOL_ARGS='{"command":"cd /tmp && pwd","name":"default","task":"move the shell"}'
@@ -117,7 +119,14 @@ cli=("$bin/gongga-cli.exe" --home "$home" --server "127.0.0.1:$port")
 
 # A session in the repository, whose rules file names SPEC.md and a skill. The model
 # is named: this home's roster has one provider, and the built-in default is not it.
-created=$("${cli[@]}" set_session reader --model fake/flash-fake --cwd "$root" 2>&1)
+session_args=(--model fake/flash-fake --cwd "$root")
+if [[ -n "${CACHE_SELFTEST_TIER:-}" ]]; then
+  session_args+=(--cache_tier "$CACHE_SELFTEST_TIER")
+fi
+if [[ -n "${CACHE_SELFTEST_KEEPALIVE:-}" ]]; then
+  session_args+=(--cache_keepalive "$CACHE_SELFTEST_KEEPALIVE")
+fi
+created=$("${cli[@]}" set_session reader "${session_args[@]}" 2>&1)
 [[ "$created" == *'"ok":true'* ]]
 ok "a session is created in the repository" $?
 # The message names two references: a skill (resolved through the home) and a file by
@@ -178,6 +187,21 @@ ok "the prose and the card both name the session, with no placeholder left" $?
 if [[ -n "${CACHE_SELFTEST_KEEPALIVE_WAIT:-}" ]]; then
   sleep "$CACHE_SELFTEST_KEEPALIVE_WAIT"
 fi
+
+python - "$FAKE_LLM_DUMP" "${CACHE_SELFTEST_TIER:-5m}" "${CACHE_SELFTEST_KEEPALIVE:-false}" <<'INNER'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding='utf-8') if line.strip()]
+want, keepalive = sys.argv[2], sys.argv[3] == "true"
+if rows:
+    ttls = {(r.get("prompt_cache_options") or {}).get("ttl") for r in rows}
+    assert ttls == {want}, f"expected only {want}, saw {ttls}"
+notices = sum(1 for r in rows if "(time notice:" in json.dumps(r, ensure_ascii=False))
+if keepalive:
+    assert notices >= 2, f"the heartbeat did not repeat: {notices} notice(s)"
+else:
+    assert notices == 0, f"a session without a heartbeat sent {notices} notice(s)"
+INNER
+ok "one static tier on every request, and the heartbeat follows its switch" $?
 
 sha=$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)
 if [[ $fails == 0 ]]; then

@@ -198,12 +198,12 @@ transcript only grows and the prompt row is replayed verbatim. With no such row 
 configured value still answers, so a new home's first request is priced exactly as
 before. The formula above is unchanged; only the source of `p` moved.
 
-Those rows also carry `uncached`, `gap_ms`, `cache_tier` and `cache_write`. The
-per-request tier choice in `cache_tier::choose` reads the gaps to price a window,
-and reads `cache_tier` back with `hit_ratio` to replace the roster's stated window
-with an observed `P(hit | tier, gap)` once this home has rows for that bucket.
-Until then a tier's window is the roster's number used as a hard step, never a
-grace period invented here. See `docs/notes/server-cache-tier.md`.
+Those rows also carry `uncached`, `gap_ms`, `cache_tier` and `cache_write`.
+`cache_tier` is the spelling the session sent, so a home can later compare a
+tier's real hit ratio against the lifetime its roster stated. The server itself
+does not price gaps or choose a tier from them: the tier is the session's own
+static setting, and the only timer it drives is `window * (100 - margin_pct) /
+100` for the interrupt and the heartbeat. See `docs/notes/server-commands.md`.
 
 ## the size is real tokens, not bytes
 
