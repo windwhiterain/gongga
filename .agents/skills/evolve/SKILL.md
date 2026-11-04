@@ -268,7 +268,7 @@ EOF
 GONGGA_PROVIDERS_CATALOG=$PWD/.dev/v/providers.toml GONGGA_KEY=sk-fake   ./.dev/target-test1/debug/gongga --home .dev/v/srv serve 8900
 
 # 3. 客户端显式指过去，并且不要让它自己拉服务端
-./target/debug/gongga --server 127.0.0.1:8900 --home .dev/v/srv --key sk-fake --client-only   set_session s fake/fake
+./target/debug/gongga --server 127.0.0.1:8900 --home .dev/v/srv --key sk-fake --client-only   set_session s fake/fake --cwd .
 ```
 
 三个坑：
@@ -293,7 +293,7 @@ GONGGA_PROVIDERS_CATALOG=$PWD/.dev/v/providers.toml GONGGA_KEY=sk-fake   ./.dev/
 ```bash
 $ gongga-cli                        # 命令目录里还是旧的参数名
 12 command(s); run one with `gongga <command> <args>`; each takes line says its shape.
-set_session -- takes: --session (required), --cwd (optional), --llm (optional), ...
+set_session -- takes: --name <name> --model <model> [--thinking <level>] [--ctx_limit <n%>] ...
                                                    # 而源码里早就没有 --llm 了
 ```
 

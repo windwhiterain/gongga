@@ -21,6 +21,12 @@ registered -- and one `target` field on each entry says who runs it. Dispatch
 reads that field; so does the CLI. A command nobody implemented is not
 "unknown" but a catalog entry with no handler, which the answer says outright.
 
+The catalog also decides the sticky vocabulary: an argument's `kind` is the
+entry that fills it (`session`, `model`, `thinking`, `ctx_limit`, `remote`,
+`cwd`), and `bundle` groups the tuning and place arguments that fill as units.
+`set_session`'s `--model` and `--cwd` are required, and required is fillable:
+a sticky entry names them, or the command is refused with what it takes.
+
 ## Dispatch::resolve
 
 One decision for every kind of command: does the name exist, who runs it, and are
@@ -121,7 +127,7 @@ be at all.
 ## LEVEL_IN_FORCE
 
 The level a session runs at is resolved once, when `set_session` writes it, and stored:
-this command's `--thinking_effort` mapped through the roster, else whatever
+this command's `--thinking` mapped through the roster, else whatever
 `Entry::level_in_force` answers -- the level the session already had when this model
 still publishes it, else this model's roster default, else nothing. So a session this
 command creates, and one whose model it changes, both come out with a level; a command
@@ -309,8 +315,9 @@ A caller with a cursor (the IM bridge) asks from the row after it on: `12:` is
 than a tail window filtered after it arrived. A caller reading a part of the
 transcript asks for exactly that part.
 
-The range is required, as SPEC spells it: a caller always says which rows it
-wants. There is no row limit any more, and no default to guess at.
+The range leads the command line, as SPEC spells it, and may be omitted: an
+omitted range is the whole transcript. The session is the `--session` argument,
+required, filled from the sticky entry like any required argument.
 
 The syntax is Python's, with two differences that are deliberate:
 

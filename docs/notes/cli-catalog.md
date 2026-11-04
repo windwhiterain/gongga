@@ -14,8 +14,9 @@ an event filter from the filters that exist: the server names the source
 same way `sessions` and `paths` already worked.
 
 Values complete from whatever the spec says can be enumerated -- the live
-session list, a fixed set, every argument name, the filesystem, client state, or
-another argument's list when the value is a name that chooses one.
+session list, a fixed set, the argument types the catalog declares, the
+filesystem, client state, or another argument's list when the value is a type
+that chooses one.
 
 ## Inner::sessions, message_session, server_cwd
 
@@ -41,10 +42,12 @@ it arrives in the greeting's `ServerInfo`, which already existed.
 Resolved once per completion, before the popup looks at any value: the machine
 `--remote` names, then the machine the line's session runs on, then this one --
 and the directory, which is the session's when the line has one. The session a
-command names may be its first positional (`send_message <session> <message>`) or
-a flag (an older server's spelling), and `session_named` reads both. A message
-names no session on the line, which is why `words` is empty for one: prose
-containing `--session` is prose, and the session it goes to is the sticky one.
+line names is the value bound to its kind-`session` argument, wherever the spec
+keeps that argument and however it is spelled, and `session_named` reads it
+through `parse_args` -- the one binder, so completion and submission can never
+disagree about what a line says. A message names no session on the line, which is
+why `words` is empty for one: prose containing `--session` is prose, and the
+session it goes to is the sticky one.
 
 ## remote_paths, wanted, inflight, fail_paths
 
@@ -112,20 +115,21 @@ over a line whose first word was settled.
 Past the command name, a word completes one of two things. A flag's value, when
 it follows a flag: the flag sits one word back when the value has not been
 started yet, and two when it has: `--remote <TAB>` and `--remote lo<TAB>`
-complete the same list. Or the next unfilled positional argument, counted from
-the bare words on the line (`positional_tokens` steps over flags and their
-values): `/set_session <TAB>` offers sessions, and with a session on the line the
-next Tab offers models. A slot whose source is `None` offers nothing, which is
-how `send_message <session> <text>` stops completing after the session.
+complete the same list. Or the next orderable slot -- a positional or a required
+argument, skipping ones a flag on the line already bound -- counted from the bare
+words on the line (`positional_tokens` steps over flags and their values):
+`/set_session <TAB>` offers sessions, and with a session on the line the next Tab
+offers models. A slot whose source is `None` offers nothing, which is how
+`send_message --name <name> --message <text>` stops completing after the session.
 
 ## resolve
 
 `depth` exists for the single case that points back into the catalog: a value
-completed the way another argument's values are. The named argument is the line's
-first positional -- `set_sticky <type> <value>` completes the value as the type
-names -- or, on an older server's spelling, the value of `--name`. One hop is
-enough for the shape the client actually declares; the second is allowed only so
-a chain that names itself is cut off rather than followed forever.
+completed the way another argument's values are. The type the line's first word
+names -- `set_sticky <type> <value>` completes the value as arguments of that
+type complete, `session` offering sessions. One hop is enough for the shape the
+client actually declares; the second is allowed only so a chain that names itself
+is cut off rather than followed forever.
 
 ## flags_on_line
 

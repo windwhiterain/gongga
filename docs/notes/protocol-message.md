@@ -61,8 +61,9 @@ shape.
 
 ## CompletionSource::Arguments
 
-This is what a command takes when its value *is* an argument name, such as
-`set_persistant_cmd_argument --name`.
+This is what a command takes when its value *is* an argument type, such as
+`set_sticky <type>`: the kinds the published catalog declares are the only
+sticky entries there are, so completing them is completing the settable ones.
 
 ## CompletionSource::Paths
 
@@ -72,10 +73,9 @@ client is one process that may be standing anywhere.
 
 ## CompletionSource::OfNamedArgument
 
-Complete this value the way the argument named on the same line under `--name`
-would be completed: `--name session --value <TAB>` offers sessions. The client
-needs this because the shape of the value depends on which argument it is going
-to fill.
+Complete this value the way arguments of the type the line names would be
+completed: `set_sticky session <TAB>` offers sessions. The client needs this
+because the shape of the value depends on which type it is going to fill.
 
 ## Operation
 
@@ -97,14 +97,26 @@ carried in. It carries an id like a command, so the answer is addressed the
 same way, and the server answers it with a `CmdResult` -- the same answer, from
 the same handler.
 
+## ArgSpec::kind and ::bundle
+
+A sticky entry keys on the argument's *type*, never its name: SPEC's `<session>`
+is the kind `session` whether the flag spells `--name` (set_session,
+send_message) or `--session` (get_messages, set_render_session). The kinds the
+published catalog declares are the only entries there are -- the cmd surface
+decides the sticky vocabulary, and a value lands only where a kind names it.
+`bundle` groups arguments that fill as a unit: some members typed, sticky leaves
+the rest alone; none typed, every member an entry holds fills.
+
 ## ArgSpec::positional
 
-SPEC's command lines bind arguments by position -- `send_message <session>
-<message>` -- or by flag -- `set_session ... --cwd <path>`. The one field says
-which a value is, and the declaration order in `args` is the binding order, so
-a spec's list is its syntax. A front-end parses and completes every command
-from the catalog alone; it keeps no list of its own, which is the "transparent
-wrapper, does not know server cmd" half of the crate's contract.
+SPEC's command lines bind arguments by position -- `interrupt_session <session>`
+-- or by flag -- `set_session ... --cwd <path>`. The one field says which
+spelling the line documents, and the declaration order in `args` is the binding
+order, so a spec's list is its syntax. Every non-optional argument may also be
+spelled by order alone; an optional one needs its flag. A front-end parses and
+completes every command from the catalog alone; it keeps no list of its own,
+which is the "transparent wrapper, does not know server cmd" half of the crate's
+contract.
 
 ## CommandSpec::target
 

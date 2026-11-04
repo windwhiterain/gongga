@@ -84,9 +84,13 @@ them an agent that wants to cancel or restart has no better option than killing
 its own server from outside. `GONGGA_HOME` and `GONGGA_SERVER` are exactly the two
 fallbacks the CLI reads, so a command needs no flags of its own. `PATH` is what
 makes `gongga-cli` resolve, in the shape each child can read
-(`server-shell-command.md`); `GONGGA_SESSION` is added where a session's shells are
-made, because that name belongs to a session and not to the server. A script gets
-the same variables and keeps the native `PATH` it was started with.
+(`server-shell-command.md`); `GONGGA_SESSION`, `GONGGA_MODEL` and `GONGGA_REMOTE`
+are added where a session's shells are made, because those facts belong to a
+session and not to the server: a shell cannot learn its own name, model or
+machine from the outside, and a script places a child from them instead of a
+flagless `set_session`, which sticky-filled arguments would turn from a read
+into a move. A script gets the same variables and keeps the native `PATH` it was
+started with.
 
 ## run (detached adoption)
 

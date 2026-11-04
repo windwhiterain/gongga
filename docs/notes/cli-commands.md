@@ -98,24 +98,29 @@ two. Before this it was `0`, which meant a fresh home capped nothing while SPEC 
 
 ## Sticky::fill
 
-A *required* argument is filled, and so is an optional one the spec declares
-`sticky` -- SPEC writes those `(sticky)`, and `set_session --model` is the one that
-has it. That flag is what keeps the other optional arguments out: an argument the
-command makes optional is a question the caller answered by leaving it out, and
-`set_event_ui` is the case that proves the rule: a sticky `session` filling its
-`--session` would make every change of block height silently change what is on
-screen.
+The catalog decides which entries exist, and a value only ever lands on an
+argument whose `kind` names it -- never on a name: `set_session --name <session>`
+and `get_messages --session <session>` share the `session` entry whatever their
+flags spell. An argument with no kind never fills, which is what keeps
+`--must_create` out: a sticky `must_create` would make every session refuse to
+join an existing one.
 
-Which arguments those are belongs to the catalog the server publishes, not to the
-client: a transparent wrapper knows no command by name.
+A bundle is judged as a unit. Some of its members typed, `Sticky` leaves the rest
+of it alone -- all or nothing: `--model` named means the caller is overriding the
+tuning, and half-applying the sticky `thinking` on top would be a mode nobody
+chose. None of its members typed, every member an entry holds fills; an entry
+missing means the bundle is incomplete, and an incomplete bundle is no bundle --
+the members fill one by one, and a required member no entry fills is left for the
+missing-arguments refusal.
 
 ## Sticky::settle_follow
 
-`set_session` writes the sticky `session` **and** `model` on the acknowledgement, not
-on the submission, so a refusal retargets nothing. Both are modes the next command
-inherits: the session it acts on, and the model it runs on. A `set_session` that
-names no model leaves the remembered one alone, which is what lets `--model` be a
-setting rather than a repetition.
+`set_session` writes entries back on the acknowledgement, not on the submission, so
+a refusal retargets nothing: the `(sticky)` session argument, and every bundle
+member the accepted command carried -- a member the command did not name is not
+written, so a partial `set_session` never erases the rest of a bundle. All are
+modes the next command inherits: the session it acts on, and the tuning and the
+place it runs with.
 
 ## EVENT_FIELDS
 
@@ -130,10 +135,12 @@ on purpose; `session=main` does not hide the list.
 ## parse_args
 
 One parser binds a line to the published spec: a bare word fills the next unfilled
-positional argument in the spec's own order, and `--flag value` / `--flag=value`
-name the rest. The spec is the only syntax the client knows -- the transparent
-wrapper keeps no command list -- so a `--word` that names nothing in it is a typo
-said as such, and a bare word beyond the last positional is "takes <signature>".
+argument that may be spelled by order -- a positional, or a required one (SPEC:
+"all non optional named argument's name can be ommited via argument order") -- and
+`--flag value` / `--flag=value` name the rest; an optional argument keeps its
+flag. The spec is the only syntax the client knows -- the transparent wrapper
+keeps no command list -- so a `--word` that names nothing in it is a typo said as
+such, and a bare word past the last orderable slot is "takes <signature>".
 
 Typed arguments win over sticky ones: the binding happens first, and
 `Sticky::fill` afterwards fills only slots still empty, which is the rule the flag
