@@ -1316,15 +1316,14 @@ impl Client {
         let id = self.next_id();
         // SPEC: the sticky follows what the server accepted, never a submission.
         // What an accepted set_session writes back is decided here, from the
-        // bound arguments: the (sticky) session argument and every bundle member
-        // the command carries, keyed by kind -- a bundle member the command did
-        // not name is not written, so a partial set_session never erases the
-        // rest of a bundle.
+        // bound arguments: every argument with a kind that the command carries,
+        // keyed by kind -- an argument the command did not name is not written,
+        // so a partial set_session never erases the entries it left alone.
         if head == "set_session" {
             let pairs: Vec<(String, String)> = spec
                 .args
                 .iter()
-                .filter(|a| (a.sticky || a.bundle.is_some()) && args.contains_key(&a.name))
+                .filter(|a| a.kind.is_some() && args.contains_key(&a.name))
                 .filter_map(|a| {
                     a.kind
                         .clone()

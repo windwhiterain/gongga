@@ -52,5 +52,5 @@ gongga tui
 ## Use
 type this command in the tui to create your fist session "hello" with "provider/model" at directory ".":
 ```tui
-/set_session hello provider/model .
+/set_session hello --model provider/model
 ```

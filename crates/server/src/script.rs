@@ -402,10 +402,6 @@ fn parse_arg(raw: &Value) -> Option<ArgSpec> {
         // A script may join the sticky world: `"kind": "session"` keys the
         // entry that fills the argument.
         kind: raw.get("kind").and_then(Value::as_str).map(str::to_string),
-        bundle: raw
-            .get("bundle")
-            .and_then(Value::as_str)
-            .map(str::to_string),
         completions,
         // A script may ask for it: `"sticky": true` in its manifest.
         sticky: raw.get("sticky").and_then(Value::as_bool).unwrap_or(false),

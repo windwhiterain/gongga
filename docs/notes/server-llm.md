@@ -356,8 +356,21 @@ looks exactly like silence -- no block ever completes, so nothing is parsed and
 the turn dies on the idle timeout with "no response data", which blames the
 provider for a separator nobody promised to send.
 
-The block it returns has its trailing `\r` stripped, so the caller only ever
-sees `data:` lines.
+The block it returns has its trailing `\r` stripped, so line endings do not
+leak into field names.
+
+## parse_sse_block
+
+An SSE `event:` field is optional (HTML 9.2.6 defaults the type to `message`),
+and not every Responses provider sends one. LongCat's stream is `data:` lines
+only, carrying the event name in the payload's `type`. Reading only `event:`
+named every one of its frames `""`: `handle` matched none of them, so a full
+200 response streamed nothing and was retried as "the stream ended with nothing
+in it".
+
+An explicit `event:` still wins. With none, the name comes from `data.type`;
+a payload with neither stays unnamed and is ignored as before. `[DONE]` is
+resolved before the JSON parse and keeps its own name.
 
 ## handle (reasoning deltas)
 

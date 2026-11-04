@@ -23,9 +23,11 @@ reads that field; so does the CLI. A command nobody implemented is not
 
 The catalog also decides the sticky vocabulary: an argument's `kind` is the
 entry that fills it (`session`, `model`, `thinking`, `ctx_limit`, `remote`,
-`cwd`), and `bundle` groups the tuning and place arguments that fill as units.
-`set_session`'s `--model` and `--cwd` are required, and required is fillable:
-a sticky entry names them, or the command is refused with what it takes.
+`cwd`). `set_session`'s settings are all optional with the initials SPEC
+spells -- `--model` omitted keeps the session's model (a new one takes the
+configured default), `--cwd` omitted stands the session where the server
+stands -- so a bare `set_session <name>` creates with every default, and each
+setting a caller names becomes a mode the acknowledgement writes back.
 
 ## Dispatch::resolve
 

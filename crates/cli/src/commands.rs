@@ -313,40 +313,15 @@ impl Sticky {
     ///
     /// # Invariant
     ///
-    /// SPEC's Sticky section. A bundle is judged as a unit: partly typed,
-    /// `Sticky` leaves the rest of it alone (all or nothing); wholly omitted,
-    /// every member an entry holds fills -- an incomplete bundle is no bundle,
-    /// the members fill one by one. Everything else with a kind fills when
-    /// omitted; absence where no entry names the argument is a decision, left
-    /// alone.
+    /// SPEC's Sticky section, its two bullets in one rule: a missing
+    /// non-optional argument is filled from its entry, and a missing optional
+    /// argument takes the entry as its initial value. An argument no entry
+    /// names is left alone: absence keeps the command's own initial, applied
+    /// where the command runs.
     pub fn fill(&self, spec: Option<&CommandSpec>, args: &mut Args) {
         let Some(spec) = spec else { return };
-        let mut bundles: Vec<(&str, Vec<&ArgSpec>)> = Vec::new();
         for a in &spec.args {
-            let Some(bundle) = a.bundle.as_deref() else {
-                continue;
-            };
-            match bundles.iter_mut().find(|(name, _)| *name == bundle) {
-                Some((_, members)) => members.push(a),
-                None => bundles.push((bundle, vec![a])),
-            }
-        }
-        for (_, members) in &bundles {
-            let typed = members
-                .iter()
-                .filter(|m| args.contains_key(&m.name))
-                .count();
-            if typed > 0 && typed < members.len() {
-                continue;
-            }
-            for m in members {
-                self.fill_one(m, args);
-            }
-        }
-        for a in &spec.args {
-            if a.bundle.is_none() {
-                self.fill_one(a, args);
-            }
+            self.fill_one(a, args);
         }
     }
 

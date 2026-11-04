@@ -95,19 +95,19 @@ cli=("$cli_bin" --home "$home" --server "127.0.0.1:$port")
 # The model never runs: no turn is started, so no provider is needed.
 
 # 1. Positional set_session.
-created=$("${cli[@]}" set_session main fake/flash-fake --cwd "$root" 2>&1)
+created=$("${cli[@]}" set_session main --model fake/flash-fake --cwd "$root" 2>&1)
 [[ "$created" == *'"ok":true'* ]]
-ok "set_session main (positional session)" $?
+ok "set_session main --model <model> --cwd <path>" $?
 say "$created"
 
 # 2. Sticky session fills the omitted first positional of del_session's sibling.
-sent=$("${cli[@]}" send_message main "hello there" 2>&1)
+sent=$("${cli[@]}" send_message --name main "hello there" 2>&1)
 [[ "$sent" == *'"ok":true'* ]]
-ok "send_message main <message> (both positional)" $?
+ok "send_message --name main <message>" $?
 
 # 3. Diagnosis: an unknown flag names the command's syntax.
-bad=$("${cli[@]}" send_message main hi --mesage x 2>&1)
-[[ "$bad" == *"has no argument --mesage"* && "$bad" == *"--name <name> --message <text>"* ]]
+bad=$("${cli[@]}" send_message --name main hi --mesage x 2>&1)
+[[ "$bad" == *"has no argument --mesage"* && "$bad" == *"--message <text> --name <name>"* ]]
 ok "unknown flag diagnosed with the signature" $?
 say "$bad"
 
@@ -184,7 +184,7 @@ say "$inter"
 
 # 15. The operation the window's gestures use crosses the wire: the protocol
 #     carries it beside the commands, and the server answers it like one.
-"${cli[@]}" set_session doomed fake/flash-fake --cwd "$root" >/dev/null 2>&1
+"${cli[@]}" set_session doomed --model fake/flash-fake --cwd "$root" >/dev/null 2>&1
 probe=$(python "$root/scripts/operation_probe.py" --port "$port" --key "$(cat "$home/server.key")" delete_session --session doomed 2>&1)
 [[ "$probe" == *'"ok":true'* ]]
 ok "the delete_session operation is answered" $?

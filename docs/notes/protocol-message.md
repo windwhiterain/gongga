@@ -122,15 +122,15 @@ carried in. It carries an id like a command, so the answer is addressed the
 same way, and the server answers it with a `CmdResult` -- the same answer, from
 the same handler.
 
-## ArgSpec::kind and ::bundle
+## ArgSpec::kind
 
 A sticky entry keys on the argument's *type*, never its name: SPEC's `<session>`
 is the kind `session` whether the flag spells `--name` (set_session,
 send_message) or `--session` (get_messages, set_render_session). The kinds the
 published catalog declares are the only entries there are -- the cmd surface
 decides the sticky vocabulary, and a value lands only where a kind names it.
-`bundle` groups arguments that fill as a unit: some members typed, sticky leaves
-the rest alone; none typed, every member an entry holds fills.
+SPEC's Sticky section fills with an entry what a command omits: required
+arguments outright, optional arguments as their initial value.
 
 ## ArgSpec::positional
 

@@ -1292,6 +1292,12 @@ fn parse_sse_block(block: &str) -> Option<SseEvent> {
         });
     }
     let parsed = serde_json::from_str(&data).unwrap_or(Value::Null);
+    // SSE's `event:` is optional; Responses frames name themselves in `type`.
+    if name.is_empty() {
+        if let Some(t) = parsed.get("type").and_then(Value::as_str) {
+            name = t.to_string();
+        }
+    }
     Some(SseEvent { name, data: parsed })
 }
 

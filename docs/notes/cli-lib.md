@@ -487,9 +487,8 @@ stays in `Sticky`, so there is one place that knows it.
 ## Client::settle_follow
 
 SPEC's `set_session` carries a second sentence: it also sets the sticky entries --
-the `(sticky)` session argument and every bundle member the accepted command
-carried, keyed by kind -- which is what keeps `send_message` from needing the
-session named every time. The pairs are decided at submission from the bound
+every argument with a kind that the accepted command carried, keyed by kind --
+which is what keeps `send_message` from needing the session named every time. The pairs are decided at submission from the bound
 arguments; the write runs on the acknowledgement, never on the submission,
 because a refused `set_session` must leave the client pointed where it was:
 following a session that `--model nosuch/model` refused to create is the kind of

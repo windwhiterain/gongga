@@ -214,6 +214,16 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
             name: "send_message".into(),
             description: "Send a message to a session and run a turn.".into(),
             args: vec![
+                arg(
+                    "message",
+                    "The message text.",
+                    true,
+                    Some("text"),
+                    CompletionSource::None,
+                ),
+                // SPEC writes `--message <message> --name <session>(sticky)`: the
+                // payload leads, and the declaration order is the order bare
+                // words bind in.
                 kind_arg(
                     "name",
                     "Target session. Required: there is no implicit default.",
@@ -221,13 +231,6 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     "session",
                     Some("name"),
                     CompletionSource::Sessions,
-                ),
-                arg(
-                    "message",
-                    "The message text.",
-                    true,
-                    Some("text"),
-                    CompletionSource::None,
                 ),
             ],
         },
@@ -253,24 +256,22 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     ),
                     true,
                 ),
-                // SPEC: `{--model <model> [--thinking <thinking>] [--ctx_limit \
-                //   <ctx_limit%>]}(sticky)` -- the tuning bundle: a mode set once
-                // and applied as a unit, so a partially typed bundle is left
-                // alone rather than half filled.
-                bundle_arg(
+                // SPEC: `[--model <model>](initial: none)` -- a session that
+                // names none keeps its model; a new one takes the configured
+                // default.
+                kind_arg(
                     "model",
                     "The model to run this session's turns on, as <provider>/<model \
-                     name>. Required: name it, or set the sticky entry once -- a \
-                     successful set_session writes it back.",
-                    true,
+                     name>. Omit to keep the session's model, or to take the \
+                     configured default on a new one.",
+                    false,
                     "model",
-                    "tuning",
                     Some("model"),
                     // The greeting's model table, which is the same list with the
                     // levels each model takes.
                     CompletionSource::Models,
                 ),
-                bundle_arg(
+                kind_arg(
                     "thinking",
                     "How hard the model should think, in the roster's spelling (`low`, \
                      `high`, `max`, ...): what completes is exactly what the model this \
@@ -278,20 +279,18 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                      told nothing uses, clearing one set earlier.",
                     false,
                     "thinking",
-                    "tuning",
                     Some("level"),
                     // What the model publishes on its roster entry, and nothing else.
                     CompletionSource::ModelLevels,
                 ),
-                bundle_arg(
+                kind_arg(
                     "ctx_limit",
                     "The context level at which this session gets a `Context notice`, \
-                     e.g. `30%`. 0 never notices. Defaults to a share of the \
+                     e.g. `30%`. 0 never notices. Initial: a 70% share of the \
                      model's context window, or the server's token budget when the \
                      window is unknown.",
                     false,
                     "ctx_limit",
-                    "tuning",
                     Some("n%"),
                     // Any 0-100 is accepted; the list is the points worth
                     // offering, not the ones allowed.
@@ -304,9 +303,8 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                         .collect(),
                     ),
                 ),
-                // SPEC: `{[--remote <remote>](default: none) --cwd <cwd>}(sticky)` --
-                // the place bundle: where the session lives, as a unit.
-                bundle_arg(
+                // SPEC: `[--remote <remote>](initial: none)`.
+                kind_arg(
                     "remote",
                     "Which machine this session's shells run on, named by a `[remotes.<name>]` \
                      table in this machine's `~/.agents/remotes.toml`. Omit for this \
@@ -318,7 +316,6 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                      open.",
                     false,
                     "remote",
-                    "place",
                     Some("name"),
                     // Exactly the tables this server was started with: `local` is
                     // what omitting the flag means, and naming it is refused.
@@ -330,16 +327,17 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                         names
                     }),
                 ),
-                bundle_arg(
+                // SPEC: `[--cwd <cwd>](initial: ".")` -- a session that names
+                // none stands where the server stands.
+                kind_arg(
                     "cwd",
                     "Working directory for the session: where a new one is created, and \
                      where an existing one is moved to. It must be a directory that \
                      exists on the machine it names -- this one, or the remote's -- or \
                      the command is refused; completion reads that machine's \
-                     directories. Required: name it, or set the sticky entry once.",
-                    true,
+                     directories. Omit for the server's own directory.",
+                    false,
                     "cwd",
-                    "place",
                     Some("path"),
                     // The client lists the filesystem it sits on, which is a hint only.
                     CompletionSource::Paths,
@@ -619,7 +617,6 @@ fn arg(
             required,
             false,
             None,
-            None,
             value_hint,
             completions,
         ),
@@ -641,7 +638,6 @@ fn pos(
             description,
             required,
             true,
-            None,
             None,
             value_hint,
             completions,
@@ -665,29 +661,6 @@ fn kind_arg(
         required,
         false,
         Some(kind),
-        None,
-        value_hint,
-        completions,
-    )
-}
-
-/// A bundle member: judged as a unit with the other members of `bundle`.
-fn bundle_arg(
-    name: &str,
-    description: &str,
-    required: bool,
-    kind: &str,
-    bundle: &str,
-    value_hint: Option<&str>,
-    completions: CompletionSource,
-) -> protocol::ArgSpec {
-    arg_spec(
-        name,
-        description,
-        required,
-        false,
-        Some(kind),
-        Some(bundle),
         value_hint,
         completions,
     )
@@ -699,7 +672,6 @@ fn arg_spec(
     required: bool,
     positional: bool,
     kind: Option<&str>,
-    bundle: Option<&str>,
     value_hint: Option<&str>,
     completions: CompletionSource,
 ) -> protocol::ArgSpec {
@@ -709,7 +681,6 @@ fn arg_spec(
         required,
         positional,
         kind: kind.map(str::to_string),
-        bundle: bundle.map(str::to_string),
         value_hint: value_hint.map(str::to_string),
         completions,
         sticky: false,

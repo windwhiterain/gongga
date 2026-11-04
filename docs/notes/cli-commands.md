@@ -105,22 +105,23 @@ flags spell. An argument with no kind never fills, which is what keeps
 `--must_create` out: a sticky `must_create` would make every session refuse to
 join an existing one.
 
-A bundle is judged as a unit. Some of its members typed, `Sticky` leaves the rest
-of it alone -- all or nothing: `--model` named means the caller is overriding the
-tuning, and half-applying the sticky `thinking` on top would be a mode nobody
-chose. None of its members typed, every member an entry holds fills; an entry
-missing means the bundle is incomplete, and an incomplete bundle is no bundle --
-the members fill one by one, and a required member no entry fills is left for the
+SPEC's two bullets are one rule here: a missing non-optional argument is
+filled from its entry, and a missing optional argument takes the entry as its
+initial value. Each argument fills independently -- `--model` named leaves the
+sticky `thinking` in place, where a bundle would have dropped it. An argument
+no entry names keeps the command's own initial, applied where the command
+runs (SPEC spells the initials: `--cwd` defaults to `.`, `--ctx_limit` to a
+70% share, and so on), and a required argument with neither is left for the
 missing-arguments refusal.
 
 ## Sticky::settle_follow
 
 `set_session` writes entries back on the acknowledgement, not on the submission, so
-a refusal retargets nothing: the `(sticky)` session argument, and every bundle
-member the accepted command carried -- a member the command did not name is not
-written, so a partial `set_session` never erases the rest of a bundle. All are
-modes the next command inherits: the session it acts on, and the tuning and the
-place it runs with.
+a refusal retargets nothing: every argument with a kind that the accepted command
+carried, keyed by kind -- an argument the command did not name is not written, so
+a partial `set_session` never erases the entries it left alone. All are modes the
+next command inherits: the session it acts on, and the model, tuning and place
+it runs with.
 
 ## EVENT_FIELDS
 

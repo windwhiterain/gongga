@@ -89,7 +89,6 @@ pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec>
                 required: true,
                 positional: true,
                 kind: None,
-                bundle: None,
                 value_hint: Some("name".into()),
                 completions: protocol::CompletionSource::Sessions,
                 sticky: false,
@@ -106,7 +105,6 @@ pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec>
                     required: required.contains(&name.as_str()),
                     positional: is_positional,
                     kind: None,
-                    bundle: None,
                     value_hint: Some(
                         spec.get("type")
                             .and_then(Value::as_str)

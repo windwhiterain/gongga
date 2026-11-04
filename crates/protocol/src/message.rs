@@ -855,7 +855,6 @@ fn spec_arg(
         required,
         positional,
         kind: kind.map(str::to_string),
-        bundle: None,
         value_hint: value_hint.map(str::to_string),
         completions,
         sticky: false,
@@ -897,16 +896,6 @@ pub struct ArgSpec {
     /// are, and an argument with no kind never fills from `Sticky`.
     #[serde(default)]
     pub kind: Option<String>,
-    /// The bundle this argument belongs to, named by the publisher.
-    ///
-    /// # Invariant
-    ///
-    /// A bundle fills as a unit or not at all: when the command types some but
-    /// not all of its members, `Sticky` leaves the rest alone; when it types
-    /// none, every member an entry holds fills (SPEC's Sticky section -- an
-    /// incomplete bundle is no bundle, the members fill one by one).
-    #[serde(default)]
-    pub bundle: Option<String>,
     /// Where the CLI should source completion candidates.
     #[serde(default)]
     pub completions: CompletionSource,
