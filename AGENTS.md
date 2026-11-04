@@ -7,7 +7,8 @@
 - when designing new feature, search any existing wheels. 
 - setting any limit/budget is forbidden.
 - session turn end should kill all process it spawns so user won't use a process that tied to a session as a long running process.
-- server home for tests should be local to each worktree so worktree's servers won't conflict (otherwise will be locked).
+- server home for tests should be local to each worktree: a shared home makes worktrees lock each other, and someone else's home is not yours to write in -- the program you run may stop the server on it.
+- pointing at a home in use is not a read-only act: `GONGGA_HOME` on a live home makes the bundle place its payload there and retire the build it replaces, and that asks the home's server to `cancel` -- every turn it is running dies with the ask, unless the program starts no server of its own (as `--client_only` says). See `docs/notes/bundle-main.md`, "There is no read-only run".
 - track your WIP under (notes)[.agents/notes/].
 
 ## Verification
@@ -112,6 +113,17 @@
   「顺手都清了」。
 - **`rm` 掉不掉 `.db` 是信号**：`Device or resource busy` 说明还有进程握着那个 home。
   这时去杀进程，不要去 `rm -f`。
+
+### 别让程序替你杀
+
+上面那一节讲的是**你**动手。真正难防的是另一种：你按下的键让别的进程去杀——
+bundle 的 retire 会让旧 build 的服务端 `cancel`（除非那个程序自己不起服务端），
+窗口退出时的 `cancel` 也一样。命令是你敲的，账记在你头上：那个 home 的服务端停了，
+它在跑的 turn 一起没了。
+
+判据还是「是不是我的 home」，只是提前一步：**跑任何会写 home 的程序之前，先确认
+`--home` / `GONGGA_HOME` 指的是自己的**。指向一个在用的 home 不是只读——
+见 `docs/notes/bundle-main.md` 的 "There is no read-only run"。
 
 ### 结果落成数据，不是笔记
 

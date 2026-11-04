@@ -40,6 +40,17 @@ Fixed in `b7715c2`:
 gained `--client-arg` so the second one is drivable with the harness the
 repository already has.
 
+The rules were there, but not where the failure was: AGENTS.md said a *server*
+home used by *tests* should be local to each worktree, and said why -- a lock
+conflict -- which is not the harm (the server stops, and the turns it is running
+die with it). It never said that pointing a program at a live home is not
+read-only: the bundle places its payload there and retires the build before it,
+and that asks the home's server to `cancel`. The hazard lived in
+`docs/notes/bundle-main.md` under "There is no read-only run", reachable only by
+reading the bundle's source. AGENTS.md now says it in the rule list and in a
+"别让程序替你杀" section, and `docs/notes/README.md` indexes the notes by task
+as well as by source file.
+
 Not done (needs the user's call):
 
 - `cli::spawn`'s error is dropped by `.ok().flatten()`, so a window whose

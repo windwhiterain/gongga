@@ -13,6 +13,20 @@ This directory is prose, not a contract: `SPEC.md` and `DESIGN.md` are the
 sources of truth. Where a note and the code disagree, the code is right and the
 note is a bug.
 
+## By task
+
+The index below is by source file: read a note when you edit the file it belongs
+to. This one is by task, because the note that holds a hazard is not the file
+you are about to touch.
+
+| you are about to | read first |
+| --- | --- |
+| run the distribution (`gongga`, `gongga tui`) | [`bundle-main.md`](bundle-main.md) -- it is not a read-only run: pointed at a live home it stops that home's server |
+| start, stop or watch a server | [`cli-server.md`](cli-server.md), [`server-supervise.md`](server-supervise.md), [`server-signal.md`](server-signal.md) |
+| write into a home (payload, config, database) | [`server-config.md`](server-config.md), [`server-store.md`](server-store.md) |
+| change what a client sends or receives | [`cli-lib.md`](cli-lib.md), [`protocol-lib.md`](protocol-lib.md) |
+| change the window | [`tui-lib.md`](tui-lib.md), [`tui-run.md`](tui-run.md) |
+
 ## Index
 
 ### protocol
