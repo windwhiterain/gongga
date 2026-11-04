@@ -800,7 +800,7 @@ fn ceil_boundary(s: &str, mut i: usize) -> usize {
 }
 
 /// Writes the full output under `dir`, returning the path in Git Bash dialect.
-fn spill(dir: &Path, label: &str, text: &str) -> Option<String> {
+pub(crate) fn spill(dir: &Path, label: &str, text: &str) -> Option<String> {
     if std::fs::create_dir_all(dir).is_err() {
         return None;
     }

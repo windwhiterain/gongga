@@ -72,6 +72,12 @@
 - **临时 `GONGGA_HOME` + 端口让内核分配**，并按 session 名或 worktree 名加门牌；
   多 agent 共机时固定端口和固定 `/tmp/xxx` 就是互相踩。
 - **key 显式传**。`GONGGA_KEY` 起的服务端**不写** `server.key`，只查 home 会拿到空。
+
+- **起服务端时 scrub 模型环境变量**（`env -u GONGGA_MODEL -u GONGGA_PROVIDER -u
+  GONGGA_BASE_URL -u GONGGA_API_KEY -u GONGGA_API_KEY_ENV`）。从会话 shell 里跑测试时，
+  这些导出变量（服务端现在会给 shell 导出 `GONGGA_MODEL`）会把测试 roster 放不下的
+  默认模型塞给服务端，启动探针直接拒绝。`scripts/*_selftest.sh` 的每个服务端启动行
+  都带；新写的验证脚本照抄。
 - **`trap` 里 kill + `rm`**，否则下一次删不掉 `gongga.db`（busy）。
 - **一行 verdict**：`PASS/FAIL · 耗时 · build sha`，别让下一个 agent 读日志自己判断。
 

@@ -305,23 +305,52 @@ pub async fn expand(
         }
         let (replacement, image) = match mention.kind {
             Reference::File => continue,
-            Reference::Skill => match skill_metadata(home, source.machine(), &mention.value) {
-                Some(metadata) => (metadata, None),
-                None => continue,
-            },
-            Reference::Image => match picture(store, source, home, &mention.value, llm).await {
-                Some(image) => {
-                    // SPEC keeps the mention and appends the copy it stands for, so
-                    // the row still says which picture it was sent with.
-                    let spelled = &text[mention.start..mention.end];
-                    let kept = match image.copy {
-                        Some(copy) => format!("{spelled} ({copy})"),
-                        None => spelled.to_string(),
-                    };
-                    (kept, Some(image))
+            Reference::Skill => match skill_at(home, source.machine(), &mention.value) {
+                Some(skill) => {
+                    // Idempotent: stored text is expanded once, verbatim, forever.
+                    // A mention already carrying its ` (path)` suffix is left
+                    // alone, or a re-sent row grows another.
+                    if text[mention.end..].starts_with(&format!(" ({})", skill.path.display())) {
+                        continue;
+                    }
+                    (
+                        format!(
+                            "{} {} ({})",
+                            Reference::Skill.prefix(),
+                            skill.name,
+                            skill.path.display()
+                        ),
+                        None,
+                    )
                 }
                 None => continue,
             },
+            Reference::Image => {
+                // Idempotent, the same rule by the copy's id: when the text
+                // already carries ` (id)` of the stored copy, nothing is copied
+                // or appended again.
+                let named = source.spelling(home, &mention.value);
+                let kept_copy = store
+                    .picture_of(&named)
+                    .map(|(id, _)| format!(" ({id})"))
+                    .filter(|suffix| text[mention.end..].starts_with(suffix));
+                if kept_copy.is_some() {
+                    continue;
+                }
+                match picture(store, source, home, &mention.value, llm).await {
+                    Some(image) => {
+                        // SPEC keeps the mention and appends the copy it stands for, so
+                        // the row still says which picture it was sent with.
+                        let spelled = &text[mention.start..mention.end];
+                        let kept = match image.copy {
+                            Some(copy) => format!("{spelled} ({copy})"),
+                            None => spelled.to_string(),
+                        };
+                        (kept, Some(image))
+                    }
+                    None => continue,
+                }
+            }
         };
         out.text.push_str(&text[cursor..mention.start]);
         out.text.push_str(&replacement);
@@ -337,23 +366,17 @@ pub async fn expand(
     out
 }
 
-/// What `@skill: <name>` becomes: the spelling it keeps, and the `SKILL.md` it names.
+/// The `SKILL.md` one `@skill: <name>` names, wherever this machine reads skills.
 ///
 /// # Invariant
 ///
 /// The spelling survives, so the index keys the entry a message wrote: the body is
 /// charged once in the prompt's index and the row keeps a pointer to it. See
 /// `docs/notes/server-meta.md`.
-fn skill_metadata(home: &Path, machine: crate::session::Machine, name: &str) -> Option<String> {
-    let found = crate::tools::index_skill::installed_for(home, machine)
+fn skill_at(home: &Path, machine: crate::session::Machine, name: &str) -> Option<skill::Skill> {
+    crate::tools::index_skill::installed_for(home, machine)
         .into_iter()
-        .find(|skill| skill.name == name)?;
-    Some(format!(
-        "{} {} ({})",
-        Reference::Skill.prefix(),
-        found.name,
-        found.path.display()
-    ))
+        .find(|skill| skill.name == name)
 }
 
 /// The picture `@image: <path>` names, copied into this home.

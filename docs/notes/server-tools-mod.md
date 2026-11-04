@@ -69,6 +69,19 @@ keeping the full output is being able to find the right one again. `slug()` in
 Implemented with a boxed future rather than `async_trait` so the crate keeps
 one fewer macro dependency; the signature is the same either way.
 
+## GENERAL_ARGS: description, max_output
+
+SPEC's adapter-level parameters: every tool may carry them, none declares
+them by hand. `definitions` injects both into the model-facing schema (a
+property a tool declares wins), and `argument_error` never names them as
+unexpected; the command surface reads `Tool::parameters` raw, so they never
+reach the tool commands. At the call layer, `description` titles the row
+(already) and `max_output` caps the result: over the cap, in chars per SPEC,
+the whole output spills to one file and the model reads the file's metadata
+`{path, chars, line_count}` -- the same spill naming as `ToolContext::cap`.
+On an endpoint session the cap is left unhonored rather than pointing at a
+file the session's tools cannot open.
+
 ## argument_error
 
 Assembled from [`Tool::parameters`] rather than written per tool, so it cannot

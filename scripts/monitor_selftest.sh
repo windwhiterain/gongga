@@ -152,7 +152,7 @@ if ! wait_tcp "$fake_port"; then
   exit 1
 fi
 
-"$bin/gongga-server.exe" --home "$home" --bind "127.0.0.1:$port" --log info >>"$log" 2>&1 &
+env -u GONGGA_MODEL -u GONGGA_PROVIDER -u GONGGA_BASE_URL -u GONGGA_API_KEY -u GONGGA_API_KEY_ENV "$bin/gongga-server.exe" --home "$home" --bind "127.0.0.1:$port" --log info >>"$log" 2>&1 &
 for _ in $(seq 1 150); do [[ -s "$home/server.lock" ]] && break; sleep 0.2; done
 wait_listening || { echo "the server never listened on 127.0.0.1:$port" >&2; exit 1; }
 server_pid=$(child_pid); sup=$(parent_of "$server_pid")
@@ -229,9 +229,12 @@ texts = [json.loads(d).get("text", "") for (d,) in c.execute(
        where s.name = '@monitor' order by m.seq""")]
 reports = [t for t in texts if "stopped with an error" in t]
 assert len(reports) >= 2, reports
-# The retry re-sends the first report unchanged, behind a preface naming the model.
-assert "unchanged" in reports[-1], reports[-1][:200]
-assert reports[-1].rstrip().endswith(reports[0].rstrip()), "the retry lost the original report"
+# The retry re-sends the first report unchanged, behind a preface naming the
+# model. It is the row that says so: a later failure of the same session earns
+# its own fresh report, which is a different row.
+retry = next((t for t in reports if "unchanged" in t), None)
+assert retry is not None, "no retry report arrived"
+assert retry.rstrip().endswith(reports[0].rstrip()), "the retry lost the original report"
 INNER
 ok "the retry carries the first report, unchanged" $?
 

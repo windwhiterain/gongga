@@ -1192,6 +1192,13 @@ impl Agent {
         };
         let run_started = std::time::Instant::now();
         tracing::info!(session = %name, tool = %tool, "tool start");
+        // Read before the run moves the arguments: the adapter's general
+        // parameters title the call and cap its result.
+        let call_description = description_of(&arguments).to_string();
+        let max_output = arguments
+            .get("max_output")
+            .and_then(serde_json::Value::as_u64)
+            .map(|max| max as usize);
         let outcome = self.tools.run(&tool, arguments, &ctx).await;
         let run_ms = run_started.elapsed().as_millis() as u64;
         let attach_started = std::time::Instant::now();
@@ -1202,13 +1209,30 @@ impl Agent {
             .attach_references(&ctx, printed_on, &outcome.output)
             .await;
         let attach_ms = attach_started.elapsed().as_millis() as u64;
+        // SPEC's adapter-level `max_output`, read like `description` from
+        // whatever tool answered: over the cap (in chars, per SPEC) the whole
+        // output spills to one file and the model reads the file's metadata
+        // instead. Attachments above scanned the full output on purpose: a
+        // picture named there is kept even when the text is capped away.
+        let capped = max_output
+            .and_then(|max| {
+                crate::tools::cap_max_output(
+                    &ctx,
+                    &tool,
+                    (!call_description.is_empty()).then_some(call_description.as_str()),
+                    &call_id,
+                    &outcome.output,
+                    max,
+                )
+            })
+            .unwrap_or_else(|| outcome.output.clone());
         // A tool that streamed nothing owes its output to the final chunk.
         let tail = match sent.load(Ordering::Relaxed) {
-            0 => outcome.output.clone(),
+            0 => capped.clone(),
             _ => String::new(),
         };
         // The model is shown no head and no label, so the time ends the text it reads.
-        let output = with_time(outcome.output, run_ms);
+        let output = with_time(capped, run_ms);
         drop(ctx);
         // A shell on an endpoint starts in a directory only that endpoint knows.
         session.adopt_reported_cwd();

@@ -80,7 +80,7 @@ rm -rf "$home"; mkdir -p "$home"
 cp -r "$HOME/.gongga/ship" "$home/ship" 2>/dev/null
 : > "$log"
 
-"$bin/gongga-server.exe" --home "$home" --bind "127.0.0.1:$port" --log info >>"$log" 2>&1 &
+env -u GONGGA_MODEL -u GONGGA_PROVIDER -u GONGGA_BASE_URL -u GONGGA_API_KEY -u GONGGA_API_KEY_ENV "$bin/gongga-server.exe" --home "$home" --bind "127.0.0.1:$port" --log info >>"$log" 2>&1 &
 for _ in $(seq 1 150); do [[ -s "$home/server.lock" ]] && break; sleep 0.2; done
 wait_listening || { echo "the server never listened on 127.0.0.1:$port" >&2; exit 1; }
 server_pid=$(child_pid); sup=$(parent_of "$server_pid")
@@ -110,7 +110,7 @@ server_pid=$back
 # report its restart as this one's.
 alt_port=$(free_port)
 refusal="$root/.dev/selftest/refusal.log"; : > "$refusal"
-"$bin/gongga-server.exe" --home "$home" --bind "127.0.0.1:$alt_port" --log info >"$refusal" 2>&1 &
+env -u GONGGA_MODEL -u GONGGA_PROVIDER -u GONGGA_BASE_URL -u GONGGA_API_KEY -u GONGGA_API_KEY_ENV "$bin/gongga-server.exe" --home "$home" --bind "127.0.0.1:$alt_port" --log info >"$refusal" 2>&1 &
 for _ in $(seq 1 150); do grep -q "already running on this home" "$refusal" && break; sleep 0.2; done
 grep -q "already running on this home" "$refusal"; ok "a second server on the same home refuses" $?
 [[ "$(grep -c 'watchdog:' "$refusal")" == 0 ]]; ok "a refusal is not restarted" $?

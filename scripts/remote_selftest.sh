@@ -196,7 +196,7 @@ say_turn() { say "  -- turn $turns: $(grep "turn end session=$1" "$log" | tail -
 fake_up remote_bash "{\"command\":\"mkdir -p \\\"\$HOME/$tag\\\" && printf '# $marker\\n' > \\\"\$HOME/$tag/AGENTS.md\\\" && cygpath -w \\\"\$HOME/$tag\\\" && cygpath -w \\\"\$HOME\\\"\",\"name\":\"peer\",\"task\":\"make the peer scratch\"}" || {
   echo "the stand-in never answered on 127.0.0.1:$fake_port" >&2; exit 1; }
 
-"$server_bin" --home "$home" --bind "127.0.0.1:$port" --log info >>"$log" 2>&1 &
+env -u GONGGA_MODEL -u GONGGA_PROVIDER -u GONGGA_BASE_URL -u GONGGA_API_KEY -u GONGGA_API_KEY_ENV "$server_bin" --home "$home" --bind "127.0.0.1:$port" --log info >>"$log" 2>&1 &
 for _ in $(seq 1 150); do [[ -s "$home/server.lock" ]] && break; sleep 0.2; done
 wait_listening || { echo "the server never listened on 127.0.0.1:$port" >&2; exit 1; }
 server_pid=$(child_pid)

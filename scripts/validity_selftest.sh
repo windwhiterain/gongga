@@ -83,7 +83,7 @@ export GONGGA_PROVIDERS_CATALOG="$work/validity-roster.toml"
 export FAKE_API_KEY=sk-fake
 
 start() { # logfile-to-append-to
-  "$bin/gongga-server.exe" --home "$home" --bind "127.0.0.1:$port" --log info >>"$1" 2>&1 &
+  env -u GONGGA_MODEL -u GONGGA_PROVIDER -u GONGGA_BASE_URL -u GONGGA_API_KEY -u GONGGA_API_KEY_ENV "$bin/gongga-server.exe" --home "$home" --bind "127.0.0.1:$port" --log info >>"$1" 2>&1 &
   for _ in $(seq 1 300); do grep -q "listening (UDP) local=127.0.0.1:$port" "$1" && break; sleep 0.2; done
 }
 

@@ -206,6 +206,13 @@ so none of them touches the space in front of it. It used to: a picture was repl
 by nothing, and the rule that closed the sentence up around that hole was applied to
 every mention, which glued `and @skill: late` into `andskill` until 2026-11-03.
 
+Expansion is idempotent, by the suffix each kind appends: a `@skill:` mention
+already followed by ` (its SKILL.md's path)`, or an `@image:` mention by
+` (the stored copy's id)`, is left exactly as it stands. Stored rows are
+re-sent verbatim -- the monitor's retry carries the report it was given,
+unchanged -- and without the guard every such pass appended the pointer a
+second time, so the row the reader saw was `@skill: monitor (path) (path)`.
+
 ## a reference that cannot be resolved stays text
 
 An unreadable picture, a skill this machine does not have, a picture named for a

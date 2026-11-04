@@ -145,7 +145,7 @@ start_server() { # home, url, logfile -> prints the pid
   local home=$1 url=$2 log=$3 port pid before
   before=$(lock_pid "$home")
   port=$(free_port)
-  GONGGA_SHIP_URL="$url" "$server_bin" --home "$home" --bind "127.0.0.1:$port" --log info \
+  GONGGA_SHIP_URL="$url" env -u GONGGA_MODEL -u GONGGA_PROVIDER -u GONGGA_BASE_URL -u GONGGA_API_KEY -u GONGGA_API_KEY_ENV "$server_bin" --home "$home" --bind "127.0.0.1:$port" --log info \
     >>"$log" 2>&1 &
   for _ in $(seq 1 200); do
     pid=$(lock_pid "$home")

@@ -337,7 +337,7 @@ impl ToolRegistry {
             .map(|t| crate::llm::ToolDefinition {
                 name: t.name().to_string(),
                 description: t.description().to_string(),
-                parameters: t.parameters(),
+                parameters: general_parameters(t.parameters()),
             })
             .collect()
     }
@@ -362,6 +362,46 @@ impl ToolRegistry {
     pub fn names(&self) -> Vec<&'static str> {
         self.tools.iter().map(|t| t.name()).collect()
     }
+}
+
+/// The adapter's general parameters: every tool may carry them, none declares
+/// them by hand. Injected into the model-facing schema in `definitions`, read
+/// back at the call layer (`description` titles the call, `max_output` caps its
+/// result); neither ever reaches the command surface, which reads
+/// `Tool::parameters` raw.
+pub const GENERAL_ARGS: &[&str] = &["description", "max_output"];
+
+/// SPEC's adapter-level parameters added to every tool the model is offered.
+///
+/// # Invariant
+///
+/// Injected here, in the model-facing schema only, so a provider's validator
+/// accepts what the call layer reads. A property a tool already declares wins:
+/// these are the defaults, not an override.
+fn general_parameters(mut schema: Value) -> Value {
+    let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) else {
+        return schema;
+    };
+    properties
+        .entry("description".to_string())
+        .or_insert_with(|| {
+            json!({
+                "type": "string",
+                "description": "What this call is for, in a few words: the log carries it \
+                                as the call's title.",
+            })
+        });
+    properties
+        .entry("max_output".to_string())
+        .or_insert_with(|| {
+            json!({
+                "type": "integer",
+                "description": "In chars: when the output exceeds this, it is saved to a \
+                                temp file and the call answers with the file's metadata \
+                                {path, chars, line_count}.",
+            })
+        });
+    schema
 }
 
 /// Why a call does not fit the declared schema, in the schema's own words.
@@ -403,7 +443,7 @@ fn argument_error(tool: &dyn Tool, args: &Value) -> Option<String> {
     let declared = string_list(&schema["properties"]);
     let unexpected: Vec<String> = given
         .keys()
-        .filter(|k| !declared.contains(&k.as_str()))
+        .filter(|k| !declared.contains(&k.as_str()) && !GENERAL_ARGS.contains(&k.as_str()))
         .map(
             |wrong| match declared.iter().find(|d| is_shorthand_of(d, wrong)) {
                 Some(right) => format!("`{wrong}` (did you mean `{right}`?)"),
@@ -1576,6 +1616,41 @@ fn spill_label(session: &str, shell: &str, description: Option<&str>, call_id: &
         Some(description) => format!("{session}-{shell}-{description}-{call_id}"),
         None => format!("{session}-{shell}-{call_id}"),
     }
+}
+
+/// SPEC's per-call `max_output`, applied at the adapter: over the cap, the
+/// whole output spills to one file and the call answers with the file's
+/// metadata. `None` is "no cap applied" -- under the cap, unparseable, or on an
+/// endpoint session, where a file on this machine is not one its tools can open.
+pub(crate) fn cap_max_output(
+    ctx: &ToolContext,
+    tool: &str,
+    description: Option<&str>,
+    call_id: &str,
+    text: &str,
+    max: usize,
+) -> Option<String> {
+    if max == 0 || text.chars().count() <= max {
+        return None;
+    }
+    if ctx.on_endpoint(ctx.machine) {
+        tracing::warn!(
+            session = %ctx.session,
+            tool,
+            "max_output cannot spill on an endpoint session; the cap is left unhonored"
+        );
+        return None;
+    }
+    let label = spill_label(&ctx.session, tool, description, call_id);
+    let path = crate::tools::bash::spill(&ctx.output_dir, &label, text)?;
+    Some(
+        json!({
+            "path": path,
+            "chars": text.chars().count(),
+            "line_count": text.lines().count(),
+        })
+        .to_string(),
+    )
 }
 
 /// The shell a tool call is about, or `default`.
