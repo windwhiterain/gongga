@@ -446,11 +446,14 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                         client.set_offline(attempts, &mut TuiSink(&mut ui));
                         // A spawned server is coming up: a fresh home has no key
                         // until it writes one, so that is not news yet.
-                        if attempts == 1 && spawned.is_none() {
+                        if spawned.is_none() {
+                            // Said every time: the refresh above wipes a note
+                            // said once, and a window that says only
+                            // "reconnecting" looks hung.
                             TuiSink(&mut ui).say(
                                 LineKind::Error,
                                 &format!(
-                                    "{} — retrying in the background, Alt+Q still leaves",
+                                    "{} (attempt {attempts}) — still trying; Alt+Q leaves",
                                     failure.message()
                                 ),
                             );

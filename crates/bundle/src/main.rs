@@ -47,8 +47,30 @@ fn run() -> Result<u8, String> {
     }
     // A build this replaces is asked to stop, then removed -- a server through
     // its own `cancel`, so its turn survives.
-    payload::retire(&home().join("payload"), &stamp, &dir);
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1 + skip).collect();
+    payload::retire(
+        &home().join("payload"),
+        &stamp,
+        &dir,
+        keeps_the_server(&wanted, &args),
+    );
     take_over(&dir.join(payload::file_name(&wanted)), skip)
+}
+
+/// Whether the program about to run leaves the server that is running alone.
+///
+/// # Invariant
+///
+/// A window told not to start a server (`--client_only`) will not take the port,
+/// so the server that holds it keeps it: that flag exists so a server upgrade
+/// does not break the client, and retiring the old build stops that server
+/// exactly there. Every other program replaces the server. See `bundle-main.md`.
+fn keeps_the_server(program: &str, args: &[std::ffi::OsString]) -> bool {
+    program == "gongga-tui"
+        && args.iter().any(|arg| {
+            let arg = arg.to_string_lossy();
+            arg == "--client_only" || arg == "--client-only"
+        })
 }
 
 /// The programs, embedded at build time by the `payload` feature.

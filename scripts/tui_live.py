@@ -92,6 +92,7 @@ between them. That is the traffic this harness exists to watch render.
     --keep-home                         reuse the home instead of wiping it
     --python PATH                       interpreter for the fake endpoint
     --server-exe/--client-exe           binaries (default target/debug)
+    --client-arg                       an argument for the client itself, e.g. --client-only
     --replay FILE                       decode a captured raw.bin, no stack
 """
 
@@ -1960,9 +1961,13 @@ class Stack:
         bridge = os.path.join(self.run_dir, "pty_bridge.py")
         write_bridge(bridge)
         self.conpty = ConPty(cols, rows, bridge, self.options.python, os.path.join(self.run_dir, "client.status"))
+        # The client's own words first: `--client_only` is what makes the window
+        # wait for a server instead of starting one, and the harness has to be
+        # able to say it.
         command = self.conpty.spawn(
             self.options.client_exe,
-            [
+            list(self.options.client_arg)
+            + [
                 "--home",
                 self.options.home,
                 "--client-home",
@@ -2210,6 +2215,12 @@ def build_parser():
     parser.add_argument("--tool-args", default=None)
     parser.add_argument("--model", default="fake/stream-model")
     parser.add_argument("--server-log", default="info")
+    parser.add_argument(
+        "--client-arg",
+        action="append",
+        default=[],
+        help="an argument for the client itself, e.g. --client-only; repeatable",
+    )
     parser.add_argument("--server-exe", default=os.path.join(ROOT, "target", "debug", "gongga-server.exe"))
     parser.add_argument("--client-exe", default=os.path.join(ROOT, "target", "debug", "gongga-tui.exe"))
     parser.add_argument("--bash", default=_find_bash())

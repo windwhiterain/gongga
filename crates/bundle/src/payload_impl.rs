@@ -101,10 +101,12 @@ pub fn file_name(name: &str) -> String {
 ///
 /// Asked, not killed: a server that receives `cancel` keeps its turn as pending
 /// work (`commands.rs`). A window or a command in flight is never touched, so a
-/// build whose clients are still up keeps its directory until they exit and the
-/// next install retires it. `ours` is the command layer that asks, because the
-/// retired one may be gone.
-pub fn retire(dir: &Path, keep: &str, ours: &Path) {
+/// build whose clients are still up keeps its directory until they exit. `ours`
+/// is the command layer that asks.
+///
+/// `keeps_servers` says the program about to run starts no server: the one
+/// running keeps the port.
+pub fn retire(dir: &Path, keep: &str, ours: &Path, keeps_servers: bool) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -113,7 +115,7 @@ pub fn retire(dir: &Path, keep: &str, ours: &Path) {
             continue;
         }
         let old = entry.path();
-        if !stop_programs_in(&old, ours) {
+        if !stop_programs_in(&old, ours, keeps_servers) {
             continue;
         }
         let _ = std::fs::remove_dir_all(&old);
@@ -121,12 +123,22 @@ pub fn retire(dir: &Path, keep: &str, ours: &Path) {
 }
 
 /// Stops the server running from `dir`, and says whether the directory can go.
-fn stop_programs_in(dir: &Path, ours: &Path) -> bool {
+///
+/// # Invariant
+///
+/// `keeps_servers` says the program about to run starts no server of its own:
+/// the one that is running keeps the port, and the directory stays with it.
+fn stop_programs_in(dir: &Path, ours: &Path, keeps_servers: bool) -> bool {
     let running = running_in(dir);
     let Some(server) = running.iter().find(|process| !outlives_its_build(process)) else {
         // Only clients: nothing holds a port, and their directory is theirs.
         return running.is_empty();
     };
+    if keeps_servers {
+        // Nothing is waiting for the port, and the server keeps answering the
+        // window that was told to use it.
+        return false;
+    }
     if !ask_to_cancel(ours, dir, server) {
         // No key, no command layer, or no answer: a stale server holding the port
         // is the worse outcome.

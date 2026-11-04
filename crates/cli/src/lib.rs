@@ -56,12 +56,8 @@ impl Connection {
     /// Where to dial and with which key, resolved once per process.
     pub fn endpoint(&self) -> anyhow::Result<Endpoint> {
         let addr = resolve_server(self)?;
-        let key = resolve_key(self).ok_or_else(|| {
-            anyhow!(
-                "no connection key: pass --key, set GONGGA_KEY, or start the server \
-                 once to generate one"
-            )
-        })?;
+        let key = resolve_key(self)
+            .ok_or_else(|| anyhow!("no connection key: pass --key or set GONGGA_KEY"))?;
         Ok(Endpoint {
             addr,
             key,
@@ -76,7 +72,13 @@ pub struct Args {
     #[command(flatten)]
     pub conn: Connection,
     /// Never start a server for this client; the window waits instead.
-    #[arg(long, global = true)]
+    ///
+    /// # Invariant
+    ///
+    /// The name SPEC gives it, `--client_only`, with the hyphenated spelling
+    /// accepted as an alias: a flag the published spec spells one way and the
+    /// binary another is a flag the reader cannot type.
+    #[arg(long = "client_only", alias = "client-only", global = true)]
     pub client_only: bool,
     #[command(subcommand)]
     pub command: Option<Sub>,
@@ -110,6 +112,7 @@ impl Args {
                 "--home",
                 "--client-home",
                 "--key",
+                "--client_only",
                 "--client-only",
             ];
             if let Some(flag) = ordered
@@ -2011,9 +2014,8 @@ pub fn server_of(conn: &Connection) -> anyhow::Result<SocketAddr> {
 
 pub fn endpoint(args: &Connection) -> anyhow::Result<Endpoint> {
     let addr = resolve_server(args)?;
-    let key = resolve_key(args).ok_or_else(|| {
-        anyhow!("no connection key: pass --key, set GONGGA_KEY, or start the server once to generate one")
-    })?;
+    let key = resolve_key(args)
+        .ok_or_else(|| anyhow!("no connection key: pass --key or set GONGGA_KEY"))?;
     Ok(Endpoint {
         addr,
         key,

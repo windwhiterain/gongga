@@ -126,6 +126,14 @@ directory -- the directory simply stays, and the next install retires it once th
 processes have exited. Killing the client was the first shape of this and it made
 every upgrade close the reader's window.
 
+One server is not asked to stop: the one a window was told to use. `--client_only`
+says "there is a server, and it is not mine", and a window that starts no server
+will not take the port -- so the retire leaves that server running and its
+directory with it. Stopping it here is what made `gongga tui --client_only` a
+window that waited for a server the bundle had just killed, on every upgrade.
+`--client_only` exists so that a server upgrade does not break the client, and
+this is where that promise is kept.
+
 ## What this is not
 
 A build of the programs into one image. `gongga` used to include the server as a
@@ -164,6 +172,9 @@ including the one that typed the command.
 So a check names its own home: `GONGGA_HOME=./scratch-home ./gongga --version`.
 `scripts/bundle.sh`'s smoke does exactly that, because a build must never place
 programs in the operator's own install.
+
+The one exception is a window that said `--client_only`: it starts no server, so
+it needs no port, so the server that is running keeps it.
 
 ## Why a feature rather than "always"
 

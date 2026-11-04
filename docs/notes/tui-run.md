@@ -73,12 +73,21 @@ A restart therefore looks like two lines in the log -- `connection lost`, then
 `connected` -- with the input line, the history and the scroll position exactly
 where they were.
 
-A cold start is not a fault and is not reported as one. The first attempt of an
-outage says its line once: when the address refused the datagram and a server may
-be started here, it is a system line -- `nothing is listening at 127.0.0.1:9700 --
-starting one` -- because that is what is about to happen. Every other failure is an
-error, since retrying is all this loop can do about it. The status line carries
-`attempt N` from then on, so the outage is not narrated twice.
+A cold start is not a fault and is not reported as one. While a server this
+window spawned is coming up, the first failed dials are that and nothing else --
+a fresh home has no connection key until the server writes it -- so the outage
+line is said only when nothing is starting, and the status line carries
+`offline -- reconnecting (attempt N)`, which is the truth.
+
+When nothing is starting -- the window was told not to start one
+(`--client_only`), or the spawn failed -- the reason is said on *every* attempt,
+not on the first. The status line holds the newest thing this window knows, and
+the refresh that follows a note wipes a note said once, so a reason said once is
+a reason nobody sees. A window that says `reconnecting` and nothing else is a
+window nobody can tell from a hung one. The line therefore carries the reason
+and the way out: `nothing is listening at 127.0.0.1:9700 (attempt 3) -- still
+trying; Alt+Q leaves`. It is the same words every time, so the outage is not
+narrated twice -- one line replaces the last, it does not add to it.
 
 
 ## the loop (a burst is one frame)
@@ -122,11 +131,6 @@ Every dial says which pid this window is, so a server nobody started for it take
 this window as its owner and stops when the window does. That is what keeps an
 `evolve` successor under the window's control: it arrives already running, and
 without the claim nothing would ever stop it. See `docs/notes/server-signal.md`.
-
-While a server this window spawned is coming up, the first failed dials are that and
-nothing else -- a fresh home has no connection key until the server writes it -- so
-the outage line is said only when nothing is starting. The status line still shows
-`offline — reconnecting (attempt N)`, which is the truth.
 
 Resolved before the terminal is taken over: a bad address is not fixed by retrying,
 and an error is far easier to read on the normal screen than after `restore()`
