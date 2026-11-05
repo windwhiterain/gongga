@@ -120,6 +120,13 @@ the one-shot mode, which prints the events themselves, never hears it.
 Told once per turn that ended, and never for a turn that is still running: a
 session that is working has not stopped.
 
+Nor for a turn somebody stopped. `Event::Status` carries `outcome`, and
+`TurnOutcome::Cancelled` -- a `cancel`, an `interrupt_session`, the window that owned
+the server leaving -- is not a stop worth announcing: the operator asked for it, so
+telling them it happened is noise, and marking the session yellow says it finished
+out of sight when it finished because they looked at it. The wire carries the word so
+that this decision is not a parse of `detail`, which is a sentence for a person.
+
 ## Client::handle_response
 
 Who is speaking belongs on that prefix, not in the text: a session tag in the
@@ -233,13 +240,16 @@ every `refresh`, which is how a window that attached late still hears about it -
 it carries the sessions the *front-end* asked to see, because which are drawn is the
 window's state (`docs/notes/tui-state.md`).
 
-The layout is announced (`Layout::Merged` or `Layout::Split`) rather than a `split`
-flag, because the front-end has to know the names and their order anyway -- and a flag
-would leave it inventing a naming rule the command layer already owns. A session filter
-narrows the announced windows with the lines it narrows: splitting into three panes
-while rendering one session is a layout nobody asked for, and a pane that shows nothing
-is not a pane. The lines carry
-their window either way: the announcement says what a frame shows, never what is held.
+The layout is announced as SPEC's lists rather than as a `split` flag, because the
+front-end has to know the names and their order anyway -- and a flag would leave it
+inventing a naming rule the command layer already owns. `shown` narrows the announced
+windows with the lines it narrows: a pane that shows nothing is not a pane. The lines
+carry their window either way: the announcement says what a frame shows, never what is
+held.
+
+Both lists stand oldest first. The store publishes sessions newest first, and the
+frame reads them the other way round -- what arrived last is at the bottom of the list
+and at the right of the split, as a transcript appends.
 
 ## A read's rows need no handler
 

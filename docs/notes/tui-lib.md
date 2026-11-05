@@ -288,6 +288,11 @@ toast on the desktop (`docs/notes/tui-notice.md`), and once inside it, as the ma
 session that stopped while it was not drawn (`docs/notes/tui-panes.md`,
 `docs/notes/tui-tree.md`).
 
+A turn somebody stopped is not this: `cli::Client` hears `TurnOutcome::Cancelled` on
+the status and says nothing, so `Tui::stopped` is the end of a turn the agent reached
+by itself. The window does not filter it a second time -- one rule, where the fact
+arrives (`docs/notes/cli-lib.md`).
+
 ## Tui::draw — the frame is under a net
 
 Drawing runs on every event, so a panic inside it is not a bug report: it takes the

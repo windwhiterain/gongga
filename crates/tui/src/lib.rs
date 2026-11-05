@@ -664,13 +664,6 @@ impl Tui {
         self.dirty = true;
     }
 
-    /// A session stopped: its turn ended, and the window says so.
-    ///
-    /// # Invariant
-    ///
-    /// The toast is outside the window, and the mark is inside it: a session that
-    /// stops while it is not drawn is the one the operator would not notice.
-    /// See `docs/notes/tui-lib.md`.
     /// Files one command's outcome for the loop.
     pub fn settled(&mut self, id: u64, ok: bool) {
         self.answers.push((id, ok));
@@ -681,6 +674,14 @@ impl Tui {
         std::mem::take(&mut self.answers)
     }
 
+    /// A session stopped: its turn ended, and the window says so.
+    ///
+    /// # Invariant
+    ///
+    /// The toast is outside the window, and the mark is inside it: a session that
+    /// stops while it is not drawn is the one the operator would not notice. A turn
+    /// somebody cancelled never reaches here -- the command layer does not announce
+    /// a stop that was asked for. See `docs/notes/tui-lib.md`.
     pub fn stopped(&mut self, session: &str, failed: bool) {
         if !self.screen.panes.is_shown(session) {
             self.screen.panes.mark_unseen(session);

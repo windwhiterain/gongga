@@ -601,19 +601,19 @@ fn draw_list(f: &mut Frame, s: &mut Screen, area: Rect) {
 ///
 /// # Invariant
 ///
-/// One column whatever the word is, because the list is a column of names and a word
-/// beside it costs the width of the widest word -- `running` is seven columns of a
-/// list that is read at a glance. The shape carries the state as well as the colour
-/// does, so the mark is still legible without it. See `docs/notes/tui-render.md`.
+/// One column whatever the word is: a word costs the width of the widest one
+/// (`running` is seven). Shape and colour carry different facts -- the shape whether a
+/// turn is running (`●` yes, `○` no), the colour how much attention the row asks for --
+/// so a mark is legible without its colour. See `docs/notes/tui-render.md`.
 fn status_mark(mark: crate::tree::Mark) -> (&'static str, Style) {
     match mark {
         crate::tree::Mark::Running => ("\u{25cf}", Style::default().fg(Color::Green)),
-        crate::tree::Mark::Stopped => ("\u{25cf}", Style::default().fg(Color::Yellow)),
+        crate::tree::Mark::Stopped => ("\u{25cb}", Style::default().fg(Color::Yellow)),
         crate::tree::Mark::Error => (
             "\u{2715}",
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         ),
-        crate::tree::Mark::Idle => ("\u{25cb}", dim()),
+        crate::tree::Mark::Idle => ("\u{25cb}", Style::default().fg(Color::Green)),
     }
 }
 

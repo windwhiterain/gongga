@@ -26,8 +26,8 @@ use anyhow::{Context, anyhow};
 use clap::{CommandFactory, FromArgMatches, Parser};
 use protocol::{
     ChannelConfig, ClientInfo, ClientMessage, Event, LogLevel, ResponseEvent, ResponsePart,
-    SERVER_STOP, ServerMessage, SessionInfo, SessionStatus, ToolAnswerEvent, decode_server,
-    encode_client,
+    SERVER_STOP, ServerMessage, SessionInfo, SessionStatus, ToolAnswerEvent, TurnOutcome,
+    decode_server, encode_client,
 };
 use tokio::net::UdpSocket;
 
@@ -728,12 +728,15 @@ impl Client {
     /// # Invariant
     ///
     /// Every session the server knows is listed whatever its window -- the list is
-    /// where a session is clicked -- and `shown` is the ones drawn beside it.
+    /// where a session is clicked -- and `shown` is the ones drawn beside it. Both
+    /// read the announcement backwards: the server publishes newest first, and a
+    /// frame reads like a transcript, where what arrived last is at the bottom.
     fn layout(&self) -> Layout {
         Layout {
             listed: self
                 .sessions
                 .iter()
+                .rev()
                 .map(|s| Listed {
                     name: s.name.clone(),
                     status: match s.status {
@@ -750,6 +753,7 @@ impl Client {
             shown: self
                 .sessions
                 .iter()
+                .rev()
                 .filter(|s| self.shown.contains(&s.name))
                 .map(|s| s.name.clone())
                 .collect(),
@@ -999,6 +1003,7 @@ impl Client {
                 session,
                 status,
                 detail,
+                outcome,
             } => {
                 if let Some(s) = self.sessions.iter_mut().find(|s| s.name == session) {
                     s.status = status;
@@ -1016,9 +1021,8 @@ impl Client {
                     LineKind::System,
                     &format!("{prefix}{label}{suffix}"),
                 );
-                // A turn that ended is a stop, and a stop is what the window
-                // outside this one is told about.
-                if status != SessionStatus::Running {
+                // A turn somebody stopped is not a stop to announce: see TurnOutcome.
+                if status != SessionStatus::Running && outcome != Some(TurnOutcome::Cancelled) {
                     sink.stopped(&session, status == SessionStatus::Error);
                 }
                 self.refresh(sink);
@@ -1645,9 +1649,8 @@ pub fn main(args: Args) -> anyhow::Result<()> {
 ///
 /// The words after `skill` belong to the entry -- `skill remote add --home x` is the
 /// script's flag -- so this layer claims only what cannot be a word of it: `ls`, whose
-/// answer is the session's, and `--name`/`--args`, which spell the server's own command
-/// (`skill <session> --name <n> --args <json>`). A skill that must receive `--name`
-/// itself is reachable as `skill run <name> --name …`.
+/// answer is the session's, and `--name`/`--args`, which spell the server's command.
+/// A skill that must receive `--name` itself is reachable as `skill run <name>`.
 async fn skill(args: &Args, tokens: &[String]) -> anyhow::Result<()> {
     let local = || crate::skill_command::dispatch(&home_of(args), &tokens[1..]);
     let listing = tokens.get(1).map(String::as_str) == Some("ls");
@@ -1664,7 +1667,7 @@ async fn skill(args: &Args, tokens: &[String]) -> anyhow::Result<()> {
         match (listing, calling_session()) {
             (true, Some(session)) => match ask_table(&mut client, &mut link, &session).await {
                 Ok(()) => Ok(()),
-                // A shell started by another server's session still has a machine to
+                // A shell of another server's session still has a machine to
                 // list: the refusal is said, and the local walk answers.
                 Err(why) => {
                     eprintln!("note: {session} is not a session this server knows ({why})");

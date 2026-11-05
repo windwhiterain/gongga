@@ -170,11 +170,19 @@ pub enum Event {
     /// keeps the catalog it was greeted with.
     Commands { commands: Vec<CommandSpec> },
     /// A session's run state changed.
+    ///
+    /// # Invariant
+    ///
+    /// `outcome` is only there when a turn ended, and it is a word rather than a
+    /// sentence: a reader deciding whether a stop is worth telling anyone about
+    /// must not parse `detail`. `detail` stays the sentence a person reads.
     Status {
         session: String,
         status: SessionStatus,
         #[serde(skip_serializing_if = "Option::is_none")]
         detail: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outcome: Option<TurnOutcome>,
     },
     /// Diagnostic line for the TUI status bar.
     Log { level: LogLevel, message: String },
@@ -554,6 +562,22 @@ pub enum SessionStatus {
     Idle,
     Running,
     Error,
+}
+
+/// How a turn ended: what the status alone cannot say.
+///
+/// # Invariant
+///
+/// `Done` and `Failed` are a turn the agent finished, and `Cancelled` is a turn
+/// somebody stopped -- a `cancel`, an `interrupt_session`, or the window that
+/// owned the server leaving. A front-end tells the operator about the first two
+/// and says nothing about the third: a stop it asked for needs no announcement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnOutcome {
+    Done,
+    Cancelled,
+    Failed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

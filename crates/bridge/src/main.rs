@@ -321,6 +321,7 @@ impl Bridge {
                 session,
                 status,
                 detail,
+                ..
             } => match status {
                 SessionStatus::Idle => self.on_idle(&session, sink).await,
                 SessionStatus::Error => self.on_error(&session, detail, out).await,

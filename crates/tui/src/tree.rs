@@ -99,16 +99,22 @@ struct Node {
     depth: usize,
     children: Vec<usize>,
     session: bool,
-    mark: Mark,
+    /// What this node's own session is doing; `Idle` when it names no session.
+    own: Mark,
+    /// The strongest mark of everything under this node, itself included.
+    under: Mark,
 }
 
 /// The rows the list draws: every session's name, and every prefix of one.
 ///
 /// # Invariant
 ///
-/// Siblings stand in the announcement's order, which is the order a name was first
-/// seen: a group therefore appears where its first session is, and never elsewhere.
-/// A folded name keeps its rows, so unfolding it costs no data.
+/// Siblings stand in the layout's order, oldest first, so a group appears where its
+/// first session is; a folded name keeps its rows, and unfolding it costs no data.
+///
+/// A row that names a session reports that session alone; a row that only groups
+/// reports the strongest mark below it. The row clicked for a window answers for that
+/// window. See `docs/notes/tui-tree.md`.
 pub fn rows(listed: &[Listed], folded: &BTreeSet<String>, unseen: &BTreeSet<String>) -> Vec<Row> {
     let mut nodes: Vec<Node> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
@@ -132,7 +138,8 @@ pub fn rows(listed: &[Listed], folded: &BTreeSet<String>, unseen: &BTreeSet<Stri
                         depth,
                         children: Vec::new(),
                         session: false,
-                        mark: Mark::Idle,
+                        own: Mark::Idle,
+                        under: Mark::Idle,
                     });
                     index.insert(prefix.clone(), at);
                     match parent {
@@ -142,12 +149,14 @@ pub fn rows(listed: &[Listed], folded: &BTreeSet<String>, unseen: &BTreeSet<Stri
                     at
                 }
             };
-            // Every row above this one holds this session too, so it reports it.
-            nodes[at].mark = nodes[at].mark.max(mark);
+            // Every row above this one holds this session too, so a group among
+            // them answers for it.
+            nodes[at].under = nodes[at].under.max(mark);
             parent = Some(at);
         }
         if let Some(last) = parent {
             nodes[last].session = true;
+            nodes[last].own = nodes[last].own.max(mark);
         }
     }
     // Depth first without recursion: a name is arbitrarily deep and a stack is not.
@@ -162,7 +171,10 @@ pub fn rows(listed: &[Listed], folded: &BTreeSet<String>, unseen: &BTreeSet<Stri
             depth: node.depth,
             session: node.session,
             group: !node.children.is_empty(),
-            mark: node.mark,
+            mark: match node.session {
+                true => node.own,
+                false => node.under,
+            },
             collapsed,
         });
         if collapsed {

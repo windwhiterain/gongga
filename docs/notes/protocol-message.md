@@ -258,6 +258,20 @@ second dispatch table -- a new row kind needs no entry, which is the same reason
 `Record` carries its kind as data -- and the reason a pattern can spell a kind the
 server has never heard of.
 
+## Event::Status — `detail` and `outcome`
+
+`detail` is the sentence a person reads beside the status word (`idle (cancelled)`),
+and it is not a fact a program may parse: `"see log"` is a nudge, not a reason.
+`outcome` is the machine's half, present exactly on the status that ends a turn, and
+it is `TurnOutcome` -- `done`, `cancelled`, `failed`.
+
+The distinction exists so `cli::Client` can ask the one question it has to answer
+without reading prose: was this turn stopped by somebody? `Sink::stopped` is told
+about a turn that ended, and a cancelled turn was ended by an operator asking for it,
+so it is not announced on the desktop and its session is not marked as having
+finished out of sight. `serde(default)`, so a status from a build without the field
+reads as "outcome unknown" and is announced, which is what that build meant.
+
 ## SessionInfo — model, thinking_effort, context_limit
 
 SPEC's `full` pane title lists them beside the measurements, so they travel with the

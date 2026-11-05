@@ -238,22 +238,29 @@ click: a shown session is still a row, because that row is where it is hidden ag
 
 Two facts, one column each, and each look means one of them:
 
-- **the status mark**: `●` running (green), `●` stopped unseen (yellow), `✕` error (red,
-  bold), `○` anything else (chrome) -- `status_mark`. It is what the announcement says
-  the session is doing, which used to be announced and dropped, so "is it running?"
-  could only be answered by reading that session's events. A group row carries the
-  strongest mark under it (`tree::Mark`, error over stopped over running over idle), so
-  a folded group still says whether something inside it needs attention.
+- **the status mark**: `●` running (green), `○` stopped unseen (yellow), `✕` error (red,
+  bold), `○` idle (green) -- `status_mark`. It is what the announcement says the
+  session is doing, which used to be announced and dropped, so "is it running?" could
+  only be answered by reading that session's events. A row that only groups carries
+  the strongest mark under it (`tree::Mark`, error over stopped over running over
+  idle), so a folded group still says whether something inside it needs attention; a
+  row that names a session carries that session and nothing else (`tui-tree.md`).
 - **the name's brightness**: bright when the session has a window beside the list, dim
   when it does not. The right-hand split states the same fact, said again where it is
   clicked.
 
 The mark is *one* column whatever the word is, and that is the whole reason it is a
 mark. A word costs the width of the widest one -- `running` is seven columns -- and the
-list is a column of names that is read at a glance. The shape carries the state as well
-as the colour does, so `running` and `error` are still distinct to a reader who cannot
-tell green from red; `idle` is the state of a session that needs nothing, so it gets
-the quietest look.
+list is a column of names that is read at a glance.
+
+Shape and colour carry different facts, so neither repeats the other. The shape says
+whether a turn is running: `●` yes, `○` no. The colour says how much attention the row
+asks for: green for nothing, yellow for a turn that finished while the session was not
+drawn, red for a failure. `running` and `error` are therefore distinct to a reader who
+cannot tell green from red, and an idle session is a green hollow circle rather than a
+grey one -- grey read as dead beside the cyan structure of the same column, in the one
+row that is news of a session doing nothing wrong. Filled is never a mark of a stop:
+stopped unseen is `○` yellow, because that turn is not running either.
 
 Rotating the glyphs to buy the width back is not on the table: a terminal draws one
 upright glyph per cell, and `ratatui`'s cell is a symbol plus a style with no

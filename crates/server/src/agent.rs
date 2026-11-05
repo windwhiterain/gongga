@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use futures_util::FutureExt;
 use protocol::{
     Event, LogLevel, ResponseEvent, ResponsePart, SessionStatus, ToolAnswerEvent, ToolStream,
+    TurnOutcome,
 };
 use serde_json::json;
 use tokio::sync::mpsc;
@@ -143,7 +144,7 @@ impl Agent {
             Some(session.id()),
             "turn_end",
             &serde_json::json!({
-                "outcome": outcome.label(),
+                "outcome": outcome,
                 "steps": steps,
                 "elapsed_ms": started.elapsed().as_millis() as u64,
                 "answer": answer,
@@ -166,6 +167,7 @@ impl Agent {
                 session: session.name().to_string(),
                 status,
                 detail,
+                outcome: Some(outcome),
             });
         }
     }
@@ -194,6 +196,7 @@ impl Agent {
             session: name.clone(),
             status: SessionStatus::Running,
             detail: None,
+            outcome: None,
         });
         let _ = self.store.set_status(id, SessionStatus::Running);
 
@@ -1561,24 +1564,6 @@ struct Attempt<'a> {
     effort: Option<&'a str>,
     /// Where the session's shell stands, which the row records so a move is seen.
     cwd: &'a std::path::Path,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TurnOutcome {
-    Done,
-    Cancelled,
-    Failed,
-}
-
-impl TurnOutcome {
-    /// The word a durable row uses, so a reader never parses a debug format.
-    fn label(self) -> &'static str {
-        match self {
-            Self::Done => "done",
-            Self::Cancelled => "cancelled",
-            Self::Failed => "failed",
-        }
-    }
 }
 
 /// What a panicking task carries, as text.

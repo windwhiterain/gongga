@@ -22,10 +22,17 @@ click on its marker folds what is under it. Splitting them into two rows would b
 list lying about how many sessions exist, and dropping either would make one of the
 two gestures unreachable.
 
-`mark` is the strongest status of everything under the row, and `Mark`'s order is
-that strength: error, stopped, running, idle. A folded group therefore still says
-whether something inside it needs attention -- the one thing a fold is expected to
-hide and must not.
+`mark` is two facts kept apart: `own` is what this row's own session is doing, and
+`under` is the strongest status of everything beneath it, `Mark`'s order being that
+strength: error, stopped, running, idle. A row that names a session draws `own`; a row
+that only groups draws `under`, so a folded group still says whether something inside
+it needs attention -- the one thing a fold is expected to hide and must not.
+
+The split is the user's 2026-11-05 report: a session drawn beside the list went yellow
+while it was idle, because a child it happens to be the parent of had stopped unseen,
+and a row is also a group whenever anything is named under it. The row an operator
+clicks to open a window has to answer for that window; a parent's own state is not news
+about its children, and the children that are news are drawn under it.
 
 `stopped` sits below `error` and above `running`: it is a session that finished while
 the operator was not looking at it, which asks for a look, but it is not a failure and
@@ -69,11 +76,13 @@ was not drawn is marked `stopped` instead of `idle`, so the list says that somet
 finished where the operator was not looking. An error keeps its own mark -- the failure
 is the stronger fact, and it is already the loudest mark in the column (`mark_of`).
 
-Siblings keep the announcement's order -- newest session first, as the store lists
-them -- which makes a group appear where its first session is. The alternative,
-sorting siblings by name, would keep the tree's rows still while sessions come and go;
-it was not taken because the list's order is how a person finds the session they just
-created, and the tree is a reading of that list, not a second one.
+Siblings keep the order the layout hands over -- oldest session first, newest last --
+which makes a group appear where its first session is. That order is the announcement
+read backwards: the store lists newest first, and `Client::layout` reverses it, because
+a frame reads like a transcript -- what arrived last is at the bottom, and a session
+that has just been made is where the next one will be. The alternative, sorting
+siblings by name, would keep the tree's rows still while sessions come and go; it was
+not taken because the list's order is how a person finds the session they just created.
 
 The walk is a stack, not recursion: depth is whatever the operator typed, and a
 hundred-segment name must not be a stack overflow in the frame that draws it. A
