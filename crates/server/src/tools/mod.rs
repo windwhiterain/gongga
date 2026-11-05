@@ -26,6 +26,7 @@ pub mod detached;
 pub mod index_skill;
 #[cfg(windows)]
 pub mod job;
+pub mod live_compact;
 pub mod python;
 
 /// Everything a tool invocation needs, supplied per call by the agent loop.
@@ -265,6 +266,7 @@ impl ToolRegistry {
                 Box::new(DelBashTool),
                 Box::new(ListBashTool),
                 Box::new(index_skill::IndexSkillTool),
+                Box::new(live_compact::LiveCompactTool),
                 Box::new(python::DelPythonTool),
                 Box::new(python::ListPythonTool),
             ],
