@@ -73,22 +73,25 @@ fn launch(roots: &skill::Roots, name: Option<&str>, argv: &[String]) -> anyhow::
     for other in &found[1..] {
         shadowed(other);
     }
-    let Some(entry) = &skill.entry else {
+    // A package needs no declared entry; without one or the other, it is a body.
+    if skill.entry.is_none() && !skill.dir().join("__init__.py").is_file() {
         return Err(anyhow!(
             "{name} is a body and nothing to run: read {} and do what it says",
             skill.path.display()
         ));
-    };
-    let run = skill::runner(entry, &programs()).map_err(|why| anyhow!(why))?;
+    }
+    let run = skill::runner_of(skill.dir(), skill.entry.as_deref(), &programs())
+        .map_err(|why| anyhow!(why))?;
+    let target = skill.entry.as_deref().unwrap_or(skill.dir());
     let mut command = Command::new(&run.program);
     command
-        .args(run.words(entry, argv))
+        .args(run.words(target, argv))
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
     let status = command
         .status()
-        .with_context(|| format!("running {}", entry.display()))?;
+        .with_context(|| format!("running {}", target.display()))?;
     let _ = std::io::stdout().flush();
     // The entry answered, not this command. A signal has no code.
     std::process::exit(status.code().unwrap_or(1));

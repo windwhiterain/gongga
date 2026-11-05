@@ -218,6 +218,40 @@ listed=$("${cli[@]}" 2>&1)
 [[ "$listed" == *"skill -- Run the"* ]]
 ok "the catalog carries skill (a tool registration, not a command of its own)" $?
 
+# A skill may be a Python package: no declared entry, the callable comes from
+# `__all__`, and the same contract is callable in-process.
+mkdir -p "$home/skills/echo-pkg"
+cat > "$home/skills/echo-pkg/SKILL.md" <<'MD'
+---
+name: echo-pkg
+description: A skill that is a Python package, not a script.
+---
+MD
+cat > "$home/skills/echo-pkg/__init__.py" <<'PY'
+__all__ = ["main"]
+
+
+def main(argv):
+    return "argv: " + " | ".join(argv) + "\n"
+PY
+packed=$("${cli[@]}" skill main --name echo-pkg --args '["a b","c"]' 2>&1)
+[[ "$packed" == *"argv: a b | c"* ]]
+ok "a package skill runs the callable its __all__ publishes" $?
+say "$packed"
+
+here=$(env -u GONGGA_SESSION "${cli[@]}" skill run echo-pkg x 2>&1)
+[[ "$here" == *"argv: x"* ]]
+ok "and the command layer runs the same package on this disk" $?
+
+inproc=$(python -c "
+import sys
+sys.path.insert(0, r'$(cygpath -m "$root")/crates/skill/python')
+import gongga_skill
+print(gongga_skill.run(r'$(cygpath -m "$home")/skills/echo-pkg', ['in', 'process']), end='')
+" 2>&1)
+[[ "$inproc" == *"argv: in | process"* ]]
+ok "the contract is importable: no process, no command line" $?
+
 # `index_skill` is gone: the same table is `skill` with no name, and `skill ls` asks
 # the server for it when the shell names a session.
 [[ "$listed" != *"index_skill"* ]]

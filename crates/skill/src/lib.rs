@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 pub mod entry;
 
-pub use entry::{Programs, Runner, runner};
+pub use entry::{Programs, Runner, runner, runner_of};
 
 /// The file that makes a directory a skill, and the one a reader opens.
 const SKILL: &str = "SKILL.md";

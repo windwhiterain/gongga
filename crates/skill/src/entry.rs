@@ -49,6 +49,53 @@ impl Runner {
     }
 }
 
+/// The module a package skill publishes its callable through.
+///
+/// # Invariant
+///
+/// One file, two readers: this crate runs it as the process form
+/// (`python -c <source> <dir> <argv...>`), and a Python caller imports it. It is the
+/// contract for "what a package skill runs", so nothing here re-states it.
+const PACKAGE_RUNNER: &str = include_str!("../python/gongga_skill.py");
+
+/// The file that makes a skill directory a package.
+const PACKAGE: &str = "__init__.py";
+
+/// What runs a skill: the package it is, or the entry it declares.
+///
+/// # Invariant
+///
+/// A package wins: a directory with `__init__.py` is a Python skill whose callable is
+/// discovered, whether or not `SKILL.md` also names an entry, because discovery is the
+/// point of the form. Everything else is the declared entry's own rules -- extension
+/// first, then `#!` -- which stay for the scripts that arrived before packages did.
+pub fn runner_of(
+    directory: &Path,
+    declared: Option<&Path>,
+    programs: &Programs,
+) -> Result<Runner, String> {
+    if directory.join(PACKAGE).is_file() {
+        return package(programs);
+    }
+    match declared {
+        Some(entry) => runner(entry, programs),
+        None => Err(format!(
+            "{} is not a Python package (no {PACKAGE}) and declares no entry: there is \
+             nothing to run",
+            directory.display()
+        )),
+    }
+}
+
+/// A package skill: Python imports it and calls the callable it publishes.
+fn package(programs: &Programs) -> Result<Runner, String> {
+    Ok(Runner {
+        program: python(programs)?,
+        leading: vec!["-c".to_string(), PACKAGE_RUNNER.to_string()],
+        posix: false,
+    })
+}
+
 /// An entry is a program of its own, or a script whose first line names one.
 pub fn runner(entry: &Path, programs: &Programs) -> Result<Runner, String> {
     let extension = entry

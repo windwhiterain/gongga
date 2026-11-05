@@ -51,3 +51,23 @@ with.
 (`-NoProfile -File`), the entry, then the caller's argv -- so the two callers cannot disagree
 about their order. Neither caller writes a command line: each hands the words to a spawn that
 provides no shell, so a word holding a space, a quote or a `$` arrives as it is.
+
+## The package form
+
+A skill may be a Python package instead of a script: the directory holds `__init__.py`, and
+what to run is *discovered* rather than declared. `__all__`'s first callable, else a `main`
+attribute, takes the argv list and answers `None`, a string, or an exit code. There is no
+`metadata.entry` to keep in step with a file name, no interpreter table to consult (it is
+Python), and no path spelling to get wrong -- on every platform the same thing happens.
+
+`python/gongga_skill.py` is that contract, and it is one file with two readers: the harness
+carries it with `include_str!` and runs it as `python -c <source> <dir> <argv...>`, and a
+Python caller imports it and calls `run(directory, argv)`. The second is why the form exists
+-- an agent's Python can use a skill in-process, with the argv as a list and the answer as a
+value, instead of re-deriving a command line. Neither reader looks for skills: a name is
+resolved by `Roots` first, because "which file does this name open" is one answer and it is
+not Python's.
+
+A package wins over a declared entry: discovery is the point of the form. Everything else
+keeps the script rule below, which stays for the skills that arrived before packages did --
+and is the fallback on a machine with no Python at all.

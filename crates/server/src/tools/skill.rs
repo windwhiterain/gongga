@@ -109,23 +109,32 @@ impl Tool for SkillTool {
                     rows.join(", ")
                 ));
             }
-            let Some(entry) = &taken.entry else {
+            // A package skill needs no declared entry: its callable is discovered.
+            if taken.entry.is_none() && !taken.dir().join("__init__.py").is_file() {
                 return ToolOutcome::err(format!(
                     "{name} is a body and nothing to run: read {} and do what it says",
                     taken.path.display()
                 ));
-            };
-            let run = match ::skill::runner(entry, &self.programs) {
+            }
+            let run = match ::skill::runner_of(taken.dir(), taken.entry.as_deref(), &self.programs)
+            {
                 Ok(run) => run,
                 Err(why) => return ToolOutcome::err(why),
             };
+            let target = taken.entry.as_deref().unwrap_or(taken.dir());
             // The entry is this machine's file whatever machine the session works on.
             let at = ctx.dir(Machine::Local);
-            let outcome =
-                match words::run(&run.program, &run.words(entry, &argv), &at, self.timeout).await {
-                    Ok(outcome) => outcome,
-                    Err(why) => return ToolOutcome::err(why),
-                };
+            let outcome = match words::run(
+                &run.program,
+                &run.words(target, &argv),
+                &at,
+                self.timeout,
+            )
+            .await
+            {
+                Ok(outcome) => outcome,
+                Err(why) => return ToolOutcome::err(why),
+            };
             let mut text = outcome.stdout;
             if !outcome.stderr.is_empty() {
                 if !text.is_empty() {
