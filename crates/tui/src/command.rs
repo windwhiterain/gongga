@@ -93,15 +93,7 @@ pub fn run(
                 );
                 return Done::Local;
             }
-            match state.change_sticky(&kind, &value) {
-                Ok(changed) => {
-                    client.say(LineKind::Result, &format!("sticky {kind} = {value}"), sink);
-                    if changed {
-                        forget(client, state, &kind, sink);
-                    }
-                }
-                Err(e) => client.say(LineKind::Error, &format!("could not save: {e}"), sink),
-            }
+            write_sticky(client, state, &kind, &value, sink);
             Done::Local
         }
         "del_sticky" => {
@@ -226,13 +218,6 @@ fn render(client: &cli::Client, state: &mut State, args: &Args, sink: &mut dyn S
 }
 
 /// `set_render_session`: whether one session is drawn beside the list.
-///
-/// # Invariant
-///
-/// It changes a view and never the state: the blocks a session already said are
-/// still held, so `true` after `false` brings them back. SPEC's click is this
-/// command, so the sticky session follows the window: shown makes it sticky, and
-/// hiding the sticky one clears it.
 fn render_session(
     client: &cli::Client,
     state: &mut State,
@@ -245,20 +230,82 @@ fn render_session(
         client.say(LineKind::Result, &format!("render {name} = {show}"), sink);
         return Done::Local;
     };
-    let show = match state::parse_show(raw) {
-        Ok(show) => show,
-        Err(e) => {
-            client.say(LineKind::Error, &e, sink);
-            return Done::Local;
+    match state::parse_show(raw) {
+        Ok(show) => write_session(client, state, &name, show, sink),
+        Err(e) => client.say(LineKind::Error, &e, sink),
+    }
+    Done::Local
+}
+
+/// Answers one of the window's own gestures.
+///
+/// # Invariant
+///
+/// A gesture ends where the command that says the same thing ends, so
+/// `Operation::StickySession` is `set_sticky session` and
+/// `Operation::RenderSession` is `set_render_session`: one behavior per gesture,
+/// whichever way it was asked for. `delete_session` is not the window's state,
+/// so it is the command layer's, unchanged. See `docs/notes/tui-command.md`.
+pub fn operate(
+    client: &mut cli::Client,
+    state: &mut State,
+    operation: protocol::Operation,
+    sink: &mut dyn Sink,
+) -> cli::Submission {
+    match operation {
+        protocol::Operation::StickySession { session } => {
+            write_sticky(client, state, "session", &session, sink);
+            cli::Submission::Local
         }
-    };
-    if let Err(e) = state.set_shown(&name, show) {
+        protocol::Operation::RenderSession { session, show } => {
+            write_session(client, state, &session, show, sink);
+            cli::Submission::Local
+        }
+        operation => client.apply(operation, sink),
+    }
+}
+
+/// Writes one sticky entry, says what it is, and forgets what followed it.
+fn write_sticky(
+    client: &cli::Client,
+    state: &mut State,
+    kind: &str,
+    value: &str,
+    sink: &mut dyn Sink,
+) {
+    match state.change_sticky(kind, value) {
+        Ok(changed) => {
+            client.say(LineKind::Result, &format!("sticky {kind} = {value}"), sink);
+            if changed {
+                forget(client, state, kind, sink);
+            }
+        }
+        Err(e) => client.say(LineKind::Error, &format!("could not save: {e}"), sink),
+    }
+}
+
+/// Shows or hides one session's window.
+///
+/// # Invariant
+///
+/// It changes a view and never the state: the blocks a session already said are
+/// still held, so `true` after `false` brings them back. It also moves the
+/// sticky session -- shown makes it sticky, hiding the sticky one clears it --
+/// so a click and a typed line leave the same window behind.
+fn write_session(
+    client: &cli::Client,
+    state: &mut State,
+    name: &str,
+    show: bool,
+    sink: &mut dyn Sink,
+) {
+    if let Err(e) = state.set_shown(name, show) {
         client.say(LineKind::Error, &format!("could not save: {e}"), sink);
-        return Done::Local;
+        return;
     }
     let saved = if show {
-        state.set_sticky("session", &name)
-    } else if state.sticky().get("session") == Some(name.as_str()) {
+        state.set_sticky("session", name)
+    } else if state.sticky().get("session") == Some(name) {
         state.del_sticky("session").map(|_| ())
     } else {
         Ok(())
@@ -267,7 +314,6 @@ fn render_session(
         client.say(LineKind::Error, &format!("could not save: {e}"), sink);
     }
     client.say(LineKind::Result, &format!("render {name} = {show}"), sink);
-    Done::Local
 }
 
 /// Forgets what followed a sticky entry that just changed, and says so.

@@ -33,6 +33,16 @@ the argument's published `accepts` refuses is left out *and said*: a default is 
 something the operator stated, so it is not worth a refusal -- but silently dropping it
 would hide that the entry is still in the file, and a later model may well take it.
 
+## the gesture branch
+
+`UiEvent::Operate` is the window's own gesture, and it takes one step the typed
+path does not: `command::operate` answers the operation against the state, and
+`sync` puts what it changed where the frame and the completion read it -- before
+the next event, so the very next frame draws the new sticky session or the window
+just hidden. A gesture the server answers (`delete_session`) has nothing to sync
+and goes out through `Client::apply` like any other message. See
+`docs/notes/tui-command.md`.
+
 ## sync, follow and settle
 
 Three steps, and each happens exactly once per submission or answer:

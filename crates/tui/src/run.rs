@@ -543,7 +543,11 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
             Step::Input(Some(UiEvent::Quit)) => break Ok(()),
             // A gesture of the window's own: an operation, not a line.
             Step::Input(Some(UiEvent::Operate(operation))) => {
-                let outcome = client.apply(operation, &mut TuiSink(&mut ui));
+                let outcome =
+                    command::operate(&mut client, &mut state, operation, &mut TuiSink(&mut ui));
+                // Whatever the gesture changed of the window's own state reaches
+                // the drawing and the completion before the next event.
+                sync(&mut client, &state, &window, &mut ui);
                 if let cli::Submission::Send(msg) = outcome
                     && let Some(open) = link.as_ref()
                     && let Err(e) = open.send(msg).await

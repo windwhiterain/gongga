@@ -33,6 +33,19 @@ because they are what an operator's fingers know:
 `connect_server` is the one command whose answer is an address: it saves it, tells
 the caller, and `Done::Moved` is how the loop learns to drop the link and repoint.
 
+## operate
+
+The window's gestures arrive as `protocol::Operation` rather than as lines
+(`docs/notes/tui-lib.md`, `handle_mouse`), and they end where the command that says
+the same thing ends -- `write_sticky` and `write_session`, the two functions both
+paths call. That is why a click on a session's name answers `render <name> = <show>`
+and moves the sticky session exactly as `/set_render_session` does, and why a click
+on a header answers `sticky session = <name>`: one behavior per gesture, whichever
+way it was asked for. `delete_session` is not the window's state, so `operate` hands
+it to `Client::apply` unchanged and the server answers it. Nothing here spells a
+command line: the window names what the operator meant, and the syntax stays the
+command layer's.
+
 ## Window
 
 The completion wrapper. A line whose head is a client command is completed from the
