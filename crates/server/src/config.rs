@@ -56,14 +56,14 @@ pub const DEFAULT_INDEX_CHANGE_TOLERANCE: f64 = 0.2;
 /// The longest a retry delay may grow to. See `docs/notes/server-config.md`.
 pub const DEFAULT_RETRY_CEILING_MS: u64 = 30_000;
 
-/// How much room the server holds back on the device it stands on, in MiB.
+/// The room left below which a volume counts as out of room, in MiB.
 ///
 /// # Invariant
 ///
-/// One number, used twice: the space a spent reserve gives back to a full disk,
-/// and the yardstick for "this volume is down to its last room". See
+/// A threshold, not a budget: nothing is held back and nothing is written. It is
+/// the number the free space reading is compared against, on every tool call. See
 /// `docs/notes/server-disk.md`.
-pub const DEFAULT_DISK_RESERVE_MB: u64 = 1024;
+pub const DEFAULT_DISK_LOW_MB: u64 = 1024;
 
 /// How long one call waits when nothing states one.
 pub const DEFAULT_TOOL_MAX_WAIT_MS: u64 = 60_000;
@@ -90,9 +90,9 @@ pub struct Config {
     pub scripts: ScriptConfig,
     pub agent: AgentConfig,
     pub transport: TransportConfig,
-    /// Room held back on this device for a disk that fills up. See
+    /// Room left below which this server says the disk is out of room. See
     /// `docs/notes/server-disk.md`.
-    pub disk_reserve: crate::disk::Reserve,
+    pub disk_low: u64,
 }
 
 /// The model the server talks to by default: which provider serves it, and how.
@@ -307,8 +307,9 @@ struct FileServer {
     home: Option<PathBuf>,
     bind: Option<String>,
     key: Option<String>,
-    /// Room held back for a full disk, in MiB; `0` holds nothing back.
-    disk_reserve_mb: Option<u64>,
+    /// Room left below which the disk counts as out of room, in MiB; `0` turns the
+    /// reading off.
+    disk_low_mb: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -679,15 +680,13 @@ impl Config {
                 .unwrap_or(Duration::from_secs(60)),
         };
 
-        let disk_reserve = crate::disk::Reserve::new(
-            crate::disk::default_path(),
-            file.server
-                .as_ref()
-                .and_then(|s| s.disk_reserve_mb)
-                .or_else(|| env_or("GONGGA_DISK_RESERVE_MB").and_then(|v| v.parse().ok()))
-                .unwrap_or(DEFAULT_DISK_RESERVE_MB)
-                .saturating_mul(1024 * 1024),
-        );
+        let disk_low = file
+            .server
+            .as_ref()
+            .and_then(|s| s.disk_low_mb)
+            .or_else(|| env_or("GONGGA_DISK_LOW_MB").and_then(|v| v.parse().ok()))
+            .unwrap_or(DEFAULT_DISK_LOW_MB)
+            .saturating_mul(1024 * 1024);
 
         Ok(Self {
             config_path: std::path::absolute(&config_path).unwrap_or(config_path),
@@ -702,7 +701,7 @@ impl Config {
             scripts,
             agent,
             transport,
-            disk_reserve,
+            disk_low,
         })
     }
 }

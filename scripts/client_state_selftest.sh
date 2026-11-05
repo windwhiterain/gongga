@@ -2,7 +2,7 @@
 # Client state is the window's: a one-shot `gongga-cli` reads none of it, writes
 # none of it, and does not offer the commands that carry it.
 #
-# Real server, real command layer, a `cli.toml` that says where a bare command
+# Real server, real command layer, a `tui.toml` that says where a bare command
 # "should" go -- and one line of verdict at the end. `-v` prints each check.
 set -uo pipefail
 
@@ -19,10 +19,10 @@ fails=0
 ok() { if [[ "$2" == 0 ]]; then printf '  ok   %s\n' "$1"; else printf '  FAIL %s\n' "$1"; fails=$((fails + 1)); fi; }
 
 [[ -x "$bin/gongga-server.exe" || -x "$bin/gongga-server" ]] || {
-  echo "build first: cargo build -p gongga-server -p gongga-cli" >&2; exit 1; }
+  echo "build first: cargo build -p gongga-server" >&2; exit 1; }
 
-server_bin="$bin/gongga-server"; cli_bin="$bin/gongga-cli"
-[[ -x "$server_bin" ]] || { server_bin="$bin/gongga-server.exe"; cli_bin="$bin/gongga-cli.exe"; }
+server_bin="$bin/gongga-server"; cli_bin="$home/bin/gongga-cli"
+[[ -x "$server_bin" ]] || { server_bin="$bin/gongga-server.exe"; cli_bin="$home/bin/gongga-cli"; }
 
 alive() { [[ -n "${1:-}" ]] && tasklist //FI "PID eq $1" //NH 2>/dev/null | grep -q "$1"; }
 child_pid() { tr -d '\r\n' < "$home/server.lock" 2>/dev/null; }
@@ -87,7 +87,7 @@ server_pid=$(child_pid)
 
 # The state a window would have left behind: a session, a model, and a level.
 # `s1` exists, so a command that inherited the entry would land in its transcript.
-cat > "$home/cli.toml" <<'TOML'
+cat > "$home/tui.toml" <<'TOML'
 [[sticky_cmd_arguments]]
 name = "session"
 value = "s1"
@@ -96,11 +96,11 @@ value = "s1"
 name = "model"
 value = "fake/flash-fake"
 TOML
-before=$(md5sum "$home/cli.toml" | cut -d' ' -f1)
+before=$(md5sum "$home/tui.toml" | cut -d' ' -f1)
 
 cli=("$cli_bin" --home "$home" --server "127.0.0.1:$port")
 "${cli[@]}" set_session s1 --model fake/flash-fake >/dev/null 2>&1
-after_create=$(md5sum "$home/cli.toml" | cut -d' ' -f1)
+after_create=$(md5sum "$home/tui.toml" | cut -d' ' -f1)
 
 # 1. A required session is not filled from the window's entry: the line fails,
 #    and nothing is delivered to the session the entry names.
@@ -119,7 +119,7 @@ ok "get_messages with no --session is refused" $?
 # 3. A command the server accepts writes nothing back: the file a window keeps is
 #    the window's, and this process has no window.
 [[ "$before" == "$after_create" ]]
-ok "set_session leaves cli.toml byte for byte as the window wrote it" $?
+ok "set_session leaves tui.toml byte for byte as the window wrote it" $?
 
 # 4. The commands that carry that state are not published to a one-shot process.
 for name in set_sticky del_sticky set_render set_render_session connect_server; do

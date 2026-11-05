@@ -17,11 +17,16 @@ the model sent, and the injection is about what the tool will read. Both orderin
 compile; only this one keeps `argument_error` from reporting a field the model never
 named.
 
-A call that asks for more than the ceiling is refused rather than shortened. Shortening
-is the cheaper-looking choice and the worse one: the caller asked for five minutes,
-would get one, and would read the result as "it finished". The refusal names the tool,
-both numbers, and `detached` -- because the thing the caller wanted (run it, do not
-hold the turn) is exactly what `detached` is for since SPEC gave it to every tool.
+A call that asks for more than the ceiling is held to it, not refused. SPEC gives the
+number two jobs -- how long the turn is held, and the ceiling no call may exceed -- and
+neither is a reason to say no: past its own clock the work becomes a `background` job,
+which is a thing the caller can collect, not a failure. Refusing was the first version's
+answer, and it read as "you may not run that", which was never true.
+
+The ceiling still binds a tool's own configured default, for the reason it always did:
+it is a config value written by an operator, and an operator setting
+`[tools.bash] timeout_ms = 300000` should not silently outrank the ceiling the same file
+sets.
 
 A tool's own configured default is clamped by the ceiling too. It is a config value
 written by an operator, and an operator setting `[tools.bash] timeout_ms = 300000`
@@ -34,42 +39,82 @@ The resolved number, read back out of the call. A tool that ran on its built-in
 duration instead would be a second answer to "how long may this wait", and the second
 answer is the one that exceeds the ceiling.
 
-## tunnel::wants_detached and Carried
+It is the clock `waited` reads: the moment the turn stops waiting for this call and the
+work becomes a `background` job. A tool that says `owns_its_wait` never gets that far --
+a shell, an interpreter and a reading tool each answer for their own wait, and a clock
+taking the call away from them would be taking away the thing that was asked for.
 
-`detached` reads the same on every tool and means the same thing to the model. What
-carries it differs, and only in one way: a tool whose work *is* a process keeps the
-registry that outlives the server (`Carried::Process`, which is local `bash` and
-nothing else), and every other tool runs its call as a job of this server
-(`Carried::Call`). The model is told neither: both answer "started, you will be told".
+## tunnel::wants_background, wants_detached, both_ways and Carried
 
-## tunnel::detach
+`background` and `detached` both mean "do not hold the turn", and they differ in one
+thing only: who reads the answer. `background` leaves it in the job's row for
+`check_job`; `detached` hands it to the session as a notice when the job ends. A call
+that says both has asked for two answers, so it is refused with one sentence, once,
+here -- `bash` used to say it itself.
 
-The job takes its own cancellation token and gives up the turn's stream. Both are the
-same fact: the turn that asked for this call ends long before the job does, so a token
-it hands down would cancel the work it just asked to continue, and a stream it hands
-down would be a channel nobody is reading. What the job keeps is everything else --
-the session's shells, its interpreters, its store -- because that is where the work is.
+What carries a `detached` call differs, and only in one way: a tool whose work *is* a
+process keeps the registry that outlives the server (`Carried::Process`, which is local
+`bash` and nothing else), and every other tool runs its call as a job of this server
+(`Carried::Call`). `background` has the matching question, `Tool::handles_background`:
+`bash` and `python` answer it themselves through their shell's and their interpreter's
+own collector, and every other tool's background is a job of this server.
 
-The row is written before the task starts and deleted in the same act that posts the
-report. That is what makes a row left behind mean exactly one thing: a process that
-stopped never said how this ended. `announce_lost` reads those rows at the next start,
-which is the only way a session that was waiting on one learns to stop waiting.
+## tunnel::foreign
+
+The tunnel's words are the tunnel's to offer. `wait` is the one tool it leaves alone,
+so `background` and `detached` are refused there by name instead of being silently
+ignored: a job that waits is a job that never has an answer to leave running.
+
+## tunnel::spawn
+
+One spawn for both ways. The job takes its own cancellation token, its own inbox and
+gives up the turn's stream. All three are the same fact: the turn that asked for this
+call ends long before the job does, so a token it hands down would cancel the work it
+just asked to continue, a stream it hands down would be a channel nobody is reading,
+and the session's own inbox would end the job as if the job had been the turn. That
+last one was a real bug for `detached` before `background` arrived: a message to the
+session cut the work it was told would keep running.
+
+A call that cannot be recorded is not started. The row is what names the job to
+`check_job` and what the next start reads, so accepting a call whose row failed would
+be starting work whose answer nobody could ever collect.
 
 The `max_output` cap is applied here as well as on the waited path, for the reason the
-cap exists at all: the answer arrives as a message, and a message with a megabyte of
-build log in it is a step that costs more than the build did.
+cap exists at all: the answer arrives as a row or a message, and a message with a
+megabyte of build log in it is a step that costs more than the build did.
+
+## tunnel::JobRegistry
+
+What `del_job` reaches. A job is stopped through the token that was already ending it:
+`waited` in that job watches it, so the cancel is a cut -- the work is aborted, the tool
+says what it left behind, and the child process dies with the future. The id is
+registered before the receipt leaves and forgotten when the work ends, so the map holds
+running jobs and nothing else; a job of a run that stopped has no token left to cancel,
+and `del_job` answers for it out of its row.
 
 ## tunnel::report
 
+The row and the notice are written in one transaction. That is what makes a row left
+`running` mean exactly one thing -- a job that never got to say how it ended -- and it
+is what stops the other two orderings from existing: an answer nobody can find, and a
+notice about an answer nobody wrote.
+
 Suppressed when the session is gone and when the server is closing, the same two rules
 `background_notifier` follows and for the same reasons: a deleted session owes nothing,
-and a shell ended by the exit did not finish. The notice is an `inject` row marked
-`detached`, so an idle session is not woken for it -- it is read at the next step
-boundary, which is what a notice is.
+and a job the exit ended did not finish. A `detached` answer is the notice itself, so
+it counts as collected the moment that notice is queued; a `background` answer stays
+uncollected until `check_job` reads it.
 
-## tunnel::announce_lost
+## tunnel::announce_owed
 
-A call carried by the server has no pid, so nothing can adopt it: the row that survives
+A job carried by the server has no pid, so nothing can adopt it: the row that survives
 a start is a job that died with the process. There is nothing to recover, and saying so
 is not optional -- the alternative is a session whose `wait` never returns because the
 news it waits for was lost with the process that owed it.
+
+The sweep speaks for two kinds of row, and it is the row that decides which: `running`
+is a job that will never answer, so it is marked `lost` and said so; `ok` or `error`
+with `collected = 0` is an answer nobody read, so the session is told it is still
+there. Both are posted after `resume_pending`, which drops the notices the stopped run
+had queued -- so exactly one voice speaks for each job, whichever half of the write it
+died in. `check_job` reads the same row, which is why the notice can only point at it.

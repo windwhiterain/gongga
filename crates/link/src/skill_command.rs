@@ -134,7 +134,7 @@ fn programs() -> skill::Programs {
 }
 
 /// The first Python that runs: Windows' Store alias sits on `PATH` and answers 49.
-fn python() -> anyhow::Result<PathBuf> {
+pub fn python() -> anyhow::Result<PathBuf> {
     for candidate in ["python3", "python", "py"] {
         let Ok(program) = which::which(candidate) else {
             continue;

@@ -19,7 +19,7 @@ ok() { # name, condition-result
 }
 
 [[ -x "$bin/gongga-server.exe" || -x "$bin/gongga-server" ]] || {
-  echo "build first: cargo build -p gongga-server -p gongga-cli" >&2; exit 1; }
+  echo "build first: cargo build -p gongga-server" >&2; exit 1; }
 
 alive() { [[ -n "${1:-}" ]] && tasklist //FI "PID eq $1" //NH 2>/dev/null | grep -q "$1"; }
 # The pid of a server is the one holding its home's lock, never `$!`: Git Bash
@@ -119,7 +119,7 @@ if netstat -ano 2>/dev/null | grep -q ":$alt_port "; then refused_left=1; else r
 ok "and it left nothing listening" $refused_left
 [[ "$(child_pid)" == "$server_pid" ]]; ok "the running server still serves the home" $?
 
-"$bin/gongga-cli.exe" --home "$home" --server "127.0.0.1:$port" cancel >/dev/null 2>&1
+"$home/bin/gongga-cli" --home "$home" --server "127.0.0.1:$port" cancel >/dev/null 2>&1
 for _ in $(seq 1 100); do alive "$server_pid" || break; sleep 0.2; done
 alive "$server_pid"; [[ $? != 0 ]]; ok "cancel stops the server" $?
 for _ in $(seq 1 100); do alive "$sup" || break; sleep 0.2; done

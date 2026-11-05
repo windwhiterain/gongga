@@ -28,11 +28,11 @@ fails=0
 ok() { if [[ "$2" == 0 ]]; then printf '  ok   %s\n' "$1"; else printf '  FAIL %s\n' "$1"; fails=$((fails + 1)); fi; }
 
 [[ -x "$bin/gongga-server.exe" || -x "$bin/gongga-server" ]] || {
-  echo "build first: cargo build -p gongga-server -p gongga-cli (or set GONGGA_BIN)" >&2
+  echo "build first: cargo build -p gongga-server (or set GONGGA_BIN)" >&2
   exit 1; }
 exe() { [[ -x "$1.exe" ]] && echo "$1.exe" || echo "$1"; }
 server_bin=$(exe "$bin/gongga-server")
-cli_bin=$(exe "$bin/gongga-cli")
+cli_bin=$(exe "$home/bin/gongga-cli")
 
 alive() { [[ -n "${1:-}" ]] && tasklist //FI "PID eq $1" //NH 2>/dev/null | grep -q "$1"; }
 child_pid() { tr -d '\r\n' < "$home/server.lock" 2>/dev/null; }

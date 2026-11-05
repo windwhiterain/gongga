@@ -24,10 +24,10 @@ you are about to touch.
 | run the distribution (`gongga`, `gongga tui`) | [`bundle-main.md`](bundle-main.md) -- it is not a read-only run: pointed at a live home it stops that home's server |
 | start, stop or watch a server | [`link-server.md`](link-server.md), [`server-supervise.md`](server-supervise.md), [`server-signal.md`](server-signal.md) |
 | write into a home (payload, config, database) | [`server-config.md`](server-config.md), [`server-store.md`](server-store.md) |
-| spend or re-arm the disk safety space, or change what wakes `@monitor/disk` | [`server-disk.md`](server-disk.md), [`server-monitor.md`](server-monitor.md) |
+| change when the server says the disk is low, or what wakes `@monitor/disk` | [`server-disk.md`](server-disk.md), [`server-monitor.md`](server-monitor.md) |
 | change what a client sends or receives | [`link-lib.md`](link-lib.md), [`protocol-lib.md`](protocol-lib.md) |
 | change the window | [`tui-lib.md`](tui-lib.md), [`tui-run.md`](tui-run.md) |
-| change what the window remembers (`cli.toml`) | [`tui-state.md`](tui-state.md), [`tui-command.md`](tui-command.md) |
+| change what the window remembers (`tui.toml`) | [`tui-state.md`](tui-state.md), [`tui-command.md`](tui-command.md) |
 
 ## Index
 

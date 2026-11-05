@@ -128,6 +128,15 @@ class Client:
                 data = sock.recv(65535)
             except socket.timeout:
                 continue
+            except OSError as reset:
+                # A port with nothing behind it answers with ICMP, and Windows hands
+                # that up as a reset: "nothing answered" is this loop's own answer,
+                # not a traceback out of a library.
+                sock.close()
+                self._sock = None
+                raise Unreachable(
+                    f"nothing answered at {self.address[0]}:{self.address[1]} ({reset})"
+                ) from None
             head = self._decode(data)
             if head is not None and head[2] & SYN:
                 self._connection = head[3]
@@ -139,6 +148,10 @@ class Client:
         self._sequence = 0
         self._send({"t": "hello", "client": {
             "version": "python", "build": "python", "label": self.label,
+            # Which session this client speaks for: a command notices it (a
+            # subscription is armed on the session its shell belongs to), and a
+            # client that says nothing is a client nobody can arm.
+            "session": os.environ.get("GONGGA_SESSION", ""),
         }, "key": self.key})
         greeting = self._wait(lambda message: message.get("t") == "hello")
         if greeting is None:
@@ -181,6 +194,9 @@ class Client:
             message = self._wait(answered, collect=seen)
             if message is None:
                 raise Unreachable(f"{command} was sent and never answered")
+            # The answer is a row of the stream too, and a caller that prints what it
+            # read has to see it: `ok`, `message` and `data` are the command's words.
+            seen.append(message)
             inner, _ = _event(message)
             return Reply(inner.get("ok", False), inner.get("message", ""),
                          inner.get("data"), seen)

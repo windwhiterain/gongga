@@ -1,249 +1,37 @@
-//! The device's safety space, and the claim on it that says who noticed first.
+//! What the device has left, and the one time a server says so.
 //!
 //! See `docs/notes/server-disk.md`.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{OnceLock, RwLock};
 
-/// The reserve file's name: one per device, so two servers share one claim.
-pub const FILE: &str = "gongga-disk-reserve";
+/// The event kind a low disk reports itself with: a fact in the log, not a message.
+pub const EVENT: &str = "disk_space";
 
-/// Where the reserve stands when the machine states nothing.
-///
-/// # Invariant
-///
-/// A machine-wide directory, never a home: two servers with different homes spend
-/// one space. `GONGGA_DISK_RESERVE` states the whole path, so a test spends a file
-/// of its own instead of this machine's.
-pub fn default_path() -> PathBuf {
-    if let Some(stated) = std::env::var_os("GONGGA_DISK_RESERVE")
-        && !stated.is_empty()
-    {
-        return PathBuf::from(stated);
-    }
-    if cfg!(windows) {
-        let root = std::env::var_os("ProgramData")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("ALLUSERSPROFILE").map(PathBuf::from))
-            .unwrap_or_else(|| PathBuf::from("C:/ProgramData"));
-        root.join("gongga").join(FILE)
-    } else if Path::new("/var/tmp").is_dir() {
-        Path::new("/var/tmp").join("gongga").join(FILE)
-    } else {
-        std::env::temp_dir().join("gongga").join(FILE)
-    }
-}
-
-/// The space this machine set aside, and where it stands.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Reserve {
-    path: PathBuf,
-    bytes: u64,
-}
-
-/// What a claim did.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Claim {
-    /// This caller deleted the file, so this caller spends it and wakes the
-    /// monitor.
-    Won,
-    /// Somebody else deleted it first: the disk is already somebody's business,
-    /// and this caller says nothing.
-    Lost,
-    /// The file could not be removed for a reason that is not "it was gone".
-    Failed(String),
-}
-
-/// One volume a tool could lose room on.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Volume {
-    pub label: String,
-    pub free: Option<u64>,
-}
-
-impl Reserve {
-    pub fn new(path: impl Into<PathBuf>, bytes: u64) -> Self {
-        Self {
-            path: path.into(),
-            bytes,
-        }
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    pub fn bytes(&self) -> u64 {
-        self.bytes
-    }
-
-    /// Puts the space back: creates the file and takes the blocks.
-    ///
-    /// # Invariant
-    ///
-    /// Creating is `create_new`, so exactly one server arms a device; the others
-    /// find the file and leave it alone. Idempotent: calling it on an armed file
-    /// either succeeds by doing nothing or grows a file a killed writer left short.
-    /// A file that cannot be grown is removed again -- half a reserve is worse
-    /// than none, because the yardstick would be a size nobody declared.
-    pub fn arm(&self) -> Result<(), String> {
-        if let Some(parent) = self.path.parent()
-            && let Err(e) = std::fs::create_dir_all(parent)
-        {
-            return Err(format!("{}: {e}", parent.display()));
-        }
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&self.path)
-        {
-            Ok(file) => {
-                if let Err(e) = file.set_len(self.bytes) {
-                    drop(file);
-                    let _ = std::fs::remove_file(&self.path);
-                    return Err(format!("{}: {e}", self.path.display()));
-                }
-                Ok(())
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => self.grow(),
-            Err(e) => Err(format!("{}: {e}", self.path.display())),
-        }
-    }
-
-    fn grow(&self) -> Result<(), String> {
-        let Ok(meta) = std::fs::metadata(&self.path) else {
-            return Ok(());
-        };
-        if meta.len() >= self.bytes {
-            return Ok(());
-        }
-        let file = std::fs::OpenOptions::new()
-            .write(true)
-            .open(&self.path)
-            .map_err(|e| format!("{}: {e}", self.path.display()))?;
-        file.set_len(self.bytes)
-            .map_err(|e| format!("{}: {e}", self.path.display()))
-    }
-
-    /// Takes the space back, and with it the right to say anything.
-    ///
-    /// # Invariant
-    ///
-    /// The check is the delete, never a read before it: a read leaves a window in
-    /// which two servers both believe they won, and the space is then mentioned
-    /// twice. What "the delete" means is the platform's answer --
-    /// [unix](Self::claim_unix), [windows](Self::claim_windows).
-    pub fn claim(&self) -> Claim {
-        #[cfg(unix)]
-        {
-            self.claim_unix()
-        }
-        #[cfg(windows)]
-        {
-            self.claim_windows()
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            match std::fs::remove_file(&self.path) {
-                Ok(()) => Claim::Won,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Claim::Lost,
-                Err(e) => Claim::Failed(format!("{}: {e}", self.path.display())),
-            }
-        }
-    }
-
-    /// `unlink` is both the check and the delete: exactly one caller sees `Ok`, and
-    /// everybody else sees "no such file".
-    #[cfg(unix)]
-    fn claim_unix(&self) -> Claim {
-        match std::fs::remove_file(&self.path) {
-            Ok(()) => Claim::Won,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Claim::Lost,
-            Err(e) => Claim::Failed(format!("{}: {e}", self.path.display())),
-        }
-    }
-
-    /// # Invariant
-    ///
-    /// An exclusive open, not a delete: measured, two callers can both report a
-    /// successful `DeleteFileW` of one file. A handle with no sharing is decided: one
-    /// caller gets it, the rest get a sharing violation, and the file goes away with
-    /// the winner's handle. See `docs/notes/server-disk.md`.
-    #[cfg(windows)]
-    fn claim_windows(&self) -> Claim {
-        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
-        use windows_sys::Win32::Storage::FileSystem::{
-            CreateFileW, DELETE, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_DELETE_ON_CLOSE, OPEN_EXISTING,
-        };
-
-        const ERROR_SHARING_VIOLATION: i32 = 32;
-        const ATTEMPTS: u32 = 3;
-        let path = wide(&self.path.to_string_lossy());
-        for attempt in 0..ATTEMPTS {
-            let handle = unsafe {
-                CreateFileW(
-                    path.as_ptr(),
-                    DELETE,
-                    0,
-                    std::ptr::null(),
-                    OPEN_EXISTING,
-                    FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE,
-                    std::ptr::null_mut(),
-                )
-            };
-            if handle != INVALID_HANDLE_VALUE {
-                unsafe { CloseHandle(handle) };
-                return Claim::Won;
-            }
-            let error = std::io::Error::last_os_error();
-            match error.raw_os_error() {
-                // ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND: somebody got here first.
-                Some(2) | Some(3) => return Claim::Lost,
-                // A scanner holding the file is not a claim either way: ask again.
-                Some(ERROR_SHARING_VIOLATION) if attempt + 1 < ATTEMPTS => {
-                    std::thread::sleep(std::time::Duration::from_millis(20));
-                }
-                _ => return Claim::Failed(format!("{}: {error}", self.path.display())),
-            }
-        }
-        Claim::Failed(format!(
-            "{}: still held by another process",
-            self.path.display()
-        ))
-    }
-
-    pub fn armed(&self) -> bool {
-        self.path.exists()
-    }
-}
-
-/// What this process watches: the device's reserve, and the home whose volume is
-/// the one this server cannot do without.
+/// What this process watches: the threshold, and the home's own volume.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Watcher {
-    pub reserve: Reserve,
+    pub threshold: u64,
     pub home: PathBuf,
 }
 
-/// The event kind a spent reserve writes: a fact in the log, not a message.
-pub const EVENT: &str = "disk_space";
-
-/// The reserve this process states, if any.
+/// The watched setting for this process, if any.
 ///
 /// # Invariant
 ///
-/// One home per process, so the reserve is one value per process: a field on every
-/// tool call would be the same value reached by a longer path. A lock rather than a
-/// `OnceLock` value, because a test installs its own file and takes it away again.
+/// One home per process, so the threshold is one value per process: a field on
+/// every tool call would be the same value reached by a longer path. A lock rather
+/// than a `OnceLock` value, because a test installs its own and takes it away.
 fn slot() -> &'static RwLock<Option<Watcher>> {
     static SLOT: OnceLock<RwLock<Option<Watcher>>> = OnceLock::new();
     SLOT.get_or_init(|| RwLock::new(None))
 }
 
-pub fn install(reserve: Reserve, home: impl Into<PathBuf>) {
+pub fn install(threshold: u64, home: impl Into<PathBuf>) {
     if let Ok(mut slot) = slot().write() {
         *slot = Some(Watcher {
-            reserve,
+            threshold,
             home: home.into(),
         });
     }
@@ -253,7 +41,7 @@ pub fn installed() -> Option<Watcher> {
     slot().read().ok().and_then(|slot| slot.clone())
 }
 
-/// Forgets the reserve, so a test's file is not carried into the next one.
+/// Forgets the setting, so a test's is not carried into the next one.
 #[cfg(test)]
 pub fn uninstall() {
     if let Ok(mut slot) = slot().write() {
@@ -261,115 +49,92 @@ pub fn uninstall() {
     }
 }
 
-/// Writes the fact that this device's last room was spent, if it was.
+/// Whether this server is already inside an episode it has reported.
 ///
 /// # Invariant
 ///
-/// Two readings of "the disk is full", and either is enough: the failure says so, or
-/// a volume has less room left than the reserve. The second exists because the first
-/// is lost often -- a pipe, a swallowed stderr, a localized message.
+/// The episode is a fact about *this server*, not about the device: the room left
+/// is read on every tool call, and a disk that stays small would otherwise report
+/// itself on every one of them. Nothing durable and no shared file -- a restart
+/// reads the disk again and says so once, which is what a restart should do.
+fn reported() -> &'static AtomicBool {
+    static REPORTED: OnceLock<AtomicBool> = OnceLock::new();
+    REPORTED.get_or_init(|| AtomicBool::new(false))
+}
+
+/// Reads the room left after a tool call, and writes the fact if it is new.
 ///
-/// Only the winner of the claim writes anything: one episode, one row, one wake.
-pub fn note_tool_failure(
-    store: &crate::store::Store,
-    session: &str,
-    tool: &str,
-    cwd: &Path,
-    failure: &str,
-) -> bool {
+/// # Invariant
+///
+/// Every tool call ends here, not only a failed one: measured, a disk that is down
+/// to its last room serves ordinary commands happily -- a `cat`, an `ls`, a shell
+/// that only reads -- so waiting for a failure waits for the first write that
+/// happens to be big enough, which on a server that mostly reads may be never.
+/// See `docs/notes/server-disk.md`.
+pub fn note_tool_end(store: &crate::store::Store, session: &str, tool: &str, cwd: &Path, ok: bool) {
     let Some(watcher) = installed() else {
-        return false;
+        return;
     };
-    if !watcher.reserve.armed() {
-        // Disarmed: the episode is already somebody's, and nothing here adds to it.
-        return false;
+    if watcher.threshold == 0 {
+        return;
     }
-    if !disk_full(failure) && !below_margin(&watcher.reserve, &watcher.home) {
-        return false;
+    let volumes = volumes(&watcher.home);
+    let free = volumes.iter().filter_map(|volume| volume.free).min();
+    if !low(free, watcher.threshold) {
+        reported().store(false, Ordering::SeqCst);
+        return;
     }
-    match watcher.reserve.claim() {
-        Claim::Won => {
-            let payload = serde_json::json!({
-                "session": session,
-                "tool": tool,
-                "cwd": cwd.display().to_string(),
-                "reserve": watcher.reserve.path().display().to_string(),
-                "bytes": watcher.reserve.bytes(),
-                "volumes": volumes(&watcher.home)
-                    .into_iter()
-                    .map(|volume| serde_json::json!({
-                        "label": volume.label,
-                        "free": volume.free,
-                    }))
-                    .collect::<Vec<_>>(),
-                "failure": head(failure),
-            });
-            match store.append_event_row(None, EVENT, &payload) {
-                Ok(row) => {
-                    tracing::info!(
-                        session,
-                        tool,
-                        event = row.id,
-                        freed = watcher.reserve.bytes(),
-                        "spent the device's disk reserve to report a full disk"
-                    );
-                    true
-                }
-                Err(e) => {
-                    // The space is back, so the report is lost but the disk is not.
-                    tracing::warn!(error = %e, "spent the disk reserve but could not record it");
-                    false
-                }
-            }
-        }
-        Claim::Lost => false,
-        Claim::Failed(why) => {
-            // Neither won nor lost: say so, and do not wake a second monitor over it.
-            tracing::warn!(why, "could not spend the disk reserve");
-            false
+    // The edge only: an episode already reported stays quiet until the disk is
+    // seen above the threshold again.
+    if reported().swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let payload = serde_json::json!({
+        "session": session,
+        "tool": tool,
+        "tool_ok": ok,
+        "cwd": cwd.display().to_string(),
+        "threshold": watcher.threshold,
+        "volumes": volumes
+            .into_iter()
+            .map(|volume| serde_json::json!({
+                "label": volume.label,
+                "free": volume.free,
+            }))
+            .collect::<Vec<_>>(),
+    });
+    match store.append_event_row(None, EVENT, &payload) {
+        Ok(row) => tracing::info!(
+            session,
+            tool,
+            event = row.id,
+            threshold = watcher.threshold,
+            free = ?free,
+            "the disk is below the threshold this machine declared"
+        ),
+        Err(e) => {
+            tracing::warn!(error = %e, "could not record a low disk");
+            // Not reported then: the next call may say so.
+            reported().store(false, Ordering::SeqCst);
         }
     }
 }
 
-/// The part of a tool's own words a report keeps: enough to recognise the cause,
-/// short enough to ride a transcript.
-fn head(failure: &str) -> String {
-    const KEPT: usize = 2_000;
-    if failure.chars().count() <= KEPT {
-        return failure.to_string();
-    }
-    let mut out: String = failure.chars().take(KEPT).collect();
-    out.push_str("\n[...]");
-    out
-}
-
-/// Whether a failure's own words name a full disk.
+/// Whether the smallest of what the volumes reported is below the threshold.
 ///
 /// # Invariant
 ///
-/// A hint, never the only test: it is what the operating system and the common
-/// implementations print, in this machine's language and in English, and the free
-/// space reading covers everything it misses.
-fn disk_full(failure: &str) -> bool {
-    const MARKS: [&str; 8] = [
-        "no space left on device",
-        "not enough space on the disk",
-        "disk quota exceeded",
-        "database or disk is full",
-        "sqlite_full",
-        "enospc",
-        "errno 28",
-        "磁盘空间不足",
-    ];
-    let lower = failure.to_lowercase();
-    MARKS.iter().any(|mark| lower.contains(mark))
+/// The smallest, not the average and not the home's own: a tool writes wherever its
+/// command says, so the volume that is out of room is whichever one answers lowest.
+fn low(free: Option<u64>, threshold: u64) -> bool {
+    free.is_some_and(|free| free < threshold)
 }
 
-/// Whether some volume is down to less room than the reserve holds.
-fn below_margin(reserve: &Reserve, home: &Path) -> bool {
-    volumes(home)
-        .iter()
-        .any(|volume| volume.free.is_some_and(|free| free < reserve.bytes()))
+/// One volume this server could lose room on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Volume {
+    pub label: String,
+    pub free: Option<u64>,
 }
 
 /// The volumes this server could lose room on: every fixed drive, and the home's
@@ -377,9 +142,9 @@ fn below_margin(reserve: &Reserve, home: &Path) -> bool {
 ///
 /// # Invariant
 ///
-/// The home's volume is the one that matters -- the database, the log, spilled
-/// tool output and job records are all there -- and the rest are reported so a
-/// monitor starts with the map instead of spending its first tool call on `df`.
+/// The home's volume is the one that matters -- the database, the log, spilled tool
+/// output and job records are all there -- and the rest are reported so a monitor
+/// starts with the map instead of spending its first tool call on a survey.
 pub fn volumes(home: &Path) -> Vec<Volume> {
     let mut out = fixed_volumes();
     let home_volume = volume_of(home);

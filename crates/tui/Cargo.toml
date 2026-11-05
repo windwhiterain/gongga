@@ -23,7 +23,7 @@ anyhow = { workspace = true }
 # The window's own cache on disk: one journal per window, and the versioned
 # record shape a later build has to be able to refuse.
 serde = { workspace = true }
-# `cli.toml` is the window's own file: the harness keeps its server state in
+# `tui.toml` is the window's own file: the harness keeps its server state in
 # sqlite and its config in TOML, and this is the one client-side section.
 toml = "0.8"
 serde_json = { workspace = true }
@@ -31,6 +31,8 @@ tokio = { workspace = true }
 futures-util = "0.3"
 ratatui = "0.30"
 crossterm = { version = "0.29", features = ["event-stream"] }
+# 0.25.10 raises its minimum Rust above this workspace's 1.85; only the cover's PNG is decoded.
+image = { version = "=0.25.9", default-features = false, features = ["png"] }
 unicode-width = "0.2"
 # The input line's grammar: `/cmd` has to be split into tokens. Nothing else in
 # this crate parses text, and the command layer never needs it -- argv is already

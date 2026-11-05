@@ -425,6 +425,17 @@ impl Tool for PythonTool {
         Some(self.timeout)
     }
 
+    /// An interpreter's `background` is a call of that interpreter, read by
+    /// `check_python`.
+    fn handles_background(&self) -> bool {
+        true
+    }
+
+    /// An interpreter turns a long wait into its own background call: the clock is its own.
+    fn owns_its_wait(&self) -> bool {
+        true
+    }
+
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -497,7 +508,7 @@ impl Tool for PythonTool {
                     return ToolOutcome::err(format!(
                         "`{name}` is running a background call, and this interpreter answers \
                          one call at a time: a foreground call now would read that one's \
-                         answer. Read it with `check_python` (or `wait_ms`), or use another \
+                         answer. Read it with `check_python` (or `timeout_ms`), or use another \
                          name."
                     ));
                 }
@@ -620,6 +631,11 @@ pub struct CheckPythonTool;
 impl Tool for CheckPythonTool {
     fn name(&self) -> &'static str {
         "check_python"
+    }
+
+    /// The read waits for `wait_ms`; that wait is the whole work.
+    fn owns_its_wait(&self) -> bool {
+        true
     }
 
     fn parameters(&self) -> Value {

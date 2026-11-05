@@ -1,137 +1,101 @@
-# server-disk: the room a machine keeps back so a full disk can say so
+# server-disk: the room left, read after every tool call
 
-A disk that fills up takes away the one thing the harness needs in order to report
-it: somewhere to write. `monitor`'s report is a row in `gongga.db`, the tool that
-noticed is a failing tool, and the turn that fixes it writes a transcript — all of
-it in the home, on the same volume that has no room.
+A disk that fills up takes away the one thing a monitor needs to report it: room to
+write. It also does something worse to a design that watches for a *failure*: it
+lets the harness keep working. A volume with a hundred megabytes left serves `cat`,
+`ls`, `grep` and a shell that only reads; the first command that fails is whichever
+one happens to write something big, and on a server that mostly reads there may be
+none before the machine is unusable.
 
-So the server holds room back:
+That was measured on this machine on 2026-11-05: the disk reached zero free, `cargo
+build` failed with `os error 112`, and the monitor that was supposed to be woken by
+exactly that never was — no `disk_space` event, no log line. So the reading is not
+attached to a failure at all.
 
-```
-<home>/config.toml    [server] disk_reserve_mb = 1024
-GONGGA_DISK_RESERVE   the whole path of the file, for a test or a second machine
-```
+## What it reads, and how often
 
-and spends it at the moment a tool fails on a disk that has none left.
+`tools::invoke` is where every tool call ends — a model's call, a script's, the
+command layer's, a call the tunnel detached. After each one, whether it worked or
+not, the server reads the room left on the volumes it could write to:
 
-## One file for the device, not one per home
+| platform | call |
+| --- | --- |
+| Windows | `GetDiskFreeSpaceExW` per fixed drive, plus the home's own volume |
+| unix | `statvfs` of the home's volume |
 
-Two servers on one machine fill the same disk, so two reserves would be two
-answers to one question, and both of them would be spent by the same episode.
-There is one file, on a machine-wide path (`%ProgramData%\gongga\gongga-disk-reserve`
-on Windows, `/var/tmp/gongga/gongga-disk-reserve` elsewhere), and one claim on it.
+One call per volume, no directory walk, no file written: microseconds against the
+milliseconds a tool call costs anyway. Nothing is held back on disk — the first
+version of this reserved a gigabyte of real space and spent it as the report's
+room, and that design was wrong twice over: it could not arm on a disk that was
+already full, and it only looked when a tool failed.
 
-What it buys is the volume it stands on. A home on another volume spends the file
-and gets nothing for it; the config is per home, so a machine with two disks states
-the same path in both homes and only the home on that volume is helped. That is
-the honest limit of one device-wide file, and it is enough while the homes are on
-one disk.
+The smallest reading decides. A command writes wherever its own words say, so the
+volume that is out of room is whichever answers lowest, and the report carries all
+of them so a monitor starts with the map instead of its own survey.
 
-## The trigger is not the tool's words
+## When it says so: one episode, not one call
 
-The obvious test is on the failure's text, and it is the one that loses the
-failure:
+The threshold is `[server] disk_low_mb` (default 1024, `0` turns the reading off),
+or `GONGGA_DISK_LOW_MB` for a run. It is a threshold and nothing else: no budget,
+no reserve, nothing written to compare against.
 
-- a command's stderr goes through a pipe, a `2>/dev/null`, or a wrapper that prints
-  its own sentence;
-- the message is localized (`磁盘空间不足`, `拒绝访问`), and a list of English
-  phrases matches nothing;
-- `exit status 1` with empty output is what a killed writer looks like.
+Read on every call, compared on every call, **reported once**: the server keeps one
+bit of state in memory — "this disk has already been reported as low" — set when the
+reading falls below the line and cleared when a reading comes back above it. So
 
-So the text is a hint and the measurement is the test: on a failed tool call, read
-the room left on the volumes this server could write to (`GetDiskFreeSpaceExW`,
-`statvfs` — one call each, no directory walk, microseconds) and compare it against
-the reserve this machine declared. Less room left than the reserve holds is "this
-volume is down to its last room", and either reading is enough to spend.
+- a disk that stays low wakes nothing twice, however many tool calls it serves;
+- a disk that recovers and falls again is news again;
+- a restart reads the disk afresh and says so once, which is what a restart should
+  do.
 
-The volumes are every fixed drive plus the home's own, so a tool that failed on a
-volume the home is not on is still seen. They are also what the report carries, so
-a monitor starts with the map instead of spending its first call on a survey.
+Nothing durable is involved, which is the difference from the error kind: that one
+has `sessions.status` and a transcript to point at, and this one has a number.
 
-## The claim is the platform's atomic delete
+## The event is the report's whole memory
 
-`Reserve::claim` returns `Won` to exactly one caller in the machine and `Lost` to
-everybody else, without a lock file, a coordinator, or a read before the delete.
-That is what makes "two servers noticed at once" one wake and not two.
+When the edge is crossed the server writes one row, `events(kind = 'disk_space')`,
+carrying the session, the tool, whether that tool succeeded, the threshold, and the
+volumes as they stood. From there it is exactly the error kind's path:
+`monitor::sweep` reads the row's id against `monitor_state('disk.event')`, and hands
+one report per row to `@monitor/disk` through `commands::deliver`.
 
-On unix that is `unlink`: the loser gets `ENOENT`.
+That is why a crash between the reading and the handover loses nothing: the row is
+the fact, and the sweep is stateless but for the cursor.
 
-On Windows it is **not** `DeleteFileW`. Measured, on this machine's NTFS: two
-callers can both report a successful delete of one file, because the disposition is
-applied to a handle that was already opened — the name is not what is decided. The
-same race in the other direction returns `ERROR_ACCESS_DENIED` to the loser, which
-a caller cannot tell from a real problem. So the claim is an exclusive open:
-`CreateFileW(DELETE, share = 0, FILE_FLAG_DELETE_ON_CLOSE)`. The first caller gets
-the handle, everybody else gets a sharing violation, and the file goes away with
-the handle that won.
+`monitor_state` also holds `disk.attempts` and `disk.wake`. The disk monitor has no
+failing session row of its own to hang a retry on, so its cursor and its attempt
+count live here: while its session is in `error`, the same event is handed over
+again on the next model, and a disk whose first choice of model is refused is still
+cleaned. See `server-monitor.md`.
 
-A sharing violation is also what an antivirus or an indexer causes for a moment, so
-it is retried twice before the claim answers `Failed` — and `Failed` is logged, not
-treated as "somebody else won". A silence that hides a full disk is the one outcome
-worse than a double wake.
+## What a report says
 
-`scripts/monitor_selftest.sh` cannot see the race: it runs one server. The race is
-`disk::tests::two_servers_share_one_claim_and_only_one_wins`, which runs sixteen
-rounds of two threads on one file — and it is the test that found the Windows
-answer, by failing once in four rounds against a delete-based claim.
+The report is written so a monitor can start work without reading anything first:
+the room left per volume, the threshold, which session's tool call was running and
+whether it succeeded, the build, the home, the pid, and the read-back command. The
+standing map — where a home keeps its database and its log, how to tell a provider's
+refusal from a harness bug — comes from `@skill: clean-disk`, which is an index
+entry in the prompt's prefix rather than text in the message.
 
-## Arming is `create_new`, and the size is the machine's
+## Two boundaries
 
-At start-up the server arms the reserve: `create_new`, then `set_len`. `create_new`
-is the same one-winner primitive in the other direction — the second server finds
-the file and leaves it alone — and `set_len` takes real blocks, not a size in a
-header. Measured: a 256 MiB reserve drops the volume's free space by exactly
-268435456 bytes.
-
-A writer killed between the create and the fill leaves a file that is short. The
-yardstick is therefore the configured number and never the file's current size, and
-the next writer grows it (`set_len` again) — a half reserve is worse than none,
-because the number it claims is then a number nobody declared.
-
-`disk_reserve_mb = 0` holds nothing back. The server says so once at start-up
-instead of pretending to be protected.
-
-## After the cleanup, the reserve comes back
-
-The turn that spends the reserve is a monitor turn with `@skill(clean-disk)`. Its
-end is the fact that the disk has been dealt with:
-
-- the report was accepted → `monitor_state` records the row it became
-  (`disk.wake`);
-- the monitor session has written past that row and is not in `error`;
-- then the reserve is armed again, on the next two-second tick.
-
-Before that, nothing re-arms it. A server that re-armed while the cleanup was still
-running would give the next failed tool call a fresh way to wake a second monitor,
-which is exactly what the claim exists to prevent.
-
-Two things end the suppression early, and both are deliberate:
-
-- **A restart.** A server that starts arms the reserve because it needs its own
-  headroom and cannot know whether somebody else finished. So a restart in the
-  middle of a cleanup ends the episode.
-- **A disk that is still full.** `set_len` fails, the tick says so at `debug`, and
-  the next tick asks again. No counter, no backoff, no retry budget — `AGENTS.md`
-  forbids inventing one.
-
-## What a failure costs, and what it does not
-
-`tools::Registry::run` is where every tool call ends — a model's, a script's, the
-command layer's — so it is where the check lives. A successful call costs nothing;
-a failed one costs one free space reading per volume, and, on the day the disk is
-actually full, the delete of the reserve and one `events` row (`kind =
-'disk_space'`).
-
-That row is the report's whole memory, the same way `sessions.status = 'error'` is
-the error monitor's: it survives a crash between the failure and the handover, and
-`monitor::sweep` reads it on the next tick. See `server-monitor.md`.
+- **A session on another machine.** `--remote` puts the session's directory on a
+  peer; this reading is this machine's, so a full disk on the peer is not seen here.
+- **A home and the volumes above it.** The drive letters are named as they are, and
+  the threshold is one number for all of them: a machine that wants one disk watched
+  more closely than another is asking for two numbers, which `AGENTS.md` is right to
+  refuse until somebody has a reason.
 
 ## Verified
 
 | what | how |
 | --- | --- |
-| a reserve takes real space, and gives it back when spent | `disk::tests::the_space_a_reserve_holds_is_actually_taken` (64 MiB before/after) |
-| one claim, one winner, sixteen rounds | `disk::tests::two_servers_share_one_claim_and_only_one_wins` |
-| arming twice keeps the space and repairs a short file | `disk::tests::arming_twice_keeps_the_space_and_repairs_a_short_file` |
-| the words a full disk is reported with are recognised | `disk::tests::the_usual_ways_a_full_disk_says_so_are_recognised` |
-| the whole chain: failing tool → spent reserve → event → `@monitor/disk` → cleanup → armed again | `bash scripts/monitor_selftest.sh` |
+| the room is read from the volume and moves when a big file does | `disk::tests::the_room_left_is_read_from_the_volume_itself` |
+| one episode per fall, and a new one after recovering | `disk::tests::a_low_disk_is_reported_once_and_again_after_recovering` |
+| the smallest volume decides | `disk::tests::the_volume_with_the_least_room_decides` |
+| a successful tool call on a low disk is enough to wake the monitor, with `@skill: clean-disk` in its index, on the second model | `bash scripts/disk_selftest.sh` |
+
+The e2e script states a threshold no disk is above (`[server] disk_low_mb` in the
+test home's own config), because a test cannot fill a disk and the chain from a
+reading to a turn is what it is there for. "An ordinary disk says nothing" is the
+unit test's half, where both sides of the line can be chosen.

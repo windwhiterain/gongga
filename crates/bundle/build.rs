@@ -20,6 +20,10 @@ fn main() {
             "cargo:rerun-if-changed={}",
             root.join("Cargo.lock").display()
         );
+        println!(
+            "cargo:rerun-if-changed={}",
+            root.join("cover.png").display()
+        );
     }
     // A commit touches nothing under `crates/`, but it changes what the embedded
     // programs report.

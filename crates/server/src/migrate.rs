@@ -14,7 +14,7 @@ use std::process::Command;
 use anyhow::{Context, bail};
 
 /// The version this build reads and writes.
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 
 /// The file that says what version a home is at.
 ///

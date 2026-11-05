@@ -167,9 +167,10 @@ here, and `hot()` is the question the rest of the file asks before touching `tex
 
 `seed(window, width, rows)` is called by the frame that is about to draw a window it
 has never decided the start of. The test is `Log::seeded` -- has *this process*
-answered where that window begins -- and not "does the window have blocks". It reads
-backwards in `WALK`-record batches, replays what it found, and stops as soon as the
-window covers `rows`, the pane's own height.
+answered where that window begins -- and not "does the window have blocks". It finds
+the newest page boundary (`Floor`, see below) and replays one page from it, which is
+what the pane draws; a journal written before pages were recorded has no boundary, and
+is then read backwards in `WALK`-record batches until it covers `rows`.
 
 That distinction is a bug this replaced. The test used to be "does this window have
 blocks", and a restart receives a `ctx … model …` line from the server before its
@@ -182,7 +183,8 @@ journal's records, and puts the live blocks back after them, replacing any block
 journal also holds by id. The rows are history first, then what this process saw.
 
 The cost of opening a session is a page, not a transcript: the biggest session on this
-machine (1602 events, 2.5 MB of text) opens having replayed 73 rows.
+machine (1602 events, 2.5 MB of text) opens having replayed 73 rows, and a window that
+paged through thousands of rows in an earlier session reads back one page of them.
 
 Since a stream lands once, one record is one block: a batch of `WALK` records is a
 batch of blocks, and the row count it can cover is no longer a guess.
@@ -190,6 +192,30 @@ batch of blocks, and the row count it can cover is no longer a guess.
 Nothing survives a restart as an open stream -- the process that was writing it is
 gone -- so a `Delta` whose `done` never arrived (an older build's journal) is the tail
 of a block, not a block that is still growing.
+
+## Pages — what one fetch landed, and where the journal says it begins
+
+A window is filled a page at a time: `get_messages --replay` with the range a pane can
+draw. The client asks for the tail when a window holds nothing, for `drawn + 1 …` when
+it is behind, and for `floor - room … floor - 1` when the operator scrolls above the
+oldest row it holds. One request per keystroke, never a transcript.
+
+`Record::Floor { seq }` is that page's left edge: the blocks *after* the record are the
+transcript's rows from `seq` up, and it is written in front of the block the page began
+with. `landed` is what writes it, and because the journal's order is the order the pane
+draws, it rewrites the window's records in that order -- a page of older rows goes in
+front of the held ones, not behind them. A block whose record is a boundary's worth of
+records away keeps its `slot` from the same list, which is why the offsets are read off
+the list as it is built rather than counted from either end.
+
+The window, not the journal, says how far back it reaches: `Log::floor_of` is
+`ledger.pages.first()`, the oldest page *in memory*. Before the first frame that is the
+page a seed is about to replay -- the journal's newest boundary -- so a greeting can
+declare it, and a page of the past lands where it belongs.
+
+A window holding rows it cannot name -- a journal no boundary was written into -- is
+refilled as a whole (`Sink::forget`) instead of by a page appended behind them, which
+would land on rows it already has.
 
 ## materialize — the body comes back at the width it is drawn at
 

@@ -36,8 +36,8 @@ hard() {
   exit 1
 }
 
-[[ -x "$bin/gongga-server.exe" && -x "$bin/gongga-cli.exe" ]] || {
-  echo "build first: cargo build -p gongga-server -p gongga-cli" >&2; exit 1; }
+[[ -x "$bin/gongga-server.exe" && -x "$home/bin/gongga-cli" ]] || {
+  echo "build first: cargo build -p gongga-server" >&2; exit 1; }
 
 alive() { [[ -n "${1:-}" ]] && tasklist //FI "PID eq $1" //NH 2>/dev/null | grep -q "$1"; }
 free_port() {
@@ -119,7 +119,7 @@ port=$(free_port); fake_port=$(free_port); wait_port=$(free_port)
 export GONGGA_HOME="$home"
 export GONGGA_SERVER="127.0.0.1:$port"
 # `spawn` finds `gongga-cli` on PATH: it must be this build, not an installed one.
-export PATH="$bin:$PATH"
+export PATH="$home/bin:$bin:$PATH"
 export FAKE_LLM_TOOL=bash
 export FAKE_LLM_TOOL_ARGS='{"command":"echo hi","name":"default"}'
 export FAKE_LLM_DUMP="$work/subagent-dump.jsonl"
@@ -196,7 +196,7 @@ env -u GONGGA_MODEL -u GONGGA_PROVIDER -u GONGGA_BASE_URL -u GONGGA_API_KEY -u G
 for _ in $(seq 1 150); do [[ -s "$home/server.lock" ]] && break; sleep 0.2; done
 wait_listening "$port" "$log" || hard "the server never listened"
 server_pid=$(tr -d '\r\n' < "$home/server.lock")
-cli=("$bin/gongga-cli.exe")
+cli=("$home/bin/gongga-cli")
 
 # The name is matched whole: `probe` must not count `probe/impl`'s turns.
 await() { local n; for _ in $(seq 1 240); do n=$(grep -cE "turn end session=$1( |$)" "$log"); [[ $n -ge $2 ]] && return 0; sleep 0.5; done; echo "  note: $1 has $n turn end(s), wanted $2" >&2; return 1; }

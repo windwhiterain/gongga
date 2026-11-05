@@ -1051,6 +1051,19 @@ impl InboxSignal {
     pub fn arrived(&self) -> bool {
         self.epoch.load(Ordering::SeqCst) != self.since
     }
+
+    /// A signal nothing can raise.
+    ///
+    /// # Invariant
+    ///
+    /// A job that outlives the turn which asked for it is not owed to anybody's
+    /// message: its own count, so a person speaking ends the turn and not the work.
+    pub fn never() -> Self {
+        Self {
+            epoch: Arc::new(AtomicU64::new(0)),
+            since: 0,
+        }
+    }
 }
 
 /// A `cancel` reaching a turn that is inside a tool call.

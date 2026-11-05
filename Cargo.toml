@@ -5,7 +5,6 @@ members = [
     "crates/skill",
     "crates/link",
     "crates/server",
-    "crates/cli",
     "crates/tui",
     "crates/bridge",
     "crates/bundle",
@@ -14,7 +13,7 @@ members = [
 # `crates/bundle` is the distribution, not a library anybody links: a plain
 # `cargo build`/`check`/`test` must not compile a second copy of the whole
 # dependency graph into its payload. Named here so `--workspace` still reaches it.
-default-members = ["crates/protocol", "crates/skill", "crates/link", "crates/console", "crates/server", "crates/cli", "crates/tui", "crates/bridge"]
+default-members = ["crates/protocol", "crates/skill", "crates/link", "crates/console", "crates/server", "crates/tui", "crates/bridge"]
 
 [workspace.package]
 version = "0.2.0"
@@ -29,7 +28,6 @@ protocol = { path = "crates/protocol", package = "gongga-protocol" }
 skill = { path = "crates/skill", package = "gongga-skill" }
 link = { path = "crates/link", package = "gongga-link" }
 server = { path = "crates/server", package = "gongga-server" }
-cli = { path = "crates/cli", package = "gongga-cli" }
 tui = { path = "crates/tui", package = "gongga-tui" }
 bridge = { path = "crates/bridge", package = "gongga-bridge" }
 console = { path = "crates/console", package = "gongga-console" }

@@ -9,6 +9,7 @@
 mod cache;
 mod clipboard;
 mod command;
+mod cover;
 mod fold;
 mod input;
 mod log;
@@ -141,6 +142,14 @@ pub enum UiEvent {
     Operate(link::protocol::Operation),
     /// Alt+Q: leave.
     Quit,
+    /// The operator asked to read above what these windows hold.
+    ///
+    /// # Invariant
+    ///
+    /// Named, never searched for: the request is what the key or the wheel said at
+    /// the moment it was pressed, so the loop that answers it holds the pages owed
+    /// and the next frame cannot add to them behind its back.
+    Older(Vec<String>),
     /// Nothing to submit: the completion asked for something only the connection
     /// can answer.
     ///
@@ -236,6 +245,8 @@ impl Server {
 
 /// Everything the renderer reads, separate from the terminal it draws to.
 pub struct Screen {
+    /// Present until the first input; taking it releases the decoded pixels.
+    cover: Option<cover::Cover>,
     /// The windows the events area is split into: a frame may not walk their logs.
     pub panes: Panes,
     pub completion: Option<Completion>,
@@ -252,6 +263,11 @@ pub struct Screen {
 }
 
 impl Screen {
+    /// Ends the cover and says whether it was showing.
+    fn dismiss_cover(&mut self) -> bool {
+        self.cover.take().is_some()
+    }
+
     /// A note about this front-end, on the status line.
     ///
     /// # Invariant
@@ -285,6 +301,11 @@ impl Screen {
             return;
         };
         self.panes.scroll_by(&target, rows);
+    }
+
+    /// The windows whose operator asked to read above what they had.
+    pub fn take_wants(&mut self) -> Vec<String> {
+        self.panes.take_wants()
     }
 
     /// Shift+Down: back to the newest line, which is where a window starts.
@@ -519,6 +540,8 @@ impl Screen {
 
 pub struct Tui {
     terminal: Terminal<CrosstermBackend<Stdout>>,
+    /// What the backend was last told, so only the cover transition changes it.
+    cursor_hidden: bool,
     screen: Screen,
     completer: SharedCompleter,
     history: Vec<String>,
@@ -562,6 +585,7 @@ impl Tui {
         client_home: &Path,
         endpoint: &str,
     ) -> anyhow::Result<Self> {
+        let cover = cover::Cover::new().context("decoding the embedded cover")?;
         enable_raw_mode().context("enabling raw mode")?;
         let initialized = (|| {
             let mut out = stdout();
@@ -586,9 +610,11 @@ impl Tui {
                 return Err(error);
             }
         };
-        Ok(Self {
+        let mut window = Self {
             terminal,
+            cursor_hidden: false,
             screen: Screen {
+                cover: Some(cover),
                 panes: Panes::with_cache(client_home, endpoint),
                 completion: None,
                 input: InputLine::default(),
@@ -614,7 +640,10 @@ impl Tui {
             pending: Vec::new(),
             settled: None,
             stashed: None,
-        })
+        };
+        // Dialing can win the first select, so the cover cannot wait for next_event.
+        window.draw()?;
+        Ok(window)
     }
 
     pub fn screen(&self) -> &Screen {
@@ -780,6 +809,33 @@ impl Tui {
         self.dirty = true;
     }
 
+    /// The oldest transcript row this window's journal says it holds.
+    pub fn floor_of(&self, name: &str) -> Option<i64> {
+        self.screen.panes.floor_of(name)
+    }
+
+    /// The rows arriving from here on are older than the ones this window holds.
+    pub fn older(&mut self, name: &str) {
+        self.screen.panes.older(name);
+        self.dirty = true;
+    }
+
+    /// A page of older rows landed: this window holds every row from `floor` up.
+    pub fn landed(&mut self, name: &str, created: i64, drawn: i64, floor: i64) {
+        self.screen.panes.landed(name, created, drawn, floor);
+        self.dirty = true;
+    }
+
+    /// The windows whose operator asked to read above what they had.
+    ///
+    /// # Invariant
+    ///
+    /// Taken, not read: each request is one page, so the one who answers it holds
+    /// it from here on and the window does not keep asking on its behalf.
+    pub fn take_wants(&mut self) -> Vec<String> {
+        self.screen.take_wants()
+    }
+
     /// The rows a window's pane could draw last frame: what one page is.
     pub fn room_of(&self, name: &str) -> usize {
         self.screen.panes.room_of(name)
@@ -853,7 +909,14 @@ impl Tui {
         let seen = (self.screen.input.text().len(), self.screen.input.cursor());
         let typed = self.input_seen != Some(seen);
         self.input_seen = Some(seen);
-        let frame = guarded(|| present(&mut self.terminal, &mut self.screen, typed));
+        let frame = guarded(|| {
+            present(
+                &mut self.terminal,
+                &mut self.screen,
+                &mut self.cursor_hidden,
+                typed,
+            )
+        });
         match frame {
             Ok(Ok(area)) => self.input_area = area,
             Ok(Err(error)) => return Err(error),
@@ -875,6 +938,11 @@ impl Tui {
             // knows how to send one.
             if let Some(operation) = self.clicked.take() {
                 return Some(UiEvent::Operate(operation));
+            }
+            // Taken, not read: a request is answered once, never on every frame.
+            let owed = self.screen.take_wants();
+            if !owed.is_empty() {
+                return Some(UiEvent::Older(owed));
             }
             if self.draw().is_err() {
                 return None;
@@ -912,12 +980,30 @@ impl Tui {
                     if !Self::actionable(&key) {
                         continue;
                     }
+                    // The cover consumes one gesture, except the window's quit shortcut.
+                    if self.screen.dismiss_cover() {
+                        self.dirty = true;
+                        if let Some(action) = Self::shortcut(&key) {
+                            return Some(action);
+                        }
+                        continue;
+                    }
                     // Held until the pause that says whether this was a paste.
                     self.pending.push(key);
                 }
-                Ok(TermEvent::Mouse(mouse)) => self.handle_mouse(mouse),
+                Ok(TermEvent::Mouse(mouse)) => {
+                    // A click must not operate the window hidden under the cover.
+                    if self.screen.dismiss_cover() {
+                        self.dirty = true;
+                        continue;
+                    }
+                    self.handle_mouse(mouse);
+                }
                 // One string, so a pasted block stays a block: see `paste`.
-                Ok(TermEvent::Paste(text)) => self.paste(&text),
+                Ok(TermEvent::Paste(text)) => {
+                    self.screen.dismiss_cover();
+                    self.paste(&text);
+                }
                 Ok(TermEvent::Resize(..)) => self.dirty = true,
                 _ => {}
             }
@@ -1549,7 +1635,7 @@ impl Tui {
     /// the frame that shows it.
     pub fn refresh_completion(&mut self) {
         let fresh = next_completion(&self.screen.input, &self.completer);
-        // A rebuild keeps the row the operator moved to: an event is not a keystroke.
+        // The row the operator moved to survives: an event is not a keystroke.
         self.screen.completion = match (self.screen.completion.take(), fresh) {
             (Some(old), Some(mut new)) if same_offering(&old, &new) => {
                 new.selected = old.selected.min(new.candidates.len() - 1);
@@ -1630,31 +1716,49 @@ impl Drop for Tui {
 fn present<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     screen: &mut Screen,
+    cursor_hidden: &mut bool,
     typed: bool,
 ) -> anyhow::Result<Rect>
 where
     B::Error: std::error::Error + Send + Sync + 'static,
 {
     terminal.autoresize()?;
+    let showing_cover = screen.cover.is_some();
     let input = {
         // The renderer writes the scroll bound back, hence `&mut`.
         let mut frame = terminal.get_frame();
-        render::draw(&mut frame, screen)
+        if let Some(cover) = screen.cover.as_ref() {
+            cover.draw(&mut frame);
+            Rect::default()
+        } else {
+            render::draw(&mut frame, screen)
+        }
     };
     terminal.flush()?;
     terminal.swap_buffers();
-    // After typing, what the row drew blank is said again: an IME writes into
-    // the console, which the diff cannot see.
-    if typed {
-        for (y, x) in render::input_ends(screen, input) {
-            terminal.set_cursor_position((x, y))?;
-            ratatui::backend::Backend::clear_region(
-                terminal.backend_mut(),
-                ClearType::UntilNewLine,
-            )?;
+    if showing_cover {
+        if !*cursor_hidden {
+            terminal.hide_cursor()?;
+            *cursor_hidden = true;
         }
+    } else {
+        // After typing, what the row drew blank is said again: an IME writes into
+        // the console, which the diff cannot see.
+        if typed {
+            for (y, x) in render::input_ends(screen, input) {
+                terminal.set_cursor_position((x, y))?;
+                ratatui::backend::Backend::clear_region(
+                    terminal.backend_mut(),
+                    ClearType::UntilNewLine,
+                )?;
+            }
+        }
+        if *cursor_hidden {
+            terminal.show_cursor()?;
+            *cursor_hidden = false;
+        }
+        terminal.set_cursor_position(render::caret(screen, input))?;
     }
-    terminal.set_cursor_position(render::caret(screen, input))?;
     terminal.backend_mut().flush()?;
     Ok(input)
 }
