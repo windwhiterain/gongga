@@ -322,3 +322,18 @@ every request sends, and omitting it takes the shortest tier the model declares.
 Both live in the `sessions` row, so a restart restores them. With no declared
 tiers the window is zero and the interrupt is inert. See
 `docs/notes/server-commands.md`.
+
+## [transport] and the loopback tier
+
+`[transport]` in `config.toml` feeds `TransportConfig`, which becomes a
+`ChannelConfig` in `server/transport.rs`. A `mtu`, `window`, `keepalive` or
+`idle_timeout` written here is taken as the operator's word: `tune_for_peer`
+changes only fields still at their defaults, so an explicit `mtu = 1400` stays
+1400 on a loopback peer too.
+
+The template writes `mtu = 1200` and `window = 64`, which are exactly the
+defaults. That is deliberate: leaving them at the defaults is what lets a local
+window pick up the loopback tier (0 ms ACK delay, 1 ms tick, 8192-byte frames,
+10 s keepalive) without a config change. Changing either to a non-default value
+opts that field out of the tier. See `docs/notes/protocol-channel.md` for the
+whole table and the SSH-tunnel blind spot.

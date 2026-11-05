@@ -106,11 +106,9 @@ pub fn file_name(name: &str) -> String {
 /// Asked, not killed: a server that receives `cancel` keeps its turn as pending
 /// work (`commands.rs`). A window or a command in flight is never touched, so a
 /// build whose clients are still up keeps its directory until they exit. `ours`
-/// is the command layer that asks.
-///
-/// `keeps_servers` says the program about to run starts no server: the one
-/// running keeps the port.
-pub fn retire(dir: &Path, keep: &str, ours: &Path, keeps_servers: bool) {
+/// is the command layer that asks. `keeps_servers` leaves the port alone;
+/// `force` skips the ask. See `bundle-main.md`.
+pub fn retire(dir: &Path, keep: &str, ours: &Path, keeps_servers: bool, force: bool) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -119,7 +117,7 @@ pub fn retire(dir: &Path, keep: &str, ours: &Path, keeps_servers: bool) {
             continue;
         }
         let old = entry.path();
-        if !stop_programs_in(&old, ours, keeps_servers) {
+        if !stop_programs_in(&old, ours, keeps_servers, force) {
             continue;
         }
         let _ = std::fs::remove_dir_all(&old);
@@ -132,7 +130,9 @@ pub fn retire(dir: &Path, keep: &str, ours: &Path, keeps_servers: bool) {
 ///
 /// `keeps_servers` says the program about to run starts no server of its own:
 /// the one that is running keeps the port, and the directory stays with it.
-fn stop_programs_in(dir: &Path, ours: &Path, keeps_servers: bool) -> bool {
+/// `force` stops only the pid `running_in(dir)` named, never a process found by
+/// its image name. See `bundle-main.md`.
+fn stop_programs_in(dir: &Path, ours: &Path, keeps_servers: bool, force: bool) -> bool {
     let running = running_in(dir);
     let Some(server) = running.iter().find(|process| !outlives_its_build(process)) else {
         // Only clients: nothing holds a port, and their directory is theirs.
@@ -143,10 +143,10 @@ fn stop_programs_in(dir: &Path, ours: &Path, keeps_servers: bool) -> bool {
         // window that was told to use it.
         return false;
     }
-    if !ask_to_cancel(ours, dir, server) {
-        // No key, no command layer, or no answer: a stale server holding the port
-        // is the worse outcome.
+    // A cancel that never answers holds the port; force takes that as its answer.
+    if force || !ask_to_cancel(ours, dir, server) {
         kill(server.pid);
+        wait_until_gone(server.pid);
     }
     // The port is free either way; the directory waits for a client still running.
     !alive(server.pid) && running.len() == 1
@@ -202,8 +202,13 @@ fn ask_to_cancel(ours: &Path, dir: &Path, server: &Process) -> bool {
         return false;
     }
     // `cancel` answers before the server stops; give it the moment it took.
+    wait_until_gone(server.pid)
+}
+
+/// Whether `pid` went away within the moment a stop is allowed to take.
+fn wait_until_gone(pid: u32) -> bool {
     for _ in 0..60 {
-        if !alive(server.pid) {
+        if !alive(pid) {
             return true;
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
