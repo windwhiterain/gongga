@@ -246,8 +246,7 @@ fn filled(
             );
             continue;
         }
-        // Spelled as a flag whatever its position: the argument is filled, not
-        // re-ordered, and a value holding a space stays one token.
+        // A flag, whatever its position: filled, not re-ordered, and one token.
         filled.push(format!("--{}", arg.name));
         filled.push(value);
     }
@@ -284,6 +283,7 @@ fn follow(
     client: &cli::Client,
     state: &mut State,
     msg: &cli::protocol::ClientMessage,
+    line: &str,
     pending: &mut Vec<(u64, crate::state::Follow)>,
 ) {
     let cli::protocol::ClientMessage::Command { id, name, args } = msg else {
@@ -301,9 +301,12 @@ fn follow(
             .into_iter()
             .find(|spec| spec.name == *name)
     {
+        // Only what was typed: a filled value is already in the file.
+        let typed = typed_names(client, line);
         let pairs: Vec<(String, String)> = spec
             .args
             .iter()
+            .filter(|arg| typed.contains(&arg.name))
             .filter_map(|arg| {
                 let kind = arg.kind.clone()?;
                 let value = args.get(&arg.name)?.clone();
@@ -316,13 +319,32 @@ fn follow(
     }
 }
 
+/// The argument names a line spelled out, before any sticky filled one in.
+fn typed_names(client: &cli::Client, line: &str) -> Vec<String> {
+    let Some(Ok(tokens)) = classified(line) else {
+        return Vec::new();
+    };
+    let head = tokens.first().cloned().unwrap_or_default();
+    let Some(spec) = client.commands().into_iter().find(|spec| spec.name == head) else {
+        return Vec::new();
+    };
+    cli::commands::parse_args(&tokens[1..], Some(&spec))
+        .map(|args| args.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
 /// Applies what the window kept for the commands the server has now answered.
 ///
 /// # Invariant
 ///
 /// Only an *accepted* command writes its entries back: a refusal leaves the file
 /// as it was, which is why nothing was written when the line was sent.
-fn settle(state: &mut State, pending: &mut Vec<(u64, crate::state::Follow)>, ui: &mut Tui) {
+fn settle(
+    client: &cli::Client,
+    state: &mut State,
+    pending: &mut Vec<(u64, crate::state::Follow)>,
+    ui: &mut Tui,
+) {
     for (id, ok) in ui.take_settled() {
         let Some(at) = pending.iter().position(|(other, _)| *other == id) else {
             continue;
@@ -331,8 +353,19 @@ fn settle(state: &mut State, pending: &mut Vec<(u64, crate::state::Follow)>, ui:
         if !ok {
             continue;
         }
-        for (kind, value) in pairs {
-            let _ = state.set_sticky(&kind, &value);
+        let written: Vec<String> = pairs.iter().map(|(kind, _)| kind.clone()).collect();
+        let mut changed: Vec<String> = Vec::new();
+        for (kind, value) in &pairs {
+            if state.change_sticky(kind, value).unwrap_or(false) {
+                changed.push(kind.clone());
+            }
+        }
+        // SPEC's `sticky to xxx`: what follows a changed model is forgotten, unless
+        // this command stated it too.
+        for (kind, parent) in command::follows(client) {
+            if changed.contains(&parent) && !written.contains(&kind) {
+                let _ = state.del_sticky(&kind);
+            }
         }
     }
 }
@@ -436,8 +469,7 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
     let home = cli::home_of(args);
     // Both are this process's own: where a row lives never depends on a greeting.
     let client_home = cli::client_home_of(args);
-    // The window's own state: the sticky entries, the drawn sessions, the two
-    // settings and the address it last pointed at. Nothing below reads it twice.
+    // The window's own state: sticky entries, drawn sessions, settings, address.
     let mut state = State::load(&home);
     // The address in force: what the window remembers first, then the flags.
     let mut conn = args.conn.clone();
@@ -559,7 +591,7 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                         Some(open) => {
                             // The command names a session: that session's window
                             // is drawn, and what the server accepts is kept.
-                            follow(&client, &mut state, &msg, &mut pending);
+                            follow(&client, &mut state, &msg, &line, &mut pending);
                             sync(&mut client, &state, &window, &mut ui);
                             if open.send(msg).await.is_err() {
                                 // Its end went unnoticed: nothing was sent, and the
@@ -597,7 +629,7 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                         }
                     }
                 }
-                settle(&mut state, &mut pending, &mut ui);
+                settle(&client, &mut state, &mut pending, &mut ui);
                 sync(&mut client, &state, &window, &mut ui);
             }
             Step::Wire(None) => {

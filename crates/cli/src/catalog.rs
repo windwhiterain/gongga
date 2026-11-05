@@ -15,8 +15,7 @@ use protocol::{ArgSpec, Args, CommandSpec, CompletionSource, ModelInfo, Referenc
 pub struct Catalog(Arc<RwLock<Inner>>);
 
 struct Inner {
-    /// Every command this client knows, as published: the server's greeting, or
-    /// what a front-end seeded for the commands it runs itself.
+    /// Every command this client knows: the greeting, or what a front-end seeded.
     published: Vec<CommandSpec>,
     /// The live sessions, as the server published them: the names a value
     /// completes against, and where each one works.

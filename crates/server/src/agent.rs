@@ -543,6 +543,10 @@ impl Agent {
     /// answer. Only a tier the roster declares may be sent, so an ignored
     /// wire field is never priced.
     fn cache_tier(&self, llm: &LlmClient, stated: Option<&str>) -> Option<String> {
+        // Stated `none`: neither the server's tier nor the roster's shortest answers.
+        if stated == Some(protocol::NONE_VALUE) {
+            return None;
+        }
         let entry = self.providers.place(llm.model());
         let tiers = entry.as_ref().map(|entry| &entry.cache_ttl_tiers);
         if let Some(tier) = stated.filter(|t| tiers.is_some_and(|m| m.contains_key(*t))) {

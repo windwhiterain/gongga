@@ -382,9 +382,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                 tracing::info!(started, "woke sessions holding an undelivered message");
             }
             monitor::sweep(&wake, &watch_home).await;
-            // A client holds the table and the catalog it was greeted with: hand
-            // it the edit. The catalog follows the table because an argument
-            // publishes the values the roster lets through.
+            // Table and catalog both follow: an argument publishes roster values.
             let roster = providers::roster();
             if roster.generation() != published {
                 published = roster.generation();

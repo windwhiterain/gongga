@@ -1,7 +1,4 @@
-//! The window's own state: what the operator set once and expects to find again.
-//!
-//! Sticky arguments, shown sessions, block size, box edge, and the server the
-//! window last pointed at -- all in `cli.toml` under the harness home.
+//! The window's own state, in `cli.toml`: what the operator set once.
 //!
 //! See `docs/notes/tui-state.md`.
 
@@ -367,6 +364,40 @@ impl State {
 
     pub fn set_sticky(&mut self, kind: &str, value: &str) -> anyhow::Result<()> {
         self.sticky.set(kind, value)
+    }
+
+    /// Writes one entry and answers whether it was a change.
+    ///
+    /// # Invariant
+    ///
+    /// "Changed" is a different value, not another setting of the same one: a
+    /// line that repeats the model it already had is no reason to forget what
+    /// belongs to that model.
+    pub fn change_sticky(&mut self, kind: &str, value: &str) -> anyhow::Result<bool> {
+        let changed = self.sticky.get(kind) != Some(value);
+        self.sticky.set(kind, value)?;
+        Ok(changed)
+    }
+
+    /// Forgets the entries that follow one that changed -- SPEC's `sticky to xxx`.
+    ///
+    /// # Invariant
+    ///
+    /// The dependencies are the published catalog's, passed in, and never a list
+    /// here: a value that belongs to a model or a machine is not carried to the
+    /// next one, and which values those are is the command's own statement.
+    /// Answers the kinds it forgot, so the window can say so.
+    pub fn forget_followers(&mut self, changed: &str, follows: &[(String, String)]) -> Vec<String> {
+        let mut gone = Vec::new();
+        for (kind, parent) in follows {
+            if parent != changed || kind == changed || self.sticky.get(kind).is_none() {
+                continue;
+            }
+            if self.sticky.del(kind).unwrap_or(false) {
+                gone.push(kind.clone());
+            }
+        }
+        gone
     }
 
     pub fn del_sticky(&mut self, kind: &str) -> anyhow::Result<bool> {

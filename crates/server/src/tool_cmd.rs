@@ -92,6 +92,7 @@ pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec>
                 value_hint: Some("name".into()),
                 completions: protocol::CompletionSource::Sessions,
                 accepts: None,
+                sticky_to: None,
                 sticky: false,
             }];
             for (name, spec) in ordered_properties(&properties, positional) {
@@ -109,6 +110,7 @@ pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec>
                     value_hint: Some(crate::tools::kind_of(spec)),
                     completions: protocol::CompletionSource::None,
                     accepts: None,
+                    sticky_to: None,
                     sticky: false,
                 });
             }

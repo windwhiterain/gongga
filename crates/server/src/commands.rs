@@ -368,7 +368,8 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     // roster lets through, published as `accepts` below.
                     CompletionSource::None,
                 )
-                .accepting_when(crate::providers::level_accepts),
+                .accepting_when(crate::providers::level_accepts)
+                .following("model"),
                 kind_arg(
                     "ctx_limit",
                     "The context level at which this session gets a `Context notice`, \
@@ -388,18 +389,22 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                         .map(|s| s.to_string())
                         .collect(),
                     ),
-                ),
+                )
+                .following("model"),
                 kind_arg(
                     "cache_tier",
                     "The cache tier every request of this session sends, in the model's \
-                     roster spelling. Omit to keep what the session has; a session that \
-                     named none sends the shortest tier its model declares.",
+                     roster spelling. Omit to keep what the session has; name `none` to \
+                     send no tier at all, which is the only way to say so on a model that \
+                     declares none. A session that never named one sends the shortest tier \
+                     its model declares.",
                     false,
                     "cache_tier",
                     Some("name"),
                     CompletionSource::None,
                 )
-                .accepting_when(crate::providers::tier_accepts),
+                .accepting_when(crate::providers::tier_accepts)
+                .following("model"),
                 kind_arg(
                     "cache_keepalive",
                     "Whether a periodic `(time notice: ...)` message keeps this \
@@ -448,7 +453,10 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     Some("path"),
                     // The client lists the filesystem it sits on, which is a hint only.
                     CompletionSource::Paths,
-                ),
+                )
+                // SPEC: `--cwd` is `sticky to remote` -- a directory belongs to the
+                // machine it exists on.
+                .following("remote"),
                 arg(
                     "must_create",
                     "`true` refuses the command unless the session does not exist yet, so a \
@@ -818,6 +826,7 @@ fn arg_spec(
         value_hint: value_hint.map(str::to_string),
         completions,
         accepts: None,
+        sticky_to: None,
         sticky: false,
     }
 }
@@ -1100,18 +1109,21 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             Err(e) => return Outcome::err(e),
         },
     };
-    // A tier the model does not declare fails here, not silently on the wire.
-    let cache_tier = match args.get("cache_tier").map(String::as_str) {
+    // Absent, stated, stated-as-none: three answers, and only the last sends none.
+    let cache_tier: Option<Option<String>> = match args.get("cache_tier").map(String::as_str) {
         None => None,
+        Some(protocol::NONE_VALUE) => Some(None),
         Some(tier) => {
             if !entry.cache_ttl_tiers.contains_key(tier) {
-                let known = entry.cache_ttl_tiers.keys().cloned().collect::<Vec<_>>();
+                let mut known = entry.cache_ttl_tiers.keys().cloned().collect::<Vec<_>>();
+                known.sort();
+                known.push(protocol::NONE_VALUE.to_string());
                 return Outcome::err(format!(
                     "--cache_tier {tier:?} is not a tier this model declares: {}",
                     known.join(", ")
                 ));
             }
-            Some(tier.to_string())
+            Some(Some(tier.to_string()))
         }
     };
     let cache_keepalive = match args.get("cache_keepalive").map(String::as_str) {
@@ -1263,7 +1275,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         tuning.cache_keepalive = value;
     }
     if let Some(tier) = cache_tier {
-        tuning.cache_tier = Some(tier);
+        tuning.cache_tier = tier;
     }
     if changed || cache_changed {
         // Persist before applying: a restart must restore what turns here read.

@@ -1106,8 +1106,10 @@ pub fn level_accepts() -> Option<protocol::Accepts> {
 /// # Invariant
 ///
 /// Every model is listed, and its list is exactly the tiers it declares, shortest
-/// window first. A model that declares none takes none, which is an empty list
-/// and not an absent entry: that is what the command refuses.
+/// window first, with [`protocol::NONE_VALUE`] first of all: "send no tier" is
+/// accepted by every model, including one that declares none -- which is the
+/// model whose empty list would otherwise leave no value to type. A model that
+/// declares no tiers therefore takes one value: `none`.
 pub fn tier_accepts() -> Option<protocol::Accepts> {
     let models = roster().models();
     if models.is_empty() {
@@ -1115,18 +1117,24 @@ pub fn tier_accepts() -> Option<protocol::Accepts> {
     }
     let mut table = std::collections::BTreeMap::new();
     for model in models {
-        let tiers = roster()
-            .entry(&model)
-            .map(|entry| {
-                let mut tiers: Vec<(String, u64)> = entry
-                    .cache_ttl_tiers
-                    .iter()
-                    .map(|(name, secs)| (name.clone(), *secs))
-                    .collect();
-                tiers.sort_by_key(|(_, secs)| *secs);
-                tiers.into_iter().map(|(name, _)| name).collect()
-            })
-            .unwrap_or_default();
+        let mut tiers = vec![protocol::NONE_VALUE.to_string()];
+        tiers.extend(
+            roster()
+                .entry(&model)
+                .map(|entry| {
+                    let mut tiers: Vec<(String, u64)> = entry
+                        .cache_ttl_tiers
+                        .iter()
+                        .map(|(name, secs)| (name.clone(), *secs))
+                        .collect();
+                    tiers.sort_by_key(|(_, secs)| *secs);
+                    tiers
+                        .into_iter()
+                        .map(|(name, _)| name)
+                        .collect::<Vec<String>>()
+                })
+                .unwrap_or_default(),
+        );
         table.insert(model, tiers);
     }
     Some(protocol::Accepts::PerModel(table))

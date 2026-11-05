@@ -541,8 +541,7 @@ pub enum Submission {
 
 pub struct Client {
     catalog: Catalog,
-    /// The harness home: where `skills/` is read, and nothing of this client's is
-    /// written. Client state is the window's. See `docs/notes/cli-lib.md`.
+    /// Where `skills/` is read. Nothing is written here: client state is the window's.
     home: PathBuf,
     /// Which sessions the front-end wants shown beside the list.
     ///
@@ -950,8 +949,7 @@ impl Client {
                 ..
             } => {
                 self.unconfirmed.retain(|(other, _)| *other != id);
-                // Told before the row is drawn: a front-end that keeps something
-                // for an accepted command hears it while the answer is news.
+                // Before the row: an accepted command's news reaches the front-end.
                 sink.settled(id, ok);
                 if let Some(remote) = self.quiet.remove(&id) {
                     match (ok, data.as_ref()) {
@@ -994,9 +992,7 @@ impl Client {
                 self.set_sessions(sessions, sink);
                 self.refresh(sink);
             }
-            // An edited roster: silent, because nobody asked and nothing failed.
-            // The catalog follows it, because an argument publishes the values
-            // the roster lets through.
+            // An edited roster: silent, and the catalog follows it.
             Event::Models { models } => self.catalog.set_models(models),
             Event::Commands { commands } => self.catalog.set_commands(commands),
             Event::Status {

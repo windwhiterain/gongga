@@ -1,8 +1,4 @@
-//! The commands the window runs itself.
-//!
-//! A line whose head is a [`protocol::client_commands`] name never reaches the
-//! command layer: it is answered here, against the window's own state, and the
-//! layer keeps no state to answer it with.
+//! The commands the window runs itself, against its own state.
 //!
 //! See `docs/notes/tui-command.md`.
 
@@ -77,9 +73,8 @@ pub fn run(
                 );
                 return Done::Local;
             };
-            // A sticky entry no argument declares never takes effect, so it is
-            // refused while the caller is still looking. An empty catalog cannot
-            // prove a name wrong, and a window with no server still stores one.
+            // An entry no argument declares can never take effect: refused, unless
+            // no catalog has arrived to prove it wrong.
             let kinds: Vec<String> = client
                 .commands()
                 .iter()
@@ -98,9 +93,12 @@ pub fn run(
                 );
                 return Done::Local;
             }
-            match state.set_sticky(&kind, &value) {
-                Ok(()) => {
+            match state.change_sticky(&kind, &value) {
+                Ok(changed) => {
                     client.say(LineKind::Result, &format!("sticky {kind} = {value}"), sink);
+                    if changed {
+                        forget(client, state, &kind, sink);
+                    }
                 }
                 Err(e) => client.say(LineKind::Error, &format!("could not save: {e}"), sink),
             }
@@ -109,7 +107,10 @@ pub fn run(
         "del_sticky" => {
             let kind = args.get("type").cloned().unwrap_or_default();
             match state.del_sticky(&kind) {
-                Ok(true) => client.say(LineKind::Result, &format!("sticky {kind} cleared"), sink),
+                Ok(true) => {
+                    client.say(LineKind::Result, &format!("sticky {kind} cleared"), sink);
+                    forget(client, state, &kind, sink);
+                }
                 Ok(false) => client.say(
                     LineKind::Error,
                     &format!("no sticky argument named {kind:?}"),
@@ -267,6 +268,45 @@ fn render_session(
     }
     client.say(LineKind::Result, &format!("render {name} = {show}"), sink);
     Done::Local
+}
+
+/// Forgets what followed a sticky entry that just changed, and says so.
+///
+/// # Invariant
+///
+/// SPEC's `sticky to xxx` is applied where the entries live: a model's level is
+/// not carried to another model, and the reader is told rather than left to
+/// notice that a line it never typed stopped applying.
+pub fn forget(client: &cli::Client, state: &mut State, changed: &str, sink: &mut dyn Sink) {
+    let gone = state.forget_followers(changed, &follows(client));
+    if gone.is_empty() {
+        return;
+    }
+    // One row: SPEC's row is the last thing told, and a row each would leave one.
+    let (what, verb) = if gone.len() == 1 {
+        ("sticky entry".to_string(), "it follows")
+    } else {
+        ("sticky entries".to_string(), "they follow")
+    };
+    client.say(
+        LineKind::System,
+        &format!("{what} {} cleared: {verb} {changed}", gone.join(", ")),
+        sink,
+    );
+}
+
+/// Every published dependency: the entry a value keys on, and the one it follows.
+pub fn follows(client: &cli::Client) -> Vec<(String, String)> {
+    client
+        .commands()
+        .iter()
+        .flat_map(|command| command.args.iter())
+        .filter_map(|arg| {
+            let kind = arg.kind.clone()?;
+            let parent = arg.sticky_to.clone()?;
+            Some((kind, parent))
+        })
+        .collect()
 }
 
 /// The kinds once each, in the order a reader can scan them.

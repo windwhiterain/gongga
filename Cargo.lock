@@ -821,6 +821,7 @@ dependencies = [
  "serde_json",
  "shell-words",
  "tokio",
+ "toml",
  "unicode-width",
 ]
 

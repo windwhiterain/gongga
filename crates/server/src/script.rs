@@ -403,9 +403,10 @@ fn parse_arg(raw: &Value) -> Option<ArgSpec> {
         // entry that fills the argument.
         kind: raw.get("kind").and_then(Value::as_str).map(str::to_string),
         completions,
-        // A script declares a source, not a value: what it accepts is its own
-        // to check, so the catalog makes no claim on its behalf.
+        // A script declares a source, not a value: what it accepts is its own.
         accepts: None,
+        // A script declares no dependency: what a value belongs to is its own.
+        sticky_to: None,
         // A script may ask for it: `"sticky": true` in its manifest.
         sticky: raw.get("sticky").and_then(Value::as_bool).unwrap_or(false),
         // Script commands keep the flag spelling; a bare word still binds by

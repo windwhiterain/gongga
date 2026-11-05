@@ -693,6 +693,16 @@ pub const BOX_EDGES: &[&str] = &["2", "0", "1", "3"];
 /// The values `set_render_session --show` takes.
 pub const SHOW_VALUES: &[&str] = &["true", "false"];
 
+/// The value that names none of something, where omitting would inherit one.
+///
+/// # Invariant
+///
+/// One spelling for every argument that has an "off": `--remote none` is this
+/// machine, `--cache_tier none` is no tier at all. Absence means something else
+/// everywhere -- the session keeps what it had -- so "none" is a statement and
+/// never a default.
+pub const NONE_VALUE: &str = "none";
+
 /// The `--thinking` value that names no level: the level a model uses by itself.
 ///
 /// # Invariant
@@ -898,6 +908,7 @@ fn spec_arg(
         value_hint: value_hint.map(str::to_string),
         completions,
         accepts: None,
+        sticky_to: None,
         sticky: false,
     }
 }
@@ -958,6 +969,17 @@ pub struct ArgSpec {
     /// roster a second time.
     #[serde(default)]
     pub accepts: Option<Accepts>,
+    /// SPEC's `(sticky to <kind>)`: this argument's entry is forgotten when that
+    /// one changes.
+    ///
+    /// # Invariant
+    ///
+    /// The dependency is data, published with the argument: a value that belongs
+    /// to a model or a machine is not carried to the next one, and the reader that
+    /// keeps the entries applies the rule without knowing a single name. A
+    /// follower of a kind that never changes is never forgotten.
+    #[serde(default)]
+    pub sticky_to: Option<String>,
     /// SPEC's `(sticky)`: filled from the entry when omitted, and written back
     /// to it when the command succeeds.
     ///
@@ -973,6 +995,12 @@ pub struct ArgSpec {
 }
 
 impl ArgSpec {
+    /// Names the entry this one follows: SPEC's `(sticky to <kind>)`.
+    pub fn following(mut self, kind: &str) -> Self {
+        self.sticky_to = Some(kind.to_string());
+        self
+    }
+
     /// Narrows what the argument accepts, and leaves offering to that same list.
     ///
     /// # Invariant
@@ -1059,12 +1087,10 @@ pub enum Accepts {
     ///
     /// # Invariant
     ///
-    /// Keyed by `provider/model_name`. A model that is absent accepts any value:
-    /// the roster has no opinion about it, which is a different fact from a model
-    /// whose list is empty and which therefore takes none. Which one a value lands
-    /// in is decided where the roster is read, and the model a line resolves to is
-    /// the one it names, else the one its session already has, else the server's
-    /// own -- what the command would really run on.
+    /// Keyed by `provider/model_name`. An absent model accepts any value -- the
+    /// roster has no opinion, which is not the same as an empty list, which takes
+    /// none. The model a line resolves to is the one it names, else its session's,
+    /// else the server's: what the command would really run on.
     PerModel(BTreeMap<String, Vec<String>>),
 }
 
