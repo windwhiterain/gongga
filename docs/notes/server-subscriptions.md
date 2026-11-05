@@ -6,10 +6,15 @@ SPEC's `subscribe`, as one registry and one matcher.
 
 ## What a subscription is
 
-Three facts: a *name*, a *pattern*, and the *session* that hears about a match. It
-is armed as `subscribe <name> <pattern>`, re-arming a name replaces what the name
-held, and `del_subscribe <name>` drops it -- a name is one subscription, so the two
-verbs are always one well-defined row. The pattern is a regex, matched against an
+Four facts: a *name*, a *pattern*, the *session that runs the match*, and the
+*command* a match runs there. It is armed as `subscribe <name> <pattern> --bash <shell>
+--cmd <cmd>`, re-arming a name replaces what the name held, and `del_subscribe <name>`
+drops it -- a name is one subscription, so the two verbs are always one well-defined
+row. The command is what a match *does*: the server no longer speaks for a
+subscription, so a row armed without one fires and does nothing. SPEC still spells the
+action as optional (`[--bash <bash> --cmd <cmd>]`), so arming one without an action is
+allowed and warned about rather than refused -- narrowing the surface is the SPEC's,
+not this module's. The pattern is a regex, matched against an
 event's name -- which for a log row is its `kind`, and for any other event is its
 own (`status`, `usage`, `sessions`, `log`, ...). When the event is about a session,
 the pattern is matched against `name:session` too, so `turn_end:child/2` is one
@@ -30,13 +35,68 @@ process parked on a socket. Two things were wrong with that.
 
 The first is the address. `wait` printed the row to whoever ran it, so a *session*
 could not be told anything by it -- the model that wanted the news had to poll, or
-spawn a shell and read its output. SPEC says `subscribe` notices *the caller
-session*, which makes the news an inbox row rather than a line on a terminal.
+spawn a shell and read its output. SPEC's `subscribe` is the answer to that: a match
+runs a command, and the command is free to be the one that tells a session.
 
 The second is that waiting is a turn, not a process. An agent that wants to stay
 where it is until something happens calls the `wait` tool: it costs part of one
 turn, it is cancelled with the turn, and it is visible in the transcript. A shell
 that sleeps is a shell nobody can see.
+
+## The server does not speak for a subscription
+
+An earlier build queued the news itself -- a match became an `inject` row in the
+subscriber's transcript, and the action was an extra. That was never in the SPEC the
+current commands are read against: the `notice the caller session` wording belongs to
+the older `subscribe --event <pattern>`, and it was replaced, not narrowed, when the
+action arrived. It is gone from the code now, for two reasons.
+
+The first is that it made the action half a mechanism: two ways for one match to
+reach a session, and the one the skills documented was the one nobody had to write.
+
+The second is durability. A notice was one `INSERT` -- cheap, and it survived a stop
+because the row *is* the obligation. Carrying the same news through an action costs a
+process and one round trip, and it survives a stop only because the two things below
+hold. Both are worth paying only because the alternative is a server that speaks for
+statements it was not asked to make.
+
+- **The matcher outlives the ask.** A stop request arrives minutes before the last
+  turn ends, and a turn that ends *during* the drain is exactly the news a subscriber
+  is owed. The matcher therefore stops at the end of the drain, not at the ask.
+- **An action holds a slot in the drain.** It is counted where a turn is counted, so
+  the process waits for it. An action that says what happened -- `send_message` --
+  then lands as a pending row while the server is stopping, and the next start
+  delivers it like any other owed message.
+
+An action that fails leaves one `subscription` row with `ok: false` and the reason.
+That is the whole of what a lost notice looks like now, so the row names the
+subscription, the session, the event and what the command said.
+
+## What the action is told
+
+A bash action runs as one line of the session's own shell: a subshell, whose first
+three statements are the event, and whose last is the action's command.
+
+    ( GONGGA_EVENT_KIND='turn_end'; GONGGA_EVENT_SESSION='main/impl'; GONGGA_EVENT_PAYLOAD='{…}'; <cmd> )
+
+Two shapes were wrong before this one, and both were silent.
+
+`VAR=x cmd "$VAR"` does not work: a simple command's words are expanded *before* its
+own assignments take effect, so the action reads nothing and looks like an event with
+no data. Hence three statements and `;`, not one prefix.
+
+Assignments without the subshell would work and then stay: a callback would leave
+three stale names in the shell the session works in, and the next honest `bash` call
+there would read last hour's event. The subshell also leaves the action's exit status
+as the line's own, which is what the `subscription` row records.
+
+The values are expanded, never re-parsed, so a payload full of quotes is carried as
+data. A subscriber writes its command once, before it knows what will fire, which is
+why the three names are fixed rather than templated.
+
+A python action is told nothing: `--code` is one string in a REPL, and an assignment
+prefix would stay in that interpreter afterwards, so the event is left to be read
+from the row instead.
 
 ## The caller
 
@@ -49,8 +109,9 @@ that fires and tells nobody cannot be noticed by the registry.
 
 ## A match can also run something
 
-`--bash <name> --cmd <cmd>` (or `--python <name> --code <code>`) carries an action:
-on a match, the command runs in the session's *own* persistent interpreter of that
+`--bash <name> --cmd <cmd>` (or `--python <name> --code <code>`) is the action, and a
+match has nothing else: the command runs in the session's *own* persistent interpreter
+of that
 name -- the same shell the `bash` tool uses under the same key, so a subscription
 and its session see each other's `cd` and exports. The name is the interpreter's,
 not the subscription's: the subscription already has one name, and the interpreter
@@ -58,18 +119,17 @@ it runs in is a place, not a label. The outcome is written as an event-log row o
 kind `subscription` -- stdout, stderr and exit code -- so `events` reads what the
 watcher saw. Running the action takes the same `tool_cmd::run` path the tool
 commands use, which is what keeps a subscription's run and a model's call from
-drifting apart. The session notice below still fires either way: an action adds
-what runs, it does not replace who hears.
+drifting apart. The name it runs under is the subscriber's choice, and a callback is
+worth its own shell: the same name is the same queue, so a callback behind the
+parent's long command is news that arrives late.
 
-## A match is a message, not a notice
+## What a wake looks like now
 
-The row a match writes is an ordinary `inject`, not one of the marked notices. That
-is the difference between "news for a session that is already working" and "this
-session asked to be woken": an idle session that subscribed is started, and a busy
-one reads it at its next step boundary. Both roads end in the transcript.
-
-The row carries `subscription: <id>` so the tool that reports arrivals can say a
-`subscribe` match is what landed, rather than "a message".
+There is no `inject` row a match writes any more, so what a subscriber wakes to is
+whatever its command sends. The `subagent` skill's command is `send_message` to
+`$GONGGA_SESSION`: idle, that starts a turn; busy (inside `wait`, say), it queues an
+`inject` row the next step boundary reads -- the same two roads as before, one hop
+longer.
 
 ## Life of a subscription
 

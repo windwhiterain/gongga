@@ -322,6 +322,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         detached: detached.clone(),
     });
 
+    // Turns in flight and subscription actions: a stop waits for both.
+    let active = Arc::new(AtomicUsize::new(0));
     // Read from the database, so a restart resumes what was asked for; the
     // actions it runs take the agent's tools.
     let subscriptions = crate::subscriptions::Subscriptions::load(
@@ -329,6 +331,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         bus.clone(),
         agent.clone(),
         sessions.clone(),
+        active.clone(),
     );
 
     let dispatch = Arc::new(Dispatch {
@@ -339,7 +342,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         subscriptions: subscriptions.clone(),
         scripts: scripts.clone(),
         providers: providers::Handle,
-        active: Arc::new(AtomicUsize::new(0)),
+        active: active.clone(),
         shutting_down: Arc::new(AtomicBool::new(false)),
         shutdown: CancellationToken::new(),
     });
@@ -372,10 +375,13 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         "detached jobs adopted from the previous run"
     );
 
-    // One matcher for every pattern. See `docs/notes/server-subscriptions.md`.
+    // Alive until the drain ends. See `docs/notes/server-subscriptions.md`.
     let watching = subscriptions.clone();
-    let stop_watching = dispatch.shutdown.clone();
-    tokio::spawn(async move { watching.watch(stop_watching).await });
+    let stop_watching = CancellationToken::new();
+    let matcher = tokio::spawn({
+        let stop_watching = stop_watching.clone();
+        async move { watching.watch(stop_watching).await }
+    });
 
     // Undelivered messages get a turn, unseen failures get handed over, and an
     // edited roster is republished.
@@ -445,6 +451,12 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     });
 
     let served = net::serve(Arc::new(cfg), dispatch, bus).await;
+    // The drain's end: nothing new may fire, and what fired is waited for.
+    stop_watching.cancel();
+    let _ = matcher.await;
+    while active.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
     // Every exit from `serve` lands here, so nothing it started outlives the
     // stop decision. See `docs/notes/server-main.md`.
     sessions.close_shells().await;

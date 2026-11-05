@@ -49,11 +49,16 @@ pub struct Dispatch {
     pub shutdown: CancellationToken,
 }
 
-/// Owns one turn's slot in [`Dispatch::active`], releasing it even on a panic.
-struct ActiveGuard(Arc<AtomicUsize>);
+/// Owns one slot in [`Dispatch::active`], releasing it even on a panic.
+///
+/// # Invariant
+///
+/// A slot is what a stop waits for, so everything that must finish before the
+/// process leaves holds one: a turn, and a subscription's action.
+pub(crate) struct ActiveGuard(Arc<AtomicUsize>);
 
 impl ActiveGuard {
-    fn new(active: Arc<AtomicUsize>) -> Self {
+    pub(crate) fn new(active: Arc<AtomicUsize>) -> Self {
         active.fetch_add(1, Ordering::SeqCst);
         Self(active)
     }
@@ -1649,7 +1654,14 @@ async fn subscribe(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
                 "--python names the interpreter; --code is what runs in it: `subscribe                  {name} <pattern> --python {python} --code <code>`"
             ));
         }
-        (None, None, None, None) => None,
+        // SPEC leaves it optional: with no action a match does nothing. Warned.
+        (None, None, None, None) => {
+            tracing::warn!(
+                session = %caller, name, pattern = %pattern,
+                "subscription armed with no action: a match will do nothing"
+            );
+            None
+        }
         // --cmd/--code without the interpreter they run in.
         _ => return Outcome::err("subscribe: --cmd needs --bash, and --code needs --python"),
     };
@@ -1665,7 +1677,8 @@ async fn subscribe(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
             );
             Outcome::ok_with(
                 format!(
-                    "subscription `{name}` armed: {caller} hears about `{pattern}`{}",
+                    "subscription `{name}` armed: a match of `{pattern}` runs its command in \
+                     {caller}'s shell{}",
                     if persistent { ", every time" } else { " once" }
                 ),
                 json!({

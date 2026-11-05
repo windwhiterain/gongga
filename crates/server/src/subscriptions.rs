@@ -4,8 +4,11 @@
 //!
 //! # Invariant
 //!
-//! Subscribing registers and answers at once; the news becomes an inbox row for the
-//! session that asked, so an idle one is woken by it.
+//! Subscribing registers and answers at once, and a match runs the action the row
+//! carries in the subscriber's own interpreter -- nothing else. The server tells
+//! nobody by itself: a subscription that must reach a session says so in its
+//! action (`send_message` to the caller), which is why the news survives a restart
+//! as the pending row that action writes.
 
 use std::sync::Arc;
 
@@ -29,6 +32,8 @@ pub struct Subscriptions {
     bus: EventBus,
     agent: Arc<crate::agent::Agent>,
     sessions: SessionManager,
+    /// The same slot a turn takes: a stop waits for the action too.
+    active: Arc<std::sync::atomic::AtomicUsize>,
     /// The database's rows, compiled: the pattern is parsed once, not per event.
     armed: tokio::sync::Mutex<Vec<Armed>>,
 }
@@ -45,6 +50,7 @@ impl Subscriptions {
         bus: EventBus,
         agent: Arc<crate::agent::Agent>,
         sessions: SessionManager,
+        active: Arc<std::sync::atomic::AtomicUsize>,
     ) -> Arc<Self> {
         let armed = match store.subscriptions() {
             Ok(rows) => rows
@@ -61,6 +67,7 @@ impl Subscriptions {
             bus,
             agent,
             sessions,
+            active,
             armed: tokio::sync::Mutex::new(armed),
         })
     }
@@ -117,6 +124,13 @@ impl Subscriptions {
     }
 
     /// Runs the matcher until the server stops: one task per server, not per pattern.
+    ///
+    /// # Invariant
+    ///
+    /// `stop` is the end of the drain, not the ask that started it. A turn that
+    /// ends while the server is stopping is exactly the news a subscriber is owed,
+    /// and the ask arrives minutes before the last turn does; closing the matcher on
+    /// the ask loses every event in between. See `docs/notes/server-subscriptions.md`.
     pub async fn watch(self: Arc<Self>, stop: tokio_util::sync::CancellationToken) {
         let mut events = self.bus.subscribe();
         loop {
@@ -146,14 +160,13 @@ impl Subscriptions {
                 .collect()
         };
         for row in fired {
-            self.notice(&row, event).await;
             if !row.persistent {
                 self.disarm(row.id).await;
             }
             if let Some(action) = Action::of(&row) {
                 let this = Arc::clone(self);
-                let name = event.name().to_string();
-                tokio::spawn(async move { this.run_action(row, action, name).await });
+                let event = event.clone();
+                tokio::spawn(async move { this.run_action(row, action, event).await });
             }
         }
     }
@@ -163,12 +176,25 @@ impl Subscriptions {
     ///
     /// # Invariant
     ///
-    /// Runs take the tool path a model's call takes, so a subscription and the
-    /// session meet in the same persistent shell. The notice is queued first,
-    /// so a slow watcher never delays the wake.
-    async fn run_action(self: Arc<Self>, row: SubscriptionRow, action: Action, event: String) {
+    /// The action is the whole of what a match does: it runs the path a model's call
+    /// runs, so a subscription and its session see the same shell. It holds a slot in
+    /// `Dispatch::active`, so a stop waits for it -- a `send_message` issued during a
+    /// drain lands as a pending row instead of dying with the process.
+    async fn run_action(
+        self: Arc<Self>,
+        row: SubscriptionRow,
+        action: Action,
+        event: protocol::Event,
+    ) {
+        let _slot = crate::commands::ActiveGuard::new(self.active.clone());
+        let stated = event_prefix(&event);
         let (tool, args) = match &action {
-            Action::Bash { name, cmd } => ("bash", json!({"name": name, "command": cmd})),
+            Action::Bash { name, cmd } => (
+                "bash",
+                json!({"name": name, "command": format!("( {stated}{cmd} )")}),
+            ),
+            // A python action carries no event: assignments would stay in the REPL
+            // afterwards, so the row is what it reads.
             Action::Python { name, code } => ("python", json!({"name": name, "code": code})),
         };
         let outcome = crate::tool_cmd::run(
@@ -183,7 +209,7 @@ impl Subscriptions {
         let payload = json!({
             "subscription": row.name,
             "session": row.session,
-            "event": event,
+            "event": event.name(),
             "ok": outcome.ok,
             "output": outcome.message,
         });
@@ -223,37 +249,6 @@ impl Subscriptions {
             payload: payload.clone(),
             at: event.created_at,
         });
-    }
-
-    /// Queues the news for the session that asked to be told about it.
-    async fn notice(&self, row: &SubscriptionRow, event: &protocol::Event) {
-        // A session that is gone has nobody left to tell.
-        match self.store.get_session(&row.session) {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                self.disarm(row.id).await;
-                return;
-            }
-            Err(e) => {
-                tracing::warn!(session = %row.session, error = %e, "could not read a subscriber");
-                return;
-            }
-        }
-        // Not marked as a notice: this one is meant to wake an idle session.
-        if let Err(e) = self.store.add_pending_task(
-            &row.session,
-            "inject",
-            &json!({
-                "session": row.session,
-                "message": said(row, event),
-                "subscription": row.id,
-            }),
-        ) {
-            tracing::warn!(
-                session = %row.session, subscription = row.id, error = %e,
-                "could not queue a subscription's news"
-            );
-        }
     }
 
     async fn disarm(&self, id: i64) {
@@ -298,34 +293,28 @@ fn matches(pattern: &regex::Regex, event: &protocol::Event) -> bool {
     }
 }
 
-/// What the subscriber reads when the news lands.
+/// What fired, as assignments the action's own words can read.
 ///
 /// # Invariant
 ///
-/// The row is passed through as it was published, and the header says which
-/// pattern it answered: a session may hold several subscriptions, and "something
-/// happened" without saying what was watched is not an answer.
-fn said(row: &SubscriptionRow, event: &protocol::Event) -> String {
-    let about = match event.session() {
-        Some(session) => format!(" about {session}"),
-        None => String::new(),
-    };
-    let body = match event {
-        protocol::Event::Record { payload, id, .. } => {
-            format!("log row {id}: {}", compact(payload))
-        }
-        other => compact(&serde_json::to_value(other).unwrap_or(serde_json::Value::Null)),
-    };
+/// Three statements ending in `;`, all inside one subshell. `VAR=x cmd "$VAR"` is the
+/// shape that does not work: a simple command's words expand before its own
+/// assignments land, so the command reads nothing. In a subshell the values are gone
+/// when the action ends, and the status stays the action's own.
+fn event_prefix(event: &protocol::Event) -> String {
+    let kind = quote(event.name());
+    let session = quote(event.session().unwrap_or_default());
+    let body = serde_json::to_value(event).unwrap_or(serde_json::Value::Null);
+    let body = serde_json::to_string(&body).unwrap_or_else(|_| body.to_string());
     format!(
-        "subscribe `{}` matched `{}`{about}.\n\n{body}",
-        row.pattern,
-        event.name()
+        "GONGGA_EVENT_KIND={kind}; GONGGA_EVENT_SESSION={session}; GONGGA_EVENT_PAYLOAD={payload}; ",
+        payload = quote(&body)
     )
 }
 
-/// The body on one line: it rides the transcript, so punctuation is not free.
-fn compact(value: &serde_json::Value) -> String {
-    serde_json::to_string(value).unwrap_or_else(|_| value.to_string())
+/// One value as a shell sees it: single quotes, an inner quote closed and reopened.
+fn quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
 }
 
 fn compiled(store: &Store, row: SubscriptionRow) -> Option<Armed> {
