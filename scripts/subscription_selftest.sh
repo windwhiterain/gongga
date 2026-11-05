@@ -102,7 +102,10 @@ ok "a session to hear the news" $created
 # The skill's own directory, in a spelling this machine's Python can import from:
 # it is a Windows Python, and a `/c/...` path is not one it can open.
 skill_dir=$(cygpath -m "$root/ship/skills/subagent" 2>/dev/null || echo "$root/ship/skills/subagent")
-relay=$(python -c "import sys; sys.path.insert(0, '$skill_dir'); import spawn; print(spawn.relay())")
+# The skill is a package now (`subagent/__init__.py`), so it is imported by the
+# directory's own name, from the directory above it.
+relay=$(python -c "import os, sys; sys.path.insert(0, os.path.dirname(sys.argv[1]));
+import subagent; print(subagent._relay())" "$skill_dir")
 say "relay: $relay"
 as parent subscribe news '^boom$' --persistant true --bash notice --cmd "$relay" >/dev/null 2>&1
 cli trigger_event boom >/dev/null 2>&1
