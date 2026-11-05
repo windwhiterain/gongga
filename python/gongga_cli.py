@@ -22,23 +22,79 @@ state and its disk, not a server's answer. See `docs/notes/python-cli.md`.
 import json
 import os
 import re
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import gongga
 
-#: The commands a client answers itself, in the Rust layer. Named here only to refuse
-#: them with the right words: a second implementation would be a second answer.
-CLIENT_SIDE = {
-    "serve": "starts a server of its own",
-    "set_sticky": "is the window's state",
-    "del_sticky": "is the window's state",
-    "set_render": "is the window's state",
-    "set_render_session": "is the window's state",
-    "connect_server": "is the window's state",
-    "skill": "runs an entry on this disk",
+#: The commands a *window* answers against its own state. A one-shot command line
+#: keeps no state, so it says whose they are instead of guessing.
+WINDOW_SIDE = {
+    "set_sticky": "set_sticky is the window's state",
+    "del_sticky": "del_sticky is the window's state",
+    "set_render": "set_render is the window's state",
+    "set_render_session": "set_render_session is the window's state",
+    "connect_server": "connect_server is the window's state",
 }
+
+#: Where the skills a session can open live, most specific first.
+def roots(home):
+    """The three directories, as `crates/skill` orders them.
+
+    # Invariant
+
+    This walk is the one place a rule is written twice: the window and the server
+    read skills through `crates/skill`, and a command line with no server has no Rust
+    to ask. The order, the name and the frontmatter are that crate's -- if one moves,
+    both move.
+    """
+    project = os.path.join(os.getcwd(), ".agents", "skills")
+    machine = os.path.join(os.path.expanduser("~"), ".agents", "skills")
+    return [("project", project), ("harness", os.path.join(home, "skills")), ("general", machine)]
+
+
+def describe(directory):
+    """A skill's `name` and `description` from its frontmatter, or from its name."""
+    name = os.path.basename(os.path.normpath(directory))
+    description = ""
+    try:
+        with open(os.path.join(directory, "SKILL.md"), encoding="utf-8") as handle:
+            lines = handle.read().splitlines()
+    except OSError:
+        return name, description
+    if not lines or lines[0].strip() != "---":
+        return name, description
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        key, _, value = line.partition(":")
+        if key.strip() == "name" and value.strip():
+            name = value.strip()
+        if key.strip() == "description" and value.strip():
+            description = value.strip()
+    return name, description
+
+
+def installed(home):
+    """Every skill this machine can open, most specific first, one row each."""
+    seen, rows = set(), []
+    for bucket, directory in roots(home):
+        try:
+            entries = sorted(os.listdir(directory))
+        except OSError:
+            continue
+        for entry in entries:
+            at = os.path.join(directory, entry)
+            if not os.path.isfile(os.path.join(at, "SKILL.md")):
+                continue
+            name, description = describe(at)
+            if name in seen:
+                continue
+            seen.add(name)
+            rows.append((name, bucket, description, os.path.join(at, "SKILL.md")))
+    return rows
 
 
 def usage(spec):
@@ -184,6 +240,177 @@ def catalog(client):
     return 0
 
 
+def table(reply):
+    """The skills a server's `skill` answered with, one tab-separated row each."""
+    try:
+        rows = json.loads(reply.message).get("skills") or []
+    except (ValueError, AttributeError):
+        return
+    for row in rows:
+        print(
+            f"{row.get('name', '')}\t{row.get('bucket', '')}\t"
+            f"{row.get('description', '')}\t{row.get('path', '')}"
+        )
+
+
+def home_of():
+    """This home, as the words and the environment spell it."""
+    return native(os.environ.get("GONGGA_HOME") or os.path.join(os.path.expanduser("~"), ".gongga"))
+
+
+def serve(words):
+    """`serve --port <port> [--home <home>]`: hand the process to the server."""
+    port, i = None, 0
+    while i < len(words):
+        word = words[i]
+        if word in ("--port", "--home"):
+            i += 1
+            if i >= len(words):
+                print(f"gongga-cli: {word} needs a value", file=sys.stderr)
+                return 2
+            if word == "--port":
+                port = words[i]
+            else:
+                os.environ["GONGGA_HOME"] = native(words[i])
+        elif "--port=" in word:
+            port = word.split("=", 1)[1]
+        elif port is None and not word.startswith("-"):
+            port = word
+        i += 1
+    if port is None:
+        print("gongga-cli: serve needs a port", file=sys.stderr)
+        return 2
+    home = home_of()
+    program = os.path.join(home, "bin", "gongga-server" + (".exe" if os.name == "nt" else ""))
+    if not os.path.isfile(program):
+        print(f"gongga-cli: no server at {program}", file=sys.stderr)
+        return 3
+    # The server takes over this process's role, not this process: its own container.
+    return subprocess.run([program, "--home", home, "--bind", f"127.0.0.1:{port}"]).returncode
+
+
+def skill(words):
+    """`skill ls` (a table), `skill run <name>`, or `skill <name> [args...]`."""
+    home = home_of()
+    # A verb first: `ls` is the table, `run` reaches a skill whose own name is `ls`.
+    verb, rest = (words[0], words[1:]) if words else ("ls", [])
+    if verb == "ls":
+        session = os.environ.get("GONGGA_SESSION")
+        if session:
+            # A shell the server started knows its own checkout, so the table is the
+            # one that session would be offered; without it, this disk's.
+            client = dial()
+            if client is None:
+                return 3
+            try:
+                reply = client.call("skill", session=session)
+            finally:
+                client.close()
+            table(reply)
+            return 0 if reply.ok else 1
+        for name, bucket, description, path in installed(home):
+            print(f"{name}\t{bucket}\t{description}\t{path}")
+        return 0
+    if verb == "run":
+        if not rest:
+            print("gongga-cli: run needs a skill name", file=sys.stderr)
+            return 2
+        verb, rest = rest[0], rest[1:]
+    name, argv = verb, rest
+    found = [row for row in installed(home) if row[0] == name]
+    if not found:
+        print(f"gongga-cli: no skill named {name!r} is installed", file=sys.stderr)
+        return 2
+    if len(found) > 1:
+        print(
+            f"gongga-cli: {name} is installed more than once: "
+            + ", ".join(f"{row[3]} ({row[1]})" for row in found),
+            file=sys.stderr,
+        )
+        return 2
+    directory = os.path.dirname(found[0][3])
+    package = os.path.isfile(os.path.join(directory, "__init__.py"))
+    if package:
+        # A package publishes functions: the first word names one.
+        driver = os.path.join(home, "lib", "gongga_skill.py")
+        return subprocess.run([sys.executable, driver, directory, *argv]).returncode
+    declared = _declared(directory)
+    if not declared:
+        print(
+            f"gongga-cli: {name} is a body and nothing to run: read {found[0][3]}",
+            file=sys.stderr,
+        )
+        return 2
+    return run_entry(os.path.join(directory, declared), argv)
+
+
+def run_entry(entry, argv):
+    """Run a script entry by its extension, then by its `#!`.
+
+    # Invariant
+
+    `crates/skill/src/entry.rs` is the rule, and this is its second reading: a script
+    has no server to ask, and a command line that cannot run one is not a command
+    line. Extension first because Windows honours no `#!`.
+    """
+    suffix = os.path.splitext(entry)[1].lower()
+    if suffix in (".sh", ".bash"):
+        program = ["bash"]
+    elif suffix == ".py":
+        program = [sys.executable]
+    elif suffix == ".ps1":
+        program = [which("pwsh") or which("powershell") or "powershell", "-NoProfile", "-File"]
+    elif suffix in (".cmd", ".bat"):
+        program = ["cmd", "/c"]
+    else:
+        program = []
+        try:
+            with open(entry, encoding="utf-8") as handle:
+                first = handle.readline()
+        except OSError:
+            first = ""
+        if first.startswith("#!"):
+            words = first[2:].split()
+            if words and os.path.basename(words[0]) == "env":
+                words = [w for w in words[1:] if not w.startswith("-")]
+            if words:
+                program = [os.path.basename(words[0])]
+    if not program:
+        return 2
+    return subprocess.run([*program, entry, *argv]).returncode
+
+
+def which(name):
+    """The program `name` on this machine's PATH, or None."""
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        candidate = os.path.join(directory, name)
+        for suffix in ("", ".exe", ".cmd", ".bat"):
+            if os.path.isfile(candidate + suffix):
+                return candidate + suffix
+    return None
+
+
+def _declared(directory):
+    """The entry a `SKILL.md` declares under `metadata`, or empty."""
+    try:
+        with open(os.path.join(directory, "SKILL.md"), encoding="utf-8") as handle:
+            lines = handle.read().splitlines()
+    except OSError:
+        return ""
+    inside = False
+    for line in lines:
+        if line.strip() == "metadata:":
+            inside = True
+            continue
+        if inside:
+            if not line.startswith(" "):
+                return ""
+            key, _, value = line.strip().partition(":")
+            if key == "entry" and value.strip():
+                return value.strip()
+    return ""
+
+
 def dial():
     """The connection, or the reason there is none, said as this program's own words."""
     try:
@@ -212,6 +439,12 @@ def main(argv):
         finally:
             client.close()
     name, words = argv[0], argv[1:]
+    # The two commands that are not a server's answer: one starts a server, the other
+    # reads this disk.
+    if name == "serve":
+        return serve(words)
+    if name == "skill":
+        return skill(words)
     client = dial()
     if client is None:
         return 3
@@ -251,7 +484,13 @@ def main(argv):
         # Compact, one row a line: the shape the layer has always printed, so a
         # script that greps `"ok":true` keeps reading what it read before.
         print(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
-    return 0 if reply.ok else 1
+    if not reply.ok:
+        return 1
+    # `skill` with no name answers with the table, and the table is four columns:
+    # a reader and a model look at one shape, whether the server or this disk said it.
+    if name == "skill":
+        table(reply)
+    return 0
 
 
 if __name__ == "__main__":
