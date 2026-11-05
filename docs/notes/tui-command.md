@@ -41,10 +41,13 @@ the same thing ends -- `write_sticky` and `write_session`, the two functions bot
 paths call. That is why a click on a session's name answers `render <name> = <show>`
 and moves the sticky session exactly as `/set_render_session` does, and why a click
 on a header answers `sticky session = <name>`: one behavior per gesture, whichever
-way it was asked for. `delete_session` is not the window's state, so `operate` hands
-it to `Client::apply` unchanged and the server answers it. Nothing here spells a
-command line: the window names what the operator meant, and the syntax stays the
-command layer's.
+way it was asked for. The one part a typed line cannot ask for is `solo`, the plain
+click's "and close the others": `write_session` applies it where the shown set is
+written, so the whole gesture costs one file write and one result line rather than
+one of each per window closed. `delete_session` is not the window's state, so
+`operate` hands it to `Client::apply` unchanged and the server answers it. Nothing
+here spells a command line: the window names what the operator meant, and the syntax
+stays the command layer's.
 
 ## Window
 

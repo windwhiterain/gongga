@@ -76,13 +76,19 @@ was not drawn is marked `stopped` instead of `idle`, so the list says that somet
 finished where the operator was not looking. An error keeps its own mark -- the failure
 is the stronger fact, and it is already the loudest mark in the column (`mark_of`).
 
-Siblings keep the order the layout hands over -- oldest session first, newest last --
-which makes a group appear where its first session is. That order is the announcement
-read backwards: the store lists newest first, and `Client::layout` reverses it, because
-a frame reads like a transcript -- what arrived last is at the bottom, and a session
-that has just been made is where the next one will be. The alternative, sorting
-siblings by name, would keep the tree's rows still while sessions come and go; it was
-not taken because the list's order is how a person finds the session they just created.
+Siblings keep the order the layout hands over -- the session whose turn ended longest
+ago first, the one that just finished last -- which makes a group appear where its
+first session is. That order is the announcement read backwards: the store lists the
+last-ended turn first, and `Client::layout` reverses it, because a frame reads like a
+transcript -- what arrived last is at the bottom, and the session that has just
+finished is where the next one will be. The alternative, sorting siblings by name,
+would keep the tree's rows still while sessions come and go; it was not taken because
+the list's order is how a person finds the session they were just working on.
+
+The cost is real and it was taken deliberately: a turn ending moves its row to the
+bottom of the list, and a shown session's pane moves with it (SPEC draws the shown
+sessions in the list's order). A name's row therefore is not the place the operator
+left it; the list is a record of what happened, ordered by when it happened.
 
 The walk is a stack, not recursion: depth is whatever the operator typed, and a
 hundred-segment name must not be a stack overflow in the frame that draws it. A

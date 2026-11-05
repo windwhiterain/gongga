@@ -94,6 +94,17 @@ will be fetched when that window is next drawn.
 session whose rows start over: `seq` alone compares two unrelated transcripts
 happily, and `(created_at, seq)` does not.
 
+## SessionInfo — ended_at
+
+`ended_at` is when the session's last turn ended, and it is the key the session list
+is ordered by: the store lists the turn that ended last first, and a client puts a
+delta row back in that order from the same number. `None` is a session that has not
+finished a turn yet, which stands at its `created_at` -- a number every client
+already has, so "newest first" needs no second field.
+
+It is not `updated_at`, which is on the wire as well: a tuning change rewrites that
+one, and a list ordered by it would move a session because its model was chosen.
+
 ## ResponsePart
 
 The SPEC models a response as `{session, reasoning, toolcall, output}`; the

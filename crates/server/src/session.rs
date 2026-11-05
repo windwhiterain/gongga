@@ -1456,6 +1456,8 @@ impl SessionManager {
                 cwd: stored,
                 created_at: 0,
                 updated_at: 0,
+                // Just created: no turn of it has ended yet.
+                ended_at: None,
                 messages: 0,
                 // A session that just came into existence has measured nothing.
                 usage: protocol::Usage::default(),

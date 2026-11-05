@@ -127,17 +127,27 @@ events then pose as the new session's history.
 
 ## Store::list_sessions
 
-The order is the order the sessions were made in, newest first, and it is the one
-thing about a session no later work can change: a window lays its panes out in
-this order, so a name that moves takes the pane the operator was reading with it.
+The order is the turn that ended last, newest first: `COALESCE(ended_at, created_at)`
+descending, `name` breaking the tie. A session that has not finished a turn yet stands
+at `created_at`, so making one puts it at the top, and a window lays its panes out in
+this order.
 
-Ordering by `updated_at` looked like "recent activity first" and behaved like
-"whatever finished last", because `finish_turn` rewrites that column at the end of
-a turn. Two sessions made in the same millisecond had no order at all between them,
-and a restart that replayed owed work finished those turns in scheduling order, so
-the same home came back drawn differently. `created_at` is written by
-`create_session_on` and by nothing else, and `id` is unique, so the pair is a
-total order that survives both the tie and the restart.
+`ended_at` is written by `finish_turn` and by nothing else. That is the point of a
+column of its own: ordering by `updated_at` looked like "recent activity first" and
+behaved like "whatever was written last", because `set_session_tuning` and
+`set_session_cache` rewrite it too -- choosing a model moved a session's row, and the
+pane the operator was reading moved with it. The list is ordered by turns, so only a
+turn may move it.
+
+The tie is `name`, not `id`, because `name` is what a client is told: `SessionInfo`
+carries `ended_at` and `name`, and `link::Client` sorts a delta by the same two
+numbers, so a row that arrives on the wire lands exactly where the store would have
+put it. `id` is unique but unpublished, and two orders that disagree are two orders.
+
+The previous key was `created_at`, chosen because nothing rewrote it: a window's panes
+are laid out in this order, so a name that moves takes the operator's pane with it.
+That cost is accepted now: the session being worked on is the one to find, so the row
+that finished a turn moves to the end of the list, where the next one will be.
 
 ## Store::get_session
 

@@ -53,6 +53,7 @@ contain spaces. `#` starts a comment.
     resize <cols> <rows>     ResizePseudoConsole
     wheel up|down [n]        SGR wheel events, n clicks
     click <col> <row>        SGR press and release at that cell
+    shift-click <col> <row>  the same press, with Shift held
     drag <c1> <r1> <c2> <r2> press, motion, release: what a selection is made of
     clipboard                read the clipboard now, and write it into the frame file
     sleep-until-frame [n] [ms]   wait for n more frames (default 1), giving up after ms
@@ -1417,6 +1418,10 @@ def decode_text(text):
     return "".join(out)
 
 
+# Shift, in the button field an SGR mouse report carries its modifiers in.
+SHIFT = 4
+
+
 def mouse_sequence(button, col, row, press=True):
     return ("\x1b[<%d;%d;%d%s" % (button, col, row, "M" if press else "m")).encode("utf-8")
 
@@ -1498,6 +1503,11 @@ class Driver:
             if len(parts) != 2:
                 raise RuntimeError("click wants <col> <row>")
             self.click(int(parts[0]), int(parts[1]))
+        elif command == "shift-click":
+            parts = argument.split()
+            if len(parts) != 2:
+                raise RuntimeError("shift-click wants <col> <row>")
+            self.click(int(parts[0]), int(parts[1]), SHIFT)
         elif command == "drag":
             parts = argument.split()
             if len(parts) != 4:
@@ -1552,10 +1562,10 @@ class Driver:
             self.send(mouse_sequence(button, col, row))
             self.wait_ms(25)
 
-    def click(self, col, row):
-        self.send(mouse_sequence(0, col, row))
+    def click(self, col, row, modifier=0):
+        self.send(mouse_sequence(modifier, col, row))
         self.wait_ms(25)
-        self.send(mouse_sequence(0, col, row, press=False))
+        self.send(mouse_sequence(modifier, col, row, press=False))
 
     def drag(self, col1, row1, col2, row2):
         """A press, a motion, and a release: what a selection is made of.

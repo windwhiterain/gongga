@@ -131,18 +131,23 @@ that session's rows, and over the session list it scrolls the list, which has a 
 of its own (SPEC gives it one). The keys keep acting on the sticky session whatever
 the pointer did.
 
-A click is a different thing, and SPEC gives it two jobs. On a name it toggles that
-session's window, with "shown" read from what the window draws (`Kind::Shown`). On a
-header it sets the sticky session. Both are *operations*, not command lines: the
-window says what it means -- `Operation::RenderSession`, `Operation::StickySession`
--- and the command layer answers it, the same way it answers the command that does
-the same thing. Spelling them as lines would put the command syntax in the window,
-where it does not belong, and would break the window every time the syntax moved.
+A click is a different thing, and SPEC gives it two jobs. On a name it selects that
+session, the way a list selects: a plain click shows it and closes every other
+window, a Shift+click adds it or takes it away and leaves the rest as they are --
+one gesture with two spellings, and `Operation::RenderSession`'s `solo` is which one
+it was. On a header it sets the sticky session. Both are *operations*, not command
+lines: the window says what it means -- `Operation::RenderSession`,
+`Operation::StickySession` -- and the command layer answers it, the same way it
+answers the command that does the same thing. Spelling them as lines would put the
+command syntax in the window, where it does not belong, and would break the window
+every time the syntax moved.
 
-Hiding a session that is shown therefore sends one line, not three. The sticky
-follow-on -- showing makes it sticky, hiding the sticky one clears it -- is
-`Client::follow_shown`, on the other side of the wire, so a typed
-`/set_render_session` behaves the same as the click.
+Closing the others costs one result line, not one per session: the shown set is
+written once, in `Shown::solo`, so a click that closes five windows still answers
+`render <name> = true, 5 other session(s) hidden`. The sticky follow-on -- showing
+makes it sticky, hiding the sticky one clears it -- lives in `write_session`, where a
+typed `/set_render_session` runs too, so the click and the line leave the same
+window behind.
 
 The go-to-bottom hint is not a session: it pins that window to its newest row
 (`Panes::pin`) and asks the command layer for nothing. A click in the events area

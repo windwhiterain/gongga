@@ -1262,14 +1262,17 @@ impl Tui {
                     self.screen.panes.toggle_row(&hit.name);
                     return;
                 }
-                let shown = self
-                    .screen
-                    .panes
-                    .get(&hit.name)
-                    .is_some_and(|pane| pane.kind == crate::panes::Kind::Shown);
+                let shown = self.screen.panes.is_shown(&hit.name);
+                // SPEC's click, the way a list selects: a plain one makes this
+                // the only window; Shift adds or removes it alone.
+                let (show, solo) = match mouse.modifiers.contains(KeyModifiers::SHIFT) {
+                    true => (!shown, false),
+                    false => (true, true),
+                };
                 self.clicked = Some(link::protocol::Operation::RenderSession {
                     session: hit.name.clone(),
-                    show: !shown,
+                    show,
+                    solo,
                 });
             }
             // A press in the events opens or closes SPEC's `abstract` there.
