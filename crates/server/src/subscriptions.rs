@@ -137,7 +137,7 @@ impl Subscriptions {
             tokio::select! {
                 _ = stop.cancelled() => break,
                 received = events.recv() => match received {
-                    Ok(event) => self.matched(&event).await,
+                    Ok(delta) => self.matched(&delta.event).await,
                     // A matcher that fell behind cannot know what it missed, and a
                     // notice nobody got is not a notice: say so once, per lag.
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {

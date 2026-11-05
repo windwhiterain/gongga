@@ -174,6 +174,26 @@ impl Panes {
         self.log.seed(window, width, rows);
     }
 
+    /// Writes down that a window has drawn up to `seq` of one session.
+    pub fn stamp(&mut self, window: &str, created: i64, seq: i64) {
+        self.log.stamp(window, created, seq);
+    }
+
+    /// What a window's journal says it has drawn.
+    pub fn stamp_of(&self, window: &str) -> Option<(i64, i64)> {
+        self.log.stamp_of(window)
+    }
+
+    /// Throws away a window's unaccounted tail before a refill.
+    pub fn rewind(&mut self, window: &str) {
+        self.log.rewind(window);
+    }
+
+    /// The windows the last frame drew.
+    pub fn drawn(&self) -> &[String] {
+        &self.drawn
+    }
+
     /// Drops the bodies this pane is not showing.
     pub fn evict(&mut self, window: &str, keep: std::ops::Range<usize>) {
         self.log.evict(window, keep);

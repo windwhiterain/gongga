@@ -475,6 +475,21 @@ pub trait Sink {
     /// and that entry is the front-end's to keep.
     fn settled(&mut self, _id: u64, _ok: bool) {}
 
+    /// Every row of `session` up to `seq` has been handed over.
+    ///
+    /// # Invariant
+    ///
+    /// Told after the events that drew the row, so a front-end stamping its journal
+    /// here states a fact about its own window -- which is what
+    /// `SessionInfo::transcript` is later compared against.
+    fn transcript(&mut self, _session: &str, _created: i64, _seq: i64) {}
+    /// `window` is about to be refilled: drop what no stored row accounts for.
+    ///
+    /// # Invariant
+    ///
+    /// Only the tail. Everything up to the window's stamp was drawn from rows that
+    /// still exist; keeping the half-written block would show it twice.
+    fn rewind(&mut self, _window: &str) {}
     /// A session stopped: its turn ended, and it waits for the operator.
     ///
     /// # Invariant
@@ -581,6 +596,71 @@ pub struct Client {
     home_note: Option<String>,
     /// SPEC's `active_quota` row, as the last step's reading spelled it.
     quota: Option<QuotaRow>,
+    /// Per session: where the server's transcript stands, and what this client
+    /// has drawn of it. See [`Sync`].
+    sync: HashMap<String, Sync>,
+    /// The position of the last event applied on this link: a jump is a hole.
+    cursor: Option<u64>,
+}
+
+/// What this client says it has drawn of one session.
+///
+/// # Invariant
+///
+/// The front-end's declaration and nothing else: this layer never reads a journal, so
+/// anything but its word here would be a guess about what a window holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Drawn {
+    /// Nothing declared yet: nothing may be fetched on its behalf.
+    Unknown,
+    /// The session, and the row its window ends at.
+    At { created: i64, seq: i64 },
+    /// The stream skipped events: what it holds cannot be trusted.
+    Lost,
+}
+
+/// One session's transcript, as the two sides state it.
+///
+/// # Invariant
+///
+/// Two numbers, neither derived from the other: `server` is the last thing a
+/// `SessionInfo` or `Transcript` said, `drawn` is what the front-end declared.
+/// Answering "in sync" from anything but their comparison is a guess.
+#[derive(Debug)]
+struct Sync {
+    /// Its `created_at`: a name handed out again is a different transcript.
+    created: i64,
+    /// The last row the server says it has written.
+    server: i64,
+    /// What the front-end says its own journal holds.
+    drawn: Drawn,
+    /// The refill in flight, when one is. See [`Fill`].
+    fill: Option<Fill>,
+    /// Set when a refill was refused, so a drawing window cannot spin.
+    ///
+    /// # Invariant
+    ///
+    /// Cleared by a greeting and nothing else: a refusal answers one range, not a moment.
+    blocked: bool,
+}
+
+/// A refill in flight: what the window is owed, and what arrived meanwhile.
+///
+/// # Invariant
+///
+/// The reply is a snapshot as of `as_of`, so a buffered event is either inside it
+/// (`seq <= as_of`, dropped) or news (`seq > as_of`, applied after). That is the join:
+/// no gap for want of a resend, no line twice for want of a number.
+#[derive(Debug)]
+struct Fill {
+    /// The command's id, so its answer closes this fill.
+    id: u64,
+    /// What the bus sent while the answer was on its way.
+    buffered: Vec<(u64, Event)>,
+    /// Whether the whole window is re-read, rather than the tail after its stamp.
+    whole: bool,
+    /// Whether the front-end was told to make room: once per fill, not per event.
+    rewound: bool,
 }
 
 /// What the operator typed, for the purpose of echoing it back into the log.
@@ -784,6 +864,8 @@ impl Client {
             build_note: None,
             home_note: None,
             quota: None,
+            sync: HashMap::new(),
+            cursor: None,
         }
     }
 
@@ -841,6 +923,7 @@ impl Client {
                 commands,
                 sessions,
                 models,
+                cursor,
                 ..
             } => {
                 self.model = server.model.clone();
@@ -858,6 +941,8 @@ impl Client {
                 self.connected = true;
                 self.attempts = 0;
                 self.draining = server.draining;
+                // Where this link's stream starts.
+                self.cursor = Some(cursor);
                 // The announcement is the facts: the model and the session count.
                 // A warning belongs beside them.
                 self.build_note = (!server.build.is_empty() && server.build != protocol::BUILD)
@@ -871,7 +956,7 @@ impl Client {
             ServerMessage::Denied { reason } => {
                 sink.note(LineKind::Error, &format!("connection refused: {reason}"));
             }
-            ServerMessage::Event(event) => self.handle_event(event, sink),
+            ServerMessage::Event { seq, event } => self.handle_delta(seq, event, sink),
             // A kind this build does not know: the tag is what a reader needs;
             // the payload is the sending side's business.
             ServerMessage::Unknown { event, .. } => {
@@ -911,6 +996,64 @@ impl Client {
             .fill_paths(field("remote"), field("path"), rows);
     }
 
+    /// One event and its place in the stream.
+    ///
+    /// # Invariant
+    ///
+    /// A number that is not the one after the last is a hole, and nothing here
+    /// invents what it held: the event's session is marked lost instead, so the next
+    /// read of that window fetches rather than showing a gap as the conversation.
+    ///
+    /// While a refill is in flight its events wait here. See [`Fill`].
+    fn handle_delta(&mut self, seq: Option<u64>, event: Event, sink: &mut dyn Sink) {
+        let Some(seq) = seq else {
+            // A command's own answer: no position in the stream, but a refill's
+            // events do arrive this way.
+            self.handle_answer(event, sink);
+            return;
+        };
+        let skipped = self.cursor.is_some_and(|last| seq > last + 1);
+        self.cursor = Some(self.cursor.map_or(seq, |last| last.max(seq)));
+        if skipped
+            && let Some(session) = event.session()
+            && let Some(sync) = self.sync.get_mut(session)
+            && matches!(sync.drawn, Drawn::At { .. })
+        {
+            sync.drawn = Drawn::Lost;
+        }
+        if let Some(session) = event.session()
+            && let Some(sync) = self.sync.get_mut(session)
+            && let Some(fill) = sync.fill.as_mut()
+        {
+            fill.buffered.push((seq, event));
+            return;
+        }
+        self.handle_event(event, sink);
+    }
+
+    /// One event that is this connection's answer rather than the stream's.
+    ///
+    /// # Invariant
+    ///
+    /// The first event of a refill is what says the window must make room: the
+    /// rows that follow are the window's whole tail, so the half-written block
+    /// that no stored row accounts for must go before the first of them lands.
+    fn handle_answer(&mut self, event: Event, sink: &mut dyn Sink) {
+        if let Some(session) = event.session()
+            && let Some(sync) = self.sync.get_mut(session)
+            && let Some(fill) = sync.fill.as_mut()
+            && !fill.rewound
+        {
+            fill.rewound = true;
+            let window = session.to_string();
+            match fill.whole {
+                true => sink.forget(&window),
+                false => sink.rewind(&window),
+            }
+        }
+        self.handle_event(event, sink);
+    }
+
     /// One event from the server, given to the front-end whatever window it names.
     ///
     /// # Invariant
@@ -923,9 +1066,9 @@ impl Client {
     fn handle_event(&mut self, event: Event, sink: &mut dyn Sink) {
         match event {
             Event::Cmd { id, name, args } => {
-                // A question the completion asked is not a line of the operator's,
-                // so it is not shown, and its answer is not either.
-                if self.quiet.contains_key(&id) {
+                // Neither the completion's questions nor a refill is the operator's
+                // line: the window does not print what healed it.
+                if self.quiet.contains_key(&id) || self.is_fill(id) {
                     return;
                 }
                 let session = args.get("session").map(String::as_str);
@@ -953,6 +1096,10 @@ impl Client {
                 ..
             } => {
                 self.unconfirmed.retain(|(other, _)| *other != id);
+                // A refill's answer says how far its transcript reaches, nothing else.
+                if self.settle_fill(id, ok, &message, data.as_ref(), sink) {
+                    return;
+                }
                 // Before the row: an accepted command's news reaches the front-end.
                 sink.settled(id, ok);
                 if let Some(remote) = self.quiet.remove(&id) {
@@ -992,9 +1139,17 @@ impl Client {
             Event::Response(e) => self.handle_response(e, sink),
             Event::ToolCall(e) => self.handle_tool_call(e, sink),
             Event::ToolAnswer(e) => self.handle_tool_answer(e, sink),
-            Event::Sessions { sessions } => {
-                self.set_sessions(sessions, sink);
+            Event::Session { session } => {
+                self.apply_session(session, sink);
                 self.refresh(sink);
+            }
+            Event::SessionGone { name } => {
+                self.drop_session(&name, sink);
+                self.refresh(sink);
+            }
+            // Where a session's transcript ends: a stamp, never a line of its own.
+            Event::Transcript { session, seq } => {
+                self.announce_transcript(&session, seq, sink);
             }
             // An edited roster: silent, and the catalog follows it.
             Event::Models { models } => self.catalog.set_models(models),
@@ -1071,6 +1226,13 @@ impl Client {
             (Some(call_id), ResponsePart::ToolCall) => format!("c:{call_id}"),
             _ => format!("r:{}:{}:{:?}", e.session, e.turn, e.part),
         };
+        // The operator's own words, replayed: a line, exactly as the echo that
+        // wrote them live put it there.
+        if e.part == ResponsePart::Input {
+            let window = e.session.clone();
+            sink.line(&window, LineKind::User, &e.text);
+            return;
+        }
         let (kind, label) = match e.part {
             // No label: the kind's colour (dim italic) already says this is the
             // model thinking, and the label was the word twice.
@@ -1082,6 +1244,8 @@ impl Client {
             // thing saying who ran it.
             ResponsePart::Activity => (LineKind::ToolCall, "provider: "),
             ResponsePart::Output => (LineKind::Assistant, ""),
+            // Handled above; the block path never sees one.
+            ResponsePart::Input => (LineKind::User, ""),
         };
         // The tag says which part of the answer this is; the window says who speaks.
         let prefix = self.tag(&e.session, label);
@@ -1141,12 +1305,171 @@ impl Client {
         for old in &self.sessions {
             if !sessions.iter().any(|new| new.name == old.name) {
                 sink.forget(&old.name);
+                self.sync.remove(&old.name);
             }
         }
         // As published: a value completed for a session belongs to that
         // session's directory and machine.
         self.catalog.set_sessions(sessions.clone());
+        for row in &sessions {
+            self.stamp_server(row);
+        }
         self.sessions = sessions;
+    }
+
+    /// Records what the server says about one session's transcript.
+    ///
+    /// # Invariant
+    ///
+    /// A session whose `created_at` moved is a different session under a reused
+    /// name, and what the window drew belongs to the old one: the declaration is
+    /// dropped. That `created_at` check is why the stamp is a pair and not a
+    /// number -- `seq` alone compares two unrelated transcripts happily.
+    fn stamp_server(&mut self, row: &SessionInfo) {
+        let entry = self.sync.entry(row.name.clone()).or_insert(Sync {
+            created: row.created_at,
+            server: row.transcript,
+            drawn: Drawn::Unknown,
+            fill: None,
+            blocked: false,
+        });
+        if entry.created != row.created_at {
+            entry.created = row.created_at;
+            entry.drawn = Drawn::Unknown;
+            entry.fill = None;
+            entry.blocked = false;
+        }
+        entry.server = row.transcript;
+    }
+
+    /// One session row arrived: created, or changed.
+    fn apply_session(&mut self, row: SessionInfo, sink: &mut dyn Sink) {
+        let added = !self.sessions.iter().any(|s| s.name == row.name);
+        self.stamp_server(&row);
+        // A name never listed has no journal, so no history to be behind on.
+        if added && let Some(sync) = self.sync.get_mut(&row.name) {
+            let (created, server) = (sync.created, sync.server);
+            sync.drawn = Drawn::At {
+                created,
+                seq: server,
+            };
+        }
+        match self.sessions.iter_mut().find(|s| s.name == row.name) {
+            Some(held) => *held = row,
+            // Newest first: the list reads like the greeting wrote it.
+            None => self.sessions.insert(0, row),
+        }
+        self.catalog.set_sessions(self.sessions.clone());
+        self.refresh(sink);
+    }
+
+    /// One session left: its window is emptied and its window's stamp goes.
+    fn drop_session(&mut self, name: &str, sink: &mut dyn Sink) {
+        self.sessions.retain(|s| s.name != name);
+        self.sync.remove(name);
+        self.catalog.set_sessions(self.sessions.clone());
+        sink.forget(name);
+        self.refresh(sink);
+    }
+
+    /// One transcript grew: the server's side of the comparison, and the
+    /// front-end's chance to stamp what it just drew.
+    fn announce_transcript(&mut self, session: &str, seq: i64, sink: &mut dyn Sink) {
+        let mut stamp = None;
+        if let Some(sync) = self.sync.get_mut(session) {
+            // A current window stays current: the events that drew the row came first.
+            let current = matches!(
+                sync.drawn,
+                Drawn::At { created, seq } if created == sync.created && seq == sync.server
+            );
+            sync.server = seq;
+            if current {
+                sync.drawn = Drawn::At {
+                    created: sync.created,
+                    seq,
+                };
+                stamp = Some((sync.created, seq));
+            }
+        }
+        if let Some(row) = self.sessions.iter_mut().find(|s| s.name == session) {
+            row.transcript = seq;
+        }
+        if let Some((created, seq)) = stamp {
+            sink.transcript(session, created, seq);
+        }
+    }
+
+    /// Whether `id` is a refill this layer asked for.
+    fn is_fill(&self, id: u64) -> bool {
+        self.sync
+            .values()
+            .any(|sync| sync.fill.as_ref().is_some_and(|fill| fill.id == id))
+    }
+
+    /// Closes a refill's answer, so what arrived meanwhile can be applied on top.
+    ///
+    /// # Invariant
+    ///
+    /// `seq <= as_of` is inside the reply and dropped; `seq > as_of` is news and is
+    /// applied in order. A refusal leaves the window behind, never "current".
+    fn settle_fill(
+        &mut self,
+        id: u64,
+        ok: bool,
+        message: &str,
+        data: Option<&serde_json::Value>,
+        sink: &mut dyn Sink,
+    ) -> bool {
+        let Some(name) = self
+            .sync
+            .iter()
+            .find(|(_, sync)| sync.fill.as_ref().is_some_and(|f| f.id == id))
+            .map(|(name, _)| name.clone())
+        else {
+            return false;
+        };
+        let field = |key: &str| {
+            data.and_then(|d| d.get(key))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0)
+        };
+        let last_seq = field("last_seq");
+        let as_of = data.and_then(|d| d.get("as_of")).and_then(|v| v.as_u64());
+        let Some(sync) = self.sync.get_mut(&name) else {
+            return true;
+        };
+        let Some(fill) = sync.fill.take() else {
+            return true;
+        };
+        // It was never the operator's line, so no answer of it is owed anywhere.
+        self.results.remove(&id);
+        if !ok || as_of.is_none() {
+            // Refused, not pending: the window says why once and waits for a new link.
+            if let Some(sync) = self.sync.get_mut(&name) {
+                sync.blocked = true;
+            }
+            sink.note(
+                LineKind::Error,
+                &format!("{name}: its transcript could not be fetched: {message}"),
+            );
+            return true;
+        }
+        let sync_created = sync.created;
+        sync.server = last_seq;
+        sync.drawn = Drawn::At {
+            created: sync.created,
+            seq: last_seq,
+        };
+        let as_of = as_of.unwrap_or_default();
+        sink.transcript(&name, sync_created, last_seq);
+        let (late, stale): (Vec<_>, Vec<_>) =
+            fill.buffered.into_iter().partition(|(seq, _)| *seq > as_of);
+        drop(stale);
+        for (_, event) in late {
+            self.handle_event(event, sink);
+        }
+        self.refresh(sink);
+        true
     }
 
     /// The status line: server facts only, never a "current session".
@@ -1184,6 +1507,12 @@ impl Client {
         self.connected = false;
         self.results.clear();
         self.attempts = attempts;
+        // Nothing that was in flight will be answered: the stream it was read
+        // from is gone, and the next dial starts a new one.
+        self.cursor = None;
+        for sync in self.sync.values_mut() {
+            sync.fill = None;
+        }
         self.refresh(sink);
         let lines: Vec<String> = std::mem::take(&mut self.unconfirmed)
             .into_iter()
@@ -1234,6 +1563,118 @@ impl Client {
         Some(ClientMessage::Command {
             id,
             name: "list_paths".to_string(),
+            args,
+        })
+    }
+
+    /// What the front-end's own journal holds for one session, told once per
+    /// declaration.
+    ///
+    /// # Invariant
+    ///
+    /// The front-end is the only one who knows this: it is the length of a
+    /// journal this layer never reads. Saying it here is what lets the greeting
+    /// compare two numbers instead of shipping the transcript.
+    pub fn declare_drawn(&mut self, name: &str, created: i64, drawn: i64) {
+        let Some(sync) = self.sync.get_mut(name) else {
+            return;
+        };
+        if sync.created != created {
+            sync.drawn = Drawn::Unknown;
+            return;
+        }
+        sync.drawn = Drawn::At {
+            created,
+            seq: drawn,
+        };
+    }
+
+    /// The sessions whose window is behind the server, and the row a refill
+    /// would start at.
+    ///
+    /// # Invariant
+    ///
+    /// Names, never sends: what is behind is decided here, but *when* it is
+    /// fetched belongs to the front-end that is about to draw the window. A
+    /// session nobody reads costs nothing, which is the whole point of a
+    /// greeting that states stamps instead of content.
+    pub fn behind(&self) -> Vec<(String, i64)> {
+        self.sync
+            .keys()
+            .filter_map(|name| self.behind_one(name).map(|from| (name.clone(), from)))
+            .collect()
+    }
+
+    /// Where a refill of one window would start, or `None` when it is current.
+    pub fn behind_one(&self, name: &str) -> Option<i64> {
+        let sync = self.sync.get(name)?;
+        if sync.fill.is_some() || sync.blocked {
+            return None;
+        }
+        match sync.drawn {
+            // Nothing declared: nothing owed on the front-end's behalf.
+            Drawn::Unknown => None,
+            // A lost thread or a reused name: the window holds what cannot be
+            // trusted, and only a whole read replaces it.
+            Drawn::Lost => Some(1),
+            Drawn::At { created, .. } if created != sync.created => Some(1),
+            // Past the server's own end: rows were truncated, so the window
+            // holds rows that no longer exist.
+            Drawn::At { seq, .. } if seq > sync.server => Some(1),
+            Drawn::At { seq, .. } if seq < sync.server => Some(seq + 1),
+            Drawn::At { .. } => None,
+        }
+    }
+
+    /// Declares that this front-end has no record of the session at all.
+    ///
+    /// # Invariant
+    ///
+    /// Not "in sync": it says there is no history to be behind on. A window whose
+    /// journal holds blocks has a stamp and is compared, which is where a gap shows.
+    pub fn declare_nothing(&mut self, name: &str) {
+        if let Some(sync) = self.sync.get_mut(name) {
+            let server = sync.server;
+            let created = sync.created;
+            sync.drawn = Drawn::At {
+                created,
+                seq: server,
+            };
+        }
+    }
+
+    /// Asks the server for one window's missing rows; `None` when nothing is
+    /// owed or there is no link.
+    ///
+    /// # Invariant
+    ///
+    /// Never echoes: it is the window's own question, and the operator's last
+    /// line is not replaced by it. The answer's rows arrive as the events that
+    /// drew them live, so a refilled window is indistinguishable from one that
+    /// never had a gap -- which is the only thing a whole fill has to be.
+    pub fn ask_transcript(&mut self, name: &str) -> Option<ClientMessage> {
+        if !self.connected || self.catalog.command("get_messages").is_none() {
+            return None;
+        }
+        let from = self.behind_one(name)?;
+        let whole = from == 1;
+        let id = self.next_id();
+        let mut args = protocol::Args::new();
+        // An empty end is the boundary: every row from `from` to the last one.
+        args.insert("range".to_string(), format!("{from}:"));
+        args.insert("session".to_string(), name.to_string());
+        // The rows a window draws, and where the transcript stood: a refill, not a read.
+        args.insert("replay".to_string(), "true".to_string());
+        let sync = self.sync.get_mut(name)?;
+        sync.fill = Some(Fill {
+            id,
+            buffered: Vec::new(),
+            whole,
+            rewound: false,
+        });
+        Some(ClientMessage::Command {
+            id,
+            name: "get_messages".to_string(),
             args,
         })
     }
@@ -1603,7 +2044,10 @@ impl Link {
             return false;
         }
         while let Some(bytes) = self.recv().await {
-            if let Ok(ServerMessage::Event(Event::CmdResult { id, .. })) = decode_server(&bytes)
+            if let Ok(ServerMessage::Event {
+                event: Event::CmdResult { id, .. },
+                ..
+            }) = decode_server(&bytes)
                 && id == CANCEL_ID
             {
                 return true;
@@ -1753,7 +2197,7 @@ async fn ask(
             anyhow::bail!("server disconnected");
         };
         let event = match decode_server(&bytes)? {
-            ServerMessage::Event(event) => event,
+            ServerMessage::Event { event, .. } => event,
             _ => continue,
         };
         client.handle_event(event.clone(), &mut printer);
@@ -1864,7 +2308,7 @@ async fn run_once(client: &mut Client, link: &mut Link, command: &[String]) -> a
             anyhow::bail!("server disconnected");
         };
         let event = match decode_server(&bytes)? {
-            ServerMessage::Event(event) => event,
+            ServerMessage::Event { event, .. } => event,
             // A kind this build does not know: printed as it arrived, never
             // attributed to a session; `--json` gets the bytes.
             ServerMessage::Unknown { event, .. } => {

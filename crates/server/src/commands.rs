@@ -47,6 +47,16 @@ pub struct Dispatch {
     pub shutting_down: Arc<AtomicBool>,
     /// Pulled after the cancel acknowledgement has had a chance to leave.
     pub shutdown: CancellationToken,
+    /// The session rows this server last published, so a change is sent as the
+    /// one row that changed.
+    ///
+    /// # Invariant
+    ///
+    /// The picture the bus last handed out, never a cache of the database: the
+    /// difference against it is what a client is missing, and comparing with a
+    /// stored table it never saw would announce rows nobody needs. See
+    /// [`publish_sessions`].
+    pub published: std::sync::Arc<std::sync::Mutex<Vec<protocol::SessionInfo>>>,
 }
 
 /// Owns one slot in [`Dispatch::active`], releasing it even on a panic.
@@ -717,6 +727,22 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     Some("name"),
                     CompletionSource::Sessions,
                 ),
+                arg(
+                    "replay",
+                    "`true` sends the transcript as a window draws it, and says which \
+                     point of the stream the answer is a picture of: the rows a window \
+                     shows, the operator's own messages as their own lines, and the \
+                     answer still being written. A window that reconnected asks this \
+                     way; a person reading asks without it.",
+                    false,
+                    Some("true|false"),
+                    CompletionSource::Static(
+                        protocol::SHOW_VALUES
+                            .iter()
+                            .map(|v| v.to_string())
+                            .collect(),
+                    ),
+                ),
             ],
         },
         CommandSpec {
@@ -1011,7 +1037,9 @@ pub(crate) async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcom
         // The gate is claimed before the durable write, so a second sender can only
         // inject, never spawn a competing turn.
         match d.store.begin_turn(session.id(), name, &message) {
-            Ok(task) => {
+            Ok((task, seq)) => {
+                // A row like any other: windows draw it from their own echo.
+                d.agent.announce_row(name, Ok(seq));
                 spawn_turn(
                     d,
                     TurnWork {
@@ -1510,6 +1538,13 @@ async fn get_messages(d: &Dispatch, args: &Args) -> Outcome {
         Ok(s) => s,
         Err(e) => return Outcome::err(e.to_string()),
     };
+    let replay = matches!(
+        args.get("replay").map(String::as_str),
+        Some("true") | Some("1")
+    );
+    if replay {
+        return replay_transcript(d, &name, &session, args);
+    }
     let last_seq = match d.store.last_seq(session.id()) {
         Ok(v) => v,
         Err(e) => return Outcome::err(e.to_string()),
@@ -1535,6 +1570,83 @@ async fn get_messages(d: &Dispatch, args: &Args) -> Outcome {
     transcript_outcome(&name, t)
 }
 
+/// The transcript as a window draws it, plus the answer still being written.
+///
+/// # Invariant
+///
+/// A snapshot with its own stream position: rows, streaming parts and number are read
+/// inside the bus's gate, so a client can tell which events it receives are already
+/// here (`seq <= as_of`) and which are news. Without the number a refill repeats or
+/// loses the tail of an answer.
+///
+/// # Invariant
+///
+/// Only what a window draws: a notice is the server's own line and is skipped, and the
+/// operator's messages come back as [`ResponsePart::Input`].
+fn replay_transcript(
+    d: &Dispatch,
+    name: &str,
+    session: &crate::session::SessionHandle,
+    args: &Args,
+) -> Outcome {
+    // Read inside the gate, the end included: a later row's event is numbered above.
+    let (as_of, read) = d.bus.as_of(|| {
+        let last = d.store.last_seq(session.id())?;
+        let window = match args.get("range") {
+            None => SeqWindow {
+                first: 1,
+                last: last.max(1),
+            },
+            // A range this build cannot read is a caller's mistake: refused here
+            // rather than reported as a store failure.
+            Some(raw) => parse_seq_slice(raw, last).map_err(anyhow::Error::msg)?,
+        };
+        let rows = d
+            .store
+            .messages_between(session.id(), window.first, window.last)?;
+        Ok::<_, anyhow::Error>((rows, session.open_parts(), window.first))
+    });
+    let (read, open, first) = match read {
+        Ok(t) => t,
+        Err(e) => return Outcome::err(e.to_string()),
+    };
+    let mut events: Vec<Event> = read
+        .messages
+        .iter()
+        .filter_map(|row| row_event(name, row, true))
+        .collect();
+    // Published and not yet stored: what a window that reconnected has no other copy of.
+    for part in &open {
+        if part.text.trim().is_empty() {
+            continue;
+        }
+        events.push(Event::Response(ResponseEvent {
+            session: name.to_string(),
+            turn: part.turn,
+            part: part.part,
+            text: part.text.clone(),
+            done: false,
+            call_id: part.call_id.clone(),
+        }));
+    }
+    let count = events.len();
+    let message = format!(
+        "{count} event(s) at seq {first}..{} in {name} (transcript ends at seq {}, stream at {as_of})",
+        read.last_seq, read.last_seq
+    );
+    Outcome::ok_with(
+        message,
+        json!({
+            "session": name,
+            "status": read.status,
+            "last_seq": read.last_seq,
+            "as_of": as_of,
+            "replayed": true,
+        }),
+    )
+    .with_events(events)
+}
+
 /// Copies one session's transcript into a free name, and tells every client.
 ///
 /// # Invariant
@@ -1555,7 +1667,7 @@ async fn clone_session(d: &Dispatch, args: &Args) -> Outcome {
     match d.store.messages_between(report.id, 1, report.last_seq) {
         Ok(transcript) => {
             for row in &transcript.messages {
-                if let Some(event) = row_event(&name, row) {
+                if let Some(event) = row_event(&name, row, false) {
                     d.bus.publish(event);
                 }
             }
@@ -1827,7 +1939,7 @@ fn transcript_outcome(name: &str, t: Transcript) -> Outcome {
     let events = t
         .messages
         .iter()
-        .filter_map(|row| row_event(name, row))
+        .filter_map(|row| row_event(name, row, false))
         .collect();
     // The rows are the events; a long read is many small messages, not one that
     // cannot be carried.
@@ -1849,9 +1961,20 @@ fn transcript_outcome(name: &str, t: Transcript) -> Outcome {
 /// The shape is not this function's to invent, or a read could show a line no
 /// front-end drew live. Nothing to show is nothing to send, and `REPLAY_TURN`
 /// keeps a re-sent row out of the block a running turn is still writing.
-fn row_event(name: &str, row: &MessageRow) -> Option<Event> {
+fn row_event(name: &str, row: &MessageRow, drawn: bool) -> Option<Event> {
     if row.text.trim().is_empty() {
         return None;
+    }
+    // The operator's own message: a line, exactly where the echo put it.
+    if row.role.as_deref() == Some("user") {
+        return Some(Event::Response(ResponseEvent {
+            session: name.to_string(),
+            turn: REPLAY_TURN,
+            part: ResponsePart::Input,
+            text: row.text.clone(),
+            done: true,
+            call_id: None,
+        }));
     }
     // A tool's output is addressed by the call that asked for it, never by a turn.
     if row.kind == "tool_result" {
@@ -1880,10 +2003,9 @@ fn row_event(name: &str, row: &MessageRow) -> Option<Event> {
         "reasoning" => ResponsePart::Reasoning,
         "builtin_call" => ResponsePart::Activity,
         "text" => ResponsePart::Output,
-        // A notice and the prompt in force are the harness, not the model:
-        // they travel as a log line.
+        // The harness's own rows: a reader gets a log line, a refilled window nothing.
         _ => {
-            return Some(Event::Log {
+            return (!drawn).then(|| Event::Log {
                 level: LogLevel::Info,
                 message: row.text.clone(),
             });
@@ -2245,12 +2367,34 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
     resumed
 }
 
+/// Publishes what changed in the session list, one row at a time.
+///
+/// # Invariant
+///
+/// A delta, never the table: a change costs one row, and the names that left are
+/// published too, because a client cannot tell "gone" from "unchanged". A rename is
+/// therefore two rows: the old name gone, the new one stated.
 pub fn publish_sessions(d: &Dispatch) {
-    if let Ok(rows) = d.sessions.list() {
-        d.bus.publish(Event::Sessions {
-            sessions: rows.iter().map(|r| session_info(d, r)).collect(),
-        });
+    let Ok(rows) = d.sessions.list() else {
+        return;
+    };
+    let now: Vec<protocol::SessionInfo> = rows.iter().map(|r| session_info(d, r)).collect();
+    let mut last = d.published.lock().unwrap_or_else(|e| e.into_inner());
+    for old in last.iter() {
+        if !now.iter().any(|new| new.name == old.name) {
+            d.bus.publish(Event::SessionGone {
+                name: old.name.clone(),
+            });
+        }
     }
+    for row in &now {
+        if !last.iter().any(|old| old == row) {
+            d.bus.publish(Event::Session {
+                session: row.clone(),
+            });
+        }
+    }
+    *last = now;
 }
 
 /// What a session would send now: its live handle when it has one, else its row.
@@ -2312,6 +2456,9 @@ pub fn session_info(d: &Dispatch, row: &crate::store::SessionRow) -> protocol::S
         created_at: row.created_at,
         updated_at: row.updated_at,
         messages: row.messages,
+        // Read from the transcript, not from a count on the row: a derived number
+        // would be a second answer to the same question.
+        transcript: d.store.last_seq(row.id).unwrap_or(0),
         cwd,
         usage: row.usage,
         model,

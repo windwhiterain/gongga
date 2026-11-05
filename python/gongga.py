@@ -99,6 +99,7 @@ class Client:
         self.timeout = timeout
         self.label = label
         self.sessions = []
+        self.cursor = None
         self.models = []
         self.default_model = None
         self.catalog = []
@@ -172,7 +173,7 @@ class Client:
         self._send({"t": "command", "id": wanted, "name": command, "args": arguments})
 
         def answered(message):
-            inner = message.get("v", message)
+            inner, _ = _event(message)
             return inner.get("t") == "cmd_result" and inner.get("id") == wanted
 
         seen = []
@@ -180,7 +181,7 @@ class Client:
             message = self._wait(answered, collect=seen)
             if message is None:
                 raise Unreachable(f"{command} was sent and never answered")
-            inner = message.get("v", message)
+            inner, _ = _event(message)
             return Reply(inner.get("ok", False), inner.get("message", ""),
                          inner.get("data"), seen)
 
@@ -288,8 +289,8 @@ class Client:
                 return message
             if collect is not None:
                 collect.append(message)
-            keep = message.get("v", message)
-            if keep.get("t") in ("sessions", "models"):
+            keep, _ = _event(message)
+            if keep.get("t") in ("session", "session_gone", "models"):
                 self._apply(message)
         return None
 
@@ -302,15 +303,41 @@ class Client:
         no pid -- which is what an unreachable server looks like, wrongly.
         """
         kind = message.get("t")
-        payload = message.get("v", message)
         if kind == "hello":
+            payload = message.get("v", message)
             self.pid = payload.get("server", {}).get("pid", 0)
             self.catalog = payload.get("commands", [])
             self.models = payload.get("models", [])
             self.default_model = payload.get("default_model")
             self.sessions = payload.get("sessions", [])
-        elif payload.get("t") == "sessions":
-            self.sessions = payload.get("sessions", [])
+            # Where this link's stream starts: every event after this greeting is
+            # numbered above it, so a jump in the numbers is a gap.
+            self.cursor = payload.get("cursor")
+            return
+        event, _ = _event(message)
+        if event.get("t") == "session":
+            row = event.get("session", {})
+            name = row.get("name")
+            rest = [s for s in self.sessions if s.get("name") != name]
+            self.sessions = [row] + rest
+        elif event.get("t") == "session_gone":
+            name = event.get("name")
+            self.sessions = [s for s in self.sessions if s.get("name") != name]
+
+
+def _event(message):
+    """The event a message carries, and its place in the stream.
+
+    Two envelopes travel and an event has one more layer than it used to: an
+    event is `{"t": "event", "v": {"seq": n, "event": {...}}}`. `seq` is the
+    server's stream cursor -- absent when the event is only this connection's
+    answer -- and a gap in it says the server published something this client
+    never received.
+    """
+    payload = message.get("v", message)
+    if message.get("t") == "event":
+        return payload.get("event", {}), payload.get("seq")
+    return payload, None
 
 
 def connect(port=None, key=None, host=None, home=None, timeout=30.0):

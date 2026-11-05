@@ -81,6 +81,24 @@ full of them, and a record a build cannot name is a record it cannot read past.
 Nothing else is recorded. `rewrite`, `relabel`, `describe` and a toggle all append a
 fresh `Seal`, because each of them changes the block's form and the newest seal wins.
 
+## Record::Stamp and Record::Rewind — where the transcript ended, and what to drop
+
+A `Stamp` is not a block: it says this window has drawn every row of its session
+up to `seq`, and which session that is (`created`, so a name handed out again is
+not mistaken for the same transcript). It is the client's half of the sync stamp —
+the server's half is `SessionInfo::transcript` — and it is the only thing that can
+answer "was this window away while rows were written" without shipping rows.
+
+A `Rewind` says everything recorded above the newest `Stamp` is thrown away,
+because the server is about to send that tail again. The replay honours it on the
+way forward: `Log::cut_tail` keeps the blocks below the stamp and drops the rest,
+including the half-written block that no row accounts for.
+
+Both changed the journal's shape, so `VERSION` is 2: an older build cannot name a
+`Stamp` record and, by the framing's own rule, cannot read past it. Journals from
+before this are therefore not read — a window's scrollback from an older build is
+lost once, and what it draws from then on is stamped.
+
 ## A stream is written once, not once per chunk
 
 A block that is still growing keeps its text in memory and lands in the journal when

@@ -1012,6 +1012,85 @@ impl Log {
         self.seeded.remove(window);
     }
 
+    /// Records that every row up to `seq` of the session is on screen, and which
+    /// session that is.
+    ///
+    /// # Invariant
+    ///
+    /// The client's side of the sync stamp: the greeting says how far the server's
+    /// transcript reaches, this says how far this window's drawing of it does, and
+    /// the difference is what a refill fetches. Written to the journal so a
+    /// restart answers the same question with the same number.
+    pub fn stamp(&mut self, window: &str, created: i64, seq: i64) {
+        self.cache.stamp(window, created, seq);
+    }
+
+    /// What this window's journal says it has drawn, and of which session.
+    pub fn stamp_of(&self, window: &str) -> Option<(i64, i64)> {
+        let end = self.cache.end(window);
+        self.cache
+            .stamp_at(window, end)
+            .map(|(_, created, seq)| (created, seq))
+    }
+
+    /// Throws away what no stored row accounts for: the server is about to send
+    /// this window's tail again.
+    ///
+    /// # Invariant
+    ///
+    /// "Unaccounted" is a position in the journal, not a count of blocks: every
+    /// block whose record was written above the newest `Stamp`, and every block
+    /// this process drew and has not written down at all. A window read back only
+    /// in part therefore cuts in the right place, which a count of blocks it had
+    /// loaded would not.
+    pub fn rewind(&mut self, window: &str) {
+        self.cache.rewind(window);
+        let cut = self.stamp_offset(window);
+        self.cut_tail(window, cut);
+    }
+
+    /// Where the newest stamp of a window sits in its journal, if it has one.
+    fn stamp_offset(&self, window: &str) -> Option<u64> {
+        let end = self.cache.end(window);
+        self.cache.stamp_at(window, end).map(|(at, _, _)| at)
+    }
+
+    /// Drops a window's unaccounted tail, keeping the blocks below `cut`.
+    fn cut_tail(&mut self, window: &str, cut: Option<u64>) {
+        let doomed = |entry: &Entry, cut: Option<u64>| {
+            if entry.window.as_ref() != window {
+                return false;
+            }
+            match (entry.slot, cut) {
+                // Never written down: drawn after the last row, by definition.
+                (None, _) => true,
+                // Written above the newest stamp: also after it.
+                (Some(slot), Some(cut)) => slot > cut,
+                // A journal with no stamp at all: nothing here is in question.
+                (Some(_), None) => false,
+            }
+        };
+        if !self.entries.iter().any(|entry| doomed(entry, cut)) {
+            return;
+        }
+        let mut moved = Vec::with_capacity(self.entries.len());
+        let mut kept = Vec::with_capacity(self.entries.len());
+        for entry in std::mem::take(&mut self.entries) {
+            let mine = doomed(&entry, cut);
+            moved.push((!mine).then_some(kept.len()));
+            if !mine {
+                kept.push(entry);
+            }
+        }
+        self.entries = kept;
+        self.open = self
+            .open
+            .drain()
+            .filter_map(|(key, at)| moved.get(at).copied().flatten().map(|at| (key, at)))
+            .collect();
+        self.reindex();
+    }
+
     /// Takes a window's blocks out of memory, keeping its journal.
     fn drop_window(&mut self, window: &str) {
         if self.views.remove(window).is_none() {
@@ -1766,8 +1845,10 @@ impl Log {
         let live = self.take_window(window);
         self.drop_window(window);
         let mut ids: HashMap<u64, usize> = HashMap::new();
+        // Where a `Rewind` here cuts: the newest stamp at or before the first record.
+        let mut cut = self.cache.stamp_at(window, start).map(|(at, _, _)| at);
         for (at, record) in self.cache.forward(window, start) {
-            self.apply(window, at, &record, &mut ids);
+            self.apply(window, at, &record, &mut ids, &mut cut);
         }
         // No stream survives a restart: the process writing it is gone.
         let open: Vec<usize> = self
@@ -1849,7 +1930,14 @@ impl Log {
     }
 
     /// Applies one journal record, as if the call that wrote it had just happened.
-    fn apply(&mut self, window: &str, at: u64, record: &Record, ids: &mut HashMap<u64, usize>) {
+    fn apply(
+        &mut self,
+        window: &str,
+        at: u64,
+        record: &Record,
+        ids: &mut HashMap<u64, usize>,
+        cut: &mut Option<u64>,
+    ) {
         let width = self.width_of(window);
         match record {
             Record::Line { id, kind, text } => {
@@ -1873,6 +1961,13 @@ impl Log {
                     ids.insert(*id, place);
                 }
             },
+            // Not a block: it says where a later `Rewind` cuts.
+            Record::Stamp { .. } => *cut = Some(at),
+            // Thrown away again on the way forward: what is above it is the refill.
+            Record::Rewind => {
+                let window = window.to_string();
+                self.cut_tail(&window, *cut);
+            }
             Record::Seal {
                 id,
                 kind,
@@ -2105,7 +2200,9 @@ fn whole(record: Record, window: &str, width: usize) -> Option<Entry> {
         Record::Line { id, kind, text } => {
             (id, kind, String::new(), String::new(), text, false, None)
         }
-        Record::Delta { .. } => return None,
+        // Neither is a block: one says where the transcript stands, the other
+        // says what to throw away.
+        Record::Delta { .. } | Record::Stamp { .. } | Record::Rewind => return None,
     };
     let mut entry = Entry::with_tag(id, window, kind, &tag, text, width);
     entry.key = key;

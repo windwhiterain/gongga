@@ -237,6 +237,20 @@ gone there is nothing to ask with anyway.
 Best-effort goodbye: the server drops this connection now instead of waiting out
 its idle timeout. Worth nothing if it fails -- the window is already closing.
 
+## declare and answer_transcripts — a refill waits for a frame
+
+`declare` runs once per greeting: for every session the server lists, it asks the
+window's own journal where that window's record ends and tells the client. A
+window with no journal declares nothing, and an undeclared window is never
+fetched — a fresh client has nothing to be behind on.
+
+`answer_transcripts` runs after every step, beside the completion's own drain, and
+asks the server only for the sessions **this frame drew**: a session nobody is
+reading costs nothing, which is the whole point of a greeting that states stamps
+instead of content. The answer arrives as the events that drew those rows live, so
+a refilled window is drawn by the code that drew it the first time — no second
+renderer, and no shape for a refill to get wrong.
+
 ## Two pids, one server
 
 The pid `spawn` answers is the watchdog's and the pid in the greeting is the

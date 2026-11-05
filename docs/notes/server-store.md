@@ -251,6 +251,16 @@ provider sees, and make the model answer questions nobody asked. That is decided
 where the row is written (`wire_item`), not here, so the walk has no drop rules
 of its own.
 
+## begin_turn and deliver_pending — the seq they answer
+
+Both write the operator's own message as a `text` row with `role: user`, and both
+answer where that row landed. The caller announces it: a row whose position nobody
+told is a row a client cannot account for, and the window would be measured as
+behind from that moment on.
+
+`deliver_pending` answers the *last* seq it wrote, which is enough for a watermark:
+"every row up to here" is not a claim about any one of them.
+
 ## Store::truncate_after
 
 The other half of the retry rule. `llm.stream` retries a failed attempt against

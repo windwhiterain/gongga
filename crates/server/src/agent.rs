@@ -125,6 +125,8 @@ impl Agent {
                 (TurnOutcome::Failed, 0)
             }
         };
+        // No part outlives its turn: what is left is text whose row was never written.
+        session.open_clear();
         // The turn's own words ride the row: a subscriber reads them there.
         let answer = self
             .store
@@ -377,8 +379,9 @@ impl Agent {
         match self.store.deliver_pending(id, name) {
             // `waited` is the "no answer yet" number: a message written mid-step lands
             // only here.
-            Ok((delivered, waited_ms)) => {
+            Ok((delivered, waited_ms, last)) => {
                 if delivered > 0 {
+                    self.announce_row(name, Ok(last));
                     tracing::info!(
                         session = %name,
                         delivered,
@@ -884,14 +887,22 @@ impl Agent {
                             self.store
                                 .save_draft(id, &item_id, turn, part_name(part), &whole.1);
                     }
-                    self.bus.publish(Event::Response(ResponseEvent {
-                        session: name.to_string(),
-                        turn,
-                        part,
-                        text,
-                        done: false,
-                        call_id,
-                    }));
+                    // The text and the chunk that carries it are one step: a
+                    // snapshot read afterwards sees both, never one of them.
+                    self.bus.step(|_| {
+                        session.open_push(&item_id, turn, part, call_id.clone(), &text);
+                        (
+                            (),
+                            Some(Event::Response(ResponseEvent {
+                                session: name.to_string(),
+                                turn,
+                                part,
+                                text: text.clone(),
+                                done: false,
+                                call_id,
+                            })),
+                        )
+                    });
                 }
                 LlmEvent::PartDone { part, item_id } => {
                     let call_id = calls.get(&item_id).cloned();
@@ -914,8 +925,8 @@ impl Agent {
                     let payload = json!({"item": item, "summary": summary, "item_id": item_id});
                     said.insert(item_id.clone());
                     streamed.remove(&item_id);
-                    self.settle_item(id, &item_id);
-                    let _ = self.store.append_message(id, "reasoning", &payload);
+                    self.settle_item(session, &item_id);
+                    self.announce_row(name, self.store.append_message(id, "reasoning", &payload));
                 }
                 // The provider executed this one; keeping the item verbatim is
                 // what lets the next request carry the same transcript.
@@ -926,11 +937,14 @@ impl Agent {
                 } => {
                     said.insert(item_id.clone());
                     streamed.remove(&item_id);
-                    self.settle_item(id, &item_id);
-                    let _ = self.store.append_message(
-                        id,
-                        "builtin_call",
-                        &json!({"item": item, "replayable": replayable}),
+                    self.settle_item(session, &item_id);
+                    self.announce_row(
+                        name,
+                        self.store.append_message(
+                            id,
+                            "builtin_call",
+                            &json!({"item": item, "replayable": replayable}),
+                        ),
                     );
                 }
                 LlmEvent::Citation { title, url, .. } => {
@@ -945,18 +959,23 @@ impl Agent {
                         call_id: None,
                     }));
                     // Operator-only: the model keeps its text, not the annotation.
-                    let _ = self
-                        .store
-                        .append_message(id, "notice", &json!({"text": text}));
+                    self.announce_row(
+                        name,
+                        self.store
+                            .append_message(id, "notice", &json!({"text": text})),
+                    );
                 }
                 LlmEvent::Output { item_id, text } => {
                     streamed.remove(&item_id);
-                    self.settle_item(id, &item_id);
+                    self.settle_item(session, &item_id);
                     if !text.trim().is_empty() {
-                        let _ = self.store.append_message(
-                            id,
-                            "text",
-                            &json!({"role":"assistant","text":text}),
+                        self.announce_row(
+                            name,
+                            self.store.append_message(
+                                id,
+                                "text",
+                                &json!({"role":"assistant","text":text}),
+                            ),
                         );
                     }
                 }
@@ -970,7 +989,7 @@ impl Agent {
                 } => {
                     // Its own text is the arguments, which this event stores.
                     streamed.remove(&item_id);
-                    self.settle_item(id, &item_id);
+                    self.settle_item(session, &item_id);
                     // Before it runs: this id is what the result carries, which
                     // is how a front-end holds a call and its output as one item.
                     self.bus.publish(Event::ToolCall(protocol::ToolCallEvent {
@@ -978,11 +997,14 @@ impl Agent {
                         call_id: call_id.clone(),
                         head: call_head(&tool, &arguments),
                     }));
-                    let _ = self.store.append_message(
-                        id,
-                        "tool_call",
-                        &json!({"call_id": call_id, "name": tool, "arguments": arguments,
-                                "step": step}),
+                    self.announce_row(
+                        name,
+                        self.store.append_message(
+                            id,
+                            "tool_call",
+                            &json!({"call_id": call_id, "name": tool, "arguments": arguments,
+                                    "step": step}),
+                        ),
                     );
                     let _ = self.store.start_tool_call(id, &call_id, &tool, &arguments);
                     if self
@@ -1121,7 +1143,7 @@ impl Agent {
                 // SPEC: nothing a cancel interrupts is lost. The chunks were
                 // already handed to the reader, so the store gets them too.
                 LlmEvent::Cancelled => {
-                    self.keep_streamed(id, &name, turn, &mut streamed, &calls);
+                    self.keep_streamed(session, id, &name, turn, &mut streamed, &calls);
                     return Ok(StepResult::Stopped);
                 }
             }
@@ -1159,7 +1181,7 @@ impl Agent {
             anyhow::bail!("model stream ended without completing");
         }
         if cancel.is_cancelled() {
-            self.keep_streamed(id, &name, turn, &mut streamed, &calls);
+            self.keep_streamed(session, id, &name, turn, &mut streamed, &calls);
             return Ok(StepResult::Stopped);
         }
         if !ran_tools {
@@ -1372,11 +1394,14 @@ impl Agent {
             .iter()
             .map(crate::image::ImageRef::to_json)
             .collect();
-        let _ = self.store.append_message(
-            id,
-            "tool_result",
-            &json!({"call_id": call_id, "output": output, "images": images,
-                    "step": step, "ok": outcome.ok, "elapsed_ms": run_ms}),
+        self.announce_row(
+            name,
+            self.store.append_message(
+                id,
+                "tool_result",
+                &json!({"call_id": call_id, "output": output, "images": images,
+                        "step": step, "ok": outcome.ok, "elapsed_ms": run_ms}),
+            ),
         );
         let _ = self.store.finish_tool_call(id, &call_id, &output, status);
         self.log_event(
@@ -1415,17 +1440,20 @@ impl Agent {
     /// block left open is a block the reader cannot tell from a running tool.
     fn answer_interrupted(&self, id: i64, name: &str, call_id: &str, tool: &str, step: u32) {
         let said = crate::store::interrupted_call();
-        let _ = self.store.append_message(
-            id,
-            "tool_result",
-            &json!({
-                "call_id": call_id,
-                "output": said,
-                "images": [],
-                "step": step,
-                "ok": false,
-                "elapsed_ms": 0,
-            }),
+        self.announce_row(
+            name,
+            self.store.append_message(
+                id,
+                "tool_result",
+                &json!({
+                    "call_id": call_id,
+                    "output": said,
+                    "images": [],
+                    "step": step,
+                    "ok": false,
+                    "elapsed_ms": 0,
+                }),
+            ),
         );
         let _ = self.store.finish_tool_call(id, call_id, &said, "cancelled");
         self.bus.publish(Event::ToolAnswer(ToolAnswerEvent {
@@ -1446,8 +1474,33 @@ impl Agent {
     /// Called wherever a real row is appended, so a draft never outlives the row it
     /// became: a leftover draft would be a second copy of the same answer, appended at
     /// the next start under an `interrupted` flag that is no longer true.
-    fn settle_item(&self, id: i64, item_id: &str) {
-        let _ = self.store.drop_draft(id, item_id);
+    fn settle_item(&self, session: &SessionHandle, item_id: &str) {
+        let _ = self.store.drop_draft(session.id(), item_id);
+        // The row says it now, so the part stops being one a refill sends.
+        session.open_done(item_id);
+    }
+
+    /// Publishes where a session's transcript now ends, after a row was written.
+    ///
+    /// # Invariant
+    ///
+    /// Every stored row is followed by its position, so a client's watermark is
+    /// a statement about what it drew rather than a guess about what the server
+    /// might have written. Nothing is announced for a row that was not written:
+    /// a position that names no row is a position a client cannot check.
+    /// See `docs/notes/protocol-message.md`.
+    pub(crate) fn announce_row(&self, session: &str, written: anyhow::Result<i64>) {
+        match written {
+            Ok(seq) => {
+                self.bus.publish(Event::Transcript {
+                    session: session.to_string(),
+                    seq,
+                });
+            }
+            Err(e) => {
+                tracing::warn!(session = %session, error = %e, "a row was not written");
+            }
+        }
     }
 
     /// Stores what a cancelled item had already said, and closes its block.
@@ -1458,6 +1511,7 @@ impl Agent {
     /// what is stored is what a request may send. See `docs/notes/server-agent.md`.
     fn keep_streamed(
         &self,
+        session: &SessionHandle,
         id: i64,
         name: &str,
         turn: u64,
@@ -1476,11 +1530,12 @@ impl Agent {
                         json!({"summary": text, "item_id": item_id.clone(),
                                "interrupted": true}),
                     )),
-                    // A call's text is its arguments; an activity is progress.
-                    ResponsePart::ToolCall | ResponsePart::Activity => None,
+                    // A call's text is its arguments; an activity is progress;
+                    // the operator's words are not the model's to store.
+                    ResponsePart::ToolCall | ResponsePart::Activity | ResponsePart::Input => None,
                 };
                 if let Some((kind, payload)) = stored {
-                    let _ = self.store.append_message(id, kind, &payload);
+                    self.announce_row(name, self.store.append_message(id, kind, &payload));
                 }
             }
             self.bus.publish(Event::Response(ResponseEvent {
@@ -1491,7 +1546,7 @@ impl Agent {
                 done: true,
                 call_id: calls.get(&item_id).cloned(),
             }));
-            self.settle_item(id, &item_id);
+            self.settle_item(session, &item_id);
         }
     }
 
@@ -1515,10 +1570,13 @@ impl Agent {
             "thinking_mark",
             &json!({"text": crate::store::THINKING_MARK}),
         ) {
-            Ok(_) => tracing::info!(
-                session = %session,
-                "appended a turn boundary: the provider refused the transcript without one"
-            ),
+            Ok(seq) => {
+                self.announce_row(session, Ok(seq));
+                tracing::info!(
+                    session = %session,
+                    "appended a turn boundary: the provider refused the transcript without one"
+                )
+            }
             Err(e) => {
                 tracing::warn!(session = %session, error = %e, "cannot append the thinking marker")
             }
@@ -1528,9 +1586,11 @@ impl Agent {
     fn error(&self, id: i64, session: &str, what: &str, e: anyhow::Error) {
         tracing::error!(session = %session, "failed to {what}: {e}");
         let said = format!("{session}: failed to {what}: {e}");
-        let _ = self
-            .store
-            .append_message(id, "notice", &json!({"text": said}));
+        self.announce_row(
+            session,
+            self.store
+                .append_message(id, "notice", &json!({"text": said})),
+        );
         self.bus.publish(Event::Log {
             level: LogLevel::Error,
             message: said,
@@ -1981,5 +2041,7 @@ fn part_name(part: ResponsePart) -> &'static str {
         ResponsePart::Reasoning => "reasoning",
         ResponsePart::ToolCall => "tool_call",
         ResponsePart::Activity => "activity",
+        // Never streamed: a replayed message is a row, and a row is not drafted.
+        ResponsePart::Input => "input",
     }
 }

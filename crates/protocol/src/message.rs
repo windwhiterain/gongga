@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 pub type Args = BTreeMap<String, String>;
 
@@ -64,15 +64,44 @@ pub enum ServerMessage {
         protocol: u32,
         server: ServerInfo,
         commands: Vec<CommandSpec>,
+        /// Every session the server holds, each carrying its sync stamp.
+        ///
+        /// # Invariant
+        ///
+        /// A greeting is the one place the whole table is sent, because it is the one
+        /// moment a client has none; every later change is one [`Event::Session`]. Each
+        /// row's [`SessionInfo::transcript`] is what a client's own record is compared
+        /// with, and a difference means a gap to fetch when that window is read.
         sessions: Vec<SessionInfo>,
         /// The models a request could run on here, and what each of them takes.
         #[serde(default)]
         models: Vec<ModelInfo>,
+        /// The stream position this connection starts from: every event this
+        /// server publishes afterwards is numbered above it.
+        ///
+        /// # Invariant
+        ///
+        /// The counter restarts with the process, so this number is only
+        /// comparable with events of the same [`ServerInfo::pid`]; a client that
+        /// redials a different server starts its stream from that one's cursor.
+        #[serde(default)]
+        cursor: u64,
     },
     /// The key was wrong. The connection is closed right after this.
     Denied { reason: String },
-    /// A single streamed observable.
-    Event(Event),
+    /// One streamed observable, and where it sits in the stream.
+    ///
+    /// # Invariant
+    ///
+    /// `seq` is the stream's cursor: one counter, one step per published event, so a
+    /// client that skipped one sees the jump. `None` is an event that is only this
+    /// connection's answer -- a command's rows or its result -- and so has no place in
+    /// the stream everybody else sees. See `docs/notes/protocol-message.md`.
+    Event {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+        event: Event,
+    },
     /// An event whose `t` this build does not know, or whose shape it cannot read.
     ///
     /// # Invariant
@@ -128,6 +157,19 @@ pub struct ServerInfo {
     pub draining: bool,
 }
 
+/// One event and its place in the stream: what the bus hands a subscriber.
+///
+/// # Invariant
+///
+/// The number is assigned where the event is published and never changes; it is
+/// the same number [`ServerMessage::Event`] carries, so a subscriber that keeps
+/// this and a client that keeps that are keeping one cursor.
+#[derive(Debug, Clone)]
+pub struct Delta {
+    pub seq: u64,
+    pub event: Event,
+}
+
 /// The `events[]` stream from the SPEC.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
@@ -148,8 +190,25 @@ pub enum Event {
     ToolCall(ToolCallEvent),
     /// Streamed tool output (bash stdout/stderr).
     ToolAnswer(ToolAnswerEvent),
-    /// The set of sessions changed.
-    Sessions { sessions: Vec<SessionInfo> },
+    /// One session was created or changed: its row, as the server states it.
+    ///
+    /// # Invariant
+    ///
+    /// One row, never the list. A client holds the sessions it was greeted with
+    /// and applies these; the whole table is republished only by a greeting,
+    /// which is the one moment a client is allowed to have none.
+    Session { session: SessionInfo },
+    /// A session is gone: a window named after it is emptied.
+    SessionGone { name: String },
+    /// Where one session's transcript ends: every row up to `seq` is written down.
+    ///
+    /// # Invariant
+    ///
+    /// The watermark a client keeps, not a fact about a window: one that drew every
+    /// event up to this has drawn every row up to `seq`. It can go backwards -- a
+    /// failed step's rows are truncated -- so "different" is the comparison, not
+    /// "behind".
+    Transcript { session: String, seq: i64 },
     /// The models a request could run on here changed.
     ///
     /// # Invariant
@@ -227,9 +286,11 @@ impl Event {
             Event::Status { session, .. } => Some(session.as_str()),
             Event::Usage(e) => Some(e.session.as_str()),
             Event::Record { session, .. } => session.as_deref(),
+            Event::Session { session } => Some(session.name.as_str()),
+            Event::SessionGone { name } => Some(name.as_str()),
+            Event::Transcript { session, .. } => Some(session.as_str()),
             Event::Cmd { .. }
             | Event::CmdResult { .. }
-            | Event::Sessions { .. }
             | Event::Models { .. }
             | Event::Commands { .. } => None,
             Event::Log { .. } | Event::Quota(_) => None,
@@ -252,7 +313,9 @@ impl Event {
             Event::Response(_) => "response",
             Event::ToolCall(_) => "tool_call",
             Event::ToolAnswer(_) => "tool_answer",
-            Event::Sessions { .. } => "sessions",
+            Event::Session { .. } => "session",
+            Event::SessionGone { .. } => "session_gone",
+            Event::Transcript { .. } => "transcript",
             Event::Models { .. } => "models",
             Event::Commands { .. } => "commands",
             Event::Status { .. } => "status",
@@ -324,6 +387,16 @@ pub enum ResponsePart {
     Output,
     /// A tool the provider ran itself, and the sources it cited.
     Activity,
+    /// The operator's own words, replayed from the transcript.
+    ///
+    /// # Invariant
+    ///
+    /// Never live: a message this client sent was drawn from its own echo, and
+    /// the reply's chunks are the model's. This part exists so a fill can put a
+    /// message back in the window exactly as the echo that wrote it did -- the
+    /// row is a row like any other, and a window that drops it drops the half of
+    /// the conversation it was answering.
+    Input,
 }
 
 /// The turn a read re-sends a stored row under, which no live turn can use.
@@ -580,13 +653,23 @@ pub enum TurnOutcome {
     Failed,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub name: String,
     pub status: SessionStatus,
     pub created_at: i64,
     pub updated_at: i64,
     pub messages: u64,
+    /// The seq of its last stored row, or 0 for an empty transcript.
+    ///
+    /// # Invariant
+    ///
+    /// The sync stamp. A client that drew every row up to this number is in sync
+    /// with this session; one that is behind it fetches the rest lazily. It is
+    /// the same number `Event::Transcript` publishes, read from the same table,
+    /// so a reader that compares them is comparing one fact with itself.
+    #[serde(default)]
+    pub transcript: i64,
     /// Its own shell's directory: a value completed for it is read from where a
     /// tool reads. Never the server's.
     pub cwd: String,

@@ -86,6 +86,12 @@ def wait_for(sock, timeout, wanted):
     return None, None
 
 
+def event_of(message):
+    """The event a message carries: an event is `{"t": "event", "v": {"seq", "event"}}`."""
+    payload = message.get("v", {})
+    return payload.get("event", payload)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, required=True)
@@ -147,13 +153,13 @@ def main():
 
     answer, _ = wait_for(
         sock, args.timeout,
-        lambda m: m.get("v", {}).get("t") == "cmd_result" and m.get("v", {}).get("id") == 7,
+        lambda m: event_of(m).get("t") == "cmd_result" and event_of(m).get("id") == 7,
     )
     if answer is None:
         print("the server did not answer the operation", file=sys.stderr)
         return 2
-    print(json.dumps(answer.get("v", {}), ensure_ascii=False, separators=(",", ":")))
-    return 0 if answer.get("v", {}).get("ok") else 1
+    print(json.dumps(event_of(answer), ensure_ascii=False, separators=(",", ":")))
+    return 0 if event_of(answer).get("ok") else 1
 
 
 if __name__ == "__main__":

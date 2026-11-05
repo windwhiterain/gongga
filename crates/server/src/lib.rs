@@ -366,6 +366,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         active: active.clone(),
         shutting_down: Arc::new(AtomicBool::new(false)),
         shutdown: CancellationToken::new(),
+        // Nothing has been announced yet: the first publish states every row.
+        published: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
     });
 
     // Before any turn: a run that died inside a tool leaves a call no request

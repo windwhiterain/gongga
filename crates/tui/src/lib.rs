@@ -743,6 +743,34 @@ impl Tui {
         self.dirty = true;
     }
 
+    /// Writes down that this window has drawn every row up to `seq` of the
+    /// session whose `created_at` is `created`.
+    ///
+    /// # Invariant
+    ///
+    /// The front-end's half of the sync stamp, and the only thing this process
+    /// knows that the server does not. See `docs/notes/tui-cache.md`.
+    pub fn stamp(&mut self, name: &str, created: i64, seq: i64) {
+        self.screen.panes.stamp(name, created, seq);
+    }
+
+    /// What this window's journal says it has drawn, and of which session.
+    pub fn stamp_of(&self, name: &str) -> Option<(i64, i64)> {
+        self.screen.panes.stamp_of(name)
+    }
+
+    /// Throws away what no stored row accounts for: the server is about to send
+    /// this window's tail again.
+    pub fn rewind(&mut self, name: &str) {
+        self.screen.panes.rewind(name);
+        self.dirty = true;
+    }
+
+    /// The windows a frame drew last: a window nobody draws costs nothing.
+    pub fn drawn(&self) -> &[String] {
+        self.screen.panes.drawn()
+    }
+
     /// Puts a line back into the prompt, cursor at the end. The counterpart of Enter.
     pub fn restore_input(&mut self, text: &str) {
         self.screen.completion = None;
