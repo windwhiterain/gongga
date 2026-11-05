@@ -87,3 +87,22 @@ cp "$HOME/.gongga/ship/config/config.toml" "$home/config.toml"
 - `--remote` 会话：cwd 在对面的机器上，那一支只看本机的卷。
 - 报告只带"这次边沿"那一次快照；如果清理没腾出空间，再报要等盘回到阈值以上。这是刻意的：
   没有第二个数（"又掉了多少再报"）就不发明一个。
+
+## 用户后来定的（远端磁盘，2026-11-05 第二轮）
+
+> 那就 monitor 用本地 monitor，notice 里根据目标机器决定是否注入 remote skill
+
+所以：
+
+1. **`@monitor/disk` 永远跑在本机**（`ensure_on` 不给 `--remote`）——它的 `bash`、`read_file` 都在本机，
+   `@skill: clean-disk` 的 `.ps1` 也只在本机有意义。
+2. **报告按目标机器注入参考**：本机低 → `@skill: clean-disk`；远端某台低 → `@skill: clean-disk` +
+   **`@skill: remote`**，并在正文里写明机器名、它的卷表、阈值，以及"动手要经过 remote skill 的
+   `run`/`put` 到那台机器"。
+3. 事件按机器分开（`payload.machine`：`local` 或远端名），一次"落下"一台机器一条——一台低不掩另一台。
+4. 远端读数：`remote/protocol.rs` 加 `Op::Space { path }`；`runner.rs` 在**它自己那台机器**上调
+   `crate::disk::volumes()`/`free_space()` 回答最小剩余空间 + 卷表；服务端在远端 tool 调用结束时
+   从 `ctx.reader` 的复用连接发一条请求（一次往返，不碰会话 shell），再与同一个
+   `[server] disk_low_mb` 比较。
+5. 未做：`main` 仍缺这轮全部工作（见下）。补它需要在 `docs/notes/server-monitor.md` 与
+   `scripts/monitor_selftest.sh` 两处解冲突：`git merge fix/older`（我的磁盘文段 + 他们的新增）。
