@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::interval;
 
-use crate::frame::{DEFAULT_MTU, Flags, Frame, FrameError, HEADER_LEN};
+use crate::frame::{DEFAULT_MTU, Flags, Frame, FrameError, HEADER_LEN, LOOPBACK_MTU};
 
 /// Largest message one send may carry, reassembled across fragments.
 pub const MAX_MESSAGE_LEN: usize = 8 * 1024 * 1024;
@@ -68,6 +68,40 @@ impl Default for ChannelConfig {
 impl ChannelConfig {
     pub fn payload_capacity(&self) -> usize {
         self.mtu.saturating_sub(HEADER_LEN).max(1)
+    }
+
+    /// Loopback tuning: no ACK delay, faster timers, bigger frames, less idle traffic.
+    ///
+    /// # Invariant
+    ///
+    /// Only a field still at its default is changed, so an explicit `[transport]`
+    /// setting wins. Both ends tune independently: frame size and timers are local
+    /// choices, and a frame header names fragments, not the sender's MTU.
+    pub fn tune_for_peer(self, peer: SocketAddr) -> Self {
+        if !peer.ip().is_loopback() {
+            return self;
+        }
+        let defaults = Self::default();
+        let mut cfg = self;
+        if cfg.mtu == defaults.mtu {
+            cfg.mtu = LOOPBACK_MTU;
+        }
+        if cfg.keepalive == defaults.keepalive {
+            cfg.keepalive = Duration::from_secs(10);
+        }
+        if cfg.ack_delay == defaults.ack_delay {
+            cfg.ack_delay = Duration::ZERO;
+        }
+        if cfg.tick == defaults.tick {
+            cfg.tick = Duration::from_millis(1);
+        }
+        if cfg.initial_rto == defaults.initial_rto {
+            cfg.initial_rto = Duration::from_millis(20);
+        }
+        if cfg.min_rto == defaults.min_rto {
+            cfg.min_rto = Duration::from_millis(5);
+        }
+        cfg
     }
 
     /// The bounds the timer arithmetic assumes: `clamp` wants `min <= max`, and

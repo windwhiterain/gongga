@@ -231,7 +231,7 @@ fn render_session(
         return Done::Local;
     };
     match state::parse_show(raw) {
-        Ok(show) => write_session(client, state, &name, show, sink),
+        Ok(show) => write_session(client, state, &name, show, false, sink),
         Err(e) => client.say(LineKind::Error, &e, sink),
     }
     Done::Local
@@ -241,11 +241,12 @@ fn render_session(
 ///
 /// # Invariant
 ///
-/// A gesture ends where the command that says the same thing ends, so
-/// `Operation::StickySession` is `set_sticky session` and
-/// `Operation::RenderSession` is `set_render_session`: one behavior per gesture,
-/// whichever way it was asked for. `delete_session` is not the window's state,
-/// so it is the command layer's, unchanged. See `docs/notes/tui-command.md`.
+/// A gesture ends where the command that says the same thing ends:
+/// `StickySession` is `set_sticky session` and `RenderSession` is
+/// `set_render_session`. `solo` is the part a typed line cannot ask for:
+/// `write_session` applies it where the shown set is written, so a gesture costs
+/// one file write and one line. `delete_session` is the command layer's.
+/// See `docs/notes/tui-command.md`.
 pub fn operate(
     client: &mut link::Client,
     state: &mut State,
@@ -257,8 +258,12 @@ pub fn operate(
             write_sticky(client, state, "session", &session, sink);
             link::Submission::Local
         }
-        protocol::Operation::RenderSession { session, show } => {
-            write_session(client, state, &session, show, sink);
+        protocol::Operation::RenderSession {
+            session,
+            show,
+            solo,
+        } => {
+            write_session(client, state, &session, show, solo, sink);
             link::Submission::Local
         }
         operation => client.apply(operation, sink),
@@ -291,18 +296,31 @@ fn write_sticky(
 /// It changes a view and never the state: the blocks a session already said are
 /// still held, so `true` after `false` brings them back. It also moves the
 /// sticky session -- shown makes it sticky, hiding the sticky one clears it --
-/// so a click and a typed line leave the same window behind.
+/// so a click and a typed line leave the same window behind. `solo` closes the
+/// other windows in the same write: a selection is one session.
 fn write_session(
     client: &link::Client,
     state: &mut State,
     name: &str,
     show: bool,
+    solo: bool,
     sink: &mut dyn Sink,
 ) {
-    if let Err(e) = state.set_shown(name, show) {
-        client.say(LineKind::Error, &format!("could not save: {e}"), sink);
-        return;
-    }
+    let written = if show && solo {
+        // Only a session the server has is a window: an entry a deleted name left
+        // behind was never one.
+        let live: Vec<&str> = client.sessions().iter().map(|s| s.name.as_str()).collect();
+        state.show_only(name, |held| live.contains(&held))
+    } else {
+        state.set_shown(name, show).map(|()| 0)
+    };
+    let closed = match written {
+        Ok(closed) => closed,
+        Err(e) => {
+            client.say(LineKind::Error, &format!("could not save: {e}"), sink);
+            return;
+        }
+    };
     let saved = if show {
         state.set_sticky("session", name)
     } else if state.sticky().get("session") == Some(name) {
@@ -313,7 +331,16 @@ fn write_session(
     if let Err(e) = saved {
         client.say(LineKind::Error, &format!("could not save: {e}"), sink);
     }
-    client.say(LineKind::Result, &format!("render {name} = {show}"), sink);
+    // One line: what the operator asked for, and what else it closed.
+    let others = match closed {
+        0 => String::new(),
+        closed => format!(", {closed} other session(s) hidden"),
+    };
+    client.say(
+        LineKind::Result,
+        &format!("render {name} = {show}{others}"),
+        sink,
+    );
 }
 
 /// Forgets what followed a sticky entry that just changed, and says so.

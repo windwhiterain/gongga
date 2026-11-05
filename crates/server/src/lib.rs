@@ -210,6 +210,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             installed.pin,
         );
     }
+    // What a tool says it is: the code's own words, as this home rewrote them.
+    tools::text::install(&cfg.config_path);
     let overridden = prompts::shared().overridden();
     tracing::info!(
         file = %cfg.config_path.display(),
@@ -323,14 +325,18 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         clients: std::sync::Mutex::new(std::collections::HashMap::new()),
         default_context: cfg.model.context,
         tools: Arc::new(
-            ToolRegistry::with_builtins(cfg.bash.timeout, cfg.bash.max_output_chars)
-                .with_python(cfg.python.clone(), skill_lib.clone())
-                .with_skills(
-                    tools::skill::programs(&cfg),
-                    skill_lib,
-                    cfg.bash.timeout,
-                    cfg.bash.max_output_chars,
-                ),
+            ToolRegistry::with_builtins(
+                cfg.tools.max_wait,
+                cfg.bash.timeout,
+                cfg.bash.max_output_chars,
+            )
+            .with_python(cfg.python.clone(), skill_lib.clone())
+            .with_skills(
+                tools::skill::programs(&cfg),
+                skill_lib,
+                cfg.bash.timeout,
+                cfg.bash.max_output_chars,
+            ),
         ),
         bus: bus.clone(),
         compress_above_tokens: cfg.agent.compress_above_tokens,
@@ -342,6 +348,17 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         output_dir: output_dir.clone(),
         detached: detached.clone(),
     });
+
+    // A tool's sentences live only in the config. See `tools::text`.
+    let missing = tools::text::shared().missing(&agent.tools);
+    if !missing.is_empty() {
+        anyhow::bail!(
+            "{} words nothing about {missing:?}, and a tool's sentences live only there \
+             (`[tool_text.<tool>]`); without them a model is guessing what each argument \
+             is for",
+            cfg.config_path.display(),
+        );
+    }
 
     // Turns in flight and subscription actions: a stop waits for both.
     let active = Arc::new(AtomicUsize::new(0));
@@ -381,6 +398,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     if settled > 0 {
         tracing::info!(settled, "half-answers kept before serving");
     }
+    // What a greeting hands every client: the picture a change is diffed against.
+    commands::prime_sessions(&dispatch);
     // Whatever was in flight when the server last stopped is owed work.
     let resumed = commands::resume_pending(&dispatch).await;
     if resumed > 0 {
@@ -388,6 +407,14 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     }
     // Failures the last run left behind, before a client can ask about them.
     monitor::sweep(&dispatch, &cfg.home).await;
+    // A call a stopped server detached has no pid to adopt: say it was lost.
+    let lost = tools::tunnel::announce_lost(&store);
+    if lost > 0 {
+        tracing::info!(
+            lost,
+            "reported detached calls a stopped server never answered"
+        );
+    }
     // Whatever the last run detached is still out there; adopt its pids now.
     let adoption_started = std::time::Instant::now();
     let adopted = detached.adopt().await;
@@ -397,6 +424,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         elapsed_ms = adoption_started.elapsed().as_millis() as u64,
         "detached jobs adopted from the previous run"
     );
+
+    // A detached bash that ends while this server runs is news for its session.
+    let detached_watch = detached.watch(dispatch.shutdown.clone());
 
     // Alive until the drain ends. See `docs/notes/server-subscriptions.md`.
     let watching = subscriptions.clone();
@@ -477,6 +507,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     // The drain's end: nothing new may fire, and what fired is waited for.
     stop_watching.cancel();
     let _ = matcher.await;
+    // Nothing notices a job's end after this: a stopping server did not see it finish.
+    let _ = detached_watch.await;
     while active.load(std::sync::atomic::Ordering::SeqCst) != 0 {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }

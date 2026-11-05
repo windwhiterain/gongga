@@ -62,7 +62,10 @@ tools, told what to call the work and where to read it. Measured: *"The backgrou
 
 The same driver on the session's peer. One `Repl` enum holds either side, so a name is
 one interpreter and the other tool's answer to it is refused rather than borrowed --
-`\`default` is already a Python on its remote`, measured.
+`\`default` is already a Python on its remote`, measured. The refusal asks for another
+`name` first and mentions `del_python` second, because a name is what the caller can
+change without ending somebody's work. Its description says only that it is `python` on
+the peer; the name space and the rest are the `remote` skill's.
 
 What is *not* shared is how the process is reached, and two measurements decided it:
 
@@ -105,8 +108,15 @@ process buys nothing and a long-running interpreter must not block an edit.
 The driver runs on this machine, or on the session's remote when the call's
 `remote` names it -- the same choice `remote_python` makes, and the same one
 machine: a session's directory is on one peer, so a second name is refused. The
-remote driver is started by name there, exactly as `remote_python` starts it, so
-a peer without Python refuses the call rather than writing on this machine.
+remote driver is started by name there,
+exactly as `remote_python` starts it, so a peer without Python refuses the call
+rather than writing on this machine.
+
+`remote` is offered only to a session that has a remote -- `definitions` drops the
+argument otherwise, so a session on one machine is never shown a machine it does not
+have. `Tool::parameters` still declares it, because the operator's catalog is built
+from the same schema and `argument_error` reads it: a session that writes the argument
+anyway is refused by `file_remote`, not by the schema.
 
 Writes go to a temporary file in the target's directory and are moved into place
 with `os.replace`; the existing mode is kept. `replace` is literal and, unless

@@ -48,6 +48,19 @@ pub use crate::log::Log;
 pub use crate::panes::Panes;
 pub use crate::run::interactive;
 
+/// The modifiers a terminal forwards with a mouse event, as a gesture's own.
+///
+/// # Invariant
+///
+/// All three, because no one of them is enough: Shift is what a person reaches
+/// for and what xterm, and so VS Code's terminal, takes for text selection --
+/// that press never reaches the application -- while Alt and Ctrl are what it
+/// does forward. One predicate, so the click and the wheel cannot disagree about
+/// which modifiers exist. See `docs/notes/tui-lib.md`.
+fn gesture_modifiers() -> KeyModifiers {
+    KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::CONTROL
+}
+
 /// Runs the window: its own runtime, because the loop owns every task in it.
 pub fn main(args: link::Args) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -767,6 +780,11 @@ impl Tui {
         self.dirty = true;
     }
 
+    /// The rows a window's pane could draw last frame: what one page is.
+    pub fn room_of(&self, name: &str) -> usize {
+        self.screen.panes.room_of(name)
+    }
+
     /// The windows a frame drew last: a window nobody draws costs nothing.
     pub fn drawn(&self) -> &[String] {
         self.screen.panes.drawn()
@@ -1211,8 +1229,8 @@ impl Tui {
         None
     }
 
-    /// The mouse points at a pane: a notch scrolls it three rows, Shift one. See
-    /// `docs/notes/tui-lib.md`.
+    /// The mouse points at a pane: a notch scrolls it three rows, a held modifier
+    /// one. See `docs/notes/tui-lib.md`.
     fn handle_mouse(&mut self, mouse: MouseEvent) {
         // The input box has a mouse of its own: the caret, and what a drag selects.
         if self.input_mouse(&mouse) {
@@ -1262,14 +1280,17 @@ impl Tui {
                     self.screen.panes.toggle_row(&hit.name);
                     return;
                 }
-                let shown = self
-                    .screen
-                    .panes
-                    .get(&hit.name)
-                    .is_some_and(|pane| pane.kind == crate::panes::Kind::Shown);
+                let shown = self.screen.panes.is_shown(&hit.name);
+                // SPEC's click, the way a list selects: a plain one makes this
+                // the only window; a modifier adds or removes it alone.
+                let (show, solo) = match mouse.modifiers.intersects(gesture_modifiers()) {
+                    true => (!shown, false),
+                    false => (true, true),
+                };
                 self.clicked = Some(link::protocol::Operation::RenderSession {
                     session: hit.name.clone(),
-                    show: !shown,
+                    show,
+                    solo,
                 });
             }
             // A press in the events opens or closes SPEC's `abstract` there.
@@ -1357,7 +1378,7 @@ impl Tui {
 
     /// Rows a wheel event scrolls, positive into the past; `None` for anything else.
     fn wheel_rows(mouse: &MouseEvent) -> Option<i64> {
-        let rows: i64 = if mouse.modifiers.contains(KeyModifiers::SHIFT) {
+        let rows: i64 = if mouse.modifiers.intersects(gesture_modifiers()) {
             1
         } else {
             3
@@ -1527,7 +1548,17 @@ impl Tui {
     /// the only thing that changes the popup then, and nothing else would ask for
     /// the frame that shows it.
     pub fn refresh_completion(&mut self) {
-        self.screen.completion = next_completion(&self.screen.input, &self.completer);
+        let fresh = next_completion(&self.screen.input, &self.completer);
+        // The row the operator moved to survives the rebuild: an event arriving is
+        // not a keystroke, and a popup that jumped back to its first candidate on
+        // every streamed chunk could not be walked at all.
+        self.screen.completion = match (self.screen.completion.take(), fresh) {
+            (Some(old), Some(mut new)) if same_offering(&old, &new) => {
+                new.selected = old.selected.min(new.candidates.len() - 1);
+                Some(new)
+            }
+            (_, fresh) => fresh,
+        };
         self.dirty = true;
     }
 
@@ -1722,6 +1753,25 @@ fn next_completion(input: &InputLine, completer: &SharedCompleter) -> Option<Com
         candidates,
         selected: 0,
     })
+}
+
+/// Whether two offerings are the same question: the same token, the same answers.
+///
+/// # Invariant
+///
+/// The popup's own state is compared, not the line: a rebuild that offers the same
+/// list in the same place keeps the row the operator chose, and one that offers
+/// anything else starts over.
+fn same_offering(old: &Completion, new: &Completion) -> bool {
+    old.start == new.start
+        && old.end == new.end
+        && old.subject == new.subject
+        && old.candidates.len() == new.candidates.len()
+        && old
+            .candidates
+            .iter()
+            .zip(&new.candidates)
+            .all(|(a, b)| a.insert == b.insert && a.detail == b.detail)
 }
 
 /// Applies the chosen candidate, then asks what the line wants next. See `docs/notes/tui-lib.md`.

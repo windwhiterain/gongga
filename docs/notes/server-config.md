@@ -95,7 +95,20 @@ so a provider having a bad minute is waited out rather than hammered.
 
 ## BashConfig::timeout
 
-The number decides when the model stops waiting, nothing else.
+The number decides when the model stops waiting, nothing else. It is a default, not a
+ceiling: `ToolsConfig::max_wait` clamps it, so a home that sets a five-minute `bash`
+wait and leaves the tunnel at sixty seconds waits one minute and is told why.
+
+## ToolsConfig::max_wait
+
+The longest one call may wait for its answer: `[tools] max_wait_ms`, or
+`GONGGA_TOOL_MAX_WAIT_MS`, sixty seconds when neither says. Read from the same
+`[tools]` table the shell and interpreter settings live in, because it is the same
+subject one level up.
+
+It is a ceiling on waiting, not on the work. A call that would need longer is refused
+and told to say `detached`, which is a call that answers at once and reports when it is
+done -- so the ceiling never costs the work, only the turn's hold on it.
 
 ## BashConfig::max_output_chars
 
@@ -309,3 +322,18 @@ every request sends, and omitting it takes the shortest tier the model declares.
 Both live in the `sessions` row, so a restart restores them. With no declared
 tiers the window is zero and the interrupt is inert. See
 `docs/notes/server-commands.md`.
+
+## [transport] and the loopback tier
+
+`[transport]` in `config.toml` feeds `TransportConfig`, which becomes a
+`ChannelConfig` in `server/transport.rs`. A `mtu`, `window`, `keepalive` or
+`idle_timeout` written here is taken as the operator's word: `tune_for_peer`
+changes only fields still at their defaults, so an explicit `mtu = 1400` stays
+1400 on a loopback peer too.
+
+The template writes `mtu = 1200` and `window = 64`, which are exactly the
+defaults. That is deliberate: leaving them at the defaults is what lets a local
+window pick up the loopback tier (0 ms ACK delay, 1 ms tick, 8192-byte frames,
+10 s keepalive) without a config change. Changing either to a non-default value
+opts that field out of the tier. See `docs/notes/protocol-channel.md` for the
+whole table and the SSH-tunnel blind spot.

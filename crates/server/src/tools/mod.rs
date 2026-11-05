@@ -31,9 +31,18 @@ pub mod job;
 pub mod python;
 pub mod python_remote;
 pub mod skill;
+pub mod text;
+pub mod tunnel;
 pub mod words;
 
 /// Everything a tool invocation needs, supplied per call by the agent loop.
+///
+/// # Invariant
+///
+/// Copyable, because a call that said `detached` outlives the call that made it: it
+/// runs as a job of this server, with its own cancellation and no stream of the
+/// turn's to write to.
+#[derive(Clone)]
 pub struct ToolContext {
     pub session: String,
     pub call_id: String,
@@ -79,6 +88,8 @@ pub struct ToolContext {
     pub vision: crate::llm::Vision,
     /// Whether a message arrived for this session that its turn cannot read yet.
     pub inbox: crate::session::InboxSignal,
+    /// Whether a `cancel` is ending this turn, said where a tool call can hear it.
+    pub stop: crate::session::StopSignal,
     /// Set when shells end because the server is going: nothing that stops then finished.
     pub closing: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -232,7 +243,6 @@ impl ToolOutcome {
 /// A tool the model can call; a boxed future instead of `async_trait`, one macro less.
 pub trait Tool: Send + Sync {
     fn name(&self) -> &'static str;
-    fn description(&self) -> &'static str;
     fn parameters(&self) -> Value;
 
     /// Which machine this call's paths belong to.
@@ -244,6 +254,42 @@ pub trait Tool: Send + Sync {
     /// the whole of "whose file is this".
     fn machine(&self, _args: &Value, ctx: &ToolContext) -> Machine {
         ctx.machine
+    }
+
+    /// Whether this tool drives the session's remote.
+    ///
+    /// # Invariant
+    ///
+    /// The tool answers for itself, so a twin added tomorrow cannot be offered to a
+    /// session that has no such machine. See `definitions`.
+    fn is_remote(&self) -> bool {
+        false
+    }
+
+    /// How long this tool's own calls wait when the call states none.
+    ///
+    /// # Invariant
+    ///
+    /// A default, never a ceiling: the tunnel resolves the wait from this and its own
+    /// cap, and writes the answer into the call. See `tunnel::resolve`.
+    fn default_timeout(&self) -> Option<Duration> {
+        None
+    }
+
+    /// Whether this tool is subject to the tunnel's shared arguments.
+    ///
+    /// # Invariant
+    ///
+    /// `wait` is the one tool that answers no: SPEC treats it internally, because
+    /// waiting is its whole work -- a ceiling on it would keep it from waiting for what
+    /// it was asked to wait for, and `detached` would be a way of not waiting at all.
+    fn tunneled(&self) -> bool {
+        true
+    }
+
+    /// What runs when a call to this tool says `detached`.
+    fn detached_carrier(&self) -> tunnel::Carried {
+        tunnel::Carried::Call
     }
 
     fn run<'a>(
@@ -301,42 +347,49 @@ impl Cut {
 }
 
 pub struct ToolRegistry {
-    tools: Vec<Box<dyn Tool>>,
+    tools: Vec<Arc<dyn Tool>>,
+    /// The longest one call may wait for its answer. See `tunnel::resolve`.
+    max_wait: Duration,
 }
 
 impl ToolRegistry {
-    pub fn with_builtins(bash_timeout: Duration, max_output_chars: usize) -> Self {
+    pub fn with_builtins(
+        max_wait: Duration,
+        bash_timeout: Duration,
+        max_output_chars: usize,
+    ) -> Self {
         Self {
+            max_wait,
             tools: vec![
-                Box::new(BashTool {
+                Arc::new(BashTool {
                     machine: Machine::Local,
                     timeout: bash_timeout,
                     max_output_chars,
                 }),
-                Box::new(BashTool {
+                Arc::new(BashTool {
                     machine: Machine::Remote,
                     timeout: bash_timeout,
                     max_output_chars,
                 }),
-                Box::new(exec::ExecTool {
+                Arc::new(exec::ExecTool {
                     machine: Machine::Local,
                     timeout: bash_timeout,
                     max_output_chars,
                 }),
-                Box::new(exec::ExecTool {
+                Arc::new(exec::ExecTool {
                     machine: Machine::Remote,
                     timeout: bash_timeout,
                     max_output_chars,
                 }),
-                Box::new(CheckBashTool { max_output_chars }),
-                Box::new(WaitTool {
+                Arc::new(CheckBashTool { max_output_chars }),
+                Arc::new(WaitTool {
                     timeout: bash_timeout,
                 }),
-                Box::new(DelBashTool),
-                Box::new(ListBashTool),
-                Box::new(python::CheckPythonTool),
-                Box::new(python::DelPythonTool),
-                Box::new(python::ListPythonTool),
+                Arc::new(DelBashTool),
+                Arc::new(ListBashTool),
+                Arc::new(python::CheckPythonTool),
+                Arc::new(python::DelPythonTool),
+                Arc::new(python::ListPythonTool),
             ],
         }
     }
@@ -350,7 +403,7 @@ impl ToolRegistry {
         let files = python.clone();
         // One implementation, two names: here, and on the session's peer.
         for machine in [Machine::Local, Machine::Remote] {
-            self.tools.push(Box::new(python::PythonTool {
+            self.tools.push(Arc::new(python::PythonTool {
                 machine,
                 program: python.program.clone(),
                 args: python.args.clone(),
@@ -359,19 +412,19 @@ impl ToolRegistry {
                 lib: lib.clone(),
             }));
         }
-        self.tools.push(Box::new(python::ReadFileTool {
+        self.tools.push(Arc::new(python::ReadFileTool {
             program: files.program.clone(),
             args: files.args.clone(),
             timeout: files.timeout,
             max_output_chars: files.max_output_chars,
         }));
-        self.tools.push(Box::new(python::WriteFileTool {
+        self.tools.push(Arc::new(python::WriteFileTool {
             program: files.program.clone(),
             args: files.args.clone(),
             timeout: files.timeout,
             max_output_chars: files.max_output_chars,
         }));
-        self.tools.push(Box::new(python::ReplaceTool {
+        self.tools.push(Arc::new(python::ReplaceTool {
             program: files.program,
             args: files.args,
             timeout: files.timeout,
@@ -388,7 +441,7 @@ impl ToolRegistry {
         timeout: Duration,
         max: usize,
     ) -> Self {
-        self.tools.push(Box::new(skill::SkillTool {
+        self.tools.push(Arc::new(skill::SkillTool {
             programs,
             lib,
             timeout,
@@ -402,11 +455,8 @@ impl ToolRegistry {
         self.tools.iter().map(|tool| tool.as_ref())
     }
 
-    pub fn get(&self, name: &str) -> Option<&dyn Tool> {
-        self.tools
-            .iter()
-            .find(|t| t.name() == name)
-            .map(|t| t.as_ref())
+    pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        self.tools.iter().find(|t| t.name() == name).map(Arc::clone)
     }
 
     /// Which machine a named tool's paths belong to.
@@ -421,16 +471,28 @@ impl ToolRegistry {
     ///
     /// # Invariant
     ///
-    /// `remote_bash` is offered only to a session that has a remote: a tool the model
-    /// can call but that can never answer is a wrong turn nobody can undo.
+    /// A tool that drives a machine this session does not have is not offered at
+    /// all, and neither is an argument that names one: a model can call what it is
+    /// offered, so what it is offered has to be able to answer. See
+    /// `docs/notes/server-tools-mod.md`.
     pub fn definitions(&self, has_remote: bool) -> Vec<crate::llm::ToolDefinition> {
         self.tools
             .iter()
-            .filter(|t| has_remote || !is_remote_tool(t.name()))
-            .map(|t| crate::llm::ToolDefinition {
-                name: t.name().to_string(),
-                description: t.description().to_string(),
-                parameters: general_parameters(t.parameters()),
+            .filter(|t| has_remote || !t.is_remote())
+            .map(|t| {
+                let mut parameters = general_parameters(t.as_ref());
+                if !has_remote
+                    && let Some(properties) = parameters
+                        .get_mut("properties")
+                        .and_then(Value::as_object_mut)
+                {
+                    properties.remove("remote");
+                }
+                crate::llm::ToolDefinition {
+                    name: t.name().to_string(),
+                    description: text::shared().description(t.name()).unwrap_or_default(),
+                    parameters,
+                }
             })
             .collect()
     }
@@ -444,31 +506,31 @@ impl ToolRegistry {
     /// notices is not the tool's own words (`check_bash` sees a field, not a
     /// sentence) but the room left where the harness writes: see
     /// `docs/notes/server-disk.md`.
-    pub async fn run(&self, name: &str, args: Value, ctx: &ToolContext) -> ToolOutcome {
-        let outcome = match self.get(name) {
-            Some(tool) => match argument_error(tool, &args) {
-                Some(message) => ToolOutcome::err(message),
-                None => waited(tool, &args, ctx).await,
-            },
-            None => ToolOutcome::err(format!(
+    pub async fn run(
+        self: &Arc<Self>,
+        name: &str,
+        mut args: Value,
+        ctx: &ToolContext,
+    ) -> ToolOutcome {
+        let Some(tool) = self.get(name) else {
+            return ToolOutcome::err(format!(
                 "unknown tool {name:?}; available: {}",
-                self.tools
-                    .iter()
-                    .map(|t| t.name())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )),
+                self.names().join(", ")
+            ));
         };
-        if !outcome.ok {
-            crate::disk::note_tool_failure(
-                &ctx.store,
-                &ctx.session,
-                name,
-                &ctx.cwd,
-                &outcome.output,
-            );
+        if let Some(message) = argument_error(tool.as_ref(), &args) {
+            return ToolOutcome::err(message);
         }
-        outcome
+        // After the schema check, so the number written back is not a word the call was
+        // never allowed to say.
+        if let Err(message) = tunnel::resolve(tool.as_ref(), &mut args, self.max_wait) {
+            return ToolOutcome::err(message);
+        }
+        // SPEC: `detached` is the tunnel's, except for the tool that carries a process.
+        if tunnel::wants_detached(&args) && tool.detached_carrier() == tunnel::Carried::Call {
+            return tunnel::detach(tool, name.to_string(), args, ctx).await;
+        }
+        invoke(name, tool, args, ctx).await
     }
 
     pub fn names(&self) -> Vec<&'static str> {
@@ -522,7 +584,7 @@ async fn waited(tool: &dyn Tool, args: &Value, ctx: &ToolContext) -> ToolOutcome
 /// property wins), read back at the call layer; they never reach the
 /// command surface, which reads `Tool::parameters` raw.
 /// `Tool::parameters` raw.
-pub const GENERAL_ARGS: &[&str] = &["description", "max_output"];
+pub const GENERAL_ARGS: &[&str] = &["description", "max_output", "timeout_ms", "detached"];
 
 /// SPEC's adapter-level parameters added to every tool the model is offered.
 ///
@@ -531,29 +593,41 @@ pub const GENERAL_ARGS: &[&str] = &["description", "max_output"];
 /// Injected here, in the model-facing schema only, so a provider's validator
 /// accepts what the call layer reads. A property a tool already declares wins:
 /// these are the defaults, not an override.
-fn general_parameters(mut schema: Value) -> Value {
-    let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) else {
-        return schema;
-    };
-    properties
-        .entry("description".to_string())
-        .or_insert_with(|| {
+pub(crate) fn general_parameters(tool: &dyn Tool) -> Value {
+    let mut schema = tool.parameters();
+    // A tool the tunnel leaves alone takes none of the tunnel's words. See SPEC.
+    if tool.tunneled()
+        && let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut)
+    {
+        properties
+            .entry("description".to_string())
+            .or_insert_with(|| {
+                json!({
+                    "type": "string"
+                })
+            });
+        properties
+            .entry("max_output".to_string())
+            .or_insert_with(|| {
+                json!({
+                    "type": "integer"
+                })
+            });
+        properties
+            .entry("timeout_ms".to_string())
+            .or_insert_with(|| {
+                json!({
+                    "type": "integer"
+                })
+            });
+        properties.entry("detached".to_string()).or_insert_with(|| {
             json!({
-                "type": "string",
-                "description": "What this call is for, in a few words: the log carries it \
-                                as the call's title.",
+                "type": "boolean"
             })
         });
-    properties
-        .entry("max_output".to_string())
-        .or_insert_with(|| {
-            json!({
-                "type": "integer",
-                "description": "In chars: when the output exceeds this, it is saved to a \
-                                temp file and the call answers with the file's metadata \
-                                {path, chars, line_count}.",
-            })
-        });
+    }
+    // Last: a sentence is written into a property that must already exist.
+    text::shared().apply(tool.name(), &mut schema);
     schema
 }
 
@@ -898,40 +972,6 @@ fn command_line(value: Option<&Value>) -> Result<String, String> {
 /// The name the tool on the session's remote is called by.
 const REMOTE_BASH: &str = "remote_bash";
 
-/// Whether a tool is the one that runs on the session's remote.
-///
-/// # Invariant
-///
-/// Such a tool is offered only to a session that has a remote: a tool the model
-/// can call but that can never answer is a wrong turn nobody can undo.
-fn is_remote_tool(name: &str) -> bool {
-    name == REMOTE_BASH || name == "remote_exec"
-}
-
-/// What `bash` says it is: one shell per name, on this machine.
-const LOCAL_BASH_DESCRIPTION: &str = "Run a shell command in a persistent Git Bash on this \
-     machine -- the one the server runs on. Each `name` is a separate shell that keeps \
-     its own working directory, exports and shell functions between calls, and stays \
-     alive until you `del_bash` it; omit `name` to use `default`. So reusing one name is \
-     how state accumulates -- inventing a name per command leaves one idle process behind \
-     per command. A name is one shell: `remote_bash` shares this name space, so a name \
-     the other machine already holds is refused rather than quietly becoming a second \
-     process. Output is streamed as it is produced. Use `cd` to move around instead of \
-     passing absolute paths every time. Very long output is capped: you get the beginning \
-     and the end, and the full text is written to a file named in the result -- read that \
-     file with `sed -n` or `grep`, do not cat it. With `background`, the command is \
-     started and the call returns immediately; collect what it printed later with \
-     `check_bash`.";
-
-/// What `remote_bash` says it is: the same thing, on the session's remote endpoint.
-const REMOTE_BASH_DESCRIPTION: &str = "`bash` on the session's remote endpoint -- \
-     the machine `set_session --remote` named. Same `command`, `name`, `description`, \
-     `timeout_ms` and `background`, and the same name space: a name the other machine \
-     already holds is refused rather than becoming a second shell. Paths are that \
-     machine's, and output a cut truncates is not spilled to a file. Two things are not \
-     offered here: `detached`, whose process belongs to this machine's registry, and a \
-     `target` that is not this session's peer.";
-
 pub struct BashTool {
     /// Which machine this tool drives. One implementation, two names.
     pub machine: Machine,
@@ -948,94 +988,46 @@ impl Tool for BashTool {
         }
     }
 
-    fn description(&self) -> &'static str {
-        match self.machine {
-            Machine::Local => LOCAL_BASH_DESCRIPTION,
-            Machine::Remote => REMOTE_BASH_DESCRIPTION,
-        }
-    }
-
     fn machine(&self, _args: &Value, _ctx: &ToolContext) -> Machine {
         self.machine
     }
 
+    fn is_remote(&self) -> bool {
+        self.machine == Machine::Remote
+    }
+
+    /// A detached `bash` is a process of this machine's registry, not a job of the server.
+    fn detached_carrier(&self) -> tunnel::Carried {
+        match self.machine {
+            Machine::Local => tunnel::Carried::Process,
+            Machine::Remote => tunnel::Carried::Call,
+        }
+    }
+
+    fn default_timeout(&self) -> Option<Duration> {
+        Some(self.timeout)
+    }
+
     fn parameters(&self) -> Value {
-        // Two machines start in two places: this one where the harness runs, the peer in
-        // the session's directory.
-        let name_note = match self.machine {
-            Machine::Local => {
-                "Whichever bash this call is about. Without `detached`: which persistent \
-                 shell to run in, default `default` -- reusing a name is what carries \
-                 `cd`, exports and shell functions from one call to the next. With \
-                 `detached`: the name of the detached bash being created, required, and \
-                 unique in the session -- it is what `del_bash` uses to end that process \
-                 later."
-            }
-            Machine::Remote => {
-                "Which shell to run in on the machine this session's directory is on, \
-                 default `default`. Reusing a name is what carries `cd`, exports and \
-                 shell functions from one call to the next; a name `bash` already holds \
-                 is refused rather than becoming a second shell."
-            }
-        };
         let mut properties = json!({
-            "name": {
-                "type": "string",
-                "description": name_note
-            },
-            "command": {
-                "type": "string",
-                "description": "The command line to execute. A program and its \
-                                 arguments, where an argument holds a space or a quote, \
-                                 belong in `exec`: there the words are not read by a \
-                                 shell and need no escaping."
-            },
-            "description": {
-                "type": "string",
-                "description": "What this call is for, in a few words -- it is read \
-                                 right after the tool's name, so say what the run is \
-                                 for, not what the command is (`check the state`, not \
-                                 `bash`). Optional, and never executed: it also names \
-                                 the file that a too-long output is spilled to, so that \
-                                 later you (and whoever reads the dumps) can tell one \
-                                 run from another. Example: `run the server tests`."
-            },
-            "timeout_ms": {
-                "type": "integer",
-                "description": "How long to wait for the command before returning. \
-                                 This is a limit on waiting, not on the command: when \
-                                 it passes, the command keeps running in the background \
-                                 and its output is posted to this session when it \
-                                 finishes. Ignored for background commands."
-            }
+            "name": {"type": "string"},
+            "command": {"type": "string"},
+            "description": {"type": "string"},
+            "timeout_ms": {"type": "integer"}
         });
         // A job of a shell is that shell's on either machine; only `bash` declares one.
         properties["background"] = json!({
-            "type": "boolean",
-            "description": "Start the command and return immediately instead of waiting \
-                             for it. Collect what it printed with `check_bash`, and this \
-                             session is told when it ends. Defaults to false."
+            "type": "boolean"
         });
         match self.machine {
             Machine::Local => {
                 properties["detached"] = json!({
-                    "type": "boolean",
-                    "description": "Run the command as a process of its own and return at \
-                                     once. It keeps running when the shell is discarded, \
-                                     when the session is cancelled and even after the server \
-                                     exits -- that is how you restart the server you are \
-                                     running on. Nothing is collected: its output is written \
-                                     to the log file named in the result. Stop it later with \
-                                     `del_bash` with its name stops it. Defaults to false."
+                    "type": "boolean"
                 });
             }
             Machine::Remote => {
                 properties["target"] = json!({
-                    "type": "string",
-                    "description": "Which machine to run on. Omit it: this session's \
-                                     directory is on one peer, and that peer is where \
-                                     `remote_bash` already runs. The name is accepted so \
-                                     that writing it changes nothing."
+                    "type": "string"
                 });
             }
         }
@@ -1399,30 +1391,12 @@ impl Tool for CheckBashTool {
         "check_bash"
     }
 
-    fn description(&self) -> &'static str {
-        "What a shell printed that you have not read: everything its `background` \
-         commands wrote, plus anything it printed while nobody was reading. Reading \
-         clears it, so each chunk comes back once. Empty means nothing yet -- ask \
-         again, or set `wait_ms` to wait for the running jobs. A name is one shell on \
-         whichever machine holds it, and the answer says which."
-    }
-
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "Shell to read. Defaults to `default`."
-                },
-                "wait_ms": {
-                    "type": "integer",
-                    "description": "If this shell has background jobs, wait up to this \
-                                    many milliseconds for them to finish before reading. \
-                                    A timeout returns the output so far and leaves the jobs \
-                                    running; it never stops them. Defaults to 0, which \
-                                    reads now."
-                }
+                "name": {"type": "string"},
+                "wait_ms": {"type": "integer"}
             },
             "additionalProperties": false
         })
@@ -1504,6 +1478,25 @@ impl Tool for CheckBashTool {
     }
 }
 
+/// Runs one tool and records a failure where the disk monitor can see it.
+///
+/// # Invariant
+///
+/// One place runs a tool, so a call the tunnel detached is recorded like a call it
+/// waited for: the same failure note, from the same code.
+pub(crate) async fn invoke(
+    name: &str,
+    tool: Arc<dyn Tool>,
+    args: Value,
+    ctx: &ToolContext,
+) -> ToolOutcome {
+    let outcome = waited(tool.as_ref(), &args, ctx).await;
+    if !outcome.ok {
+        crate::disk::note_tool_failure(&ctx.store, &ctx.session, name, &ctx.cwd, &outcome.output);
+    }
+    outcome
+}
+
 // ----------------------------------- wait -----------------------------------
 
 /// SPEC's `wait`: stay in this turn until something lands for this session.
@@ -1522,27 +1515,19 @@ impl Tool for WaitTool {
         "wait"
     }
 
-    fn description(&self) -> &'static str {
-        "Stay in this turn until something arrives for this session: the report of \
-         a background job that finished, the news of a `subscribe` whose pattern \
-         matched, or a message from a person. It consumes nothing -- whatever \
-         arrived is delivered at the next step boundary, the same way every other \
-         queued message is -- so this call is how an agent waits without giving up \
-         its turn, and without polling. With no `timeout_ms` it waits for the same \
-         ceiling a `bash` call gets; when that passes it says nothing arrived, which \
-         is not an error."
+    fn default_timeout(&self) -> Option<Duration> {
+        Some(self.timeout)
+    }
+
+    fn tunneled(&self) -> bool {
+        false
     }
 
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "timeout_ms": {
-                    "type": "integer",
-                    "description": "Give up after this many milliseconds. This is a \
-                                    limit on waiting, not on the news: passing it \
-                                    returns what has not arrived, and nothing is lost."
-                }
+                "timeout_ms": {"type": "integer"}
             },
             "additionalProperties": false
         })
@@ -1560,8 +1545,13 @@ impl Tool for WaitTool {
                 .map(Duration::from_millis)
                 .unwrap_or(self.timeout)
                 .max(Duration::from_millis(100));
-            let deadline = std::time::Instant::now() + wait;
+            let began = std::time::Instant::now();
+            let deadline = began + wait;
             loop {
+                // Read first: a cancel that came before this call is not a reason to wait.
+                if ctx.stop.requested() {
+                    return wait_cancelled(ctx, began.elapsed());
+                }
                 // The person's message ends this wait (see `cut`); rows are what
                 // is left to watch.
                 match ctx.store.pending_injects_of(&ctx.session) {
@@ -1588,6 +1578,10 @@ impl Tool for WaitTool {
                     ));
                 }
                 tokio::time::sleep(remaining.min(WAIT_POLL)).await;
+                // The sleep is the whole poll: a `cancel` sets a flag, not this token.
+                if ctx.stop.requested() {
+                    return wait_cancelled(ctx, began.elapsed());
+                }
             }
         })
     }
@@ -1610,6 +1604,41 @@ impl Tool for WaitTool {
             }
         })
     }
+}
+
+/// What a `wait` answers when a `cancel` ended it, and what it leaves behind.
+///
+/// # Invariant
+///
+/// A wait is not work that can be left undone: it started nothing, and the news it was
+/// waiting for is still the server's to deliver. So the turn owes nothing afterwards --
+/// `nothing_owed` says so, which is why the next start does not replay it -- and what
+/// happened is recorded once, as a notice row the session reads whenever it next talks.
+fn wait_cancelled(ctx: &ToolContext, waited: Duration) -> ToolOutcome {
+    ctx.stop.nothing_owed();
+    let message = format!(
+        "This session was waiting for news when the server was asked to stop, {} into the \
+         wait. It ended there, and it is not resumed: nothing was left undone, so the next \
+         start owes nothing. What it was waiting for -- a message, a `subscribe` match, a \
+         finished job -- is still the next start's to deliver.",
+        crate::agent::spent(u64::try_from(waited.as_millis()).unwrap_or(u64::MAX))
+    );
+    if let Err(e) = ctx.store.add_pending_task(
+        &ctx.session,
+        "inject",
+        &json!({
+            "session": ctx.session,
+            "message": message,
+            "notice": "wait_cancelled",
+        }),
+    ) {
+        tracing::warn!(session = %ctx.session, error = %e,
+            "could not record a wait that a cancel ended");
+    }
+    ToolOutcome::ok(
+        "the server is stopping: this wait ends here and is not resumed. Nothing you were \
+         waiting for was stopped -- news that lands later is the next start's to deliver.",
+    )
 }
 
 /// What one queued row is, in the few words a summary can carry.
@@ -1635,23 +1664,11 @@ impl Tool for ListBashTool {
         "list_bash"
     }
 
-    fn description(&self) -> &'static str {
-        "List the bash of this session: their names, the machine each runs on, their \
-         working directories, how much unread output they are holding, and how many \
-         background jobs are still running. Also lists the session's detached bashes, \
-         which are not any shell's and survive them all. `name_regex` narrows the \
-         answer to the names that match, which is how one name's state is asked about."
-    }
-
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "name_regex": {
-                    "type": "string",
-                    "description": "Only names matching this pattern, unanchored: \
-                                    `qa` also takes `qa2`. Defaults to every bash."
-                }
+                "name_regex": {"type": "string"}
             },
             "additionalProperties": false
         })
@@ -1727,26 +1744,11 @@ impl Tool for DelBashTool {
         "del_bash"
     }
 
-    fn description(&self) -> &'static str {
-        "Delete bash whose name matches a regex, either kind. A persistent shell \
-         is discarded: its working directories, exports and shell functions are \
-         lost, and naming it again starts a fresh shell in its own machine's session \
-         directory; the background jobs it was running go with it. A name is one shell, \
-         so this ends it wherever it lives -- this machine or the session's remote. A \
-         detached bash is stopped, which is the only thing that can -- its log file \
-         stays where it is. Use this when a shell is wedged or polluted, and to clean \
-         up the names a long session invented."
-    }
-
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "name_regex": {
-                    "type": "string",
-                    "description": "Pattern matched against shell names, unanchored: \
-                                    `qa` also takes `qa2`. Defaults to `^default$`."
-                }
+                "name_regex": {"type": "string"}
             },
             "additionalProperties": false
         })

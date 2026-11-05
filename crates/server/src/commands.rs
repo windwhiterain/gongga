@@ -165,6 +165,8 @@ fn spawn_turn(d: &Dispatch, work: TurnWork) {
         agent
             .run_turn(&work.session, work.tasks, work.epoch, work.gate)
             .await;
+        // The list is ordered by when a turn ended: publish the row that moved.
+        publish_sessions(&keepalive_d);
         // What the turn queued behind itself is this turn's to finish, and the
         // gate is free here without being taken.
         if session.has_move() {
@@ -2367,6 +2369,23 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
     resumed
 }
 
+/// Fills the published picture from the database, announcing nothing.
+///
+/// # Invariant
+///
+/// The picture a greeting hands every client is the one [`publish_sessions`]
+/// compares against. A server that started with sessions already in its database
+/// would otherwise diff against nothing: it would announce every row as new, and
+/// a deletion -- the one change a client cannot work out for itself -- would be
+/// the one thing it never heard.
+pub fn prime_sessions(d: &Dispatch) {
+    let Ok(rows) = d.sessions.list() else {
+        return;
+    };
+    let picture: Vec<protocol::SessionInfo> = rows.iter().map(|r| session_info(d, r)).collect();
+    *d.published.lock().unwrap_or_else(|e| e.into_inner()) = picture;
+}
+
 /// Publishes what changed in the session list, one row at a time.
 ///
 /// # Invariant
@@ -2455,6 +2474,7 @@ pub fn session_info(d: &Dispatch, row: &crate::store::SessionRow) -> protocol::S
         status: row.status,
         created_at: row.created_at,
         updated_at: row.updated_at,
+        ended_at: row.ended_at,
         messages: row.messages,
         // Read from the transcript, not from a count on the row: a derived number
         // would be a second answer to the same question.

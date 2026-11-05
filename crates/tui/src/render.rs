@@ -898,6 +898,7 @@ fn draw_command(f: &mut Frame, s: &mut Screen, area: Rect) {
 /// One pane's rows, and the scroll bound it writes back.
 fn draw_rows(f: &mut Frame, s: &mut Screen, name: &str, area: Rect) {
     s.panes.mark_drawn(name);
+    s.panes.note_room(name, area.height as usize);
     if area.height == 0 {
         return;
     }

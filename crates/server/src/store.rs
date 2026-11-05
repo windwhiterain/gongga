@@ -116,7 +116,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     cache_tier TEXT,
     -- Whether a periodic time notice keeps this session's prefix warm. Off by
     -- default: a session that never asked starts no timer of its own.
-    cache_keepalive INTEGER NOT NULL DEFAULT 0
+    cache_keepalive INTEGER NOT NULL DEFAULT 0,
+    -- When this session's last turn ended, and nothing else. NULL is a session
+    -- that has not finished a turn yet, which the list orders by `created_at`.
+    -- Its own column rather than `updated_at`, which a tuning change rewrites:
+    -- the list is ordered by this, so writing it anywhere else would move a row
+    -- for a reason the operator did not give.
+    ended_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS sessions_by_status ON sessions(status);
 
@@ -211,9 +217,26 @@ CREATE TABLE IF NOT EXISTS detached_jobs (
     pid        INTEGER NOT NULL,
     cmd        TEXT NOT NULL,
     log        TEXT NOT NULL,
-    started_at INTEGER NOT NULL
+    started_at INTEGER NOT NULL,
+    -- Whether the session has been told this job ended. Exactly one notice per job,
+    -- across restarts: the watcher sets it, and adoption reads it.
+    noticed    INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS detached_by_session ON detached_jobs(session);
+
+-- A tool call that said `detached` and has not reported yet. The row is how a process
+-- that stops can tell the session what it lost: unlike a detached process, such a job
+-- has no pid to adopt, so the row is the only trace. See
+-- `docs/notes/server-tools-detached.md`.
+CREATE TABLE IF NOT EXISTS detached_calls (
+    id          INTEGER PRIMARY KEY,
+    session     TEXT NOT NULL,
+    call_id     TEXT NOT NULL,
+    tool        TEXT NOT NULL,
+    description TEXT,
+    started_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS detached_calls_by_session ON detached_calls(session);
 
 -- What the prefix cache has learnt about the order things are emitted in, one row per
 -- owner -- the unit whose requests share bytes, which is a session's directory. Not one
@@ -296,6 +319,27 @@ fn add_column_if_missing(
     Ok(())
 }
 
+/// Gives a row written before `ended_at` existed the turn end it already had.
+///
+/// # Invariant
+///
+/// Only a session that has rows and no stamp: the last row of a transcript is
+/// written by the last turn, so its time is when that turn ended, while a
+/// session with no rows never ended one and keeps `NULL`. Safe at every start,
+/// which is what makes a home an older build wrote right again.
+/// See `docs/notes/server-store.md`.
+fn backfill_ended_at(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE sessions
+            SET ended_at = (SELECT MAX(m.created_at) FROM messages m
+                             WHERE m.session_id = sessions.id)
+          WHERE ended_at IS NULL
+            AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = sessions.id)",
+        [],
+    )?;
+    Ok(())
+}
+
 /// Whether `table` already answers a select on `column`.
 fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
     conn.prepare(&format!("SELECT {column} FROM {table} LIMIT 1"))
@@ -369,6 +413,13 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     ] {
         add_column_if_missing(conn, "sessions", column, ddl)?;
     }
+    add_column_if_missing(
+        conn,
+        "sessions",
+        "ended_at",
+        "ALTER TABLE sessions ADD COLUMN ended_at INTEGER",
+    )?;
+    backfill_ended_at(conn)?;
     settle_handover(conn)?;
     // An old row needs a name before it can be listed or deleted.
     add_column_if_missing(
@@ -376,6 +427,12 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "detached_jobs",
         "name",
         "ALTER TABLE detached_jobs ADD COLUMN name TEXT NOT NULL DEFAULT ''",
+    )?;
+    add_column_if_missing(
+        conn,
+        "detached_jobs",
+        "noticed",
+        "ALTER TABLE detached_jobs ADD COLUMN noticed INTEGER NOT NULL DEFAULT 0",
     )?;
     conn.execute(
         "UPDATE detached_jobs SET name = shell || '-' || job WHERE name = ''",
@@ -699,19 +756,19 @@ impl Store {
         Ok(ids)
     }
 
-    /// Every session, newest first, in an order no session's work can move.
+    /// Every session, the one whose turn ended last first.
     ///
     /// # Invariant
     ///
-    /// `created_at` is written once and never rewritten, and `id` breaks the tie
-    /// between two sessions made in the same millisecond. `updated_at` is not part
-    /// of the order: a finished turn rewrites it, and a restart that replays owed
-    /// work finishes turns, so the list used to come back in another order. See
-    /// `docs/notes/server-store.md`.
+    /// The key is `ended_at`, or `created_at` for a session whose turn never
+    /// ended, newest first. `name` breaks the tie and is unique, so the order is
+    /// total, and the client sorts by the same two numbers. `updated_at` is not
+    /// part of it: `set_session_tuning` rewrites that column, so ordering by it
+    /// moved a row whenever a model was chosen. See `docs/notes/server-store.md`.
     pub fn list_sessions(&self) -> anyhow::Result<Vec<SessionRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(&format!(
-            "{} ORDER BY s.created_at DESC, s.id DESC",
+            "{} ORDER BY COALESCE(s.ended_at, s.created_at) DESC, s.name DESC",
             Self::SESSION_SELECT
         ))?;
         let rows = stmt
@@ -727,14 +784,15 @@ impl Store {
     ///
     /// `model` is the whole model, and a row written before it said that keeps the
     /// bare name in `model_name`: this select reads both, so nothing that was pinned
-    /// stops being pinned.
+    /// stops being pinned. A column is appended, never inserted: `session_row` reads
+    /// these by position.
     const SESSION_SELECT: &'static str = "SELECT s.id, s.name, s.status,
                     COALESCE(s.model, s.model_name), s.cwd,
                     s.created_at, s.updated_at,
                     (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS messages,
                     s.context_limit, s.thinking_effort,
                     s.context_tokens, s.cached_tokens, s.tps, s.ttft_ms, s.remote,
-                    s.cache_tier, s.cache_keepalive
+                    s.cache_tier, s.cache_keepalive, s.ended_at
              FROM sessions s";
 
     /// Every session in `error`, with what a monitor turn still owes it.
@@ -868,6 +926,7 @@ impl Store {
             remote: r.get(14)?,
             cache_tier: r.get(15)?,
             cache_keepalive: r.get::<_, i64>(16)? != 0,
+            ended_at: r.get(17)?,
         })
     }
 
@@ -1784,6 +1843,12 @@ impl Store {
     }
 
     /// Commits the terminal status and the fate of this turn's durable obligations together.
+    ///
+    /// # Invariant
+    ///
+    /// It also stamps `ended_at`, the column the session list is ordered by, so
+    /// "the turn ended" and "the list may move" are the same commit: a reader
+    /// never sees a session that finished while its place still says otherwise.
     pub fn finish_turn(
         &self,
         session_id: i64,
@@ -1795,7 +1860,7 @@ impl Store {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
         tx.execute(
-            "UPDATE sessions SET status = ?1, updated_at = ?2 WHERE id = ?3",
+            "UPDATE sessions SET status = ?1, updated_at = ?2, ended_at = ?2 WHERE id = ?3",
             params![status_name(status), now_millis(), session_id],
         )?;
         if status != SessionStatus::Error {
@@ -1916,7 +1981,7 @@ impl Store {
     pub fn detached_jobs(&self) -> anyhow::Result<Vec<DetachedRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, name, shell, job, pid, cmd, log, started_at
+            "SELECT id, session, name, shell, job, pid, cmd, log, started_at, noticed
              FROM detached_jobs ORDER BY id",
         )?;
         let rows = stmt
@@ -1931,10 +1996,67 @@ impl Store {
                     cmd: r.get(6)?,
                     log: r.get(7)?,
                     started_at: r.get(8)?,
+                    noticed: r.get::<_, i64>(9)? != 0,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    pub fn add_detached_call(
+        &self,
+        session: &str,
+        call_id: &str,
+        tool: &str,
+        description: Option<&str>,
+    ) -> anyhow::Result<i64> {
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT INTO detached_calls (session, call_id, tool, description, started_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![session, call_id, tool, description, now_millis()],
+        )?;
+        let id = tx.last_insert_rowid();
+        tx.commit()?;
+        Ok(id)
+    }
+
+    /// Every call a run left unresolved, oldest first.
+    pub fn detached_calls(&self) -> anyhow::Result<Vec<DetachedCallRow>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, session, call_id, tool, description, started_at
+             FROM detached_calls ORDER BY id",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(DetachedCallRow {
+                    id: r.get(0)?,
+                    session: r.get(1)?,
+                    call_id: r.get(2)?,
+                    tool: r.get(3)?,
+                    description: r.get(4)?,
+                    started_at: r.get(5)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn delete_detached_call(&self, id: i64) -> anyhow::Result<()> {
+        self.lock()
+            .execute("DELETE FROM detached_calls WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// Records that a session has been told this job ended.
+    pub fn note_detached_noticed(&self, id: i64) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE detached_jobs SET noticed = 1 WHERE id = ?1",
+            params![id],
+        )?;
+        Ok(())
     }
 
     pub fn delete_detached_job(&self, id: i64) -> anyhow::Result<()> {
@@ -2105,6 +2227,26 @@ pub struct DetachedRow {
     /// Where its output is written; survives the job and the server.
     pub log: String,
     pub started_at: i64,
+    /// Whether the session was already told this job ended.
+    pub noticed: bool,
+}
+
+/// A tool call that said `detached` and has not reported yet.
+///
+/// # Invariant
+///
+/// The row is deleted in the same act that posts the call's report, so a row that
+/// survives a start is a call whose server stopped before it could answer. See
+/// `docs/notes/server-tools-detached.md`.
+#[derive(Debug, Clone)]
+pub struct DetachedCallRow {
+    pub id: i64,
+    pub session: String,
+    /// The tool call this row answers for, so its report names what the transcript names.
+    pub call_id: String,
+    pub tool: String,
+    pub description: Option<String>,
+    pub started_at: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -2124,6 +2266,13 @@ pub struct SessionRow {
     pub cwd: String,
     pub created_at: i64,
     pub updated_at: i64,
+    /// When its last turn ended; `None` is a session that never finished one.
+    ///
+    /// # Invariant
+    ///
+    /// Written by `finish_turn` and by nothing else, because the list is ordered
+    /// by it: a tuning change has no turn to end.
+    pub ended_at: Option<i64>,
     pub messages: u64,
     /// SPEC's `context (tok)`, `tps (latest)` and `ttft (latest)`: what the last
     /// completed request measured.

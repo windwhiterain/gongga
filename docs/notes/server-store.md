@@ -127,17 +127,39 @@ events then pose as the new session's history.
 
 ## Store::list_sessions
 
-The order is the order the sessions were made in, newest first, and it is the one
-thing about a session no later work can change: a window lays its panes out in
-this order, so a name that moves takes the pane the operator was reading with it.
+The order is the turn that ended last, newest first: `COALESCE(ended_at, created_at)`
+descending, `name` breaking the tie. A session that has not finished a turn yet stands
+at `created_at`, so making one puts it at the top, and a window lays its panes out in
+this order.
 
-Ordering by `updated_at` looked like "recent activity first" and behaved like
-"whatever finished last", because `finish_turn` rewrites that column at the end of
-a turn. Two sessions made in the same millisecond had no order at all between them,
-and a restart that replayed owed work finished those turns in scheduling order, so
-the same home came back drawn differently. `created_at` is written by
-`create_session_on` and by nothing else, and `id` is unique, so the pair is a
-total order that survives both the tie and the restart.
+`ended_at` is written by `finish_turn` and by nothing else. That is the point of a
+column of its own: ordering by `updated_at` looked like "recent activity first" and
+behaved like "whatever was written last", because `set_session_tuning` and
+`set_session_cache` rewrite it too -- choosing a model moved a session's row, and the
+pane the operator was reading moved with it. The list is ordered by turns, so only a
+turn may move it.
+
+The tie is `name`, not `id`, because `name` is what a client is told: `SessionInfo`
+carries `ended_at` and `name`, and `link::Client` sorts a delta by the same two
+numbers, so a row that arrives on the wire lands exactly where the store would have
+put it. `id` is unique but unpublished, and two orders that disagree are two orders.
+
+The previous key was `created_at`, chosen because nothing rewrote it: a window's panes
+are laid out in this order, so a name that moves takes the operator's pane with it.
+That cost is accepted now: the session being worked on is the one to find, so the row
+that finished a turn moves to the end of the list, where the next one will be.
+
+A session with a transcript and no stamp is repaired at start, in `migrate`
+(`backfill_ended_at`): its `ended_at` becomes the time of its last row, which is
+written by its last turn. That condition is the whole of it -- a session with no
+rows never ended a turn and keeps `NULL`, and the order says `created_at` for it --
+so the repair is safe to run every start, and it is what makes an older build's
+home right again after this one has stamped only the turns that ended since. The
+first shape of this checked "no row is stamped yet", which was wrong on the home
+that mattered: it had a handful of stamped rows and twenty-six old ones, so the
+repair skipped itself and the list still read as "ordered by when sessions were
+made". `updated_at` was the other candidate and is worse: it also moves when a
+model is chosen, and it is written after the last row.
 
 ## Store::get_session
 
@@ -400,6 +422,17 @@ wants to know.
 
 Written before the job is handed to the model, so a crash in between leaves a row
 the next start adopts rather than a process nobody knows about.
+
+The row also carries `noticed`: whether the session has been told the job ended. It is
+in the database because the second reader is the next start, and one end is one
+notice even across a restart.
+
+## Store::add_detached_call
+
+The trace of a call that said `detached` and is not a process: there is no pid to
+adopt, so the row is the only thing that can tell the next start the answer was lost.
+Deleted in the same act that posts the report, which is what makes a surviving row
+mean "nobody ever answered this".
 
 ## SessionRow::model
 

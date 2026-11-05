@@ -112,14 +112,47 @@ shut this process down. The same goes for any ancestor of ours, which is what a
 launcher that spawns the server instead of `exec`ing it leaves behind (see
 `is_self_or_ancestor`).
 
-The pid is only checked for liveness, never proven to be the same process, so a
-recycled pid could in principle be adopted. The window is narrow and the cost
-is bounded by `del_bash`, which is explicit.
+The pid is not taken on trust: `process_started_at` gives a process identity, and a
+row whose saved start time and actual one disagree is a recycled pid, not the job. The
+tolerance is five seconds, because Unix `ps` reports whole seconds and the row is
+written after the fork. A row that cannot be verified is left alone rather than
+adopted -- adopting the wrong process would let `del_bash` kill something nobody asked
+it to.
 
 ## DetachedRegistry::adopt (dead rows)
 
 Dead rows are the common case and the cheap one to answer: no walk up the
 parent chain for a process that is not there.
+
+They are not dropped in silence. A session that asked for a detached bash and is
+waiting for it to end has nothing else to wait for once the process is gone, so the row
+says what it can -- the name, the pid, the log -- before it is deleted; otherwise the
+wait runs out its ceiling and reports that nothing arrived, which is false. Unless the
+row says it was already noticed: one end is one notice, and a notice repeated at the
+next start claims a job that finished an hour ago.
+
+## DetachedJob::noticed
+
+Whether the session has been told this job ended, kept in the row as well as in memory.
+In memory it stops the watcher posting the same end every half second; in the database
+it stops adoption posting it again after a restart. The write happens after the notice,
+so a row that says it was noticed has been.
+
+## DetachedRegistry::watch
+
+One pass every `JOB_POLL`, and the pass is exact where it can be: a job this server
+spawned has its handle, so `try_wait` is the process, not a guess. Only adopted jobs
+need a listing, and they are listed in one batch, which is why the poll rate is a
+listing rate and not a per-job signal.
+
+The notice is the row `wait` wakes for. That is the whole reason the watcher exists:
+before it, a detached bash's end was visible only to whoever thought to call
+`list_bash`, so "stay in this turn until the job you started ends" was a poll loop with
+a model in it.
+
+Notices stop with the server: the watcher holds the shutdown token, and a job that
+ended because the process stopped did not finish. The `noticed` flag is left unset
+there on purpose -- the next start adopts the process and says what it finds.
 
 ## kill_tree
 

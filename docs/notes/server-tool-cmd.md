@@ -25,6 +25,12 @@ a value that means a number arrives a number. `coerce` types each value by the
 tool's own schema, so the operator's line and the agent's call reach the same
 implementation with the same shapes.
 
+The schema here is `general_parameters`, not `Tool::parameters`: an operator can spell
+the tunnel's arguments too, `--timeout_ms` and `--detached` included. Reading the raw
+schema was right while the general arguments were a title and a cap; once they became
+the tunnel's, refusing them on this path would mean the model may detach a call and the
+operator may not, on one implementation with one schema.
+
 ## One runner
 
 `tool_cmd::run` builds the `ToolContext` a command names and runs the tool.

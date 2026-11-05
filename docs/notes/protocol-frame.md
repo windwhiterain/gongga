@@ -30,3 +30,13 @@ keepalive is a bare `ACK`, so the flag had no meaning.
 
 1200 keeps a full frame under the Internet safe MTU so cross-machine links never
 rely on IP fragmentation.
+
+## LOOPBACK_MTU
+
+8192 for a peer on `127.0.0.1` or `::1`. Both ends already read into a 65507-byte
+buffer, so a larger datagram changes no reader: a 209 KB message becomes 26
+frames instead of 179, with 26 frame headers instead of 179. Loopback has no link
+MTU worth protecting, and the IP fragmentation it causes is reassembled by the
+local kernel. `ChannelConfig::tune_for_peer` picks it; see `protocol-channel.md`.
+An address that is loopback only because an SSH tunnel forwards it is the one
+case this cannot see -- the path is not local, but the peer address is.

@@ -569,10 +569,16 @@ its numbers, and `shown` is the ones that also get a header and their events bes
 the list.
 
 The two lists overlap on purpose. SPEC's session list is every session -- a click on a
-name toggles its window -- so the list is not a list of what is hidden. The earlier
+name selects it -- so the list is not a list of what is hidden. The earlier
 shape gave each render mode one area and kept a name out of the list when another area
 drew it, which made the list the only way back to a hidden session and cost the window
 two more areas (`line`, and the modes as words).
+
+The order is the store's, the turn that ended last first, read backwards so the
+session that just finished is drawn last: a frame reads like a transcript. A delta
+row lands where that order puts it (`newest_turn_first`), because `SessionInfo`
+carries `ended_at` and a client that kept the row where it arrived would draw a list
+the server no longer has.
 
 The flag is read off each session rather than off the file's entries, because a
 session nobody set is hidden: reading the map would leave a new session with no window

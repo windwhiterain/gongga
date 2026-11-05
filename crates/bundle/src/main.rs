@@ -48,11 +48,16 @@ fn run() -> Result<u8, String> {
     // A build this replaces is asked to stop, then removed -- a server through
     // its own `cancel`, so its turn survives.
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1 + skip).collect();
+    // The head owns the retire; the program parses argv only after it is done.
+    let force = std::env::args_os()
+        .skip(1)
+        .any(|arg| arg.to_string_lossy() == "--force");
     payload::retire(
         &home().join("payload"),
         &stamp,
         &dir,
         keeps_the_server(&wanted, &args),
+        force,
     );
     take_over(&dir.join(payload::file_name(&wanted)), skip)
 }
