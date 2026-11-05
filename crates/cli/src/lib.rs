@@ -1071,12 +1071,8 @@ impl Client {
                 if self.quiet.contains_key(&id) || self.is_fill(id) {
                     return;
                 }
-                // Which argument names the session is the catalog's answer, not
-                // the argument's spelling: `send_message --name` and
-                // `get_messages --session` are one idea. Reading the literal key
-                // `session` put every `--name` command in the command row, so a
-                // message the operator sent was answered in the pane it never
-                // reached. See `docs/notes/cli-lib.md`.
+                // The session is the argument's kind, never its spelling: see
+                // `docs/notes/cli-lib.md`, `Client::command_line`.
                 let session = self.session_named(&name, &args);
                 let window = self.command_line(session);
                 // The result carries only the id, so say now where its answer goes.
