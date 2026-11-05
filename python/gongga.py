@@ -128,6 +128,15 @@ class Client:
                 data = sock.recv(65535)
             except socket.timeout:
                 continue
+            except OSError as reset:
+                # A port with nothing behind it answers with ICMP, and Windows hands
+                # that up as a reset: "nothing answered" is this loop's own answer,
+                # not a traceback out of a library.
+                sock.close()
+                self._sock = None
+                raise Unreachable(
+                    f"nothing answered at {self.address[0]}:{self.address[1]} ({reset})"
+                ) from None
             head = self._decode(data)
             if head is not None and head[2] & SYN:
                 self._connection = head[3]
