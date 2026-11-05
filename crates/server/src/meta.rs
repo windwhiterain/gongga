@@ -297,9 +297,8 @@ pub async fn literal(
     }
 }
 
-/// A checkpoint summary with each text reference's content inlined, so the
-/// artifact stands alone without the prompt index. What cannot be read stays
-/// literal, and a picture stays a name: neither invents a body.
+/// Inlines a summary's text references so the artifact stands alone; the
+/// unreadable and any picture stay literal.
 pub async fn embed(source: Source<'_>, home: &Path, text: &str) -> String {
     let mut out = String::new();
     let mut cursor = 0;
