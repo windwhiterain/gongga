@@ -80,7 +80,7 @@ keeping the full output is being able to find the right one again. `slug()` in
 Implemented with a boxed future rather than `async_trait` so the crate keeps
 one fewer macro dependency; the signature is the same either way.
 
-## GENERAL_ARGS: description, max_output, timeout_ms, detached
+## GENERAL_ARGS: description, max_output, timeout_ms, background, detached
 
 SPEC's tunnel-level parameters: every tool may carry them, none declares them by
 hand, and a tool the tunnel leaves alone (`Tool::tunneled`, which is `wait` alone)
@@ -100,13 +100,37 @@ model reads the file's metadata `{path, chars, line_count}` -- the same spill na
 as `ToolContext::cap`. On an endpoint session the cap is left unhonored rather than
 pointing at a file the session's tools cannot open.
 
-## Tool::default_timeout, Tool::tunneled, Tool::detached_carrier
+## The five questions the tunnel asks a tool
 
-The three questions the tunnel asks a tool, each with the answer that fits nearly
-every tool: a default wait (`None`, meaning the ceiling itself), subject to the tunnel
-(`true`), and carried by the server when detached (`Carried::Call`). Each override is
-in the tool that differs: `bash` states its configured wait and says a detached call of
-its own is a process, `wait` says the tunnel does not touch it at all.
+Each with the answer that fits nearly every tool: a default wait (`None`, meaning the
+ceiling itself), subject to the tunnel (`true`), carried by the server when detached
+(`Carried::Call`), backgrounding as a job of the server (`false`), and answering for its
+own wait (`false`). Each override is in the tool that differs: `bash` states its
+configured wait and says a detached call of its own is a process, `wait` says the tunnel
+does not touch it at all, `bash` and `python` answer that their background and their
+clock are their shell's or their interpreter's, and the three reading tools answer for a
+clock of their own because a read that waits *is* the wait.
+
+## waited: from holding the turn to holding a job
+
+The work runs on a task with a token of its own. That is what makes SPEC's first rule
+possible -- "a foreground job running over timeout becomes background": the turn stops
+waiting and the work does not stop. Everything a call can do to end the wait early is
+still here, because they are the wait's own: a message ends it, a cancel ends it, and
+both abort the task before the tool is asked what it left behind. Only the clock ends it
+*without* aborting, which is the whole difference between a cut and a promotion.
+
+`holds_the_turn` is what tells the two apart. A call that already answers without
+waiting -- a `background` or `detached` job -- holds no turn, so a clock of its own is
+dormant for it: the id it was given stays the id the caller reads from.
+
+## promote
+
+The promotion is a row and a forwarder, in that order: the receipt names the id before
+the caller can ask, and the forwarder owns the answer until it is written where
+`check_job` reads it. The forwarder gives up the turn's stream for the same reason
+`tunnel::spawn` does -- nobody is reading that channel any more -- and then it is
+indistinguishable from a job that was started as one.
 
 `tunneled` is one word for one thing on purpose: `wait` is not capped *and* not
 detachable *and* not offered `timeout_ms` by the general parameters, because all three
@@ -190,7 +214,40 @@ failed call -- which is why it is read here and not validated.
 
 Both flags return at once, which is the point: the turn stays responsive
 instead of sitting out a long command. They differ in what happens to the
-output, not in whether the call blocks.
+output, not in whether the call blocks. `bash` declares `background` itself and
+answers `handles_background` yes, so the tunnel's own background path never runs
+for it: a job of a shell is that shell's, and `check_bash` is what reads it.
+
+## CheckJobTool
+
+The collector for everything whose background is not a shell's: a `background` call
+answers at once with its `job_id`, and this is the only thing that reads the answer
+out of the row. It belongs in this file because it is one of the reading tools, next
+to `check_bash` and `check_python`, and it states the same zero default.
+
+Three rules make the answer honest. A job belongs to the session that started it, so
+another session's id is not found rather than refused with its details. A read with no
+number reads now, and a read with one waits on the clock the tunnel resolved. And
+reading marks the row collected, so a second read says the answer was already taken
+instead of handing the same text out twice -- `check_bash` clears its buffer for the
+same reason.
+
+`lost` is a status, not an error: a job that died with the server is something
+`check_job` can say exactly, and answering with a failure would read as "the call was
+wrong" rather than "the work is gone".
+
+## DelJobTool
+
+The other end of the same row. It deletes first and stops second, and the order is the
+whole design: stopping a job makes it write how it ended, and that ending would post a
+notice about a job the caller just asked to forget. With the row gone, the same report
+finds nothing to write to.
+
+A job of this process is stopped through the token it was given -- `JobRegistry` -- so
+the work ends where it is, and a program it started goes with it (`kill_on_drop`). A
+job that is not in the registry had already ended, and deleting it is all that is left
+to do. Leaving the session takes the same road: its jobs are stopped and deleted with
+it, because work a session started is not work a deleted session keeps.
 
 ## BashTool::run (a detached job's cwd)
 

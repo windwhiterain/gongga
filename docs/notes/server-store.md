@@ -194,7 +194,7 @@ to ask the same question.
 
 ## pictures in a row
 
-A tool result, and a message written with `@image:`, carry the text they always
+A tool result, and a message written with `@image(...)`, carry the text they always
 carried plus `images`: a path, a media type and the id of the copy this home keeps
 per picture, never the bytes themselves.
 

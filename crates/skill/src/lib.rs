@@ -16,7 +16,7 @@ const SKILL: &str = "SKILL.md";
 /// # Invariant
 ///
 /// `ALL` is the precedence order, and it is the same one the server expands
-/// `@skill:` with and the command layer completes against: a name in more than one
+/// `@skill(...)` with and the command layer completes against: a name in more than one
 /// root is the first one read, so a project's own skill beats the home's, which
 /// beats the machine's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -104,7 +104,7 @@ impl Roots {
             .collect()
     }
 
-    /// The skill `@skill: <name>` and `skill <name>` both read.
+    /// The skill `@skill(<name>)` and `skill <name>` both read.
     pub fn find(&self, name: &str) -> Option<Skill> {
         self.named(name).into_iter().next()
     }
@@ -113,7 +113,7 @@ impl Roots {
 /// One skill directory: what its frontmatter declares, and where its files are.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Skill {
-    /// What `@skill:` names it by: the frontmatter's, or the directory's.
+    /// What `@skill(...)` names it by: the frontmatter's, or the directory's.
     pub name: String,
     /// The one line saying what it is for; empty when the file declares none.
     pub description: String,

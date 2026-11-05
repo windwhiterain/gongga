@@ -230,7 +230,7 @@ keystroke, which is the same rule every other value follows.
 
 Two facts the front-end supplies, and this layer stores neither: the sticky argument
 names (what `set_sticky <type>` completes) and the session a bare message goes to
-(what makes `@skill:` complete the skills of the session the message will reach). A
+(what makes `@skill(...)` complete the skills of the session the message will reach). A
 message names no session on its own line, so that entry is the only address it has.
 The window calls this after any change; nothing here reads `tui.toml`.
 

@@ -2,8 +2,8 @@
 **WRITING TEST IS NOT ALLOWED**
 **CODE THAT WILL PANIC IS NOT ALLOWED**
 
-- @file: SPEC.md is the only source of truth (agents should not edit without user's permission).
-- @skill: whiting-dev is developing standard.
+- @file(SPEC.md) is the only source of truth (agents should not edit without user's permission).
+- @skill(whiting-dev) is developing standard.
 - when designing new feature, search any existing wheels. 
 - setting any limit/budget is forbidden.
 - session turn end should kill all process it spawns so user won't use a process that tied to a session as a long running process.
@@ -227,7 +227,7 @@ skill 都要改一次这个文件，而读的人手上已经有那张表。
 「读者自己写的」而不再更新。
 
 **跑一个 skill 的脚本：从它自己的目录出发，别写桶的路径。** 正文里写入口用
-`SKILL_DIR=<本 SKILL.md 所在目录>`（`@skill:` 展开的 `SKILL.md: <path>`、`skill` 的
+`SKILL_DIR=<本 SKILL.md 所在目录>`（`@skill(...)` 展开的 `SKILL.md: <path>`、`skill` 的
 `path` 列都给得出它），再 `"$SKILL_DIR/<entry>" …`：home 会搬、桶会变，而别的 harness 不认
 `<home>/skills/...` 也不认 clone 路径——它读到的是一个不存在的命令。gongga 里更短的一层是
 `gongga-cli skill <name> [args…]`（`skill ls` 是它的诊断动词），
@@ -259,7 +259,7 @@ skill 都要改一次这个文件，而读的人手上已经有那张表。
   `heir` 先把整份 transcript 拷进一个 mentor 会话、逐行校验副本，然后**删空自己**——只留在
   飞的那个 tool call（服务端一收到 call 就执行，所以它总在最后一行）；指引写在它的结果里，
   第一课则由脚本用一次 `send_message` 发出，在下一个 step 边界落成一条普通 user 消息（所以它的
-  `@file:`/`@skill:` 会进 index，和空会话的首轮一样）；mentor 那边会补一条 tool_result 告它
+  `@file(...)`/`@skill(...)` 会进 index，和空会话的首轮一样）；mentor 那边会补一条 tool_result 告它
   自己成了 mentor，只答被问的。
   之后卡住了用 `get_messages` 读 mentor、用 `send_message` 问 mentor。
   read 读的是消息（模型输出 + 注入），工具调用与 reasoning 被过滤掉。

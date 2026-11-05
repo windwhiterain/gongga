@@ -159,7 +159,7 @@ with no key that pastes anything.
 
 Which hop is measured: everything in the table above, and the paste itself --
 in a real VS Code terminal `Alt+V` writes `gongga-paste-<pid>-<n>.png` and
-inserts `@image: <path>` into the prompt. What is reasoned is only why xterm.js
+inserts `@image(<path>)` into the prompt. What is reasoned is only why xterm.js
 drops the key, which no line of VS Code's bundle was read to confirm; the
 observation is that nothing arrives, and the fix does not depend on the reason.
 
@@ -198,23 +198,23 @@ paste is not a second-class paste.
 
 ## The picture is a reference, not a picture
 
-What goes into the prompt is the text `@image: <path>`, and only that. The path
+What goes into the prompt is the text `@image(<path>)`, and only that. The path
 is where the clipboard module wrote the image; it is absolute, and the server
 resolves an absolute path as it stands.
 
 This is SPEC's Meta mechanism, and it was already there: a message carrying
-`@image: <path>` has the reference replaced by a file id when the message is
+`@image(<path>)` has the reference replaced by a file id when the message is
 sent, the picture uploaded through the File API in advance of the request. The
 TUI's whole part in this is to write the spelling the server's parser reads.
 `image_reference` in `tui/lib.rs` is that spelling and nothing more: it prints
 the path it is given, so a Windows path stays a Windows path and a POSIX path
 stays a POSIX path.
 
-The value is one word, because the parser reads one word and the server's
-completion popup inserts one word. The generated file name has no spaces, so the
-absolute path has none either. A path that *did* have a space would be one word
-too many, and the server would read the first half of it — which is why the
-image is written to a generated name rather than to the operator's own.
+The value is what stands inside the parentheses, whatever it holds: a path with a
+space in it is written as it is, because the `)` is what ends the name rather than
+the next space (`docs/notes/server-meta.md`). Nothing needs escaping here, and the
+generated file name is still used rather than the operator's own, so the reference a
+prompt shows names a file this home made.
 
 Nothing is uploaded by the TUI and nothing is resolved by it. The reference is
 text in the input line until the operator sends the message, and the server does
@@ -226,7 +226,7 @@ and a message that only mentions a picture stays a mention until it is sent.
 Through the same insertion a text paste uses, and not through `Tui::paste`.
 
 `Tui::paste` runs `clipboard::paste_text` over what it is given, which
-normalizes line endings — harmless for an `@image:` reference, but the semantics
+normalizes line endings — harmless for an `@image(...)` reference, but the semantics
 of "paste" are "text the terminal sent", and a reference is not that. So the
 shared part is factored out into `Screen::insert_paste`: it closes the
 completion popup (the popup was about the token before the paste, not about what

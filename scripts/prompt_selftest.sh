@@ -138,7 +138,7 @@ ok "a tier the model does not declare is refused, listing the ones it does" $?
 # a *relative* path, whose meaning is the thing a `cd` used to change. A report always
 # names one, which is also what keeps the index from being empty.
 sent=$("${cli[@]}" send_message --name reader \
-  "@skill: self-control @file: docs/notes/tui-main.md — move the shell, then answer" 2>&1)
+  "@skill(self-control) @file(docs/notes/tui-main.md) — move the shell, then answer" 2>&1)
 [[ "$sent" == *'"ok":true'* ]]
 ok "its turn is accepted" $?
 for _ in $(seq 1 120); do grep -q 'turn end session=reader' "$log" && break; sleep 0.5; done
@@ -159,13 +159,13 @@ rows = [json.loads(d) for (d,) in c.execute(
 # change -- so no second prompt row was written at all.
 assert len(rows) == 1, f"a moved shell rewrote the prompt: {len(rows)} rows, {[r['rooted'] for r in rows]}"
 only = rows[0]
-assert "@file:AGENTS.md" in only["rooted"], only["rooted"]
-assert "@skill:self-control" in only["rooted"], only["rooted"]
+assert "@file(AGENTS.md)" in only["rooted"], only["rooted"]
+assert "@skill(self-control)" in only["rooted"], only["rooted"]
 # A relative path means the same file after the shell moved: it is resolved in the
 # session's directory, not where the last command left the shell.
-assert "@file:docs/notes/tui-main.md" in only["rooted"], only["rooted"]
+assert "@file(docs/notes/tui-main.md)" in only["rooted"], only["rooted"]
 # The rules file's own references came with it (AGENTS.md names SPEC.md).
-assert any(root.startswith("@file:SPEC.md") for root in only["rooted"]), only["rooted"]
+assert any(root.startswith("@file(SPEC.md)") for root in only["rooted"]), only["rooted"]
 INNER
 ok "a cd in the shell writes no new prompt row" $?
 

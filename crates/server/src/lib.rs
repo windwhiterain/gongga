@@ -220,23 +220,15 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     );
 
     let store = store::Store::open(&cfg.db_path)?;
-    // Armed before any tool can fail, so a disk that fills up can say so.
-    disk::install(cfg.disk_reserve.clone(), cfg.home.clone());
-    if cfg.disk_reserve.bytes() == 0 {
-        tracing::info!("no disk reserve: this home holds nothing back for a full disk");
+    // Read after every tool call, before a full disk takes the room to report it.
+    disk::install(cfg.disk_low, cfg.home.clone());
+    if cfg.disk_low == 0 {
+        tracing::info!("no disk threshold: this home never reads the room left");
     } else {
-        match cfg.disk_reserve.arm() {
-            Ok(()) => tracing::info!(
-                path = %cfg.disk_reserve.path().display(),
-                bytes = cfg.disk_reserve.bytes(),
-                "the device's disk reserve is armed"
-            ),
-            Err(why) => tracing::warn!(
-                why,
-                "the disk reserve could not be armed: a full disk would have no room to \
-                 report itself"
-            ),
-        }
+        tracing::info!(
+            threshold = cfg.disk_low,
+            "the room left is read after every tool call, and reported below this"
+        );
     }
     // A home with no usable model refuses here, not on a first turn; sessions
     // build their own client.
@@ -347,6 +339,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         context_limit_percent: cfg.agent.context_limit_percent,
         output_dir: output_dir.clone(),
         detached: detached.clone(),
+        jobs: crate::tools::tunnel::JobRegistry::new(),
     });
 
     // A tool's sentences live only in the config. See `tools::text`.
@@ -407,13 +400,10 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     }
     // Failures the last run left behind, before a client can ask about them.
     monitor::sweep(&dispatch, &cfg.home).await;
-    // A call a stopped server detached has no pid to adopt: say it was lost.
-    let lost = tools::tunnel::announce_lost(&store);
-    if lost > 0 {
-        tracing::info!(
-            lost,
-            "reported detached calls a stopped server never answered"
-        );
+    // A job of a stopped server has no pid to adopt: say what it owed and never said.
+    let owed = tools::tunnel::announce_owed(&store);
+    if owed > 0 {
+        tracing::info!(owed, "reported jobs a stopped server left owed");
     }
     // Whatever the last run detached is still out there; adopt its pids now.
     let adoption_started = std::time::Instant::now();

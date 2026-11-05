@@ -494,6 +494,22 @@ pub trait Sink {
     /// Only the tail. Everything up to the window's stamp was drawn from rows that
     /// still exist; keeping the half-written block would show it twice.
     fn rewind(&mut self, _window: &str) {}
+    /// The rows handed over from here on are older than the ones `window` holds.
+    ///
+    /// # Invariant
+    ///
+    /// A page of the past is drawn where the transcript puts it -- above what the
+    /// window already holds -- and nothing is dropped: the page is the rows the
+    /// transcript has just before the window's oldest one.
+    fn older(&mut self, _window: &str) {}
+    /// A page of older rows landed, so `window` holds every row from `floor` up.
+    ///
+    /// # Invariant
+    ///
+    /// Nothing is restamped: a page of the past does not move the row the window
+    /// ends at, so `drawn` is the number it already had. `floor` is the oldest row
+    /// the window holds, and the next page above is counted from it.
+    fn landed(&mut self, _window: &str, _created: i64, _drawn: i64, _floor: i64) {}
     /// A session stopped: its turn ended, and it waits for the operator.
     ///
     /// # Invariant
@@ -640,6 +656,14 @@ struct Sync {
     fill: Option<Fill>,
     /// Set when the stream skipped events: what was drawn still counts, the tail is owed.
     stale: bool,
+    /// The oldest row of the transcript this window holds, when it holds any.
+    ///
+    /// # Invariant
+    ///
+    /// The other end of `drawn`: what `drawn` is the newest row of, this is the
+    /// oldest, and a page above it is the rows `floor - room .. floor`. `None` means
+    /// the window holds no row this client can name, so nothing is owed above it.
+    floor: Option<i64>,
     /// Whether a page has been read for this window at all.
     ///
     /// # Invariant
@@ -671,8 +695,43 @@ struct Fill {
     buffered: Vec<(u64, Event)>,
     /// Whether the whole window is re-read, rather than the tail after its stamp.
     whole: bool,
+    /// Whether the page is the rows *above* what the window holds, not below.
+    ///
+    /// # Invariant
+    ///
+    /// A page of the past never rewinds and never restamps: the tail stays as it is
+    /// and the page lands above it. See [`Client::ask_older`].
+    older: bool,
+    /// Where this page's oldest row comes from, once it is answered.
+    floor: First,
     /// Whether the front-end was told to make room: once per fill, not per event.
     rewound: bool,
+}
+
+/// The oldest row a page will have, as the request names it.
+///
+/// # Invariant
+///
+/// A range spelled `-N:` is resolved by the server against the transcript as it
+/// stands when it answers, so its first row is only known then: `Counted` is the
+/// one form that cannot be read off the words sent. Anything else names its first
+/// row, and that is the number the page's floor will be.
+#[derive(Debug, Clone, Copy)]
+enum First {
+    /// The range's start, as written.
+    Named(i64),
+    /// Counted back from the answered transcript's last row, by this many rows.
+    Counted(i64),
+}
+
+impl First {
+    /// The oldest row a page of this width has, given where the transcript ended.
+    fn at(self, last_seq: i64) -> i64 {
+        match self {
+            First::Named(first) => first.max(1),
+            First::Counted(room) => (last_seq - room + 1).max(1),
+        }
+    }
 }
 
 /// What the operator typed, for the purpose of echoing it back into the log.
@@ -1059,9 +1118,11 @@ impl Client {
         {
             fill.rewound = true;
             let window = session.to_string();
-            match fill.whole {
-                true => sink.forget(&window),
-                false => sink.rewind(&window),
+            match (fill.whole, fill.older) {
+                (true, _) => sink.forget(&window),
+                // A page of the past lands above the window, so nothing goes.
+                (false, true) => sink.older(&window),
+                (false, false) => sink.rewind(&window),
             }
         }
         self.handle_event(event, sink);
@@ -1347,6 +1408,7 @@ impl Client {
             drawn: Drawn::Unknown,
             fill: None,
             stale: false,
+            floor: None,
             loaded: false,
             blocked: false,
         });
@@ -1355,6 +1417,7 @@ impl Client {
             entry.drawn = Drawn::Unknown;
             entry.fill = None;
             entry.stale = false;
+            entry.floor = None;
             entry.loaded = false;
             entry.blocked = false;
         }
@@ -1472,18 +1535,33 @@ impl Client {
             return true;
         }
         let sync_created = sync.created;
-        sync.stale = false;
-        sync.loaded = true;
-        sync.server = last_seq;
-        sync.drawn = Drawn::At {
-            created: sync.created,
-            seq: last_seq,
-        };
         let as_of = as_of.unwrap_or_default();
-        sink.transcript(&name, sync_created, last_seq);
         let (late, stale): (Vec<_>, Vec<_>) =
             fill.buffered.into_iter().partition(|(seq, _)| *seq > as_of);
         drop(stale);
+        sync.server = last_seq;
+        let floor = fill.floor.at(last_seq);
+        if fill.older {
+            // A page of the past: the row the window ends at is the one it had, and
+            // the floor moves up to where this page starts.
+            sync.floor = Some(floor);
+            let drawn = match sync.drawn {
+                Drawn::At { seq, .. } => seq,
+                Drawn::Unknown => 0,
+            };
+            sink.landed(&name, sync_created, drawn, floor);
+        } else {
+            // The tail: the window now ends where the answer does, and the page it
+            // was given says which rows it holds.
+            sync.stale = false;
+            sync.loaded = true;
+            sync.drawn = Drawn::At {
+                created: sync.created,
+                seq: last_seq,
+            };
+            sync.floor = Some(sync.floor.map_or(floor, |held| held.min(floor)));
+            sink.landed(&name, sync_created, last_seq, floor);
+        }
         for (_, event) in late {
             self.handle_event(event, sink);
         }
@@ -1594,18 +1672,20 @@ impl Client {
     /// The front-end is the only one who knows this: it is the length of a
     /// journal this layer never reads. Saying it here is what lets the greeting
     /// compare two numbers instead of shipping the transcript.
-    pub fn declare_drawn(&mut self, name: &str, created: i64, drawn: i64) {
+    pub fn declare_drawn(&mut self, name: &str, created: i64, drawn: i64, floor: Option<i64>) {
         let Some(sync) = self.sync.get_mut(name) else {
             return;
         };
         if sync.created != created {
             sync.drawn = Drawn::Unknown;
+            sync.floor = None;
             return;
         }
         sync.drawn = Drawn::At {
             created,
             seq: drawn,
         };
+        sync.floor = floor;
         sync.stale = false;
     }
 
@@ -1657,6 +1737,7 @@ impl Client {
         if let Some(sync) = self.sync.get_mut(name) {
             let created = sync.created;
             sync.drawn = Drawn::At { created, seq: 0 };
+            sync.floor = None;
             sync.stale = false;
         }
     }
@@ -1666,46 +1747,91 @@ impl Client {
     ///
     /// # Invariant
     ///
-    /// Never echoes: it is the window's own question, and the operator's last
-    /// line is not replaced by it. The answer's rows arrive as the events that
-    /// drew them live, so a refilled window is indistinguishable from one that
-    /// never had a gap -- which is the only thing a whole fill has to be.
+    /// Never echoes: it is the window's own question, not the operator's line. Its
+    /// rows arrive as the events that drew them live, so a refill looks like a stream.
     pub fn ask_transcript(&mut self, name: &str, room: usize) -> Option<ClientMessage> {
-        if !self.connected || self.catalog.command("get_messages").is_none() {
-            return None;
-        }
         let sync = self.sync.get(name)?;
         if sync.fill.is_some() || sync.blocked {
             return None;
         }
-        // A window holding nothing is owed the rows a pane can draw, counted from
-        // the end; one that lost its thread is owed the tail after what it has.
-        // Never unbounded: a window that is a thousand rows behind is given one
-        // page, and the next frame decides again. That is what makes a stream of
-        // natural messages cost a page rather than a transcript.
+        // One page, never a transcript: the rows a pane can draw, or the tail after.
         let room = room.max(1) as i64;
-        let range = match sync.loaded {
-            false if sync.drawn != Drawn::Unknown => format!("-{room}:"),
+        let (range, first) = match sync.loaded {
+            false if sync.drawn != Drawn::Unknown => (format!("-{room}:"), First::Counted(room)),
             false => return None,
             true => {
                 let from = self.behind_one(name)?;
-                format!("{from}:{}", from + room - 1)
+                (format!("{from}:{}", from + room - 1), First::Named(from))
             }
         };
-        // Never a whole-window replacement: what the window has already drawn is
-        // good, and a page lands below it.
-        let whole = false;
+        // Whole only for rows it cannot name: a page appended to those would repeat.
+        let whole = !sync.loaded && sync.floor.is_none() && sync.drawn != Drawn::Unknown;
+        self.begin_fill(name, range, first, whole, false)
+    }
+
+    /// Whether a refill of this window is already on its way.
+    ///
+    /// # Invariant
+    ///
+    /// Asked by a caller whose request was refused for that reason alone: a fill
+    /// answers the page it was asked for, and the caller's own request waits for it.
+    pub fn waiting(&self, name: &str) -> bool {
+        self.sync.get(name).is_some_and(|sync| sync.fill.is_some())
+    }
+
+    /// Asks the server for the page of rows just above the oldest one the window
+    /// holds, sized by what a pane can draw.
+    ///
+    /// # Invariant
+    ///
+    /// One page, and only when there is something above the floor: a window whose
+    /// floor is the transcript's first row is owed nothing, and asking again would
+    /// be a request the answer could not change.
+    pub fn ask_older(&mut self, name: &str, room: usize) -> Option<ClientMessage> {
+        let sync = self.sync.get(name)?;
+        if sync.fill.is_some() || sync.blocked {
+            return None;
+        }
+        let room = room.max(1) as i64;
+        let above = sync.floor?.saturating_sub(1);
+        if above < 1 {
+            return None;
+        }
+        let first = (above - room + 1).max(1);
+        self.begin_fill(
+            name,
+            format!("{first}:{above}"),
+            First::Named(first),
+            false,
+            true,
+        )
+    }
+
+    /// Sends one `get_messages` refill and remembers what the window is owed.
+    fn begin_fill(
+        &mut self,
+        name: &str,
+        range: String,
+        first: First,
+        whole: bool,
+        older: bool,
+    ) -> Option<ClientMessage> {
+        if !self.connected || self.catalog.command("get_messages").is_none() {
+            return None;
+        }
         let id = self.next_id();
         let mut args = protocol::Args::new();
+        // The rows a window draws, and where the transcript stood: a refill, not a read.
         args.insert("range".to_string(), range);
         args.insert("session".to_string(), name.to_string());
-        // The rows a window draws, and where the transcript stood: a refill, not a read.
         args.insert("replay".to_string(), "true".to_string());
         let sync = self.sync.get_mut(name)?;
         sync.fill = Some(Fill {
             id,
             buffered: Vec::new(),
             whole,
+            older,
+            floor: first,
             rewound: false,
         });
         Some(ClientMessage::Command {

@@ -111,13 +111,13 @@ send() {
     sleep 0.5
   done
 }
-send "first look at @image:$posix_png please"
+send "first look at @image($posix_png) please"
 after_first=$(wc -l < "$files")
-send "the same picture again: @image:$posix_png"
+send "the same picture again: @image($posix_png)"
 after_second=$(wc -l < "$files")
 # The provider drops everything it holds once this many requests have been served, so
 # the third turn is the one that meets a dead file.
-send "and a third time @image:$posix_png"
+send "and a third time @image($posix_png)"
 after_third=$(wc -l < "$files")
 
 ok "three turns with the same picture ran" \

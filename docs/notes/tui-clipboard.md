@@ -110,8 +110,7 @@ stdout, which the caller redirects into the destination file. The distinction is
 Where a pasted picture is written: a `gongga-tui` directory under the system
 temp directory, created if it is missing. The file name is generated
 (`gongga-paste-<pid>-<n>.png`) rather than taken from the clipboard, which
-matters twice over: the name has no spaces, so the `@image:` reference the
-prompt shows is one word and the server's Meta parser reads it whole; and the
+matters twice over: the name is one this program made and can read back, and the
 picture outlives the paste, because the message references the file at the moment
 it is sent.
 

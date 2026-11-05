@@ -97,7 +97,7 @@ impl Shells {
     ///
     /// One directory, one machine: it is the remote's when the session names one,
     /// and this machine's otherwise. Everything that reads a path -- the prompt's
-    /// index, `@file:`, `@image:`, `@skill:` -- asks this, and nothing infers it
+    /// index, `@file(...)`, `@image(...)`, `@skill(...)` -- asks this, and nothing infers it
     /// from how a path is spelled.
     pub fn owner(&self) -> Machine {
         match self.remote {
@@ -1050,6 +1050,19 @@ impl InboxSignal {
     /// True if a message arrived after this signal was taken.
     pub fn arrived(&self) -> bool {
         self.epoch.load(Ordering::SeqCst) != self.since
+    }
+
+    /// A signal nothing can raise.
+    ///
+    /// # Invariant
+    ///
+    /// A job that outlives the turn which asked for it is not owed to anybody's
+    /// message: its own count, so a person speaking ends the turn and not the work.
+    pub fn never() -> Self {
+        Self {
+            epoch: Arc::new(AtomicU64::new(0)),
+            since: 0,
+        }
     }
 }
 

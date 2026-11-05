@@ -320,7 +320,7 @@ assumed to be four characters per token.
 
 That measurement is not a nicety. A plan compares sizes with each other, so a constant
 factor would cancel out; what it cannot cancel is a *ratio* -- and the ratio between
-`@skill:self-control` and one table row is exactly what decides which chain is cheaper,
+`@skill(self-control)` and one table row is exactly what decides which chain is cheaper,
 which is the decision this module exists to make.
 
 ## the identity is the content
@@ -335,7 +335,7 @@ of the bytes and `plan` takes it from the caller. Two consequences, both wanted:
 
 - edited text is a *new* item, so the chain that carried the old bytes cannot warm it.
   Both halves are the identity, which is what `plan`'s tuple says: the key is the *raw
-  spelling* (`@skill:helper`, `@file:docs/plan.md`) -- the thing that is also printed in
+  spelling* (`@skill(helper)`, `@file(docs/plan.md)`) -- the thing that is also printed in
   the index and so is itself part of the prefix -- and the digest is the text behind it.
   A path is not special; whatever the caller prints as the entry's name is its key.
   Without this the layout would claim a prefix the endpoint cannot serve, which shows up

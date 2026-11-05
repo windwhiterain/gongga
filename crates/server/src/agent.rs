@@ -68,6 +68,8 @@ pub struct Agent {
     pub output_dir: PathBuf,
     /// Detached jobs of every session, reached through `ToolContext`.
     pub detached: DetachedRegistry,
+    /// Jobs running in this process, so a call can stop one by its id.
+    pub jobs: crate::tools::tunnel::JobRegistry,
 }
 
 impl Agent {
@@ -683,7 +685,7 @@ impl Agent {
         home: &std::path::Path,
         source: crate::meta::Source<'_>,
     ) -> Option<(String, Vec<String>)> {
-        // The queue as well as the transcript: an early message left its `@file:`
+        // The queue as well as the transcript: an early message left its `@file(...)`
         // mentions for this row to index.
         let mut texts = self.store.user_texts(id).ok()?;
         texts.extend(self.store.queued_texts(name).unwrap_or_default());
@@ -1197,7 +1199,7 @@ impl Agent {
         Ok(StepResult::RanTools)
     }
 
-    /// Turns the `@image:` references in a tool's output into attachments.
+    /// Turns the `@image(...)` references in a tool's output into attachments.
     ///
     /// # Invariant
     ///
@@ -1213,21 +1215,22 @@ impl Agent {
         let mut out = Vec::new();
         // The bytes are on the machine that printed the name. See
         // `docs/notes/server-meta.md`.
-        let named = crate::meta::mentions(output)
-            .into_iter()
-            .filter(|m| m.kind == protocol::Reference::Image)
-            .map(|m| m.value);
         let reader = ctx.reader();
         let source = match (&reader, printed_on) {
             (Some(reader), crate::session::Machine::Remote) => crate::meta::Source::Remote(reader),
             (None, crate::session::Machine::Remote) => crate::meta::Source::Unreachable,
             (_, crate::session::Machine::Local) => crate::meta::Source::Local,
         };
+        let dir = ctx.dir(printed_on);
+        let named = crate::meta::mentions(output)
+            .into_iter()
+            .filter(|m| m.kind == protocol::Reference::Image)
+            .map(|m| m.value);
         for given in named {
             // Read on the machine that printed it: a `bash` picture here, a `remote_bash`
             // one there.
-            let path = source.spelling(&ctx.dir(printed_on), &given);
-            let bytes = match source.read(&ctx.dir(printed_on), &given).await {
+            let path = source.spelling(&dir, &given);
+            let bytes = match source.read(&dir, &given).await {
                 Some(b) => b,
                 // Not a picture this harness can read: leave the text alone.
                 None => continue,
@@ -1310,6 +1313,7 @@ impl Agent {
             machine,
             remote: session.remote_name(),
             detached: self.detached.clone(),
+            jobs: self.jobs.clone(),
             events: Some(tx),
             cancel: tool_cancel.clone(),
             store: self.store.clone(),
@@ -1317,6 +1321,7 @@ impl Agent {
             env: session.env(),
             vision: llm.vision(crate::prompts::shared()),
             inbox: session.inbox_signal(),
+            holds_the_turn: true,
             stop: session.stop_signal(),
             closing: session.closing_signal(),
         };
@@ -1395,7 +1400,7 @@ impl Agent {
         }));
 
         let status = if outcome.ok { "ok" } else { "error" };
-        // A command that printed `@image: <path>` names a picture: it becomes an
+        // A command that printed `@image(<path>)` names a picture: it becomes an
         // attachment, uploaded once per file.
         let images: Vec<_> = scanned
             .iter()
@@ -1963,6 +1968,7 @@ fn summary_keys(tool: &str) -> &'static [&'static str] {
         // SPEC lists bash's own set; another tool is summarised by nothing yet,
         // which still reads better than a wall of JSON.
         "bash" => &["name", "background", "detached", "time_out"],
+        "check_job" => &["job_id", "wait_ms"],
         _ => &[],
     }
 }

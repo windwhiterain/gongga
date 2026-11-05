@@ -6,7 +6,7 @@ all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, l
 - protocol
 - server: binary (the backend program; also a library for its own tests).
 - client: use protocal to send server cmd
-  - cli: binary.
+  - cli: python.
     - cmd fully documented and diagnosed.
   - tui: binary.
 - bundle: binary, bundle server/cli/tui's binary, route the cmd.
@@ -40,6 +40,10 @@ tool are tunnel of cmd that agents can directly call to avoid escape.
 
 all tool has optional `description`, `max_output`, `timeout_ms`, `background`, `detached` argument that the tunnel consume.
 - `max_output`: in chars, if exeeded, save to temp file and return the file metadata {path, chars, line count}
+- foreground job running over timeout become background.
+- job running over certain time auto become detached. long job is forced to use detached + wait that job and wait can live across cancel.
+- detached job lives across server restart, adopted when server restart.
+- background/detached job ended will notice caller session, missing detacthed job, likely finished or killed when the server is down, will also notice.
 
 wait is the only expecial tool that treated internally.
 
@@ -48,12 +52,7 @@ use `which("bash")` as bash.
   cwd is session's cwd if session has no remote.
   runs in the persistent shell `name`
   - key = {session_name, bash_name}.
-  - background bash ended will notice its session, background bash has no timeout.
-- exec{command}:
-  command is a list of words: the program, then its arguments, one word each.
-  no shell reads them, so a word needs no escaping and gets none.
-  cwd is the session's cwd. not the persistent shell: `cd` and exports do not survive.
-  what a shell does (pipes, redirects, `cd`, `&&`, expansion, wildcards) is not here.
+- exec{command}: so shell to avoid escape.
 - python{code, ...}: mirror bash, persistant REPL.
 - list_bash{name_regex}: list matched bash with the caller session's name in key.
 - list_python{...}: mirror list_bash.
@@ -79,10 +78,10 @@ after the system prompt, before the first user message, inject one message with 
 transcript is append only, transcript that has been sent must not be change.
 ## Meta
 preprocess before saving to transcripts.
-- `@image: <path>` , append id to it `@image: <path> (id)`.
+- `@image(<path>)` , append id to it `@image(<path>) (id)`.
   - copy the image to transcript, dedup by path.
-- `@skill: <name>` append path metadata to it `@skill: <name> (path)`.
-- `@file: <path>` no replace.
+- `@skill(<name>)` append path metadata to it `@skill(<name>) (path)`.
+- `@file(<path>)` no replace.
 in cmd_input, those three should be auto complete.
 
 upload referencing image to provider in advance to get id => OpenAI API File ID mapping.
@@ -93,6 +92,10 @@ replace `id` with mapped File ID before sending for request.
 a cache tree is simulated for each model or (model, some config) that shares prefix cache.
 
 for the first user message to a empty session, find all meta references recursively with the prompt as the root, plan the price optimal meta content order in the cache tree, append the meta's content with its raw form (without replacement) as index to the system prompt, then per session dynamic content.
+
+## monitor
+- session: spawn/notice when any session is error.
+- disk: spawn/notice when free space is under certain threshold.
 
 ## UI
 - main (vertical)
@@ -235,7 +238,6 @@ roles:
 - advisor (sota): plan, proposal
   - present plan for implementation to the justice.
   - present proposal of changes to the spec.
-- HR (flash): create justice/premier/advisor session, monitor their situation, fix harness errors (quota, ...).
 
 record:
 - proposal{example, expected, actual, actual_spec, expected_spec}
