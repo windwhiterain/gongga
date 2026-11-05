@@ -19,10 +19,15 @@ the only party that knows which names it asks for.
 nothing. That is the invariant, and it is about the cache. The provider holds the token
 prefix of a request, so a value that differs between sessions ends the shared prefix at
 the byte it changes. Two sessions of one directory send a byte-identical index --
-measured at 29,267 characters for both -- and a per-session value in front of it makes
-every new session's first turn a prompt the provider has never seen: 14,310 tokens in,
-188 cached, 1.3%. That is the row the caching note records as "cold first turn", and it
-was being paid once per session rather than once per directory.
+measured at 29,267 characters for both -- and a per-session value in front of it made
+every new session's first turn a prompt the provider had never seen: 14,310 tokens in,
+188 cached, 1.3%, paid once per session rather than once per directory.
+
+What the fix is worth depends on the provider, and both readings are in the caching
+note: DeepSeek serves a shared prefix, so a fresh session's first turn went to 15,360 of
+15,625 cached (98.3%) with no other change; MiniMax serves only a prompt it has already
+served under that key (or one that extends it), so neither the head nor the key can give
+it a sibling's first turn.
 
 This rule has been decided twice, which is why it is written down here rather than only
 next to the template. It was `text()` from `09537ef` (2026-11-01). It was reverted the

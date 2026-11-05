@@ -269,15 +269,14 @@ directive at all, which lands in the provider's default tier -- still the only
 tier `docs/reference/prefix-cache.md` allows a plan to price.
 
 `[model] cache_affinity` (or `GONGGA_CACHE_AFFINITY`) sends `prompt_cache_key` with
-the session's **directory**. It creates no cache and costs nothing; what it does is
-decide which node a request reaches, and a provider keeps a prefix under the key that
-wrote it -- so the value must be the unit that shares a prefix, never a conversation.
-The session name was that value and hid every session's bytes from its siblings
-(measured: 128 of 14,415 cached across two names against 14,336 of 14,471 under one).
-It ships on, because a provider whose router scatters identical requests serves none
-of them from cache (LongCat: 0/5 with no key, 5/5 with one); a new endpoint that
-rejects the field fails every request, so it is the one line to remove.
-`docs/notes/server-prefix-cache.md` has the measurements.
+the session's **directory**: the unit whose sessions send the same head, and so the unit
+a provider that routes by key should route together. It creates no cache and costs
+nothing. It ships on, because a provider whose router scatters identical requests serves
+none of them from cache (LongCat: 0/5 with no key, 5/5 with one); a new endpoint that
+rejects the field fails every request, so it is the one line to remove. What the key
+still cannot do: MiniMax partitions its store by it and serves only a prompt it has
+already served under that key, so no key choice gives two sessions a shared first turn.
+`docs/notes/server-prefix-cache.md` has both measurements.
 
 `[model] cache_session_header` (or `GONGGA_CACHE_SESSION_HEADER`) adds an
 `X-Session-ID` header carrying the same directory, for endpoints that pin an

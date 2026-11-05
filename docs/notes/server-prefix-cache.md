@@ -95,33 +95,53 @@ both -- so the provider's cache of one is warmth for the other's first turn. Tha
 the head of the request carries no value at all: see `docs/notes/server-prompts.md`,
 "SYSTEM".
 
-## the affinity key is a directory, not a conversation
-
-`prompt_cache_key` (`cache_affinity`) and the `X-Session-ID` header pin a request to the
-spirit of the provider's router: a request with the same key is more likely to reach the
-node that still holds that prefix. That makes the key a second, coarser namespace, and it
-must not be finer than the prefix that is actually shared. It was the session name, which
-made every conversation a namespace of its own: a sibling's bytes were never found.
-
-Measured on MiniMax `MiniMax-M3.1-Flash`, three fresh sessions of one directory, one
-message each (`Reply with exactly: ok`), system prose and index byte-identical across all
-three (400 and 29,388 characters):
-
-| session | key | input | cached |
-| --- | --- | --- | --- |
-| fresh `cachefix-a` | `cachefix-a` | 14471 | 0 |
-| fresh `cachefix-b` | `cachefix-b` | 14415 | 128 |
-| `cachefix-a` deleted and recreated | `cachefix-a` | 14471 | 14336 |
-
-The first two are the same bytes under two keys: 0.9%. The third is those bytes under a
-key the provider had already written: 99.1%. So the key is not a hint the provider may
-ignore -- it decides *which* prefix a request can find. The caller now passes the
-session's directory (the card's `cwd`, one key per machine and directory), and only a
-session whose directory nobody stated falls back to its name, because then there is no
-wider unit to name.
-
 `del_session` deletes that session's row: a new session of the same name is a new
 conversation, and must not be warmed by the old one.
+
+## what a provider's cache actually serves
+
+The head fix above rests on a claim that had to be measured: two sessions of one
+directory send the same instructions and the same index, so a provider that caches a
+request's token prefix should serve the second session's head. Two providers disagree
+about whether any provider does that.
+
+**DeepSeek `deepseek-flash` does.** Two fresh sessions of this directory, one message
+each, the head carrying no value: 15,360 of 15,625 cached (98.3%) -- and the *first* of
+the two already hit, from bytes older sessions sent under their own session names. So
+there the key is not a namespace, and a new session's first turn is warm from its
+siblings.
+
+**MiniMax `MiniMax-M3.1-Flash` is not a prefix cache at all.** Probes with ~8.2k tokens
+of system prose and one tiny user message (`.dev/verify/cache_key_probe.py`):
+
+| key | prompt | cached |
+| --- | --- | --- |
+| k1 | A | 0 (never sent) |
+| k1 | A | 8192 of 8260 |
+| k2 | A | 128 (k2 had never sent A) |
+| k1 | A with the first user word changed | 0 |
+| k1 | A with one sentence appended to the system prompt | 185 |
+| k1 | A with one sentence prepended to the system prompt | 0 |
+| k1 | A again, after the rows above | 8192 |
+
+Two rules, neither of them "a shared prefix":
+
+- **The key partitions the store.** The same bytes under k2 are a miss.
+- **A prompt is one unit.** One word changed in the first user message, or a sentence at
+  either end of the system prompt, reports the 128-185 baseline -- not "everything before
+  the change". Only a prompt the provider has served before under that key, or one that
+  strictly extends it (which is what a session's own next turn is: 98.7% measured), is
+  served. The store holds several prompts per key: the last row still hits after the
+  three changed ones.
+
+So on MiniMax two sessions share a first turn only if their prompts are byte-identical,
+and this server's card (`dynamic_tail`) names the session and its first minute. That is a
+question about the card's contents, not about the order of the request.
+
+`prompt_cache_key` (`cache_affinity`) and `X-Session-ID` therefore carry the session's
+**directory**: the unit a provider that shares prefixes routes together, and one that
+partitions by key still serves each session its own continuation (a key holds several
+prompts, measured, so siblings do not evict each other).
 
 ## Node::touched, expire
 
