@@ -125,10 +125,10 @@ pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec>
 ///
 /// # Invariant
 ///
-/// A bare word binds the next unfilled parameter after the previous one, so
-/// this order is the order position reaches: `<session>`, then the object,
-/// then the switches. The schema's own order serves the model's keyword
-/// calls, where every name is spelled.
+/// A bare word binds the first unfilled parameter at the line's cursor, so this
+/// order is the order position reaches: `<session>`, then the object, then the
+/// switches. The schema's own order serves the model's keyword calls, where
+/// every name is spelled.
 fn ordered_properties<'a>(
     properties: &'a serde_json::Map<String, serde_json::Value>,
     positional: &[&str],

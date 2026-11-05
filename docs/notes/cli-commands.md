@@ -144,14 +144,24 @@ on purpose; `session=main` does not hide the list.
 
 ## parse_args
 
-One parser binds a line to the published spec: a bare word guesses the next
-unfilled parameter after the one the previous bare word took -- the first lands
-on the declaration's first unfilled one -- and `--flag value` / `--flag=value`
-name the rest. Optional parameters are reached by position exactly where they
-are declared, and a flag-bound parameter is skipped, never rebound, so
-`set_session main flash --cwd <path>` binds name and model while the flag
-takes the directory. The rule lives in `next_unfilled`, one function the
-parser and the completion both walk. The spec is the only syntax the client
+One parser binds a line to the published spec: the line carries a cursor over
+the declaration, and a bare word takes the first unfilled parameter from there.
+`--flag value` / `--flag=value` name a parameter outright. Both spellings move
+the cursor to one past the parameter they bound, so a flag advances it exactly
+as a bare word does -- and naming a parameter behind the cursor pulls it back.
+No parameter is ever bound twice, which is why a bare word steps over the ones
+already on the line: `set_session main --model flash high` binds name by
+position, model by flag, then thinking by the cursor the flag left.
+
+Two consequences worth stating, because they are the rule and not an accident.
+An optional parameter ahead of the cursor takes the word first: on
+`--ctx_limit 30 high`, `high` is the model, since the cursor stopped at the
+parameter after `--ctx_limit`. And a cursor past the last parameter wraps to the
+first unfilled one, which is what keeps a flag that sits early from stranding the
+required parameter behind it: `--must_create true main` still binds `main` to
+name, and `--model flash main` binds it to thinking, then refuses the missing
+name. The rule lives in `next_unfilled`, with `after_arg` for the cursor a flag
+leaves, and the completion replays the same two steps (`bound_words`). The spec is the only syntax the client
 knows -- the transparent wrapper keeps no command list of its own, and the
 client's own commands are the published one it does carry
 (`docs/notes/cli-catalog.md`) -- so a `--word` that names nothing in it is a

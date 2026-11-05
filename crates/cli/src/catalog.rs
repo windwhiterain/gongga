@@ -570,32 +570,59 @@ impl Completer for Catalog {
                 candidates: resolve(&arg.completions, &token, &ctx, &words, 0),
             };
         }
-        // The parser's own guessing rule, walked over the line's words, so
-        // the popup offers what the typed word would land on.
-        let mut bound: protocol::Args = protocol::Args::new();
-        for word in words
-            .iter()
-            .filter_map(|w| w.strip_prefix("--"))
-            .filter_map(|f| f.split('=').next())
-        {
-            if spec.args.iter().any(|a| a.name == word) {
-                bound.insert(word.to_string(), String::new());
-            }
-        }
-        let mut after: Option<usize> = None;
-        for _word in positional_tokens(&spec, &words, word_at_cursor) {
-            if let Some(at) = crate::commands::next_unfilled(&spec, &bound, after) {
-                bound.insert(spec.args[at].name.clone(), String::new());
-                after = Some(at);
-            }
-        }
-        crate::commands::next_unfilled(&spec, &bound, after)
+        // The parser's rule, replayed over the line, so the popup offers what
+        // the typed word lands on. See `bound_words`.
+        let (bound, cursor) = bound_words(&spec, &words, word_at_cursor);
+        crate::commands::next_unfilled(&spec, &bound, cursor)
             .map(|at| Offered {
                 subject: Some(format!("--{}", spec.args[at].name)),
                 candidates: resolve(&spec.args[at].completions, &token, &ctx, &words, 0),
             })
             .unwrap_or_default()
     }
+}
+
+/// What a line has bound so far, and the cursor its next bare word looks from.
+///
+/// # Invariant
+///
+/// The two steps [`crate::commands::parse_args`] binds by -- a flag moves the
+/// cursor past its parameter ([`crate::commands::after_arg`]), and a bare word
+/// takes [`crate::commands::next_unfilled`] -- with no values read: a word is a
+/// value only to the parser. So a popup and the word that follows it agree.
+fn bound_words(spec: &CommandSpec, words: &[String], skip: Option<usize>) -> (Args, usize) {
+    let mut bound = Args::new();
+    let mut cursor = 0;
+    let mut i = 1;
+    while i < words.len() {
+        if Some(i) == skip {
+            i += 1;
+            continue;
+        }
+        let Some(flag) = words[i].strip_prefix("--") else {
+            let Some(at) = crate::commands::next_unfilled(spec, &bound, cursor) else {
+                return (bound, cursor);
+            };
+            bound.insert(spec.args[at].name.clone(), String::new());
+            cursor = at + 1;
+            i += 1;
+            continue;
+        };
+        let (name, inline) = match flag.split_once('=') {
+            Some((name, _)) => (name, true),
+            None => (flag, false),
+        };
+        // A flag this spec does not publish binds nothing, and takes no value.
+        match crate::commands::after_arg(Some(spec), name) {
+            Some(at) => {
+                bound.insert(spec.args[at - 1].name.clone(), String::new());
+                cursor = at;
+                i += if inline { 1 } else { 2 };
+            }
+            None => i += 1,
+        }
+    }
+    (bound, cursor)
 }
 
 /// Completes a message's `@image:`, `@skill:` and `@file:` references.

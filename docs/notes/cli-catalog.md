@@ -128,11 +128,12 @@ Past the command name, a word completes one of two things. A flag's value, when
 it follows a flag: the flag sits one word back when the value has not been
 started yet, and two when it has: `--remote <TAB>` and `--remote lo<TAB>`
 complete the same list. Or the parameter a bare word would guess -- the same
-rule the parser binds by (`next_unfilled`): flags first, then each bare word
-takes the next unfilled parameter after the previous one
-(`positional_tokens` steps over flags and their values):
-`/set_session <TAB>` offers sessions, and with a session on the line the next Tab
-offers models. A parameter whose source is `None` offers nothing, which is how
+rule the parser binds by, replayed over the line (`bound_words`): each word moves
+one cursor, a flag past its parameter and a bare word to whatever
+`next_unfilled` picks, so the popup names the parameter the next word lands on.
+`/set_session <TAB>` offers sessions, with a session on the line models, and a
+flag on the line moves the offer past it: `/set_session main --model flash <TAB>`
+offers thinking. A parameter whose source is `None` offers nothing, which is how
 `send_message --name <name> --message <text>` stops completing after the session.
 
 ## models, default_model, and the two sources that read them

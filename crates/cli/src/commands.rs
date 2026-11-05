@@ -411,17 +411,15 @@ pub fn roots(home: &Path, project: Option<&Path>) -> skill::Roots {
 ///
 /// # Invariant
 ///
-/// The spec is the only syntax the caller knows: an unknown command cannot
-/// be parsed, and a token naming nothing in it is a typo said as such, not a
-/// shape to guess at. A value may start with `--` only in the `--flag=--value`
-/// spelling. See `next_unfilled` for the guessing rule itself.
+/// The spec is the only syntax the caller knows: an unknown command is not
+/// parsed, and a token naming nothing in it is a typo said as such. A value may
+/// start with `--` only in the `--flag=--value` spelling.
 pub fn parse_args(tokens: &[String], spec: Option<&CommandSpec>) -> anyhow::Result<Args> {
     let flags: Vec<&ArgSpec> = spec.map(|s| s.args.iter().collect()).unwrap_or_default();
     let takes = |name: &str| flags.iter().any(|a| a.name == name);
     let mut args = Args::new();
-    // Where the last bare word bound; the next guesses right after it
-    // (None: the declaration's first unfilled parameter).
-    let mut after: Option<usize> = None;
+    // One past what the last token bound, a flag as much as a bare word.
+    let mut cursor = 0;
     let mut i = 0;
     while i < tokens.len() {
         let token = &tokens[i];
@@ -436,6 +434,7 @@ pub fn parse_args(tokens: &[String], spec: Option<&CommandSpec>) -> anyhow::Resu
                     );
                 }
                 insert_once(&mut args, name, value)?;
+                cursor = after_arg(spec, name).unwrap_or(cursor);
                 i += 1;
             } else {
                 if !takes(flag) {
@@ -449,10 +448,11 @@ pub fn parse_args(tokens: &[String], spec: Option<&CommandSpec>) -> anyhow::Resu
                     .get(i + 1)
                     .ok_or_else(|| anyhow::anyhow!("--{flag} needs a value"))?;
                 insert_once(&mut args, flag, value)?;
+                cursor = after_arg(spec, flag).unwrap_or(cursor);
                 i += 2;
             }
         } else {
-            let Some(at) = spec.and_then(|s| next_unfilled(s, &args, after)) else {
+            let Some(at) = spec.and_then(|s| next_unfilled(s, &args, cursor)) else {
                 anyhow::bail!(
                     "unexpected argument {token:?}; {} takes {}",
                     spec.map(|s| s.name.as_str()).unwrap_or("this command"),
@@ -461,31 +461,46 @@ pub fn parse_args(tokens: &[String], spec: Option<&CommandSpec>) -> anyhow::Resu
             };
             let name = spec.map(|s| s.args[at].name.clone()).unwrap_or_default();
             insert_once(&mut args, &name, token)?;
-            after = Some(at);
+            cursor = at + 1;
             i += 1;
         }
     }
     Ok(args)
 }
 
-/// The argument a bare word lands on: the first unfilled parameter after
-/// `after`; None starts at the declaration.
+/// The cursor a parameter leaves behind: the index right after it.
 ///
 /// # Invariant
 ///
-/// The guessing rule a nameless value binds by: it takes the parameter right
-/// after the one the previous nameless value took, optional ones included, so
-/// position reaches every parameter exactly where it is declared. Flags fill
-/// independently and are skipped, never rebound -- the one rule both the
-/// parser and completion walk, so what a popup offers is what a word lands on.
-pub fn next_unfilled(spec: &CommandSpec, bound: &Args, after: Option<usize>) -> Option<usize> {
-    let start = after.map(|a| a + 1).unwrap_or(0);
+/// One past the parameter whatever spelling bound it: a flag and a bare word
+/// move one cursor, and naming a parameter behind it pulls it back. Binding one
+/// twice is [`insert_once`]'s refusal.
+pub fn after_arg(spec: Option<&CommandSpec>, name: &str) -> Option<usize> {
+    let spec = spec?;
+    spec.args
+        .iter()
+        .position(|a| a.name == name)
+        .map(|at| at + 1)
+}
+
+/// Where a bare word at `cursor` lands.
+///
+/// # Invariant
+///
+/// The first unfilled parameter from the cursor, else the first unfilled one from
+/// the start -- the rule a nameless value binds by, and the one both the parser
+/// and the completion walk, so a popup offers what a word lands on. Nothing binds
+/// twice, so position reaches each parameter where it is declared; the wrap keeps
+/// a flag ahead of the line from stranding what is behind it.
+pub fn next_unfilled(spec: &CommandSpec, bound: &Args, cursor: usize) -> Option<usize> {
+    let unfilled = |(_, a): &(usize, &ArgSpec)| !bound.contains_key(&a.name);
     spec.args
         .iter()
         .enumerate()
-        .skip(start)
-        .find(|(_, a)| !bound.contains_key(&a.name))
-        .map(|(i, _)| i)
+        .skip(cursor)
+        .find(unfilled)
+        .or_else(|| spec.args.iter().enumerate().find(unfilled))
+        .map(|(at, _)| at)
 }
 
 /// A repeated argument is a contradiction, whatever spellings it was given.
