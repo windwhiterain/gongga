@@ -1680,10 +1680,17 @@ impl Client {
         }
         // A window holding nothing is owed the rows a pane can draw, counted from
         // the end; one that lost its thread is owed the tail after what it has.
+        // Never unbounded: a window that is a thousand rows behind is given one
+        // page, and the next frame decides again. That is what makes a stream of
+        // natural messages cost a page rather than a transcript.
+        let room = room.max(1) as i64;
         let range = match sync.loaded {
-            false if sync.drawn != Drawn::Unknown => format!("-{}:", room.max(1)),
+            false if sync.drawn != Drawn::Unknown => format!("-{room}:"),
             false => return None,
-            true => format!("{}:", self.behind_one(name)?),
+            true => {
+                let from = self.behind_one(name)?;
+                format!("{from}:{}", from + room - 1)
+            }
         };
         // Never a whole-window replacement: what the window has already drawn is
         // good, and a page lands below it.
