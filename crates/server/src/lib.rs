@@ -43,6 +43,7 @@ mod tool_cmd;
 mod tools;
 mod transcript;
 mod transport;
+pub mod worker;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -337,6 +338,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             .then(|| cfg.agent.cache_ttl_secs.saturating_mul(1_000)),
         index_change_tolerance: cfg.agent.index_change_tolerance,
         context_limit_percent: cfg.agent.context_limit_percent,
+        home: cfg.home.clone(),
         output_dir: output_dir.clone(),
         detached: detached.clone(),
         jobs: crate::tools::tunnel::JobRegistry::new(),
@@ -400,8 +402,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     }
     // Failures the last run left behind, before a client can ask about them.
     monitor::sweep(&dispatch, &cfg.home).await;
-    // A job of a stopped server has no pid to adopt: say what it owed and never said.
-    let owed = tools::tunnel::announce_owed(&store);
+    // What the last run left running is adopted, or said to be gone.
+    let owed = tools::tunnel::announce_owed(&store, &cfg, &output_dir).await;
     if owed > 0 {
         tracing::info!(owed, "reported jobs a stopped server left owed");
     }

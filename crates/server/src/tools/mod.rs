@@ -46,6 +46,8 @@ pub mod words;
 pub struct ToolContext {
     pub session: String,
     pub call_id: String,
+    /// The home this call belongs to: what a worker needs to be started.
+    pub home: PathBuf,
     /// Where capped tool output is spilled, so nothing is lost by capping.
     pub output_dir: PathBuf,
     /// The session's named shells, on this machine and -- when it names one --
@@ -296,9 +298,15 @@ pub trait Tool: Send + Sync {
         true
     }
 
-    /// What runs when a call to this tool says `detached`.
+    /// What carries a call to this tool that says `detached`.
+    ///
+    /// # Invariant
+    ///
+    /// `Here` is the answer for a tool that acts on this server's state: a process of its
+    /// own would find none of it, so `detached` is refused. See
+    /// `docs/notes/server-tools-worker.md`.
     fn detached_carrier(&self) -> tunnel::Carried {
-        tunnel::Carried::Call
+        tunnel::Carried::Here
     }
 
     /// Whether `background` is this tool's own work rather than the tunnel's.
@@ -576,9 +584,22 @@ impl ToolRegistry {
             return tunnel::spawn(tool, name.to_string(), args, ctx, tunnel::Mode::Background)
                 .await;
         }
-        // SPEC: `detached` is the tunnel's, except for the tool that carries a process.
-        if tunnel::wants_detached(&args) && tool.detached_carrier() == tunnel::Carried::Call {
-            return tunnel::spawn(tool, name.to_string(), args, ctx, tunnel::Mode::Detached).await;
+        // SPEC: `detached` means a process of its own, so only work that is one can.
+        if tunnel::wants_detached(&args) {
+            match tool.detached_carrier() {
+                tunnel::Carried::Process => {}
+                tunnel::Carried::Worker => {
+                    return tunnel::detach_to_worker(tool, name.to_string(), args, ctx).await;
+                }
+                tunnel::Carried::Here => {
+                    return ToolOutcome::err(format!(
+                        "`{name}` cannot run detached: a detached call is a process of its own, \
+                         and `{name}` acts on what this server holds -- its shells, its \
+                         interpreters, its jobs. Run it here, or say `background` and collect \
+                         it with `check_job`."
+                    ));
+                }
+            }
         }
         invoke(name, tool, args, ctx).await
     }
@@ -1201,8 +1222,9 @@ impl Tool for BashTool {
     /// A detached `bash` is a process of this machine's registry, not a job of the server.
     fn detached_carrier(&self) -> tunnel::Carried {
         match self.machine {
+            // A peer's detached bash would have to run on the peer: refused here.
             Machine::Local => tunnel::Carried::Process,
-            Machine::Remote => tunnel::Carried::Call,
+            Machine::Remote => tunnel::Carried::Here,
         }
     }
 
@@ -2078,7 +2100,10 @@ impl Tool for DelJobTool {
             if let Err(e) = ctx.store.delete_job(id) {
                 return ToolOutcome::err(format!("could not delete job {id}: {e}"));
             }
-            let stopped = ctx.jobs.stop(id);
+            let stopped = match row.pid {
+                Some(pid) => crate::tools::detached::kill_tree(pid as u32).await,
+                None => ctx.jobs.stop(id),
+            };
             let what = named(&row);
             ToolOutcome::ok(if stopped {
                 format!(

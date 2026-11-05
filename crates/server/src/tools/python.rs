@@ -965,6 +965,11 @@ pub struct ReadFileTool {
 }
 
 impl Tool for ReadFileTool {
+    /// One file, read or written, is a one-shot a worker can own.
+    fn detached_carrier(&self) -> crate::tools::tunnel::Carried {
+        crate::tools::tunnel::Carried::Worker
+    }
+
     fn name(&self) -> &'static str {
         "read_file"
     }
@@ -1070,6 +1075,11 @@ pub struct WriteFileTool {
 }
 
 impl Tool for WriteFileTool {
+    /// One file, read or written, is a one-shot a worker can own.
+    fn detached_carrier(&self) -> crate::tools::tunnel::Carried {
+        crate::tools::tunnel::Carried::Worker
+    }
+
     fn name(&self) -> &'static str {
         "write_file"
     }
@@ -1163,6 +1173,11 @@ pub struct ReplaceTool {
 }
 
 impl Tool for ReplaceTool {
+    /// One file, read or written, is a one-shot a worker can own.
+    fn detached_carrier(&self) -> crate::tools::tunnel::Carried {
+        crate::tools::tunnel::Carried::Worker
+    }
+
     fn name(&self) -> &'static str {
         "replace"
     }

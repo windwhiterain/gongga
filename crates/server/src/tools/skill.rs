@@ -22,6 +22,11 @@ pub struct SkillTool {
 }
 
 impl Tool for SkillTool {
+    /// A skill entry is a program of its own, so a worker can own it.
+    fn detached_carrier(&self) -> crate::tools::tunnel::Carried {
+        crate::tools::tunnel::Carried::Worker
+    }
+
     fn name(&self) -> &'static str {
         "skill"
     }

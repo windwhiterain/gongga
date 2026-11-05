@@ -94,12 +94,6 @@ impl DetachedJob {
         log: &Path,
         env: &[(String, String)],
     ) -> anyhow::Result<Self> {
-        if let Some(parent) = log.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let out = std::fs::File::create(log)?;
-        let err = out.try_clone()?;
-
         let mut command = Command::new(program);
         command
             .arg("--norc")
@@ -111,6 +105,38 @@ impl DetachedJob {
         for (k, v) in env {
             command.env(k, v);
         }
+        Self::spawn(command, log, cmd)
+    }
+
+    /// Starts one program with its words, on its own, writing to `log`.
+    ///
+    /// # Invariant
+    ///
+    /// No shell reads the words: a worker is named by the same spellings the server
+    /// has, and a path with a space in it must reach it as one path.
+    pub fn launch_program(
+        program: &Path,
+        args: &[String],
+        cwd: &Path,
+        log: &Path,
+        env: &[(String, String)],
+    ) -> anyhow::Result<Self> {
+        let mut command = Command::new(program);
+        command.args(args).current_dir(cwd);
+        for (k, v) in env {
+            command.env(k, v);
+        }
+        let label = format!("{} {}", program.display(), args.join(" "));
+        Self::spawn(command, log, &label)
+    }
+
+    /// The one place a detached process is started: in a group of its own, with a log.
+    fn spawn(mut command: Command, log: &Path, label: &str) -> anyhow::Result<Self> {
+        if let Some(parent) = log.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let out = std::fs::File::create(log)?;
+        let err = out.try_clone()?;
         command
             .stdin(Stdio::null())
             .stdout(out)
@@ -122,9 +148,25 @@ impl DetachedJob {
             command.process_group(0);
         }
         #[cfg(windows)]
-        {
-            command.creation_flags(0x0000_0200); // CREATE_NEW_PROCESS_GROUP
-        }
+        let child = {
+            const NEW_GROUP: u32 = 0x0000_0200;
+            const BREAKAWAY: u32 = 0x0100_0000;
+            // Out of this server's job object too, or `KILL_ON_JOB_CLOSE` would end a
+            // detached job with the process that started it.
+            command.creation_flags(NEW_GROUP | BREAKAWAY);
+            match command.spawn() {
+                Ok(child) => child,
+                // A job that does not allow breakaway has nothing to break out of.
+                Err(e) if e.raw_os_error() == Some(5) => {
+                    command.creation_flags(NEW_GROUP);
+                    command
+                        .spawn()
+                        .map_err(|e| anyhow::anyhow!("spawning detached command: {e}"))?
+                }
+                Err(e) => return Err(anyhow::anyhow!("spawning detached command: {e}")),
+            }
+        };
+        #[cfg(unix)]
         let child = command
             .spawn()
             .map_err(|e| anyhow::anyhow!("spawning detached command: {e}"))?;
@@ -135,12 +177,17 @@ impl DetachedJob {
             job: 0,
             shell: String::new(),
             pid,
-            cmd: cmd.to_string(),
+            cmd: label.to_string(),
             log: log.to_path_buf(),
             started_at: now_millis(),
             child: Some(child),
             noticed: false,
         })
+    }
+
+    /// Gives up the child to a caller who will wait on it itself.
+    pub fn take_child(&mut self) -> Option<Child> {
+        self.child.take()
     }
 
     /// Rebuilds a job from what a previous run left in the database.
@@ -1179,7 +1226,7 @@ async fn live_batch(pids: Vec<u32>) -> anyhow::Result<HashSet<u32>> {
 /// Which of `pids` are in use now, answered for all of them at once.
 ///
 /// See `docs/notes/server-tools-detached.md`.
-fn alive_pids(pids: &[u32]) -> anyhow::Result<HashSet<u32>> {
+pub(crate) fn alive_pids(pids: &[u32]) -> anyhow::Result<HashSet<u32>> {
     let wanted: HashSet<u32> = pids.iter().copied().filter(|p| *p != 0).collect();
     if wanted.is_empty() {
         return Ok(wanted);
