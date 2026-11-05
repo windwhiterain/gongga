@@ -1,9 +1,10 @@
 """Run a skill's entry: the function its package publishes.
 
 A skill may be a Python package -- a directory with `__init__.py` -- instead of a
-script with a declared entry. Its public API is its *functions*, and one of them
-is what a call runs. The API is `__all__` when the package states one, and
-otherwise the module's own callables whose names do not start with `_`.
+script with a declared entry. Its public API is its *functions*: whatever the
+module defines in global scope under a name that does not start with `_`. `__all__`
+is not consulted -- `SKILL.md` is what says what the functions are for, and a name
+this file hid would be a second answer to that.
 
     import gongga_skill
     gongga_skill.run("/path/to/skill", "fetch", ["https://example.com"])
@@ -69,18 +70,21 @@ def package(directory):
 
 
 def functions(module):
-    """The public API of a package: name to callable, in declaration order."""
-    stated = getattr(module, "__all__", None)
-    names = list(stated) if stated is not None else list(vars(module))
-    found = {}
-    for name in names:
-        candidate = getattr(module, name, None)
-        if name.startswith("_") or not callable(candidate):
-            continue
-        if inspect.ismodule(candidate) or inspect.isclass(candidate):
-            continue
-        found[name] = candidate
-    return found
+    """The public API of a package: name to callable, in declaration order.
+
+    Everything global that is callable and not `_`-prefixed -- which means an
+    imported function is published too. A package that wants a helper out of its
+    API imports the module (`import json`, then `json.dumps`) or names the helper
+    with a leading `_`; `__all__` is not a third spelling this file reads.
+    """
+    return {
+        name: value
+        for name, value in vars(module).items()
+        if not name.startswith("_")
+        and callable(value)
+        and not inspect.ismodule(value)
+        and not inspect.isclass(value)
+    }
 
 
 def bind(entry, words):

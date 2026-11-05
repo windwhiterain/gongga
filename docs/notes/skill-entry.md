@@ -55,9 +55,11 @@ provides no shell, so a word holding a space, a quote or a `$` arrives as it is.
 ## The package form
 
 A skill may be a Python package instead of a script: the directory holds `__init__.py`, and
-what to run is *discovered* rather than declared. Its public API is its **functions** --
-`__all__` when the package states one, otherwise the module's own callables that do not
-start with `_` -- and a call names one: the first word after the skill. The rest bind to
+what to run is *discovered* rather than declared. Its public API is its **functions**:
+whatever global scope holds under a name that does not start with `_`. `__all__` is not a
+second spelling of that -- `SKILL.md` is where the functions are described, and a file that
+hid one would be answering the same question twice. A call names one: the first word after
+the skill. The rest bind to
 that function's parameters in declaration order, or by name with `--name value`, and an
 annotation of `int`, `float` or `bool` converts the word. What the function answers is the
 answer: `None`, a string, an exit code, or a structure printed as JSON.

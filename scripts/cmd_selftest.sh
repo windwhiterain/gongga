@@ -228,9 +228,6 @@ description: A skill that is a Python package, not a script.
 ---
 MD
 cat > "$home/skills/echo-pkg/__init__.py" <<'PY'
-__all__ = ["echo", "code"]
-
-
 def echo(*words):
     return "argv: " + " | ".join(words) + "\n"
 
