@@ -63,25 +63,44 @@ no `cache_control` -- and states the boundary in one sentence:
 > 缓存采用前缀匹配的方式，以「工具定义-系统提示词-历史对话内容」为顺序构建，任意模块内容的变更，都可能会影响缓存的效果；
 
 with, beside it: 512 or more input tokens; and the best practice *静态内容在前、动态用户信息在最后*.
-Three things follow that no earlier reading of this provider had:
+The page names the **order** in which the prefix is assembled and says a change in any
+module *may* affect the cache. It does not say where a cut falls inside a module, and it
+documents no `cache_control` anywhere -- its own Anthropic SDK example sends none. The
+page the older reading of this file came from (`anthropic-api-compatible-cache`, with its
+breakpoint / 20 blocks / 4 marks / 5 minutes) redirects here today, so that reading is
+withdrawn rather than quoted.
 
-- **The unit is a module, not a byte and not a block**: tool definitions, then system
-  prompt, then history. A change in one module is documented to affect the cache, and
-  this server's prompt index lives *inside the system prompt* -- so a session whose first
-  message names a different skill changes that module, and everything after it is new.
-  Measured: the same request with only the index swapped read 189 cached of 19,952.
-- **`cache_control` is not documented at all any more**, on this page or anywhere else on
-  the site as of 2026-11-05. Measured: `cache_creation_input_tokens` was 0 on every one
-  of a dozen requests that carried a breakpoint, and marking a tool definition or a
-  system block changed the prompt (and so the reading) without writing anything.
-- **A new prompt is cold even when its system module is byte-identical**: sending the same
-  tools and prose with a different first user message read 274 cached of 19,872. What was
-  served in other runs was a prompt the provider had already stored, or a prefix long
-  enough to cover a whole stored span.
+### the boundary this provider actually has
 
-The older reading still holds where it was measured (`docs/notes/server-anthropic.md`):
-a *repeat* of one prompt is served almost entirely, and the OpenAI faces serve nothing at
-all across prompts.
+Measured 2026-11-05, a 21k-token request against the real endpoint (the machine's 15 tool
+schemas, the stored prose and a stored 51,310-character index), every request a variant of
+the one before:
+
+| send | total | read |
+| --- | --- | --- |
+| a prompt never sent | 21,281 | 0 |
+| **the same prompt extended** by an assistant turn and a new user turn | 21,295 | **21,120** |
+| that one extended again | 21,308 | **21,120** |
+| a sibling: same tools, same system, another card and another message | 21,223 | 128 |
+| three more siblings | 21,223 each | 128, 0, 128 |
+| the last character of a stored prompt changed | 21,030 | 192 |
+
+So there is **one** thing this provider serves: a request that **extends a stored
+request** (or repeats it exactly). The served length is the stored request's length,
+quantized down to a multiple of 128 tokens. Nothing is served across requests that
+diverge anywhere -- not the tool definitions, not the system text, not its prose half.
+
+That makes the earlier "a sibling's first turn hit 15,616 of 15,640" reading wrong, and
+the way it went wrong is worth keeping: a session's `cached_tokens` column is its
+*newest* measurement, and every turn that calls a tool sends two requests. The second
+extends the first, so it reads ~99%; the column reports that, not the turn's first
+request. Three of five "first turns" that hit were second requests inside their own turn.
+
+What follows for a plan: on this provider there is no order to choose, because a
+cross-session hit cannot happen at all. The only cross-session reuse reachable is an
+**identical prompt**, i.e. siblings whose whole request is byte-for-byte the same -- which
+the start card's session name and minute forbid, and which no ordering of the index can
+buy.
 
 MiniMax's automatic cache states three things worth writing down, checked 2026-11-05:
 caching applies to requests of **512 or more input tokens**; the prefix is matched in the

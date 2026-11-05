@@ -67,14 +67,23 @@ holds per face rather than per row: the Responses face still copies.
 A breakpoint marks the end of what a provider may reuse. Two are sent:
 
 1. **the system text** (prose + index), which every session of a directory sends
-   identically — this is what made a sibling's first turn hit 15,616 of 15,640;
+   identically;
 2. **the message before the newest one**, which the body holds back until another
    arrives. The newest message is never marked: it has never been sent, and a breakpoint
    behind it caches a prefix nothing can reuse.
 
-The transcript's own breakpoint is why a long session does not re-bill its whole history
-on every turn: the prefix is re-warmed by the previous turn, and the 20-block look-back
-covers what a turn adds.
+**They are worth nothing measurable on this provider, and the reason corrects an earlier
+reading.** `cache_creation_input_tokens` was 0 on every request that carried one, and a
+prompt whose bytes a stored prompt does *not* prefix answers 128–192 however much of its
+head was already sent. What this provider serves is one thing: a request that **extends**
+a stored request — the same conversation, one step later — and an exact repeat. See
+`docs/reference/prefix-cache.md`, "the boundary this provider actually has".
+
+The 15,616-of-15,640 readings first read as a sibling's first turn were that session's
+*second* request inside its own turn (a tool loop extends the prompt, so the first request
+is stored and the next one extends it). A session's `cached_tokens` is the newest
+measurement it has, so a one-request turn looks identical to a two-request one in that
+column unless the rows are read too.
 
 ## which provider is spoken in which face
 
