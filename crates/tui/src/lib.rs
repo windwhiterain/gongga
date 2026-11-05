@@ -1543,7 +1543,17 @@ impl Tui {
     /// the only thing that changes the popup then, and nothing else would ask for
     /// the frame that shows it.
     pub fn refresh_completion(&mut self) {
-        self.screen.completion = next_completion(&self.screen.input, &self.completer);
+        let fresh = next_completion(&self.screen.input, &self.completer);
+        // The row the operator moved to survives the rebuild: an event arriving is
+        // not a keystroke, and a popup that jumped back to its first candidate on
+        // every streamed chunk could not be walked at all.
+        self.screen.completion = match (self.screen.completion.take(), fresh) {
+            (Some(old), Some(mut new)) if same_offering(&old, &new) => {
+                new.selected = old.selected.min(new.candidates.len() - 1);
+                Some(new)
+            }
+            (_, fresh) => fresh,
+        };
         self.dirty = true;
     }
 
@@ -1738,6 +1748,25 @@ fn next_completion(input: &InputLine, completer: &SharedCompleter) -> Option<Com
         candidates,
         selected: 0,
     })
+}
+
+/// Whether two offerings are the same question: the same token, the same answers.
+///
+/// # Invariant
+///
+/// The popup's own state is compared, not the line: a rebuild that offers the same
+/// list in the same place keeps the row the operator chose, and one that offers
+/// anything else starts over.
+fn same_offering(old: &Completion, new: &Completion) -> bool {
+    old.start == new.start
+        && old.end == new.end
+        && old.subject == new.subject
+        && old.candidates.len() == new.candidates.len()
+        && old
+            .candidates
+            .iter()
+            .zip(&new.candidates)
+            .all(|(a, b)| a.insert == b.insert && a.detail == b.detail)
 }
 
 /// Applies the chosen candidate, then asks what the line wants next. See `docs/notes/tui-lib.md`.
