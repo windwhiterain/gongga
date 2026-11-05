@@ -251,6 +251,53 @@ pub trait Tool: Send + Sync {
         args: Value,
         ctx: &'a ToolContext,
     ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>>;
+
+    /// What this call leaves behind when its wait is ended from outside.
+    ///
+    /// # Invariant
+    ///
+    /// The wait itself is `ToolRegistry::run`'s, so a message ends every tool's wait
+    /// the same way; only the aftermath is the tool's own, and it is read from the
+    /// context -- a shell, an interpreter -- because the future that owned it has
+    /// been dropped by the time this is called. The default is the honest answer for
+    /// a tool with nothing to leave behind: it stopped where it was.
+    fn cut<'a>(
+        &'a self,
+        _args: &'a Value,
+        _ctx: &'a ToolContext,
+        why: Cut,
+        _started: std::time::Instant,
+    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            ToolOutcome::err(format!(
+                "`{}` ended its wait: {}. What it had already done is not reported, because \
+                 the call was ended instead of finishing.",
+                self.name(),
+                why.because()
+            ))
+        })
+    }
+}
+
+/// Why a call's wait ended before the tool answered it.
+///
+/// See `docs/notes/server-tools-mod.md`.
+#[derive(Debug, Clone, Copy)]
+pub enum Cut {
+    /// Someone is talking to this session, and the turn is owed that message.
+    Message,
+    /// The turn was cancelled, so nothing it started is owed.
+    Cancelled,
+}
+
+impl Cut {
+    /// Why, in the words a model reads.
+    pub fn because(self) -> &'static str {
+        match self {
+            Cut::Message => "a message arrived for this session",
+            Cut::Cancelled => "the turn was cancelled",
+        }
+    }
 }
 
 pub struct ToolRegistry {
@@ -401,7 +448,7 @@ impl ToolRegistry {
         let outcome = match self.get(name) {
             Some(tool) => match argument_error(tool, &args) {
                 Some(message) => ToolOutcome::err(message),
-                None => tool.run(args, ctx).await,
+                None => waited(tool, &args, ctx).await,
             },
             None => ToolOutcome::err(format!(
                 "unknown tool {name:?}; available: {}",
@@ -427,6 +474,43 @@ impl ToolRegistry {
     pub fn names(&self) -> Vec<&'static str> {
         self.tools.iter().map(|t| t.name()).collect()
     }
+}
+
+/// Waits for one call, and ends that wait when somebody speaks or the turn stops.
+///
+/// # Invariant
+///
+/// The only wait: every tool is awaited here, so "a message reaches the turn" is one
+/// rule and not one per tool. A cut goes through `Tool::cut`, the tool's own account
+/// of what it left behind, and `ctx.inbox` is compared against the copy the context
+/// took when the call started -- only a message that arrives during *this* call ends
+/// it. See `docs/notes/server-tools-mod.md`.
+async fn waited(tool: &dyn Tool, args: &Value, ctx: &ToolContext) -> ToolOutcome {
+    let started = std::time::Instant::now();
+    // The tool moves its arguments; the cut is handed its own copy.
+    let mut run = Box::pin(tool.run(args.clone(), ctx));
+    let mut punctual = tokio::time::interval(INBOX_POLL);
+    let why = loop {
+        tokio::select! {
+            outcome = &mut run => return outcome,
+            _ = ctx.cancel.cancelled() => break Cut::Cancelled,
+            _ = punctual.tick() => {
+                if ctx.inbox.arrived() {
+                    break Cut::Message;
+                }
+            }
+        }
+    };
+    // Dropped before the aftermath is asked for: the shell's lock is free again.
+    drop(run);
+    tracing::info!(
+        session = %ctx.session,
+        tool = %tool.name(),
+        why = why.because(),
+        elapsed = ?started.elapsed(),
+        "the wait ended before the call answered"
+    );
+    tool.cut(args, ctx, why, started).await
 }
 
 /// The adapter's general parameters: every tool may carry them, none
@@ -786,30 +870,6 @@ fn is_shorthand_of(declared: &str, given: &str) -> bool {
     short.chars().all(|c| spelled.any(|l| l == c))
 }
 
-/// The turn was cancelled while a command was running; its own type, not a message.
-#[derive(Debug)]
-struct Cancelled;
-
-impl std::fmt::Display for Cancelled {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("cancelled")
-    }
-}
-
-impl std::error::Error for Cancelled {}
-
-/// A message arrived for the session while this command ran: its own type because the shell lives on.
-#[derive(Debug)]
-struct WaitingMessage;
-
-impl std::fmt::Display for WaitingMessage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("a message arrived while the command was running")
-    }
-}
-
-impl std::error::Error for WaitingMessage {}
-
 /// How often a long wait checks for somebody trying to say something.
 ///
 /// See `docs/notes/server-tools-mod.md`.
@@ -1131,7 +1191,7 @@ impl Tool for BashTool {
                 Err(e) => return ToolOutcome::err(format!("{e}")),
             };
 
-            // Relay output as it arrives: draining after the command would block a chatty shell.
+            // Relay output as it arrives; the wait around it is `waited`'s.
             let (tx, mut rx) = mpsc::channel::<BashChunk>(256);
             let mut shell = handle.lock().await;
             // Scoped so the future borrowing `shell` drops before the guard does.
@@ -1139,21 +1199,9 @@ impl Tool for BashTool {
             let outcome = {
                 let execute = shell.run(&command, timeout, Some(&tx));
                 tokio::pin!(execute);
-                let mut punctual = tokio::time::interval(INBOX_POLL);
                 loop {
                     tokio::select! {
                         res = &mut execute => break res,
-                        _ = ctx.cancel.cancelled() => break Err(anyhow::Error::new(Cancelled)),
-                        // Somebody is talking, and one command is not worth their wait. See the notes.
-                        _ = punctual.tick() => {
-                            if ctx.inbox.arrived() {
-                                tracing::info!(
-                                    session = %ctx.session, shell = %name, elapsed = ?started.elapsed(),
-                                    "handed a command to the background: a message is waiting"
-                                );
-                                break Err(anyhow::Error::new(WaitingMessage));
-                            }
-                        }
                         maybe = rx.recv() => {
                             if let Some(chunk) = maybe {
                                 let stream = match chunk.stream {
@@ -1166,16 +1214,6 @@ impl Tool for BashTool {
                     }
                 }
             };
-            // A cancelled command is stopped, not abandoned: leftovers would answer the next call.
-            let cancelled = matches!(&outcome, Err(e) if e.is::<Cancelled>());
-            if cancelled {
-                shell.kill().await;
-            }
-            if matches!(&outcome, Err(e) if e.is::<WaitingMessage>()) {
-                // Already streamed or queued in `rx`: clear the pump so a late
-                // completion reports only output after this call.
-                let _ = shell.take_partial_output();
-            }
             // Read while the guard is held: a shell that lost its stream must not get another command.
             let healthy = shell.usable();
             drop(shell);
@@ -1188,7 +1226,7 @@ impl Tool for BashTool {
             }
 
             match outcome {
-                // Either the wait ran out or somebody spoke: nothing was stopped either way.
+                // Its deadline passed: nothing was stopped, the shell still holds it.
                 Ok(o) if o.still_running => {
                     leave_running(
                         ctx,
@@ -1199,19 +1237,6 @@ impl Tool for BashTool {
                         self.max_output_chars,
                         started,
                         "its deadline passed",
-                    )
-                    .await
-                }
-                Err(e) if e.is::<WaitingMessage>() => {
-                    leave_running(
-                        ctx,
-                        self.machine,
-                        name,
-                        &handle,
-                        description,
-                        self.max_output_chars,
-                        started,
-                        "a message arrived for this session",
                     )
                     .await
                 }
@@ -1260,27 +1285,6 @@ impl Tool for BashTool {
                         None => ToolOutcome::err(format!("{text}\n[shell exited]")),
                     }
                 }
-                Err(e) if e.is::<Cancelled>() => {
-                    // Same as lost output: a shell stopped mid-flight is never handed another command.
-                    let replaced = ctx.replace_shell(self.machine, name, &handle);
-                    ToolOutcome::err(format!(
-                        "cancelled: the turn was interrupted and this command was stopped. \
-                         What it printed above (if anything) is all there is, and its exit \
-                         status is unknown. {}",
-                        if replaced {
-                            format!(
-                                "Shell `{name}` was replaced with a fresh one in the session's \
-                                 working directory, so `cd` and exports from earlier calls are \
-                                 gone."
-                            )
-                        } else {
-                            format!(
-                                "A fresh shell could not be put in place under `{name}`, so use \
-                                 another name or `del_bash` it."
-                            )
-                        }
-                    ))
-                }
                 Err(e) => {
                     // The write failed, so stdin may hold half a line; `healthy` is what says so.
                     let ended = e.is::<crate::tools::bash::ShellEnded>();
@@ -1302,6 +1306,77 @@ impl Tool for BashTool {
                             }
                         ))
                     }
+                }
+            }
+        })
+    }
+
+    /// A command in a shell outlives the wait: it is handed to the background, and
+    /// a fresh shell takes its name.
+    ///
+    /// # Invariant
+    ///
+    /// Runs after the call's own future is gone: the task it spawns takes this
+    /// shell's lock. See `docs/notes/server-tools-mod.md`.
+    fn cut<'a>(
+        &'a self,
+        args: &'a Value,
+        ctx: &'a ToolContext,
+        why: Cut,
+        started: std::time::Instant,
+    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            let name = shell_name(args);
+            // Only ever a title: the spill file a cut writes is named the same way.
+            let description = args
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let Some((machine, handle)) = ctx.find(name) else {
+                return ToolOutcome::err(format!(
+                    "the wait for shell `{name}` ended ({}), and the shell is already gone: \
+                     what the command printed after this call is lost with it",
+                    why.because()
+                ));
+            };
+            match why {
+                Cut::Message => {
+                    // Already streamed to the window: the notice carries the rest.
+                    let _ = handle.lock().await.take_partial_output();
+                    leave_running(
+                        ctx,
+                        machine,
+                        name,
+                        &handle,
+                        description,
+                        self.max_output_chars,
+                        started,
+                        why.because(),
+                    )
+                    .await
+                }
+                Cut::Cancelled => {
+                    // Stopped, not abandoned: leftovers would answer the next command.
+                    handle.lock().await.kill().await;
+                    let replaced = ctx.replace_shell(machine, name, &handle);
+                    ToolOutcome::err(format!(
+                        "cancelled: the turn was interrupted and this command was stopped. \
+                         What it printed above (if anything) is all there is, and its exit \
+                         status is unknown. {}",
+                        if replaced {
+                            format!(
+                                "Shell `{name}` was replaced with a fresh one in the session's \
+                                 working directory, so `cd` and exports from earlier calls are \
+                                 gone."
+                            )
+                        } else {
+                            format!(
+                                "A fresh shell could not be put in place under `{name}`, so use \
+                                 another name or `del_bash` it."
+                            )
+                        }
+                    ))
                 }
             }
         })
@@ -1382,15 +1457,8 @@ impl Tool for CheckBashTool {
                     if remaining.is_zero() {
                         break;
                     }
-                    tokio::select! {
-                        _ = tokio::time::sleep(remaining.min(WAIT_POLL)) => {}
-                        _ = ctx.cancel.cancelled() => {
-                            return ToolOutcome::err(format!(
-                                "check_bash stopped waiting for {name}; its background jobs \
-                                 are still running"
-                            ));
-                        }
-                    }
+                    // Only a clock: a message or a cancel ends this from `waited`.
+                    tokio::time::sleep(remaining.min(WAIT_POLL)).await;
                 }
             }
             let mut shell = handle.lock().await;
@@ -1413,6 +1481,24 @@ impl Tool for CheckBashTool {
             ToolOutcome::ok(format!(
                 "{text}\n[{where_it_is}: {} job(s) still running]",
                 jobs
+            ))
+        })
+    }
+
+    /// A read never stopped anything: its jobs are still there to read.
+    fn cut<'a>(
+        &'a self,
+        args: &'a Value,
+        _ctx: &'a ToolContext,
+        why: Cut,
+        _started: std::time::Instant,
+    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            let name = shell_name(args);
+            ToolOutcome::err(format!(
+                "check_bash stopped waiting for {name}: {}. The jobs it was waiting for were \
+                 not stopped, and `check_bash` reads what they printed.",
+                why.because()
             ))
         })
     }
@@ -1476,13 +1562,8 @@ impl Tool for WaitTool {
                 .max(Duration::from_millis(100));
             let deadline = std::time::Instant::now() + wait;
             loop {
-                // A person's message is the one arrival no row shows yet.
-                if ctx.inbox.arrived() {
-                    return ToolOutcome::ok(
-                        "a message arrived for this session while this call waited; it is \
-                         delivered at the next step boundary",
-                    );
-                }
+                // The person's message ends this wait (see `cut`); rows are what
+                // is left to watch.
                 match ctx.store.pending_injects_of(&ctx.session) {
                     Ok(rows) if !rows.is_empty() => {
                         let mut what: Vec<String> = rows.iter().map(arrival).collect();
@@ -1506,12 +1587,26 @@ impl Tool for WaitTool {
                         crate::agent::spent(wait.as_millis() as u64)
                     ));
                 }
-                tokio::select! {
-                    _ = tokio::time::sleep(remaining.min(WAIT_POLL)) => {}
-                    _ = ctx.cancel.cancelled() => {
-                        return ToolOutcome::err("wait stopped: this turn was cancelled");
-                    }
-                }
+                tokio::time::sleep(remaining.min(WAIT_POLL)).await;
+            }
+        })
+    }
+
+    /// The one tool whose whole point is the wait: being cut by the news is its answer.
+    fn cut<'a>(
+        &'a self,
+        _args: &Value,
+        _ctx: &'a ToolContext,
+        why: Cut,
+        _started: std::time::Instant,
+    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            match why {
+                Cut::Message => ToolOutcome::ok(
+                    "a message arrived for this session while this call waited; it is \
+                     delivered at the next step boundary",
+                ),
+                Cut::Cancelled => ToolOutcome::err("wait stopped: this turn was cancelled"),
             }
         })
     }

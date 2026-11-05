@@ -130,18 +130,17 @@ impl Interpreter {
         });
     }
 
-    /// Waits until nothing is running here, or until `wait` passes.
-    pub async fn wait_idle(&self, wait: Duration, cancel: &tokio_util::sync::CancellationToken) {
+    /// Waits until nothing runs here, or until `wait` passes.
+    ///
+    /// One clock, no token: `Tools::run` ends a wait.
+    pub async fn wait_idle(&self, wait: Duration) {
         let deadline = std::time::Instant::now() + wait;
         while self.jobs() > 0 {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
             if left.is_zero() {
                 return;
             }
-            tokio::select! {
-                _ = tokio::time::sleep(left.min(Duration::from_millis(100))) => {}
-                _ = cancel.cancelled() => return,
-            }
+            tokio::time::sleep(left.min(Duration::from_millis(100))).await;
         }
     }
 }

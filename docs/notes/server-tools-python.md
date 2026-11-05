@@ -112,3 +112,14 @@ Writes go to a temporary file in the target's directory and are moved into place
 with `os.replace`; the existing mode is kept. `replace` is literal and, unless
 `all` is set, requires exactly one occurrence, so a stale `old` is an error rather
 than a silent no-op. `read_file` takes zero-based `offset` and `limit` lines.
+
+## A wait that is cut
+
+The wait is `ToolRegistry::run`'s, so a message or a cancelled turn ends it for
+`python` as it does for `bash`. What happens next cannot be `bash`'s answer:
+a foreground call reads its own reply line while it holds the interpreter's lock,
+and a call that returned without reading it would leave that line in the pipe for
+the next caller, which would take it as the answer to a different question. So
+the interpreter is ended with the call, and the next call under that name starts
+with a fresh namespace. `check_python`'s `wait_ms` is a clock and nothing else --
+`wait_idle` no longer watches a token of its own.

@@ -105,13 +105,6 @@ the schema, not a list of synonyms, so a renamed argument never needs a new
 entry -- and a key unrelated to anything declared gets no guess rather than a
 wrong one.
 
-## WaitingMessage
-
-Its own type for the same reason `Cancelled` is: the two say opposite things
-about the same shell. A cancelled command is killed; a backgrounded one keeps
-running and owes its output later. Told apart by string, that distinction is a
-bug waiting for someone to reword a message.
-
 ## INBOX_POLL
 
 A tick rather than a notification. Notifying every waiter needs somewhere to
@@ -126,12 +119,13 @@ Where the signal comes from: the session owns the counter, and every tool call
 in a turn takes a fresh copy, so a message wakes exactly one wait instead of
 every call that follows it.
 
-## Cancelled
+## Cancelled, and why it is gone
 
-Its own type rather than a string, because the cancel path has work to do that
-no other error does: the command has to be stopped, and the shell it was
-running in has to be thrown away. A message-shaped error would make that work
-a string comparison.
+It was its own type rather than a string because the cancel path had work to do
+that no other error did: the command had to be stopped, and the shell it was
+running in thrown away. Now the tool body is not there when that work happens --
+it is dropped, and `Tool::cut` does the work from the context -- so a `Cut` value
+carries the reason, and there is no error type to tell apart.
 
 ## BashTool::run (the `command` argument)
 
@@ -204,23 +198,55 @@ The deadline was on waiting, not on the command. Nothing was stopped: the shell
 still holds it. Give the session a fresh shell under the same name so work can
 continue, and have the old one report the rest of the output into the inbox.
 
-## BashTool::run (a message arriving mid-command)
+## A message arriving mid-call
 
 This is the fix for "the session went quiet for five minutes while I was talking
 to it". A step is one model request *plus* every tool call it asked for, and the
-inbox is read only between steps, so a command that sleeps for its whole
-`timeout_ms` -- 300 seconds, the way it was configured that one time -- holds
-whatever the operator said until the deadline arrives. The turn was not stuck;
-it was in the middle of a step that nobody could shorten.
+inbox is read only between steps, so a call that waits for its whole `timeout_ms`
+-- 300 seconds, the way it was configured that one time -- holds whatever the
+operator said until the deadline arrives. The turn was not stuck; it was in the
+middle of a step that nobody could shorten.
 
-Ending the wait early does not touch the command. It keeps running in the old
-shell, which goes through the same hands as a command that outlived its
-deadline, so there is one story for "this call returned without its output" and
-not two. What the model hears differs only in the reason, and the reason is the
-part worth knowing: nobody told it to stop, somebody wanted to talk to it.
+The first version of the fix was the `bash` body's own: a three-way `select` over
+the command, the cancellation token and a 250 ms inbox tick. That was one tool's
+answer to a question every tool has. `exec` and `python` have the same question
+and no answer -- a `remote_exec` waiting four hours for a file to appear could
+not be reached by `send_message` *or* by `interrupt_session`, and the operator's
+message sat in `pending_tasks` until the timeout it was written against.
 
-Only this tool waits long enough for it to matter. A `read_image` call is a file
-read; nothing is gained by interrupting that.
+So the wait is `waited`, in `ToolRegistry::run`, and it is the only one: every
+tool is awaited there, the inbox is compared against the copy the context took
+when the call started, and a cut is handed to `Tool::cut`. A tool that is cut
+never sees an error: its future is dropped, which is exactly what makes a program
+die with its call (`kill_on_drop`, or the peer's connection closing) and what
+frees a shell's lock for the task that reads the rest of its output.
+
+## Tool::cut
+
+Where a tool says what it leaves behind, now that the wait is not its own. The
+default is for a tool with nothing to leave -- a file read, a skill's entry -- and
+it says the call was ended rather than finished, because that is the whole of what
+is known about it.
+
+Three tools override it:
+
+- `bash`/`remote_bash` keeps the old behaviour, which is why the old behaviour was
+  worth keeping: the command is not touched, the shell is replaced with a fresh
+  one, and the old one reports the rest of its output into the inbox. "A message
+  ended the wait" and "the deadline passed" are still one story, told with two
+  reasons.
+- `exec`/`remote_exec` cannot keep it: a program with no shell has nowhere to be
+  left, so it is stopped with the call and its exit status is unknown. This is a
+  fact about `exec`, not a policy -- a remote run's lifetime *is* its connection.
+- `python`/`remote_python` ends the interpreter. A foreground call reads its own
+  reply line under the interpreter's lock, so a call that returned without reading
+  it would hand that line to the next caller as the answer to another question.
+  Killing the interpreter is the only way to keep "one name, one interpreter"
+  true; the next call starts a fresh namespace.
+
+`wait` is the odd one for a good reason: the news that cuts it *is* its answer, so
+its cut is an `ok`, not an error. `check_bash`/`check_python` say their jobs were
+not stopped, since a read stopping never stops anything.
 
 ## background_notifier
 
