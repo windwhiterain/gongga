@@ -104,9 +104,16 @@ process buys nothing and a long-running interpreter must not block an edit.
 
 The driver runs on this machine, or on the session's remote when the call's
 `remote` names it -- the same choice `remote_python` makes, and the same one
-machine: a session's directory is on one peer, so a second name is refused. The
-remote driver is started by name there, exactly as `remote_python` starts it, so
-a peer without Python refuses the call rather than writing on this machine.
+machine: a session's directory is on one peer, so a second name is refused, and
+the refusal names the value to write. The remote driver is started by name there,
+exactly as `remote_python` starts it, so a peer without Python refuses the call
+rather than writing on this machine.
+
+`remote` is offered only to a session that has a remote -- `definitions` drops the
+argument otherwise, so a session on one machine is never shown a machine it does not
+have. `Tool::parameters` still declares it, because the operator's catalog is built
+from the same schema and `argument_error` reads it: a session that writes the argument
+anyway is refused by `file_remote`, not by the schema.
 
 Writes go to a temporary file in the target's directory and are moved into place
 with `os.replace`; the existing mode is kept. `replace` is literal and, unless

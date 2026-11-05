@@ -432,11 +432,30 @@ it is following the spec rather than this schema. `argument_error` passes a stra
 through rather than failing the call (see above), so an undeclared `target` was a key
 that silently did nothing: the command ran on the session's peer while the model
 believed it had chosen a machine. Declared, it is refused unless it names that peer,
-and the refusal names `set_session --remote`.
+and the refusal names the value to write -- the peer's own name, or no `target` at all
+-- because the model asked about a machine and not about moving the session. Moving it
+is `set_session --remote`, which is a command; a refusal that answered with that
+command read as advice to move a working session.
 
 Only one value can be accepted, because the other machine would have no directory to
 stand in: the session's cwd is the peer's path, and a reference printed by a `bash`
 call on a second peer would be read through the first one's connection.
+
+## no remote word reaches a session that has no remote
+
+`definitions(has_remote)` drops two kinds of thing at once: the tools whose twin drives
+the peer (`Tool::is_remote`), and the `remote` argument a file tool takes. A session
+without a peer is told nothing about one -- not a tool it cannot call, not an argument
+that can only be refused, and not a sentence in a description about "the other
+machine", which is a fact it can act on in no way at all.
+
+The tool answers for itself because the list of names drifted once: `remote_python` was
+added to the registry while `is_remote_tool` still named only `remote_bash` and
+`remote_exec`, so a session with no remote was offered an interpreter that could only
+answer "this session names no remote". A turn was spent on it, and the model went on
+believing a remote tool existed under some other name. What a session can learn about
+another machine now comes from the `remote` skill, which is prose it asks for and not a
+call it fails.
 
 ## the schema is per machine
 
