@@ -189,6 +189,9 @@ async fn handle_connection(
     };
 
     let mut bus_rx = bus.subscribe();
+    // Where this connection's stream begins: everything the bus publishes from
+    // now on is numbered above it, so a client can tell what it may have missed.
+    let cursor = bus.position();
     // Commands run elsewhere: one must not hold up the events owed here.
     // See `docs/notes/server-net.md`.
     let (commands, queued) = mpsc::unbounded_channel::<Queued>();
@@ -226,6 +229,7 @@ async fn handle_connection(
                 .collect(),
             // The same list `--model` completes, and the one an edit republishes.
             models: crate::providers::model_table(),
+            cursor,
         },
     )
     .await
@@ -236,7 +240,7 @@ async fn handle_connection(
     // A measurement, not part of the greeting: told here so a window attaching
     // between two steps still has a row.
     if let Some(reading) = crate::quota::last() {
-        let _ = send_event(&sink, Event::Quota(reading)).await;
+        let _ = send_event(&sink, None, Event::Quota(reading)).await;
     }
 
     loop {
@@ -254,7 +258,7 @@ async fn handle_connection(
                             name: name.clone(),
                             args: args.clone(),
                         };
-                        if send_event(&sink, echo).await.is_err() {
+                        if send_event(&sink, None, echo).await.is_err() {
                             break;
                         }
                         if commands
@@ -283,7 +287,7 @@ async fn handle_connection(
                                 ),
                                 data: None,
                             };
-                            if send_event(&sink, result).await.is_err() {
+                            if send_event(&sink, None, result).await.is_err() {
                                 break;
                             }
                             continue;
@@ -293,7 +297,7 @@ async fn handle_connection(
                             name: name.to_string(),
                             args: args.clone(),
                         };
-                        if send_event(&sink, echo).await.is_err() {
+                        if send_event(&sink, None, echo).await.is_err() {
                             break;
                         }
                         if commands
@@ -315,10 +319,10 @@ async fn handle_connection(
                     }
                 }
             }
-            event = bus_rx.recv() => {
-                match event {
-                    Ok(event) => {
-                        if send_event(&sink, event).await.is_err() {
+            delta = bus_rx.recv() => {
+                match delta {
+                    Ok(delta) => {
+                        if send_event(&sink, Some(delta.seq), delta.event).await.is_err() {
                             break;
                         }
                     }
@@ -373,7 +377,7 @@ async fn run_commands(
         // follows is the sentence about it.
         let mut broken = false;
         for event in outcome.events {
-            if send_event(&sink, event).await.is_err() {
+            if send_event(&sink, None, event).await.is_err() {
                 broken = true;
                 break;
             }
@@ -387,7 +391,7 @@ async fn run_commands(
             message: outcome.message,
             data: outcome.data,
         };
-        if let Err(e) = send_event(&sink, result).await {
+        if let Err(e) = send_event(&sink, None, result).await {
             tracing::debug!(id = command.id, error = %e, "command reply connection closed");
             break;
         }
@@ -463,8 +467,15 @@ async fn send_server(sink: &protocol::ChannelSink, msg: &ServerMessage) -> anyho
 ///
 /// A size refusal keeps the connection: the caller asked a question this channel
 /// cannot answer, and the answer to that is a sentence, not a dropped link.
-async fn send_event(sink: &protocol::ChannelSink, event: Event) -> anyhow::Result<()> {
-    let bytes = encode_server(&ServerMessage::Event(event.clone()))?;
+async fn send_event(
+    sink: &protocol::ChannelSink,
+    seq: Option<u64>,
+    event: Event,
+) -> anyhow::Result<()> {
+    let bytes = encode_server(&ServerMessage::Event {
+        seq,
+        event: event.clone(),
+    })?;
     let started = std::time::Instant::now();
     let outcome = queue_event(sink, event, bytes).await;
     // A send that waited is the one measurement of a client that is not reading.
@@ -499,12 +510,15 @@ async fn queue_event(
                  ask for fewer rows with a range, e.g. `-500:`"
             );
             tracing::warn!(id, len, limit, "reply too large to send");
-            let small = ServerMessage::Event(Event::CmdResult {
-                id,
-                ok: false,
-                message: why,
-                data: None,
-            });
+            let small = ServerMessage::Event {
+                seq: None,
+                event: Event::CmdResult {
+                    id,
+                    ok: false,
+                    message: why,
+                    data: None,
+                },
+            };
             sink.send(encode_server(&small)?)
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))

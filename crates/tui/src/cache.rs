@@ -47,6 +47,24 @@ pub enum Record {
         text: String,
         done: bool,
     },
+    /// One session's transcript now ends at `seq`, and every block recorded
+    /// above this record was drawn from a stored row.
+    ///
+    /// # Invariant
+    ///
+    /// A window's watermark, and the only thing a later greeting is compared
+    /// with: `created` is the session's, so a name the server handed out again is
+    /// not mistaken for the transcript this one drew. See `docs/notes/tui-cache.md`.
+    Stamp { created: i64, seq: i64 },
+    /// Everything recorded above this, from the last `Stamp`, is thrown away: the
+    /// server is about to send the window's tail again.
+    ///
+    /// # Invariant
+    ///
+    /// Written before the refill's blocks and read by the replay that rebuilds
+    /// the window, so a restart in the middle of a refill neither loses the rows
+    /// below the stamp nor keeps the half-written block it replaced.
+    Rewind,
     /// A block as it stands: created, relabelled, described, opened or closed.
     Seal {
         id: u64,
@@ -70,7 +88,7 @@ pub enum Record {
 const FRAME: u64 = 4;
 
 /// The framing a journal is written in. Bumped when `Record` changes shape.
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 /// One window's journal, held open for as long as this process draws it.
 ///
@@ -293,6 +311,16 @@ impl Cache {
         })
     }
 
+    /// Writes down that the window has drawn up to `seq` of the session.
+    pub fn stamp(&self, window: &str, created: i64, seq: i64) {
+        self.append(window, &Record::Stamp { created, seq });
+    }
+
+    /// Writes down that the tail above the last stamp is thrown away.
+    pub fn rewind(&self, window: &str) {
+        self.append(window, &Record::Rewind);
+    }
+
     /// Where this window's journal ends: the offset a later record starts at.
     ///
     /// # Invariant
@@ -325,6 +353,26 @@ impl Cache {
             Some(at)
         })
         .unwrap_or(0)
+    }
+
+    /// The newest stamp of a window: where it was written, and what it said.
+    ///
+    /// # Invariant
+    ///
+    /// `at` is the record's own offset, which is what a refill cuts at: a block
+    /// whose record was written above this one was drawn after the last row the
+    /// stamp accounts for. Walking back stops at the first record this build
+    /// cannot read, for the same reason every other backward walk does.
+    pub fn stamp_at(&self, window: &str, before: u64) -> Option<(u64, i64, i64)> {
+        let mut at = before.min(self.end(window));
+        while at > 0 {
+            let start = self.back(window, at, 1);
+            if let Some(Record::Stamp { created, seq }) = self.read(window, start) {
+                return Some((start, created, seq));
+            }
+            at = start;
+        }
+        None
     }
 
     /// The record just before `at`, if the file holds one this build understands.

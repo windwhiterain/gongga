@@ -1637,12 +1637,18 @@ impl Store {
     }
 
     /// Accepts an idle session's first message and its turn obligation together.
+    ///
+    /// # Invariant
+    ///
+    /// Answers the task and the message's own seq: the caller announces where the
+    /// transcript now ends, and a number it had to guess would be a cursor into
+    /// the wrong place. See `docs/notes/server-store.md`.
     pub fn begin_turn(
         &self,
         session_id: i64,
         session: &str,
         expanded: &crate::meta::Expanded,
-    ) -> anyhow::Result<i64> {
+    ) -> anyhow::Result<(i64, i64)> {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
         tx.execute(
@@ -1655,9 +1661,9 @@ impl Store {
             ],
         )?;
         let id = tx.last_insert_rowid();
-        Self::append_message_conn(&tx, session_id, "text", &user_row(expanded))?;
+        let seq = Self::append_message_conn(&tx, session_id, "text", &user_row(expanded))?;
         tx.commit()?;
-        Ok(id)
+        Ok((id, seq))
     }
 
     /// The newest copy this home holds for `path`, and the type it was read as.
@@ -1711,7 +1717,13 @@ impl Store {
     }
 
     /// Delivers current injected messages and removes their inbox rows in one transaction.
-    pub fn deliver_pending(&self, session_id: i64, session: &str) -> anyhow::Result<(usize, i64)> {
+    /// Answers how many it delivered, how long the oldest waited, and the seq of
+    /// the last row it wrote -- the watermark the caller announces.
+    pub fn deliver_pending(
+        &self,
+        session_id: i64,
+        session: &str,
+    ) -> anyhow::Result<(usize, i64, i64)> {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
         let tasks = {
@@ -1730,6 +1742,8 @@ impl Store {
         };
         let mut waited = 0;
         let mut delivered = 0;
+        // The watermark the caller announces: the last row this transaction wrote.
+        let mut last = 0;
         for (id, payload, written_at) in tasks {
             let payload: serde_json::Value = serde_json::from_str(&payload)?;
             if let Some(notice) = payload.get("context_notice") {
@@ -1758,7 +1772,7 @@ impl Store {
             }
             let expanded = crate::meta::Expanded::from_json(&payload)
                 .ok_or_else(|| anyhow::anyhow!("pending inject {id} has no message"))?;
-            Self::append_message_conn(&tx, session_id, "text", &user_row(&expanded))?;
+            last = Self::append_message_conn(&tx, session_id, "text", &user_row(&expanded))?;
             tx.execute("DELETE FROM pending_tasks WHERE id = ?1", params![id])?;
             // The oldest wait is the one the operator felt.
             let age = now_millis() - written_at;
@@ -1768,7 +1782,7 @@ impl Store {
             delivered += 1;
         }
         tx.commit()?;
-        Ok((delivered, waited))
+        Ok((delivered, waited, last))
     }
 
     /// Commits the terminal status and the fate of this turn's durable obligations together.

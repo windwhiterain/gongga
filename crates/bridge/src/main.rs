@@ -299,7 +299,7 @@ impl Bridge {
         sink: &protocol::ChannelSink,
         out: &Arc<dyn Outbox>,
     ) -> anyhow::Result<()> {
-        let ServerMessage::Event(event) = message else {
+        let ServerMessage::Event { event, .. } = message else {
             return Ok(());
         };
         match event {

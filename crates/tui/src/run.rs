@@ -83,6 +83,14 @@ impl Sink for TuiSink<'_> {
     fn stopped(&mut self, session: &str, failed: bool) {
         self.0.stopped(session, failed);
     }
+
+    fn transcript(&mut self, session: &str, created: i64, seq: i64) {
+        self.0.stamp(session, created, seq);
+    }
+
+    fn rewind(&mut self, window: &str) {
+        self.0.rewind(window);
+    }
 }
 
 impl TuiSink<'_> {
@@ -137,6 +145,56 @@ async fn answer_completion(
     if version != *seen {
         *seen = version;
         ui.refresh_completion();
+    }
+}
+
+/// Tells the client what this window's own journals hold, once per greeting.
+///
+/// # Invariant
+///
+/// Only what is written down: a window the journal says nothing about is left
+/// undeclared, and an undeclared window is never fetched -- a fresh client has
+/// nothing to be behind on. See `docs/notes/tui-run.md`.
+fn declare(client: &mut cli::Client, ui: &Tui) {
+    let names: Vec<String> = client.sessions().iter().map(|s| s.name.clone()).collect();
+    for name in names {
+        match ui.stamp_of(&name) {
+            Some((created, drawn)) => client.declare_drawn(&name, created, drawn),
+            // No journal, no history: nothing this window could be behind on.
+            None => client.declare_nothing(&name),
+        }
+    }
+}
+
+/// Asks the server for the rows of the windows a frame drew and the greeting
+/// found behind.
+///
+/// # Invariant
+///
+/// The draw is the trigger: a session nobody is reading is never fetched, so a
+/// reconnect costs one request per window the operator is looking at rather than
+/// one per session on the machine. The answer arrives as the events that drew
+/// those rows the first time, so a refilled window is drawn by the code that drew
+/// it live.
+async fn answer_transcripts(client: &mut cli::Client, link: Option<&cli::Link>, ui: &mut Tui) {
+    let Some(open) = link else {
+        return;
+    };
+    let behind: Vec<String> = client
+        .behind()
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    for name in behind {
+        if !ui.drawn().iter().any(|drawn| *drawn == name) {
+            continue;
+        }
+        let Some(message) = client.ask_transcript(&name) else {
+            continue;
+        };
+        if open.send(message).await.is_err() {
+            break;
+        }
     }
 }
 
@@ -656,8 +714,10 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                 match outcome {
                     Ok((open, greeting)) => {
                         ui.set_server(Some(whose_server(spawned, &greeting)));
-                        // Applying the greeting is the resync: catalog, sessions, model.
+                        // Applying the greeting is what the server says; what
+                        // this window kept is the other half of the comparison.
                         greeting.apply(&mut client, &mut TuiSink(&mut ui));
+                        declare(&mut client, &ui);
                         link = Some(open);
                         backoff = RECONNECT_MIN;
                     }
@@ -689,6 +749,8 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
         // After the step, never during it: a peer's directory is not a
         // synchronous answer.
         answer_completion(&mut client, link.as_ref(), &mut ui, &mut drawn_listings).await;
+        // Same place, same reason: what a frame drew decides what is fetched.
+        answer_transcripts(&mut client, link.as_ref(), &mut ui).await;
     };
 
     // SPEC's stop, for the server the bar drew as own, and nothing for one that is

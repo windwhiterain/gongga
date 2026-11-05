@@ -495,6 +495,20 @@ struct SessionInner {
     /// on a remote it has not reached yet has none -- the first connection fills it.
     /// See `docs/notes/server-meta.md`.
     placed: Mutex<Option<PathBuf>>,
+    /// The parts of an answer that are still being written.
+    ///
+    /// # Invariant
+    ///
+    /// What a refill sends besides the stored rows, and the only copy of the
+    /// text between the last stored row and now: the drafts on disk are flushed
+    /// every quarter second, so a window that reconnected mid-answer would
+    /// otherwise lose that tail for good.
+    ///
+    /// Every update happens inside the event bus's own step (see
+    /// [`crate::bus::EventBus::step`]), which is what makes a snapshot of this
+    /// exact with respect to the stream's cursor: text and number are read
+    /// together or not at all.
+    open: Mutex<Vec<OpenPart>>,
     /// A move asked for while a turn held the session, waiting for that turn to end.
     ///
     /// # Invariant
@@ -504,7 +518,71 @@ struct SessionInner {
     pending_move: Mutex<Option<MoveRequest>>,
 }
 
+/// One part of an answer that has not been stored yet.
+///
+/// # Invariant
+///
+/// The text is the whole of what has been published for this part, and it is
+/// only ever read inside the event bus's gate: a reader that took it outside
+/// would have text whose chunks it was also about to be told, and the same
+/// letters would land twice. See `docs/notes/server-session.md`.
+#[derive(Debug, Clone)]
+pub struct OpenPart {
+    /// The provider's id for the item, so a row landing can retire its part.
+    pub item: String,
+    pub turn: u64,
+    pub part: protocol::ResponsePart,
+    pub call_id: Option<String>,
+    pub text: String,
+}
+
 impl SessionHandle {
+    /// Adds a chunk to the part being written, keeping the text so far.
+    pub fn open_push(
+        &self,
+        item: &str,
+        turn: u64,
+        part: protocol::ResponsePart,
+        call_id: Option<String>,
+        text: &str,
+    ) {
+        let mut open = self.inner.open.lock().unwrap_or_else(|e| e.into_inner());
+        match open.iter_mut().find(|open| open.item == item) {
+            Some(entry) => entry.text.push_str(text),
+            None => open.push(OpenPart {
+                item: item.to_string(),
+                turn,
+                part,
+                call_id,
+                text: text.to_string(),
+            }),
+        }
+    }
+
+    /// Forgets one part: its row is written, so the transcript says it now.
+    pub fn open_done(&self, item: &str) {
+        let mut open = self.inner.open.lock().unwrap_or_else(|e| e.into_inner());
+        open.retain(|open| open.item != item);
+    }
+
+    /// Forgets every part still being written: the turn that wrote them ended.
+    pub fn open_clear(&self) {
+        self.inner
+            .open
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+    }
+
+    /// Every part still being written, as of this moment.
+    pub fn open_parts(&self) -> Vec<OpenPart> {
+        self.inner
+            .open
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     pub fn id(&self) -> i64 {
         self.inner.id
     }
@@ -1626,6 +1704,7 @@ impl SessionManager {
                 closing: Arc::new(AtomicBool::new(false)),
                 reader: Mutex::new(reader),
                 placed: Mutex::new((!row_cwd.trim().is_empty()).then(|| PathBuf::from(&row_cwd))),
+                open: Mutex::new(Vec::new()),
                 pending_move: Mutex::new(None),
             }),
         };
