@@ -18,22 +18,6 @@ use crate::session::Machine;
 use crate::tools::exec_remote;
 use crate::tools::{Cut, Tool, ToolContext, ToolOutcome};
 
-/// What `exec` says it is: one program, its arguments, no shell.
-const EXEC_DESCRIPTION: &str = "Run one program with its arguments, without a shell. \
-     The command is a list of words: the program first, then its arguments, one \
-     word each. No shell reads them, so a word that holds a space, a quote, a \
-     `;` or a `$` reaches the program exactly as written -- there is nothing to \
-     escape and nothing to escape it wrongly. What a shell would do (pipes, \
-     redirects, `cd`, `&&`, variable expansion, wildcards) is not available \
-     here; use `bash` for those. The program is looked up on PATH, and it runs \
-     in the session's directory. This is not the persistent shell: `cd` and \
-     exports do not survive the call.";
-
-/// What `remote_exec` says it is: `exec`, on the machine that holds the directory.
-const REMOTE_EXEC_DESCRIPTION: &str = "`exec` on the session's remote endpoint -- one \
-     program with its arguments, with no shell between them, looked up on the peer's \
-     PATH. Same `command` as `exec`; the paths are that machine's.";
-
 pub struct ExecTool {
     pub machine: Machine,
     pub timeout: Duration,
@@ -45,13 +29,6 @@ impl Tool for ExecTool {
         match self.machine {
             Machine::Local => "exec",
             Machine::Remote => "remote_exec",
-        }
-    }
-
-    fn description(&self) -> &'static str {
-        match self.machine {
-            Machine::Local => EXEC_DESCRIPTION,
-            Machine::Remote => REMOTE_EXEC_DESCRIPTION,
         }
     }
 
@@ -74,27 +51,10 @@ impl Tool for ExecTool {
                 "command": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "The program and its arguments, one word each: the \
-                                     program first. No word is interpreted, so a word \
-                                     that holds a space, a quote, a `;` or a `$` needs \
-                                     no escaping and gets none."
+
                 },
-                "description": {
-                    "type": "string",
-                    "description": "What this call is for, in a few words -- it is read \
-                                     right after the tool's name, so say what the run \
-                                     is for, not what the command is (`check the state`, \
-                                     not `exec`). Optional, and never executed: it also \
-                                     names the file that a too-long output is spilled \
-                                     to, so that later you (and whoever reads the dumps) \
-                                     can tell one run from another."
-                },
-                "timeout_ms": {
-                    "type": "integer",
-                    "description": "How long to wait for the program before giving up \
-                                     on it. When it passes, the program is stopped and \
-                                     what it printed is what this call answers with."
-                }
+                "description": {"type": "string"},
+                "timeout_ms": {"type": "integer"}
             },
             "required": ["command"]
         })

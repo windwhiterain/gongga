@@ -12,27 +12,6 @@ use crate::tools::words;
 use crate::tools::{Tool, ToolContext, ToolOutcome};
 use skill::Skill;
 
-/// What `skill` says it is: one entry, its own argv, no shell.
-const DESCRIPTION: &str = "Run the entry a skill declares, or list what is installed.
-
-With no `name`: one row per skill this session can open -- what to call it, the line \
-saying what it is for, the `SKILL.md` to read, and which root it came from (`project` for \
-this checkout, `harness` for the home, `general` for the machine, in that precedence).
-
-With `name`: that skill's entry, started with your `args` and nothing between them -- no \
-shell, so a word holding a space, a quote or a `$` arrives as it is. A skill that is a \
-Python package publishes *functions*: the first word of `args` names which one, and the \
-rest bind to its parameters in order (`--name value` spells one out). A script entry's \
-program is read off its extension and its `#!` line: give the script's arguments, never \
-its interpreter. The entry's own output comes back and its \
-exit code is this call's `ok`, so a non-zero one is the skill failing, not this tool. A \
-skill that is a body with no entry refuses, naming the `SKILL.md` to read instead, and a \
-name installed in two roots refuses rather than picking one.
-
-It runs on this machine in the session's directory, whatever machine the session works \
-on: an entry is a file this server can open. Use `exec` when the program is yours to \
-name; use this when the skill owns it.";
-
 pub struct SkillTool {
     /// What an entry may be started by, as the server resolved them.
     pub programs: ::skill::Programs,
@@ -47,10 +26,6 @@ impl Tool for SkillTool {
         "skill"
     }
 
-    fn description(&self) -> &'static str {
-        DESCRIPTION
-    }
-
     fn default_timeout(&self) -> Option<Duration> {
         Some(self.timeout)
     }
@@ -59,17 +34,11 @@ impl Tool for SkillTool {
         json!({
             "type": "object",
             "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "The skill's name, as a row of the list spells it. Omit it \
-                                    and this answers with the list instead."
-                },
+                "name": {"type": "string"},
                 "args": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "The entry's arguments, one word each: passed through \
-                                    unparsed and unquoted, so a word holding a space or a \
-                                    `$` needs no escaping and gets none."
+
                 }
             },
             "required": []
