@@ -2,7 +2,7 @@
 -- Rust Coding Agent Harness --
 
 ## Crate Structure
-all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, live inside directory "crates/xxx". 
+all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, live inside directory "crates/xxx".
 - protocol
 - skill: where a skill is on disk -- the three roots, their precedence, the frontmatter,
   and the entry a body runs. No dependency, because the server and the command layer
@@ -22,7 +22,7 @@ all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, l
 - key.
 
 ## LLM API
-standard OpenAI Response API.
+standard OpenAI Response API/Anthropic API.
 - images: File API, gated by - auto recover invalid transcript (only append, no drop).
 
 ### Invarian
@@ -53,7 +53,7 @@ use `which("bash")` as bash.
 - list_python{...}: mirror list_bash.
 - check_bash{name = "default", wait_ms = 0}: return bash's output that hasn't been read by the caller session. With `wait_ms > 0` and background jobs still running, wait until they finish or the wait expires, then return the unread output: a timeout leaves the jobs running.
 - check_python{...}: mirror check_bash.
-- del_bash{name_regex}: delete matched bash with the caller sessions' name in key. 
+- del_bash{name_regex}: delete matched bash with the caller sessions' name in key.
 - del_python{...}: mirror del_bash.
 - remote_bash{command, name, target = <session's remote>, background = false, timeout_ms = <timeout_ms>}:
   cwd is session's cwd if session's remote is target.
@@ -90,12 +90,12 @@ preprocess before saving to transcripts.
 - `@file: <path>` no replace.
 in cmd_input, those three should be auto complete.
 
-upload referencing image to provider in advance to get id => OpenAI API File ID mapping. 
+upload referencing image to provider in advance to get id => OpenAI API File ID mapping.
 
 replace `id` with mapped File ID before sending for request.
 
 ### Meta Prefix Cache Planning
-a cache tree is simulated for each model or (model, some config) that shares prefix cache.   
+a cache tree is simulated for each model or (model, some config) that shares prefix cache.
 
 for the first user message to a empty session, find all meta references recursively with the prompt as the root, plan the price optimal meta content order in the cache tree, append the meta's content with its raw form (without replacement) as index to the system prompt, then per session dynamic content.
 
@@ -114,7 +114,7 @@ for the first user message to a empty session, find all meta references recursiv
 - event
   - | user_message
   - | assistant_message_item{reasoning | toolcall | output}: streaming.
-  - | tool_result: 
+  - | tool_result:
     - bash's output streaming.
 
 - events (vertical)
@@ -163,7 +163,7 @@ all named argument's name can be ommited via argument order.
   - `del_session --name <session>(sticky)`: also delete all bash with the session name in key.
   - `send_message --message <message> --name <session>(sticky)`: inject message instantly, turn waiting bash to backgound.
   - `interrupt_session <session>(sticky)`
-  - `cancel`: not instantly, but finish every task that can't be serialized to data, then store the pending tasks into data, the exit. next start will auto pick up those tasks.  
+  - `cancel`: not instantly, but finish every task that can't be serialized to data, then store the pending tasks into data, the exit. next start will auto pick up those tasks.
   - `trigger_event <event>`
   - `subscribe <subscription> <pattern> [--persistant] [--bash <bash> --cmd <cmd>] [--python <python> --code <code>]`:
     when pattern matched triggered event, run bash cmd or python code in persistant bash or python interpreter.
@@ -228,9 +228,9 @@ restart server should still keep its lifetime, e.g. tui spawned server's lifetim
 ## Skill: Polity
 agents play certain roles to keep context focus.
 
-roles: 
+roles:
 - justice (pro/sota): talk to the user, understand user.
-  - judge if plan is conform to the spec and approve to implment. 
+  - judge if plan is conform to the spec and approve to implment.
   - judge if report is conform to the spec and approve.
   - judge if proposal is in spirit of the spec and send to user for approval.
 - premier (flash):
