@@ -24,7 +24,6 @@ pub fn dispatch(home: &Path, tokens: &[String]) -> anyhow::Result<()> {
             "skill: name one (`skill <name> [args…]`), or `skill ls` for what is installed"
         )),
         Some("ls") => list(&roots),
-        Some("which") => which(&roots, tokens.get(1).map(String::as_str)),
         Some("run") => launch(
             &roots,
             tokens.get(1).map(String::as_str),
@@ -58,31 +57,6 @@ fn list(roots: &skill::Roots) -> anyhow::Result<()> {
             found.description.replace(['\t', '\n'], " "),
             found.path.display()
         );
-    }
-    Ok(())
-}
-
-/// Where a name resolves, and what else holds that name.
-fn which(roots: &skill::Roots, name: Option<&str>) -> anyhow::Result<()> {
-    let name = name.ok_or_else(|| anyhow!("which: name a skill, e.g. `skill which image`"))?;
-    let found = roots.named(name);
-    let Some(first) = found.first() else {
-        return Err(anyhow!(
-            "no skill named {name:?} is installed; `skill ls` lists what is"
-        ));
-    };
-    println!(
-        "{}\t{}\t{}\t{}",
-        first.name,
-        first.bucket.as_str(),
-        first.path.display(),
-        first
-            .entry
-            .as_ref()
-            .map_or_else(|| "-".to_string(), |entry| entry.display().to_string())
-    );
-    for other in &found[1..] {
-        shadowed(other);
     }
     Ok(())
 }

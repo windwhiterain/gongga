@@ -1639,35 +1639,39 @@ pub fn main(args: Args) -> anyhow::Result<()> {
     })
 }
 
-/// `skill`: the server's command when one publishes it, else the entry itself.
+/// `skill`: `ls` and `--name` ask a server, the rest is the entry's own argv.
 ///
 /// # Invariant
 ///
-/// The greeting's catalog decides, as it does for every other name: a server that
-/// publishes `skill` runs the entry on the session's terms, and a machine with no
-/// server still does, because an entry is a file rather than a command's work.
+/// The words after `skill` belong to the entry -- `skill remote add --home x` is the
+/// script's flag -- so this layer claims only what cannot be a word of it: `ls`, whose
+/// answer is the session's, and `--name`/`--args`, which spell the server's own command
+/// (`skill <session> --name <n> --args <json>`). A skill that must receive `--name`
+/// itself is reachable as `skill run <name> --name …`.
 async fn skill(args: &Args, tokens: &[String]) -> anyhow::Result<()> {
     let local = || crate::skill_command::dispatch(&home_of(args), &tokens[1..]);
-    let verb = tokens.get(1).map(String::as_str);
-    // `which` and `run` are this layer's words, not a skill's name.
-    if matches!(verb, Some("which") | Some("run")) {
+    let listing = tokens.get(1).map(String::as_str) == Some("ls");
+    let named = tokens[2..]
+        .iter()
+        .any(|word| word == "--name" || word.starts_with("--name="));
+    if !listing && !named {
         return local();
     }
     let Ok((mut client, mut link)) = connect(args).await else {
         return local();
     };
     let result = if client.has_command("skill") {
-        match verb {
-            // `ls`: the table this session would be offered, asked of the server
-            // when a shell names one, of this machine otherwise.
-            Some("ls") => match calling_session() {
-                Some(session) => ask_table(&mut client, &mut link, &session).await,
-                None => {
-                    link.goodbye().await;
-                    return local();
+        match (listing, calling_session()) {
+            (true, Some(session)) => match ask_table(&mut client, &mut link, &session).await {
+                Ok(()) => Ok(()),
+                // A shell started by another server's session still has a machine to
+                // list: the refusal is said, and the local walk answers.
+                Err(why) => {
+                    eprintln!("note: {session} is not a session this server knows ({why})");
+                    local()
                 }
             },
-            None => {
+            (true, None) => {
                 link.goodbye().await;
                 return local();
             }

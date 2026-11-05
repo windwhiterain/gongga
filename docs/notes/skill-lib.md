@@ -37,7 +37,7 @@ table full of skills nobody installed.
 
 `all` walks every layer and sorts each one's directories, so the same home draws the same
 table twice. `named` keeps every skill a name opens instead of the first one: `find` is
-what `@skill:` and `skill <name>` read, and the rest is what `skill which` reports as
+what `@skill:` and `skill <name>` read, and the rest is what `skill ls` reports as
 shadowed. A name in two layers is not an error -- the specification says the more
 specific layer wins and asks the implementation to say when it did -- but it is also not
 something to hide from the reader who typed the name.

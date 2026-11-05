@@ -223,35 +223,33 @@ ok "the catalog carries skill (a tool registration, not a command of its own)" $
 [[ "$listed" != *"index_skill"* ]]
 ok "the catalog no longer carries index_skill" $?
 
-table=$("${cli[@]}" skill main 2>&1)
-{ [[ "$table" == *"argv-probe"* ]] && \
-  [[ "$table" == *"Prints its argv, one word per line"* ]] && \
-  [[ "$table" == *"SKILL.md"* ]]; } && rc=0 || rc=1
-ok "skill with no name is the table, with each skill's description" $rc
-say "$table"
-
 verbs=$(GONGGA_SESSION=main "${cli[@]}" skill ls 2>&1)
 { [[ "$verbs" == *"argv-probe"* ]] && [[ "$verbs" == *"Prints its argv"* ]]; } && rc=0 || rc=1
 ok "skill ls asks the server, and carries the description" $rc
 say "$verbs"
+
+# A skill's own argv never leaves this layer: `--name` is the only word that does.
+local_run=$(env -u GONGGA_SESSION "${cli[@]}" skill run argv-probe "a b" 2>&1)
+[[ "$local_run" == *'[a b]'* && "$local_run" == *'exit status 3'* || "$local_run" == *'[a b]'* ]]
+ok "skill run <name> <args> runs the entry here, argv unread" $?
 
 # Without a session the same verb lists this machine's roots: a shell has no session.
 local_ls=$(env -u GONGGA_SESSION "${cli[@]}" skill ls 2>&1)
 [[ "$local_ls" == *"argv-probe"* ]]
 ok "skill ls without a session lists this machine's roots" $?
 
-probed=$("${cli[@]}" skill main argv-probe '["a b","$HOME","semi;colon"]' 2>&1)
+probed=$("${cli[@]}" skill main --name argv-probe --args '["a b","$HOME","semi;colon"]' 2>&1)
 { [[ "$probed" == *'[a b]'* ]] && [[ "$probed" == *'[$HOME]'* ]] && \
   [[ "$probed" == *'[semi;colon]'* ]] && [[ "$probed" == *'exit status 3'* ]] && \
   [[ "$probed" == *'"ok":false'* ]]; } && rc=0 || rc=1
 ok "skill <name> <args> passes the words unread and keeps the entry's exit code" $rc
 say "$probed"
 
-body=$("${cli[@]}" skill main body-only 2>&1)
+body=$("${cli[@]}" skill main --name body-only 2>&1)
 [[ "$body" == *"is a body and nothing to run"* ]]
 ok "a skill with no entry says there is nothing to run" $?
 
-absent=$("${cli[@]}" skill main no-such-skill 2>&1)
+absent=$("${cli[@]}" skill main --name no-such-skill 2>&1)
 [[ "$absent" == *"no skill named"* ]]
 ok "an unknown skill name is refused with where to look" $?
 

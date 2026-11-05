@@ -234,7 +234,7 @@ skill 都要改一次这个文件，而读的人手上已经有那张表。
 `SKILL_DIR=<本 SKILL.md 所在目录>`（`@skill:` 展开的 `SKILL.md: <path>`、`skill` 的
 `path` 列都给得出它），再 `"$SKILL_DIR/<entry>" …`：home 会搬、桶会变，而别的 harness 不认
 `<home>/skills/...` 也不认 clone 路径——它读到的是一个不存在的命令。gongga 里更短的一层是
-`gongga-cli skill <name> [args…]`（`skill ls` / `skill which <name>` 是它的两个诊断动词），
+`gongga-cli skill <name> [args…]`（`skill ls` 是它的诊断动词），
 它按同样的三根优先级晚绑定解析，参数原样透传，退出码就是入口的。入口本身在 frontmatter 里
 声明（`metadata.entry:`，规范 `metadata` 允许的扩展位），所以正文和机器读的是同一份事实。
 `scripts/skill_contract.sh` 拦两种走样：正文出现桶路径、`entry` 指不到文件。

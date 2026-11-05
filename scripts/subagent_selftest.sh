@@ -342,9 +342,10 @@ last=$(query "select json_extract(display,'\$.output') from messages where sessi
 ok "M the child's turn end interrupts it: '$last'" $?
 
 # --- I: the declared entry is what `skill subagent` runs -----------------------
-entry=$("${cli[@]}" skill which subagent 2>/dev/null | cut -f4)
-[[ "$entry" == *"subagent"* && "$(basename "$entry")" == "spawn.py" ]]
-ok "I skill which names the entry: $entry" $?
+readme=$("${cli[@]}" skill ls 2>/dev/null | awk -F'\t' '$1=="subagent"{print $4}')
+entry=$(sed -n 's/^  entry: //p' "$readme" 2>/dev/null | head -1)
+[[ "$readme" == *"subagent"* && "$entry" == "spawn.py" ]]
+ok "I skill ls gives the SKILL.md, and it declares the entry: $entry" $?
 "${cli[@]}" skill subagent --help >"$work/entry.out" 2>&1; i=$?
 [[ $i == 0 && "$(grep -c 'one segment' "$work/entry.out")" -ge 1 ]]
 ok "I and skill subagent runs it: exit $i" $?
