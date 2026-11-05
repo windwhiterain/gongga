@@ -476,8 +476,8 @@ impl Agent {
         // build, the first minute and the directory.
         let instructions = prompts.system();
         let here = match placed {
-            Some(path) => Self::stated(path),
-            None => Self::stated(cwd),
+            Some(path) => crate::session::stated(path),
+            None => crate::session::stated(cwd),
         };
         let home = std::path::PathBuf::from(&here);
         let tail = Some(prompts.render(
@@ -497,7 +497,7 @@ impl Agent {
         ));
         // Where the conversation's references stand now, planned once, for the one
         // request that carries it.
-        let (index, rooted) = match self.index_of(id, name, model, &home, source).await {
+        let (index, rooted) = match self.index_of(id, name, model, &here, &home, source).await {
             Some((index, rooted)) => (Some(index), rooted),
             None => (None, Vec::new()),
         };
@@ -526,21 +526,6 @@ impl Agent {
         explained
             .then_some(self.index_change_tolerance)
             .filter(|tolerance| *tolerance > 0.0)
-    }
-
-    /// The one spelling of `cwd` the prompt says.
-    ///
-    /// # Invariant
-    ///
-    /// Two spellings of one directory render one string: a re-spelling would rewrite
-    /// the cached tail.
-    fn stated(cwd: &std::path::Path) -> String {
-        let resolved = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
-        let text = resolved.display().to_string();
-        match text.strip_prefix(r"\\?\") {
-            Some(rest) => rest.to_string(),
-            None => text,
-        }
     }
 
     /// How many tokens `text` is worth on the roster model named `model`.
@@ -678,6 +663,7 @@ impl Agent {
         id: i64,
         name: &str,
         model: &str,
+        owner: &str,
         home: &std::path::Path,
         source: crate::meta::Source<'_>,
     ) -> Option<(String, Vec<String>)> {
@@ -701,7 +687,7 @@ impl Agent {
             .collect();
         let planned = crate::prefix_cache::plan(
             &self.store,
-            name,
+            owner,
             "prompt index",
             &wanted,
             rates,
@@ -1010,9 +996,14 @@ impl Agent {
                 }
                 LlmEvent::Completed { usage } => {
                     saw_completion = true;
-                    // The index it carried is warm again -- and only that one. See
-                    // `docs/notes/server-prefix-cache.md`.
-                    crate::prefix_cache::confirm(&self.store, name, "prompt index", &prompt.rooted);
+                    // The index it carried is warm again -- and only that one. The
+                    // owner is the directory the prompt row states.
+                    crate::prefix_cache::confirm(
+                        &self.store,
+                        &prompt.cwd,
+                        "prompt index",
+                        &prompt.rooted,
+                    );
                     // Outside the guard: a provider with no counts still took the time.
                     let ttft_ms =
                         first_token.map(|t| t.duration_since(requested).as_millis() as u64);
@@ -1743,13 +1734,13 @@ mod tests {
         let forward = dir.display().to_string().replace('\\', "/");
         let slashed = std::path::PathBuf::from(&forward);
         assert_eq!(
-            Agent::stated(&dir),
-            Agent::stated(&slashed),
+            crate::session::stated(&dir),
+            crate::session::stated(&slashed),
             "{forward} and {} name one directory",
             dir.display()
         );
         assert!(
-            !Agent::stated(&dir).starts_with(r"\\?\"),
+            !crate::session::stated(&dir).starts_with(r"\\?\"),
             "the canonical prefix is not prose"
         );
         let _ = std::fs::remove_dir(&dir);
@@ -1900,19 +1891,13 @@ fn call_fields(tool: &str, value: &serde_json::Value) -> Vec<protocol::Field> {
 ///
 /// # Invariant
 ///
-/// A list of words is shown as the words it is, so the row reads as the command
-/// that ran and not as JSON the reader has to decode.
+/// A list of words is shown as the list it is, because a word holding a space
+/// and two words are the same text once they are joined: the reader has to be
+/// able to tell them apart.
 fn command_text(command: &serde_json::Value) -> String {
     match command {
         serde_json::Value::String(text) => text.clone(),
-        serde_json::Value::Array(words) => words
-            .iter()
-            .map(|word| match word {
-                serde_json::Value::String(text) => text.clone(),
-                other => other.to_string(),
-            })
-            .collect::<Vec<String>>()
-            .join(" "),
+        serde_json::Value::Array(words) => serde_json::to_string(words).unwrap_or_default(),
         other => other.to_string(),
     }
 }

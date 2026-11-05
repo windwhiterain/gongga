@@ -206,8 +206,10 @@ CREATE TABLE IF NOT EXISTS detached_jobs (
 );
 CREATE INDEX IF NOT EXISTS detached_by_session ON detached_jobs(session);
 
--- What the prefix cache has learnt about the order things are emitted in: one row,
--- because it is one learning shared by every caller of `prefix_cache::plan`.
+-- What the prefix cache has learnt about the order things are emitted in, one row per
+-- owner -- the unit whose requests share bytes, which is a session's directory. Not one
+-- per caller and not one per session: two sessions of one directory must plan from the
+-- same orderings or their heads differ. See `docs/notes/server-prefix-cache.md`.
 -- What a request of a model was measured at: characters written against the tokens
 -- the provider counted. The ratio is the only honest way to cost an item.
 CREATE TABLE IF NOT EXISTS token_ratio (
@@ -217,8 +219,8 @@ CREATE TABLE IF NOT EXISTS token_ratio (
 );
 
 CREATE TABLE IF NOT EXISTS prefix_layout (
-    session TEXT PRIMARY KEY,
-    layout  TEXT NOT NULL
+    owner  TEXT PRIMARY KEY,
+    layout TEXT NOT NULL
 );
 
 -- What a session asked to be told about: a named pattern over the event
@@ -296,6 +298,13 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     // Renamed twice as the words settled: `llm` -> the model, `model` -> `model_name`.
     if has_column(conn, "sessions", "llm") && !has_column(conn, "sessions", "provider") {
         conn.execute("ALTER TABLE sessions RENAME COLUMN llm TO provider", [])?;
+    }
+    // A layout belongs to the bytes, not a session: its owner is a directory now.
+    if has_column(conn, "prefix_layout", "session") && !has_column(conn, "prefix_layout", "owner") {
+        conn.execute(
+            "ALTER TABLE prefix_layout RENAME COLUMN session TO owner",
+            [],
+        )?;
     }
     if has_column(conn, "sessions", "model") && !has_column(conn, "sessions", "model_name") {
         conn.execute("ALTER TABLE sessions RENAME COLUMN model TO model_name", [])?;
@@ -1320,16 +1329,22 @@ impl Store {
         }
     }
 
-    /// The orderings `session` has already emitted, as `prefix_cache` records them.
+    /// The orderings `owner` has already emitted, as `prefix_cache` records them.
+    ///
+    /// # Invariant
+    ///
+    /// `owner` is the unit whose requests share bytes -- a session's directory -- not a
+    /// session: two sessions sending the same head must plan from the same orderings or
+    /// their heads differ. See `docs/notes/server-prefix-cache.md`.
     pub fn prefix_layout(
         &self,
-        session: &str,
+        owner: &str,
     ) -> anyhow::Result<Option<crate::prefix_cache::Layout>> {
         let row: Option<String> = {
             let conn = self.lock();
             conn.query_row(
-                "SELECT layout FROM prefix_layout WHERE session = ?1",
-                params![session],
+                "SELECT layout FROM prefix_layout WHERE owner = ?1",
+                params![owner],
                 |row| row.get(0),
             )
             .optional()?
@@ -1351,23 +1366,14 @@ impl Store {
     /// Replaces what is stored, so the next start plans from what this one learnt.
     pub fn save_prefix_layout(
         &self,
-        session: &str,
+        owner: &str,
         layout: &crate::prefix_cache::Layout,
     ) -> anyhow::Result<()> {
         let text = serde_json::to_string(layout)?;
         self.lock().execute(
-            "INSERT INTO prefix_layout (session, layout) VALUES (?1, ?2)
-             ON CONFLICT(session) DO UPDATE SET layout = excluded.layout",
-            params![session, text],
-        )?;
-        Ok(())
-    }
-
-    /// Everything a deleted session learnt, so `del_session` leaves nothing behind.
-    pub fn forget_prefix_layout(&self, session: &str) -> anyhow::Result<()> {
-        self.lock().execute(
-            "DELETE FROM prefix_layout WHERE session = ?1",
-            params![session],
+            "INSERT INTO prefix_layout (owner, layout) VALUES (?1, ?2)
+             ON CONFLICT(owner) DO UPDATE SET layout = excluded.layout",
+            params![owner, text],
         )?;
         Ok(())
     }

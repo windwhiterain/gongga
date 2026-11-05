@@ -9,29 +9,30 @@ use serde::{Deserialize, Serialize};
 
 use crate::store::Store;
 
-/// Every session's layout, read from `store` the first time that session asks.
+/// Every owner's layout, read from `store` the first time that owner asks.
 ///
 /// # Invariant
 ///
-/// One layout per session: a provider caches the prefix of a conversation, so what
-/// another session emitted is not warm for this one, and a chain only this session
-/// can use must not be chosen for it.
-fn shared(store: &Store, session: &str) -> MutexGuard<'static, HashMap<String, Layout>> {
+/// One layout per unit of shared bytes -- a session's directory -- because a provider
+/// caches bytes, not conversations: two sessions of one directory must plan from the
+/// same orderings, or their heads differ and neither warms the other. See
+/// `docs/notes/server-prefix-cache.md`.
+fn shared(store: &Store, owner: &str) -> MutexGuard<'static, HashMap<String, Layout>> {
     static SHARED: OnceLock<Mutex<HashMap<String, Layout>>> = OnceLock::new();
     let mut layouts = SHARED
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    if !layouts.contains_key(session) {
-        let layout = match store.prefix_layout(session) {
+    if !layouts.contains_key(owner) {
+        let layout = match store.prefix_layout(owner) {
             Ok(Some(layout)) => layout,
             Ok(None) => Layout::new(),
             Err(e) => {
-                tracing::warn!(error = %e, session = %session, "the stored prefix layout cannot be read; starting empty");
+                tracing::warn!(error = %e, owner = %owner, "the stored prefix layout cannot be read; starting empty");
                 Layout::new()
             }
         };
-        layouts.insert(session.to_string(), layout);
+        layouts.insert(owner.to_string(), layout);
     }
     drop(layouts);
     SHARED
@@ -72,7 +73,7 @@ pub struct Plan {
     pub revisions: Vec<(String, String)>,
 }
 
-/// The cheapest order for `wanted`, learnt across what this session has emitted.
+/// The cheapest order for `wanted`, learnt across what this owner has emitted.
 ///
 /// # Invariant
 ///
@@ -80,14 +81,14 @@ pub struct Plan {
 /// appended as a patch rather than re-sent: `None` makes edited text a new item.
 pub fn plan(
     store: &Store,
-    session: &str,
+    owner: &str,
     purpose: &str,
     wanted: &[Wanted<'_>],
     rates: Rates,
     tolerance: Option<f64>,
 ) -> Plan {
-    let mut layouts = shared(store, session);
-    let Some(layout) = layouts.get_mut(session) else {
+    let mut layouts = shared(store, owner);
+    let Some(layout) = layouts.get_mut(owner) else {
         return Plan::default();
     };
     let planned = layout.plan(
@@ -97,8 +98,8 @@ pub fn plan(
         tolerance,
         crate::store::now_millis() as u64,
     );
-    if let Err(e) = store.save_prefix_layout(session, layout) {
-        tracing::warn!(error = %e, session = %session, "the learnt prefix layout could not be written");
+    if let Err(e) = store.save_prefix_layout(owner, layout) {
+        tracing::warn!(error = %e, owner = %owner, "the learnt prefix layout could not be written");
     }
     planned
 }
@@ -110,16 +111,16 @@ pub fn plan(
 ///
 /// `keys` are the spellings the request emitted, in order, and only an answered request
 /// calls this: `touched` never means "a plan liked it".
-pub fn confirm(store: &Store, session: &str, purpose: &str, keys: &[String]) {
-    let mut layouts = shared(store, session);
-    let Some(layout) = layouts.get_mut(session) else {
+pub fn confirm(store: &Store, owner: &str, purpose: &str, keys: &[String]) {
+    let mut layouts = shared(store, owner);
+    let Some(layout) = layouts.get_mut(owner) else {
         return;
     };
     if !layout.confirm(purpose, keys, crate::store::now_millis() as u64) {
         return;
     }
-    if let Err(e) = store.save_prefix_layout(session, layout) {
-        tracing::warn!(error = %e, session = %session, "the warm prefix could not be written");
+    if let Err(e) = store.save_prefix_layout(owner, layout) {
+        tracing::warn!(error = %e, owner = %owner, "the warm prefix could not be written");
     }
 }
 

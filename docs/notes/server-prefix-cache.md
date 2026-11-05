@@ -77,26 +77,40 @@ is already this pass's answer. liana's opposite choice -- keep `remove_memory`
 around and patch the sizes it touched -- answers a question this port does not ask:
 a row of a skill table is re-measured, never deleted.
 
-## one layout per session
+## one layout per unit of shared bytes
 
-A provider caches the prefix of a *conversation*, so what session A emitted is not warm
-for session B -- and a chain only A can use must not be chosen for B. So the layout is
-keyed by session: `prefix_layout` is one row per session name, the process keeps one
-decoded `Layout` per session in a map, and `plan` takes the name it is planning for.
+A provider caches a prefix per endpoint, so what a request can reuse is the bytes another
+request already sent -- not a conversation and not a process. The thing that remembers
+orderings is therefore keyed by the unit whose requests send the same head: a session's
+**directory**, the same value the card states and the affinity key names. One row in
+`prefix_layout` per owner, read once into the process's mutex and written back after
+every plan, so a restart plans from what the last run learnt.
 
-That reversed an earlier decision in this file, and the reversal is the user's: it is
-also why the shared version was less useful than it looked. A shared layout would have
-been an index of chains that nothing could ever hit, growing a branch per session and
-paying a scan for each.
+Why the unit matters, and why "per session" was a hole: the forests exist to *choose*
+among the orderings that were emitted ("the cheapest chain, then the rest", above). A
+session plans its prompt index exactly once -- the head is stamped with the first request
+and replayed after that, because what has been sent is never rewritten -- and at that
+moment its own forest is empty. So a per-session forest never chooses anything: it holds
+one chain, on an empty probe, and nothing ever reads it again. The only reason a choice
+ever happens is that another session of the same directory planned before: its chain is
+then a candidate, the second session takes the same order, and the two send the same
+head, which is what makes either of them warm.
 
-What is per session is the layout, not the bytes. Two sessions of one directory send the
-same instructions and the same index -- the card, which names the session, comes after
-both -- so the provider's cache of one is warmth for the other's first turn. That is why
-the head of the request carries no value at all: see `docs/notes/server-prompts.md`,
-"SYSTEM".
+That is also why the layout survives `del_session`: it is a fact about bytes that were
+sent, not about a conversation. Deleting a session deletes its transcript; the next
+session of the same directory still pays less if it emits the same order.
 
-`del_session` deletes that session's row: a new session of the same name is a new
-conversation, and must not be warmed by the old one.
+The cost of sharing is a chain that is only partly useful to the next owner, and that is
+already handled: a chain carrying an item outside `wanted` is not a candidate. So two
+owners sharing one layout cannot corrupt each other's order, only fail to share it.
+
+`plan(store, owner, purpose, wanted, rates, tolerance)` is the whole interface: a caller
+hands over keys with their text and sizes and gets an order back -- each entry with the
+text to send under it, plus the patches that catch up what changed. `index_skill` and the
+prompt index are the two callers, and they are different kinds of thing -- a tool result
+and a system prompt -- which is the point of the algorithm being generic. `purpose`
+separates their chains inside one owner's forest, so they never evict each other.
+
 
 ## what a provider's cache actually serves
 
@@ -378,30 +392,7 @@ five-line entry is one line -- is over it: the boundary falls on the side of re-
 Only the prompt index asks for this. The skill table passes `None`: a row is json, and a
 diff of json is not something a reader reads.
 
-## shared, plan: one layout per home, on disk
-
-A provider caches a prefix per endpoint, not per session and not per process. So the
-thing that remembers orderings is the home's database, not a field of anything that
-dies: one row in `prefix_layout`, read once into the process's mutex and written back
-after every plan. A restart is a new process asking the same endpoint for the same
-bytes, and it has to plan from what the last run learnt or its first request is cold.
-
-`plan(store, wanted, rates, tolerance)` is the whole interface, deliberately: a caller
-hands over keys with their text and sizes and gets an order back -- each entry with the
-text to send under it, plus the patches that catch up what changed. It knows nothing
-about chains, and nothing about which of its entries were kept as they were. `index_skill` and
-the first prompt row are the two callers so far, and they are different kinds of
-thing -- a tool result and a system prompt -- which is the point of the algorithm
-being generic. Callers namespace their own keys, because a key identifies bytes: the
-skill table uses the `SKILL.md` path, the prompt index uses the canonical spelling
-(`@skill:heir`, `@file:docs/plan.md`).
-
-The one cost of sharing is a chain that is only partly useful to the next caller, and
-that is already handled: a chain carrying an item outside `wanted` is not a candidate.
-So two callers sharing one layout cannot corrupt each other's order, only fail to
-share it.
-
-## purpose: two callers, one session
+## purpose: two callers, one owner
 
 The skill table and the prompt index both plan for the same session, and their keys are
 different things (a `SKILL.md` path, a raw spelling). One shared map was wrong in a way

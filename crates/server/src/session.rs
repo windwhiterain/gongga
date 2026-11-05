@@ -1658,3 +1658,19 @@ fn listing_script(directory: &str) -> String {
 fn quote_word(word: &str) -> String {
     format!("'{}'", word.replace('\'', "'\\''"))
 }
+
+/// The one spelling of a session's directory, as the prompt and the layouts key it.
+///
+/// # Invariant
+///
+/// Two spellings of one directory render one string: a re-spelling would rewrite the
+/// cached tail, and two sessions of that directory would plan from two layouts. See
+/// `docs/notes/server-prefix-cache.md`.
+pub fn stated(cwd: &std::path::Path) -> String {
+    let resolved = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let text = resolved.display().to_string();
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) => rest.to_string(),
+        None => text,
+    }
+}

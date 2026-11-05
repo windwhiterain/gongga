@@ -1898,11 +1898,6 @@ async fn finish_delete(d: &Dispatch, name: &str, was_busy: bool, dropped: usize)
     }
     match d.sessions.delete(name) {
         Ok(true) => {
-            // What it learnt about its own prefix goes with it: a new session of
-            // the same name is a new conversation.
-            if let Err(e) = d.store.forget_prefix_layout(name) {
-                tracing::warn!(session = %name, error = %e, "could not forget the prefix layout");
-            }
             // SPEC: a deleted session's bash go with it, and so do its
             // subscriptions -- there is nobody left to tell.
             let forgotten = d.subscriptions.forget_session(name).await;
