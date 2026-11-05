@@ -1610,9 +1610,7 @@ pub(crate) async fn invoke(
     ctx: &ToolContext,
 ) -> ToolOutcome {
     let outcome = waited(tool.as_ref(), &args, ctx).await;
-    if !outcome.ok {
-        crate::disk::note_tool_failure(&ctx.store, &ctx.session, name, &ctx.cwd, &outcome.output);
-    }
+    crate::disk::note_tool_end(&ctx.store, &ctx.session, name, &ctx.cwd, outcome.ok);
     outcome
 }
 

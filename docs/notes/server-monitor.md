@@ -12,10 +12,10 @@ delivery through `commands::deliver` -- is one implementation.
 | kind | session | watches | skill |
 | --- | --- | --- | --- |
 | error | `@monitor/error` | `sessions.status = 'error'` | `monitor` |
-| disk | `@monitor/disk` | a tool failing on a disk with no room left | `clean-disk` |
+| disk | `@monitor/disk` | the room left, read after every tool call | `clean-disk` |
 
-`Kind` in `monitor.rs` is that table. The disk kind's trigger is the device's own
-safety space, and it has its own note: `server-disk.md`.
+`Kind` in `monitor.rs` is that table. The disk kind's trigger is a free space
+reading compared against a threshold, and it has its own note: `server-disk.md`.
 
 Three decisions carry the whole of it: what a trigger *is* (data, not an event),
 which session it goes to (`@monitor/<kind>`, one per kind), and how that session
@@ -227,10 +227,8 @@ whole chain:
 | the monitor's own turn | `turn end session=@monitor/error outcome=Failed`, then `model=fake/flash-fake attempt=2`, and that turn ends `Done` |
 | the retry's transcript | the original report, unchanged, behind a preface naming the failed model |
 | six more seconds of ticks | no second report for the same failure |
-| a tool failing with a full disk's words | the device's reserve is spent, one `disk_space` event row carries the session, the tool and the volumes, and `@monitor/disk` is created with `@skill: clean-disk` in its prompt index |
-| the disk monitor's first model refused | `turn end session=@monitor/disk outcome=Failed`, then the same report on the next model ends `Done` |
-| after that turn | the reserve file is armed again |
+| the disk kind | `bash scripts/disk_selftest.sh`: a successful tool call on a volume below the declared threshold writes one `disk_space` event and creates `@monitor/disk` with `@skill: clean-disk` in its prompt index; a second call adds nothing; a refused first model is retried and the turn ends `Done` |
+| the disk kind's arithmetic | `disk::tests::*`: an ordinary disk says nothing, a low one says it once, a recovered one says it again |
 
-The race the selftest cannot see -- two servers spending one reserve -- is
-`disk::tests::two_servers_share_one_claim_and_only_one_wins`; see
-`server-disk.md`.
+The disk kind is a separate script because it needs no error to have happened
+first; see `server-disk.md`.

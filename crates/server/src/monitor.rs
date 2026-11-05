@@ -72,11 +72,10 @@ const CONTEXT_ROWS: i64 = 20;
 const DISK_EVENT_CURSOR: &str = "disk.event";
 /// How many models that handover has been through.
 const DISK_EVENT_ATTEMPTS: &str = "disk.attempts";
-/// The row the last disk report became: a cleanup has happened once the session
-/// has written past it.
+/// The row the last disk report became: a monitor in `error` has written past it.
 const DISK_WAKE_ROW: &str = "disk.wake";
 
-/// Hands every unwatched trigger to its monitor, and arms the reserve again.
+/// Hands every unwatched trigger to the monitor of its kind.
 ///
 /// # Invariant
 ///
@@ -89,7 +88,6 @@ pub async fn sweep(d: &Arc<Dispatch>, home: &Path) {
     }
     sweep_errors(d, home).await;
     sweep_disk(d, home).await;
-    arm_again(d);
 }
 
 /// Every session in `error` that a monitor turn still owes a report to.
@@ -149,9 +147,10 @@ async fn report_failure(d: &Arc<Dispatch>, home: &Path, failure: &Failure, self_
 ///
 /// # Invariant
 ///
-/// One wake per event row, and the row is the whole memory: two servers racing over
-/// one reserve write one row. A monitor that failed gets the same report on the next
-/// model, so a refused first choice is still cleaned.
+/// One wake per event row, and the row is the whole memory: the room was read once
+/// for it, and a restart reads the event log rather than the disk. A monitor that
+/// failed gets the same report on the next model, so a refused first choice is still
+/// cleaned.
 async fn sweep_disk(d: &Arc<Dispatch>, home: &Path) {
     let cursor = d.store.monitor_value(DISK_EVENT_CURSOR).unwrap_or(0);
     let attempts = d
@@ -219,59 +218,6 @@ async fn give_disk(d: &Arc<Dispatch>, home: &Path, row: &crate::store::EventRow,
             let _ = d
                 .store
                 .set_monitor_value(DISK_EVENT_ATTEMPTS, i64::from(attempts.saturating_add(1)));
-        }
-    }
-}
-
-/// Puts the device's reserve back once the turn that spent it has ended.
-///
-/// # Invariant
-///
-/// Only after the cleanup has answered, never before: re-arming while the monitor
-/// is still working hands the next failed tool call a fresh way to wake a second
-/// monitor, which is the one thing the claim exists to prevent. A monitor that
-/// failed re-arms nothing -- its own failure is the error kind's business, and a
-/// disk that is still full would only spend the reserve again.
-fn arm_again(d: &Arc<Dispatch>) {
-    let Some(watcher) = crate::disk::installed() else {
-        return;
-    };
-    let reserve = &watcher.reserve;
-    if reserve.armed() {
-        return;
-    }
-    let wake = d.store.monitor_value(DISK_WAKE_ROW).unwrap_or(0);
-    if wake <= 0 {
-        // Nothing was spent through this server, so nothing here may arm it.
-        return;
-    }
-    let Ok(Some(session)) = d.store.get_session(DISK.session) else {
-        return;
-    };
-    if session.status == SessionStatus::Error {
-        return;
-    }
-    let Ok(last) = d.store.last_message_seq(session.id) else {
-        return;
-    };
-    if last <= wake {
-        // No answer yet: the cleanup turn has not finished.
-        return;
-    }
-    match reserve.arm() {
-        Ok(()) => {
-            tracing::info!(
-                path = %reserve.path().display(),
-                bytes = reserve.bytes(),
-                "the device's disk reserve is armed again"
-            );
-            let _ = d.store.set_monitor_value(DISK_WAKE_ROW, 0);
-            // The episode is over; a later one is a new event row.
-            let _ = d.store.set_monitor_value(DISK_EVENT_ATTEMPTS, 0);
-        }
-        Err(why) => {
-            // Full enough that the reserve does not fit yet: the next tick asks again.
-            tracing::debug!(why, "the disk reserve does not fit yet");
         }
     }
 }
@@ -408,9 +354,10 @@ fn report(
     Ok(out)
 }
 
-/// What the disk report says: the room spent, and the volumes as they stood.
+/// What the disk report says: the room left, and the volumes as they stood.
 fn disk_report(home: &Path, payload: &str) -> String {
     let facts: serde_json::Value = serde_json::from_str(payload).unwrap_or(serde_json::Value::Null);
+    let number = |key: &str| -> Option<u64> { facts.get(key).and_then(|v| v.as_u64()) };
     let text = |key: &str| -> String {
         facts
             .get(key)
@@ -440,28 +387,33 @@ fn disk_report(home: &Path, payload: &str) -> String {
         .unwrap_or_else(|| "  (nothing was measured)".to_string());
     let mut out = format!(
         "{skill}\n\n\
-         A gongga server on this machine ran out of disk room: a tool failed, and the \
-         server spent the space it had set aside so that it could still write this. \
-         Find what filled the disk, clean it with the skill, and say what you freed.\n\n\
+         A gongga server on this machine has less disk room left than this machine \
+         declared it must have. Nothing has failed yet; find what is filling the disk, \
+         clean it with the skill, and say what you freed.\n\n\
          - home: {home}\n\
          - volumes as they stood then:\n{volumes}\n\
-         - the space that was released: {path} ({bytes})\n\
-         - the session whose tool failed: {session}\n\
-         - the tool: {tool}\n\
+         - the threshold this machine declared: {threshold}\n\
+         - the tool that was running: {tool} (in session {session}, {ok})\n\
          - its directory: {cwd}\n\
          - harness build: {build}\n\
          - server: pid {pid}, cwd {server_cwd}\n",
         skill = format!("{}{}", protocol::Reference::Skill.prefix(), DISK.skill),
         home = home.display(),
         volumes = volumes,
-        path = text("reserve"),
-        bytes = facts
-            .get("bytes")
-            .and_then(|v| v.as_u64())
+        threshold = number("threshold")
             .map(crate::disk::human)
             .unwrap_or_else(|| "unknown".to_string()),
-        session = text("session"),
         tool = text("tool"),
+        session = text("session"),
+        ok = if facts
+            .get("tool_ok")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true)
+        {
+            "which succeeded"
+        } else {
+            "which failed"
+        },
         cwd = text("cwd"),
         build = protocol::version_line(),
         pid = std::process::id(),
@@ -469,10 +421,6 @@ fn disk_report(home: &Path, payload: &str) -> String {
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default(),
     );
-    let failure = text("failure");
-    if !failure.is_empty() {
-        out.push_str(&format!("\nWhat the tool printed:\n\n{failure}\n"));
-    }
     let session = text("session");
     if !session.is_empty() {
         out.push_str(&format!(
@@ -481,9 +429,8 @@ fn disk_report(home: &Path, payload: &str) -> String {
     }
     out.push_str(
         "\nThe skill surveys every volume first and reports what it freed per volume; \
-         start there. The space that was released is not held back again until your turn \
-         ends, so a second full disk before then has nowhere to report. Answer in one \
-         message: what was full, what you freed, and what is left.\n",
+         start there. This server said this once for the whole time the disk stays this \
+         low: answer in one message with what was full, what you freed, and what is left.\n",
     );
     out
 }
