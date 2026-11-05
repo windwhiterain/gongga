@@ -1,22 +1,9 @@
-//! `gongga-cli`: one server command per process.
-//!
-//! What a command line *means* is not here. A server command is the server's
-//! catalog, and the program that reads it is `python/gongga_cli.py`, installed beside
-//! this home's other Python. This file is the name a shell types, plus the two
-//! commands the layer answers itself: one starts a process, the other walks the
-//! skill roots on this disk, and neither is a server's answer.
-//!
-//! See `docs/notes/cli-bin-gongga.md`.
+//! `gongga-cli`: the name a shell types; the rest is `python/gongga_cli.py`.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-/// The commands this program answers itself.
-///
-/// # Invariant
-///
-/// Named here and nowhere else: `serve` takes over the process, and `skill` reads
-/// `crates/skill`'s roots, which has one implementation and is Rust.
+/// What this program answers itself: `serve` and the local `skill`.
 const OWN: [&str; 2] = ["serve", "skill"];
 
 /// The Python command line's name in this home's `lib`.
@@ -30,8 +17,7 @@ fn main() -> anyhow::Result<()> {
         return link::main(args);
     }
     let code = python(&words)?;
-    // The command's answer is this process's: a refusal of the server's is a
-    // non-zero exit, and a pipeline reads it the same either way.
+    // The command's answer is this process's exit status.
     std::process::exit(code);
 }
 
