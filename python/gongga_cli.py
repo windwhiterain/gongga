@@ -4,22 +4,23 @@
 
 What the server publishes is the whole interface, so nothing here is a table of
 commands: the greeting's catalog says which names exist, which arguments each takes,
-which of them are required, and which take a bare word instead of `--name`.
+which are required, and which are spelled without `--`. A word with no flag fills the
+first argument still empty from the line's cursor on -- the rule the Rust layer binds
+by, because two command lines that disagree about which argument a word lands on are
+one line too many.
 
-One event per line on stdout, JSON, exactly as the server sent it -- the shape a
-script or a pipeline reads. The command's own message goes to stderr, and the exit
-status is the command's: `0` ran, `1` the server refused, `2` the line itself was
+Events go out one per line as JSON, in the order the server sent them: a script or a
+pipeline reads its answer there. The command's own message goes to stderr, and the
+exit status is the command's: `0` ran, `1` the server refused, `2` the line itself was
 wrong, `3` nothing answered.
 
-What is *not* here yet, and is deliberately refused rather than guessed: the client's
-own commands (`set_sticky`, `set_render`, `connect_server`, `serve`, and the local
-`skill`), because they are answered by the command layer's own state and not by a
-server. See `docs/notes/python-cli.md`.
+Its own commands -- `serve`, the sticky/render pair, `connect_server`, the local
+`skill` -- are refused by name rather than guessed at: they are the command layer's
+state and its disk, not a server's answer. See `docs/notes/python-cli.md`.
 """
 
 import json
 import os
-import socket
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -52,53 +53,72 @@ def usage(spec):
     return " ".join(words)
 
 
+def after_arg(specs, name):
+    """The cursor a parameter leaves behind: one past it."""
+    for at, spec in enumerate(specs):
+        if spec["name"] == name:
+            return at + 1
+    return None
+
+
+def next_unfilled(specs, bound, cursor):
+    """Where a bare word at `cursor` lands: the first unfilled one, else the first.
+
+    The wrap is what keeps a flag ahead of the line from stranding what is behind
+    it, and it is the rule the Rust layer binds by.
+    """
+    order = list(range(cursor, len(specs))) + list(range(0, min(cursor, len(specs))))
+    for at in order:
+        if specs[at]["name"] not in bound:
+            return at
+    return None
+
+
 def bind(wanted, words):
-    """The words as `spec`'s arguments, by position and by `--name`."""
+    """The words as `wanted`'s arguments: `--name value`, or a word by position."""
     specs = wanted.get("args") or []
-    named = {spec["name"]: spec for spec in specs}
-    # Which of them take a bare word, in the order published.
-    positional = [spec["name"] for spec in specs if spec.get("positional")]
-    values, rest = {}, []
-    i = 0
+    takes = {spec["name"] for spec in specs}
+    values, cursor, i = {}, 0, 0
     while i < len(words):
         word = words[i]
         if word.startswith("--"):
             name, separator, inline = word[2:].partition("=")
-            if name not in named:
+            if name not in takes:
                 raise ValueError(
-                    f"{name} is not an argument of {wanted['name']}; it takes "
-                    + (", ".join(named) or "nothing")
+                    f"{wanted['name']} has no argument --{name}; it takes "
+                    + (", ".join(takes) or "nothing")
                 )
             if not separator:
                 i += 1
                 if i >= len(words):
                     raise ValueError(f"--{name} needs a value")
                 inline = words[i]
+            if name in values:
+                raise ValueError(f"--{name} was given twice")
             values[name] = inline
-        else:
-            rest.append(word)
+            cursor = after_arg(specs, name) or cursor
+            i += 1
+            continue
+        at = next_unfilled(specs, values, cursor)
+        if at is None:
+            raise ValueError(
+                f"unexpected argument {word!r}; {wanted['name']} reads " + usage(wanted)
+            )
+        values[specs[at]["name"]] = word
+        cursor = at + 1
         i += 1
-    for name in positional:
-        if not rest:
-            break
-        values.setdefault(name, rest.pop(0))
-    if rest:
-        raise ValueError("more words than the command takes: " + " ".join(rest))
     missing = [
-        spec["name"]
-        for spec in specs
-        if spec.get("required") and spec["name"] not in values
+        spec["name"] for spec in specs if spec.get("required") and spec["name"] not in values
     ]
     if missing:
         raise ValueError(
-            f"{wanted['name']} needs " + ", ".join(missing) + "; it reads "
-            + usage(wanted)
+            f"{wanted['name']} needs " + ", ".join(missing) + "; it reads " + usage(wanted)
         )
     return values
 
 
 def catalog(client):
-    """What this server publishes, one line each: the answer to a bare invocation."""
+    """What this server publishes, one command a line: the answer to bare invocation."""
     for row in client.catalog:
         print(usage(row))
         if row.get("description"):
@@ -106,32 +126,42 @@ def catalog(client):
     return 0
 
 
+def dial():
+    """The connection, or the reason there is none, said as this program's own words."""
+    try:
+        return gongga.connect()
+    except gongga.Unreachable as unreachable:
+        print(f"gongga-cli: {unreachable}", file=sys.stderr)
+        return None
+    except FileNotFoundError as missing:
+        print(f"gongga-cli: no key to dial with: {missing}", file=sys.stderr)
+        return None
+
+
 def main(argv):
     if not argv:
-        try:
-            client = gongga.connect()
-        except (gongga.Unreachable, FileNotFoundError) as unreachable:
-            print(f"gongga-cli: {unreachable}", file=sys.stderr)
+        client = dial()
+        if client is None:
             return 3
         try:
             return catalog(client)
         finally:
             client.close()
     name, words = argv[0], argv[1:]
-    if name in CLIENT_SIDE:
-        print(
-            f"gongga-cli: {name} {CLIENT_SIDE[name]}, which the Python command line "
-            "does not answer yet",
-            file=sys.stderr,
-        )
-        return 2
-    try:
-        client = gongga.connect()
-    except (gongga.Unreachable, FileNotFoundError) as unreachable:
-        print(f"gongga-cli: {unreachable}", file=sys.stderr)
+    client = dial()
+    if client is None:
         return 3
     try:
         wanted = next((row for row in client.catalog if row["name"] == name), None)
+        # A name the layer answers itself is refused only when this server does not
+        # publish it too: `skill` is both, and the server's is the one that runs here.
+        if wanted is None and name in CLIENT_SIDE:
+            print(
+                f"gongga-cli: {name} {CLIENT_SIDE[name]}, which the Python command line "
+                "does not answer yet",
+                file=sys.stderr,
+            )
+            return 2
         if wanted is None:
             print(
                 f"gongga-cli: this server publishes no {name!r}; run it with no name "
@@ -158,8 +188,4 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    try:
-        sys.exit(main(sys.argv[1:]))
-    except socket.timeout:
-        print("gongga-cli: the server stopped answering", file=sys.stderr)
-        sys.exit(3)
+    sys.exit(main(sys.argv[1:]))
