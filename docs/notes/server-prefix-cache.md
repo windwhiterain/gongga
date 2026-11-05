@@ -138,11 +138,45 @@ a sibling fired within a few seconds of it is still inside the store's own delay
 Two things this had to be untangled from. One is the first reading of any shape: a prompt
 is cold the first time it is sent and warm on the very next identical send, so a single
 128 means nothing -- repeated readings of one shape were 4 of 4 and 8 of 8 stable. The
-other is the key: 8.2k of the same bytes under a key that had never sent them answered 128
-and 8259 afterwards, so `prompt_cache_key` does partition the store. Neither layer is the
+other is the key, and that reading has since been withdrawn: 8.2k of the same bytes under
+a key that had never sent them answered 128 and 8259 afterwards, which looked like the key
+partitioning the store, but MiniMax documents no such field at all (see below) and the
+same pattern is what a node-local cache looks like from outside. Neither layer is the
 platform's or the Responses face's fault: the same 8.2k system text with two *different
 final user messages* was served 8272 of 8273 on six of eight requests by **both**
 `/responses` and `/chat/completions` (`.dev/verify/alternate_probe.py`).
+
+## what the provider documents, checked
+
+MiniMax's own pages say what the two faces offer, and they are not the same thing:
+
+- **Automatic caching** (`text-prompt-caching`, the OpenAI-compatible faces this server
+  speaks): "caching applies to API calls with 512 or more input tokens"; "caching uses
+  prefix matching, constructed in the order of tool list -> system prompts -> user
+  messages"; "changes to any module's content may affect caching effectiveness". No
+  `cache_control`, no key, and **no lifetime stated**. Usage is
+  `prompt_tokens_details.cached_tokens`.
+- **Explicit caching** (`anthropic-api-compatible-cache`, the `/anthropic` face): a
+  `cache_control` breakpoint marks the end of the cacheable prefix; the cache is
+  cumulative, checked forward from the breakpoint, and looks at most **20 blocks** back;
+  system, messages and tool definitions may all be marked, at most 4 breakpoints; the
+  lifetime is **5 minutes, renewed on every hit**.
+
+Three consequences for this module follow, and none of them is a bug in the plan:
+
+- **`prompt_cache_key` is not a documented MiniMax field.** So the directory value is a
+  hint for the providers that document one (LongCat's measurement) and a no-op here; no
+  reading of this face can be explained by the key.
+- **What the automatic cache warms is a prefix in a fixed module order**, tools first.
+  A session whose tool list differs -- a `--remote` session, whose definitions come from
+  `definitions(session.on_remote())` -- can never share the system-and-index part with a
+  local one, however identical the prose.
+- **The lifetime of the tier we actually buy is unstated.** The roster's per-provider
+  `cache_ttl_secs` is a claim about the *explicit* tier; the automatic cache documents
+  none, so `expire` is given a number the provider never stated. That is the one place
+  where the plan is more confident than the provider: for a model whose cache is
+  automatic, a measured `cache_hit_posterior` is the honest input to `Rates::invalid`,
+  and a TTL is not.
 
 ## Node::touched, expire
 

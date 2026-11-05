@@ -274,9 +274,9 @@ a provider that routes by key should route together. It creates no cache and cos
 nothing. It ships on, because a provider whose router scatters identical requests serves
 none of them from cache (LongCat: 0/5 with no key, 5/5 with one); a new endpoint that
 rejects the field fails every request, so it is the one line to remove. What the key
-still cannot do: MiniMax partitions its store by it, so no key choice gives two sessions
-a shared first turn on its own -- what decides that is the card's position in the input,
-see `docs/notes/server-prefix-cache.md`.
+still cannot do: MiniMax does not document the field at all, so no value of it buys
+anything there; what decides a shared first turn is the card's position in the input, see
+`docs/notes/server-prefix-cache.md`.
 
 `[model] cache_session_header` (or `GONGGA_CACHE_SESSION_HEADER`) adds an
 `X-Session-ID` header carrying the same directory, for endpoints that pin an
