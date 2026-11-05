@@ -176,16 +176,16 @@ sid = c.execute("select id from sessions where name='reader'").fetchone()[0]
 prompt = json.loads(c.execute(
     "select display from messages where session_id=? and kind='system' limit 1", (sid,)).fetchone()[0])
 prose, card = prompt["instructions"], prompt["tail"]
-# The name in the prose, and nowhere a placeholder: a model asked what it is called
-# reads the prose first and answered "no" while this said `$GONGGA_SESSION`.
-assert "`reader`" in prose, prose[:200]
+# No value in the prose at all: these bytes open every request, so a per-session
+# value ends the prefix every session of a directory shares. The card states it.
+assert "`reader`" not in prose, prose[:200]
 assert "$GONGGA_SESSION" not in prose, prose[:200]
 assert "{{" not in prose and "}}" not in prose, prose[:200]
 # And the card still carries it, with the build, the first minute and the directory.
 assert "Session `reader`" in card, card
 assert "harness gongga at `" in card and "in `" in card, card
 INNER
-ok "the prose and the card both name the session, with no placeholder left" $?
+ok "the prose carries no value and the card names the session" $?
 
 # The keepalive is a timer inside the server, so give it a chance to fire while
 # the process is still here. Otherwise the ordinary run pays nothing.

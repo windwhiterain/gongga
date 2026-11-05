@@ -335,10 +335,10 @@ the record and never used to price anything. See
 
 `build_head` sends `prompt_cache_options` only when the configured tier appears
 in the roster's `cache_ttl_tiers` for that provider, and `prompt_cache_key` only
-when a machine explicitly enabled affinity. Neither field is sent by default:
-a tier the endpoint ignores would make the plan price a tier that was never in
-force, and not every endpoint accepts the affinity field. A separate switch
-adds an `X-Session-ID` header with the same session name, for the endpoints
+when affinity is enabled (it ships enabled). The key names the session's
+directory -- the unit that shares a prefix, not the conversation: a provider
+keeps a prefix under the key that wrote it. A separate switch
+adds an `X-Session-ID` header with the same value, for the endpoints
 that pin an inference instance that way; the header travels through
 `stream_once` -> `read_stream` -> `read_stream_inner` beside the key. A tier's
 window is a claim about the provider, not a constant of this module: a probe

@@ -106,8 +106,14 @@ pub struct ModelConfig {
     /// Percent of the tier's window left when the interrupt or a heartbeat fires.
     pub cache_margin_pct: u8,
     /// Send a stable route affinity key, for a provider known to accept one.
+    ///
+    /// # Invariant
+    ///
+    /// The value is the session's directory, never its name: a provider keeps a
+    /// prefix under the key that wrote it, so a key per conversation hides every
+    /// session's bytes from its siblings. See `docs/notes/server-prefix-cache.md`.
     pub cache_affinity: bool,
-    /// Pin the inference instance with an `X-Session-ID` header.
+    /// Pin the inference instance with `X-Session-ID`, naming the same directory.
     pub cache_session_header: bool,
     /// Ask the API not to retain server-side state; we replay the transcript.
     pub store: bool,

@@ -269,14 +269,20 @@ directive at all, which lands in the provider's default tier -- still the only
 tier `docs/reference/prefix-cache.md` allows a plan to price.
 
 `[model] cache_affinity` (or `GONGGA_CACHE_AFFINITY`) sends `prompt_cache_key` with
-the session name. It is off by default: the key creates no cache, costs nothing,
-and only raises the chance a request lands where its prefix already is, but not
-every endpoint accepts the field.
+the session's **directory**. It creates no cache and costs nothing; what it does is
+decide which node a request reaches, and a provider keeps a prefix under the key that
+wrote it -- so the value must be the unit that shares a prefix, never a conversation.
+The session name was that value and hid every session's bytes from its siblings
+(measured: 128 of 14,415 cached across two names against 14,336 of 14,471 under one).
+It ships on, because a provider whose router scatters identical requests serves none
+of them from cache (LongCat: 0/5 with no key, 5/5 with one); a new endpoint that
+rejects the field fails every request, so it is the one line to remove.
+`docs/notes/server-prefix-cache.md` has the measurements.
 
 `[model] cache_session_header` (or `GONGGA_CACHE_SESSION_HEADER`) adds an
-`X-Session-ID` header with the same name, for endpoints that pin an inference
-instance that way. It is a separate switch: an unknown header is not the same
-risk as an unknown body field, and a provider may want one without the other.
+`X-Session-ID` header carrying the same directory, for endpoints that pin an
+inference instance that way. It is a separate switch: an unknown header is not the
+same risk as an unknown body field, and a provider may want one without the other.
 
 `[model] cache_margin_pct` (or `GONGGA_CACHE_MARGIN_PCT`, 5 by default, capped
 at 50) sets where in the tier's window the tool interrupt and the next heartbeat

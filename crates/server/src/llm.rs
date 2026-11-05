@@ -199,7 +199,7 @@ impl LlmClient {
         index: Option<&str>,
         tail: Option<&str>,
         source: &RequestSource,
-        session: &str,
+        affinity: &str,
         tools: &[ToolDefinition],
         effort: Option<&str>,
         cache_tier: Option<&str>,
@@ -211,12 +211,12 @@ impl LlmClient {
             instructions,
             index,
             tail,
-            session,
+            affinity,
             tools,
             effort,
             cache_tier,
         );
-        let session_header = self.cache_session_header.then(|| session.to_string());
+        let session_header = self.cache_session_header.then(|| affinity.to_string());
         // Owned, because the attempt below records it after this body is gone.
         let effort_sent = effort.map(str::to_string);
         let build_head_ms = build_started.elapsed().as_millis() as u64;
@@ -399,7 +399,7 @@ impl LlmClient {
         instructions: &str,
         index: Option<&str>,
         card: Option<&str>,
-        session: &str,
+        affinity: &str,
         tools: &[ToolDefinition],
         effort: Option<&str>,
         cache_tier: Option<&str>,
@@ -416,9 +416,9 @@ impl LlmClient {
         if let Some(tier) = directive {
             body["prompt_cache_options"] = json!({"mode": "implicit", "ttl": tier});
         }
-        // A session name is stable; a random id would scatter the requests.
+        // Invariant: the key names the unit that shares a prefix, not a conversation.
         if self.cache_affinity {
-            body["prompt_cache_key"] = json!(session);
+            body["prompt_cache_key"] = json!(affinity);
         }
         // The index joins the prose: both change only when a file does. The card is
         // stamped once, so the two lifetimes differ.

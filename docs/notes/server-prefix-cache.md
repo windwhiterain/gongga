@@ -95,6 +95,31 @@ both -- so the provider's cache of one is warmth for the other's first turn. Tha
 the head of the request carries no value at all: see `docs/notes/server-prompts.md`,
 "SYSTEM".
 
+## the affinity key is a directory, not a conversation
+
+`prompt_cache_key` (`cache_affinity`) and the `X-Session-ID` header pin a request to the
+spirit of the provider's router: a request with the same key is more likely to reach the
+node that still holds that prefix. That makes the key a second, coarser namespace, and it
+must not be finer than the prefix that is actually shared. It was the session name, which
+made every conversation a namespace of its own: a sibling's bytes were never found.
+
+Measured on MiniMax `MiniMax-M3.1-Flash`, three fresh sessions of one directory, one
+message each (`Reply with exactly: ok`), system prose and index byte-identical across all
+three (400 and 29,388 characters):
+
+| session | key | input | cached |
+| --- | --- | --- | --- |
+| fresh `cachefix-a` | `cachefix-a` | 14471 | 0 |
+| fresh `cachefix-b` | `cachefix-b` | 14415 | 128 |
+| `cachefix-a` deleted and recreated | `cachefix-a` | 14471 | 14336 |
+
+The first two are the same bytes under two keys: 0.9%. The third is those bytes under a
+key the provider had already written: 99.1%. So the key is not a hint the provider may
+ignore -- it decides *which* prefix a request can find. The caller now passes the
+session's directory (the card's `cwd`, one key per machine and directory), and only a
+session whose directory nobody stated falls back to its name, because then there is no
+wider unit to name.
+
 `del_session` deletes that session's row: a new session of the same name is a new
 conversation, and must not be warmed by the old one.
 
