@@ -20,3 +20,17 @@ one `include_str!` still pointed at the old directory.
 
 A restart rewrites nothing that is already right: a caller may be reading the file, and a
 mtime that changes for no reason makes every "did the installer run" question unanswerable.
+
+## Who gets this directory on `sys.path`
+
+Three callers, and each says so in the child's environment rather than by copying files:
+
+- the `python` tool, through `GONGGA_SKILL_LIB` on the interpreter it starts;
+- `skill`, on the entry process it starts -- so a package's own `import gongga` resolves
+  from inside the package, not only from the driver's scope;
+- the command layer's `skill <name>`, when `--home`'s `lib/` exists. It writes nothing
+  there: a home that never ran a server has no `lib/`, and that home's entry simply has
+  no client to import.
+
+`gongga_skill.py` itself puts `GONGGA_SKILL_LIB` on `sys.path` at import time, so the
+driver and an imported package agree about where `gongga.py` is.

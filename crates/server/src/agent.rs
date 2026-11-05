@@ -1286,6 +1286,7 @@ impl Agent {
             cancel: tool_cancel.clone(),
             store: self.store.clone(),
             cwd: session.cwd(),
+            env: session.env(),
             vision: llm.vision(crate::prompts::shared()),
             inbox: session.inbox_signal(),
             closing: session.closing_signal(),

@@ -27,11 +27,13 @@ pub async fn run(
     program: &Path,
     args: &[String],
     cwd: &Path,
+    env: &[(String, String)],
     timeout: Duration,
 ) -> Result<RunOutcome, String> {
     let mut child = Command::new(program)
         .args(args)
         .current_dir(cwd)
+        .envs(env.iter().map(|(name, value)| (name, value)))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

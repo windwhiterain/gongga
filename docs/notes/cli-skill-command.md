@@ -102,3 +102,11 @@ it is a command in a pipeline, or a program the bundle started -- so the probe
 would put a window on the user's desktop for as long as it took to import `sys`.
 The probe's creation flags carry `CREATE_NO_WINDOW`, and its stdio is null: it
 answers a question, it is not a program anyone reads.
+
+## The home's Python surface
+
+When `--home`'s `lib/` exists, the entry runs with `GONGGA_SKILL_LIB` pointing at it, so a
+package's `import gongga` and `import gongga_skill` resolve on this disk with no server at
+all. Nothing is written here: the server installs that directory at startup, and a home
+that never ran one has no client to import -- which the entry finds out as an ordinary
+`ImportError`, not as a command layered over a server this layer does not have.

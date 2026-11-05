@@ -43,6 +43,7 @@ pub async fn run(
         cancel: CancellationToken::new(),
         store: store.clone(),
         cwd: handle.cwd(),
+        env: handle.env(),
         vision: crate::llm::Vision {
             accepts_image: false,
             refusal: String::new(),

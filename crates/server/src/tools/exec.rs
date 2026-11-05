@@ -116,7 +116,9 @@ impl Tool for ExecTool {
             let outcome = match self.machine {
                 Machine::Local => {
                     let program = std::path::Path::new(&command.program);
-                    super::words::run(program, &command.args, &command.cwd, timeout).await
+                    // The session's own facts, as its shell has them: a program that
+                    // asks `$GONGGA_SESSION` is asking about this session.
+                    super::words::run(program, &command.args, &command.cwd, &ctx.env, timeout).await
                 }
                 Machine::Remote => {
                     // The peer runs it: the program is looked up on its PATH and

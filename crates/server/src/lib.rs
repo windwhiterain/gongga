@@ -261,6 +261,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         cfg.model.model(),
         detached.clone(),
         shell_env,
+        script_env.clone(),
         crate::remotes::load(),
     );
     let bus = EventBus::new(4096);
@@ -307,6 +308,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                 .with_python(cfg.python.clone(), skill_lib.clone())
                 .with_skills(
                     tools::skill::programs(&cfg),
+                    skill_lib,
                     cfg.bash.timeout,
                     cfg.bash.max_output_chars,
                 ),

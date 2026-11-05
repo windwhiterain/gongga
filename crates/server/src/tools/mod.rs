@@ -73,6 +73,8 @@ pub struct ToolContext {
     pub store: Store,
     /// The session's working directory, for tools that take a relative path.
     pub cwd: PathBuf,
+    /// What a program this turn starts is given. See `SessionHandle::env`.
+    pub env: Vec<(String, String)>,
     /// What this turn's model can take in; a picture tool asks before sending one.
     pub vision: crate::llm::Vision,
     /// Whether a message arrived for this session that its turn cannot read yet.
@@ -331,15 +333,17 @@ impl ToolRegistry {
         self
     }
 
-    /// Adds `skill`, which starts an entry with the interpreters this server has.
+    /// Adds `skill`; `lib` is where this home keeps the Python a package imports.
     pub fn with_skills(
         mut self,
         programs: ::skill::Programs,
+        lib: Option<std::path::PathBuf>,
         timeout: Duration,
         max: usize,
     ) -> Self {
         self.tools.push(Box::new(skill::SkillTool {
             programs,
+            lib,
             timeout,
             max_output_chars: max,
         }));

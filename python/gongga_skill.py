@@ -39,6 +39,14 @@ import traceback
 #: The file that makes a skill directory a package.
 PACKAGE = "__init__.py"
 
+#: Where the harness keeps this file and `gongga.py`, when it says so. The skill
+#: being run is a package like any other, so its own `import gongga` has to resolve:
+#: the caller that starts a package sets this, and the two lines make the pair
+#: importable from the package as well as from this driver.
+_skill_lib = os.environ.get("GONGGA_SKILL_LIB")
+if _skill_lib and _skill_lib not in sys.path:
+    sys.path.insert(0, _skill_lib)
+
 
 def _as_bool(word):
     lowered = word.strip().lower()

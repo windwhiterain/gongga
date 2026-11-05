@@ -27,10 +27,16 @@ pub fn dispatch(home: &Path, tokens: &[String]) -> anyhow::Result<()> {
         Some("ls") => list(&roots),
         Some("run") => launch(
             &roots,
+            home,
             tokens.get(1).map(String::as_str),
             tokens.get(2..).unwrap_or_default(),
         ),
-        Some(name) => launch(&roots, Some(name), tokens.get(1..).unwrap_or_default()),
+        Some(name) => launch(
+            &roots,
+            home,
+            Some(name),
+            tokens.get(1..).unwrap_or_default(),
+        ),
     }
 }
 
@@ -63,7 +69,12 @@ fn list(roots: &skill::Roots) -> anyhow::Result<()> {
 }
 
 /// Runs a skill's entry with this process's stdio, and leaves as it did.
-fn launch(roots: &skill::Roots, name: Option<&str>, argv: &[String]) -> anyhow::Result<()> {
+fn launch(
+    roots: &skill::Roots,
+    home: &Path,
+    name: Option<&str>,
+    argv: &[String],
+) -> anyhow::Result<()> {
     let name = name.ok_or_else(|| anyhow!("run: name a skill, e.g. `skill run ls`"))?;
     let found = roots.named(name);
     let Some(skill) = found.first() else {
@@ -90,6 +101,11 @@ fn launch(roots: &skill::Roots, name: Option<&str>, argv: &[String]) -> anyhow::
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    // The home's Python surface, so a package imports the contract and the client.
+    let lib = home.join("lib");
+    if lib.is_dir() {
+        command.env("GONGGA_SKILL_LIB", &lib);
+    }
     let status = command
         .status()
         .with_context(|| format!("running {}", target.display()))?;

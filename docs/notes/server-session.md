@@ -258,3 +258,21 @@ recoverable, rather than rows whose files are gone, which is not.
 
 Used by `cancel`, which has to stop turns that are actually running rather than
 every row in the database.
+
+## session_vars and SessionHandle::env
+
+A session's shells were the only programs that learned whose they were: `session_env`
+built `GONGGA_SESSION`, `GONGGA_MODEL` and `GONGGA_REMOTE` for bash. Everything else the
+server started -- an `exec` program, a Python, a skill's entry -- inherited the *server's*
+own environment, which belongs to whoever launched it. Measured, in this repository's own
+session: the `python` tool answered `$GONGGA_SESSION` with `tui` while running for `arg`.
+
+That is not a missing convenience, it is a wrong answer to "which session is this" -- and
+`subagent`'s `spawn` reads exactly that variable to choose a child's parent. So the pair
+is now split: `session_vars` is what one session adds (name, model, machine, read from the
+rows each time, so a `set_session --model` is what the next child sees), and
+`SessionHandle::env` is the base for programs that are not shells -- the same facts with
+the native `PATH` a Windows program reads, mirroring `script_env`.
+
+Tools hand this to the children they start and nothing of their own: `ToolContext::env` is
+`SessionHandle::env`, and `bash` keeps using the shells it already has.

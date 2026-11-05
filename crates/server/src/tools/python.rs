@@ -148,6 +148,7 @@ impl PythonRepl {
         args: &[String],
         cwd: &Path,
         lib: Option<&Path>,
+        env: &[(String, String)],
     ) -> anyhow::Result<Self> {
         let program = match program {
             Some(path) => path.to_path_buf(),
@@ -168,6 +169,8 @@ impl PythonRepl {
         if let Some(lib) = lib {
             command.env("GONGGA_SKILL_LIB", lib);
         }
+        // The session's own facts, so `import gongga` reaches this server. See `env`.
+        command.envs(env.iter().map(|(name, value)| (name, value)));
         let mut child = command
             .spawn()
             .map_err(|e| anyhow::anyhow!("spawning {}: {e}", program.display()))?;
@@ -387,6 +390,7 @@ impl PythonTool {
                 &self.args,
                 cwd,
                 self.lib.as_deref(),
+                &ctx.env,
             )?)),
             Machine::Remote => {
                 let endpoint = ctx
@@ -844,7 +848,7 @@ async fn one_shot(
     request: Value,
     timeout: Duration,
 ) -> anyhow::Result<Reply> {
-    let mut repl = PythonRepl::spawn(program, args, cwd, None)?;
+    let mut repl = PythonRepl::spawn(program, args, cwd, None, &[])?;
     let reply = repl.run_request(&request, timeout).await;
     repl.kill().await;
     reply

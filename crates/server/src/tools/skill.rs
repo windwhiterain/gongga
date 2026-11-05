@@ -36,6 +36,8 @@ name; use this when the skill owns it.";
 pub struct SkillTool {
     /// What an entry may be started by, as the server resolved them.
     pub programs: ::skill::Programs,
+    /// Where this home keeps `gongga_skill.py` and `gongga.py`, which a package imports.
+    pub lib: Option<std::path::PathBuf>,
     pub timeout: Duration,
     pub max_output_chars: usize,
 }
@@ -126,10 +128,19 @@ impl Tool for SkillTool {
             let target = taken.entry.as_deref().unwrap_or(taken.dir());
             // The entry is this machine's file whatever machine the session works on.
             let at = ctx.dir(Machine::Local);
+            // The package form's second half: a skill's Python imports the contract.
+            let mut env: Vec<(String, String)> = ctx.env.clone();
+            if let Some(lib) = self.lib.as_deref() {
+                env.push((
+                    "GONGGA_SKILL_LIB".to_string(),
+                    lib.to_string_lossy().into_owned(),
+                ));
+            }
             let outcome = match words::run(
                 &run.program,
                 &run.words(target, &argv),
                 &at,
+                &env,
                 self.timeout,
             )
             .await

@@ -80,3 +80,12 @@ not Python's.
 A package wins over a declared entry: discovery is the point of the form. Everything else
 keeps the script rule below, which stays for the skills that arrived before packages did --
 and is the fallback on a machine with no Python at all.
+
+## What a package's process is given
+
+`GONGGA_SKILL_LIB` and the session's own environment (`SessionHandle::env`): the first
+puts `gongga_skill.py` and `gongga.py` on `sys.path` for the package's own imports, the
+second makes `import gongga` reach *this* server as *this* session. Without the second a
+skill written in Python would have to shell out to `gongga-cli` for every command -- which
+is what `subagent` did before packages -- and its `$GONGGA_SESSION` would be the
+launcher's, not the caller's.

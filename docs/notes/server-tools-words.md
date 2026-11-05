@@ -30,3 +30,11 @@ The one thing this does not cover is the *program* being a shell: `["bash", "-c"
 a shell with a string, and then the string is code again. That is the caller's word to give,
 not this module's to refuse -- but it is why `skill` passes an entry and argv instead of
 letting a body's instructions reach a shell.
+
+## The environment the child gets
+
+`run` takes the pairs to set, and its two callers pass `ToolContext::env` -- the session's
+own facts, not this server's inherited environment, which is whoever launched the server.
+See `server-session.md`, "session_vars and SessionHandle::env": a program that answers
+`$GONGGA_SESSION` with somebody else's name is not a convenience missed but a wrong answer,
+and `subagent`'s `spawn` decides a child's parent from exactly that variable.

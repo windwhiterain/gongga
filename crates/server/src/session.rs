@@ -460,6 +460,8 @@ struct SessionInner {
     store: Store,
     /// This machine's shells, and the remote's when the session names one.
     shells: Arc<Mutex<Shells>>,
+    /// What a program this session starts is given before its own rows. See `env`.
+    script_env: Vec<(String, String)>,
     /// The persistent Python interpreters, named like shells.
     pythons: Arc<AsyncMutex<PythonMap<String, Arc<crate::tools::interpreter::Interpreter>>>>,
     cancel: Mutex<CancellationToken>,
@@ -513,6 +515,13 @@ impl SessionHandle {
 
     pub fn shells(&self) -> Arc<Mutex<Shells>> {
         self.inner.shells.clone()
+    }
+
+    /// What a program this session starts sees: never the server's own environment.
+    pub fn env(&self) -> Vec<(String, String)> {
+        let mut env = self.inner.script_env.clone();
+        env.extend(session_vars(&self.inner.store, &self.inner.name));
+        env
     }
 
     pub fn pythons(
@@ -966,6 +975,8 @@ pub struct SessionManager {
     detached: DetachedRegistry,
     /// Variables for every session shell, so the model can reach this server via the CLI.
     shell_env: Vec<(String, String)>,
+    /// The same facts with a native `PATH`, for programs that are not shells.
+    script_env: Vec<(String, String)>,
     /// The named peers a session may run on. See `docs/notes/server-remote.md`.
     remotes: Vec<crate::remotes::RemoteConfig>,
     live: Arc<Mutex<HashMap<String, SessionHandle>>>,
@@ -987,6 +998,29 @@ pub struct SessionManager {
     readers: Arc<Mutex<HashMap<String, Arc<crate::remote::Reader>>>>,
 }
 
+/// What one session adds to either base environment: its name, its model, its machine.
+///
+/// # Invariant
+///
+/// Read from the rows every time, so a `set_session --model` is what the next child
+/// sees: a shell, a Python and an entry asked the same question give one answer.
+fn session_vars(store: &Store, name: &str) -> Vec<(String, String)> {
+    let mut env = Vec::new();
+    // A shell cannot learn its own session's name from the outside.
+    env.push(("GONGGA_SESSION".to_string(), name.to_string()));
+    // ... nor its model or machine: a child is placed from these,
+    // not a flagless `set_session`; sticky fill would move it.
+    if let Some(row) = store.get_session(name).ok().flatten() {
+        if !row.model.trim().is_empty() {
+            env.push(("GONGGA_MODEL".to_string(), row.model.clone()));
+        }
+        if let Some(remote) = row.remote.filter(|remote| !remote.trim().is_empty()) {
+            env.push(("GONGGA_REMOTE".to_string(), remote));
+        }
+    }
+    env
+}
+
 impl SessionManager {
     pub fn new(
         store: Store,
@@ -994,6 +1028,7 @@ impl SessionManager {
         model: String,
         detached: DetachedRegistry,
         shell_env: Vec<(String, String)>,
+        script_env: Vec<(String, String)>,
         remotes: Vec<crate::remotes::RemoteConfig>,
     ) -> Self {
         Self {
@@ -1002,6 +1037,7 @@ impl SessionManager {
             model,
             detached,
             shell_env,
+            script_env,
             remotes,
             live: Arc::new(Mutex::new(HashMap::new())),
             listing_shells: Arc::new(Mutex::new(HashMap::new())),
@@ -1396,18 +1432,7 @@ impl SessionManager {
     /// The variables every shell of `name` runs with.
     fn session_env(&self, name: &str) -> Vec<(String, String)> {
         let mut env = self.shell_env.clone();
-        // A shell cannot learn its own session's name from the outside.
-        env.push(("GONGGA_SESSION".to_string(), name.to_string()));
-        // ... nor its model or machine: a child is placed from these,
-        // not a flagless `set_session`; sticky fill would move it.
-        if let Some(row) = self.store.get_session(name).ok().flatten() {
-            if !row.model.trim().is_empty() {
-                env.push(("GONGGA_MODEL".to_string(), row.model.clone()));
-            }
-            if let Some(remote) = row.remote.filter(|remote| !remote.trim().is_empty()) {
-                env.push(("GONGGA_REMOTE".to_string(), remote));
-            }
-        }
+        env.extend(session_vars(&self.store, name));
         env
     }
 
@@ -1573,6 +1598,7 @@ impl SessionManager {
                 name: row.name.clone(),
                 store: self.store.clone(),
                 shells: Arc::new(Mutex::new(shells)),
+                script_env: self.script_env.clone(),
                 pythons: Arc::new(AsyncMutex::new(PythonMap::new())),
                 cancel: Mutex::new(CancellationToken::new()),
                 cancels: AtomicU64::new(0),
