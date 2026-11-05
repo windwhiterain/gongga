@@ -358,6 +358,26 @@ answered, and the channel says it cannot carry the answer. That refusal arrives
 as a `cmd_result` naming both sizes, not as a dropped connection, which is what
 it used to do.
 
+## clone_session
+
+A session written into the database behind the server's back is a session no window
+ever lists: the tree is drawn from the `sessions` event, and a script's `insert` sends
+none. The heir copied its transcript that way, which is what this command exists to
+replace -- the copy is the server's act, so the server can say it happened.
+
+Two refusals, both structural. The source must exist, and the target name must be free
+(`UNIQUE` on `sessions.name`, reported as "already exists"): a copy that joined a
+transcript already under that name would be two conversations in one window, the same
+reason `set_session --must_create` exists for a caller that means to start its own.
+
+What is published is what a client needs to see the copy as it sees the source: the
+session list first, then every copied row as the event it streamed as -- `row_event`
+with `REPLAY_TURN`, the same rule a read answers with. This is the bus and not
+`Outcome::events`, and that difference from `get_messages` is the point: a read is one
+client's private question, while a clone is a session every client's tree should hold.
+A failed re-send is a warning in the log, never an undo: the rows are already durable,
+and a clone nobody was told about is still a clone.
+
 ## del_session
 
 Delete means "not this session and not what it is doing", so stop the turn first.

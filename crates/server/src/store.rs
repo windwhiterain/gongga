@@ -543,6 +543,58 @@ impl Store {
         Ok(id)
     }
 
+    /// Copies a session's transcript into a new name, row for row.
+    ///
+    /// # Invariant
+    ///
+    /// The two sessions read the same: same rows at the same `seq`, same model,
+    /// placement and last measurement. One transaction, so a copy taken while a turn
+    /// writes holds every row or none. The target must be a free name and the source
+    /// must exist. See `docs/notes/server-store.md`.
+    pub fn clone_session(&self, source: &str, name: &str) -> anyhow::Result<CloneReport> {
+        if name.trim().is_empty() {
+            anyhow::bail!("session name must not be empty");
+        }
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        let now = now_millis();
+        // `status` says what the session is doing now; the copy is doing nothing.
+        let copied = tx
+            .execute(
+                "INSERT INTO sessions (name, status, model, model_name, cwd, created_at,
+                                       updated_at, context_limit, thinking_effort,
+                                       context_tokens, context_generation, cached_tokens,
+                                       tps, ttft_ms, remote, monitor_seq, monitor_attempts,
+                                       cache_tier, cache_keepalive)
+                 SELECT ?2, 'idle', model, model_name, cwd, ?3, ?3, context_limit,
+                        thinking_effort, context_tokens, context_generation, cached_tokens,
+                        tps, ttft_ms, remote, monitor_seq, monitor_attempts, cache_tier,
+                        cache_keepalive
+                   FROM sessions WHERE name = ?1",
+                params![source, name, now],
+            )
+            .map_err(|e| duplicate_session(name, e))?;
+        // No row means the source is not there; the transaction drops unwritten.
+        if copied == 0 {
+            anyhow::bail!("no session named {source:?} to clone");
+        }
+        let id = tx.last_insert_rowid();
+        let rows = tx.execute(
+            "INSERT INTO messages (session_id, seq, kind, content, display, call_id, created_at)
+             SELECT ?2, seq, kind, content, display, call_id, created_at
+               FROM messages WHERE session_id = (SELECT id FROM sessions WHERE name = ?1)
+               ORDER BY seq",
+            params![source, id],
+        )?;
+        let last_seq = tx.query_row(
+            "SELECT COALESCE(MAX(seq), 0) FROM messages WHERE session_id = ?1",
+            params![id],
+            |r| r.get(0),
+        )?;
+        tx.commit()?;
+        Ok(CloneReport { id, rows, last_seq })
+    }
+
     /// Keeps a row's directory equal to where an endpoint put the session's shell.
     ///
     /// # Invariant
@@ -2007,6 +2059,14 @@ pub struct SessionRow {
     pub cache_tier: Option<String>,
     /// Whether a periodic time notice keeps this session's prefix warm.
     pub cache_keepalive: bool,
+}
+
+/// What a clone wrote: the new session, its rows, and where it ends.
+#[derive(Debug, Clone, Copy)]
+pub struct CloneReport {
+    pub id: i64,
+    pub rows: usize,
+    pub last_seq: i64,
 }
 
 /// One session that stopped with an error, as `Store::failures` reports it.

@@ -283,6 +283,29 @@ A gap in `seq` cannot happen today -- `append_message` is the only writer and ro
 go only with their session -- so this pins the query's contract rather than a bug
 that was seen.
 
+## Store::clone_session
+
+One transaction, two statements: `INSERT INTO sessions ... SELECT` copies the source's
+own facts -- model, placement, tuning, last measurement -- and `INSERT INTO messages ...
+SELECT` copies its rows at their own `seq`. Nothing is read into Rust and written back,
+so a copy taken while a turn appends holds every row or none, and the source cannot lose
+a row to it.
+
+`status` is the one column not copied: it says what the session is doing now, and a copy
+is doing nothing. `created_at` and `updated_at` are the copy's own. `monitor_seq` and
+`monitor_attempts` travel, because they describe rows the copy also holds -- a monitor
+turn should not be handed the same rows twice.
+
+What is not the transcript does not move: `pending_tasks` (work owed to the source),
+`drafts` (a stream in flight), `subscriptions` (what the source asked to be told),
+`tool_calls` (bookkeeping of runs) and `prefix_layout` (what the source's own name
+learnt about its prefix). Pictures need no copy: a row names its copy by the `pictures`
+id, and both sessions live in one home, so the clone reads the same bytes -- which is
+also why `orphaned_blobs` may keep a file either session names.
+
+An empty source clones to a session with no rows, which is what `set_session` makes
+too. `rows` and `last_seq` come back so the command can say how much moved.
+
 ## Store::set_usage_for_generation
 
 Called with the token counts from `usage`, never with a computed one: the provider

@@ -703,6 +703,33 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 ),
             ],
         },
+        CommandSpec {
+            target: CommandTarget::Server,
+            name: "clone_session".into(),
+            description: "Copy a session's transcript into a name that is free, row for row, \
+                      at the same `seq`. The copy reads exactly as the source does; a turn \
+                      it runs later is its own."
+                .into(),
+            args: vec![
+                kind_arg(
+                    "session",
+                    "The session to copy. It keeps its own rows: a clone reads the source, \
+                     it does not take anything away.",
+                    true,
+                    "session",
+                    Some("name"),
+                    CompletionSource::Sessions,
+                ),
+                pos(
+                    "name",
+                    "The name the copy takes. It must be free: a copy that joined an \
+                     existing transcript would be two conversations under one name.",
+                    true,
+                    Some("name"),
+                    CompletionSource::None,
+                ),
+            ],
+        },
     ]
 }
 
@@ -822,6 +849,7 @@ pub async fn dispatch(d: &Dispatch, name: &str, args: &Args, origin: &Origin) ->
         "interrupt_session" => interrupt_session(d, args).await,
         "cancel" => cancel(d, origin).await,
         "get_messages" => get_messages(d, args).await,
+        "clone_session" => clone_session(d, args).await,
         "events" => events(d, args).await,
         "subscribe" => subscribe(d, args, origin.session()).await,
         "del_subscribe" => del_subscribe(d, args, origin.session()).await,
@@ -1485,6 +1513,52 @@ async fn get_messages(d: &Dispatch, args: &Args) -> Outcome {
         Err(e) => return Outcome::err(e.to_string()),
     };
     transcript_outcome(&name, t)
+}
+
+/// Copies one session's transcript into a free name, and tells every client.
+///
+/// # Invariant
+///
+/// A client's view of the copy is its view of the source: the session list is published
+/// first, then the same rows as the events they streamed as.
+/// See `docs/notes/server-commands.md`.
+async fn clone_session(d: &Dispatch, args: &Args) -> Outcome {
+    let source = args["session"].clone();
+    let name = args["name"].clone();
+    let report = match d.store.clone_session(&source, &name) {
+        Ok(report) => report,
+        Err(e) => return Outcome::err(e.to_string()),
+    };
+    // List, then rows: what a copy written behind the server's back cannot send. See
+    // `docs/notes/server-commands.md`.
+    publish_sessions(d);
+    match d.store.messages_between(report.id, 1, report.last_seq) {
+        Ok(transcript) => {
+            for row in &transcript.messages {
+                if let Some(event) = row_event(&name, row) {
+                    d.bus.publish(event);
+                }
+            }
+        }
+        // The copy is already durable: a failed re-send is a report, not an undo.
+        Err(e) => d.bus.publish(Event::Log {
+            level: LogLevel::Warn,
+            message: format!("{name} was cloned, but its rows were not re-sent: {e}"),
+        }),
+    }
+    tracing::info!(session = %name, source = %source, rows = report.rows, "session cloned");
+    Outcome::ok_with(
+        format!(
+            "cloned {} row(s) of {source} into {name} (transcript ends at seq {})",
+            report.rows, report.last_seq
+        ),
+        json!({
+            "session": source,
+            "name": name,
+            "rows": report.rows,
+            "last_seq": report.last_seq,
+        }),
+    )
 }
 
 /// Arms a pattern, and answers with what it armed.
