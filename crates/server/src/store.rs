@@ -1453,22 +1453,24 @@ impl Store {
     ///
     /// # Invariant
     ///
-    /// Heir empties a transcript from under a still-running turn and its lesson
-    /// lands as an injection, so the fresh-lineage reset and the plan request
-    /// live here rather than on `begin_turn`: a stale origin would make the
-    /// post-heir history one permanent prefix and suppress every later round.
+    /// Heir empties a transcript from under a still-running turn, keeping only
+    /// the in-flight call and its result, and its lesson lands as an injection —
+    /// so "fresh" means no `text` row survives, never a physically empty table,
+    /// and the reset and plan request live here rather than on `begin_turn`.
     fn append_user_conn(
         tx: &rusqlite::Transaction<'_>,
         session_id: i64,
         expanded: &crate::meta::Expanded,
     ) -> anyhow::Result<i64> {
-        let empty = tx.query_row(
-            "SELECT NOT EXISTS (SELECT 1 FROM messages WHERE session_id = ?1)",
+        let no_text = tx.query_row(
+            "SELECT NOT EXISTS (SELECT 1 FROM messages
+                 WHERE session_id = ?1 AND kind = 'text')",
             params![session_id],
             |row| row.get::<_, bool>(0),
         )?;
-        if empty {
-            // After heir, the next row of either kind establishes a fresh lineage.
+        if no_text {
+            // No text row survives: whatever stood before (heir keeps only an
+            // in-flight pair) is not this lineage's history.
             tx.execute(
                 "DELETE FROM live_compact_artifacts WHERE session_id = ?1",
                 params![session_id],
