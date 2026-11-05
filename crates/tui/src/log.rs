@@ -770,6 +770,17 @@ struct Ledger {
     index: RowIndex,
     /// Rows one block may fill in this window; 0 defers to the log's `block_size`.
     cap: usize,
+    /// The pages this window holds, in the order it draws them: the block each one
+    /// begins with, and the oldest row it stands for.
+    ///
+    /// # Invariant
+    ///
+    /// A page is what one fill landed. Kept here rather than derived from the blocks,
+    /// because a block does not know which row of the transcript it stands for: this
+    /// is the one place the two are joined, and what a restart replays from.
+    pages: Vec<(u64, i64)>,
+    /// The block a page now landing begins with, until its answer names the rows.
+    page_first: Option<u64>,
     /// The width `blocks` were last laid out at; 0 until a frame asks.
     width: usize,
 }
@@ -811,6 +822,15 @@ pub struct Log {
     next_id: u64,
     /// The blocks whose bodies are here. Eviction walks this, not the log.
     hot: Vec<usize>,
+    /// The windows a fill is landing in, and the floor of the page it opens when the
+    /// journal named it.
+    ///
+    /// # Invariant
+    ///
+    /// One entry per fill, set when it starts and taken by the first block it lands:
+    /// that block is where the page begins, which is the only place a `Floor` record
+    /// may stand.
+    filling: HashMap<String, Option<i64>>,
     /// The window whose next blocks are older than the ones it holds, and where in
     /// its ledger the next of them goes.
     ///
@@ -887,6 +907,7 @@ impl Log {
             // Nothing is ever written: a log built with no front-end in mind does
             // not invent a directory.
             cache: Cache::none(),
+            filling: HashMap::new(),
             prepend: None,
             next_id: 0,
             hot: Vec::new(),
@@ -1019,6 +1040,9 @@ impl Log {
         if self.prepend.as_ref().is_some_and(|(name, _)| name == window) {
             self.prepend = None;
         }
+        // A fill that empties a window opens a page too: its first block is where a
+        // page of this transcript begins, as with any other fill.
+        self.begins(window);
         self.cache.remove(window);
         self.drop_window(window);
         // The name may be handed out again: its next beginning is the server's.
@@ -1038,15 +1062,36 @@ impl Log {
         self.cache.stamp(window, created, seq);
     }
 
-    /// The oldest transcript row this window's journal says it holds.
+    /// The oldest transcript row this window holds, among the pages in memory.
     ///
     /// # Invariant
     ///
-    /// Read from the journal, never derived from the stamp: the page a window holds
-    /// is as wide as the last thing it was given, and a restart is the one moment
-    /// that width is not a number this process remembers.
+    /// From memory, never from the journal: a page the journal holds and a seed did
+    /// not read back is not a row this window can show, and answering with the
+    /// journal's floor would have the next page land on rows already here. See
+    /// `docs/notes/tui-cache.md`.
     pub fn floor_of(&self, window: &str) -> Option<i64> {
-        self.cache.floor(window)
+        if let Some(ledger) = self.ledger(window)
+            && let Some((_, seq)) = ledger.pages.first()
+        {
+            return Some(*seq);
+        }
+        // Nothing drawn yet: the journal names the page a first frame will read back,
+        // so that page's oldest row is the answer the frame is about to make true.
+        self.cache
+            .floor(window, self.cache.end(window))
+            .map(|(_, seq)| seq)
+    }
+
+    /// Says a fill is landing in this window, so its first block opens a page.
+    ///
+    /// # Invariant
+    ///
+    /// Set by the two things a fill starts with -- [`Log::rewind`] for the tail and
+    /// [`Log::older`] for the page above -- and taken by the first block that lands:
+    /// the journal's page boundary may only stand where a page truly begins.
+    fn begins(&mut self, window: &str) {
+        self.filling.insert(window.to_string(), None);
     }
 
     /// The rows arriving from here on are older than the ones this window holds.
@@ -1057,42 +1102,73 @@ impl Log {
     /// row the window ends at does not move -- which is why the answer to it is a
     /// [`Log::landed`] and not a stamp.
     pub fn older(&mut self, window: &str) {
+        self.begins(window);
         self.prepend = Some((window.to_string(), 0));
     }
 
-    /// A page of older rows has landed, so this window now holds every row from
-    /// `floor` up.
+    /// A page has landed, so this window holds every row from `floor` up to `drawn`.
     ///
     /// # Invariant
     ///
-    /// The journal is written in the order the pane draws, so the page goes in front
-    /// of the window's other blocks instead of behind them. Left alone when a block
-    /// cannot stand for itself: a journal missing a body is worse than an order a
-    /// restart would get wrong. See `docs/notes/tui-cache.md`.
+    /// The journal is written in the order the pane draws, with the page boundary in
+    /// front of the block the page began with: a page of older rows therefore lands
+    /// above the held ones, and a restart replays from that boundary. Left alone when
+    /// a block cannot stand for itself -- a journal missing a body is worse than an
+    /// order a restart would get wrong. See `docs/notes/tui-cache.md`.
     pub fn landed(&mut self, window: &str, created: i64, drawn: i64, floor: i64) {
-        if self.prepend.as_ref().is_some_and(|(name, _)| name == window) {
+        let prepending = self.prepend.as_ref().is_some_and(|(name, _)| name == window);
+        if prepending {
             self.prepend = None;
         }
+        self.filling.remove(window);
         let width = self.width_of(window);
-        let Some(blocks) = self.views.get(window).map(|ledger| ledger.blocks.clone()) else {
+        let Some(ledger) = self.views.get_mut(window) else {
             return;
         };
-        let mut records = Vec::with_capacity(blocks.len() + 2);
-        for &at in &blocks {
+        let blocks = ledger.blocks.clone();
+        let Some(first) = ledger.page_first.take() else {
+            // No block opened a page: an answer with no rows in it names nothing.
+            return;
+        };
+        // A page of the past opens in front of the ones already held, and the tail
+        // opens behind them: the list is the order the pane draws.
+        match prepending {
+            true => ledger.pages.insert(0, (first, floor)),
+            false => ledger.pages.push((first, floor)),
+        }
+        // A page whose blocks are gone names nothing: the boundary would stand in
+        // front of a block this window no longer draws.
+        let drawn_ids: Vec<u64> = blocks.iter().map(|&at| self.entries[at].id).collect();
+        ledger
+            .pages
+            .retain(|(id, _)| drawn_ids.contains(id));
+        let boundaries: Vec<(u64, i64)> = ledger.pages.clone();
+        let mut records = Vec::with_capacity(blocks.len() + boundaries.len() + 1);
+        let mut written: Vec<Option<usize>> = vec![None; blocks.len()];
+        for (place, &at) in blocks.iter().enumerate() {
             materialize(&mut self.entries, &self.cache, at, width);
             let entry = &self.entries[at];
-            if !entry.hot() || entry.pending {
+            if !entry.hot() {
                 return;
             }
+            if let Some((_, seq)) = boundaries.iter().find(|(id, _)| *id == entry.id) {
+                records.push(Record::Floor { seq: *seq });
+            }
+            written[place] = Some(records.len());
             records.push(entry.seal_record());
         }
         records.push(Record::Stamp { created, seq: drawn });
-        records.push(Record::Floor { seq: floor });
         let Some(offsets) = self.cache.rewrite(window, &records) else {
             return;
         };
-        for (&at, slot) in blocks.iter().zip(offsets) {
-            self.entries[at].slot = Some(slot);
+        // Where each block landed, read off the list that was built: a page boundary
+        // in front of it shifts every record after it, so counting from either end
+        // would name the wrong one.
+        for (&at, place) in blocks.iter().zip(written) {
+            let Some(place) = place else {
+                continue;
+            };
+            self.entries[at].slot = Some(offsets[place]);
             self.entries[at].pending = false;
         }
     }
@@ -1116,6 +1192,7 @@ impl Log {
     /// in part therefore cuts in the right place, which a count of blocks it had
     /// loaded would not.
     pub fn rewind(&mut self, window: &str) {
+        self.begins(window);
         self.cache.rewind(window);
         let cut = self.stamp_offset(window);
         self.cut_tail(window, cut);
@@ -1270,6 +1347,9 @@ impl Log {
             self.entries[at].window = shared;
         }
         let window = self.entries[at].window.clone();
+        // A fill's first block is where its page begins, and a page boundary may
+        // only stand there: taken here, once, by whichever fill is landing.
+        let opens = self.filling.remove(window.as_ref());
         let above = match &self.prepend {
             Some((name, pos)) if window.as_ref() == name.as_str() => Some(*pos),
             _ => None,
@@ -1305,6 +1385,15 @@ impl Log {
         };
         entries[at].at = pos;
         hot.push(at);
+        let id = entries[at].id;
+        if let Some(floor) = opens {
+            ledger.page_first = Some(id);
+            // A journal that named the page's oldest row says so: a live fill learns
+            // it from its answer instead.
+            if let Some(seq) = floor {
+                ledger.pages.push((id, seq));
+            }
+        }
         if let Some((name, next)) = self.prepend.as_mut()
             && window.as_ref() == name.as_str()
         {
@@ -1916,7 +2005,7 @@ impl Log {
         Viewport { rows, max_scroll }
     }
 
-    /// Fills a window from its journal, newest first, until it covers `rows`.
+    /// Fills a window from its journal, from the newest page boundary.
     ///
     /// # Invariant
     ///
@@ -1924,6 +2013,14 @@ impl Log {
     /// not whether the window has blocks: a restart receives a realtime line before
     /// its first frame, and that line must not hide the journal behind it. A name
     /// decided once is never seeded again. See `docs/notes/tui-cache.md`.
+    ///
+    /// # Invariant
+    ///
+    /// One page, from the boundary that page begins at, and the rows it holds are the
+    /// rows the boundary names -- which is why [`Log::floor_of`] can answer before the
+    /// first frame. A page is as many rows as the pane that asked for it, so one is
+    /// always enough. A journal written before boundaries were recorded has none, and
+    /// is read as far back as the pane needs while claiming no floor at all.
     pub fn seed(&mut self, window: &str, width: usize, rows: usize) {
         if !self.seeded.insert(window.to_string()) {
             return;
@@ -1932,15 +2029,23 @@ impl Log {
         if end == 0 {
             return;
         }
-        let mut start = end;
-        loop {
-            start = self.cache.back(window, start, WALK);
-            self.replay(window, start);
-            self.lay_out(window, width);
-            if start == 0 || self.rows(window, width) >= rows {
-                break;
+        // The newest page boundary: what a page began with stands right there, and
+        // a page is as many rows as the pane that asked for it, so one is enough.
+        // A journal with no boundary at all is read as far back as the pane needs.
+        let Some((boundary, _)) = self.cache.floor(window, end) else {
+            let mut start = end;
+            loop {
+                start = self.cache.back(window, start, WALK);
+                self.replay(window, start);
+                self.lay_out(window, width);
+                if start == 0 || self.rows(window, width) >= rows {
+                    break;
+                }
             }
-        }
+            return;
+        };
+        self.replay(window, boundary);
+        self.lay_out(window, width);
     }
 
     /// Rebuilds one window from its journal, from `start` to the end.
@@ -2072,8 +2177,11 @@ impl Log {
             },
             // Not a block: it says where a later `Rewind` cuts.
             Record::Stamp { .. } => *cut = Some(at),
-            // Not a block either: the floor a restart counts its next page from.
-            Record::Floor { .. } => {}
+            // Not a block either: it opens a page, and the block after it is the one
+            // the page begins with.
+            Record::Floor { seq } => {
+                self.filling.insert(window.to_string(), Some(*seq));
+            }
             // Thrown away again on the way forward: what is above it is the refill.
             Record::Rewind => {
                 let window = window.to_string();

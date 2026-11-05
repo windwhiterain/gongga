@@ -64,13 +64,14 @@ pub enum Record {
     /// window: a restart mid-refill neither loses the rows below the stamp nor keeps
     /// the half-written block it replaced.
     Rewind,
-    /// The oldest transcript row this window's blocks stand for.
+    /// The blocks after this record are the transcript's rows from `seq` up.
     ///
     /// # Invariant
     ///
-    /// Written with every `Stamp` and only ever beside one: `seq` is the floor the
-    /// stamp's ceiling is counted from, so a window read back from a journal knows
-    /// which page above it is still owed. See `docs/notes/tui-cache.md`.
+    /// One page boundary, written before the page it opens and only ever there: a
+    /// window read back from a journal replays from the newest one, so it holds one
+    /// page and knows that page's oldest row -- which is what the page above it is
+    /// counted from. See `docs/notes/tui-cache.md`.
     Floor { seq: i64 },
     /// A block as it stands: created, relabelled, described, opened or closed.
     Seal {
@@ -363,19 +364,18 @@ impl Cache {
         Some(offsets)
     }
 
-    /// The oldest transcript row this window's journal says it holds.
+    /// The newest page boundary of a window before `before`, and its oldest row.
     ///
     /// # Invariant
     ///
-    /// The newest `Floor`, found the way a stamp is: walking back stops at the
-    /// first record this build cannot read, for the same reason every other
-    /// backward walk does.
-    pub fn floor(&self, window: &str) -> Option<i64> {
-        let mut at = self.end(window);
+    /// Found the way a stamp is: walking back stops at the first record this build
+    /// cannot read, for the same reason every other backward walk does.
+    pub fn floor(&self, window: &str, before: u64) -> Option<(u64, i64)> {
+        let mut at = before.min(self.end(window));
         while at > 0 {
             let start = self.back(window, at, 1);
             if let Some(Record::Floor { seq }) = self.read(window, start) {
-                return Some(seq);
+                return Some((start, seq));
             }
             at = start;
         }

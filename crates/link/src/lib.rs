@@ -1551,6 +1551,8 @@ impl Client {
             };
             sink.landed(&name, sync_created, drawn, floor);
         } else {
+            // The tail: the window now ends where the answer does, and the page it
+            // was given says which rows it holds.
             sync.stale = false;
             sync.loaded = true;
             sync.drawn = Drawn::At {
@@ -1558,7 +1560,7 @@ impl Client {
                 seq: last_seq,
             };
             sync.floor = Some(sync.floor.map_or(floor, |held| held.min(floor)));
-            sink.transcript(&name, sync_created, last_seq);
+            sink.landed(&name, sync_created, last_seq, floor);
         }
         for (_, event) in late {
             self.handle_event(event, sink);
@@ -1769,8 +1771,12 @@ impl Client {
             }
         };
         // Never a whole-window replacement: what the window has already drawn is
-        // good, and a page lands below it.
-        self.begin_fill(name, range, first, false, false)
+        // good, and a page lands below it -- unless it holds rows it cannot name,
+        // which is a journal no page boundary was written into. That window is
+        // refilled as a whole, because a page appended to it would land on rows it
+        // already has. See `docs/notes/tui-cache.md`.
+        let whole = !sync.loaded && sync.floor.is_none() && sync.drawn != Drawn::Unknown;
+        self.begin_fill(name, range, first, whole, false)
     }
 
     /// Whether a refill of this window is already on its way.
