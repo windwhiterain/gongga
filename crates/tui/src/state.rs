@@ -154,6 +154,29 @@ impl Shown {
         self.save()
     }
 
+    /// Shows one session and hides the rest, in one write, counting what closed.
+    ///
+    /// # Invariant
+    ///
+    /// One save for the whole change: a name closed here is a view like any
+    /// other, and the file never holds a state the operator never had. The count
+    /// is the windows that were open, so the line the operator reads says what
+    /// the click did. `known` is which names are sessions now: an entry a deleted
+    /// name left is not a window.
+    pub fn solo(&mut self, name: &str, known: impl Fn(&str) -> bool) -> anyhow::Result<usize> {
+        let closed = self
+            .show
+            .iter()
+            .filter(|(held, show)| **show && held.as_str() != name && known(held))
+            .count();
+        for (held, show) in self.show.iter_mut() {
+            *show = held == name;
+        }
+        self.show.insert(name.to_string(), true);
+        self.save()?;
+        Ok(closed)
+    }
+
     fn save(&self) -> anyhow::Result<()> {
         let mut file = read_file(&self.path);
         file.render_session = self
@@ -407,6 +430,11 @@ impl State {
     /// Writes one session's mode down, keeping every other section of the file.
     pub fn set_shown(&mut self, name: &str, show: bool) -> anyhow::Result<()> {
         self.shown.set(name, show)
+    }
+
+    /// Makes one session the only one shown; answers how many windows closed.
+    pub fn show_only(&mut self, name: &str, known: impl Fn(&str) -> bool) -> anyhow::Result<usize> {
+        self.shown.solo(name, known)
     }
 
     pub fn set_block_size(&mut self, size: BlockSize) -> anyhow::Result<()> {

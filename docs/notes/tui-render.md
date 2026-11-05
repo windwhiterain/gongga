@@ -234,7 +234,9 @@ segments, the header spells it.
 It used to hold only the sessions no other area drew, which made it the list of what
 was hidden rather than the list of what exists -- and a session drawn `full` had its
 name in two places. SPEC now gives the list every name and puts the toggle in the
-click: a shown session is still a row, because that row is where it is hidden again.
+click: a shown session is still a row, because that row is where it is clicked again --
+Shift+click to close it, a plain click to make it the only one (`tui-lib.md`,
+`handle_mouse`).
 
 Two facts, one column each, and each look means one of them:
 

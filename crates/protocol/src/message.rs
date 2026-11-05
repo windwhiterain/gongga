@@ -756,7 +756,19 @@ pub struct CmdArg {
 pub enum Operation {
     /// Make a session the sticky one.
     StickySession { session: String },
-    RenderSession { session: String, show: bool },
+    /// Show or hide a session's window.
+    ///
+    /// # Invariant
+    ///
+    /// `solo` is the plain click on a name: the session becomes the one shown and
+    /// every other window closes, the way a list selects. `false` touches only
+    /// this session's window, which is what Shift+click and the typed command do.
+    RenderSession {
+        session: String,
+        show: bool,
+        #[serde(default)]
+        solo: bool,
+    },
     /// Delete a session, its shells and its transcript.
     DeleteSession { session: String },
 }
