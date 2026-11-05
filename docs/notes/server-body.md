@@ -27,17 +27,19 @@ Three positions have been tried, and each was measured:
 - **Its own item, after the transcript.** A value written after the rows is a *new
   message on every step*: a live session read that as "the harness keeps injecting" and
   spent a 45-step turn answering it.
-- **Its own item, before the first user message.** Well-behaved, but it sits inside the
-  region a provider serves -- MiniMax serves the prefix in front of the request's *final*
-  user message -- and the card is the one thing two sessions cannot share, so no sibling
-  could ever warm another's first turn. Measured on one 9.6k-token prompt, the same bytes
-  except the card: 128 of 9,586 cached with the card in front, 9,585 of 9,586 with it
-  inside the final message.
+- **Its own item, before the first user message.** Well-behaved, and it puts the one byte
+  two sessions differ in in front of the messages -- the earliest place it can be. The
+  three positions were then compared side by side on the body this server really sends,
+  and came out indistinguishable (see `server-prefix-cache.md`), so what moved it was
+  the provider's documented rule, not a reading of this provider.
 
 In front of the first user message's text, the card is part of the turn the user asked
-for: the model reads it as that message's preamble, the provider serves the prefix in
-front of the final message, and a sibling session's head is then a prefix the provider
-holds. Measured on the real server after the change: three of ten fresh sessions of one
+for: the model reads it as that message's preamble, and the one byte two sessions differ
+in is as late in the request as the provider's rule allows. That is a reading of the
+rule ("prefix matching, tools -> system -> user messages", "put dynamic user information
+at the end"), not a measurement: on MiniMax the three positions -- before the message, in
+its text, after it -- were indistinguishable (a new card is cold in all three, the same
+prompt again is ~99.9% in all three; see `server-prefix-cache.md`). Measured on the real server after the change: three of ten fresh sessions of one
 directory came back 14,336-14,391 of ~14,440 cached; the other seven were cold, and the
 three were the ones not fired within a few seconds of a first send (see
 `server-prefix-cache.md`). `carry` in `body` is the one place the text is rewritten, and what it prepends

@@ -111,30 +111,30 @@ the two already hit, from bytes older sessions sent under their own session name
 there the key is not a namespace, and a new session's first turn is warm from its
 siblings.
 
-**MiniMax `MiniMax-M3.1-Flash` does too, and where the differing bytes sit decides how
-much of it is served.** Measured with two sessions whose stored
-`instructions` and `index` are byte-equal (`cachefix-g`, `cachefix-h`), one user message,
-read twice each (`.dev/verify/`):
+**MiniMax `MiniMax-M3.1-Flash` does, and its readings are dominated by something else.**
+A controlled comparison of three card positions, on the body this server really sends
+(14 tool schemas, 20,840 tokens), a fresh card name each time, two readings each
+(`.dev/verify/`):
 
-| where the card sits | cached, first send of a card the store had not seen |
-| --- | --- |
-| a message of its own, before the user message | 128 of 9586 |
-| in front of the user message's text | 9585 of 9586 |
+| card position | first send of a new card | the same prompt again |
+| --- | --- | --- |
+| its own message, before the user message | 0-192 of 20,845 | 20,736 |
+| in front of the user message's text | 189-192 of 20,840 | 20,839 |
+| its own message, after the user message | 128-192 of 20,845 | 20,736-20,844 |
 
-So the card's *position* is what decides cross-session sharing: as its own item in front
-of the user message it is the first byte where two sessions differ, and everything after
-it is a miss; carried by the message itself the difference is at the end of the stream,
-and the system text and tool list in front of it are shared. That is the provider's own
-advice -- "put dynamic user information at the end of the conversation" -- and it is what
-a prefix cache charges for: a hit is a *prefix*, so it stops at the first differing byte,
-whoever is asking. `docs/notes/server-body.md` has the change and its cost.
+**No difference.** A prompt the provider has not served before comes back cold wherever
+the card sits; the same prompt again comes back ~99.9%. The reading that made the
+position look decisive earlier -- 128 with the card in front, 9,585 with it in the
+message -- did not reproduce once the three shapes were run side by side, so it is
+withdrawn. What decides a hit here is whether the request lands on a node that holds the
+prefix: of ten fresh sessions of one directory, three hit ~99% and seven were cold, and a
+repeat almost always hits.
 
-On the real server, after the change, ten fresh sessions of this directory with one
-message each: three came back 14,336-14,391 of ~14,440 cached (99.3-99.7%), the rest
-0-189. The three were not the first of their minute -- a prompt is first served cold, and
-a sibling fired within a few seconds of it is still inside the store's own delay
-(`p1` 0, then `p2` and `p3` 14,336 twenty seconds apart). So the shape is what decides
-*whether* a sibling can be warm at all; the provider decides *when*.
+The card still sits in front of the first user message's text, because the provider's own
+rule says a hit is a prefix over "tools -> system -> user messages" and its advice is to
+put dynamic content last: there the one byte two sessions differ in is as late as the
+request allows. That is an argument from the documented rule, not a measurement from this
+provider.
 
 Two things this had to be untangled from. One is the first reading of any shape: a prompt
 is cold the first time it is sent and warm on the very next identical send, so a single
