@@ -157,6 +157,7 @@ fn positional_of(tool: &str) -> &'static [&'static str] {
         "read_file" => &["path"],
         "write_file" => &["path", "content"],
         "replace" => &["path", "old", "new"],
+        "skill" => &["name", "args"],
         _ => &[],
     }
 }

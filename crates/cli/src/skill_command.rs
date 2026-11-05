@@ -104,12 +104,10 @@ fn launch(roots: &skill::Roots, name: Option<&str>, argv: &[String]) -> anyhow::
             skill.path.display()
         ));
     };
-    let run = runner(entry)?;
+    let run = skill::runner(entry, &programs()).map_err(|why| anyhow!(why))?;
     let mut command = Command::new(&run.program);
     command
-        .args(&run.leading)
-        .arg(run.spell(entry))
-        .args(argv)
+        .args(run.words(entry, argv))
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
@@ -143,103 +141,13 @@ fn entry_name(found: &skill::Skill) -> String {
     )
 }
 
-/// The program an entry is run by, and the arguments it wants before the file.
-struct Runner {
-    program: PathBuf,
-    leading: Vec<String>,
-    /// A POSIX shell reads `/c/...`, which is not a path Python or Windows can open.
-    posix: bool,
-}
-
-impl Runner {
-    /// The entry's path the way this program reads it.
-    fn spell(&self, entry: &Path) -> String {
-        if self.posix {
-            skill::shell_path(entry)
-        } else {
-            entry.display().to_string()
-        }
+/// What this machine can run an entry with: found here, chosen by the crate's rule.
+fn programs() -> skill::Programs {
+    skill::Programs {
+        bash: which::which("bash").ok(),
+        python: python().ok(),
+        powershell: powershell().ok(),
     }
-}
-
-/// An entry is a program of its own, or a script whose first line names one.
-fn runner(entry: &Path) -> anyhow::Result<Runner> {
-    let extension = entry
-        .extension()
-        .map(|extension| extension.to_string_lossy().to_ascii_lowercase())
-        .unwrap_or_default();
-    let plain = |program: PathBuf, leading: Vec<String>| Runner {
-        program,
-        leading,
-        posix: false,
-    };
-    Ok(match extension.as_str() {
-        "sh" | "bash" => Runner {
-            program: which::which("bash").context("no bash on PATH")?,
-            leading: Vec::new(),
-            posix: true,
-        },
-        "py" => plain(python()?, Vec::new()),
-        "ps1" => plain(
-            powershell()?,
-            ["-NoProfile", "-File"].map(str::to_string).to_vec(),
-        ),
-        "cmd" | "bat" => plain(PathBuf::from("cmd"), vec!["/c".to_string()]),
-        // No extension worth naming: the file's own `#!` says what runs it.
-        _ => match shebang(entry) {
-            Some(program) => interpreted(&program)?,
-            None => plain(entry.to_path_buf(), Vec::new()),
-        },
-    })
-}
-
-/// The program a `#!` line names, which is the file's answer even under Windows.
-fn shebang(entry: &Path) -> Option<String> {
-    let first = std::fs::read_to_string(entry).ok()?;
-    let line = first.lines().next()?.strip_prefix("#!")?;
-    let mut words = line.split_whitespace();
-    let mut program = words.next()?;
-    let name = file_name(program);
-    // `#!/usr/bin/env bash` names the interpreter in its argument, not in `env`.
-    if name == "env" {
-        program = words.find(|word| !word.starts_with('-'))?;
-        return Some(file_name(program));
-    }
-    Some(name)
-}
-
-fn file_name(program: &str) -> String {
-    program
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(program)
-        .to_string()
-}
-
-/// The program a `#!` line names.
-fn interpreted(program: &str) -> anyhow::Result<Runner> {
-    let program = if program.starts_with("python") {
-        python()?
-    } else {
-        which::which(program).with_context(|| format!("no {program} on PATH"))?
-    };
-    let posix = matches!(
-        program_name(&program).as_str(),
-        "sh" | "bash" | "zsh" | "dash"
-    );
-    Ok(Runner {
-        program,
-        leading: Vec::new(),
-        posix,
-    })
-}
-
-/// The last component of a program's path, which is how a shell is recognised.
-fn program_name(program: &Path) -> String {
-    program
-        .file_stem()
-        .map(|name| name.to_string_lossy().to_ascii_lowercase())
-        .unwrap_or_default()
 }
 
 /// The first Python that runs: Windows' Store alias sits on `PATH` and answers 49.

@@ -190,7 +190,50 @@ probe=$(python "$root/scripts/operation_probe.py" --port "$port" --key "$(cat "$
 ok "the delete_session operation is answered" $?
 say "$probe"
 
-# 16. The session it deleted is gone.
+# 16. The `skill` command is a server command: the tool's own registration put it
+#     in the catalog, so an operator and the model reach the same entry.
+mkdir -p "$home/skills/argv-probe" "$home/skills/body-only"
+cat > "$home/skills/argv-probe/SKILL.md" <<'MD'
+---
+name: argv-probe
+description: Prints its argv, one word per line, and leaves with 3.
+metadata:
+  entry: probe.sh
+---
+# argv probe
+MD
+cat > "$home/skills/argv-probe/probe.sh" <<'SH'
+#!/usr/bin/env bash
+for word in "$@"; do printf '[%s]\n' "$word"; done
+exit 3
+SH
+cat > "$home/skills/body-only/SKILL.md" <<'MD'
+---
+name: body-only
+description: A body and nothing to run.
+---
+# body only
+MD
+listed=$("${cli[@]}" 2>&1)
+[[ "$listed" == *"skill -- Run the"* ]]
+ok "the catalog carries skill (a tool registration, not a command of its own)" $?
+
+probed=$("${cli[@]}" skill main argv-probe '["a b","$HOME","semi;colon"]' 2>&1)
+{ [[ "$probed" == *'[a b]'* ]] && [[ "$probed" == *'[$HOME]'* ]] && \
+  [[ "$probed" == *'[semi;colon]'* ]] && [[ "$probed" == *'exit status 3'* ]] && \
+  [[ "$probed" == *'"ok":false'* ]]; } && rc=0 || rc=1
+ok "skill <name> <args> passes the words unread and keeps the entry's exit code" $rc
+say "$probed"
+
+body=$("${cli[@]}" skill main body-only 2>&1)
+[[ "$body" == *"is a body and nothing to run"* ]]
+ok "a skill with no entry says there is nothing to run" $?
+
+absent=$("${cli[@]}" skill main no-such-skill 2>&1)
+[[ "$absent" == *"no skill named"* ]]
+ok "an unknown skill name is refused with where to look" $?
+
+# 17. The session it deleted is gone.
 left=$("${cli[@]}" get_messages --session doomed 2>&1)
 [[ "$left" == *"no session"* || "$left" == *'"ok":false'* ]]
 ok "the session the operation deleted is gone" $?

@@ -140,7 +140,7 @@ impl PythonRepl {
     pub fn spawn(program: Option<&Path>, args: &[String], cwd: &Path) -> anyhow::Result<Self> {
         let program = match program {
             Some(path) => path.to_path_buf(),
-            None => detect_python()?,
+            None => detect()?,
         };
         let mut command = Command::new(&program);
         command
@@ -329,7 +329,7 @@ impl Reply {
     }
 }
 
-fn detect_python() -> anyhow::Result<PathBuf> {
+pub(crate) fn detect() -> anyhow::Result<PathBuf> {
     for candidate in ["python3", "python"] {
         if let Ok(path) = which::which(candidate) {
             return Ok(path);

@@ -44,6 +44,7 @@ you are about to touch.
 | note | source |
 | --- | --- |
 | [`skill-lib.md`](skill-lib.md) | `crates/skill/src/lib.rs` |
+| [`skill-entry.md`](skill-entry.md) | `crates/skill/src/entry.rs` |
 
 ### console
 
@@ -94,6 +95,8 @@ you are about to touch.
 | [`server-tools-bash.md`](server-tools-bash.md) | `crates/server/src/tools/bash.rs` |
 | [`server-tools-detached.md`](server-tools-detached.md) | `crates/server/src/tools/detached.rs` |
 | [`server-tools-index-skill.md`](server-tools-index-skill.md) | `crates/server/src/tools/index_skill.rs` |
+| [`server-tools-skill.md`](server-tools-skill.md) | `crates/server/src/tools/skill.rs` |
+| [`server-tools-words.md`](server-tools-words.md) | `crates/server/src/tools/words.rs` |
 | [`server-tools-job.md`](server-tools-job.md) | `crates/server/src/tools/job.rs` |
 | [`server-transcript.md`](server-transcript.md) | `crates/server/src/transcript.rs` |
 

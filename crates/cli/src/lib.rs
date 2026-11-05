@@ -1155,6 +1155,11 @@ impl Client {
         lines
     }
 
+    /// Whether the greeting published this name, which is the only list there is.
+    pub fn has_command(&self, name: &str) -> bool {
+        self.catalog.command(name).is_some()
+    }
+
     /// Runs one command from argv already split into tokens; no grammar here.
     pub fn command(&mut self, tokens: Vec<String>, sink: &mut dyn Sink) -> Submission {
         self.submit_tokens(tokens, sink, Echo::Command)
@@ -1919,15 +1924,10 @@ const CANCEL_ID: u64 = u64::MAX;
 /// `serve` is decided before a runtime exists: it leaves nothing of the client
 /// behind, and the server builds the runtime it wants to be stopped in.
 pub fn main(args: Args) -> anyhow::Result<()> {
-    if let Some(Sub::Cmd(tokens)) = &args.command {
-        match tokens.first().map(String::as_str) {
-            Some("serve") => return crate::server::serve(&args, &tokens[1..]),
-            // Nothing here needs a runtime or a link: an entry is a file on this disk.
-            Some("skill") => {
-                return crate::skill_command::dispatch(&home_of(&args), &tokens[1..]);
-            }
-            _ => {}
-        }
+    if let Some(Sub::Cmd(tokens)) = &args.command
+        && tokens.first().map(String::as_str) == Some("serve")
+    {
+        return crate::server::serve(&args, &tokens[1..]);
     }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -1935,9 +1935,33 @@ pub fn main(args: Args) -> anyhow::Result<()> {
     runtime.block_on(async {
         match &args.command {
             None => list_commands(&args).await,
+            Some(Sub::Cmd(command)) if command.first().map(String::as_str) == Some("skill") => {
+                skill(&args, command).await
+            }
             Some(Sub::Cmd(command)) => run(&args, command).await,
         }
     })
+}
+
+/// `skill`: the server's command when one publishes it, else the entry itself.
+///
+/// # Invariant
+///
+/// The greeting's catalog decides, as it does for every other name: a server that
+/// publishes `skill` runs the entry on the session's terms, and a machine with no
+/// server still does, because an entry is a file rather than a command's work.
+async fn skill(args: &Args, tokens: &[String]) -> anyhow::Result<()> {
+    let local = || crate::skill_command::dispatch(&home_of(args), &tokens[1..]);
+    let Ok((mut client, mut link)) = connect(args).await else {
+        return local();
+    };
+    let result = if client.has_command("skill") {
+        run_once(&mut client, &mut link, tokens).await
+    } else {
+        local()
+    };
+    link.goodbye().await;
+    result
 }
 
 /// What a command row says about lines the server never answered.

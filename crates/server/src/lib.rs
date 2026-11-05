@@ -294,7 +294,12 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         default_context: cfg.model.context,
         tools: Arc::new(
             ToolRegistry::with_builtins(cfg.bash.timeout, cfg.bash.max_output_chars)
-                .with_python(cfg.python.clone()),
+                .with_python(cfg.python.clone())
+                .with_skills(
+                    tools::skill::programs(&cfg),
+                    cfg.bash.timeout,
+                    cfg.bash.max_output_chars,
+                ),
         ),
         bus: bus.clone(),
         compress_above_tokens: cfg.agent.compress_above_tokens,

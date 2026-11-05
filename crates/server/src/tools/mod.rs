@@ -31,6 +31,8 @@ pub mod interpreter;
 pub mod job;
 pub mod python;
 pub mod python_remote;
+pub mod skill;
+pub mod words;
 
 /// Everything a tool invocation needs, supplied per call by the agent loop.
 pub struct ToolContext {
@@ -326,6 +328,21 @@ impl ToolRegistry {
             args: files.args,
             timeout: files.timeout,
             max_output_chars: files.max_output_chars,
+        }));
+        self
+    }
+
+    /// Adds `skill`, which starts an entry with the interpreters this server has.
+    pub fn with_skills(
+        mut self,
+        programs: ::skill::Programs,
+        timeout: Duration,
+        max: usize,
+    ) -> Self {
+        self.tools.push(Box::new(skill::SkillTool {
+            programs,
+            timeout,
+            max_output_chars: max,
         }));
         self
     }

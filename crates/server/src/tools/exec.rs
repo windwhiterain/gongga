@@ -8,11 +8,9 @@
 //! made to.
 
 use std::path::PathBuf;
-use std::process::Stdio;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use tokio::process::Command;
 
 use crate::session::Machine;
 use crate::tools::exec_remote;
@@ -116,7 +114,10 @@ impl Tool for ExecTool {
                 .unwrap_or(self.timeout);
 
             let outcome = match self.machine {
-                Machine::Local => run(&command, timeout).await,
+                Machine::Local => {
+                    let program = std::path::Path::new(&command.program);
+                    super::words::run(program, &command.args, &command.cwd, timeout).await
+                }
                 Machine::Remote => {
                     // The peer runs it: the program is looked up on its PATH and
                     // started with the words, in its own directory.
@@ -132,7 +133,7 @@ impl Tool for ExecTool {
                     match exec_remote::run(&endpoint, &command.program, &command.args, &at, timeout)
                         .await
                     {
-                        Ok(outcome) => Ok(RunOutcome {
+                        Ok(outcome) => Ok(super::words::RunOutcome {
                             stdout: outcome.stdout,
                             stderr: outcome.stderr,
                             code: outcome.code,
@@ -142,7 +143,7 @@ impl Tool for ExecTool {
                 }
             };
             match outcome {
-                Ok(RunOutcome {
+                Ok(super::words::RunOutcome {
                     stdout,
                     stderr,
                     code,
@@ -177,14 +178,6 @@ impl Tool for ExecTool {
     }
 }
 
-/// What one run produced.
-struct RunOutcome {
-    stdout: String,
-    stderr: String,
-    code: i32,
-}
-
-/// The program and its arguments, as the caller gave them.
 fn command_of(args: &Value, ctx: &ToolContext) -> Result<ExecCommand, String> {
     let Some(words) = args.get("command").and_then(Value::as_array) else {
         return Err("exec requires a `command`: a list of words, the program first".to_string());
@@ -226,105 +219,4 @@ pub struct ExecCommand {
     pub args: Vec<String>,
     /// The directory the program runs in.
     pub cwd: PathBuf,
-}
-
-/// Runs the program and waits for it, however long it takes.
-///
-/// # Invariant
-///
-/// The program is spawned with its words as arguments and no shell between it
-/// and the words, so what the program receives is what the caller wrote.
-async fn run(command: &ExecCommand, timeout: Duration) -> Result<RunOutcome, String> {
-    let mut child = Command::new(&command.program)
-        .args(&command.args)
-        .current_dir(&command.cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| spawn_error(&command.program, &e))?;
-
-    // Both streams are read while the program runs, so a chatty one cannot fill
-    // a pipe and stop the program writing.
-    let out_task = child
-        .stdout
-        .take()
-        .map(|stream| tokio::spawn(drain_out(stream)));
-    let err_task = child
-        .stderr
-        .take()
-        .map(|stream| tokio::spawn(drain_err(stream)));
-
-    let waited = tokio::time::timeout(timeout, child.wait()).await;
-    let code = match waited {
-        Ok(Ok(status)) => status.code().unwrap_or(-1),
-        Ok(Err(e)) => return Err(format!("waiting for {}: {e}", command.program)),
-        // The deadline passed: the program is stopped, not left running.
-        Err(_) => {
-            let _ = child.start_kill();
-            let _ = child.wait().await;
-            // The pipes close with the program, so what it printed is what it printed.
-            let (stdout, stderr) = drain_both(out_task, err_task).await;
-            return Err(format!(
-                "{} did not finish within {}s and was stopped; it printed:\n{}{}",
-                command.program,
-                timeout.as_secs(),
-                stdout,
-                stderr
-            ));
-        }
-    };
-    let (stdout, stderr) = drain_both(out_task, err_task).await;
-    Ok(RunOutcome {
-        stdout,
-        stderr,
-        code,
-    })
-}
-
-/// Reads one stream to its end.
-async fn drain_out(mut stream: tokio::process::ChildStdout) -> String {
-    use tokio::io::AsyncReadExt;
-    let mut text = Vec::new();
-    let _ = stream.read_to_end(&mut text).await;
-    String::from_utf8_lossy(&text).into_owned()
-}
-
-/// Reads the other stream to its end.
-async fn drain_err(mut stream: tokio::process::ChildStderr) -> String {
-    use tokio::io::AsyncReadExt;
-    let mut text = Vec::new();
-    let _ = stream.read_to_end(&mut text).await;
-    String::from_utf8_lossy(&text).into_owned()
-}
-
-/// What both streams said, each read to its end.
-async fn drain_both(
-    out: Option<tokio::task::JoinHandle<String>>,
-    err: Option<tokio::task::JoinHandle<String>>,
-) -> (String, String) {
-    let stdout = match out {
-        Some(task) => task.await.unwrap_or_default(),
-        None => String::new(),
-    };
-    let stderr = match err {
-        Some(task) => task.await.unwrap_or_default(),
-        None => String::new(),
-    };
-    (stdout, stderr)
-}
-
-/// Why the program did not start, in words a reader acts on.
-fn spawn_error(program: &str, error: &std::io::Error) -> String {
-    match error.kind() {
-        std::io::ErrorKind::NotFound => format!(
-            "exec found no program named {program:?}: it is looked up on PATH, and a \
-             word with a directory in it is run as it is written"
-        ),
-        std::io::ErrorKind::PermissionDenied => {
-            format!("exec was not allowed to run {program:?}")
-        }
-        _ => format!("exec could not run {program:?}: {error}"),
-    }
 }

@@ -20,6 +20,16 @@ directory on this disk, not the server. That is why "a skill's argv is not this 
 argv" is enforced in `check_flag_order` -- `skill remote add --home x` names the script's
 flag, and the order check would otherwise refuse the line as a misplaced global.
 
+That local route now yields to a server that publishes `skill` (`crates/server/src/tools/
+skill.rs`): the greeting's catalog decides, as it does for every other name, and the entry
+runs on the session's terms with the output capped and shaped like any other tool result. The
+fallback is what the rest of this note is about -- a machine with no server still runs an
+entry, because an entry is a file and not a command's work.
+
+The two spellings of the same line differ in one place, on purpose: the server command types
+its arguments by the tool's schema, so `skill main web-search '["fetch", "<url>"]'` arrives as
+a word list, while this route passes argv as typed and unparsed, as SPEC says.
+
 ## dispatch
 
 The verbs are `ls`, `which`, `run`, and anything else is a skill name. `run` exists only
@@ -40,6 +50,11 @@ body mentions mean something else than the session's cwd, which is not this comm
 business.
 
 ## runner
+
+`runner` moved to `crates/skill/src/entry.rs` when the server grew the `skill` tool: the rule
+"which program starts this file" has one answer, and the server could not keep a second copy.
+What stayed here is the *lookup* -- `which`, the Python probe, PowerShell -- handed to the
+crate as `skill::Programs`. The paragraph below is the reasoning that moved with it.
 
 An entry is run by the program its extension names -- `bash` for a shell script, a Python
 for a `.py`, PowerShell for `.ps1`, `cmd /c` for a batch file -- and an entry with no
