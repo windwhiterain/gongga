@@ -473,7 +473,7 @@ impl LlmClient {
                 &offered,
                 effort,
                 self.temperature,
-                index,
+                (index_framing(), index),
                 card,
             );
         }
@@ -538,7 +538,28 @@ impl LlmClient {
         let mut head = body.to_string();
         head.pop();
         head.push_str(",\"input\":[");
-        // Index first, then the card: the index is what a directory shares.
+        // The opening and separator come first: the index is never the first message.
+        let framing = index_framing();
+        if let Some(opening) = &framing.opening {
+            head.push_str(
+                &json!({
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": opening}],
+                })
+                .to_string(),
+            );
+            head.push(',');
+        }
+        if let (Some(separator), Some(_)) = (&framing.separator, &index) {
+            head.push_str(
+                &json!({
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": separator}],
+                })
+                .to_string(),
+            );
+            head.push(',');
+        }
         if let Some(index) = index {
             head.push_str(
                 &json!({
@@ -1348,6 +1369,21 @@ pub(crate) fn sendable_activity(
         return None;
     }
     Some(item)
+}
+
+/// The constant opening and separator, when this home carries them.
+fn index_framing() -> crate::anthropic::Framing {
+    let prompts = crate::prompts::shared();
+    let text = |name: &str| {
+        prompts
+            .text(name)
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+    };
+    crate::anthropic::Framing {
+        opening: text(crate::prompts::INDEX_OPENING),
+        separator: text(crate::prompts::INDEX_SEPARATOR),
+    }
 }
 
 /// Whether this event ends a response, in the face that is being read.

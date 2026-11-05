@@ -16,6 +16,13 @@ use crate::llm::{LlmEvent, Outbox, SseEvent, Usage};
 /// The last word of the URL: what this face appends to a provider's base.
 pub const PATH: &str = "/v1/messages";
 
+/// The constant messages that keep the index off the first one; absent is "as before".
+#[derive(Debug, Clone, Default)]
+pub struct Framing {
+    pub opening: Option<String>,
+    pub separator: Option<String>,
+}
+
 /// The request up to and including `"messages":[`.
 ///
 /// # Invariant
@@ -32,9 +39,10 @@ pub fn head(
     tools: &[Value],
     effort: Option<&str>,
     temperature: Option<f32>,
-    index: Option<&str>,
+    indexing: (Framing, Option<&str>),
     card: Option<&str>,
 ) -> Vec<u8> {
+    let (framing, index) = indexing;
     let mut body = json!({
         "model": model,
         "max_tokens": max_tokens,
@@ -60,6 +68,21 @@ pub fn head(
     let mut head = body.to_string();
     head.pop();
     head.push_str(",\"messages\":[");
+    if let Some(opening) = framing.opening.filter(|t| !t.is_empty()) {
+        head.push_str(
+            &json!({"role": "user", "content": [{"type": "text", "text": opening}]}).to_string(),
+        );
+        head.push(',');
+    }
+    if let Some(separator) = framing.separator.filter(|t| !t.is_empty())
+        && index.is_some()
+    {
+        head.push_str(
+            &json!({"role": "assistant", "content": [{"type": "text", "text": separator}]})
+                .to_string(),
+        );
+        head.push(',');
+    }
     if let Some(index) = index.filter(|index| !index.is_empty()) {
         head.push_str(
             &json!({"role": "user", "content": [{"type": "text", "text": index}]}).to_string(),

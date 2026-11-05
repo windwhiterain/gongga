@@ -18,6 +18,12 @@ pub const REVISION: &str = "reference_revision";
 /// The start card: what the session is, where it stands, and when. Stamped once.
 pub const TAIL: &str = "dynamic_tail";
 
+/// What opens the request, before the index. See `docs/reference/prefix-cache.md`.
+pub const INDEX_OPENING: &str = "index_opening";
+
+/// The other-role message between the opening and the index, so they do not merge.
+pub const INDEX_SEPARATOR: &str = "index_separator";
+
 /// The same card when the session's workspace is on a peer.
 ///
 /// # Invariant
