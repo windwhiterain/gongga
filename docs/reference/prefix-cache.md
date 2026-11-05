@@ -6,6 +6,10 @@ guessed at. Not what this server does: what it must fit.
 Sources, fetched 2026-11-03:
 
 - Kimi — <https://platform.kimi.com/docs/guide/context-caching>
+- MiniMax, automatic (the OpenAI faces this server speaks) —
+  <https://platform.minimax.io/docs/api-reference/text-prompt-caching>
+- MiniMax, explicit (the `/anthropic` face) —
+  <https://platform.minimax.io/docs/api-reference/anthropic-api-compatible-cache>
 - Volcengine Ark — <https://docs.volcengine.com/docs/ark/context-cache>
 - Alibaba Model Studio — <https://help.aliyun.com/zh/model-studio/context-cache>
 
@@ -42,9 +46,18 @@ Field names, as each vendor spells them:
 | Kimi | `prompt_cache_options: {"mode":"implicit","ttl":"5m"\|"1h"}` on Chat Completions **and** Responses; `cache_control: {"type":"ephemeral","ttl":...}` at the **top level** of Anthropic Messages | — |
 | Volcengine Ark | `caching: {"type":"enabled","prefix":true}`, `expire_at` = now + 3600 … 604800 | `prompt_cache_key` (≤15 req/min per value) |
 | Alibaba | `cache_control` on a content block, at most 4 marks per request, look-back 20 blocks | — |
-| MiniMax | `cache_control` on the Anthropic surface | — |
+| MiniMax | automatic on `/v1/chat/completions` **and** `/v1/responses`; `cache_control` only on the Anthropic surface | — |
 | Tencent TokenHub | — | `prompt_cache_key` in the body and an `X-Session-ID` header, to pin the inference instance |
 | DeepSeek, StepFun, LongCat, Dots, Zhipu, local | — (implicit only) | — |
+
+MiniMax's automatic cache states three things worth writing down, checked 2026-11-05:
+caching applies to requests of **512 or more input tokens**; the prefix is matched in the
+order **tool list → system prompts → user messages**; and no lifetime is stated. Its
+explicit cache is a different face and a different rule set: a `cache_control` breakpoint
+marks the end of the cacheable prefix, the cache is cumulative and checked forward from
+the breakpoint, at most **20 blocks** back, at most 4 breakpoints, and it lives **5
+minutes, renewed on every hit**. `prompt_cache_key` is not documented on either face, so
+a reading of that surface cannot be explained by a key.
 
 Two things follow from the table and are easy to miss:
 
@@ -63,9 +76,9 @@ Two things follow from the table and are easy to miss:
 
 | semantics | who | what it means for a plan |
 | --- | --- | --- |
-| **renewing** | Kimi 5m/1h, MiniMax, Alibaba explicit, most implicit caches | every hit resets the clock, so a gap shorter than the TTL keeps the prefix warm indefinitely; `last sent + ttl` is exactly when it dies |
+| **renewing** | Kimi 5m/1h, MiniMax **explicit**, Alibaba explicit, most implicit caches | every hit resets the clock, so a gap shorter than the TTL keeps the prefix warm indefinitely; `last sent + ttl` is exactly when it dies |
 | **deadline** | Volcengine explicit `expire_at` (official: "不会随着缓存 / 存储的使用而重置缓存生命周期") | the clock starts at the **write**; using it does not move it, so the death time is `written + expire_at`, not `last sent + ttl` |
-| **evicted** | DeepSeek, StepFun, LongCat, Tencent, Dots, Zhipu, Alibaba implicit, Volcengine implicit | there is no TTL to obey; the provider clears what it has not seen for a while. Only a probability is honest |
+| **evicted** | DeepSeek, StepFun, LongCat, Tencent, Dots, Zhipu, Alibaba implicit, Volcengine implicit, **MiniMax automatic** | there is no TTL to obey; the provider clears what it has not seen for a while. Only a probability is honest |
 
 The distinction is the whole reason `prefix_cache::expire` cannot simply take "a TTL":
 its `touched` is refreshed on every send, which is right for the first row and wrong for
