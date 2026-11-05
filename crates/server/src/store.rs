@@ -1115,7 +1115,8 @@ impl Store {
             "UPDATE sessions SET live_compact_baseline_tokens = ?1
              WHERE id = ?2 AND context_generation = ?3
                AND live_compact_origin_seq IS NOT NULL
-               AND live_compact_baseline_tokens IS NULL",
+               AND live_compact_baseline_tokens IS NULL
+               AND live_compact_started = 1",
             params![input_tokens as i64, session_id, generation as i64],
         )?;
         Ok(())
@@ -1157,6 +1158,20 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(true)
+    }
+
+    /// Establishes the starting checkpoint at a turn end: the latest provider
+    /// measurement becomes the baseline, and only from then on may the interval
+    /// fire and a usage re-establish a post-compaction baseline mid-turn.
+    pub fn establish_live_compact_baseline(&self, session_id: i64) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE sessions SET live_compact_baseline_tokens = context_tokens,
+                    live_compact_started = 1
+             WHERE id = ?1 AND live_compact_origin_seq IS NOT NULL
+               AND live_compact_baseline_tokens IS NULL AND context_tokens > 0",
+            params![session_id],
+        )?;
+        Ok(())
     }
 
     /// Lets a failed or stale summary request be asked again without deleting its marker.
@@ -1467,11 +1482,17 @@ impl Store {
             )?;
             tx.execute(
                 "UPDATE sessions SET live_compact_origin_seq = NULL,
-                        live_compact_baseline_tokens = NULL, live_compact_requested = 0
+                        live_compact_baseline_tokens = NULL, live_compact_requested = 0,
+                        live_compact_started = 0
                  WHERE id = ?1",
                 params![session_id],
             )?;
         }
+        let fresh_origin = tx.query_row(
+            "SELECT live_compact_origin_seq IS NULL FROM sessions WHERE id = ?1",
+            params![session_id],
+            |row| row.get::<_, bool>(0),
+        )?;
         let user_seq = Self::append_message_conn(&tx, session_id, "text", &user_row(expanded))?;
         tx.execute(
             "UPDATE sessions SET live_compact_origin_seq = ?2,
@@ -1479,6 +1500,18 @@ impl Store {
              WHERE id = ?1 AND live_compact_origin_seq IS NULL",
             params![session_id, user_seq],
         )?;
+        if fresh_origin {
+            // SPEC: the first true user message is asked for a plan, one row behind it.
+            Self::append_message_conn(
+                &tx,
+                session_id,
+                "text",
+                &user_row(&crate::meta::Expanded {
+                    text: crate::live_compact::PLAN_NOTICE.to_string(),
+                    images: Vec::new(),
+                }),
+            )?;
+        }
         tx.commit()?;
         Ok(id)
     }

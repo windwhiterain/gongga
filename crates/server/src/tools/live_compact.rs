@@ -36,7 +36,7 @@ impl Tool for LiveCompactTool {
     fn run<'a>(
         &'a self,
         args: Value,
-        _ctx: &'a ToolContext,
+        ctx: &'a ToolContext,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
             let summary = args
@@ -47,7 +47,15 @@ impl Tool for LiveCompactTool {
             if summary.is_empty() {
                 return ToolOutcome::err("summary must not be empty");
             }
-            ToolOutcome::ok(summary)
+            // Where this session's references are read: the machine it stands on.
+            let source = match (&ctx.reader, ctx.machine) {
+                (Some(reader), crate::session::Machine::Remote) => {
+                    crate::meta::Source::Remote(reader)
+                }
+                (None, crate::session::Machine::Remote) => crate::meta::Source::Unreachable,
+                (_, crate::session::Machine::Local) => crate::meta::Source::Local,
+            };
+            ToolOutcome::ok(crate::meta::embed(source, &ctx.cwd, summary).await)
         })
     }
 }

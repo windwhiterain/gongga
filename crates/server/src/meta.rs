@@ -297,6 +297,32 @@ pub async fn literal(
     }
 }
 
+/// A checkpoint summary with each text reference's content inlined, so the
+/// artifact stands alone without the prompt index. What cannot be read stays
+/// literal, and a picture stays a name: neither invents a body.
+pub async fn embed(source: Source<'_>, home: &Path, text: &str) -> String {
+    let mut out = String::new();
+    let mut cursor = 0;
+    for mention in mentions(text) {
+        if mention.start < cursor {
+            continue;
+        }
+        let Some(body) = content(source, home, &spelling(&mention)).await else {
+            continue;
+        };
+        let from = if mention.start > cursor && text[cursor..mention.start].ends_with(' ') {
+            mention.start - 1
+        } else {
+            mention.start
+        };
+        out.push_str(&text[cursor..from]);
+        out.push_str(&body);
+        cursor = mention.end;
+    }
+    out.push_str(&text[cursor..]);
+    out.trim().to_string()
+}
+
 /// Resolves the references one message carries, before it is stored.
 ///
 /// # Invariant
