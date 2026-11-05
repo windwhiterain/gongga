@@ -287,7 +287,7 @@ impl Entry {
         let mut rows: Vec<String> = Vec::new();
         for field in call.fields.iter().filter(|field| !field.summary) {
             let name = match field.label.is_empty() {
-                true if call.name == "bash" => "command",
+                true if call.name == "bash" || call.name == "exec" => "command",
                 true => "value",
                 false => field.label.as_str(),
             };

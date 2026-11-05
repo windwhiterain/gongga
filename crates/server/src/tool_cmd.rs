@@ -151,6 +151,7 @@ fn ordered_properties<'a>(
 fn positional_of(tool: &str) -> &'static [&'static str] {
     match tool {
         "bash" | "remote_bash" => &["command"],
+        "exec" => &["command"],
         "python" | "remote_python" => &["code"],
         "del_bash" | "del_python" | "list_bash" | "list_python" => &["name_regex"],
         "read_file" => &["path"],
@@ -177,14 +178,10 @@ fn coerce(tool: &dyn crate::tools::Tool, args: &Args) -> Value {
     for (name, value) in args.iter() {
         let spec = properties.get(name);
         let kind = spec.and_then(|p| p.get("type")).and_then(Value::as_str);
-        // A property that offers a list takes one written as JSON, so an operator
-        // reaches the same shape the model does.
-        if kind.is_none()
-            && let Some(words) = spec
-                .and_then(|p| p.get("anyOf"))
-                .and_then(Value::as_array)
-                .filter(|kinds| kinds.iter().any(|kind| kind["type"] == "array"))
-                .and_then(|_| serde_json::from_str::<Vec<String>>(value).ok())
+        // A list argument is written as JSON, so an operator reaches the same
+        // shape the model does.
+        if kind == Some("array")
+            && let Some(words) = serde_json::from_str::<Vec<String>>(value).ok()
         {
             out[name] = json!(words);
             continue;

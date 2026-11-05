@@ -23,6 +23,8 @@ use crate::tools::detached::DetachedRegistry;
 
 pub mod bash;
 pub mod detached;
+pub mod exec;
+pub mod exec_remote;
 pub mod index_skill;
 pub mod interpreter;
 #[cfg(windows)]
@@ -103,6 +105,19 @@ impl ToolContext {
                 })
                 .await;
         }
+    }
+
+    /// Where one machine's shells run, for a tool that needs another program there.
+    ///
+    /// # Invariant
+    ///
+    /// `None` when the session has no shells on that machine, which is what a tool
+    /// reports rather than starting the program on the wrong one.
+    pub(crate) fn endpoint(&self, machine: Machine) -> Option<crate::remote::endpoint::Endpoint> {
+        self.shells
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .endpoint(machine)
     }
 
     /// The handle for `name` on `machine`, spawning the shell if this is its first use.
@@ -257,6 +272,16 @@ impl ToolRegistry {
                     timeout: bash_timeout,
                     max_output_chars,
                 }),
+                Box::new(exec::ExecTool {
+                    machine: Machine::Local,
+                    timeout: bash_timeout,
+                    max_output_chars,
+                }),
+                Box::new(exec::ExecTool {
+                    machine: Machine::Remote,
+                    timeout: bash_timeout,
+                    max_output_chars,
+                }),
                 Box::new(CheckBashTool { max_output_chars }),
                 Box::new(WaitTool {
                     timeout: bash_timeout,
@@ -334,7 +359,7 @@ impl ToolRegistry {
     pub fn definitions(&self, has_remote: bool) -> Vec<crate::llm::ToolDefinition> {
         self.tools
             .iter()
-            .filter(|t| has_remote || t.name() != REMOTE_BASH)
+            .filter(|t| has_remote || !is_remote_tool(t.name()))
             .map(|t| crate::llm::ToolDefinition {
                 name: t.name().to_string(),
                 description: t.description().to_string(),
@@ -516,7 +541,7 @@ fn string_list(value: &Value) -> Vec<&str> {
     }
 }
 
-fn json_type(value: &Value) -> &'static str {
+pub(crate) fn json_type(value: &Value) -> &'static str {
     match value {
         Value::Null => "null",
         Value::Bool(_) => "a boolean",
@@ -754,12 +779,6 @@ const INBOX_POLL: Duration = Duration::from_millis(250);
 // ---------------------------------- bash ----------------------------------
 
 /// The command a call asks for, as the line the shell will read.
-///
-/// # Invariant
-///
-/// A list is quoted word by word, so each word reaches the shell as one word
-/// exactly as it was written: no splitting on spaces, no globbing, no expansion
-/// of `$` or `~`. A string is the line itself, and the shell reads it as a line.
 fn command_line(value: Option<&Value>) -> Result<String, String> {
     match value {
         Some(Value::String(text)) => {
@@ -768,35 +787,9 @@ fn command_line(value: Option<&Value>) -> Result<String, String> {
             }
             Ok(text.clone())
         }
-        Some(Value::Array(words)) => {
-            if words.is_empty() {
-                return Err("bash received an empty list of words".to_string());
-            }
-            let mut quoted = Vec::with_capacity(words.len());
-            for word in words {
-                let Some(word) = word.as_str() else {
-                    return Err(format!(
-                        "bash received a list whose entries must all be strings, and one \
-                         was {kind}",
-                        kind = json_type(word),
-                    ));
-                };
-                // A NUL ends an argument for every program there is, so a word
-                // holding one arrives as a different word. Refuse it.
-                if word.contains('\0') {
-                    return Err(
-                        "bash received a word holding a NUL byte, which no program could \
-                         receive: an argument ends at a NUL, so it would arrive truncated"
-                            .to_string(),
-                    );
-                }
-                quoted.push(bash::shell_quote(word));
-            }
-            Ok(quoted.join(" "))
-        }
         Some(other) => Err(format!(
-            "bash requires a `command` that is a string or a list of strings, and this one is \
-             {kind}",
+            "bash requires a `command` that is a string, and this one is {kind}. A program \
+             and its arguments belong to `exec`, where the words are not read by a shell",
             kind = json_type(other),
         )),
         None => Err("bash requires a `command`".to_string()),
@@ -805,6 +798,16 @@ fn command_line(value: Option<&Value>) -> Result<String, String> {
 
 /// The name the tool on the session's remote is called by.
 const REMOTE_BASH: &str = "remote_bash";
+
+/// Whether a tool is the one that runs on the session's remote.
+///
+/// # Invariant
+///
+/// Such a tool is offered only to a session that has a remote: a tool the model
+/// can call but that can never answer is a wrong turn nobody can undo.
+fn is_remote_tool(name: &str) -> bool {
+    name == REMOTE_BASH || name == "remote_exec"
+}
 
 /// What `bash` says it is: one shell per name, on this machine.
 const LOCAL_BASH_DESCRIPTION: &str = "Run a shell command in a persistent Git Bash on this \
@@ -882,17 +885,11 @@ impl Tool for BashTool {
                 "description": name_note
             },
             "command": {
-                "description": "What to run: a command line, or a list of words -- the \
-                                 program and its arguments, one word each. A list needs no \
-                                 quoting: each word reaches the shell exactly as it is \
-                                 written, so an argument with a space in it needs no \
-                                 escaping. A command line is for what only a shell can do \
-                                 (pipes, redirects, `cd`), a list is for a program and \
-                                 its arguments.",
-                "anyOf": [
-                    {"type": "string"},
-                    {"type": "array", "items": {"type": "string"}}
-                ]
+                "type": "string",
+                "description": "The command line to execute. A program and its \
+                                 arguments, where an argument holds a space or a quote, \
+                                 belong in `exec`: there the words are not read by a \
+                                 shell and need no escaping."
             },
             "description": {
                 "type": "string",

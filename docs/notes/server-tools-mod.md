@@ -143,23 +143,17 @@ list of strings.
 
 ## command_line
 
-A `command` is either a command line or a list of words, and the list is what a
-model writes when the arguments carry spaces, quotes or `$` it does not want the
-shell to touch. Each word is quoted, so it reaches the shell as one word exactly
-as written: no splitting, no globbing, no expansion. The cost is that the list
-cannot do what only a shell can do (a pipe, a redirect, `cd`), which is why the
-string form stays.
-
-One reading of the two forms, in `command_line`: the model is not asked to
-choose a different tool, and the tool is not asked to guess which shape it was
-given.
+`bash` takes a command line, and a line is read by a shell: its words are split,
+expanded and globbed, and the quoting that says which is which is the model's to
+write. A program and its arguments, where an argument carries a space or a
+quote, belong to `exec` instead -- see `server-tools-exec.md`.
 
 ## A word holding a NUL
 
-Refused, because it cannot arrive as the word that was sent: an argument ends at a
-NUL for every program there is, and the shell drops the byte when it reads the
-line. The agent would get a word it never wrote -- a different word, silently --
-so the call is refused instead, and the refusal says why.
+Refused by `exec`, because it cannot arrive as the word that was sent: an argument
+ends at a NUL for every program there is, and the byte is dropped somewhere on
+the way. The agent would get a word it never wrote -- a different word, silently
+-- so the call is refused instead, and the refusal says why.
 
 ## BashTool::run (the `description` argument)
 

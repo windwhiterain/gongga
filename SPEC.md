@@ -42,6 +42,12 @@ use `which("bash")` as bash.
   runs in the persistent shell `name`
   - key = {session_name, bash_name}.
   - background bash ended will notice its session, background bash has no timeout.
+- exec{command, timeout_ms = <timeout_ms>}:
+  command is a list of words: the program, then its arguments, one word each.
+  no shell reads them, so a word needs no escaping and gets none.
+  cwd is the session's cwd. not the persistent shell: `cd` and exports do not survive.
+  what a shell does (pipes, redirects, `cd`, `&&`, expansion, wildcards) is not here.
+- remote_exec{command, timeout_ms = <timeout_ms>}: mirror exec, on the session's remote.
 - python{code, ...}: mirror bash, persistant REPL.
 - list_bash{name_regex}: list matched bash with the caller session's name in key.
 - list_python{...}: mirror list_bash.
@@ -88,8 +94,10 @@ upload referencing image to provider in advance to get id => OpenAI API File ID 
 
 replace `id` with mapped File ID before sending for request.
 
-### Meta Prefix Cache Optimize
-for the first user message to a empty session, find all meta references recursively with the prompt as the root, find the optimized meta trajectory, append the meta's content with its raw form (without replacement) as index to the system prompt, then the user message with no replacement.
+### Meta Prefix Cache Planning
+a cache tree is simulated for each model or (model, some config) that shares prefix cache.   
+
+for the first user message to a empty session, find all meta references recursively with the prompt as the root, plan the price optimal meta content order in the cache tree, append the meta's content with its raw form (without replacement) as index to the system prompt, then per session dynamic content.
 
 ## UI
 - main (vertical)
