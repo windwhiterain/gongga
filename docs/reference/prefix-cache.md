@@ -166,8 +166,19 @@ and what a provider leaves on the table, not a per-model decision this server ma
 | bytedance-ark | implicit | hit; **no storage fee** | `prompt_cache_key` affinity (free); the explicit lease (determinism, needs `previous_response_id`) |
 | qwen-token-plan, qwen-dashscope | implicit | hit at 12.5% | explicit needs >6 hits per layer to pay, and `cache_control` on a surface we do not speak |
 | tencent-tokenhub | implicit | hit | `prompt_cache_key` + `X-Session-ID` (free) |
-| minimax-cn | implicit; its explicit tier is 5m as well | hit; no write fee | nothing: the two tiers differ only in billing, not in length |
+| minimax-cn | **anthropic face, 5m explicit** (since 2026-11-05) | hit; no write fee | nothing on that face -- but note the OpenAI faces below |
 | deepseek, stepfun, longcat, dots, zhipu, local | the only tier there is | hit | nothing to choose |
+
+One reading of MiniMax changed the design on 2026-11-05, and it is worth keeping beside
+these tables because it is a distinction the tables cannot show. Its OpenAI-shaped faces
+do **not** serve a prefix: a new prompt answers 128–192 cached however identical its head
+is to a prompt already stored (a real 19,422-token body: 19,421 for the prompt sent the
+day before, **0** for a sibling whose card was renamed, 128 for a one-character change).
+Its `/anthropic` face does: the same 8,260-token system text with a `cache_control`
+breakpoint answered 8,192 across a changed user message, and 8,266 with a sentence
+appended. So "it caches" is not a property of the vendor but of the face a request is
+sent to, and the roster now says which face each provider is spoken in. See
+`docs/notes/server-anthropic.md`.
 
 What the server already reads back: `usage.input_tokens_details.cached_tokens`, which is
 the one measurement that could correct any of this. Kimi also reports

@@ -290,6 +290,13 @@ neither, which is why the two are two switches and not one -- an unknown header 
 the same risk as an unknown body field, and a provider may document one without the
 other.
 
+`[model] api` (or nothing: the roster's `[[provider]] api`) names the face a request is
+sent in. It is the endpoint label the roster declares -- `anthropic-messages` is the only
+one besides the OpenAI shapes -- and it decides the URL, the body and the stream, so it is
+read once when the client is built. `max_output_tokens` comes from the roster's model
+entry when the home says nothing; the anthropic face requires it, and a request in that
+face with neither is refused rather than given a guessed length.
+
 `[model] cache_margin_pct` (or `GONGGA_CACHE_MARGIN_PCT`, 5 by default, capped
 at 50) sets where in the tier's window the tool interrupt and the next heartbeat
 fire: `window * (100 - pct) / 100`.

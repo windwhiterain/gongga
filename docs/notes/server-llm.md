@@ -333,6 +333,13 @@ the record and never used to price anything. See
 
 ## cache directives on the wire
 
+A provider is spoken in one face per request, and the roster says which:
+`[[provider]] api` names an endpoint the provider declares, `[model] api` overrides it
+for one home, and a name the provider does not offer falls back to the built-in order
+(`openai-responses` first). `anthropic-messages` is the second face; its request shape,
+its events and what it costs are `docs/notes/server-anthropic.md`. Everything below
+describes the Responses face, which is still what every provider but one speaks.
+
 `build_head` sends `prompt_cache_options` only when the configured tier appears
 in the roster's `cache_ttl_tiers` for that provider, and `prompt_cache_key` only
 when the roster's `[[provider]] cache_affinity` says this provider documents it (or
