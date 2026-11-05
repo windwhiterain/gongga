@@ -24,10 +24,7 @@ const SCRIPT: &str = "gongga_cli.py";
 
 fn main() -> anyhow::Result<()> {
     let words: Vec<OsString> = std::env::args_os().skip(1).collect();
-    if words
-        .first()
-        .is_some_and(|word| OWN.iter().any(|own| *own == word.to_string_lossy()))
-    {
+    if command(&words).is_some_and(|name| OWN.contains(&name.as_str())) {
         let args = link::parse_argv(link::spoken_name(), link::ABOUT);
         args.check_flag_order()?;
         return link::main(args);
@@ -36,6 +33,27 @@ fn main() -> anyhow::Result<()> {
     // The command's answer is this process's: a refusal of the server's is a
     // non-zero exit, and a pipeline reads it the same either way.
     std::process::exit(code);
+}
+
+/// The command a line names: the first word that is not a flag or a flag's value.
+///
+/// # Invariant
+///
+/// `--home /c/x` and `--server 127.0.0.1:9700` come before the command, so "the
+/// first word" is not the command. Which flags take a value is the layer's list, and
+/// asking it here would be a second copy of one answer -- a word that starts with a
+/// dash is skipped, and so is the word after it when the flag carries no `=`.
+fn command(words: &[OsString]) -> Option<String> {
+    let mut i = 0;
+    while i < words.len() {
+        let word = words[i].to_string_lossy().into_owned();
+        if word.starts_with("--") {
+            i += if word.contains('=') { 1 } else { 2 };
+            continue;
+        }
+        return Some(word);
+    }
+    None
 }
 
 /// Runs the Python command line with these words, and answers its exit code.

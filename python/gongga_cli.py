@@ -21,6 +21,7 @@ state and its disk, not a server's answer. See `docs/notes/python-cli.md`.
 
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -44,9 +45,10 @@ def usage(spec):
     """One command's shape, as the catalog publishes it."""
     words = [spec["name"]]
     for argument in spec.get("args") or []:
-        word = f"--{argument['name']} <{argument['name']}>"
+        hint = argument.get("value_hint") or argument["name"]
+        word = f"--{argument['name']} <{hint}>"
         if argument.get("positional"):
-            word = f"<{argument['name']}>"
+            word = f"<{hint}>"
         if not argument.get("required"):
             word = f"[{word}]"
         words.append(word)
@@ -85,8 +87,7 @@ def bind(wanted, words):
             name, separator, inline = word[2:].partition("=")
             if name not in takes:
                 raise ValueError(
-                    f"{wanted['name']} has no argument --{name}; it takes "
-                    + (", ".join(takes) or "nothing")
+                    f"{wanted['name']} has no argument --{name}; it reads " + usage(wanted)
                 )
             if not separator:
                 i += 1
@@ -102,7 +103,7 @@ def bind(wanted, words):
         at = next_unfilled(specs, values, cursor)
         if at is None:
             raise ValueError(
-                f"unexpected argument {word!r}; {wanted['name']} reads " + usage(wanted)
+                f'unexpected argument "{word}"; {wanted["name"]} reads ' + usage(wanted)
             )
         values[specs[at]["name"]] = word
         cursor = at + 1
@@ -115,6 +116,21 @@ def bind(wanted, words):
             f"{wanted['name']} needs " + ", ".join(missing) + "; it reads " + usage(wanted)
         )
     return values
+
+
+def native(path):
+    r"""A `/c/...` path as this platform spells it.
+
+    The shell this command line is typed into is bash, and bash hands its paths on
+    as `/c/...`; a Windows program opens `C:\...`. One conversion, here, for the
+    arguments that are paths -- the command's own words are never rewritten.
+    """
+    if os.name != "nt":
+        return path
+    drive = re.match(r"^/([A-Za-z])/(.*)$", path)
+    if drive:
+        return drive.group(1).upper() + ":\\" + drive.group(2).replace("/", "\\")
+    return path
 
 
 #: The flags that come before the command's name: they say which home and which
@@ -142,17 +158,29 @@ def globals_of(words):
             if i >= len(words):
                 raise ValueError(f"{name} needs a value")
             inline = words[i]
-        settings[GLOBALS[name]] = inline
+        settings[GLOBALS[name]] = native(inline) if name == "--home" else inline
         i += 1
     return settings, words[i:]
 
 
 def catalog(client):
-    """What this server publishes, one command a line: the answer to bare invocation."""
-    for row in client.catalog:
-        print(usage(row))
-        if row.get("description"):
-            print("    " + row["description"].replace("\n", " "))
+    """What this server publishes: the answer to a bare invocation.
+
+    # Invariant
+
+    The list is the greeting's and the shape is the layer's: `<name> -- <what it
+    is>`, then `takes:` on its own line. Who runs a command is the reader's
+    business, so a client command and a script's say so and a server's says nothing.
+    """
+    rows = client.catalog
+    print(
+        f"{len(rows)} command(s); run one with `gongga <command> <args>`; each takes "
+        "line says its shape."
+    )
+    for row in rows:
+        who = {"client": " [client-side]", "server_script": " [script]"}
+        print(f"{row['name']}{who.get(row.get('target') or 'server', '')} -- {row.get('description', '')}")
+        print("    takes: " + usage(row))
     return 0
 
 
@@ -216,12 +244,13 @@ def main(argv):
         return 3
     finally:
         client.close()
+    # Every row of the answer, the reply line last: what the server said, in the order
+    # it said it, so a caller that reads lines sees the events and the verdict as one
+    # stream -- the shape `--json` prints and a script parses.
     for event in reply.events:
-        print(json.dumps(event, ensure_ascii=False))
-    # The command's answer is the line a reader (or a pipe) takes away, so it goes to
-    # stdout with the events: stderr is for what this program says itself.
-    if reply.message:
-        print(reply.message)
+        # Compact, one row a line: the shape the layer has always printed, so a
+        # script that greps `"ok":true` keeps reading what it read before.
+        print(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
     return 0 if reply.ok else 1
 
 
