@@ -19,7 +19,7 @@ The home already draws this line elsewhere, and this file joins it:
 | --- | --- |
 | `<home>/config.toml` | the pinned content's, merged on every install |
 | `<home>/server.key` | this machine's credential |
-| `<home>/cli.toml` | the client's own state |
+| `<home>/tui.toml` | the client's own state |
 | `<home>/gongga.db` | this machine's data |
 | `~/.agents/remotes.toml` | this machine's peers |
 

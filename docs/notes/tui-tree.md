@@ -108,7 +108,7 @@ the next click is tested against.
 
 It is not written down anywhere: like an opened `abstract`, it is what the window is
 doing, not what the server holds. Relaunching the client shows every group unfolded.
-That was chosen over a new client command (`cli.toml` entry) because a name can be
+That was chosen over a new client command (`tui.toml` entry) because a name can be
 folded from a click only, the state is one keystroke from being remade, and a stored
 one raises a question with no good answer -- what does a fold mean for a group whose
 sessions the server has since deleted?
