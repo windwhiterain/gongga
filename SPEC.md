@@ -4,13 +4,11 @@
 ## Crate Structure
 all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, live inside directory "crates/xxx".
 - protocol
-- skill: where a skill is on disk -- the three roots, their precedence, the frontmatter,
-  and the entry a body runs. No dependency, because the server and the command layer
-  both read it and neither may link the other.
 - server: binary (the backend program; also a library for its own tests).
-- cli: binary.
-  - cmd fully documented and diagnosed, transparent server cmd wrapper, do not know server cmd.
-- tui: binary, transparent cli wrapper.
+- client: use protocal to send server cmd
+  - cli: binary.
+    - cmd fully documented and diagnosed.
+  - tui: binary.
 - bundle: binary, bundle server/cli/tui's binary, route the cmd.
   - `tui [--client_only]`: `bundle server` and connected to it, kill/exit will cancel the server it spawn.
     - `--client_only`: suppress auto spawn server.
@@ -28,19 +26,6 @@ all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, l
   published event), so "what did this client miss" is a comparison and never a
   guess. A command's own answer has no position: it belongs to its connection.
 
-### Invariant: a window is behind, and asks for the rest itself
-The greeting is the verdict, not the recovery. For each session it states where
-that session's transcript now ends; a client compares that with what its own
-record says it drew, and the windows that come out behind are re-read when they
-are next drawn -- a session nobody is reading costs nothing.
-
-A re-read is `get_messages --replay true`, and its answer is a picture of one
-instant: the stored rows as the events that drew them, the operator's own
-messages as their own lines, the parts still streaming, and the stream position
-the picture was taken at. That position is what joins the answer to the events
-arriving beside it: everything at or below it is already in the answer, and
-everything above it is news.
-
 ## LLM API
 standard OpenAI Response API/Anthropic API.
 - images: File API, gated by - auto recover invalid transcript (only append, no drop).
@@ -53,8 +38,10 @@ path, rendered in hierarchy.
 ## Tool
 tool are tunnel of cmd that agents can directly call to avoid escape.
 
-all tool has optional `description`, `max_output`, `timeout_ms`, `background` argument that the tunnel consume.
+all tool has optional `description`, `max_output`, `timeout_ms`, `background`, `detached` argument that the tunnel consume.
 - `max_output`: in chars, if exeeded, save to temp file and return the file metadata {path, chars, line count}
+
+wait is the only expecial tool that treated internally.
 
 use `which("bash")` as bash.
 - bash{command, name = "default", detached = false}:
@@ -214,30 +201,11 @@ all named argument's name can be ommited via argument order.
   - `connect_server [--ip <ip>](default: localhost) --port <port>`
   - `serve --port <port> [--home <home>](default: "~/.gongga")`
 
-## Skill
-a skill is a directory holding `SKILL.md`: `name`, `description`, and what its body needs.
-use python cripts read/write gongga home, calling server cmd.
-
-three roots, and the first one to hold a name wins: the session's checkout
-(`<cwd>/.agents/skills`), the home (`<home>/skills`, installed from the pin), the machine
-(`~/.agents/skills`). A name found in more than one is reported as shadowed, never
-resolved silently.
-
-- `metadata.entry: <file>` in the frontmatter names the program the body runs, relative to
-  that skill's directory. It sits under `metadata`, which the Agent Skills specification
-  defines as an arbitrary mapping, so a skill carrying it stays valid elsewhere.
-- a body runs its entry from **its own directory** -- `SKILL_DIR=<dir of SKILL.md>` then
-  `"$SKILL_DIR/<entry>"` -- never from an install path. The anchor costs nothing here:
-  `@skill:` expansion and `skill` with no name both hand out the `SKILL.md` path.
-- a skill with no entry is a body and nothing to run.
-
-### Invariant
-one reading of the roots, their order and the frontmatter: `skill`, used by the server's
-table and `@skill:` expansion, by the command layer's completion, and by the entry runner.
-A second walk is a second answer to "which file does this name open".
-
 ## Git Managed Config
 personal(local) change always rebase on official(remote).
+
+## Skill
+provider uv python package, API can be called by harness cmd or python import.
 
 ## Skill: Self Control
 do whatever user can do to the server.
