@@ -133,8 +133,8 @@ SCENARIOS = {
             "expect render lab/x = true, 3 other session(s) hidden 8000",
             "gone [work/api] 8000",
             "gone [work/web] 8000",
-            "label a Shift+click takes that one window away and leaves the rest alone",
-            "shift-click 6 6",
+            "label a modified click takes that one window away and leaves the rest alone",
+            "alt-click 6 6",
             "sleep-until-frame 2 4000",
             "expect render lab/x = false 8000",
             "gone [lab/x] 8000",
@@ -158,9 +158,10 @@ SCENARIOS = {
         "options": {"tool": "bash", "fake": "stream"},
         "script": [
             "# the gestures are operations, not command lines: the window asks for"
-            "# what it means and the command layer answers it. The delete gesture"
-            "# is not here: this terminal does not deliver Shift+Delete, so"
-            "# scripts/cmd_selftest.sh answers that operation on the wire instead.",
+            "# what it means and the command layer answers it. Alt is the modifier a"
+            "# terminal forwards (VS Code keeps Shift+click for selection), and the"
+            "# delete gesture is not here: this terminal does not deliver"
+            "# Shift+Delete, so scripts/cmd_selftest.sh answers it on the wire.",
             "expect session(s) 20000",
             "label creating the session the gesture will act on",
             "keys /set_session main",
@@ -171,8 +172,8 @@ SCENARIOS = {
             "click 4 2",
             "sleep-until-frame 1 4000",
             "expect render main = true 8000",
-            "label a Shift+click on a session's name hides its window: an operation",
-            "shift-click 4 2",
+            "label a modified click on a session's name hides its window: an operation",
+            "alt-click 4 2",
             "sleep-until-frame 1 4000",
             "expect render main = false 8000",
         ],

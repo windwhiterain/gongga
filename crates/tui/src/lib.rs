@@ -48,6 +48,19 @@ pub use crate::log::Log;
 pub use crate::panes::Panes;
 pub use crate::run::interactive;
 
+/// The modifiers a terminal forwards with a mouse event, as a gesture's own.
+///
+/// # Invariant
+///
+/// All three, because no one of them is enough: Shift is what a person reaches
+/// for and what xterm, and so VS Code's terminal, takes for text selection --
+/// that press never reaches the application -- while Alt and Ctrl are what it
+/// does forward. One predicate, so the click and the wheel cannot disagree about
+/// which modifiers exist. See `docs/notes/tui-lib.md`.
+fn gesture_modifiers() -> KeyModifiers {
+    KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::CONTROL
+}
+
 /// Runs the window: its own runtime, because the loop owns every task in it.
 pub fn main(args: link::Args) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1211,8 +1224,8 @@ impl Tui {
         None
     }
 
-    /// The mouse points at a pane: a notch scrolls it three rows, Shift one. See
-    /// `docs/notes/tui-lib.md`.
+    /// The mouse points at a pane: a notch scrolls it three rows, a held modifier
+    /// one. See `docs/notes/tui-lib.md`.
     fn handle_mouse(&mut self, mouse: MouseEvent) {
         // The input box has a mouse of its own: the caret, and what a drag selects.
         if self.input_mouse(&mouse) {
@@ -1264,8 +1277,8 @@ impl Tui {
                 }
                 let shown = self.screen.panes.is_shown(&hit.name);
                 // SPEC's click, the way a list selects: a plain one makes this
-                // the only window; Shift adds or removes it alone.
-                let (show, solo) = match mouse.modifiers.contains(KeyModifiers::SHIFT) {
+                // the only window; a modifier adds or removes it alone.
+                let (show, solo) = match mouse.modifiers.intersects(gesture_modifiers()) {
                     true => (!shown, false),
                     false => (true, true),
                 };
@@ -1360,7 +1373,7 @@ impl Tui {
 
     /// Rows a wheel event scrolls, positive into the past; `None` for anything else.
     fn wheel_rows(mouse: &MouseEvent) -> Option<i64> {
-        let rows: i64 = if mouse.modifiers.contains(KeyModifiers::SHIFT) {
+        let rows: i64 = if mouse.modifiers.intersects(gesture_modifiers()) {
             1
         } else {
             3
