@@ -37,7 +37,10 @@ Three positions have been tried, and each was measured:
 In front of the first user message's text, the card is part of the turn the user asked
 for: the model reads it as that message's preamble, the provider serves the prefix in
 front of the final message, and a sibling session's head is then a prefix the provider
-holds. `carry` in `body` is the one place the text is rewritten, and what it prepends
+holds. Measured on the real server after the change: three of ten fresh sessions of one
+directory came back 14,336-14,391 of ~14,440 cached; the other seven were cold, and the
+three were the ones not fired within a few seconds of a first send (see
+`server-prefix-cache.md`). `carry` in `body` is the one place the text is rewritten, and what it prepends
 comes from the stamped prompt row, so a replay sends the same bytes.
 
 The card itself is stamped once, with the session's first prompt row, and replayed

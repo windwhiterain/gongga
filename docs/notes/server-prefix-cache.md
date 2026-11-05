@@ -128,6 +128,13 @@ byte two sessions cannot share; carried by the message itself, the region is the
 text (and, from the second turn on, the transcript), which every session of a directory
 shares. `docs/notes/server-body.md` has the change and its cost.
 
+On the real server, after the change, ten fresh sessions of this directory with one
+message each: three came back 14,336-14,391 of ~14,440 cached (99.3-99.7%), the rest
+0-189. The three were not the first of their minute -- a prompt is first served cold, and
+a sibling fired within a few seconds of it is still inside the store's own delay
+(`p1` 0, then `p2` and `p3` 14,336 twenty seconds apart). So the shape is what decides
+*whether* a sibling can be warm at all; the provider decides *when*.
+
 Two things this had to be untangled from. One is the first reading of any shape: a prompt
 is cold the first time it is sent and warm on the very next identical send, so a single
 128 means nothing -- repeated readings of one shape were 4 of 4 and 8 of 8 stable. The
