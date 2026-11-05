@@ -84,7 +84,7 @@ Recovery therefore happens where the row is written, not where the request is bu
 
 `store::wire_item` is the only place a row's request shape exists. It runs inside the
 insert, so the `content` column holds the exact bytes every later request carries:
-pictures already turned into a content array (with each `@image:` `(id)` replaced by the
+pictures already turned into a content array (with each `@image(...) (id)` replaced by the
 File ID the provider minted, while the `display` column keeps what the reader wrote),
 and a provider-side item's payload already read back from its blob. A blob that cannot
 be read makes the item non-replayable *then*, not at the tenth replay.

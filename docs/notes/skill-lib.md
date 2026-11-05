@@ -3,7 +3,7 @@
 ## module doc
 
 One reading of a skill directory, shared by the three places that need it: the server's
-`skill` table and `@skill:` expansion, the command layer's completion, and
+`skill` table and `@skill(...)` expansion, the command layer's completion, and
 `gongga-cli skill`, which runs the entry. It exists because the reading had grown two
 implementations -- one in `server/src/tools/skill.rs`, one in `cli/src/commands.rs`
 -- each documented as "the same roots in the same order as the other one". That comment
@@ -37,7 +37,7 @@ table full of skills nobody installed.
 
 `all` walks every layer and sorts each one's directories, so the same home draws the same
 table twice. `named` keeps every skill a name opens instead of the first one: `find` is
-what `@skill:` and `skill <name>` read, and the rest is what `skill ls` reports as
+what `@skill(...)` and `skill <name>` read, and the rest is what `skill ls` reports as
 shadowed. A name in two layers is not an error -- the specification says the more
 specific layer wins and asks the implementation to say when it did -- but it is also not
 something to hide from the reader who typed the name.
@@ -52,7 +52,7 @@ launcher disagree about where the script is.
 ## frontmatter
 
 `---`, then top-level `key: value` lines, then `---`. Two of the keys are this harness's:
-`description` (the table's line) and `name` (what `@skill:` resolves). Everything else in
+`description` (the table's line) and `name` (what `@skill(...)` resolves). Everything else in
 the header is the reader's or another harness's.
 
 A folded or quoted description on one line is read as written; multi-line YAML values are

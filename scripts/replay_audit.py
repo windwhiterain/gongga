@@ -106,7 +106,7 @@ def main():
 
         # New content entering the store mid-conversation, the way an heir's first
         # lesson does: a message that names a reference of its own.
-        command("send_message", "--name", "audit", "--message", "第三回合，带一个 @file: Cargo.toml 的引用")
+        command("send_message", "--name", "audit", "--message", "第三回合，带一个 @file(Cargo.toml) 的引用")
         time.sleep(8)
 
         # Deleting a session has to take the payload with it -- and it has to be

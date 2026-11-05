@@ -92,14 +92,14 @@ cli=("$bin/gongga-cli.exe" --home "$home" --server "127.0.0.1:$port")
 
 created=$("${cli[@]}" set_session reader fake/flash-fake --cwd "$root" 2>&1)
 [[ "$created" == *'"ok":true'* ]] || { echo "FAIL · session not created: $created" >&2; exit 1; }
-"${cli[@]}" send_message reader "read @file:docs/notes/tui-main.md then answer" >/dev/null 2>&1
+"${cli[@]}" send_message reader "read @file(docs/notes/tui-main.md) then answer" >/dev/null 2>&1
 for _ in $(seq 1 120); do grep -q 'turn end session=reader' "$log" && break; sleep 0.5; done
 first=$(grep -c 'turn end session=reader' "$log")
 
 # The reference the index carries changes, and is *named again* so a fresh plan sees it.
 printf '\n- a line added while the session is running\n' >> "$root/AGENTS.md"
 restore=$?
-"${cli[@]}" send_message reader "and again @file:docs/notes/tui-main.md" >/dev/null 2>&1
+"${cli[@]}" send_message reader "and again @file(docs/notes/tui-main.md)" >/dev/null 2>&1
 for _ in $(seq 1 120); do [[ $(grep -c 'turn end session=reader' "$log") -gt $first ]] && break; sleep 0.5; done
 git -C "$root" checkout -- AGENTS.md
 

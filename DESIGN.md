@@ -1230,7 +1230,7 @@ Git Bash 自动探测常见安装路径，找不到再退回 PATH 上的 `bash`�
 | `Enter` 发送 / `Shift+Enter`（`Alt+Enter`）换行 | 判定逻辑有单测，**真 TTY 未验证**（见下）|
 | `Shift+Delete` 删 sticky 会话，`Delete`/`Backspace` 只编辑；空行 + 有 sticky 才删 | 通过（`shift_delete_is_the_delete_key`；裸 `Delete`/`Backspace`/`Shift+D` 均不删）|
 | 帮助行是 SPEC 的 hot-key、按宽度换行，且在窗口最后几行；矮窗口先让出面板的行 | 通过（`the_reminder_names_specs_hot_keys_and_nothing_else`、`the_reminder_wraps_to_the_rows_the_window_allows`、`a_short_window_still_ends_on_the_help_row`）|
-| `Alt+V` 读剪贴板并走 `Tui::paste`（`Ctrl+V` 同路）；读不到只在状态条报错，`Ctrl+` 其余字母仍无绑定 | 真 VS Code 终端验过：`Alt+V` 写出 `gongga-paste-<pid>-<n>.png` 并插入 `@image: <path>`；见 `docs/notes/tui-paste.md` |
+| `Alt+V` 读剪贴板并走 `Tui::paste`（`Ctrl+V` 同路）；读不到只在状态条报错，`Ctrl+` 其余字母仍无绑定 | 真 VS Code 终端验过：`Alt+V` 写出 `gongga-paste-<pid>-<n>.png` 并插入 `@image(<path>)`；见 `docs/notes/tui-paste.md` |
 | 补全：已填的 `--flag` 不再列出；Tab 完 flag 自动接上它的值列表 | 通过（catalog 单测 3 个 + tui 的 `apply_and_continue` 单测）|
 | 长日志的一帧成本与日志长度无关（20k 行 156ns / 旧 8.1ms）| 通过（`examples/frame_cost`）+ 单测 `a_frame_touches_only_a_screenful` |
 | 流式追加 = 整行重排（折行偏移一致）| 通过（单测 `appending_equals_rewrapping_from_the_top`，9 组 × 6 种宽度）|
@@ -1576,9 +1576,9 @@ monitor 的那一行）与 `monitor_attempts`（这次失败换过几个模型�
 **一个会话，名字是 `@monitor`。** 内置会话带 `@` 前缀，`set_session` 拒绝这个前缀并说明
 理由——2026-11-02 证明「monitor」是用户真的会用的名字。前缀本身先选了 `#`，被一个细节否掉：
 `shell_words::split`（输入行与脚本 argv 用的就是它）把**以 `#` 开头**的词之后整行当注释，
-于是手敲要引号；`@` 不用，而且 `@image:` / `@skill:` / `@file:` 的匹配带冒号，裸 `@monitor`
-永远不会被 `meta::mentions` 当成引用。下发走 `commands::deliver`：空闲就起
-turn，忙就进 inbox，排队门 / `@skill:` 展开 / shell / 工具 / 事件 / 窗口渲染全部复用。
+于是手敲要引号；`@` 不用，而且引用以 `@image(` / `@skill(` / `@file(` 开头、以 `)` 收尾，裸的
+`@monitor` 永远不会被 `meta::mentions` 当成引用。下发走 `commands::deliver`：空闲就起
+turn，忙就进 inbox，排队门 / `@skill(...)` 展开 / shell / 工具 / 事件 / 窗口渲染全部复用。
 `del_session @monitor` 允许（不能工作的 monitor 得能删），下一次失败会重建它。
 
 **选模型：usable flash。** roster 的 `tier = "flash"` × credential 能解析 × 能走 Responses
@@ -1600,7 +1600,7 @@ API。排序按最差的额度窗口降序，没报额度的按 roster 顺序排
 
 | 放哪 | 是什么 | 代价 |
 | --- | --- | --- |
-| `@skill: monitor`（ship 内容），进 prompt 的 index | 地图（home 里每个文件）、分诊表（供应商/配置/harness 三层，先在 harness 之外复现）、只读 schema、安全规则、交付格式 | 付一次，本会话后续每个请求都复用 |
+| `@skill(monitor)`（ship 内容），进 prompt 的 index | 地图（home 里每个文件）、分诊表（供应商/配置/harness 三层，先在 harness 之外复现）、只读 schema、安全规则、交付格式 | 付一次，本会话后续每个请求都复用 |
 | 消息本体 | 这次失败：会话、模型、行范围、build、home、pid、cwd、服务端写下的 `notice`、读回命令 | 付一次，且会随 transcript 走 |
 
 前者能成立靠的就是 SPEC 的 meta prefix cache optimize：消息里提到 skill，该 skill 的正文成为
@@ -1614,7 +1614,7 @@ index 的根、进系统提示词，而消息里那个引用保持字面形式�
 所以那个代价是零。名字在一次会话里不变，因此字节在每次请求里也不变——缓存需要的正是这个。
 
 **为什么必须是 skill 而不是目录里的 `AGENTS.md`**：index 的根里确实有
-`@file:AGENTS.md`（`meta::roots` 按会话目录播种），那次失败的第一份 prompt **也**带着它
+`@file(AGENTS.md)`（`meta::roots` 按会话目录播种），那次失败的第一份 prompt **也**带着它
 （21,400 字符）。丢的是**后面的行**，原因是 index 跟着一个行里看不见的东西走：
 
 `SessionHandle::cwd()` = `ShellSet::reported_cwd()`，即会话**shell** 的当前目录，`Shell` 每条
@@ -1629,7 +1629,7 @@ index 的根、进系统提示词，而消息里那个引用保持字面形式�
 | 45、63 | `cd /c/resource/gongga && …` | `AGENTS.md` 回来，21,400 |
 
 所以 skill 的价值不是「那时还没有 cwd」（有，而且是对的），而是它经 `<home>/skills` 解析、
-**shell 移动它也不动**——monitor 恰恰整回合在 `cd`。selftest 因此断言 `@skill:monitor` 在
+**shell 移动它也不动**——monitor 恰恰整回合在 `cd`。selftest 因此断言 `@skill(monitor)` 在
 prompt 行的 `rooted` 里。
 
 **与 `model_pool` 的边界**：服务端只读 roster 的 `tier` 与额度读数；`preference.toml` 权重、
@@ -1654,7 +1654,7 @@ prompt 行的 `rooted` 里。
    system 行——实测一个回合里 21,400 → 12,017 → 21,400，全是 `cd` 造成的。现在 `meta::roots`
    一律在**会话记录的目录**里读（播种的 `AGENTS.md`、它命名物、以及消息点名的引用）：一条已发
    消息里的相对路径在会话一生中只指一个文件——"已发送"对一个装在提示词里的地图只能这么解释。
-   （第一版保留了"消息引用按 cwd 读"，被自己的探针否掉：`@file: docs/notes/tui-main.md`
+   （第一版保留了"消息引用按 cwd 读"，被自己的探针否掉：`@file(docs/notes/tui-main.md)`
    在 shell `cd` 走后整根消失。）回归测试
    `scripts/prompt_selftest.sh`。一个已接受的后果：会话目录没有 `AGENTS.md` 时就是没有，
-   `cd` 到别处也不会读到那儿的——要读就点名 `@file: /别的/AGENTS.md`。
+   `cd` 到别处也不会读到那儿的——要读就点名 `@file(/别的/AGENTS.md)`。

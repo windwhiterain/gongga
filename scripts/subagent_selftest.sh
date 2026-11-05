@@ -206,10 +206,10 @@ turns_of() { grep -cE "turn end session=$1( |$)" "$log"; }
 
 # The parent speaks first, and this one message is what its head will carry for
 # ever: `prompt_in_force` writes prose and index once and returns the row after.
-"${cli[@]}" send_message --name probe 'Start here with @file: early.md please.' >"$work/parent-first.out" 2>&1
+"${cli[@]}" send_message --name probe 'Start here with @file(early.md) please.' >"$work/parent-first.out" 2>&1
 await probe 1 || hard "the parent's first turn never ended"
 rooted=$(query "select json_extract(display,'\$.rooted') from messages where session_id=(select id from sessions where name='probe') and kind='system'")
-[[ "$rooted" == '["@file:early.md"]' ]]
+[[ "$rooted" == '["@file(early.md)"]' ]]
 ok "0 the parent's head is stamped with its first message's references: $rooted" $?
 
 # --- A: one spawn, one session under the caller's name, one subscription ---------
@@ -253,10 +253,10 @@ ok "E and the session it had already made is gone" $?
 
 # --- F and G: the brief, and the child's turn end reaching the parent ----------
 "${cli[@]}" send_message --name probe/impl \
-  'Implement @file: early.md, following @skill: late. Answer done.' >"$work/brief.out" 2>&1
+  'Implement @file(early.md), following @skill(late). Answer done.' >"$work/brief.out" 2>&1
 await probe/impl 1 || hard "the child's turn never ended"
 kept=$(query "select json_extract(display,'\$.text') from messages where session_id=(select id from sessions where name='probe/impl') and kind='text' and display like '%@file%'" | head -1)
-[[ "$kept" == *"@file: early.md"* && "$kept" == *"@skill: late"* ]]
+[[ "$kept" == *"@file(early.md)"* && "$kept" == *"@skill(late)"* ]]
 ok "F the brief keeps both spellings in its stored row" $?
 child_index=$(query "select length(json_extract(display,'\$.index')) from messages where session_id=(select id from sessions where name='probe/impl') and kind='system'")
 [[ "${child_index:-0}" -gt 100 ]]
@@ -273,11 +273,11 @@ ok "G the child's turn end is a message in the parent's transcript" $?
 # after it may already include the turn being waited for.
 before=$(turns_of probe)
 "${cli[@]}" send_message --name probe \
-  'Also read @file: late.md and @skill: late, then stop.' >"$work/later.out" 2>&1
+  'Also read @file(late.md) and @skill(late), then stop.' >"$work/later.out" 2>&1
 await probe $(( before + 1 )) || hard "the parent's second turn never ended"
 later=$(query "select json_extract(display,'\$.text') from messages where session_id=(select id from sessions where name='probe') and kind='text' and display like '%late.md%'")
-[[ "$later" == *"@file: late.md"* && "$later" == *"@skill: late ("*"late"*"SKILL.md)"* ]]
-ok "H a later message keeps @file: and expands @skill: to its path" $?
+[[ "$later" == *"@file(late.md)"* && "$later" == *"@skill(late) ("*"late"*"SKILL.md)"* ]]
+ok "H a later message keeps @file(...) and expands @skill(...) to its path" $?
 python - "$work/subagent-dump.jsonl" <<'INNER'
 import json, sys
 last = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()][-1]

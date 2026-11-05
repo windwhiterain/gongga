@@ -235,7 +235,7 @@ ok "a remote named only in config.toml does not exist" $?
 grep -q 'these remotes are in config.toml' "$log"
 ok "and startup says so, with the migrator that moves them" $?
 
-"${cli[@]}" send_message "@skill: self-control make the scratch" probe >/dev/null 2>&1
+"${cli[@]}" send_message "@skill(self-control) make the scratch" probe >/dev/null 2>&1
 wait_turn probe; say_turn probe
 
 # The peer's own path, in the spelling its own shell gave, and the file it wrote.
@@ -349,7 +349,7 @@ c = sqlite3.connect(f"file:{home}/gongga.db?mode=ro", uri=True)
 sid = c.execute("select id from sessions where name='probe2'").fetchone()[0]
 last = [json.loads(d) for (d,) in c.execute(
     "select display from messages where session_id=? and kind='system' order by seq desc limit 1", (sid,))][0]
-assert "@file:AGENTS.md" in last["rooted"], last["rooted"]
+assert "@file(AGENTS.md)" in last["rooted"], last["rooted"]
 assert marker in (last["index"] or ""), (last["index"] or "")[:300]
 INNER
 ok "a placed session's first prompt carries the peer's own AGENTS.md" $?

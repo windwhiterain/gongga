@@ -80,7 +80,7 @@ twice.
 
 `cwd` is the live one when the session has a shell, and the row only when it has
 none. The row is where the session was *placed*; the shell's own directory is where
-every tool reads -- `skill`, `@skill:`, `@file:` all resolve against it -- so a
+every tool reads -- `skill`, `@skill(...)`, `@file(...)` all resolve against it -- so a
 row that said the placement while the shell had `cd`-ed elsewhere would let a
 front-end complete a name from one directory and send it to another. That is exactly
 the bug the client was fixed for: its skills came from the window's launch directory,
@@ -569,8 +569,8 @@ the next failure creates it again.
 `#` was the first choice and lost on a detail: a word that *starts* with `#` opens a
 comment in `shell_words::split`, which is what splits the input line and a script's
 argv, so `--session '#monitor'` had to be quoted or written `--session=#monitor`.
-`@` needs neither. It costs nothing on the reference side either: `@image:`,
-`@skill:` and `@file:` match on a prefix that ends in a colon, so a bare
+`@` needs neither. It costs nothing on the reference side either: `@image(...)`,
+`@skill(...)` and `@file(...)` match on an opening parenthesis, so a bare
 `@monitor/error` is never read as one (`meta::mentions`).
 
 ## a session's own heartbeat

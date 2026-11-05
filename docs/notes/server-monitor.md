@@ -62,8 +62,9 @@ work has to be removable; the next trigger creates it again.
 
 `@` rather than `#` because a `#` that opens a word is a comment to
 `shell_words::split`, so `--session=@monitor/error` is what a hand types and nothing
-needs quoting. The references a message carries are `@image:`, `@skill:`,
-`@file:` -- prefixes with a colon -- so a bare `@monitor/error` is not one of them,
+needs quoting. The references a message carries are `@image(...)`,
+`@skill(...)`, `@file(...)` -- each an opening parenthesis -- so a bare
+`@monitor/error` is not one of them,
 and the report a monitor is given never names itself anyway.
 
 The session is created with no `--cwd`, so `SessionManager` gives it the server's
@@ -71,7 +72,7 @@ own directory, exactly like a session made from a window.
 
 Delivery is `commands::deliver`, the same path `send_message` takes: idle means a
 turn starts now, busy means an inbox row the next step boundary reads. The queue
-gate, `@skill:` expansion, shells, tools, events, and the window's rendering are
+gate, `@skill(...)` expansion, shells, tools, events, and the window's rendering are
 all reused; there is no second way to start a turn.
 
 ## Choosing the model: usable flash
@@ -145,7 +146,7 @@ So the knowledge is split by how long it lives:
 
 | where | what | what it costs |
 | --- | --- | --- |
-| `@skill:monitor` (ship), in the prompt's index | the map, the triage table, the read-only schema, the safety rules, how a report ends | charged once, reused by every later request of the session |
+| `@skill(monitor)` (ship), in the prompt's index | the map, the triage table, the read-only schema, the safety rules, how a report ends | charged once, reused by every later request of the session |
 | the message | this failure: session, model, row range, build, home, pid, cwd, the `notice` the server wrote, the read-back command | charged once, and it rides the transcript |
 
 The reference is what makes the first row work: a message that names a skill makes
@@ -155,13 +156,13 @@ optimize). Nothing about the *dynamic* half needs a skill, so a home that instal
 none still gets a report worth acting on; it just gets the map by exploring.
 
 Two things are deliberately still in the message: the read-back command (it names
-the failing session) and `@skill: self-control`, because a monitor that decides to
+the failing session) and `@skill(self-control)`, because a monitor that decides to
 change source and restart the server needs the turn-preserving stop, and that is
 the one action it must not improvise.
 
 ## Why a skill and not the directory's `AGENTS.md`
 
-`meta::roots` also seeds `@file:AGENTS.md` from the session's own directory. That
+`meta::roots` also seeds `@file(AGENTS.md)` from the session's own directory. That
 works, and it worked in the failing run: the first prompt's index carried
 `AGENTS.md` (21,400 characters). The rows that did not were **later** rows, and
 the reason is the one thing the index follows that the row does not show.
@@ -196,7 +197,7 @@ is one, and it is right at the first prompt. It is that a skill resolves through
 `<home>/skills` and does not move when the shell does, and a monitor turn moves
 its shell constantly. It also means the map cannot silently vanish mid-turn.
 
-The selftest asserts the property directly: `@skill:monitor` must be in the prompt
+The selftest asserts the property directly: `@skill(monitor)` must be in the prompt
 row's `rooted`, and the skill's own words must be in the index.
 
 The index is not free: 38,190 characters in this repository, because `AGENTS.md`
@@ -227,7 +228,7 @@ whole chain:
 | the monitor's own turn | `turn end session=@monitor/error outcome=Failed`, then `model=fake/flash-fake attempt=2`, and that turn ends `Done` |
 | the retry's transcript | the original report, unchanged, behind a preface naming the failed model |
 | six more seconds of ticks | no second report for the same failure |
-| a tool failing with a full disk's words | the device's reserve is spent, one `disk_space` event row carries the session, the tool and the volumes, and `@monitor/disk` is created with `@skill: clean-disk` in its prompt index |
+| a tool failing with a full disk's words | the device's reserve is spent, one `disk_space` event row carries the session, the tool and the volumes, and `@monitor/disk` is created with `@skill(clean-disk)` in its prompt index |
 | the disk monitor's first model refused | `turn end session=@monitor/disk outcome=Failed`, then the same report on the next model ends `Done` |
 | after that turn | the reserve file is armed again |
 

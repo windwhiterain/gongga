@@ -79,10 +79,10 @@ after the system prompt, before the first user message, inject one message with 
 transcript is append only, transcript that has been sent must not be change.
 ## Meta
 preprocess before saving to transcripts.
-- `@image: <path>` , append id to it `@image: <path> (id)`.
+- `@image(<path>)` , append id to it `@image(<path>) (id)`.
   - copy the image to transcript, dedup by path.
-- `@skill: <name>` append path metadata to it `@skill: <name> (path)`.
-- `@file: <path>` no replace.
+- `@skill(<name>)` append path metadata to it `@skill(<name>) (path)`.
+- `@file(<path>)` no replace.
 in cmd_input, those three should be auto complete.
 
 upload referencing image to provider in advance to get id => OpenAI API File ID mapping.

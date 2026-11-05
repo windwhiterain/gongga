@@ -59,7 +59,7 @@ file and the answer is that file's name.
 
 ## The table, and why it is not a second walk
 
-`installed_for` walks the three roots once -- the same call `@skill:` expansion uses -- and
+`installed_for` walks the three roots once -- the same call `@skill(...)` expansion uses -- and
 the project layer is the session's checkout, which is why it takes a cwd and a machine: the
 same server serves sessions in different checkouts, and a skill in one of them must not
 appear in another's table. A session whose directory is on a peer gets the home's and the
@@ -69,7 +69,7 @@ machine's rows, plus one sentence saying that checkout's skills are that machine
 The description is the whole argument for the table: a reader decides from that line whether
 to open the body, and the body is what costs context. A row is `name`, `description`, `path`
 and `bucket` -- the four things needed to decide *and* to open, since `path` is the
-`SKILL.md` `@skill:` hands out.
+`SKILL.md` `@skill(...)` hands out.
 
 The order is the walk's: project, then the home, then the machine, and whatever order each
 root's directory listing gives. It is not the prefix-cache plan -- `plan` answers what goes
