@@ -12,7 +12,7 @@
 #   F  the child's brief keeps its `@file:`/`@skill:` spellings, in its first row
 #   G  the child's turn end reaches the parent's transcript as a subscription notice
 #   H  a later message's reference does not join the stamped head
-#   I  the skill's declared entry runs as `skill subagent`
+#   I  the skill is a package: its API is `spawn(role, ...)`, run by `skill subagent spawn`
 #   K  deleting a session takes its own subscriptions, not its children's
 #
 # One server lifecycle, one fake endpoint, one temporary home. `--keep` leaves the
@@ -213,7 +213,7 @@ rooted=$(query "select json_extract(display,'\$.rooted') from messages where ses
 ok "0 the parent's head is stamped with its first message's references: $rooted" $?
 
 # --- A: one spawn, one session under the caller's name, one subscription ---------
-name=$(GONGGA_SESSION=probe "$skill/spawn.py" impl --cwd "$project" --model fake/flash-fake --context-limit 20% 2>"$work/spawn-a.err")
+name=$(GONGGA_SESSION=probe "${cli[@]}" skill subagent spawn impl --cwd "$project" --model fake/flash-fake --context_limit 20% 2>"$work/spawn-a.err")
 [[ "$name" == "probe/impl" ]]; ok "A spawn names the session <caller>/<role>: $name" $?
 armed=$(query "select session, pattern, persistent from subscriptions")
 [[ "$armed" == 'probe|^turn_end:probe/impl$|1' ]]
@@ -221,28 +221,31 @@ ok "A and arms ^turn_end:probe/impl\$ for probe, persistently: $armed" $?
 [[ "$(query "select count(*) from sessions where name='probe/impl'")" == "1" ]]
 ok "A the session exists once" $?
 [[ "$(query "select context_limit from sessions where name='probe/impl'")" == "20" ]]
-ok "A its --context-limit was taken: $(query "select context_limit from sessions where name='probe/impl'")" $?
+ok "A its --context_limit was taken: $(query "select context_limit from sessions where name='probe/impl'")" $?
 
 # --- B: the same role twice is a new segment, never a shared transcript ----------
-second=$(GONGGA_SESSION=probe "$skill/spawn.py" impl --model fake/flash-fake 2>/dev/null)
-[[ "$second" == "probe/impl/2" ]]; ok "B a taken name becomes a new segment: $second" $?
+GONGGA_SESSION=probe "${cli[@]}" skill subagent spawn impl --model fake/flash-fake \
+  >"$work/spawn-b.out" 2>"$work/spawn-b.err"
+second=$(cat "$work/spawn-b.out")
+[[ "$second" == "probe/impl/2" ]]
+ok "B a taken name becomes a new segment: $second $(head -2 "$work/spawn-b.err" | tr '\n' ' ')" $?
 [[ "$(query "select count(*) from subscriptions where session='probe'")" == "2" ]]
 ok "B and it is separately subscribed" $?
 
 # --- C and D: the two refusals ------------------------------------------------
-GONGGA_SESSION=probe "$skill/spawn.py" a/b >/dev/null 2>"$work/spawn-c.err"; c=$?
+GONGGA_SESSION=probe "${cli[@]}" skill subagent spawn a/b >/dev/null 2>"$work/spawn-c.err"; c=$?
 [[ $c == 2 && "$(grep -c 'one segment' "$work/spawn-c.err")" -ge 1 ]]
 ok "C a multi-segment role is refused: $(head -1 "$work/spawn-c.err")" $?
 [[ "$(query "select count(*) from sessions where name like 'probe/a%'")" == "0" ]]
 ok "C and nothing is created" $?
-env -u GONGGA_SESSION "$skill/spawn.py" lost >/dev/null 2>"$work/spawn-d.err"; d=$?
+env -u GONGGA_SESSION "${cli[@]}" skill subagent spawn lost >/dev/null 2>"$work/spawn-d.err"; d=$?
 [[ $d == 2 && "$(grep -c 'GONGGA_SESSION is not set' "$work/spawn-d.err")" -ge 1 ]]
 ok "D no GONGGA_SESSION is refused: $(head -1 "$work/spawn-d.err")" $?
 
 # --- E: a subscription that fails leaves nothing behind ------------------------
 # `ghost` is not a session, so the server refuses to notice it -- the one real way
 # to make the second step fail after the first one worked.
-GONGGA_SESSION=ghost "$skill/spawn.py" lost --model fake/flash-fake >/dev/null 2>"$work/spawn-e.err"; e=$?
+GONGGA_SESSION=ghost "${cli[@]}" skill subagent spawn lost --model fake/flash-fake >/dev/null 2>"$work/spawn-e.err"; e=$?
 [[ $e == 2 && "$(grep -c 'could not subscribe' "$work/spawn-e.err")" -ge 1 ]]
 ok "E a refused subscription fails the spawn: $(tail -1 "$work/spawn-e.err")" $?
 [[ "$(query "select count(*) from sessions where name='ghost/lost'")" == "0" ]]
@@ -276,9 +279,18 @@ ok "H a later message keeps @file: and expands @skill: to its path" $?
 python - "$work/subagent-dump.jsonl" <<'INNER'
 import json, sys
 last = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()][-1]
-instructions = last.get("instructions") or ""
-carried = [m for m in ["EARLY file named", "LATE file named", "LATE skill body"] if m in instructions]
-print("      last request's instructions carry:", carried)
+# The head is the prose, the index and the card; the card is where it ends. The
+# index travels as a message, never in the system text (docs/reference/prefix-cache.md),
+# so reading `instructions` alone would miss the very thing this checks.
+head = [last.get("instructions") or ""]
+for message in last.get("input") or []:
+    text = json.dumps(message.get("content"), ensure_ascii=False)
+    if "Session `probe`" in text:
+        break
+    head.append(text)
+head = "\n".join(head)
+carried = [m for m in ["EARLY file named", "LATE file named", "LATE skill body"] if m in head]
+print("      last request's head carries:", carried)
 sys.exit(0 if carried == ["EARLY file named"] else 1)
 INNER
 ok "H so the head still carries only what the first message named" $?
@@ -288,7 +300,7 @@ ok "H and one request later there is still exactly one head row" $?
 # --- J: the pattern is anchored, so a grandchild's turn is not the grandparent's --
 # `probe` hears about `probe/impl`; `probe/impl/review` ends with `turn_end` about a
 # session whose name *starts with* that pattern's. Unanchored, `probe` would hear it.
-grand=$(GONGGA_SESSION=probe/impl "$skill/spawn.py" review --model fake/flash-fake 2>/dev/null)
+grand=$(GONGGA_SESSION=probe/impl "${cli[@]}" skill subagent spawn review --model fake/flash-fake 2>/dev/null)
 [[ "$grand" == "probe/impl/review" ]]
 ok "J the caller is the parent, so a grandchild is <child>/<role>: $grand" $?
 "${cli[@]}" send_message --name "$grand" 'Answer with one word.' >"$work/grand.out" 2>&1
@@ -326,7 +338,7 @@ ok "L with no subscription, wait sits to its timeout: $spent ms, '$waits'" $?
 # The parent has to be busy for the notice to be a queued row: it is inside its
 # first `wait` when the child finishes, so the tool returns early instead of timing out.
 start_wait_fake
-child_from_alone=$(GONGGA_SESSION=alone "$skill/spawn.py" impl --model waitfake/wait-fake 2>/dev/null)
+child_from_alone=$(GONGGA_SESSION=alone "${cli[@]}" skill subagent spawn impl --model waitfake/wait-fake 2>/dev/null)
 [[ "$child_from_alone" == "alone/impl" ]]; ok "M a second parent gets its own child: $child_from_alone" $?
 "${cli[@]}" send_message --name alone 'wait while the child works' >"$work/alone-wait.out" 2>&1
 for _ in $(seq 1 100); do
@@ -341,14 +353,16 @@ last=$(query "select json_extract(display,'\$.output') from messages where sessi
 [[ "$last" == *"arrived while this call waited"* && "$last" == *"subscribe"* ]]
 ok "M the child's turn end interrupts it: '$last'" $?
 
-# --- I: the declared entry is what `skill subagent` runs -----------------------
-readme=$("${cli[@]}" skill ls 2>/dev/null | awk -F'\t' '$1=="subagent"{print $4}')
-entry=$(sed -n 's/^  entry: //p' "$readme" 2>/dev/null | head -1)
-[[ "$readme" == *"subagent"* && "$entry" == "spawn.py" ]]
-ok "I skill ls gives the SKILL.md, and it declares the entry: $entry" $?
-"${cli[@]}" skill subagent --help >"$work/entry.out" 2>&1; i=$?
-[[ $i == 0 && "$(grep -c 'one segment' "$work/entry.out")" -ge 1 ]]
-ok "I and skill subagent runs it: exit $i" $?
+# --- I: the skill is a package whose API is `spawn(role, ...)` -----------------
+here=$("${cli[@]}" skill ls 2>/dev/null | awk -F'\t' '$1=="subagent"{print $4}')
+[[ "$here" == *"subagent"* ]]
+ok "I skill ls gives the SKILL.md the package sits beside: $here" $?
+asked=$(env -u GONGGA_SESSION "${cli[@]}" skill run subagent 2>&1)
+[[ "$asked" == *"publishes: spawn"* ]]
+ok "I the package publishes one function, spawn" $?
+wrong=$(env -u GONGGA_SESSION "${cli[@]}" skill run subagent spawn 2>&1)
+[[ "$wrong" == *"spawn(role"*"needs role"* ]]
+ok "I and calling it without a role is refused with its signature" $?
 
 sha=$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)
 if [[ $fails == 0 ]]; then printf 'PASS · subagent-skill · %s\n' "$sha"; else printf 'FAIL · subagent-skill · %s (%d)\n' "$sha" "$fails"; exit 1; fi
