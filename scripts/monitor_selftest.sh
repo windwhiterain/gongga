@@ -94,11 +94,23 @@ if [[ -n "${left// /}" ]]; then
 fi
 rm -rf "$home"; mkdir -p "$home"
 cp -r "$HOME/.gongga/ship" "$home/ship" 2>/dev/null
-# This home watches no disk: the disk kind's own script states its threshold.
-cat > "$home/config.toml" <<'TOML'
-[server]
-disk_low_mb = 0
-TOML
+# This home watches no disk: the disk kind's own script states its threshold. The
+# shipped config is the base, because a home config that holds only this is a home
+# with no tool sentences, and the server refuses to start on it.
+cp "$HOME/.gongga/ship/config/config.toml" "$home/config.toml"
+python - "$home/config.toml" <<'PY'
+import sys
+path = sys.argv[1]
+lines = open(path, encoding="utf-8").read().splitlines()
+out, done = [], False
+for line in lines:
+    out.append(line)
+    if line.strip() == "[server]" and not done:
+        out.append("disk_low_mb = 0")
+        done = True
+assert done, "the shipped config has no [server] table"
+open(path, "w", encoding="utf-8", newline="\n").write("\n".join(out) + "\n")
+PY
 : > "$log"; : > "$dump"
 
 # Two flash models: the first is refused by the endpoint, the second is served.

@@ -84,11 +84,25 @@ trap cleanup EXIT
 rm -rf "$work"; mkdir -p "$home"
 cp -r "$HOME/.gongga/ship" "$home/ship" 2>/dev/null
 # The threshold this machine is told to watch: no disk is above it, so the first
-# tool call is already below the line, and the reading is the whole story.
-cat > "$home/config.toml" <<'TOML'
-[server]
-disk_low_mb = 100000000
-TOML
+# tool call is already below the line, and the reading is the whole story. It goes
+# into the *shipped* config, which is the base: a home whose config.toml holds only
+# what the test wants is a home with no tool sentences, and the server refuses to
+# start on it.
+ship_config="$HOME/.gongga/ship/config/config.toml"
+cp "$ship_config" "$home/config.toml"
+python - "$home/config.toml" 100000000 <<'PY'
+import sys
+path, value = sys.argv[1], sys.argv[2]
+lines = open(path, encoding="utf-8").read().splitlines()
+out, done = [], False
+for line in lines:
+    out.append(line)
+    if line.strip() == "[server]" and not done:
+        out.append(f"disk_low_mb = {value}")
+        done = True
+assert done, "the shipped config has no [server] table"
+open(path, "w", encoding="utf-8", newline="\n").write("\n".join(out) + "\n")
+PY
 : > "$log"; : > "$dump"
 
 # Two flash models where the first is refused, so the disk monitor's own failure
