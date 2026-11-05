@@ -242,9 +242,9 @@ segment are all a person's business.
 
 The grammar is enforced here and only here, because this is the one path that makes a
 session. Every name after it came from a row this command wrote, so a table that holds
-a name is a table whose names have passed -- `monitor::SESSION` never goes through
-`set_session`, and `@monitor` is a legal value of the grammar's character set anyway,
-which is exactly why the reserved check is a separate refusal saying why.
+a name is a table whose names have passed -- a monitor's own name never goes through
+`set_session`, and `@monitor/error` is a legal value of the grammar's character set
+anyway, which is exactly why the reserved check is a separate refusal saying why.
 
 # Invariant
 
@@ -548,8 +548,9 @@ is how a rename (`summary` to `handover`) broke a benchmark mid-run.
 ## `@` is the harness's namespace
 
 `set_session` refuses a name beginning with `@`. Built-in sessions live there --
-SPEC's monitor is `@monitor` -- so the namespace is reserved, and the harness never
-has to look at a session and decide whether it is its own. Refused rather than
+the harness's monitors are `@monitor/error` and `@monitor/disk` -- so the namespace
+is reserved, and the harness never has to look at a session and decide whether it is
+its own. Refused rather than
 renamed: a session under a name the caller did not choose is a session they will
 not find again.
 
@@ -560,8 +561,8 @@ the next failure creates it again.
 comment in `shell_words::split`, which is what splits the input line and a script's
 argv, so `--session '#monitor'` had to be quoted or written `--session=#monitor`.
 `@` needs neither. It costs nothing on the reference side either: `@image:`,
-`@skill:` and `@file:` match on a prefix that ends in a colon, so a bare `@monitor`
-is never read as one (`meta::mentions`).
+`@skill:` and `@file:` match on a prefix that ends in a colon, so a bare
+`@monitor/error` is never read as one (`meta::mentions`).
 
 ## a session's own heartbeat
 

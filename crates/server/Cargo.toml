@@ -60,6 +60,12 @@ libc = "0.2"
 # everything it started", which is what ending a persistent shell needs.
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    # Room left on a volume, and which volumes there are: the disk monitor's
+    # evidence. See `docs/notes/server-disk.md`.
+    "Win32_Storage_FileSystem",
+    "Win32_System_WindowsProgramming",
+    # `CreateFileW` names a `SECURITY_ATTRIBUTES`, which is this feature's type.
+    "Win32_Security",
     # Ctrl-C, Ctrl-Break and a closed console window ask to stop.
     "Win32_System_Console",
     "Win32_System_JobObjects",

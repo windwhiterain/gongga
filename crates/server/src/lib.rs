@@ -13,6 +13,7 @@ mod clock;
 mod commands;
 mod config;
 mod diff;
+mod disk;
 mod fork;
 mod image;
 mod instance;
@@ -217,6 +218,24 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     );
 
     let store = store::Store::open(&cfg.db_path)?;
+    // Armed before any tool can fail, so a disk that fills up can say so.
+    disk::install(cfg.disk_reserve.clone(), cfg.home.clone());
+    if cfg.disk_reserve.bytes() == 0 {
+        tracing::info!("no disk reserve: this home holds nothing back for a full disk");
+    } else {
+        match cfg.disk_reserve.arm() {
+            Ok(()) => tracing::info!(
+                path = %cfg.disk_reserve.path().display(),
+                bytes = cfg.disk_reserve.bytes(),
+                "the device's disk reserve is armed"
+            ),
+            Err(why) => tracing::warn!(
+                why,
+                "the disk reserve could not be armed: a full disk would have no room to \
+                 report itself"
+            ),
+        }
+    }
     // A home with no usable model refuses here, not on a first turn; sessions
     // build their own client.
     drop(LlmClient::new(&cfg.model)?);

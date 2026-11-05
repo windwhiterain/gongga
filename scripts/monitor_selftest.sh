@@ -2,7 +2,9 @@
 # SPEC's monitor, end to end and offline: a fake Responses endpoint that refuses
 # one model id, and a roster of two flash models where the first is the refused
 # one -- so one run covers a failed turn, the handover, the monitor's own
-# failure, and the switch to the model that works.
+# failure, and the switch to the model that works. Then the other kind: a tool
+# that fails saying the disk is full, the reserve it spends so the report has
+# somewhere to go, and the monitor that gets it.
 #
 # One line of verdict at the end; `-v` prints the report the monitor was given.
 set -uo pipefail
@@ -11,6 +13,9 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 bin="$root/target/debug"
 work="$root/.dev/selftest"
 home="$work/monitor-home"
+# The device's reserve, pointed at this run's own file: the real one is shared with
+# every server on the machine, including the one this test runs under.
+reserve="$work/disk-reserve"
 log="$work/monitor.log"
 dump="$work/monitor-dump.jsonl"
 roster="$work/roster.toml"
@@ -78,7 +83,7 @@ cleanup() {
     alive "$pid" && taskkill //PID "$pid" //T //F >/dev/null 2>&1
   done
   alive "$fake_pid" && taskkill //PID "$fake_pid" //F >/dev/null 2>&1
-  rm -f "$work/fake.pid"
+  rm -f "$work/fake.pid" "$reserve"
   sleep 1
   # Busy files mean a process still holds the home; say so instead of hiding it.
   rm -rf "$home" || echo "note: $home is still held by a process" >&2
@@ -139,6 +144,11 @@ export DEAD_API_KEY=sk-dead
 export FAKE_API_KEY=sk-fake
 export FAKE_LLM_DUMP="$dump"
 export FAKE_LLM_FAIL_MODEL=flash-dead
+# One MiB: the test checks the claim, not the arithmetic of a gigabyte. A volume
+# with less than this left is the "full" the free space reading has to see, and a
+# tool that says so itself is the other reading.
+export GONGGA_DISK_RESERVE="$reserve"
+export GONGGA_DISK_RESERVE_MB=1
 
 # The fake writes its own Windows pid: `$!` is an MSYS pid, and taskkill on one
 # kills whatever process that number happens to name.
@@ -171,20 +181,22 @@ grep -q 'turn end session=broken outcome=Failed' "$log"
 ok "a session whose model is refused ends in error" $?
 
 for _ in $(seq 1 100); do grep -q "handed a failure to the monitor" "$log" && break; sleep 0.5; done
-grep -q 'handed a failure to the monitor session=broken model="dead/flash-dead"' "$log"
-ok "the failure is handed to @monitor, on the first usable flash model" $?
-rows | grep -q "'@monitor'"
-ok "@monitor exists as an ordinary session" $?
+grep -q 'handed a failure to the monitor session=broken model=dead/flash-dead' "$log"
+ok "the failure is handed to @monitor/error, on the first usable flash model" $?
+rows | grep -q "'@monitor/error'"
+ok "@monitor/error exists as an ordinary session" $?
 
-for _ in $(seq 1 100); do
-  [[ "$(grep -c 'handed a failure to the monitor' "$log")" -ge 2 ]] && break; sleep 0.5
-done
-grep -q 'turn end session=@monitor outcome=Failed' "$log"
+for _ in $(seq 1 100); do grep -q 'turn end session=@monitor/error outcome=Failed' "$log" && break; sleep 0.5; done
+grep -q 'turn end session=@monitor/error outcome=Failed' "$log"
 ok "the monitor's own turn failed too" $?
-grep -q 'handed a failure to the monitor session=@monitor model="fake/flash-fake" attempt=2' "$log"
+# Waited for by its own line, not by "a second handover happened": the monitor's
+# failure and the retry are two handovers, and the second one lands after both.
+retry='handed a failure to the monitor session=@monitor/error model=fake/flash-fake attempt=2'
+for _ in $(seq 1 100); do grep -q "$retry" "$log" && break; sleep 0.5; done
+grep -q "$retry" "$log"
 ok "so the next model was tried" $?
-for _ in $(seq 1 100); do grep -q 'turn end session=@monitor outcome=Done' "$log" && break; sleep 0.5; done
-grep -q 'turn end session=@monitor outcome=Done' "$log"
+for _ in $(seq 1 100); do grep -q 'turn end session=@monitor/error outcome=Done' "$log" && break; sleep 0.5; done
+grep -q 'turn end session=@monitor/error outcome=Done' "$log"
 ok "and that attempt finished" $?
 
 echo "--- the standing knowledge is an index entry, not a message"
@@ -192,7 +204,7 @@ python - "$home" <<'INNER'
 import json, sqlite3, sys
 c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
 row = c.execute("""select m.display from messages m join sessions s on s.id = m.session_id
-                   where s.name = '@monitor' and m.kind = 'system'
+                   where s.name = '@monitor/error' and m.kind = 'system'
                    order by m.seq desc limit 1""").fetchone()
 assert row, 'the monitor session has no prompt row'
 prompt = json.loads(row[0])
@@ -209,7 +221,7 @@ python - "$home" <<'INNER'
 import json, sqlite3, sys
 c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
 first = c.execute("""select m.display from messages m join sessions s on s.id = m.session_id
-                     where s.name = '@monitor' and m.kind = 'text'
+                     where s.name = '@monitor/error' and m.kind = 'text'
                      order by m.seq limit 1""").fetchone()[0]
 text = json.loads(first).get('text', '')
 assert text.startswith('@skill: monitor'), text[:80]
@@ -226,7 +238,7 @@ import json, sqlite3, sys
 c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
 texts = [json.loads(d).get("text", "") for (d,) in c.execute(
     """select m.display from messages m join sessions s on s.id = m.session_id
-       where s.name = '@monitor' order by m.seq""")]
+       where s.name = '@monitor/error' order by m.seq""")]
 reports = [t for t in texts if "stopped with an error" in t]
 assert len(reports) >= 2, reports
 # The retry re-sends the first report unchanged, behind a preface naming the
@@ -242,6 +254,91 @@ before=$(grep -c 'handed a failure to the monitor' "$log")
 sleep 6
 [[ "$(grep -c 'handed a failure to the monitor' "$log")" == "$before" ]]
 ok "a tick does not report the same failure again" $?
+
+echo "--- the other kind: a full disk still has room to say so"
+[[ -f "$reserve" ]]
+ok "the device's reserve is armed at start" $?
+
+"${cli[@]}" set_session spill --model fake/flash-fake --cwd "$root" >/dev/null 2>&1
+# A tool that fails with the words a full disk is reported with. The reserve is
+# spent at the failure, before anything is written, so the report has somewhere to
+# go -- which is the whole reason it exists.
+# `&& false`, not `exit 1`: `exit` ends the session's persistent shell, and the
+# tool reports that instead of what the command printed -- which is exactly the
+# kind of lost failure the free space reading is there to cover.
+tool_failure=$("${cli[@]}" bash spill "echo 'No space left on device' >&2 && false" 2>&1)
+[[ -n "$tool_failure" ]]
+ok "the tool failed" $?
+[[ ! -f "$reserve" ]]
+ok "so the reserve was spent" $?
+
+for _ in $(seq 1 100); do grep -q "spent the device's disk reserve" "$log" && break; sleep 0.3; done
+grep -q "spent the device's disk reserve" "$log"
+ok "the server recorded what it spent, and where" $?
+
+python - "$home" <<'INNER'
+import json, sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
+rows = c.execute("select id, payload from events where kind = 'disk_space'").fetchall()
+assert len(rows) == 1, f"one episode, one row: {rows}"
+payload = json.loads(rows[0][1])
+assert payload["session"] == "spill", payload
+assert payload["tool"] == "bash", payload
+assert "No space left on device" in payload["failure"], payload
+assert payload["bytes"] > 0 and payload["volumes"], payload
+INNER
+ok "the event carries the session, the tool and the volumes as they stood" $?
+
+for _ in $(seq 1 100); do grep -q "handed the disk's last room to the monitor" "$log" && break; sleep 0.3; done
+grep -q "handed the disk's last room to the monitor" "$log"
+ok "the disk event is handed to @monitor/disk" $?
+rows | grep -q "'@monitor/disk'"
+ok "@monitor/disk exists as an ordinary session" $?
+
+echo "--- the disk monitor's standing knowledge is the cleaning skill"
+python - "$home" <<'INNER'
+import json, sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
+row = c.execute("""select m.display from messages m join sessions s on s.id = m.session_id
+                   where s.name = '@monitor/disk' and m.kind = 'system'
+                   order by m.seq desc limit 1""").fetchone()
+assert row, "the disk monitor has no prompt row"
+prompt = json.loads(row[0])
+rooted = prompt.get("rooted") or []
+assert "@skill:clean-disk" in rooted, f"the skill is not an index root: {rooted}"
+body = prompt.get("index") or ""
+assert "DryRun" in body or "clean-disk" in body, "the skill body is not in the index"
+INNER
+ok "the cleaning skill reaches the prompt index" $?
+
+python - "$home" <<'INNER'
+import json, sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
+first = c.execute("""select m.display from messages m join sessions s on s.id = m.session_id
+                     where s.name = '@monitor/disk' and m.kind = 'text'
+                     order by m.seq limit 1""").fetchone()[0]
+text = json.loads(first).get("text", "")
+assert text.startswith("@skill: clean-disk"), text[:80]
+assert "tool failed" in text and "ran out of disk room" in text, text[:400]
+assert "the session whose tool failed: spill" in text, text[:800]
+assert "the space that was released" in text
+assert "volumes as they stood then" in text
+INNER
+ok "the report names the failure, the volumes and the space that was released" $?
+
+for _ in $(seq 1 120); do
+  [[ "$(grep -c 'turn end session=@monitor/disk outcome=' "$log")" -ge 2 ]] && break
+  sleep 0.5
+done
+grep -q 'turn end session=@monitor/disk outcome=Failed' "$log"
+ok "the disk monitor's first model was refused too" $?
+for _ in $(seq 1 120); do grep -q 'turn end session=@monitor/disk outcome=Done' "$log" && break; sleep 0.5; done
+grep -q 'turn end session=@monitor/disk outcome=Done' "$log"
+ok "and the same report on the next model finished" $?
+
+for _ in $(seq 1 120); do [[ -f "$reserve" ]] && break; sleep 0.5; done
+[[ -f "$reserve" ]]
+ok "the reserve is armed again once the cleanup answered" $?
 
 [[ "$verbose" == "-v" ]] && { say "-- sessions:"; rows | say; }
 [[ "$verbose" == "-v" ]] && { say "-- the report:"; grep -o "A gongga session stopped[^\"]\{0,400\}" "$log" | head -1 | say; }

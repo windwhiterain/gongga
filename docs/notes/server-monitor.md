@@ -1,12 +1,25 @@
-# server-monitor: the session that is told to fix what stopped with an error
+# server-monitor: the sessions the harness spawns and hands a report to
 
 SPEC: "once a session stopped with error, auto spawn a moniter session told to
 fix. moniter session will be choosen from usable flash, auto switch if it also
 errored".
 
-Three decisions carry the whole of it: what a failure *is* (data, not an event),
-which session it goes to (`@monitor`, one of them), and how that session is
-chosen and re-chosen.
+A monitor is a session the *server* starts, on a model the server chose, with a
+report the server wrote. What differs between monitors is what they watch and what
+the report says; everything else -- the session, the model search, the retry, the
+delivery through `commands::deliver` -- is one implementation.
+
+| kind | session | watches | skill |
+| --- | --- | --- | --- |
+| error | `@monitor/error` | `sessions.status = 'error'` | `monitor` |
+| disk | `@monitor/disk` | a tool failing on a disk with no room left | `clean-disk` |
+
+`Kind` in `monitor.rs` is that table. The disk kind's trigger is the device's own
+safety space, and it has its own note: `server-disk.md`.
+
+Three decisions carry the whole of it: what a trigger *is* (data, not an event),
+which session it goes to (`@monitor/<kind>`, one per kind), and how that session
+is chosen and re-chosen.
 
 ## A failure is a row, not an event
 
@@ -35,21 +48,23 @@ Only the *handover* is recorded, and it is recorded after the message is accepte
 a crash between the two repeats a report, which is recoverable, where the other
 order loses one.
 
-## One monitor session, under a name nobody else may take
+## One session per kind, under a name nobody else may take
 
-The session is `@monitor`. Built-in sessions carry a leading `@`, and
-`set_session` refuses that prefix with a sentence saying so. This is why the
-reservation is worth having at all: the harness never has to look at a session and
-decide whether it is its own, and a person's session called `monitor` -- which
-2026-11-02 showed is a name people do use -- is simply their session. Deleting
-`@monitor` is allowed, because a monitor that cannot work has to be removable; the
-next failure creates it again.
+The sessions are `@monitor/error` and `@monitor/disk`. A leading `@` is the
+harness's namespace, and `set_session` refuses it -- whole or by segment -- with a
+sentence saying so. This is why the reservation is worth having at all: the harness
+never has to look at a session and decide whether it is its own, and a person's
+session called `monitor` -- which 2026-11-02 showed is a name people do use -- is
+simply their session. The slash is the same hierarchy every session name has, so
+`@monitor/error` sorts and nests like any other name, and a monitor of our own can
+still be a child of another. Deleting one is allowed, because a monitor that cannot
+work has to be removable; the next trigger creates it again.
 
 `@` rather than `#` because a `#` that opens a word is a comment to
-`shell_words::split`, so `--session=@monitor` is what a hand types and nothing needs
-quoting. The references a message carries are `@image:`, `@skill:`, `@file:` --
-prefixes with a colon -- so a bare `@monitor` is not one of them, and the report the
-monitor is given never names itself anyway.
+`shell_words::split`, so `--session=@monitor/error` is what a hand types and nothing
+needs quoting. The references a message carries are `@image:`, `@skill:`,
+`@file:` -- prefixes with a colon -- so a bare `@monitor/error` is not one of them,
+and the report a monitor is given never names itself anyway.
 
 The session is created with no `--cwd`, so `SessionManager` gives it the server's
 own directory, exactly like a session made from a window.
@@ -83,9 +98,11 @@ the report is delivered, so the turn cannot start on the model that just failed.
 
 ## When the monitor itself fails
 
-The monitor is an ordinary session, so its own failure is an ordinary
-`sessions.status = 'error'` row -- `self_failed` is `name == SESSION`, which is
-now a fact rather than a guess.
+A monitor is an ordinary session, so its own failure is an ordinary
+`sessions.status = 'error'` row -- `self_failed` is "the name starts with
+`@monitor/`", which is now a fact rather than a guess. It goes to
+`@monitor/error`, because "why does this session keep failing" is that kind's
+question whatever the failing session was.
 
 `sessions.monitor_attempts` counts the attempts made for this failure, so it is
 also the index of the *next* candidate. On a monitor failure the sweep takes
@@ -103,10 +120,18 @@ Two details that are only obvious after getting them wrong:
   transcript whenever a turn ends *not* in error. A session that recovers and
   fails again has a new episode, and the search starts from the best candidate.
 
-When the list is exhausted the sweep writes one `Event::Log` and stops: `@monitor`
-has failed on every usable flash model, and the session in error is left for a
+When the list is exhausted the sweep writes one `Event::Log` and stops: the kind's
+session has failed on every usable flash model, and the report is left for a
 reader. No recursion, no invented retry budget -- `AGENTS.md` forbids one, and the
 failure is still visible in the window either way.
+
+The disk kind counts its own attempts, because it has no failing session row to
+hang them on: `monitor_state` holds the event it last handed over
+(`disk.event`), how many models that handover has been through
+(`disk.attempts`), and the row the last report became (`disk.wake`). While that
+row's session is in `error`, the same event is handed over again on the next
+candidate -- a disk whose first choice of model is refused is still cleaned, and
+the error kind is told about the failing monitor in parallel.
 
 ## What the report says, and what the skill says
 
@@ -198,7 +223,14 @@ whole chain:
 | --- | --- |
 | `set_session '@mine'` | refused: the `@` prefix belongs to the harness |
 | a session on the refused model | `turn end … outcome=Failed`, `status='error'` |
-| the handover | `handed a failure to the monitor session=broken model="dead/flash-dead"`, `@monitor` created, `monitor_seq` past the transcript |
-| the monitor's own turn | `turn end session=@monitor outcome=Failed`, then `model="fake/flash-fake" attempt=2`, and that turn ends `Done` |
+| the handover | `handed a failure to the monitor session=broken model=dead/flash-dead`, `@monitor/error` created, `monitor_seq` past the transcript |
+| the monitor's own turn | `turn end session=@monitor/error outcome=Failed`, then `model=fake/flash-fake attempt=2`, and that turn ends `Done` |
 | the retry's transcript | the original report, unchanged, behind a preface naming the failed model |
 | six more seconds of ticks | no second report for the same failure |
+| a tool failing with a full disk's words | the device's reserve is spent, one `disk_space` event row carries the session, the tool and the volumes, and `@monitor/disk` is created with `@skill: clean-disk` in its prompt index |
+| the disk monitor's first model refused | `turn end session=@monitor/disk outcome=Failed`, then the same report on the next model ends `Done` |
+| after that turn | the reserve file is armed again |
+
+The race the selftest cannot see -- two servers spending one reserve -- is
+`disk::tests::two_servers_share_one_claim_and_only_one_wins`; see
+`server-disk.md`.

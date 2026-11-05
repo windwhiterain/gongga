@@ -388,8 +388,17 @@ impl ToolRegistry {
             .collect()
     }
 
+    /// Runs one tool, and reads a failure as what it may be: a full disk.
+    ///
+    /// # Invariant
+    ///
+    /// Every tool call goes through here -- a model's call, a script's, a command
+    /// layer's -- so this is the one place a failing tool is noticed. What it
+    /// notices is not the tool's own words (`check_bash` sees a field, not a
+    /// sentence) but the room left where the harness writes: see
+    /// `docs/notes/server-disk.md`.
     pub async fn run(&self, name: &str, args: Value, ctx: &ToolContext) -> ToolOutcome {
-        match self.get(name) {
+        let outcome = match self.get(name) {
             Some(tool) => match argument_error(tool, &args) {
                 Some(message) => ToolOutcome::err(message),
                 None => tool.run(args, ctx).await,
@@ -402,7 +411,17 @@ impl ToolRegistry {
                     .collect::<Vec<_>>()
                     .join(", ")
             )),
+        };
+        if !outcome.ok {
+            crate::disk::note_tool_failure(
+                &ctx.store,
+                &ctx.session,
+                name,
+                &ctx.cwd,
+                &outcome.output,
+            );
         }
+        outcome
     }
 
     pub fn names(&self) -> Vec<&'static str> {
