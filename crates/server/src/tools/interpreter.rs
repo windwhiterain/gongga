@@ -130,10 +130,9 @@ impl Interpreter {
         });
     }
 
-    /// Waits until nothing is running here, or until `wait` passes.
+    /// Waits until nothing runs here, or until `wait` passes.
     ///
-    /// Only a clock: the call around this is `Tools::run`'s, which ends the wait
-    /// when somebody speaks or the turn stops.
+    /// One clock, no token: `Tools::run` ends a wait.
     pub async fn wait_idle(&self, wait: Duration) {
         let deadline = std::time::Instant::now() + wait;
         while self.jobs() > 0 {

@@ -480,12 +480,11 @@ impl ToolRegistry {
 ///
 /// # Invariant
 ///
-/// This is the only wait: every tool -- a shell, a program, an interpreter, `wait`
-/// itself, a file copy on a peer -- is awaited here, so "a message reaches the turn"
-/// is one rule and not one rule per tool. A cut goes through `Tool::cut`, which is
-/// the tool's own account of what it left behind; `ctx.inbox` is compared against
-/// the copy the context took when the call started, so only a message that arrives
-/// during *this* call ends it. See `docs/notes/server-tools-mod.md`.
+/// The only wait: every tool is awaited here, so "a message reaches the turn" is one
+/// rule and not one per tool. A cut goes through `Tool::cut`, the tool's own account
+/// of what it left behind, and `ctx.inbox` is compared against the copy the context
+/// took when the call started -- only a message that arrives during *this* call ends
+/// it. See `docs/notes/server-tools-mod.md`.
 async fn waited(tool: &dyn Tool, args: &Value, ctx: &ToolContext) -> ToolOutcome {
     let started = std::time::Instant::now();
     // The tool moves its arguments; the cut is handed its own copy.
@@ -502,8 +501,7 @@ async fn waited(tool: &dyn Tool, args: &Value, ctx: &ToolContext) -> ToolOutcome
             }
         }
     };
-    // Dropped before the aftermath is asked for: what the call owned goes with it, and
-    // a shell's lock is free for the one reading what it left running.
+    // Dropped before the aftermath is asked for: the shell's lock is free again.
     drop(run);
     tracing::info!(
         session = %ctx.session,
@@ -1193,10 +1191,7 @@ impl Tool for BashTool {
                 Err(e) => return ToolOutcome::err(format!("{e}")),
             };
 
-            // Relay output as it arrives: draining after the command would block a chatty shell.
-            // The wait around this -- somebody speaking, the turn stopping -- is
-            // `waited`'s, so this body ends only when the command answers or its
-            // deadline passes; `BashTool::cut` says what a cut leaves running.
+            // Relay output as it arrives; the wait around it is `waited`'s.
             let (tx, mut rx) = mpsc::channel::<BashChunk>(256);
             let mut shell = handle.lock().await;
             // Scoped so the future borrowing `shell` drops before the guard does.
@@ -1317,13 +1312,12 @@ impl Tool for BashTool {
     }
 
     /// A command in a shell outlives the wait: it is handed to the background, and
-    /// the shell is replaced so the name keeps meaning "a shell you can use".
+    /// a fresh shell takes its name.
     ///
     /// # Invariant
     ///
-    /// `leave_running` runs after the call's own future is gone, which is what it
-    /// needs: the task it spawns takes this shell's lock to finish reading it. See
-    /// `docs/notes/server-tools-mod.md`.
+    /// Runs after the call's own future is gone: the task it spawns takes this
+    /// shell's lock. See `docs/notes/server-tools-mod.md`.
     fn cut<'a>(
         &'a self,
         args: &'a Value,
@@ -1348,8 +1342,7 @@ impl Tool for BashTool {
             };
             match why {
                 Cut::Message => {
-                    // Already sent to the window as it arrived: the rest of the output
-                    // is what the completion notice carries, not a second copy.
+                    // Already streamed to the window: the notice carries the rest.
                     let _ = handle.lock().await.take_partial_output();
                     leave_running(
                         ctx,
@@ -1569,8 +1562,8 @@ impl Tool for WaitTool {
                 .max(Duration::from_millis(100));
             let deadline = std::time::Instant::now() + wait;
             loop {
-                // The person's message is not read here: it is what ends this wait (see
-                // `cut`), so what is left to watch is the rows a turn cannot see yet.
+                // The person's message ends this wait (see `cut`); rows are what
+                // is left to watch.
                 match ctx.store.pending_injects_of(&ctx.session) {
                     Ok(rows) if !rows.is_empty() => {
                         let mut what: Vec<String> = rows.iter().map(arrival).collect();

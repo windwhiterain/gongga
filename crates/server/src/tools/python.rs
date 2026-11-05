@@ -618,9 +618,8 @@ impl Tool for PythonTool {
     ///
     /// A foreground call reads its own reply line under the interpreter's lock, so a
     /// call that returns without reading it would hand that line to the next caller
-    /// as if it were the answer to a different question. Ending the interpreter is
-    /// the only way to keep "one name, one interpreter" true; the next call under
-    /// that name starts a fresh namespace. See `docs/notes/server-tools-python.md`.
+    /// as the answer to another question. Ending the interpreter keeps "one name, one
+    /// interpreter" true. See `docs/notes/server-tools-python.md`.
     fn cut<'a>(
         &'a self,
         args: &'a Value,

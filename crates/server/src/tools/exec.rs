@@ -197,8 +197,8 @@ impl Tool for ExecTool {
         _started: std::time::Instant,
     ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
-            // Named if the call's words could be read at all; a cut is not the place
-            // to complain about arguments the call already passed.
+            // Named only if the words could be read: a cut is not where a bad
+            // argument is reported.
             let program = match command_of(args, ctx) {
                 Ok(command) => format!("`{}`", command.program),
                 Err(_) => "the program".to_string(),
