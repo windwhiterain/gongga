@@ -341,8 +341,8 @@ impl Catalog {
     /// Keyed by what the answer depends on, so a session that moves is read again
     /// and no call site has to remember to ask. See `docs/notes/cli-catalog.md`.
     fn skill_names(&self, place: &Place) -> Vec<String> {
-        // A peer's checkout is not here: the home's and the machine's are, and
-        // the server's own `@skill(...)` expansion reads those.
+        // A peer's checkout is not here: the home's and the machine's are -- the
+        // same rows `@skill(...)` expands against.
         let key = SkillKey {
             project: place.peer.is_none().then(|| place.dir.clone()),
             home: self.read().home.clone(),
@@ -579,18 +579,14 @@ fn bound_words(spec: &CommandSpec, words: &[String], skip: Option<usize>) -> (Ar
 ///
 /// # Invariant
 ///
-/// A reference is completed in two steps that never overlap: the prefix, while one
-/// is still being typed, and then the value it names -- a path for a picture or a
-/// file, a skill's name for a skill. What the popup inserts is what the parser
-/// reads: the prefix carries the `(` that opens its group, and a finished value
-/// carries the `)` that closes it. The `@` need not open the word -- the server
-/// reads `看下@file(x)` as a reference -- so the popup asks from the `@` and replaces
-/// from there, leaving the prose in front of it.
+/// Two steps that never overlap: the prefix, then the value -- a path for a picture
+/// or a file, a skill's name for a skill. What the popup inserts is what the parser
+/// reads: `@file(` opens the group and `path)` closes it. See
+/// `docs/notes/link-catalog.md`.
 fn reference(ctx: &Ctx, line: &str, cursor: usize, token: &str) -> Offered {
     let (start, _, _) = token_bounds(line, cursor);
     if let Some((at, kind, typed)) = opening(token) {
-        // `@file(pa`, written together: the prefix is behind the cursor and stays, so
-        // the value is what gets replaced -- from just past its `(`.
+        // `@file(pa`: the value is what gets replaced, from just past the `(`.
         return Offered {
             start: Some(start + at + kind.prefix().len()),
             candidates: closed(value(kind, typed, ctx)),
@@ -661,8 +657,7 @@ fn closed(candidates: Vec<Candidate>) -> Vec<Candidate> {
         .collect()
 }
 
-/// The reference `word` carries, wherever its `@` sits: that `@`'s offset, the kind
-/// it opens, and the value written inside its group so far.
+/// The reference `word` carries: its `@`'s offset, kind, and value so far.
 fn opening(word: &str) -> Option<(usize, Reference, &str)> {
     let at = word.rfind('@')?;
     let rest = &word[at..];

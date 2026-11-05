@@ -1549,9 +1549,7 @@ impl Tui {
     /// the frame that shows it.
     pub fn refresh_completion(&mut self) {
         let fresh = next_completion(&self.screen.input, &self.completer);
-        // The row the operator moved to survives the rebuild: an event arriving is
-        // not a keystroke, and a popup that jumped back to its first candidate on
-        // every streamed chunk could not be walked at all.
+        // A rebuild keeps the row the operator moved to: an event is not a keystroke.
         self.screen.completion = match (self.screen.completion.take(), fresh) {
             (Some(old), Some(mut new)) if same_offering(&old, &new) => {
                 new.selected = old.selected.min(new.candidates.len() - 1);

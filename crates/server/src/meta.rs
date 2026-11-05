@@ -23,12 +23,10 @@ pub struct Mention {
 ///
 /// # Invariant
 ///
-/// A reference is `@kind(value)`, and the parentheses are the delimitation: the
-/// value ends where its group closes, so the prose around it never has to be
-/// guessed at. Those parentheses are part of the spelling rather than punctuation
-/// inside the name, which is what lets `看下@file(src/meta.rs)这个文件` be one
-/// sentence holding one reference -- the `@` need not open a word, and the name need
-/// not stop at a space. See `docs/notes/server-meta.md`.
+/// A reference is `@kind(value)`, and the parentheses do the delimiting: the value
+/// ends where its group closes, so no prose around it is guessed at -- `@` need not
+/// open a word, and a name need not stop at a space. See
+/// `docs/notes/server-meta.md`.
 pub fn mentions(text: &str) -> Vec<Mention> {
     let mut out = Vec::new();
     let mut cursor = 0;
