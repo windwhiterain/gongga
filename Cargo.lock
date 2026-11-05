@@ -743,6 +743,18 @@ name = "gongga-cli"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "gongga-link",
+]
+
+[[package]]
+name = "gongga-console"
+version = "0.2.0"
+
+[[package]]
+name = "gongga-link"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
  "clap",
  "dirs",
  "gongga-console",
@@ -755,10 +767,6 @@ dependencies = [
  "toml",
  "which",
 ]
-
-[[package]]
-name = "gongga-console"
-version = "0.2.0"
 
 [[package]]
 name = "gongga-protocol"
@@ -814,7 +822,7 @@ dependencies = [
  "base64 0.23.1",
  "crossterm",
  "futures-util",
- "gongga-cli",
+ "gongga-link",
  "pulldown-cmark",
  "ratatui",
  "serde",

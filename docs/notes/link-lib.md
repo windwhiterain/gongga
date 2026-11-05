@@ -1,8 +1,8 @@
-# cli/lib.rs
+# link/lib.rs
 
 ## lib.rs
 
-This crate owns the command surface: it takes the catalog the server publishes,
+This crate owns the command surface `crates/cli` prints and `crates/tui` draws: it takes the catalog the server publishes,
 turns one command's tokens into a message on the wire, and keeps no state of its
 own -- the sticky arguments, the drawn sessions and `cli.toml` are the window's
 (`docs/notes/tui-state.md`). Which is which is the published `target`, not a

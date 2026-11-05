@@ -3,7 +3,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use cli::{DialFailure, Greeting, Layout, LineKind, Link, Sink};
+use link::{DialFailure, Greeting, Layout, LineKind, Link, Sink};
 use tokio::time::Duration;
 
 use crate::command::{self, Done};
@@ -60,7 +60,7 @@ impl Sink for TuiSink<'_> {
     fn rewrite(&mut self, window: &str, key: &str, text: &str) {
         self.0.rewrite(window, key, text);
     }
-    fn tool_call(&mut self, window: &str, key: &str, head: &cli::protocol::Head, _streamed: bool) {
+    fn tool_call(&mut self, window: &str, key: &str, head: &link::protocol::Head, _streamed: bool) {
         self.0.describe(window, key, head);
     }
 
@@ -126,8 +126,8 @@ fn classified(line: &str) -> Option<Result<Vec<String>, String>> {
 /// date. It runs outside the key handler, because a completion is answered
 /// synchronously and a peer's directory cannot be.
 async fn answer_completion(
-    client: &mut cli::Client,
-    link: Option<&cli::Link>,
+    client: &mut link::Client,
+    link: Option<&link::Link>,
     ui: &mut Tui,
     seen: &mut u64,
 ) {
@@ -155,7 +155,7 @@ async fn answer_completion(
 /// Only what is written down: a window the journal says nothing about is left
 /// undeclared, and an undeclared window is never fetched -- a fresh client has
 /// nothing to be behind on. See `docs/notes/tui-run.md`.
-fn declare(client: &mut cli::Client, ui: &Tui) {
+fn declare(client: &mut link::Client, ui: &Tui) {
     let names: Vec<String> = client.sessions().iter().map(|s| s.name.clone()).collect();
     for name in names {
         match ui.stamp_of(&name) {
@@ -176,7 +176,7 @@ fn declare(client: &mut cli::Client, ui: &Tui) {
 /// one per session on the machine. The answer arrives as the events that drew
 /// those rows the first time, so a refilled window is drawn by the code that drew
 /// it live.
-async fn answer_transcripts(client: &mut cli::Client, link: Option<&cli::Link>, ui: &mut Tui) {
+async fn answer_transcripts(client: &mut link::Client, link: Option<&link::Link>, ui: &mut Tui) {
     let Some(open) = link else {
         return;
     };
@@ -203,31 +203,31 @@ async fn answer_transcripts(client: &mut cli::Client, link: Option<&cli::Link>, 
 /// filled here, where they are kept, and a filled value nothing accepts is left
 /// out rather than sent as a statement the operator never made.
 fn submission(
-    client: &mut cli::Client,
+    client: &mut link::Client,
     state: &mut State,
     line: &str,
     sink: &mut TuiSink,
     moved: &mut Option<std::net::SocketAddr>,
-) -> cli::Submission {
+) -> link::Submission {
     let trimmed = line.trim();
     if trimmed.is_empty() {
-        return cli::Submission::Rejected;
+        return link::Submission::Rejected;
     }
     match classified(line) {
         Some(Ok(tokens)) => {
             let head = tokens.first().cloned().unwrap_or_default();
             if let Some(spec) = command::spec(&head) {
                 client.echo(&tokens, None, sink);
-                return match cli::commands::parse_args(&tokens[1..], Some(&spec)) {
+                return match link::commands::parse_args(&tokens[1..], Some(&spec)) {
                     Ok(args) => {
                         if let Done::Moved(addr) = command::run(client, state, &head, &args, sink) {
                             *moved = Some(addr);
                         }
-                        cli::Submission::Local
+                        link::Submission::Local
                     }
                     Err(e) => {
                         client.say(LineKind::Error, &e.to_string(), sink);
-                        cli::Submission::Rejected
+                        link::Submission::Rejected
                     }
                 };
             }
@@ -235,7 +235,7 @@ fn submission(
         }
         Some(Err(e)) => {
             sink.say(LineKind::Error, &e);
-            cli::Submission::Rejected
+            link::Submission::Rejected
         }
         None => match state.sticky().get("session") {
             Some(session) => client.message(trimmed, session, sink),
@@ -245,7 +245,7 @@ fn submission(
                     "no session to send to: set one with `/set_sticky session <name>`, or start the line with `/` and name the command",
                     sink,
                 );
-                cli::Submission::Rejected
+                link::Submission::Rejected
             }
         },
     }
@@ -261,7 +261,7 @@ fn submission(
 /// something the operator stated: sending it would be refused for a value nobody
 /// typed, and dropping it silently would hide that the entry is still in the file.
 fn filled(
-    client: &cli::Client,
+    client: &link::Client,
     state: &State,
     tokens: Vec<String>,
     sink: &mut dyn Sink,
@@ -270,7 +270,7 @@ fn filled(
     let Some(spec) = client.commands().into_iter().find(|spec| spec.name == head) else {
         return tokens;
     };
-    let Ok(args) = cli::commands::parse_args(&tokens[1..], Some(&spec)) else {
+    let Ok(args) = link::commands::parse_args(&tokens[1..], Some(&spec)) else {
         // The command layer's own diagnosis is better than none: let it speak.
         return tokens;
     };
@@ -315,7 +315,7 @@ fn filled(
 /// sticky session, the sessions drawn beside the list, and the completion's own
 /// vocabulary. A front-end that set half of it would draw one state and complete
 /// against another.
-fn sync(client: &mut cli::Client, state: &State, window: &command::Window, ui: &mut Tui) {
+fn sync(client: &mut link::Client, state: &State, window: &command::Window, ui: &mut Tui) {
     ui.set_block_size(state.block_size().0);
     ui.set_box_edge(state.box_edge().0);
     ui.set_sticky_session(state.sticky().get("session"));
@@ -334,13 +334,13 @@ fn sync(client: &mut cli::Client, state: &State, window: &command::Window, ui: &
 /// sticky one, and an accepted `set_session` writes back every mode it carried.
 /// Neither is written before the answer -- a refused command writes nothing.
 fn follow(
-    client: &cli::Client,
+    client: &link::Client,
     state: &mut State,
-    msg: &cli::protocol::ClientMessage,
+    msg: &link::protocol::ClientMessage,
     line: &str,
     pending: &mut Vec<(u64, crate::state::Follow)>,
 ) {
-    let cli::protocol::ClientMessage::Command { id, name, args } = msg else {
+    let link::protocol::ClientMessage::Command { id, name, args } = msg else {
         return;
     };
     if let Some(session) = client.session_named(name, args).map(str::to_string) {
@@ -374,7 +374,7 @@ fn follow(
 }
 
 /// The argument names a line spelled out, before any sticky filled one in.
-fn typed_names(client: &cli::Client, line: &str) -> Vec<String> {
+fn typed_names(client: &link::Client, line: &str) -> Vec<String> {
     let Some(Ok(tokens)) = classified(line) else {
         return Vec::new();
     };
@@ -382,7 +382,7 @@ fn typed_names(client: &cli::Client, line: &str) -> Vec<String> {
     let Some(spec) = client.commands().into_iter().find(|spec| spec.name == head) else {
         return Vec::new();
     };
-    cli::commands::parse_args(&tokens[1..], Some(&spec))
+    link::commands::parse_args(&tokens[1..], Some(&spec))
         .map(|args| args.keys().cloned().collect())
         .unwrap_or_default()
 }
@@ -394,7 +394,7 @@ fn typed_names(client: &cli::Client, line: &str) -> Vec<String> {
 /// Only an *accepted* command writes its entries back: a refusal leaves the file
 /// as it was, which is why nothing was written when the line was sent.
 fn settle(
-    client: &cli::Client,
+    client: &link::Client,
     state: &mut State,
     pending: &mut Vec<(u64, crate::state::Follow)>,
     ui: &mut Tui,
@@ -494,9 +494,9 @@ fn wait_for(spawned: Option<u32>, attempts: u32, backoff: Duration) -> Duration 
 /// decided by whoever started it, so a window that merely dials -- into a home
 /// somebody serves by hand, or onto a `connect_server` -- reads it and leaves it
 /// running when it closes. See `docs/notes/tui-run.md`.
-async fn dial_now(conn: cli::Connection) -> Result<(Link, Greeting), DialFailure> {
+async fn dial_now(conn: link::Connection) -> Result<(Link, Greeting), DialFailure> {
     let endpoint = conn.endpoint().map_err(DialFailure::Temporary)?;
-    cli::dial(endpoint).await
+    link::dial(endpoint).await
 }
 
 /// Gives the operator back the lines no server answered.
@@ -518,11 +518,11 @@ fn give_back(ui: &mut Tui, lines: Vec<String>) {
 }
 
 /// The interactive front-end: the window outlives the link. See `docs/notes/tui-run.md`.
-pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
+pub async fn interactive(args: &link::Args) -> anyhow::Result<()> {
     // The command an agent's shell types, installed before any shell exists.
-    let home = cli::home_of(args);
+    let home = link::home_of(args);
     // Both are this process's own: where a row lives never depends on a greeting.
-    let client_home = cli::client_home_of(args);
+    let client_home = link::client_home_of(args);
     // The window's own state: sticky entries, drawn sessions, settings, address.
     let mut state = State::load(&home);
     // The address in force: what the window remembers first, then the flags.
@@ -530,16 +530,16 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
     if let Some(addr) = state.connection() {
         conn.server = Some(addr.to_string());
     }
-    let mut endpoint = cli::endpoint_name(&conn);
+    let mut endpoint = link::endpoint_name(&conn);
 
-    let mut client = cli::build_client(args);
+    let mut client = link::build_client(args);
     let window = command::Window::new(client.completer());
     let mut ui = Tui::new(window.shared(), &client_home, &endpoint)?;
     // Nothing has been sent yet: a fresh client owes nobody a line.
     let _ = client.set_offline(0, &mut TuiSink(&mut ui));
     sync(&mut client, &state, &window, &mut ui);
 
-    let mut link: Option<cli::Link> = None;
+    let mut link: Option<link::Link> = None;
     let mut dialing: Option<Dialing> = None;
     let mut next_try = tokio::time::Instant::now();
     let mut backoff = RECONNECT_MIN;
@@ -547,9 +547,9 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
     // Started once, before any dial; what it spawned is its to stop, so the
     // server on the address is stopped first.
     let spawned: Option<u32> = match starts_a_server(args.client_only) {
-        true => match cli::server_of(&conn) {
+        true => match link::server_of(&conn) {
             Ok(addr) => {
-                if let Some(old) = cli::stop(&conn, &home, addr).await {
+                if let Some(old) = link::stop(&conn, &home, addr).await {
                     TuiSink(&mut ui).say(
                         LineKind::System,
                         &format!("stopped the server that was serving this home (pid {old})"),
@@ -558,7 +558,7 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                 // The key this window dials with, so the child does not mint
                 // another one and refuse the window that started it.
                 let key = conn.key.clone();
-                cli::spawn(&home, addr, Some(std::process::id()), key.as_deref())
+                link::spawn(&home, addr, Some(std::process::id()), key.as_deref())
                     .ok()
                     .flatten()
             }
@@ -602,7 +602,7 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                 // Whatever the gesture changed of the window's own state reaches
                 // the drawing and the completion before the next event.
                 sync(&mut client, &state, &window, &mut ui);
-                if let cli::Submission::Send(msg) = outcome
+                if let link::Submission::Send(msg) = outcome
                     && let Some(open) = link.as_ref()
                     && let Err(e) = open.send(msg).await
                 {
@@ -630,7 +630,7 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                     conn.server = Some(addr.to_string());
                     // The rows on screen are the old endpoint's: they go, and the
                     // next frame reads this one's records instead.
-                    endpoint = cli::endpoint_name(&conn);
+                    endpoint = link::endpoint_name(&conn);
                     ui.repoint(&client_home, &endpoint);
                     link = None;
                     ui.set_server(None);
@@ -641,11 +641,11 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                     give_back(&mut ui, unanswered);
                 }
                 match outcome {
-                    cli::Submission::Local | cli::Submission::Rejected => {}
+                    link::Submission::Local | link::Submission::Rejected => {}
                     // Nothing left this process, so the text is still the operator's:
                     // put it back rather than log it away.
-                    cli::Submission::Offline => ui.restore_input(&line),
-                    cli::Submission::Send(msg) => match link.as_ref() {
+                    link::Submission::Offline => ui.restore_input(&line),
+                    link::Submission::Send(msg) => match link.as_ref() {
                         Some(open) => {
                             // The command names a session: that session's window
                             // is drawn, and what the server accepts is kept.

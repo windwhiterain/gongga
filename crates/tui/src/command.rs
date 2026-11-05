@@ -4,8 +4,8 @@
 
 use std::net::SocketAddr;
 
-use cli::protocol::{self, Args, CommandSpec};
-use cli::{LineKind, Sink};
+use link::protocol::{self, Args, CommandSpec};
+use link::{LineKind, Sink};
 
 use crate::state::{self, BlockSize, BoxEdge, State};
 
@@ -37,7 +37,7 @@ pub fn handles(name: &str) -> bool {
 /// ran does: SPEC's row is the last thing asked or told, not a log. Nothing here
 /// dials, except the one command whose whole meaning is an address.
 pub fn run(
-    client: &cli::Client,
+    client: &link::Client,
     state: &mut State,
     name: &str,
     args: &Args,
@@ -52,7 +52,7 @@ pub fn run(
                 LineKind::Error,
                 &format!(
                     "serve takes over the process; run it in a shell: `{} serve <port>`",
-                    cli::typed_name()
+                    link::typed_name()
                 ),
                 sink,
             );
@@ -67,7 +67,7 @@ pub fn run(
                     LineKind::Error,
                     &format!(
                         "set_sticky is missing required argument(s): value; it takes {}",
-                        cli::commands::signature(spec(name).as_ref()),
+                        link::commands::signature(spec(name).as_ref()),
                     ),
                     sink,
                 );
@@ -128,10 +128,10 @@ pub fn run(
 }
 
 /// `connect_server`: the address this window dials from now on.
-fn connect(client: &cli::Client, state: &mut State, args: &Args, sink: &mut dyn Sink) -> Done {
+fn connect(client: &link::Client, state: &mut State, args: &Args, sink: &mut dyn Sink) -> Done {
     let port = args.get("port").map(String::as_str).unwrap_or_default();
     let ip = args.get("ip").map(String::as_str);
-    let addr = match cli::server_address(ip, port) {
+    let addr = match link::server_address(ip, port) {
         Ok(addr) => addr,
         Err(e) => {
             client.say(LineKind::Error, &format!("{e}"), sink);
@@ -162,7 +162,7 @@ fn connect(client: &cli::Client, state: &mut State, args: &Args, sink: &mut dyn 
 ///
 /// A value that does not parse saves nothing, and no argument at all is a read of
 /// the setting rather than a reset of it.
-fn render(client: &cli::Client, state: &mut State, args: &Args, sink: &mut dyn Sink) -> Done {
+fn render(client: &link::Client, state: &mut State, args: &Args, sink: &mut dyn Sink) -> Done {
     let size = args.get("block_size");
     let edge = args.get("box_edge");
     if size.is_none() && edge.is_none() {
@@ -219,7 +219,7 @@ fn render(client: &cli::Client, state: &mut State, args: &Args, sink: &mut dyn S
 
 /// `set_render_session`: whether one session is drawn beside the list.
 fn render_session(
-    client: &cli::Client,
+    client: &link::Client,
     state: &mut State,
     args: &Args,
     sink: &mut dyn Sink,
@@ -247,19 +247,19 @@ fn render_session(
 /// whichever way it was asked for. `delete_session` is not the window's state,
 /// so it is the command layer's, unchanged. See `docs/notes/tui-command.md`.
 pub fn operate(
-    client: &mut cli::Client,
+    client: &mut link::Client,
     state: &mut State,
     operation: protocol::Operation,
     sink: &mut dyn Sink,
-) -> cli::Submission {
+) -> link::Submission {
     match operation {
         protocol::Operation::StickySession { session } => {
             write_sticky(client, state, "session", &session, sink);
-            cli::Submission::Local
+            link::Submission::Local
         }
         protocol::Operation::RenderSession { session, show } => {
             write_session(client, state, &session, show, sink);
-            cli::Submission::Local
+            link::Submission::Local
         }
         operation => client.apply(operation, sink),
     }
@@ -267,7 +267,7 @@ pub fn operate(
 
 /// Writes one sticky entry, says what it is, and forgets what followed it.
 fn write_sticky(
-    client: &cli::Client,
+    client: &link::Client,
     state: &mut State,
     kind: &str,
     value: &str,
@@ -293,7 +293,7 @@ fn write_sticky(
 /// sticky session -- shown makes it sticky, hiding the sticky one clears it --
 /// so a click and a typed line leave the same window behind.
 fn write_session(
-    client: &cli::Client,
+    client: &link::Client,
     state: &mut State,
     name: &str,
     show: bool,
@@ -323,7 +323,7 @@ fn write_session(
 /// SPEC's `sticky to xxx` is applied where the entries live: a model's level is
 /// not carried to another model, and the reader is told rather than left to
 /// notice that a line it never typed stopped applying.
-pub fn forget(client: &cli::Client, state: &mut State, changed: &str, sink: &mut dyn Sink) {
+pub fn forget(client: &link::Client, state: &mut State, changed: &str, sink: &mut dyn Sink) {
     let gone = state.forget_followers(changed, &follows(client));
     if gone.is_empty() {
         return;
@@ -342,7 +342,7 @@ pub fn forget(client: &cli::Client, state: &mut State, changed: &str, sink: &mut
 }
 
 /// Every published dependency: the entry a value keys on, and the one it follows.
-pub fn follows(client: &cli::Client) -> Vec<(String, String)> {
+pub fn follows(client: &link::Client) -> Vec<(String, String)> {
     client
         .commands()
         .iter()
@@ -371,19 +371,19 @@ fn sorted(mut kinds: Vec<String>) -> Vec<String> {
 /// nothing of this one's, so a one-shot process cannot complete them and cannot
 /// be handed one by accident.
 pub struct Window {
-    own: cli::Catalog,
-    server: cli::SharedCompleter,
+    own: link::Catalog,
+    server: link::SharedCompleter,
 }
 
 impl Window {
-    pub fn new(server: cli::SharedCompleter) -> Self {
-        let own = cli::Catalog::new();
+    pub fn new(server: link::SharedCompleter) -> Self {
+        let own = link::Catalog::new();
         own.set_commands(protocol::client_commands());
         Self { own, server }
     }
 
     /// Hands the completion to a front-end that reads it.
-    pub fn shared(&self) -> cli::SharedCompleter {
+    pub fn shared(&self) -> link::SharedCompleter {
         std::sync::Arc::new(Self {
             own: self.own.clone(),
             server: self.server.clone(),
@@ -391,7 +391,7 @@ impl Window {
     }
 
     /// Tells the completion what the window's own state is now.
-    pub fn refresh(&self, client: &cli::Client, state: &State) {
+    pub fn refresh(&self, client: &link::Client, state: &State) {
         self.own.set_sticky_names(&state.sticky().names());
         self.own.set_message_session(state.sticky().get("session"));
         self.own.set_sessions(client.sessions().to_vec());
@@ -400,8 +400,8 @@ impl Window {
     }
 }
 
-impl cli::Completer for Window {
-    fn complete(&self, line: &str, cursor: usize) -> cli::Offered {
+impl link::Completer for Window {
+    fn complete(&self, line: &str, cursor: usize) -> link::Offered {
         match head(line) {
             Some(name) if handles(name) => self.own.complete(line, cursor),
             _ => self.server.complete(line, cursor),

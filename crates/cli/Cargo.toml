@@ -5,35 +5,18 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Gongga harness command layer: catalog, sticky arguments, wire client"
+description = "Gongga harness command layer: one command per process, its events out"
 
-# Deliberately no rendering crate: this is the layer. Its own program is the
-# `gongga` binary below -- argv in, the command's events out, no terminal in
-# sight. The terminal is `crates/tui`, which depends on this crate.
-#
-# It does not depend on the harness: `serve` starts `gongga-server`, which is a
-# program of its own. Depending on it was half a minute of link time for a
-# command that only ever forwarded its argv.
+# The program, not the client. What a command line means -- the catalog, the sticky
+# arguments, the link -- is `crates/link`, because the window runs the same one and
+# must not link a program to get it.
 [[bin]]
 name = "gongga-cli"
 path = "src/bin/gongga-cli.rs"
-# Three lines of `main`: every test in this crate is the library's, so the
-# workspace gains no empty test binary that still has to be linked.
+# Three lines of `main`: every test this used to carry is the library's, in
+# `crates/link`, so the workspace gains no empty test binary that still links.
 test = false
 
 [dependencies]
-protocol = { workspace = true }
-skill = { workspace = true }
-console = { workspace = true }
-tokio = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
+link = { workspace = true }
 anyhow = { workspace = true }
-
-clap = { version = "4", features = ["derive", "wrap_help"] }
-dirs = "6"
-toml = "0.8"
-which = { workspace = true }
-# Completion splits the line being typed (`catalog.rs`), which is the input
-# line's business -- a command that already arrived as argv is never re-split.
-shell-words = "1"

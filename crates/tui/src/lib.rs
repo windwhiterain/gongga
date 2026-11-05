@@ -2,8 +2,9 @@
 //!
 //! # Invariant
 //!
-//! `tui` depends on `cli`, never the reverse, so the command layer stays usable
-//! from a script and a new command never changes this crate.
+//! `tui` depends on `link`, never the reverse and never on `cli`: the command
+//! surface and the wire stay usable from a script, and a new command never
+//! changes this crate.
 
 mod cache;
 mod clipboard;
@@ -48,7 +49,7 @@ pub use crate::panes::Panes;
 pub use crate::run::interactive;
 
 /// Runs the window: its own runtime, because the loop owns every task in it.
-pub fn main(args: cli::Args) -> anyhow::Result<()> {
+pub fn main(args: link::Args) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -56,7 +57,7 @@ pub fn main(args: cli::Args) -> anyhow::Result<()> {
 }
 
 // The vocabulary is the command layer's, re-exported so this crate can name it.
-pub use cli::{
+pub use link::{
     Candidate, Completer, Completion, Layout, LineKind, Listed, QuotaRow, SharedCompleter,
     token_bounds,
 };
@@ -124,7 +125,7 @@ pub enum UiEvent {
     /// The window asks for what it means -- "make this session sticky" -- and
     /// the command layer answers it. Spelling it as a command line would put
     /// the command syntax in the window, where it does not belong.
-    Operate(cli::protocol::Operation),
+    Operate(link::protocol::Operation),
     /// Alt+Q: leave.
     Quit,
     /// Nothing to submit: the completion asked for something only the connection
@@ -526,7 +527,7 @@ pub struct Tui {
     input_seen: Option<(usize, usize)>,
     /// A click on a session, as the command line it asks for, waiting for the loop
     /// to take it. See `docs/notes/tui-lib.md`.
-    clicked: Option<cli::protocol::Operation>,
+    clicked: Option<link::protocol::Operation>,
     /// The input box as the last frame drew it: a click has to find it.
     input_area: Rect,
     /// Where a drag began, while the button is still down.
@@ -815,7 +816,7 @@ impl Tui {
     }
 
     /// Shows a call's name and fields as a structured section.
-    pub fn describe(&mut self, name: &str, key: &str, head: &cli::protocol::Head) {
+    pub fn describe(&mut self, name: &str, key: &str, head: &link::protocol::Head) {
         self.screen.panes.describe(name, key, head);
         self.dirty = true;
     }
@@ -1153,7 +1154,7 @@ impl Tui {
             && let Some(target) = self.screen.sticky_session.clone()
         {
             self.close_completion();
-            return Some(UiEvent::Operate(cli::protocol::Operation::DeleteSession {
+            return Some(UiEvent::Operate(link::protocol::Operation::DeleteSession {
                 session: target,
             }));
         }
@@ -1249,7 +1250,7 @@ impl Tui {
         // the reading at it.
         match hit.part {
             Part::Header => {
-                self.clicked = Some(cli::protocol::Operation::StickySession {
+                self.clicked = Some(link::protocol::Operation::StickySession {
                     session: hit.name.clone(),
                 })
             }
@@ -1266,7 +1267,7 @@ impl Tui {
                     .panes
                     .get(&hit.name)
                     .is_some_and(|pane| pane.kind == crate::panes::Kind::Shown);
-                self.clicked = Some(cli::protocol::Operation::RenderSession {
+                self.clicked = Some(link::protocol::Operation::RenderSession {
                     session: hit.name.clone(),
                     show: !shown,
                 });
@@ -1740,8 +1741,8 @@ fn apply_and_continue(
 pub struct NoCompleter;
 
 impl Completer for NoCompleter {
-    fn complete(&self, _line: &str, _cursor: usize) -> cli::Offered {
-        cli::Offered::default()
+    fn complete(&self, _line: &str, _cursor: usize) -> link::Offered {
+        link::Offered::default()
     }
 }
 

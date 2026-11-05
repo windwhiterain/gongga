@@ -1,0 +1,28 @@
+[package]
+name = "gongga-link"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "The client side of the wire: a link to a server, the command surface it publishes, and the lines a front-end draws"
+
+# One client, two front-ends. `crates/cli` prints a command's events; `crates/tui`
+# draws them. Neither owns the link, and a second copy of "what did the server say"
+# is the thing this crate exists to prevent.
+[dependencies]
+protocol = { workspace = true }
+console = { workspace = true }
+skill = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+clap = { version = "4", features = ["derive", "wrap_help"] }
+dirs = "6"
+toml = "0.8"
+which = { workspace = true }
+shell-words = "1"
+
+[dev-dependencies]
+# The tests dial a server in-process, as `crates/server`'s own do.
