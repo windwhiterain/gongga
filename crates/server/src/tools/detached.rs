@@ -20,6 +20,14 @@ use crate::store::{DetachedRow, Store};
 const TERM_GRACE: Duration = Duration::from_secs(1);
 /// Even KILL is not accepted as proof until the group and leader are observed gone.
 const KILL_CONFIRM: Duration = Duration::from_secs(2);
+/// How often the registry asks whether a job it holds has ended.
+///
+/// # Invariant
+///
+/// A job we spawned is asked exactly (its handle is the process); an adopted one is
+/// asked by listing every pid once, so this is the rate of that listing, not of a
+/// signal. See `docs/notes/server-tools-detached.md`.
+const JOB_POLL: Duration = Duration::from_millis(500);
 #[cfg(any(windows, unix))]
 const SIGNAL_POLL: Duration = Duration::from_millis(25);
 /// Unix `ps` reports elapsed whole seconds; leave room for that and spawn-to-insert latency.
@@ -68,6 +76,13 @@ pub struct DetachedJob {
     pub started_at: i64,
     /// Present only while the server that started it runs; an adopted job has only a pid.
     child: Option<Child>,
+    /// Whether the session has already been told this job ended.
+    ///
+    /// # Invariant
+    ///
+    /// Exactly one notice per job, so a session waiting on one is woken once and a
+    /// job that is deleted after its end is not noticed twice.
+    noticed: bool,
 }
 
 impl DetachedJob {
@@ -124,6 +139,7 @@ impl DetachedJob {
             log: log.to_path_buf(),
             started_at: now_millis(),
             child: Some(child),
+            noticed: false,
         })
     }
 
@@ -139,6 +155,7 @@ impl DetachedJob {
             log: PathBuf::from(&row.log),
             started_at: row.started_at,
             child: None,
+            noticed: row.noticed,
         }
     }
 
@@ -351,6 +368,7 @@ impl DetachedRegistry {
             cmd: cmd.to_string(),
             log: log.display().to_string(),
             started_at: launched.started_at,
+            noticed: false,
         }) {
             Ok(id) => id,
             Err(e) => {
@@ -400,6 +418,99 @@ impl DetachedRegistry {
             || registry
                 .stopping
                 .contains(&(session.to_string(), name.to_string()))
+    }
+
+    /// Tells each session whose detached job ended, once, while this server runs.
+    ///
+    /// # Invariant
+    ///
+    /// The report is the row an `inject` notice is: a session that is busy reads it at
+    /// its next step boundary and an idle one is woken for it, which is the only shape
+    /// that reaches both. Nothing else notices a detached bash's end -- its output goes
+    /// to a log nobody is watching. See `docs/notes/server-tools-detached.md`.
+    pub fn watch(&self, stop: tokio_util::sync::CancellationToken) -> tokio::task::JoinHandle<()> {
+        let registry = self.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(JOB_POLL);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    _ = stop.cancelled() => return,
+                    _ = tick.tick() => registry.notice_ended().await,
+                }
+            }
+        })
+    }
+
+    /// One pass over every job this registry holds.
+    async fn notice_ended(&self) {
+        let adopted: Vec<u32> = {
+            let registry = self.inner.lock().await;
+            registry
+                .jobs
+                .values()
+                .flatten()
+                .filter(|j| j.child.is_none() && !j.noticed)
+                .map(|j| j.pid)
+                .collect()
+        };
+        let live = if adopted.is_empty() {
+            HashSet::new()
+        } else {
+            match live_batch(adopted.clone()).await {
+                Ok(live) => live,
+                Err(e) => {
+                    // Unknown is not ended: a notice is a claim, and this cannot make it.
+                    tracing::warn!("could not enumerate detached processes: {e}");
+                    return;
+                }
+            }
+        };
+        let mut ended = Vec::new();
+        {
+            let mut registry = self.inner.lock().await;
+            for (session, jobs) in registry.jobs.iter_mut() {
+                for job in jobs.iter_mut() {
+                    if job.noticed {
+                        continue;
+                    }
+                    let code = match &mut job.child {
+                        Some(child) => match child.try_wait() {
+                            Ok(Some(status)) => Some(status.code()),
+                            Ok(None) => continue,
+                            Err(e) => {
+                                tracing::warn!(pid = job.pid, error = %e,
+                                    "could not ask whether a detached bash ended");
+                                continue;
+                            }
+                        },
+                        None => {
+                            if live.contains(&job.pid) {
+                                continue;
+                            }
+                            None
+                        }
+                    };
+                    job.noticed = true;
+                    ended.push((
+                        session.clone(),
+                        job.id,
+                        job.name.clone(),
+                        job.pid,
+                        job.log.clone(),
+                        code,
+                    ));
+                }
+            }
+        }
+        for (session, id, name, pid, log, code) in ended {
+            let store = self.inner.lock().await.store.clone();
+            notice_one_end(&store, &session, &name, pid, &log, code).await;
+            // Written after the notice: a row that says it was noticed must have been.
+            if let Err(e) = store.note_detached_noticed(id) {
+                tracing::warn!(pid, error = %e, "could not record that a detached bash was noticed");
+            }
+        }
     }
 
     /// The jobs of one session, with their liveness.
@@ -544,6 +655,10 @@ impl DetachedRegistry {
             };
             // Dead rows are the cheap case: no walk up the parent chain for a process that is gone.
             if !live.contains(&pid) {
+                // Say it: a session waiting here would wait for ever. Unless already said.
+                if !row.noticed {
+                    notice_gone(&registry.store, &row, "it is not running any more").await;
+                }
                 let _ = registry.store.delete_detached_job(row.id);
                 continue;
             }
@@ -568,6 +683,15 @@ impl DetachedRegistry {
                         actual_started_at = actual,
                         "not adopting a pid whose process identity does not match"
                     );
+                    if !row.noticed {
+                        notice_gone(
+                            &registry.store,
+                            &row,
+                            "the pid now belongs to another process, so this one is gone",
+                        )
+                        .await;
+                    }
+                    let _ = registry.store.delete_detached_job(row.id);
                     continue;
                 }
                 Ok(None) => {
@@ -595,6 +719,70 @@ impl DetachedRegistry {
             adopted += 1;
         }
         adopted
+    }
+}
+
+/// Posts one session the news that a detached bash is over.
+///
+/// # Invariant
+///
+/// A deleted session owes nothing: its row would be stranded, and its name may be
+/// reused by a different session later. See `docs/notes/server-tools-detached.md`.
+async fn notice_one_end(
+    store: &Store,
+    session: &str,
+    name: &str,
+    pid: u32,
+    log: &Path,
+    code: Option<Option<i32>>,
+) {
+    if matches!(store.get_session(session), Ok(None)) {
+        return;
+    }
+    let how = match code {
+        Some(Some(code)) => format!("has finished with exit status {code}"),
+        Some(None) => "has ended, though its exit status could not be read".to_string(),
+        // Adopted across a restart: the pid is all that survived, and it is gone.
+        None => "is no longer running, and how it ended cannot be known from here".to_string(),
+    };
+    let message = format!(
+        "The detached bash `{name}` (pid {pid}) {how}. What it printed was never \
+         collected -- read it at: {}. The row is still there: `list_bash` reports it \
+         as not running, and `del_bash name_regex: \"^{name}$\"` removes it.",
+        log.display()
+    );
+    if let Err(e) = store.add_pending_task(
+        session,
+        "inject",
+        &json!({"session": session, "message": message, "notice": "detached"}),
+    ) {
+        tracing::warn!(session, name, error = %e, "could not notice a detached bash's end");
+    }
+}
+
+/// Tells a session that the detached bash it was waiting for is gone.
+async fn notice_gone(store: &Store, row: &DetachedRow, why: &str) {
+    if matches!(store.get_session(&row.session), Ok(None)) {
+        return;
+    }
+    let command = if row.cmd.trim().is_empty() {
+        String::new()
+    } else {
+        format!(" It was running: {}", row.cmd.trim())
+    };
+    let message = format!(
+        "The detached bash `{}` (pid {}) is gone: {why}.{command} What it printed \
+         before that is at: {}. Nothing is waiting on it any more, so there is nothing \
+         left to wait for.",
+        row.name, row.pid, row.log
+    );
+    if let Err(e) = store.add_pending_task(
+        &row.session,
+        "inject",
+        &json!({"session": row.session, "message": message, "notice": "detached"}),
+    ) {
+        tracing::warn!(session = %row.session, pid = row.pid, error = %e,
+            "could not notice a detached bash that did not survive the restart");
     }
 }
 

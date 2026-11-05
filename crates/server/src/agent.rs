@@ -1311,6 +1311,7 @@ impl Agent {
             env: session.env(),
             vision: llm.vision(crate::prompts::shared()),
             inbox: session.inbox_signal(),
+            stop: session.stop_signal(),
             closing: session.closing_signal(),
         };
         let run_started = std::time::Instant::now();

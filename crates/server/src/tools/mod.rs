@@ -31,9 +31,17 @@ pub mod job;
 pub mod python;
 pub mod python_remote;
 pub mod skill;
+pub mod tunnel;
 pub mod words;
 
 /// Everything a tool invocation needs, supplied per call by the agent loop.
+///
+/// # Invariant
+///
+/// Copyable, because a call that said `detached` outlives the call that made it: it
+/// runs as a job of this server, with its own cancellation and no stream of the
+/// turn's to write to.
+#[derive(Clone)]
 pub struct ToolContext {
     pub session: String,
     pub call_id: String,
@@ -79,6 +87,8 @@ pub struct ToolContext {
     pub vision: crate::llm::Vision,
     /// Whether a message arrived for this session that its turn cannot read yet.
     pub inbox: crate::session::InboxSignal,
+    /// Whether a `cancel` is ending this turn, said where a tool call can hear it.
+    pub stop: crate::session::StopSignal,
     /// Set when shells end because the server is going: nothing that stops then finished.
     pub closing: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -256,6 +266,32 @@ pub trait Tool: Send + Sync {
         false
     }
 
+    /// How long this tool's own calls wait when the call states none.
+    ///
+    /// # Invariant
+    ///
+    /// A default, never a ceiling: the tunnel resolves the wait from this and its own
+    /// cap, and writes the answer into the call. See `tunnel::resolve`.
+    fn default_timeout(&self) -> Option<Duration> {
+        None
+    }
+
+    /// Whether this tool is subject to the tunnel's shared arguments.
+    ///
+    /// # Invariant
+    ///
+    /// `wait` is the one tool that answers no: SPEC treats it internally, because
+    /// waiting is its whole work -- a ceiling on it would keep it from waiting for what
+    /// it was asked to wait for, and `detached` would be a way of not waiting at all.
+    fn tunneled(&self) -> bool {
+        true
+    }
+
+    /// What runs when a call to this tool says `detached`.
+    fn detached_carrier(&self) -> tunnel::Carried {
+        tunnel::Carried::Call
+    }
+
     fn run<'a>(
         &'a self,
         args: Value,
@@ -311,42 +347,49 @@ impl Cut {
 }
 
 pub struct ToolRegistry {
-    tools: Vec<Box<dyn Tool>>,
+    tools: Vec<Arc<dyn Tool>>,
+    /// The longest one call may wait for its answer. See `tunnel::resolve`.
+    max_wait: Duration,
 }
 
 impl ToolRegistry {
-    pub fn with_builtins(bash_timeout: Duration, max_output_chars: usize) -> Self {
+    pub fn with_builtins(
+        max_wait: Duration,
+        bash_timeout: Duration,
+        max_output_chars: usize,
+    ) -> Self {
         Self {
+            max_wait,
             tools: vec![
-                Box::new(BashTool {
+                Arc::new(BashTool {
                     machine: Machine::Local,
                     timeout: bash_timeout,
                     max_output_chars,
                 }),
-                Box::new(BashTool {
+                Arc::new(BashTool {
                     machine: Machine::Remote,
                     timeout: bash_timeout,
                     max_output_chars,
                 }),
-                Box::new(exec::ExecTool {
+                Arc::new(exec::ExecTool {
                     machine: Machine::Local,
                     timeout: bash_timeout,
                     max_output_chars,
                 }),
-                Box::new(exec::ExecTool {
+                Arc::new(exec::ExecTool {
                     machine: Machine::Remote,
                     timeout: bash_timeout,
                     max_output_chars,
                 }),
-                Box::new(CheckBashTool { max_output_chars }),
-                Box::new(WaitTool {
+                Arc::new(CheckBashTool { max_output_chars }),
+                Arc::new(WaitTool {
                     timeout: bash_timeout,
                 }),
-                Box::new(DelBashTool),
-                Box::new(ListBashTool),
-                Box::new(python::CheckPythonTool),
-                Box::new(python::DelPythonTool),
-                Box::new(python::ListPythonTool),
+                Arc::new(DelBashTool),
+                Arc::new(ListBashTool),
+                Arc::new(python::CheckPythonTool),
+                Arc::new(python::DelPythonTool),
+                Arc::new(python::ListPythonTool),
             ],
         }
     }
@@ -360,7 +403,7 @@ impl ToolRegistry {
         let files = python.clone();
         // One implementation, two names: here, and on the session's peer.
         for machine in [Machine::Local, Machine::Remote] {
-            self.tools.push(Box::new(python::PythonTool {
+            self.tools.push(Arc::new(python::PythonTool {
                 machine,
                 program: python.program.clone(),
                 args: python.args.clone(),
@@ -369,19 +412,19 @@ impl ToolRegistry {
                 lib: lib.clone(),
             }));
         }
-        self.tools.push(Box::new(python::ReadFileTool {
+        self.tools.push(Arc::new(python::ReadFileTool {
             program: files.program.clone(),
             args: files.args.clone(),
             timeout: files.timeout,
             max_output_chars: files.max_output_chars,
         }));
-        self.tools.push(Box::new(python::WriteFileTool {
+        self.tools.push(Arc::new(python::WriteFileTool {
             program: files.program.clone(),
             args: files.args.clone(),
             timeout: files.timeout,
             max_output_chars: files.max_output_chars,
         }));
-        self.tools.push(Box::new(python::ReplaceTool {
+        self.tools.push(Arc::new(python::ReplaceTool {
             program: files.program,
             args: files.args,
             timeout: files.timeout,
@@ -398,7 +441,7 @@ impl ToolRegistry {
         timeout: Duration,
         max: usize,
     ) -> Self {
-        self.tools.push(Box::new(skill::SkillTool {
+        self.tools.push(Arc::new(skill::SkillTool {
             programs,
             lib,
             timeout,
@@ -412,11 +455,8 @@ impl ToolRegistry {
         self.tools.iter().map(|tool| tool.as_ref())
     }
 
-    pub fn get(&self, name: &str) -> Option<&dyn Tool> {
-        self.tools
-            .iter()
-            .find(|t| t.name() == name)
-            .map(|t| t.as_ref())
+    pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        self.tools.iter().find(|t| t.name() == name).map(Arc::clone)
     }
 
     /// Which machine a named tool's paths belong to.
@@ -440,7 +480,7 @@ impl ToolRegistry {
             .iter()
             .filter(|t| has_remote || !t.is_remote())
             .map(|t| {
-                let mut parameters = general_parameters(t.parameters());
+                let mut parameters = general_parameters(t.as_ref());
                 if !has_remote
                     && let Some(properties) = parameters
                         .get_mut("properties")
@@ -466,31 +506,31 @@ impl ToolRegistry {
     /// notices is not the tool's own words (`check_bash` sees a field, not a
     /// sentence) but the room left where the harness writes: see
     /// `docs/notes/server-disk.md`.
-    pub async fn run(&self, name: &str, args: Value, ctx: &ToolContext) -> ToolOutcome {
-        let outcome = match self.get(name) {
-            Some(tool) => match argument_error(tool, &args) {
-                Some(message) => ToolOutcome::err(message),
-                None => waited(tool, &args, ctx).await,
-            },
-            None => ToolOutcome::err(format!(
+    pub async fn run(
+        self: &Arc<Self>,
+        name: &str,
+        mut args: Value,
+        ctx: &ToolContext,
+    ) -> ToolOutcome {
+        let Some(tool) = self.get(name) else {
+            return ToolOutcome::err(format!(
                 "unknown tool {name:?}; available: {}",
-                self.tools
-                    .iter()
-                    .map(|t| t.name())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )),
+                self.names().join(", ")
+            ));
         };
-        if !outcome.ok {
-            crate::disk::note_tool_failure(
-                &ctx.store,
-                &ctx.session,
-                name,
-                &ctx.cwd,
-                &outcome.output,
-            );
+        if let Some(message) = argument_error(tool.as_ref(), &args) {
+            return ToolOutcome::err(message);
         }
-        outcome
+        // After the schema check, so the number written back is not a word the call was
+        // never allowed to say.
+        if let Err(message) = tunnel::resolve(tool.as_ref(), &mut args, self.max_wait) {
+            return ToolOutcome::err(message);
+        }
+        // SPEC: `detached` is the tunnel's, except for the tool that carries a process.
+        if tunnel::wants_detached(&args) && tool.detached_carrier() == tunnel::Carried::Call {
+            return tunnel::detach(tool, name.to_string(), args, ctx).await;
+        }
+        invoke(name, tool, args, ctx).await
     }
 
     pub fn names(&self) -> Vec<&'static str> {
@@ -544,7 +584,7 @@ async fn waited(tool: &dyn Tool, args: &Value, ctx: &ToolContext) -> ToolOutcome
 /// property wins), read back at the call layer; they never reach the
 /// command surface, which reads `Tool::parameters` raw.
 /// `Tool::parameters` raw.
-pub const GENERAL_ARGS: &[&str] = &["description", "max_output"];
+pub const GENERAL_ARGS: &[&str] = &["description", "max_output", "timeout_ms", "detached"];
 
 /// SPEC's adapter-level parameters added to every tool the model is offered.
 ///
@@ -553,7 +593,12 @@ pub const GENERAL_ARGS: &[&str] = &["description", "max_output"];
 /// Injected here, in the model-facing schema only, so a provider's validator
 /// accepts what the call layer reads. A property a tool already declares wins:
 /// these are the defaults, not an override.
-fn general_parameters(mut schema: Value) -> Value {
+pub(crate) fn general_parameters(tool: &dyn Tool) -> Value {
+    let mut schema = tool.parameters();
+    // A tool the tunnel leaves alone takes none of the tunnel's words. See SPEC.
+    if !tool.tunneled() {
+        return schema;
+    }
     let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) else {
         return schema;
     };
@@ -576,6 +621,25 @@ fn general_parameters(mut schema: Value) -> Value {
                                 {path, chars, line_count}.",
             })
         });
+    properties
+        .entry("timeout_ms".to_string())
+        .or_insert_with(|| {
+            json!({
+                "type": "integer",
+                "description": "How long to wait for this call before leaving it. No call \
+                                waits longer than this machine's ceiling; one that needs \
+                                to is refused and told to say `detached`.",
+            })
+        });
+    properties.entry("detached".to_string()).or_insert_with(|| {
+        json!({
+            "type": "boolean",
+            "description": "Do not wait for this call: it runs as a job of this server, \
+                            which returns at once, and what it answers arrives later as \
+                            a notice for this session -- `wait` is how you stay in this \
+                            turn until that news lands. Defaults to false.",
+        })
+    });
     schema
 }
 
@@ -972,6 +1036,18 @@ impl Tool for BashTool {
 
     fn is_remote(&self) -> bool {
         self.machine == Machine::Remote
+    }
+
+    /// A detached `bash` is a process of this machine's registry, not a job of the server.
+    fn detached_carrier(&self) -> tunnel::Carried {
+        match self.machine {
+            Machine::Local => tunnel::Carried::Process,
+            Machine::Remote => tunnel::Carried::Call,
+        }
+    }
+
+    fn default_timeout(&self) -> Option<Duration> {
+        Some(self.timeout)
     }
 
     fn parameters(&self) -> Value {
@@ -1521,6 +1597,25 @@ impl Tool for CheckBashTool {
     }
 }
 
+/// Runs one tool and records a failure where the disk monitor can see it.
+///
+/// # Invariant
+///
+/// One place runs a tool, so a call the tunnel detached is recorded like a call it
+/// waited for: the same failure note, from the same code.
+pub(crate) async fn invoke(
+    name: &str,
+    tool: Arc<dyn Tool>,
+    args: Value,
+    ctx: &ToolContext,
+) -> ToolOutcome {
+    let outcome = waited(tool.as_ref(), &args, ctx).await;
+    if !outcome.ok {
+        crate::disk::note_tool_failure(&ctx.store, &ctx.session, name, &ctx.cwd, &outcome.output);
+    }
+    outcome
+}
+
 // ----------------------------------- wait -----------------------------------
 
 /// SPEC's `wait`: stay in this turn until something lands for this session.
@@ -1537,6 +1632,14 @@ pub struct WaitTool {
 impl Tool for WaitTool {
     fn name(&self) -> &'static str {
         "wait"
+    }
+
+    fn default_timeout(&self) -> Option<Duration> {
+        Some(self.timeout)
+    }
+
+    fn tunneled(&self) -> bool {
+        false
     }
 
     fn description(&self) -> &'static str {
@@ -1577,8 +1680,13 @@ impl Tool for WaitTool {
                 .map(Duration::from_millis)
                 .unwrap_or(self.timeout)
                 .max(Duration::from_millis(100));
-            let deadline = std::time::Instant::now() + wait;
+            let began = std::time::Instant::now();
+            let deadline = began + wait;
             loop {
+                // Read first: a cancel that came before this call is not a reason to wait.
+                if ctx.stop.requested() {
+                    return wait_cancelled(ctx, began.elapsed());
+                }
                 // The person's message ends this wait (see `cut`); rows are what
                 // is left to watch.
                 match ctx.store.pending_injects_of(&ctx.session) {
@@ -1605,6 +1713,10 @@ impl Tool for WaitTool {
                     ));
                 }
                 tokio::time::sleep(remaining.min(WAIT_POLL)).await;
+                // The sleep is the whole poll: a `cancel` sets a flag, not this token.
+                if ctx.stop.requested() {
+                    return wait_cancelled(ctx, began.elapsed());
+                }
             }
         })
     }
@@ -1627,6 +1739,41 @@ impl Tool for WaitTool {
             }
         })
     }
+}
+
+/// What a `wait` answers when a `cancel` ended it, and what it leaves behind.
+///
+/// # Invariant
+///
+/// A wait is not work that can be left undone: it started nothing, and the news it was
+/// waiting for is still the server's to deliver. So the turn owes nothing afterwards --
+/// `nothing_owed` says so, which is why the next start does not replay it -- and what
+/// happened is recorded once, as a notice row the session reads whenever it next talks.
+fn wait_cancelled(ctx: &ToolContext, waited: Duration) -> ToolOutcome {
+    ctx.stop.nothing_owed();
+    let message = format!(
+        "This session was waiting for news when the server was asked to stop, {} into the \
+         wait. It ended there, and it is not resumed: nothing was left undone, so the next \
+         start owes nothing. What it was waiting for -- a message, a `subscribe` match, a \
+         finished job -- is still the next start's to deliver.",
+        crate::agent::spent(u64::try_from(waited.as_millis()).unwrap_or(u64::MAX))
+    );
+    if let Err(e) = ctx.store.add_pending_task(
+        &ctx.session,
+        "inject",
+        &json!({
+            "session": ctx.session,
+            "message": message,
+            "notice": "wait_cancelled",
+        }),
+    ) {
+        tracing::warn!(session = %ctx.session, error = %e,
+            "could not record a wait that a cancel ended");
+    }
+    ToolOutcome::ok(
+        "the server is stopping: this wait ends here and is not resumed. Nothing you were \
+         waiting for was stopped -- news that lands later is the next start's to deliver.",
+    )
 }
 
 /// What one queued row is, in the few words a summary can carry.

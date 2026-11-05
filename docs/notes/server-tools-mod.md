@@ -69,18 +69,37 @@ keeping the full output is being able to find the right one again. `slug()` in
 Implemented with a boxed future rather than `async_trait` so the crate keeps
 one fewer macro dependency; the signature is the same either way.
 
-## GENERAL_ARGS: description, max_output
+## GENERAL_ARGS: description, max_output, timeout_ms, detached
 
-SPEC's adapter-level parameters: every tool may carry them, none declares
-them by hand. `definitions` injects both into the model-facing schema (a
-property a tool declares wins), and `argument_error` never names them as
-unexpected; the command surface reads `Tool::parameters` raw, so they never
-reach the tool commands. At the call layer, `description` titles the row
-(already) and `max_output` caps the result: over the cap, in chars per SPEC,
-the whole output spills to one file and the model reads the file's metadata
-`{path, chars, line_count}` -- the same spill naming as `ToolContext::cap`.
-On an endpoint session the cap is left unhonored rather than pointing at a
-file the session's tools cannot open.
+SPEC's tunnel-level parameters: every tool may carry them, none declares them by
+hand, and a tool the tunnel leaves alone (`Tool::tunneled`, which is `wait` alone)
+offers none of them. `general_parameters` injects them into the model-facing schema
+(a property a tool declares wins, so `bash`'s own `detached` keeps its longer
+description) and `argument_error` never names them as unexpected.
+
+The command surface reads the same function, so an operator can spell every argument
+a call may carry. It used to read `Tool::parameters` raw, which was right while the
+general arguments were a title and a cap -- the tunnel's words changed that, and a
+tool command that refuses `--detached` is a tool the model has and the operator does
+not.
+
+At the call layer, `description` titles the row (already) and `max_output` caps the
+result: over the cap, in chars per SPEC, the whole output spills to one file and the
+model reads the file's metadata `{path, chars, line_count}` -- the same spill naming
+as `ToolContext::cap`. On an endpoint session the cap is left unhonored rather than
+pointing at a file the session's tools cannot open.
+
+## Tool::default_timeout, Tool::tunneled, Tool::detached_carrier
+
+The three questions the tunnel asks a tool, each with the answer that fits nearly
+every tool: a default wait (`None`, meaning the ceiling itself), subject to the tunnel
+(`true`), and carried by the server when detached (`Carried::Call`). Each override is
+in the tool that differs: `bash` states its configured wait and says a detached call of
+its own is a process, `wait` says the tunnel does not touch it at all.
+
+`tunneled` is one word for one thing on purpose: `wait` is not capped *and* not
+detachable *and* not offered `timeout_ms` by the general parameters, because all three
+are the same sentence -- SPEC treats it internally.
 
 ## argument_error
 
@@ -356,7 +375,21 @@ version of this tool had.
 
 The ceiling it defaults to is `bash`'s, because that is this harness's one answer to
 "how long may a tool hold a turn"; the deadline passing is not an error, and the news
-is not lost. A cancelled turn ends the wait the way it ends any other call.
+is not lost. The tunnel's cap does not apply to it -- waiting is what it is for -- so a
+`wait` may legitimately ask for longer than any other call.
+
+A `cancel` is a different ending from a cancelled turn. Interrupting a turn abandons
+its work, and `wait` answers like any other call: an error, `this turn was
+cancelled`. A `cancel` abandons nothing, so the wait sends a third answer: the server
+is stopping, `wait` ends here, the news it was waiting for is the next start's to
+deliver. It then clears the session's `resumable` flag -- a wait started nothing, so
+nothing is left undone -- and the turn's pending row is dropped instead of replayed.
+Without that, a restart would run the same turn again to wait for news that has nothing
+to do with the work.
+
+The record of the cancelled wait is an `inject` row marked `wait_cancelled`: a notice,
+so it does not owe a turn, and the only trace of what the session was doing when the
+server stopped.
 
 ## ListBashTool::run (detached rows)
 

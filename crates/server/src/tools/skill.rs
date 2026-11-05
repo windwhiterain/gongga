@@ -51,6 +51,10 @@ impl Tool for SkillTool {
         DESCRIPTION
     }
 
+    fn default_timeout(&self) -> Option<Duration> {
+        Some(self.timeout)
+    }
+
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -141,7 +145,7 @@ impl Tool for SkillTool {
                 &run.words(target, &argv),
                 &at,
                 &env,
-                self.timeout,
+                crate::tools::tunnel::wait_of(&args).unwrap_or(self.timeout),
             )
             .await
             {

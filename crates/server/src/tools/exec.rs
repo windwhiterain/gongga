@@ -65,6 +65,10 @@ impl Tool for ExecTool {
         self.machine == Machine::Remote
     }
 
+    fn default_timeout(&self) -> Option<Duration> {
+        Some(self.timeout)
+    }
+
     fn parameters(&self) -> Value {
         json!({
             "type": "object",

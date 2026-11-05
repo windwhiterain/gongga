@@ -49,6 +49,7 @@ pub async fn run(
             refusal: String::new(),
         },
         inbox: handle.inbox_signal(),
+        stop: handle.stop_signal(),
         closing: handle.closing_signal(),
     };
     let outcome = agent.tools.run(tool, args, &ctx).await;
@@ -69,7 +70,8 @@ pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec>
     tools
         .iter()
         .map(|tool| {
-            let schema = tool.parameters();
+            // The model's schema, so every argument a call may carry is spellable.
+            let schema = crate::tools::general_parameters(tool);
             let positional = positional_of(tool.name());
             let required = schema
                 .get("required")
@@ -171,8 +173,7 @@ fn positional_of(tool: &str) -> &'static [&'static str] {
 /// The tunnel's point: an agent's call and an operator's line reach the same
 /// shapes, so a number is a number on both paths.
 fn coerce(tool: &dyn crate::tools::Tool, args: &Args) -> Value {
-    let properties = tool
-        .parameters()
+    let properties = crate::tools::general_parameters(tool)
         .get("properties")
         .and_then(Value::as_object)
         .cloned()
@@ -222,6 +223,6 @@ pub async fn dispatch_tool(d: &Dispatch, name: &str, args: &Args) -> Outcome {
         .filter(|(key, _)| key.as_str() != "session")
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
-    let value = coerce(tool, &rest);
+    let value = coerce(tool.as_ref(), &rest);
     run(&d.agent, &d.sessions, &d.store, session, name, value).await
 }
