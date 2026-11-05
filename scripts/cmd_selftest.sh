@@ -218,6 +218,28 @@ listed=$("${cli[@]}" 2>&1)
 [[ "$listed" == *"skill -- Run the"* ]]
 ok "the catalog carries skill (a tool registration, not a command of its own)" $?
 
+# `index_skill` is gone: the same table is `skill` with no name, and `skill ls` asks
+# the server for it when the shell names a session.
+[[ "$listed" != *"index_skill"* ]]
+ok "the catalog no longer carries index_skill" $?
+
+table=$("${cli[@]}" skill main 2>&1)
+{ [[ "$table" == *"argv-probe"* ]] && \
+  [[ "$table" == *"Prints its argv, one word per line"* ]] && \
+  [[ "$table" == *"SKILL.md"* ]]; } && rc=0 || rc=1
+ok "skill with no name is the table, with each skill's description" $rc
+say "$table"
+
+verbs=$(GONGGA_SESSION=main "${cli[@]}" skill ls 2>&1)
+{ [[ "$verbs" == *"argv-probe"* ]] && [[ "$verbs" == *"Prints its argv"* ]]; } && rc=0 || rc=1
+ok "skill ls asks the server, and carries the description" $rc
+say "$verbs"
+
+# Without a session the same verb lists this machine's roots: a shell has no session.
+local_ls=$(env -u GONGGA_SESSION "${cli[@]}" skill ls 2>&1)
+[[ "$local_ls" == *"argv-probe"* ]]
+ok "skill ls without a session lists this machine's roots" $?
+
 probed=$("${cli[@]}" skill main argv-probe '["a b","$HOME","semi;colon"]' 2>&1)
 { [[ "$probed" == *'[a b]'* ]] && [[ "$probed" == *'[$HOME]'* ]] && \
   [[ "$probed" == *'[semi;colon]'* ]] && [[ "$probed" == *'exit status 3'* ]] && \

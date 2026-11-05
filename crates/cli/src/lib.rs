@@ -1648,16 +1648,119 @@ pub fn main(args: Args) -> anyhow::Result<()> {
 /// server still does, because an entry is a file rather than a command's work.
 async fn skill(args: &Args, tokens: &[String]) -> anyhow::Result<()> {
     let local = || crate::skill_command::dispatch(&home_of(args), &tokens[1..]);
+    let verb = tokens.get(1).map(String::as_str);
+    // `which` and `run` are this layer's words, not a skill's name.
+    if matches!(verb, Some("which") | Some("run")) {
+        return local();
+    }
     let Ok((mut client, mut link)) = connect(args).await else {
         return local();
     };
     let result = if client.has_command("skill") {
-        run_once(&mut client, &mut link, tokens).await
+        match verb {
+            // `ls`: the table this session would be offered, asked of the server
+            // when a shell names one, of this machine otherwise.
+            Some("ls") => match calling_session() {
+                Some(session) => ask_table(&mut client, &mut link, &session).await,
+                None => {
+                    link.goodbye().await;
+                    return local();
+                }
+            },
+            None => {
+                link.goodbye().await;
+                return local();
+            }
+            _ => run_once(&mut client, &mut link, tokens).await,
+        }
     } else {
         local()
     };
     link.goodbye().await;
     result
+}
+
+/// `skill ls` through the server: the table, printed as the same four columns.
+async fn ask_table(client: &mut Client, link: &mut Link, session: &str) -> anyhow::Result<()> {
+    let asked = vec!["skill".to_string(), session.to_string()];
+    let (ok, message) = ask(client, link, &asked).await?;
+    if !ok {
+        anyhow::bail!(message);
+    }
+    let table: serde_json::Value = serde_json::from_str(&message)?;
+    let mut lines = String::new();
+    for row in table
+        .get("skills")
+        .and_then(|s| s.as_array())
+        .into_iter()
+        .flatten()
+    {
+        let field = |name: &str| row.get(name).and_then(|v| v.as_str()).unwrap_or_default();
+        lines.push_str(&format!(
+            "{}\t{}\t{}\t{}\n",
+            field("name"),
+            field("bucket"),
+            field("description").replace(['\t', '\n'], " "),
+            field("path")
+        ));
+    }
+    print!("{lines}");
+    if let Some(elsewhere) = table.get("elsewhere").and_then(|v| v.as_str()) {
+        eprintln!("{elsewhere}");
+    }
+    Ok(())
+}
+
+/// One command asked quietly: its own answer, and nothing printed on the way.
+///
+/// # Invariant
+///
+/// Only the `cmd_result` this command was sent with ends the wait; every other event
+/// is fed to the client and dropped, so a table never carries a session's news.
+async fn ask(
+    client: &mut Client,
+    link: &mut Link,
+    tokens: &[String],
+) -> anyhow::Result<(bool, String)> {
+    let mut printer = NullSink::default();
+    let msg = match client.command(tokens.to_vec(), &mut printer) {
+        Submission::Send(msg) => msg,
+        Submission::Local => anyhow::bail!("{} was not sent", tokens.join(" ")),
+        Submission::Rejected => anyhow::bail!(
+            "{}",
+            printer
+                .take_error()
+                .unwrap_or_else(|| "not a command".to_string())
+        ),
+        Submission::Offline => anyhow::bail!("not connected to the server"),
+    };
+    let id = match &msg {
+        ClientMessage::Command { id, .. } => *id,
+        other => anyhow::bail!("{other:?} is not a command"),
+    };
+    link.send(msg)
+        .await
+        .map_err(|e| anyhow!("send failed: {e}"))?;
+    loop {
+        let Some(bytes) = link.recv().await else {
+            anyhow::bail!("server disconnected");
+        };
+        let event = match decode_server(&bytes)? {
+            ServerMessage::Event(event) => event,
+            _ => continue,
+        };
+        client.handle_event(event.clone(), &mut printer);
+        if let Event::CmdResult {
+            id: rid,
+            ok,
+            message,
+            ..
+        } = &event
+            && *rid == id
+        {
+            return Ok((*ok, message.clone()));
+        }
+    }
 }
 
 /// What a command row says about lines the server never answered.

@@ -257,6 +257,14 @@ keeps is the turn: `REPLAY_TURN` says a part is a row rather than a stream, and 
 the difference between a block of its own and text appended to the answer a running
 turn is still writing.
 
+## ask
+
+`run_once` prints every event it meets, because one-shot mode's answer *is* the events.
+`skill ls` wants one command's message and none of the news around it, so `ask` is the same
+send-and-wait with the printing removed: it feeds each event to the client (a sticky still
+follows) and returns when the `cmd_result` carrying this command's id arrives. Anything else
+on the link is not this question's answer, and a table never carries a session's news.
+
 ## kind_of
 
 The one place a server-named `HeadKind` becomes one of this crate's `LineKind`s, and

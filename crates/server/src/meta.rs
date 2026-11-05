@@ -239,7 +239,7 @@ async fn content(source: Source<'_>, home: &Path, spelling: &str) -> Option<Stri
 /// A skill's `SKILL.md` as written, frontmatter included.
 fn skill_body(home: &Path, machine: crate::session::Machine, name: &str) -> Option<String> {
     // Only a row this server holds: a peer's checkout skill is not.
-    let found = crate::tools::index_skill::installed_for(home, machine)
+    let found = crate::tools::skill::installed_for(home, machine)
         .into_iter()
         .find(|skill| skill.name == name)?;
     std::fs::read_to_string(found.path).ok()
@@ -372,7 +372,7 @@ pub async fn expand(
 /// charged once in the prompt's index and the row keeps a pointer to it. See
 /// `docs/notes/server-meta.md`.
 fn skill_at(home: &Path, machine: crate::session::Machine, name: &str) -> Option<skill::Skill> {
-    crate::tools::index_skill::installed_for(home, machine)
+    crate::tools::skill::installed_for(home, machine)
         .into_iter()
         .find(|skill| skill.name == name)
 }

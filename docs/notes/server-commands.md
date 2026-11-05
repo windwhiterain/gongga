@@ -80,7 +80,7 @@ twice.
 
 `cwd` is the live one when the session has a shell, and the row only when it has
 none. The row is where the session was *placed*; the shell's own directory is where
-every tool reads -- `index_skill`, `@skill:`, `@file:` all resolve against it -- so a
+every tool reads -- `skill`, `@skill:`, `@file:` all resolve against it -- so a
 row that said the placement while the shell had `cd`-ed elsewhere would let a
 front-end complete a name from one directory and send it to another. That is exactly
 the bug the client was fixed for: its skills came from the window's launch directory,

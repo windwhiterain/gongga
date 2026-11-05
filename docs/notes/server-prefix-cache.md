@@ -110,7 +110,7 @@ owners sharing one layout cannot corrupt each other's order, only fail to share 
 
 `plan(store, owner, purpose, wanted, rates, tolerance)` is the whole interface: a caller
 hands over keys with their text and sizes and gets an order back -- each entry with the
-text to send under it, plus the patches that catch up what changed. `index_skill` and the
+text to send under it, plus the patches that catch up what changed. `skill` and the
 prompt index are the two callers, and they are different kinds of thing -- a tool result
 and a system prompt -- which is the point of the algorithm being generic. `purpose`
 separates their chains inside one owner's forest, so they never evict each other.
@@ -219,7 +219,7 @@ never held is a miss rather than an error; the first request after that failure 
 what actually went out. Making that exact would mean dropping unconfirmed nodes, which is
 worth doing when something else needs the distinction.
 
-The skill table's ordering (`tools/index_skill`) is planned the same way but has no
+The skill table's ordering (`tools/skill`) is planned the same way but has no
 confirm: it is a tool result inside the transcript, so it is not a prefix the provider
 holds for the *next* request's sake. Its nodes now expire with their tier and the table
 falls back to the caller's order -- no behaviour change, because the row was already

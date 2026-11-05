@@ -153,7 +153,7 @@ the default setup of a remote session would send "in ``" for the life of the ses
 
 Both remote cards also say what stays on this machine, because a model that assumes
 otherwise spends a turn discovering it: `remote_bash` has no `gongga-cli` -- the
-command layer, this home and every skill `index_skill` lists are here -- and
+command layer, this home and every skill `skill` lists are here -- and
 `read_file`, `write_file`, `replace` and `python` act here, which for a session whose
 directory belongs to the peer means a relative path names *this* machine's copy of
 that same spelling and never the peer's. That is the one place the model is told, and
@@ -210,7 +210,7 @@ read none at all: `prompts::constitution` used to join two of them -- the machin
 `~/.agents/agents.md`, then `AGENTS.md` beside the session's directory -- and both reads
 left with that template. The machine's own standing rules moved to a skill
 (`~/.agents/skills/whiting-dev`), which is where this machine keeps every other
-procedure: listed by `index_skill`, read when a task matches its description.
+procedure: listed by `skill` (with no name), read when a task matches its description.
 
 What came back on 2026-11-02 is narrower, and it comes back by a different road: the
 session's own `AGENTS.md` is a *root* of the prompt index (`meta::RULES`), so it lands in

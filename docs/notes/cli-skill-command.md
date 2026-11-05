@@ -20,6 +20,15 @@ directory on this disk, not the server. That is why "a skill's argv is not this 
 argv" is enforced in `check_flag_order` -- `skill remote add --home x` names the script's
 flag, and the order check would otherwise refuse the line as a misplaced global.
 
+`skill ls` is the one verb that can be answered by either side. With `GONGGA_SESSION` set --
+a shell the harness started -- it asks the server for the table *that session* would be
+offered (`skill <session>`, no `name`), because the project root is the session's checkout
+and the command layer's cwd is not it. With no session it walks this machine's roots: a bare
+shell is not standing in anything. Both print the same four columns -- name, root,
+description, `SKILL.md` -- so a reader and a model are looking at one shape; the server's
+answer arrives as the tool's JSON and is rendered here, which is why `ask` exists (one
+command, asked quietly: its `cmd_result` and nothing else).
+
 That local route now yields to a server that publishes `skill` (`crates/server/src/tools/
 skill.rs`): the greeting's catalog decides, as it does for every other name, and the entry
 runs on the session's terms with the output capped and shaped like any other tool result. The

@@ -10,7 +10,7 @@ use protocol::{ArgSpec, Args, CommandSpec};
 ///
 /// # Invariant
 ///
-/// One walk, shared with the server's `index_skill` and with `skill <name>` -- so a
+/// One walk, shared with the server's `skill` and with `skill <name>` -- so a
 /// name read here is a name that can be opened. `project` is the directory the session
 /// works in, and `None` when that directory is another machine's: its checkout is not
 /// on this disk. See `docs/notes/cli-commands.md`.

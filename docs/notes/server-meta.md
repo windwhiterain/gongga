@@ -38,7 +38,7 @@ so `@skill:` expands to a pointer rather than to prose, on the first turn too.
 That pointer is not a courtesy. The index carries a skill's body and nothing about
 where the file is, so a first message that kept only `@skill: <name>` sent the model
 hunting the three roots for the directory; measured on 2026-11-04 in one session, four
-`ls`/`index_skill` calls before it found `SKILL.md`. `@file:` is the opposite case: its
+`ls`/`skill` calls before it found `SKILL.md`. `@file:` is the opposite case: its
 spelling *is* its path, so it is left exactly as written and still keys the index.
 
 ## the rules file is a root, not a message

@@ -2,8 +2,10 @@
 
 ## module doc
 
-The server already knew which skills exist: `index_skill` reads the three roots and publishes
-rows with a name, a path and the entry. What a model could not do was *run* one. Its only
+The server already knew which skills exist: a separate tool read the three roots and published
+rows with a name, a path and the entry. What a model could not do was *run* one -- and that
+tool has since been folded in here: one registration answers the table when no `name` is
+given and runs the entry when one is. Its only
 route was `bash "…/web-search.sh fetch <url>"` -- a shell line it had to quote, from a path it
 had to copy out of a body, on an interpreter it had to infer from an extension. The entry
 runner already existed on the command line (`gongga-cli skill`), but a tool call cannot reach
@@ -29,8 +31,8 @@ coerced by the tool's own schema, which is how an operator reaches the shape the
 
 ## The roots decision
 
-The lookup is `index_skill::installed_for` and nothing else: the same rows the model was told
-about are the rows it can run. A name in more than one root is refused with both directories
+The lookup is `installed_for` and nothing else: the same rows the table prints are the rows
+it can run. A name in more than one root is refused with both directories
 rather than resolved to the first -- `Roots` documents that a shadowed name is never resolved
 silently, and running a file is the last place to break that.
 
@@ -52,3 +54,25 @@ is the call's answer, unparsed. Re-encoding it (into JSON, into rows) would be a
 of a contract every one of these scripts already keeps, and `jq`-ability is why they print
 what they print. The cap is the shared one: over `max_output_chars` the text is spilled to a
 file and the answer is that file's name.
+
+## The table, and why it is not a second walk
+
+`installed_for` walks the three roots once -- the same call `@skill:` expansion uses -- and
+the project layer is the session's checkout, which is why it takes a cwd and a machine: the
+same server serves sessions in different checkouts, and a skill in one of them must not
+appear in another's table. A session whose directory is on a peer gets the home's and the
+machine's rows, plus one sentence saying that checkout's skills are that machine's files to
+`ls` and `cat` over `remote_bash`.
+
+The description is the whole argument for the table: a reader decides from that line whether
+to open the body, and the body is what costs context. A row is `name`, `description`, `path`
+and `bucket` -- the four things needed to decide *and* to open, since `path` is the
+`SKILL.md` `@skill:` hands out.
+
+The rows are ordered by the prefix-cache plan for the session's owner, so a table that has
+not changed is not re-paid for by a new session in the same directory. That is an ordering
+of the same rows, never a filter: a skill that is installed appears, whatever the plan says.
+
+`skill ls` in the command layer prints those four columns, asking this tool when the shell
+names a session (`GONGGA_SESSION`) and walking the roots itself when it does not: a shell
+with no session has no checkout to ask about.

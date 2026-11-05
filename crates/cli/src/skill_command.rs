@@ -50,12 +50,13 @@ fn list(roots: &skill::Roots) -> anyhow::Result<()> {
             shadowed(found);
             continue;
         }
+        // The server's four columns, so a reader and a model see one shape.
         println!(
             "{}\t{}\t{}\t{}",
             found.name,
             found.bucket.as_str(),
-            entry_name(found),
-            found.dir().display()
+            found.description.replace(['\t', '\n'], " "),
+            found.path.display()
         );
     }
     Ok(())
@@ -127,18 +128,6 @@ fn shadowed(found: &skill::Skill) {
         found.bucket.as_str(),
         found.path.display()
     );
-}
-
-fn entry_name(found: &skill::Skill) -> String {
-    found.entry.as_ref().map_or_else(
-        || "-".to_string(),
-        |entry| {
-            entry
-                .file_name()
-                .map(|file| file.to_string_lossy().into_owned())
-                .unwrap_or_default()
-        },
-    )
 }
 
 /// What this machine can run an entry with: found here, chosen by the crate's rule.

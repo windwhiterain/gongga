@@ -179,7 +179,7 @@ git config core.hooksPath scripts/hooks
 ## 改过服务端代码之后
 
 跑着的进程还是旧二进制，新代码要接管这个 home 才算生效。整套流程在 `evolve` skill 里
-（`index_skill` 会给出路径），**不在这里重述**：那份散文和 `evolve.sh` 一起版本化，写第二遍
+（`skill` 不带名字会给出路径），**不在这里重述**：那份散文和 `evolve.sh` 一起版本化，写第二遍
 就一定会有一份是旧的。
 
 这里只留一条不随 skill 变的：改 server 代码的人**必须**走完它，否则你自己、下一个 agent、
@@ -213,7 +213,7 @@ skill 是"任务相关才读"的散文 + 脚本。三个桶，**越近的越先*
 | `harness` | `$GONGGA_HOME/skills/<name>` | 内容仓库 `ship`，按 protocol 取最新 commit | 改 `ship/skills/<name>` 再发版 |
 | `general` | `~/.agents/skills/<name>` | 社区 clone `gongga-agents` | 改社区仓库 |
 
-**别全读，也别 grep 目录**：调用 `index_skill` 工具，它返回 name / description / path /
+**别全读，也别 grep 目录**：调用 `skill` 工具（不带 `name`），它返回 name / description / path /
 bucket 一张表，命中才按它给的路径读正文。列表本身不写在这里——写在这里就等于每加一个
 skill 都要改一次这个文件，而读的人手上已经有那张表。
 
@@ -221,7 +221,7 @@ skill 都要改一次这个文件，而读的人手上已经有那张表。
 `.dev/`，装进 `$GONGGA_HOME` 之后它找不到仓库根，所以它住在**这个仓库**的
 `.agents/skills/evolve/`，随 checkout 走，不随内容仓走。**不要往 `$GONGGA_HOME/skills/` 里放它的
 副本**：那份副本会随源码一起变旧，而且它自己 `cd` 到 home 之后往上找不到 `Cargo.toml`，一行
-都跑不通——但 `index_skill` 会把两个同名 `evolve` 都列出来，读的人先撞上坏的那个。
+都跑不通——但 `skill` 会把两个同名 `evolve` 都列出来，读的人先撞上坏的那个。
 
 其余（`heir` / `image` / `self-control` / `subagent` + 默认 config）在内容仓库里，是这个仓库的
 **submodule**（`ship/`）。改 skill 就是**在 `ship/` 里改然后发布**（`scripts/ship.sh -m`），
@@ -231,7 +231,7 @@ skill 都要改一次这个文件，而读的人手上已经有那张表。
 「读者自己写的」而不再更新。
 
 **跑一个 skill 的脚本：从它自己的目录出发，别写桶的路径。** 正文里写入口用
-`SKILL_DIR=<本 SKILL.md 所在目录>`（`@skill:` 展开的 `SKILL.md: <path>`、`index_skill` 的
+`SKILL_DIR=<本 SKILL.md 所在目录>`（`@skill:` 展开的 `SKILL.md: <path>`、`skill` 的
 `path` 列都给得出它），再 `"$SKILL_DIR/<entry>" …`：home 会搬、桶会变，而别的 harness 不认
 `<home>/skills/...` 也不认 clone 路径——它读到的是一个不存在的命令。gongga 里更短的一层是
 `gongga-cli skill <name> [args…]`（`skill ls` / `skill which <name>` 是它的两个诊断动词），

@@ -25,7 +25,6 @@ pub mod bash;
 pub mod detached;
 pub mod exec;
 pub mod exec_remote;
-pub mod index_skill;
 pub mod interpreter;
 #[cfg(windows)]
 pub mod job;
@@ -290,7 +289,6 @@ impl ToolRegistry {
                 }),
                 Box::new(DelBashTool),
                 Box::new(ListBashTool),
-                Box::new(index_skill::IndexSkillTool),
                 Box::new(python::CheckPythonTool),
                 Box::new(python::DelPythonTool),
                 Box::new(python::ListPythonTool),
