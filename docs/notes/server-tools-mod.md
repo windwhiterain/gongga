@@ -418,7 +418,10 @@ second, because a tool that can only refuse is a wrong turn nobody can undo.
 whichever machine holds it is the one that answers. `list_bash` reports it per row and
 `check_bash` in its closing bracket, so a reader can tell `peer` from `here` without
 asking. A name already taken on the other machine is refused, naming the machine that
-has it.
+has it and asking for a different `name`: `default` is the directory-owning machine's,
+so a remote session's local `bash` hits this on every call that names none, and the
+first thing that refusal has to say is which parameter to change. `del_bash` is
+mentioned second, because it frees the name by ending a working shell.
 
 The directory a shell starts in follows the same rule as the session's own: the
 machine that owns the placement gets it, and the other side starts in its own default
