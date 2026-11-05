@@ -275,6 +275,9 @@ pub fn detect_python() -> Option<PathBuf> {
 pub struct AgentConfig {
     /// Input tokens above which the agent is told to fold its own context.
     pub compress_above_tokens: u64,
+    /// Input-token growth between agent-written checkpoints.
+    /// Defaults to 20,000; 0 disables live compact.
+    pub live_compact_interval_tokens: u64,
     /// The chance a cached prefix is gone by the next request, `0.0..=1.0`.
     pub cache_invalid_rate: f64,
     /// A lifetime for a cached prefix, in seconds, for every provider at once; `0`
@@ -368,6 +371,7 @@ struct FileScripts {
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct FileAgent {
     compress_above_tokens: Option<u64>,
+    live_compact_interval_tokens: Option<u64>,
     cache_invalid_rate: Option<f64>,
     cache_ttl_secs: Option<u64>,
     index_change_tolerance: Option<f64>,
@@ -636,6 +640,14 @@ impl Config {
                 .and_then(|a| a.compress_above_tokens)
                 .or_else(|| env_or("GONGGA_COMPRESS_ABOVE_TOKENS").and_then(|v| v.parse().ok()))
                 .unwrap_or(DEFAULT_COMPRESS_ABOVE_TOKENS),
+            live_compact_interval_tokens: file
+                .agent
+                .as_ref()
+                .and_then(|a| a.live_compact_interval_tokens)
+                .or_else(|| {
+                    env_or("GONGGA_LIVE_COMPACT_INTERVAL_TOKENS").and_then(|v| v.parse().ok())
+                })
+                .unwrap_or(20_000),
             cache_invalid_rate: file
                 .agent
                 .as_ref()

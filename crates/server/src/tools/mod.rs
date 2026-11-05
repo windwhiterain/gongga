@@ -28,6 +28,7 @@ pub mod exec_remote;
 pub mod interpreter;
 #[cfg(windows)]
 pub mod job;
+pub mod live_compact;
 pub mod python;
 pub mod python_remote;
 pub mod skill;
@@ -428,6 +429,7 @@ impl ToolRegistry {
                 Arc::new(DelBashTool),
                 Arc::new(DelJobTool),
                 Arc::new(ListBashTool),
+                Arc::new(live_compact::LiveCompactTool),
                 Arc::new(python::CheckPythonTool),
                 Arc::new(python::DelPythonTool),
                 Arc::new(python::ListPythonTool),

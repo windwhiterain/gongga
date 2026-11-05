@@ -66,6 +66,8 @@ pub struct Agent {
     pub context_limit_percent: u8,
     /// The home this call belongs to: what a worker needs to be started.
     pub home: PathBuf,
+    /// Input-token growth between agent-written checkpoints; 0 disables live compact.
+    pub live_compact_interval_tokens: u64,
     /// Where capped tool output is spilled; without it the tail is lost.
     pub output_dir: PathBuf,
     /// Detached jobs of every session, reached through `ToolContext`.
@@ -241,6 +243,7 @@ impl Agent {
             }
             // Ask before the request is built, so this is the step that hears it.
             self.maybe_notify_context(session, id, &name, budget);
+            self.maybe_request_live_compact(id, &name);
             let cwd = session.cwd();
             tracing::info!(
                 session = %name,
@@ -286,6 +289,10 @@ impl Agent {
         };
 
         tracing::info!(session = %name, outcome = ?outcome.0, elapsed = ?started.elapsed(), "turn end");
+        // SPEC: the starting checkpoint is set at the first turn end, never mid-turn.
+        if let Err(e) = self.store.establish_live_compact_baseline(id) {
+            tracing::warn!(session = %name, error = %e, "could not establish the live compact baseline");
+        }
         outcome
     }
 
@@ -454,6 +461,46 @@ impl Agent {
                 "{name}: context at {tokens} of {budget} tokens; asked the agent to fold"
             ),
         });
+    }
+
+    /// Queues one durable agent-written checkpoint request for this token interval.
+    fn maybe_request_live_compact(&self, id: i64, name: &str) {
+        let interval = self.live_compact_interval_tokens;
+        if interval == 0 {
+            return;
+        }
+        let Ok(measurement) = self.store.live_compact_measurement(id) else {
+            return;
+        };
+        if measurement.requested {
+            return;
+        }
+        let Some(baseline) = measurement.baseline_tokens else {
+            return;
+        };
+        if measurement.tokens.saturating_sub(baseline) < interval {
+            return;
+        }
+        let message = live_compact_notice();
+        match self
+            .store
+            .request_live_compact(id, name, measurement.generation, &message)
+        {
+            Ok(true) => {
+                self.log_event(
+                    Some(id),
+                    "live_compact_notice",
+                    &json!({
+                        "tokens": measurement.tokens,
+                        "baseline": baseline,
+                        "interval": interval,
+                        "generation": measurement.generation,
+                    }),
+                );
+            }
+            Ok(false) => {}
+            Err(e) => self.error(id, name, "queueing the live compact request", e),
+        }
     }
 
     /// The prose this session sends: stamped once, and the same bytes for ever.
@@ -1119,6 +1166,14 @@ impl Agent {
                     let _ = self
                         .store
                         .set_usage_for_generation(id, generation, measured);
+                    if let Some(input_tokens) = usage.as_ref().and_then(|u| u.input_tokens) {
+                        if let Err(e) =
+                            self.store
+                                .set_live_compact_baseline(id, generation, input_tokens)
+                        {
+                            tracing::warn!(session = %name, error = %e, "could not set live compact baseline");
+                        }
+                    }
                     // SPEC: the row updates at every step's end. Off the turn's
                     // path, because reading an allowance is a network call.
                     crate::quota::publish(
@@ -1373,24 +1428,78 @@ impl Agent {
             })
             .unwrap_or_else(|| outcome.output.clone());
         // A tool that streamed nothing owes its output to the final chunk.
-        let tail = match sent.load(Ordering::Relaxed) {
+        let compacting = tool == crate::tools::live_compact::LIVE_COMPACT_TOOL;
+        let mut tail = match sent.load(Ordering::Relaxed) {
+            0 if compacting => outcome.output.clone(),
             0 => capped.clone(),
             _ => String::new(),
         };
-        // The model is shown no head and no label, so the time ends the text it reads.
-        let output = with_time(capped, run_ms);
+        // A checkpoint artifact is exactly the agent's summary, not a timing annotation.
+        let mut output = if compacting {
+            outcome.output.clone()
+        } else {
+            // The model is shown no head and no label, so the time ends the text it reads.
+            with_time(capped, run_ms)
+        };
         drop(ctx);
         // A shell on an endpoint starts in a directory only that endpoint knows.
         session.adopt_reported_cwd();
         let _ = forwarder.await;
+        let mut status = if outcome.ok { "ok" } else { "error" };
+        // A command that printed `@image: <path>` names a picture: it becomes an
+        // attachment, uploaded once per file.
+        let images: Vec<_> = scanned
+            .iter()
+            .map(crate::image::ImageRef::to_json)
+            .collect();
+        let mut content = json!({"call_id": call_id, "output": output, "images": images,
+                    "step": step, "ok": outcome.ok, "elapsed_ms": run_ms});
+        let mut checkpointed = false;
+        let mut checkpoint_error = None;
+        if tool == crate::tools::live_compact::LIVE_COMPACT_TOOL && outcome.ok {
+            match self
+                .store
+                .append_live_compact_result(id, &call_id, &content)
+            {
+                Ok(committed) => {
+                    checkpointed = true;
+                    self.announce_row(name, Ok(committed.result_seq));
+                    self.log_event(
+                        Some(id),
+                        "live_compact",
+                        &json!({
+                            "checkpoint": committed.checkpoint_id,
+                            "result_seq": committed.result_seq,
+                            "generation": committed.generation,
+                        }),
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(session = %name, error = %e, "could not commit live compact checkpoint");
+                    checkpoint_error = Some(format!("{e:#}"));
+                }
+            }
+        }
+        if tool == crate::tools::live_compact::LIVE_COMPACT_TOOL && !checkpointed {
+            status = "error";
+            let reason = checkpoint_error.unwrap_or_else(|| output.clone());
+            output = format!("ERROR: live_compact checkpoint was not committed: {reason}");
+            content["output"] = json!(output.clone());
+            content["ok"] = json!(false);
+            self.announce_row(name, self.store.append_message(id, "tool_result", &content));
+            let _ = self.store.reset_live_compact_request(id);
+            tail = output.clone();
+        } else if !checkpointed {
+            self.announce_row(name, self.store.append_message(id, "tool_result", &content));
+        }
+        let tool_ok = status == "ok";
         tracing::info!(
             session = %name,
             tool = %tool,
-            ok = outcome.ok,
+            ok = tool_ok,
             elapsed = ?started.elapsed(),
             "tool end"
         );
-
         // The one chunk that ends the call, and the only one that knows how it went.
         self.bus.publish(Event::ToolAnswer(ToolAnswerEvent {
             session: name.to_string(),
@@ -1399,25 +1508,8 @@ impl Agent {
             stream: ToolStream::Stdout,
             text: tail,
             done: true,
-            head: Some(result_head(outcome.ok, run_ms)),
+            head: Some(result_head(tool_ok, run_ms)),
         }));
-
-        let status = if outcome.ok { "ok" } else { "error" };
-        // A command that printed `@image(<path>)` names a picture: it becomes an
-        // attachment, uploaded once per file.
-        let images: Vec<_> = scanned
-            .iter()
-            .map(crate::image::ImageRef::to_json)
-            .collect();
-        self.announce_row(
-            name,
-            self.store.append_message(
-                id,
-                "tool_result",
-                &json!({"call_id": call_id, "output": output, "images": images,
-                        "step": step, "ok": outcome.ok, "elapsed_ms": run_ms}),
-            ),
-        );
         let _ = self.store.finish_tool_call(id, &call_id, &output, status);
         self.log_event(
             Some(id),
@@ -1719,6 +1811,11 @@ fn context_notice(
             ("budget", &budget.to_string()),
         ],
     )
+}
+
+fn live_compact_notice() -> String {
+    "The live-compaction token interval has elapsed. Call `live_compact` now with a      `summary` of everything since the previous checkpoint, including the latest complete      ordinary tool-call round. The server retains that round and every checkpoint summary;      do not use heir or delete any transcript rows."
+        .to_string()
 }
 
 /// The notice threshold in input tokens, or 0 for "off".
