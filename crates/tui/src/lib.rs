@@ -916,8 +916,7 @@ impl Tui {
             if let Some(operation) = self.clicked.take() {
                 return Some(UiEvent::Operate(operation));
             }
-            // Taken, not read: a request is answered once, and reading it here
-            // again would be a window that asks for the same page for ever.
+            // Taken, not read: a request is answered once, never on every frame.
             let owed = self.screen.take_wants();
             if !owed.is_empty() {
                 return Some(UiEvent::Older(owed));
@@ -1595,9 +1594,7 @@ impl Tui {
     /// the frame that shows it.
     pub fn refresh_completion(&mut self) {
         let fresh = next_completion(&self.screen.input, &self.completer);
-        // The row the operator moved to survives the rebuild: an event arriving is
-        // not a keystroke, and a popup that jumped back to its first candidate on
-        // every streamed chunk could not be walked at all.
+        // The row the operator moved to survives: an event is not a keystroke.
         self.screen.completion = match (self.screen.completion.take(), fresh) {
             (Some(old), Some(mut new)) if same_offering(&old, &new) => {
                 new.selected = old.selected.min(new.candidates.len() - 1);

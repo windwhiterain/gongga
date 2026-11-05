@@ -770,14 +770,12 @@ struct Ledger {
     index: RowIndex,
     /// Rows one block may fill in this window; 0 defers to the log's `block_size`.
     cap: usize,
-    /// The pages this window holds, in the order it draws them: the block each one
-    /// begins with, and the oldest row it stands for.
+    /// The pages this window holds, in the order it draws them.
     ///
     /// # Invariant
     ///
-    /// A page is what one fill landed. Kept here rather than derived from the blocks,
-    /// because a block does not know which row of the transcript it stands for: this
-    /// is the one place the two are joined, and what a restart replays from.
+    /// Each is a block id and the oldest row that page stands for: a page is what one
+    /// fill landed, and this is the only place a row and a block are joined.
     pages: Vec<(u64, i64)>,
     /// The block a page now landing begins with, until its answer names the rows.
     page_first: Option<u64>,
@@ -1044,8 +1042,7 @@ impl Log {
         {
             self.prepend = None;
         }
-        // A fill that empties a window opens a page too: its first block is where a
-        // page of this transcript begins, as with any other fill.
+        // A fill that empties a window opens a page too.
         self.begins(window);
         self.cache.remove(window);
         self.drop_window(window);
@@ -1080,8 +1077,7 @@ impl Log {
         {
             return Some(*seq);
         }
-        // Nothing drawn yet: the journal names the page a first frame will read back,
-        // so that page's oldest row is the answer the frame is about to make true.
+        // Nothing drawn yet: the journal names the page the first frame reads back.
         self.cache
             .floor(window, self.cache.end(window))
             .map(|(_, seq)| seq)
@@ -1137,8 +1133,7 @@ impl Log {
             // No block opened a page: an answer with no rows in it names nothing.
             return;
         };
-        // A page of the past opens in front of the ones already held, and the tail
-        // opens behind them: the list is the order the pane draws.
+        // The list is the order the pane draws: a page of the past opens first.
         match prepending {
             true => ledger.pages.insert(0, (first, floor)),
             false => ledger.pages.push((first, floor)),
@@ -1169,9 +1164,7 @@ impl Log {
         let Some(offsets) = self.cache.rewrite(window, &records) else {
             return;
         };
-        // Where each block landed, read off the list that was built: a page boundary
-        // in front of it shifts every record after it, so counting from either end
-        // would name the wrong one.
+        // Read off the list that was built: a boundary before a block shifts it.
         for (&at, place) in blocks.iter().zip(written) {
             let Some(place) = place else {
                 continue;
@@ -1355,8 +1348,7 @@ impl Log {
             self.entries[at].window = shared;
         }
         let window = self.entries[at].window.clone();
-        // A fill's first block is where its page begins, and a page boundary may
-        // only stand there: taken here, once, by whichever fill is landing.
+        // A fill's first block is where its page begins: taken here, once.
         let opens = self.filling.remove(window.as_ref());
         let above = match &self.prepend {
             Some((name, pos)) if window.as_ref() == name.as_str() => Some(*pos),
@@ -2027,11 +2019,10 @@ impl Log {
     ///
     /// # Invariant
     ///
-    /// One page, from the boundary that page begins at, and the rows it holds are the
-    /// rows the boundary names -- which is why [`Log::floor_of`] can answer before the
-    /// first frame. A page is as many rows as the pane that asked for it, so one is
-    /// always enough. A journal written before boundaries were recorded has none, and
-    /// is read as far back as the pane needs while claiming no floor at all.
+    /// One page, from the boundary that page begins at: the rows are the rows that
+    /// boundary names, which is why [`Log::floor_of`] answers before the first frame.
+    /// A page is as many rows as the pane that asked for it, so one is always enough.
+    /// A journal written before boundaries has none, and claims no floor at all.
     pub fn seed(&mut self, window: &str, width: usize, rows: usize) {
         if !self.seeded.insert(window.to_string()) {
             return;
@@ -2040,9 +2031,7 @@ impl Log {
         if end == 0 {
             return;
         }
-        // The newest page boundary: what a page began with stands right there, and
-        // a page is as many rows as the pane that asked for it, so one is enough.
-        // A journal with no boundary at all is read as far back as the pane needs.
+        // The newest page boundary. A journal with none is read as far back as it can.
         let Some((boundary, _)) = self.cache.floor(window, end) else {
             let mut start = end;
             loop {

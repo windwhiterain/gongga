@@ -227,8 +227,7 @@ async fn answer_older(
         if ui.floor_of(&name).is_some_and(|floor| floor <= 1) {
             continue;
         }
-        // One page, shaped by the pane. A fill of this window already on its way
-        // answers this one too, so the request waits for it rather than for ever.
+        // One page, shaped by the pane. A fill already on its way answers it too.
         match client.ask_older(&name, ui.room_of(&name)) {
             Some(message) => {
                 if open.send(message).await.is_err() {

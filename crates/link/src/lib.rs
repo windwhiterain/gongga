@@ -1747,20 +1747,14 @@ impl Client {
     ///
     /// # Invariant
     ///
-    /// Never echoes: it is the window's own question, and the operator's last
-    /// line is not replaced by it. The answer's rows arrive as the events that
-    /// drew them live, so a refilled window is indistinguishable from one that
-    /// never had a gap -- which is the only thing a whole fill has to be.
+    /// Never echoes: it is the window's own question, not the operator's line. Its
+    /// rows arrive as the events that drew them live, so a refill looks like a stream.
     pub fn ask_transcript(&mut self, name: &str, room: usize) -> Option<ClientMessage> {
         let sync = self.sync.get(name)?;
         if sync.fill.is_some() || sync.blocked {
             return None;
         }
-        // A window holding nothing is owed the rows a pane can draw, counted from
-        // the end; one that lost its thread is owed the tail after what it has.
-        // Never unbounded: a window that is a thousand rows behind is given one
-        // page, and the next frame decides again. That is what makes a stream of
-        // natural messages cost a page rather than a transcript.
+        // One page, never a transcript: the rows a pane can draw, or the tail after.
         let room = room.max(1) as i64;
         let (range, first) = match sync.loaded {
             false if sync.drawn != Drawn::Unknown => (format!("-{room}:"), First::Counted(room)),
@@ -1770,11 +1764,7 @@ impl Client {
                 (format!("{from}:{}", from + room - 1), First::Named(from))
             }
         };
-        // Never a whole-window replacement: what the window has already drawn is
-        // good, and a page lands below it -- unless it holds rows it cannot name,
-        // which is a journal no page boundary was written into. That window is
-        // refilled as a whole, because a page appended to it would land on rows it
-        // already has. See `docs/notes/tui-cache.md`.
+        // Whole only for rows it cannot name: a page appended to those would repeat.
         let whole = !sync.loaded && sync.floor.is_none() && sync.drawn != Drawn::Unknown;
         self.begin_fill(name, range, first, whole, false)
     }
