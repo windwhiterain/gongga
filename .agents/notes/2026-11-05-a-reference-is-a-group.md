@@ -50,6 +50,12 @@
 - `cargo build --workspace`、`cargo fmt --check`、`comments-check`、`test-layout-check`、
   `scripts/skill_contract.sh`、`cargo test --workspace` 全绿；`scripts/ship.sh --check` = 0。
 
+## 落地
+
+`feature/meta-reference`（4 个提交）已在 `main` 上（`4d94099`，fast-forward，没有 merge commit
+之外的改写）。之后三件按顺序：`evolve` 让新 build 接管这个 home —— 这一步会 retire 旧 build，
+正在跑的 turn 会随之结束，所以要用户点头；然后 `scripts/ship.sh -m "…"` 把内容推上去。
+
 ## 还没做的一件
 
 `ship/` 的内容已经在新 clone 上提交成 `local`（`references are groups: …`），但**没有 push**：
