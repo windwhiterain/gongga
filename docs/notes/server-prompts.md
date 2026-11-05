@@ -13,25 +13,36 @@ the shipped content behind it is what answers when the home says nothing; both a
 read from disk. The one list this module does own is `REQUIRED`, because the code is
 the only party that knows which names it asks for.
 
-## SYSTEM: the prose, with the session's name filled
+## SYSTEM: the prose as written, with no value in it
 
-`instructions` opens every request, and `{{session}}` in it is the one placeholder
-`system()` fills. It was `text()` rather than `render()` for a year of this design, for
-a reason that turned out not to hold: "a placeholder filled from the session would give
-each session its own first bytes, and the cache is keyed by bytes." The cache is keyed
-per *conversation* -- `prefix_layout` is a row per session, and the note on caching says
-so outright -- so no session's bytes were ever warm for another. Nothing was being
-shared, and the cost of the name was zero.
+`instructions` opens every request and is read, not rendered: `system()` substitutes
+nothing. That is the invariant, and it is about the cache. The provider holds the token
+prefix of a request, so a value that differs between sessions ends the shared prefix at
+the byte it changes. Two sessions of one directory send a byte-identical index --
+measured at 29,267 characters for both -- and a per-session value in front of it makes
+every new session's first turn a prompt the provider has never seen: 14,310 tokens in,
+188 cached, 1.3%. That is the row the caching note records as "cold first turn", and it
+was being paid once per session rather than once per directory.
 
-What it did cost was the name. The prose said "Your session name is `$GONGGA_SESSION`",
-which nothing substitutes, so a model read the literal and reported that its prompt did
-not tell it its name -- measured in a session called `probe`, whose whole first turn was
-that question and the tool call it needed to answer it. The variable is real in every
-shell, and that is exactly the point: knowing the name should not need a shell.
+This rule has been decided twice, which is why it is written down here rather than only
+next to the template. It was `text()` from `09537ef` (2026-11-01). It was reverted the
+next day (`3715d6c`, 2026-11-02) to fill `{{session}}`, because the prose had said
+`$GONGGA_SESSION` -- which nothing substitutes -- and a model asked its name read the
+literal and said its prompt did not tell it. The revert's stated reason, "a
+conversation's prefix is its own, `prefix_layout` is keyed by session, so nothing was
+being shared", mistook this server's plan book for the provider's cache: `prefix_layout`
+is the order *we* emit an index in, kept per session; what the provider remembers is
+bytes at an endpoint, and any request sending them is warm. The card already stated the
+name one message after the prose, so the sentence was redundant as well as costly, and
+the remedy for a literal is to drop the sentence, not to fill it.
 
-A name is stable for a session, so the bytes stay stable for every request of one, which
-is all a cached prefix needs. The card (`dynamic_tail`) still states it too, with the
-build, the first minute and the directory.
+What the head may hold is therefore prose true in every turn and identical for every
+session of a directory: identity, the standing authorisation to run commands, and
+"procedures are skills". The identity of *this* session is in the card
+(`dynamic_tail`), stamped once and carried as the first input item -- after the
+instructions, which is where a value that differs per session belongs. `system()`
+reports a placeholder in the head rather than filling it, so the wrong shape is loud
+instead of silent.
 
 The reason the prose was cut down to a page-or-less still stands: it had grown into
 procedures -- how to batch reads, how to drive `gongga-cli`, which bucket a skill lives

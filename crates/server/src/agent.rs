@@ -472,9 +472,9 @@ impl Agent {
         let remote = session.remote_name();
         let remote = remote.as_deref();
         let prompts = crate::prompts::shared();
-        // The session's own name is the one value in the prose, so a model asked its
-        // name can answer without a tool call.
-        let instructions = prompts.system(name);
+        // The prose carries no value at all: the card below states the name, the
+        // build, the first minute and the directory.
+        let instructions = prompts.system();
         let here = match placed {
             Some(path) => Self::stated(path),
             None => Self::stated(cwd),

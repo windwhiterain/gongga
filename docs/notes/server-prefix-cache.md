@@ -85,10 +85,15 @@ keyed by session: `prefix_layout` is one row per session name, the process keeps
 decoded `Layout` per session in a map, and `plan` takes the name it is planning for.
 
 That reversed an earlier decision in this file, and the reversal is the user's: it is
-also why the shared version was less useful than it looked. The system prompt now ends
-with a tail naming the session (`dynamic_tail`), so two sessions' prefixes differ before
-the transcript even starts. A shared layout would have been an index of chains that
-nothing could ever hit, growing a branch per session and paying a scan for each.
+also why the shared version was less useful than it looked. A shared layout would have
+been an index of chains that nothing could ever hit, growing a branch per session and
+paying a scan for each.
+
+What is per session is the layout, not the bytes. Two sessions of one directory send the
+same instructions and the same index -- the card, which names the session, comes after
+both -- so the provider's cache of one is warmth for the other's first turn. That is why
+the head of the request carries no value at all: see `docs/notes/server-prompts.md`,
+"SYSTEM".
 
 `del_session` deletes that session's row: a new session of the same name is a new
 conversation, and must not be warmed by the old one.
@@ -338,6 +343,11 @@ prose + a 355-line `self-control` body + `AGENTS.md` + tool schemas):
 | same session, next turn | 10371 | 10240 | 98.7% |
 | same session, turn after the minute ticked | 10481 | 128 | 1.2% |
 
+The first row was read here as "a provider's price for a prompt it has not seen". It is
+also what every new session paid for its first turn while the head carried the session
+name, however many siblings had already sent the same index -- one directory's sessions
+warmed each other only above that byte. `docs/notes/server-prompts.md` has the decision
+and the measurement.
 The good reading: the index is worth its bytes, because a turn that follows a warm one
 is billed almost entirely at the cache rate (¥0.10/1M against ¥1.00/1M on this roster)
 -- the index, the prose and the schemas are re-used rather than re-sent.

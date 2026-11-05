@@ -31,15 +31,16 @@ pub const TAIL_REMOTE: &str = "dynamic_tail_remote";
 /// See `docs/notes/server-prompts.md`.
 pub const TAIL_REMOTE_UNSTATED: &str = "dynamic_tail_remote_unstated";
 
-/// The system instructions: the prose, with the session's own name in it.
+/// The system instructions: prose as written, no value filled in; per-session facts
+/// go in the card.
 ///
 /// # Invariant
 ///
-/// `{{session}}` is the only placeholder filled here, and it is filled from the
-/// session's name, which never changes for that session -- so the bytes are stable
-/// for every request of one conversation, which is what a cached prefix needs. A name
-/// written as `$GONGGA_SESSION` instead was read by a model as a literal placeholder
-/// it did not have. See `docs/notes/server-prompts.md`.
+/// No per-session or per-turn fact belongs here: these bytes open every request, so a
+/// value ends the prefix a provider holds at the byte it changes. A provider caches a
+/// byte prefix at an endpoint, shared by every request that sends it; the per-session
+/// `prefix_layout` row is our order for the index, not that cache. See
+/// `docs/notes/server-prefix-cache.md`.
 pub const SYSTEM: &str = "instructions";
 
 /// Every template the code asks for by name.
@@ -152,11 +153,22 @@ impl Prompts {
     }
 
     /// The system instructions as written: one text, no value is filled in.
-    pub fn system(&self, session: &str) -> String {
-        match self.text(SYSTEM) {
-            Some(text) => substitute(&text, &[("session", session)]),
-            None => String::new(),
+    ///
+    /// # Invariant
+    ///
+    /// Nothing is substituted here, checked rather than trusted: a placeholder in the
+    /// head would cut the prefix every session of this directory shares, so it is
+    /// reported and left written. See [`SYSTEM`].
+    pub fn system(&self) -> String {
+        let text = self.text(SYSTEM).unwrap_or_default();
+        if text.contains("{{") {
+            tracing::error!(
+                "the system instructions carry a placeholder: these bytes open every \
+                 request, so a value here ends the prefix every session of a directory \
+                 shares. Drop the sentence; the card (`dynamic_tail`) states the name"
+            );
         }
+        text
     }
 
     /// One template, with its placeholders filled.
