@@ -75,6 +75,8 @@ pub struct ToolContext {
     pub remote: Option<String>,
     /// Detached jobs, keyed by session; they outlive their shell, their session and the server.
     pub detached: DetachedRegistry,
+    /// The jobs running right now, so `del_job` can stop one.
+    pub jobs: tunnel::JobRegistry,
     /// Streaming sink for `tool_answer` events.
     pub events: Option<mpsc::Sender<ToolAnswerEvent>>,
     pub cancel: CancellationToken,
@@ -88,6 +90,13 @@ pub struct ToolContext {
     pub vision: crate::llm::Vision,
     /// Whether a message arrived for this session that its turn cannot read yet.
     pub inbox: crate::session::InboxSignal,
+    /// Whether this call is holding a turn, which is what gives its clock a meaning.
+    ///
+    /// # Invariant
+    ///
+    /// False for a job: a call that already answers without waiting holds no turn, so
+    /// nothing is left for `timeout_ms` to take away from it.
+    pub holds_the_turn: bool,
     /// Whether a `cancel` is ending this turn, said where a tool call can hear it.
     pub stop: crate::session::StopSignal,
     /// Set when shells end because the server is going: nothing that stops then finished.
@@ -303,6 +312,17 @@ pub trait Tool: Send + Sync {
         false
     }
 
+    /// Whether this tool's wait is its own, so the tunnel's clock does not end it.
+    ///
+    /// # Invariant
+    ///
+    /// A shell or an interpreter turns a long wait into its own background job, and a
+    /// reading tool waits for `wait_ms`: in both the work *is* the wait, so a clock
+    /// taking the call away would be taking away the thing that was asked for.
+    fn owns_its_wait(&self) -> bool {
+        false
+    }
+
     fn run<'a>(
         &'a self,
         args: Value,
@@ -398,6 +418,7 @@ impl ToolRegistry {
                     timeout: bash_timeout,
                 }),
                 Arc::new(DelBashTool),
+                Arc::new(DelJobTool),
                 Arc::new(ListBashTool),
                 Arc::new(python::CheckPythonTool),
                 Arc::new(python::DelPythonTool),
@@ -535,9 +556,7 @@ impl ToolRegistry {
         }
         // After the schema check, so the number written back is not a word the call was
         // never allowed to say.
-        if let Err(message) = tunnel::resolve(tool.as_ref(), &mut args, self.max_wait) {
-            return ToolOutcome::err(message);
-        }
+        tunnel::resolve(tool.as_ref(), &mut args, self.max_wait);
         // The tunnel's words are the tunnel's to offer: `wait` takes none of them.
         if let Some(word) = tunnel::foreign(tool.as_ref(), &args) {
             return ToolOutcome::err(format!(
@@ -573,29 +592,72 @@ impl ToolRegistry {
 ///
 /// # Invariant
 ///
-/// The only wait: every tool is awaited here, so "a message reaches the turn" is one
-/// rule and not one per tool. A cut goes through `Tool::cut`, the tool's own account
-/// of what it left behind, and `ctx.inbox` is compared against the copy the context
-/// took when the call started -- only a message that arrives during *this* call ends
-/// it. See `docs/notes/server-tools-mod.md`.
-async fn waited(tool: &dyn Tool, args: &Value, ctx: &ToolContext) -> ToolOutcome {
+/// The only wait, so "a message reaches the turn" is one rule and not one per tool.
+/// The work runs on a task with a token of its own: that is what lets the clock take
+/// the turn away without stopping it. See `docs/notes/server-tools-mod.md`.
+async fn waited(tool: &Arc<dyn Tool>, args: &Value, ctx: &ToolContext) -> ToolOutcome {
     let started = std::time::Instant::now();
-    // The tool moves its arguments; the cut is handed its own copy.
-    let mut run = Box::pin(tool.run(args.clone(), ctx));
+    let description = args
+        .get("description")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let max = args
+        .get("max_output")
+        .and_then(Value::as_u64)
+        .map(|max| usize::try_from(max).unwrap_or(usize::MAX))
+        .unwrap_or(crate::config::DEFAULT_MAX_OUTPUT_CHARS);
+    // This call's own clock: a job holds no turn, and a tool whose wait is its work
+    // is not on the clock at all.
+    let clock_at = (ctx.holds_the_turn && tool.tunneled() && !tool.owns_its_wait())
+        .then(|| tunnel::wait_of(args))
+        .flatten()
+        .map(|wait| tokio::time::Instant::now() + wait);
+    let mut job = ctx.clone();
+    job.cancel = CancellationToken::new();
+    let token = job.cancel.clone();
+    let work = Arc::clone(tool);
+    let mut given = args.clone();
+    // A tool whose wait is the tunnel's gets no deadline of its own: the clock is
+    // the turn's, and the work outlives it.
+    if !tool.owns_its_wait()
+        && let Some(object) = given.as_object_mut()
+    {
+        object.remove("timeout_ms");
+    }
+    let (tx, mut rx) = mpsc::channel::<ToolOutcome>(1);
+    let task = tokio::spawn(async move {
+        let outcome = work.run(given, &job).await;
+        let _ = tx.send(outcome).await;
+    });
     let mut punctual = tokio::time::interval(INBOX_POLL);
     let why = loop {
         tokio::select! {
-            outcome = &mut run => return outcome,
-            _ = ctx.cancel.cancelled() => break Cut::Cancelled,
+            answer = rx.recv() => return answer.unwrap_or_else(|| stopped(tool.name())),
+            _ = ctx.cancel.cancelled() => break Some(Cut::Cancelled),
             _ = punctual.tick() => {
                 if ctx.inbox.arrived() {
-                    break Cut::Message;
+                    break Some(Cut::Message);
                 }
             }
+            _ = wait_until(clock_at) => break None,
         }
     };
-    // Dropped before the aftermath is asked for: the shell's lock is free again.
-    drop(run);
+    let Some(why) = why else {
+        // Out of time, not out of work: the turn stops waiting, the job does not.
+        return promote(
+            ctx,
+            tool.name(),
+            description.as_deref(),
+            max,
+            rx,
+            token,
+            started,
+        )
+        .await;
+    };
+    // A cut ends the work too, and it is ended before the tool says what it left.
+    task.abort();
+    let _ = task.await;
     tracing::info!(
         session = %ctx.session,
         tool = %tool.name(),
@@ -603,7 +665,99 @@ async fn waited(tool: &dyn Tool, args: &Value, ctx: &ToolContext) -> ToolOutcome
         elapsed = ?started.elapsed(),
         "the wait ended before the call answered"
     );
-    tool.cut(args, ctx, why, started).await
+    tool.as_ref().cut(args, ctx, why, started).await
+}
+
+/// Sleeps until `at`, or for ever when this call has no clock of its own.
+async fn wait_until(at: Option<tokio::time::Instant>) {
+    match at {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending::<()>().await,
+    }
+}
+
+/// What a call says when its own work stopped without answering.
+fn stopped(name: &str) -> ToolOutcome {
+    ToolOutcome::err(format!(
+        "`{name}` ended without answering: the work it was running stopped before it could \
+         say how it went."
+    ))
+}
+
+/// Hands a call that outlived its clock to the job table, and answers for it.
+///
+/// # Invariant
+///
+/// The id is in the receipt before the caller can ask for it, and one forwarder owns
+/// the answer: what arrives later is written where `check_job` reads it, in the same
+/// act that tells the session. Nothing else holds that text.
+async fn promote(
+    ctx: &ToolContext,
+    tool: &str,
+    description: Option<&str>,
+    max: usize,
+    mut rx: mpsc::Receiver<ToolOutcome>,
+    token: CancellationToken,
+    started: std::time::Instant,
+) -> ToolOutcome {
+    let id = match ctx.store.add_job(
+        &ctx.session,
+        &ctx.call_id,
+        tool,
+        description,
+        tunnel::Mode::Background.as_str(),
+    ) {
+        Ok(id) => id,
+        Err(e) => {
+            return ToolOutcome::err(format!(
+                "`{tool}` is still running after {} and this call could not be recorded as a \
+                 job ({e}), so nothing would collect what it answers.",
+                crate::agent::spent(started.elapsed().as_millis() as u64)
+            ));
+        }
+    };
+    let waited = crate::agent::spent(started.elapsed().as_millis() as u64);
+    let mut sink = ctx.clone();
+    // The stream belonged to the turn that is no longer waiting.
+    sink.events = None;
+    let named = tool.to_string();
+    let described = description.map(str::to_string);
+    // Registered before the receipt leaves, so `del_job` reaches it from the first
+    // instant the caller could name it.
+    ctx.jobs.add(id, token);
+    tokio::spawn(async move {
+        let Some(outcome) = rx.recv().await else {
+            return;
+        };
+        sink.jobs.done(id);
+        let text = match crate::tools::cap_max_output(
+            &sink,
+            &named,
+            described.as_deref(),
+            &sink.call_id,
+            &outcome.output,
+            max,
+        ) {
+            Some(metadata) => format!("{metadata}\n(over {max} chars: it is all in that file)"),
+            None => outcome.output,
+        };
+        let ran = crate::agent::spent(started.elapsed().as_millis() as u64);
+        tunnel::report(
+            &sink,
+            id,
+            &named,
+            &text,
+            outcome.ok,
+            &ran,
+            tunnel::Mode::Background,
+        )
+        .await;
+    });
+    ToolOutcome::ok(format!(
+        "`{tool}` was still running after {waited}, so this call became background job {id}. \
+         It runs on without this turn: `check_job` with `job_id: {id}` collects what it \
+         answers, and this session is told when it ends."
+    ))
 }
 
 /// The adapter's general parameters: every tool may carry them, none
@@ -1052,6 +1206,11 @@ impl Tool for BashTool {
         true
     }
 
+    /// A shell turns a long wait into its own background job: the clock is its own.
+    fn owns_its_wait(&self) -> bool {
+        true
+    }
+
     fn default_timeout(&self) -> Option<Duration> {
         Some(self.timeout)
     }
@@ -1426,22 +1585,25 @@ pub struct CheckBashTool {
 
 /// How often a waiting read asks whether the work it waits for is done.
 const WAIT_POLL: Duration = Duration::from_millis(100);
+/// A wait is a tool call, not a turn: beyond this it is better to come back later.
+const MAX_WAIT: Duration = Duration::from_secs(600);
 
 impl Tool for CheckBashTool {
     fn name(&self) -> &'static str {
         "check_bash"
     }
 
-    /// A read with no number reads now: waiting is the call's to ask for.
-    fn default_timeout(&self) -> Option<Duration> {
-        Some(Duration::ZERO)
+    /// The read waits for `wait_ms`; that wait is the whole work.
+    fn owns_its_wait(&self) -> bool {
+        true
     }
 
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "name": {"type": "string"}
+                "name": {"type": "string"},
+                "wait_ms": {"type": "integer"}
             },
             "additionalProperties": false
         })
@@ -1459,8 +1621,12 @@ impl Tool for CheckBashTool {
                     "no live shell named {name}; `list_bash` says which names exist"
                 ));
             };
-            // SPEC's `timeout_ms`, resolved by the tunnel: this read's own clock.
-            let wait = tunnel::wait_of(&args).unwrap_or_default();
+            let wait = args
+                .get("wait_ms")
+                .and_then(Value::as_u64)
+                .map(Duration::from_millis)
+                .unwrap_or(Duration::ZERO)
+                .min(MAX_WAIT);
             if !wait.is_zero() {
                 let deadline = std::time::Instant::now() + wait;
                 loop {
@@ -1531,16 +1697,17 @@ impl Tool for CheckJobTool {
         "check_job"
     }
 
-    /// A read with no number reads now: waiting is the call's to ask for.
-    fn default_timeout(&self) -> Option<Duration> {
-        Some(Duration::ZERO)
+    /// The read waits for `wait_ms`; that wait is the whole work.
+    fn owns_its_wait(&self) -> bool {
+        true
     }
 
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "job_id": {"type": "integer"}
+                "job_id": {"type": "integer"},
+                "wait_ms": {"type": "integer"}
             },
             "required": ["job_id"],
             "additionalProperties": false
@@ -1560,8 +1727,12 @@ impl Tool for CheckJobTool {
             else {
                 return ToolOutcome::err("check_job needs the `job_id` its start answered with");
             };
-            // SPEC's `timeout_ms`, resolved by the tunnel: this read's own clock.
-            let wait = tunnel::wait_of(&args).unwrap_or_default();
+            let wait = args
+                .get("wait_ms")
+                .and_then(Value::as_u64)
+                .map(Duration::from_millis)
+                .unwrap_or(Duration::ZERO)
+                .min(MAX_WAIT);
             let deadline = std::time::Instant::now() + wait;
             loop {
                 let row = match ctx.store.job(id) {
@@ -1589,7 +1760,7 @@ impl Tool for CheckJobTool {
                             .unwrap_or(u64::MAX),
                     );
                     return ToolOutcome::ok(format!(
-                        "job {id}{} is still running after {ran}. `timeout_ms` stays in this call \
+                        "job {id}{} is still running after {ran}. `wait_ms` stays in this call \
                          until it ends, and this session is told when it ends.",
                         named(&row)
                     ));
@@ -1692,7 +1863,7 @@ pub(crate) async fn invoke(
     args: Value,
     ctx: &ToolContext,
 ) -> ToolOutcome {
-    let outcome = waited(tool.as_ref(), &args, ctx).await;
+    let outcome = waited(&tool, &args, ctx).await;
     crate::disk::note_tool_end(&ctx.store, &ctx.session, name, &ctx.cwd, outcome.ok);
     outcome
 }
@@ -1852,6 +2023,67 @@ fn arrival(row: &crate::store::PendingTask) -> String {
             Some(_) => "a context notice".to_string(),
             None => "a message".to_string(),
         },
+    }
+}
+
+// --------------------------------- del_job ---------------------------------
+
+/// SPEC's `del_job`: forget a job, and stop it if it is still running.
+pub struct DelJobTool;
+
+impl Tool for DelJobTool {
+    fn name(&self) -> &'static str {
+        "del_job"
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "job_id": {"type": "integer"}
+            },
+            "required": ["job_id"],
+            "additionalProperties": false
+        })
+    }
+
+    fn run<'a>(
+        &'a self,
+        args: Value,
+        ctx: &'a ToolContext,
+    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            let Some(id) = args
+                .get("job_id")
+                .and_then(Value::as_u64)
+                .and_then(|id| i64::try_from(id).ok())
+            else {
+                return ToolOutcome::err("del_job needs the `job_id` its start answered with");
+            };
+            let row = match ctx.store.job(id) {
+                Ok(Some(row)) => row,
+                Ok(None) => return ToolOutcome::err(format!("no job {id} in this session")),
+                Err(e) => return ToolOutcome::err(format!("could not read job {id}: {e}")),
+            };
+            if row.session != ctx.session {
+                return ToolOutcome::err(format!("no job {id} in this session"));
+            }
+            // Forgotten before it is stopped: a job that is cancelled writes its ending,
+            // and an ending nobody asked for is not news.
+            if let Err(e) = ctx.store.delete_job(id) {
+                return ToolOutcome::err(format!("could not delete job {id}: {e}"));
+            }
+            let stopped = ctx.jobs.stop(id);
+            let what = named(&row);
+            ToolOutcome::ok(if stopped {
+                format!(
+                    "deleted job {id}{what}, and stopped it: what it had printed is not kept, \
+                     and nothing about it will be posted."
+                )
+            } else {
+                format!("deleted job {id}{what}. It had already ended.")
+            })
+        })
     }
 }
 

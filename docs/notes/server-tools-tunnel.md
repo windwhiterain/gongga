@@ -17,12 +17,16 @@ the model sent, and the injection is about what the tool will read. Both orderin
 compile; only this one keeps `argument_error` from reporting a field the model never
 named.
 
-A call that asks for more than the ceiling is refused rather than shortened. Shortening
-is the cheaper-looking choice and the worse one: the caller asked for five minutes,
-would get one, and would read the result as "it finished". The refusal names the tool,
-both numbers, and both ways of not waiting -- `background` for work that is collected
-with `check_job`, `detached` for an answer that comes to the session by itself -- or
-says to come back later, which is the only honest answer for a reading call.
+A call that asks for more than the ceiling is held to it, not refused. SPEC gives the
+number two jobs -- how long the turn is held, and the ceiling no call may exceed -- and
+neither is a reason to say no: past its own clock the work becomes a `background` job,
+which is a thing the caller can collect, not a failure. Refusing was the first version's
+answer, and it read as "you may not run that", which was never true.
+
+The ceiling still binds a tool's own configured default, for the reason it always did:
+it is a config value written by an operator, and an operator setting
+`[tools.bash] timeout_ms = 300000` should not silently outrank the ceiling the same file
+sets.
 
 A tool's own configured default is clamped by the ceiling too. It is a config value
 written by an operator, and an operator setting `[tools.bash] timeout_ms = 300000`
@@ -35,12 +39,10 @@ The resolved number, read back out of the call. A tool that ran on its built-in
 duration instead would be a second answer to "how long may this wait", and the second
 answer is the one that exceeds the ceiling.
 
-Three tools read it as a clock of their own rather than as a ceiling: `check_bash`,
-`check_python` and `check_job`. They state `default_timeout` as zero -- a read with no
-number reads now -- and a number they are given is how long the read waits for the work
-to end, not how long it may hold the turn. `wait_ms` was a second name for that same
-number, which is exactly the second vocabulary `Tool::default_timeout` exists to prevent;
-the ceiling is now the only way a caller says "wait this long".
+It is the clock `waited` reads: the moment the turn stops waiting for this call and the
+work becomes a `background` job. A tool that says `owns_its_wait` never gets that far --
+a shell, an interpreter and a reading tool each answer for their own wait, and a clock
+taking the call away from them would be taking away the thing that was asked for.
 
 ## tunnel::wants_background, wants_detached, both_ways and Carried
 
@@ -80,6 +82,15 @@ be starting work whose answer nobody could ever collect.
 The `max_output` cap is applied here as well as on the waited path, for the reason the
 cap exists at all: the answer arrives as a row or a message, and a message with a
 megabyte of build log in it is a step that costs more than the build did.
+
+## tunnel::JobRegistry
+
+What `del_job` reaches. A job is stopped through the token that was already ending it:
+`waited` in that job watches it, so the cancel is a cut -- the work is aborted, the tool
+says what it left behind, and the child process dies with the future. The id is
+registered before the receipt leaves and forgotten when the work ends, so the map holds
+running jobs and nothing else; a job of a run that stopped has no token left to cancel,
+and `del_job` answers for it out of its row.
 
 ## tunnel::report
 

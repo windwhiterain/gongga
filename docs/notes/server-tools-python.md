@@ -131,5 +131,5 @@ a foreground call reads its own reply line while it holds the interpreter's lock
 and a call that returned without reading it would leave that line in the pipe for
 the next caller, which would take it as the answer to a different question. So
 the interpreter is ended with the call, and the next call under that name starts
-with a fresh namespace. `check_python`'s `timeout_ms` is a clock and nothing else --
+with a fresh namespace. `check_python`'s `wait_ms` is a clock and nothing else --
 `wait_idle` no longer watches a token of its own.

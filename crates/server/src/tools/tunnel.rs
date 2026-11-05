@@ -11,30 +11,24 @@ use tokio_util::sync::CancellationToken;
 use crate::store::Store;
 use crate::tools::{Tool, ToolContext, ToolOutcome};
 
-/// Reads `timeout_ms` for every tool, and refuses a wait this tunnel will not hold.
+/// Reads `timeout_ms` for every tool: how long this call holds the turn.
 ///
 /// # Invariant
 ///
-/// One reading of how long a call may wait: no tool decides that for itself, so no
-/// two tools can disagree about the ceiling, and a call that names a longer wait is
-/// told what to do instead of being silently shortened. `wait` is the one tool the
-/// tunnel leaves alone -- waiting is its whole work, and a ceiling on it would keep
-/// it from waiting for what it was asked to wait for.
-pub fn resolve(tool: &dyn Tool, args: &mut Value, cap: Duration) -> Result<(), String> {
+/// One reading of how long a call may wait, so no two tools disagree about the
+/// ceiling, and a call that asks for more is held to it rather than refused.
+/// `wait` is the one tool the tunnel leaves alone.
+pub fn resolve(tool: &dyn Tool, args: &mut Value, cap: Duration) {
     if !tool.tunneled() {
-        return Ok(());
+        return;
     }
     let Some(object) = args.as_object_mut() else {
         // Arguments that are not an object are refused by the call's own schema.
-        return Ok(());
+        return;
     };
-    let stated = object.get("timeout_ms").and_then(Value::as_u64);
-    if let Some(asked) = stated
-        && Duration::from_millis(asked) > cap
-    {
-        return Err(too_long(tool.name(), Duration::from_millis(asked), cap));
-    }
-    let wait = stated
+    let wait = object
+        .get("timeout_ms")
+        .and_then(Value::as_u64)
         .map(Duration::from_millis)
         .or_else(|| tool.default_timeout())
         .unwrap_or(cap)
@@ -44,7 +38,6 @@ pub fn resolve(tool: &dyn Tool, args: &mut Value, cap: Duration) -> Result<(), S
         "timeout_ms".to_string(),
         Value::from(u64::try_from(wait.as_millis()).unwrap_or(u64::MAX)),
     );
-    Ok(())
 }
 
 /// The wait this call may take, as the tunnel resolved it.
@@ -58,24 +51,6 @@ pub fn wait_of(args: &Value) -> Option<Duration> {
     args.get("timeout_ms")
         .and_then(Value::as_u64)
         .map(Duration::from_millis)
-}
-
-/// Why one call does not get the wait it asked for, and what to do instead.
-///
-/// # Invariant
-///
-/// The ceiling is not a failure of the call's work: it is a refusal to hold the turn
-/// for it, so the sentence always names the way to run the same work without waiting.
-fn too_long(name: &str, asked: Duration, cap: Duration) -> String {
-    let asked = crate::agent::spent(u64::try_from(asked.as_millis()).unwrap_or(u64::MAX));
-    let cap = crate::agent::spent(u64::try_from(cap.as_millis()).unwrap_or(u64::MAX));
-    format!(
-        "`{name}` did not run: it asked to wait {asked} and no call waits longer than {cap}. \
-         Start the work so that it reports to you instead -- `background` answers at once \
-         with a `job_id` that `check_job` collects, and `detached` hands the answer over \
-         when it lands -- or ask again later. A wait that is already running is not \
-         lengthened by asking for more."
-    )
 }
 
 /// Whether this call said `detached`.
@@ -123,6 +98,56 @@ pub enum Carried {
     Process,
     /// The call runs as a job of this server and reports when it is done.
     Call,
+}
+
+/// The jobs this server is running, so one of them can be stopped by name.
+///
+/// # Invariant
+///
+/// Only a job of this process is here: a job of a run that stopped has no token to
+/// cancel, and `del_job` answers for it out of its row. A token leaves as soon as its
+/// job ends, so the map holds what is running and nothing else.
+#[derive(Clone, Default)]
+pub struct JobRegistry {
+    running: Arc<std::sync::Mutex<std::collections::HashMap<i64, CancellationToken>>>,
+}
+
+impl JobRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Takes the id a job was given, under the token that ends it.
+    pub fn add(&self, id: i64, cancel: CancellationToken) {
+        self.running
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, cancel);
+    }
+
+    /// Forgets a job that ended by itself.
+    pub fn done(&self, id: i64) {
+        self.running
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id);
+    }
+
+    /// Stops one job here; false when it had already ended.
+    pub fn stop(&self, id: i64) -> bool {
+        let cancel = self
+            .running
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id);
+        match cancel {
+            Some(cancel) => {
+                cancel.cancel();
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 /// Which way a call that does not wait gives up its answer.
@@ -192,10 +217,14 @@ pub async fn spawn(
     job.cancel = CancellationToken::new();
     job.events = None;
     job.inbox = crate::session::InboxSignal::never();
+    job.holds_the_turn = false;
     let started = std::time::Instant::now();
     let called = name.clone();
+    let ended = job.cancel.clone();
+    ctx.jobs.add(id, ended.clone());
     tokio::spawn(async move {
         let outcome = crate::tools::invoke(&called, tool, args, &job).await;
+        job.jobs.done(id);
         let spent = crate::agent::spent(started.elapsed().as_millis() as u64);
         let text = match crate::tools::cap_max_output(
             &job,
@@ -231,7 +260,7 @@ pub async fn spawn(
 /// outlive the session's silence, and a deleted session owes nothing. A `detached`
 /// answer is the notice itself, so it counts as collected the moment that notice is
 /// queued; a `background` answer waits for `check_job`.
-async fn report(
+pub(crate) async fn report(
     ctx: &ToolContext,
     id: i64,
     name: &str,

@@ -431,6 +431,11 @@ impl Tool for PythonTool {
         true
     }
 
+    /// An interpreter turns a long wait into its own background call: the clock is its own.
+    fn owns_its_wait(&self) -> bool {
+        true
+    }
+
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -628,16 +633,17 @@ impl Tool for CheckPythonTool {
         "check_python"
     }
 
-    /// A read with no number reads now: waiting is the call's to ask for.
-    fn default_timeout(&self) -> Option<Duration> {
-        Some(Duration::ZERO)
+    /// The read waits for `wait_ms`; that wait is the whole work.
+    fn owns_its_wait(&self) -> bool {
+        true
     }
 
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "name": {"type": "string"}
+                "name": {"type": "string"},
+                "wait_ms": {"type": "integer"}
             },
             "additionalProperties": false
         })
@@ -659,7 +665,11 @@ impl Tool for CheckPythonTool {
                     "no interpreter named {name}; `list_python` says which names exist"
                 ));
             };
-            let wait = crate::tools::tunnel::wait_of(&args).unwrap_or_default();
+            let wait = args["wait_ms"]
+                .as_u64()
+                .map(Duration::from_millis)
+                .unwrap_or(Duration::ZERO)
+                .min(Duration::from_secs(600));
             if !wait.is_zero() {
                 // Only a clock: a message or a cancel ends this from `waited`.
                 handle.wait_idle(wait).await;

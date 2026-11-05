@@ -2117,6 +2117,16 @@ impl Store {
         Ok(rows)
     }
 
+    /// Every job a session still has, running or not.
+    pub fn jobs_of(&self, session: &str) -> anyhow::Result<Vec<i64>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare("SELECT id FROM tool_jobs WHERE session = ?1 ORDER BY id")?;
+        let ids = stmt
+            .query_map(params![session], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<i64>>>()?;
+        Ok(ids)
+    }
+
     /// Says a job will never answer, and keeps the row so `check_job` can say why.
     pub fn lose_job(&self, id: i64) -> anyhow::Result<()> {
         self.lock().execute(

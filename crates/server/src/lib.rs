@@ -339,6 +339,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         context_limit_percent: cfg.agent.context_limit_percent,
         output_dir: output_dir.clone(),
         detached: detached.clone(),
+        jobs: crate::tools::tunnel::JobRegistry::new(),
     });
 
     // A tool's sentences live only in the config. See `tools::text`.

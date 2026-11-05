@@ -35,7 +35,11 @@ cleanup() {
   # is not distinguishable from a real one by anything but its home.
   local pid; pid=$(cat "$home/server.lock" 2>/dev/null)
   alive "$pid" && taskkill //PID "$pid" //T //F >/dev/null 2>&1
-  sleep 1
+  # It writes on the way out, so the home is gone only once the process is.
+  for _ in $(seq 1 100); do
+    alive "$pid" || break
+    sleep 0.2
+  done
   rm -rf "$home" || echo "note: $home is still held by a process" >&2
 }
 trap cleanup EXIT
@@ -59,7 +63,7 @@ cli=("$bin/gongga-cli.exe" --home "$home" --server "127.0.0.1:$port")
 # The CLI echoes its own command frame, so the answer is the last line: grepping
 # the whole stream would match the arguments the caller just typed.
 run() { "${cli[@]}" "$@" 2>&1 | tail -n 1; }
-job_of() { sed -n 's/.*as job \([0-9][0-9]*\).*/\1/p' <<<"$1"; }
+job_of() { sed -n 's/.* job \([0-9][0-9]*\)[.:].*/\1/p' <<<"$1"; }
 
 start || { echo "FAIL · job · the server never listened"; sed -n '1,20p' "$log"; exit 1; }
 run set_session probe --cwd "$work" >/dev/null 2>&1
@@ -85,7 +89,7 @@ said=$(run check_job other --job_id "$job")
 grep -q "no job $job" <<<"$said"
 ok "another session's job is not this session's to read" $?
 
-said=$(run check_job probe --job_id "$job" --timeout_ms 30000)
+said=$(run check_job probe --job_id "$job" --wait_ms 30000)
 grep -q "slow-done" <<<"$said"
 ok "check_job collects what the job printed" $?
 grep -q "finished successfully" <<<"$said"
@@ -98,6 +102,46 @@ ok "reading an answer clears it, as check_bash does" $?
 said=$(run check_job probe --job_id 999999)
 grep -q "no job 999999" <<<"$said"
 ok "an id this session never had is not found" $?
+
+# ---- SPEC: a foreground job over its timeout becomes background -----------
+
+t0=$SECONDS
+said=$(run exec probe '["bash","-c","sleep 4; echo late-answer"]' --timeout_ms 1000)
+took=$((SECONDS - t0))
+promoted=$(job_of "$said")
+[[ -n "$promoted" ]]
+ok "a call past its timeout became background job $promoted" $?
+[[ $took -lt 4 ]]
+ok "the turn stopped waiting at its clock (${took}s)" $?
+grep -q "late-answer" <<<"$said" && early=1 || early=0
+[[ "$early" == 0 ]]
+ok "the receipt did not wait for the work" $?
+
+said=$(run check_job probe --job_id "$promoted" --wait_ms 30000)
+grep -q "late-answer" <<<"$said"
+ok "the work it became still answers, through check_job" $?
+
+# ---- del_job stops the work, not just the row ------------------------------
+
+marker="$work/deljob-marker"
+rm -f "$marker"
+said=$(run exec probe "[\"bash\",\"-c\",\"sleep 6; echo late > $marker\"]" --background true)
+doomed=$(job_of "$said")
+[[ -n "$doomed" ]]
+ok "a job to delete was started (job $doomed)" $?
+
+said=$(run del_job probe --job_id "$doomed")
+grep -q "and stopped it" <<<"$said"
+ok "del_job stops it" $?
+
+said=$(run check_job probe --job_id "$doomed")
+grep -q "no job $doomed" <<<"$said"
+ok "a deleted job is not collectable" $?
+
+sleep 8
+[[ -f "$marker" ]] && wrote=1 || wrote=0
+[[ "$wrote" == 0 ]]
+ok "the work it was running never finished on its own" $?
 
 # ---- a tool that has a background of its own keeps it ----------------------
 
@@ -152,7 +196,7 @@ start || { echo "FAIL · job · the second start never listened"; sed -n '1,20p'
 grep -q "reported jobs a stopped server left owed" "$log"
 ok "the next start says what the last run owed" $?
 
-said=$(run check_job probe --job_id "$lost" --timeout_ms 5000)
+said=$(run check_job probe --job_id "$lost" --wait_ms 5000)
 grep -q "never reported" <<<"$said"
 ok "the job that died with the server reads as lost" $?
 

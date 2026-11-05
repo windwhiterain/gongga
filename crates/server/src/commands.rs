@@ -2038,6 +2038,15 @@ async fn finish_delete(d: &Dispatch, name: &str, was_busy: bool, dropped: usize)
         Some(session) => Some(session.claim().await),
         None => None,
     };
+    // A job of this session is work it started: it goes the way its bash goes.
+    let jobs = d.store.jobs_of(name).unwrap_or_default();
+    let mut stopped_jobs = 0;
+    for job in jobs {
+        if d.agent.jobs.stop(job) {
+            stopped_jobs += 1;
+        }
+        let _ = d.store.delete_job(job);
+    }
     let stopped = d.sessions.detached().stop_session(name).await;
     if stopped.failed > 0 {
         return Outcome::err(format!(
@@ -2060,6 +2069,9 @@ async fn finish_delete(d: &Dispatch, name: &str, was_busy: bool, dropped: usize)
                     " and stopped {} detached bash(es)",
                     stopped.stopped
                 ));
+            }
+            if stopped_jobs > 0 {
+                message.push_str(&format!(" and {stopped_jobs} job(s)"));
             }
             if was_busy {
                 message.push_str(" (interrupted the running turn)");
