@@ -414,6 +414,25 @@ leaves the sticky where it was.
 The window's click is therefore one command line, not three: `!shown` is what it
 knows, and everything else follows from the flag changing.
 
+## Client::session_named, Client::show_session and Client::show_named_session
+
+The window decides what it draws from the commands it sends, not from the sessions the
+server announces. A session the server announces is a session nobody here asked for:
+it stays in the list and its events are not drawn. A command that names a session --
+`set_session --name`, `get_messages --session`, `send_message --name` -- is a
+session the window was told about, and it is shown.
+
+`session_named` reads the *kind* the catalog gives an argument, not the argument's
+name: `set_session` binds `--name` and `get_messages` binds `--session` to one idea,
+and only the kind says which is the session. It answers `None` for a client command,
+because `set_render_session` has a session argument too and it says whether that
+session is drawn -- following it would undo what it says.
+
+`show_session` is `set_shown` without the row: the operator asked for a command, not
+for a report that the window now draws another session. It is the same rule the click
+uses, so a session the operator named and a session a command named are shown the same
+way, and showing one makes it the sticky session.
+
 ## QuotaRow, quota_row
 
 SPEC's `active_quota` row, spelled once for every front-end, for the same reason
@@ -483,7 +502,7 @@ drew it, which made the list the only way back to a hidden session and cost the 
 two more areas (`line`, and the modes as words).
 
 The flag is read off each session rather than off the file's entries, because a
-session nobody set is shown: reading the map would leave a new session with no window
+session nobody set is hidden: reading the map would leave a new session with no window
 at all.
 
 ## Sink::sticky_session

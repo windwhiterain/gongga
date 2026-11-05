@@ -114,14 +114,15 @@ impl BoxEdge {
 ///
 /// It is a view, never a deletion: a session left hidden keeps every block it ever
 /// carried, so showing it again brings the whole history back. A session nobody
-/// set is shown: a window has to show something.
+/// set is hidden: a window draws what it was told to draw, and a session it
+/// never named is not one of them.
 pub struct Shown {
     path: PathBuf,
     show: BTreeMap<String, bool>,
 }
 
 impl Shown {
-    /// Loads `home/cli.toml`; a missing or unreadable file shows everything.
+    /// Loads `home/cli.toml`; a missing or unreadable file shows nothing.
     pub fn load(home: &Path) -> Self {
         let path = home.join("cli.toml");
         let show = read_file(&path)
@@ -132,9 +133,9 @@ impl Shown {
         Self { path, show }
     }
 
-    /// Whether this session gets a window beside the list; nobody set is shown.
+    /// Whether this session gets a window beside the list; nobody set is hidden.
     pub fn is_shown(&self, name: &str) -> bool {
-        self.show.get(name).copied().unwrap_or(true)
+        self.show.get(name).copied().unwrap_or(false)
     }
 
     pub fn set(&mut self, name: &str, show: bool) -> anyhow::Result<()> {

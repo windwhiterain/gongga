@@ -338,6 +338,9 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                     cli::Submission::Offline => ui.restore_input(&line),
                     cli::Submission::Send(msg) => match link.as_ref() {
                         Some(open) => {
+                            // The command names a session: that session's
+                            // window is drawn.
+                            client.show_named_session(&msg, &mut TuiSink(&mut ui));
                             if let Err(e) = open.send(msg).await {
                                 // Its end went unnoticed, so the line may not have
                                 // arrived: report it rather than re-queue it.

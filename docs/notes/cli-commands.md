@@ -39,18 +39,20 @@ ever carried, so `true` after it brings the whole history back -- which is the
 property the old session filter did not have, because it dropped the lines on the
 way in.
 
-A session nobody set is shown. SPEC does not name a default; a window that opens on
-nothing, with no line saying why, reads as a broken server, so the default is the one
-that shows the work.
+A session nobody set is hidden (2026-11-05: the operator's ruling). The window draws
+what it was told to draw: a session the operator names -- by clicking it, or by a
+command that names it -- is shown, and a session the server announces is not. The
+earlier default was the other way round, and it made every session somebody else
+created appear in the events area on its own.
 
 `is_shown(name)` is the only question the layout asks, and it is asked of the session
-rather than of the map: a session with no entry is shown, so reading the map would
+rather than of the map: a session with no entry is hidden, so reading the map would
 leave a new session with no window.
 
 `stored_show` also reads the words a mode once spelled -- `full` and `line` were on
 screen, `none` was not -- so a `cli.toml` written before SPEC had one flag per session
 keeps meaning what it meant. A word with no meaning is dropped rather than guessed at,
-which shows the session, the same as having no entry.
+which leaves the session as having no entry: hidden.
 
 ## BlockSize and BoxEdge
 

@@ -684,7 +684,7 @@ impl Client {
                     title: title_note(s),
                 })
                 .collect(),
-            // A session nobody set is shown, so this reads the sessions rather
+            // A session nobody set is hidden, so this reads the sessions rather
             // than the file's entries.
             shown: self
                 .sessions
@@ -1467,6 +1467,69 @@ impl Client {
         );
         self.follow_shown(session, show, sink);
         self.after_sticky_change(sink);
+    }
+
+    /// Shows one session's window, without saying so.
+    ///
+    /// # Invariant
+    ///
+    /// Silent: this is the window's own bookkeeping, not an answer to the
+    /// operator. A session nobody set is hidden, so this is what puts one on the
+    /// screen -- and it is the same rule the click uses, so a session the
+    /// operator named and a session a command named are shown the same way.
+    /// See `docs/notes/cli-lib.md`.
+    pub fn show_session(&mut self, session: &str, sink: &mut dyn Sink) {
+        if !self.shown.is_shown(session)
+            && let Err(e) = self.shown.set(session, true)
+        {
+            self.row(sink, LineKind::Error, &format!("could not save: {e}"));
+            return;
+        }
+        // The sticky session follows: the session this command names is the
+        // one the window reads.
+        self.follow_shown(session, true, sink);
+        self.after_sticky_change(sink);
+    }
+
+    /// The session a command names, when the catalog says it names one.
+    ///
+    /// # Invariant
+    ///
+    /// The kind is the catalog's, not the argument's name: `set_session --name`
+    /// and `get_messages --session` bind different names to one idea, and only
+    /// the kind says which of them is the session. A client command names no
+    /// session: `set_render_session` has a session argument, and it says whether
+    /// that session is drawn -- following it would undo what it says.
+    /// See `docs/notes/cli-lib.md`.
+    pub fn session_named<'a>(&self, name: &str, args: &'a protocol::Args) -> Option<&'a str> {
+        let spec = self.catalog.command(name)?;
+        if spec.target != protocol::CommandTarget::Server {
+            return None;
+        }
+        let name = spec
+            .args
+            .iter()
+            .find(|a| a.kind.as_deref() == Some("session"))
+            .map(|a| a.name.clone())?;
+        args.get(&name).map(String::as_str)
+    }
+
+    /// Shows the session a command names, when it names one.
+    ///
+    /// # Invariant
+    ///
+    /// The window works it out for itself, from the command it is about to send:
+    /// a session the server announces is a session the window was never told to
+    /// draw, and one this command names is one it was.
+    /// See `docs/notes/cli-lib.md`.
+    pub fn show_named_session(&mut self, message: &ClientMessage, sink: &mut dyn Sink) {
+        let ClientMessage::Command { name, args, .. } = message else {
+            return;
+        };
+        let Some(session) = self.session_named(name, args).map(str::to_string) else {
+            return;
+        };
+        self.show_session(&session, sink);
     }
 
     /// Runs one client command, whose args the spec already validated.

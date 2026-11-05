@@ -107,6 +107,12 @@ loop, and one frame covers the burst (`Link::try_recv`). The accounting matters
 as much as the draining: each message taken is one fewer pending, which is what
 gives the peer the receive window back.
 
+The window draws the session a command names, and works it out for itself: before
+the command goes out, `Client::show_named_session` reads the catalog's kind and shows
+that session. A session the server announces is not shown -- nobody here asked for
+it -- so a session somebody else created never takes the events area on its own. See
+`docs/notes/cli-lib.md`.
+
 The one thing done before the window opens is `cli::home_of`: the loop needs the
 home for the server it may start, and nothing else. The command an agent's shell
 types is not this front-end's to write -- a shell only exists inside a server, and
