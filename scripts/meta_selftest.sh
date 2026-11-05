@@ -119,7 +119,8 @@ env -u GONGGA_MODEL -u GONGGA_PROVIDER -u GONGGA_BASE_URL -u GONGGA_API_KEY -u G
 for _ in $(seq 1 150); do [[ -s "$home/server.lock" ]] && break; sleep 0.2; done
 wait_listening || { echo "the server never listened on 127.0.0.1:$port" >&2; exit 1; }
 server_pid=$(child_pid)
-cli=("$bin/gongga-cli.exe" --home "$home" --server "127.0.0.1:$port")
+# The client is the home's shim, written by the server it talks to (`docs/notes/cli-bin-gongga.md`).
+cli=("$home/bin/gongga-cli" --home "$home" --server "127.0.0.1:$port")
 
 created=$("${cli[@]}" set_session reader --model fake/flash-fake --cwd "$root" 2>&1)
 [[ "$created" == *'"ok":true'* ]]
