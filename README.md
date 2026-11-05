@@ -4,11 +4,12 @@ _Post Modern Agent Harness_
 
 ## Features
 
-- Powerful prefix cache planning argirithm. 
+- Powerful prefix cache planning argirithm.
 - Everything is skill, even compact context, spawn subagent, read_image.
   - Skills give scripts, so agents can nest, chain them arbiarily.
+- Tool call is mapped generally to any command to avoid shell escape hell.
 - Agents can do whatever user can do to the harness even where themself live.
-- Auto image reference replacement, so that agent can create arbitary tool return any contents with images embedded, no need seperate `read_image` tool call.  
+- Auto image reference replacement, so that agent can create arbitary tool return any contents with images embedded, no need seperate `read_image` tool call.
 - Heir based context compact, new session can ask mentor session about the history.
 - Infinite forward compatibility via chain of migraters.
 - Elegant server cancle, restart auto continue, interrupt no session, tasks nor client, covinent for long running agents and self-evolving.
@@ -23,7 +24,7 @@ _Post Modern Agent Harness_
 ### Quality of Life
 
 - Message/notice/interruption will wake the waiting agent immediately, turn the waited process into background.
-- Provider quota update in realtime. 
+- Provider quota update in realtime.
 - Reasoning abstraction show both first line and second line so you know the reaction of the agents, and what it gonna do.
 - Vscode terminal compatible.
 

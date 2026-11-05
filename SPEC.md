@@ -33,21 +33,20 @@ path, rendered in hierarchy.
 ## Tool
 tool are tunnel of cmd that agents can directly call to avoid escape.
 
-all tool has optional `description`, `max_output` argument that the tunnel consume.
+all tool has optional `description`, `max_output`, `timeout_ms`, `background` argument that the tunnel consume.
 - `max_output`: in chars, if exeeded, save to temp file and return the file metadata {path, chars, line count}
 
 use `which("bash")` as bash.
-- bash{command, name = "default", background = false, detached = false, timeout_ms = <timeout_ms>}:
+- bash{command, name = "default", detached = false}:
   cwd is session's cwd if session has no remote.
   runs in the persistent shell `name`
   - key = {session_name, bash_name}.
   - background bash ended will notice its session, background bash has no timeout.
-- exec{command, timeout_ms = <timeout_ms>}:
+- exec{command}:
   command is a list of words: the program, then its arguments, one word each.
   no shell reads them, so a word needs no escaping and gets none.
   cwd is the session's cwd. not the persistent shell: `cd` and exports do not survive.
   what a shell does (pipes, redirects, `cd`, `&&`, expansion, wildcards) is not here.
-- remote_exec{command, timeout_ms = <timeout_ms>}: mirror exec, on the session's remote.
 - python{code, ...}: mirror bash, persistant REPL.
 - list_bash{name_regex}: list matched bash with the caller session's name in key.
 - list_python{...}: mirror list_bash.
@@ -55,24 +54,13 @@ use `which("bash")` as bash.
 - check_python{...}: mirror check_bash.
 - del_bash{name_regex}: delete matched bash with the caller sessions' name in key.
 - del_python{...}: mirror del_bash.
-- remote_bash{command, name, target = <session's remote>, background = false, timeout_ms = <timeout_ms>}:
+- remote_bash{command, name, target = <session's remote>}:
   cwd is session's cwd if session's remote is target.
   non-meta reference the remote skill.
+- remote_exec{command}: mirror exec.
 - remote_python{code, ...}: mirror remote_bash.
-- read_file/write_file/replace
-- wait{timeout_ms = <timeout_ms>}: if interrupted, the call end.
-
-File tools run through the Python tool's interpreter, on this machine by default
-and on the session's remote when `remote` names it, so file content is a JSON field
-and never a shell command or Python source. A `remote` that names another machine is
-refused: a session's directory is on one peer.
-- read_file{path, offset = 0, limit = 0, remote = none}: lines `offset..offset+limit`;
-  `limit = 0` reads to the end. Capped like other tool output.
-- write_file{path, content, remote = none}: create parent directories and replace the
-  file atomically; `content` is written as UTF-8 bytes.
-- replace{path, old, new, all = false, remote = none}: literal replacement; without
-  `all`, exactly one occurrence must match, and any other count is an error. Atomic.
-
+- read_file/write_file/replace{remote = none}:
+- wait{}: if interrupted, the call end.
 
 ## Server State
 everything in database (sqlite) under a home directory, structured for agentic retrieval/mutation.
@@ -157,35 +145,50 @@ stikcy to xxx means del its sticky if sticky xxx is changed
 all named argument's name can be ommited via argument order.
 
 - server:
-  - `set_session --name <session>(sticky) [--model <model>](initial: none)(sticky) [--thinking <thinking>](initial: default)(stikcy to model) [--ctx_limit <ctx_limit%>](initial: "70%")(tsikcy to model) [--remote <remote>](initial: none) [--cwd <cwd>](initial: ".")(sticky to remote) [--must_create <bool>](initial: false)`:
+  - `set_session --name <session>(sticky) [--model <model>](initial: none)(sticky) [--thinking <thinking>](initial: default)(stikcy to model) [--ctx_limit <ctx_limit%>](initial: "70%")(tsikcy to model) [--cache_iter <cache_iter>](initial: shortest)(sticky over model) [--remote <remote>](initial: none) [--cwd <cwd>](initial: ".")(sticky to remote) [--must_create <bool>](initial: false)`:
     - `--must_create true` refuses the command when the session already exists: a caller
       that starts its own session must not join another one's transcript by reusing a name.
   - `del_session --name <session>(sticky)`: also delete all bash with the session name in key.
   - `send_message --message <message> --name <session>(sticky)`: inject message instantly, turn waiting bash to backgound.
-  - `interrupt_session <session>(sticky)`
+  - `interrupt_session --name <session>(sticky)`
   - `cancel`: not instantly, but finish every task that can't be serialized to data, then store the pending tasks into data, the exit. next start will auto pick up those tasks.
-  - `trigger_event <event>`
-  - `subscribe <subscription> <pattern> [--persistant] [--bash <bash> --cmd <cmd>] [--python <python> --code <code>]`:
+  - `trigger_event --event <event>`
+  - `subscribe --subscription <subscription> --pattern <pattern> [--persistant <bool>] [--bash <bash> --cmd <cmd>] [--python <python> --code <code>]`:
     when pattern matched triggered event, run bash cmd or python code in persistant bash or python interpreter.
-  - `del_subscribe <subscription>`
+  - `del_subscribe --subscription <subscription>`
+  - `skill --name <name> [--args <word list as JSON>]`: run the entry a skill declares,
+    resolved by the roots below, with the words as given and no shell between them. The
+    program that starts it is read off the file (`.sh` is bash, `.py` is python, `.ps1` is
+    powershell, `.cmd` is `cmd /c`, and no extension means its `#!` line), so the caller
+    names the script's arguments and not its interpreter. The entry's exit code is this
+    command's `ok`, and what it printed is what comes back. A skill with no entry is a body
+    and refuses, naming the `SKILL.md` to read instead. Published by the tool of the same
+    name, which is the one registration both surfaces come from.
 - server_script: that registered by external python scripts
-  - `get_messages [<begin>]:[<end>] --session <session>(sticky)`: return the items in closed range <begin>:<end> (negative number count from end, missing number means boundary).
-  - `clone_session <session> <name>`
-  - `skill <name> [args...]` | `skill ls` | `skill which <name>` | `skill run <name>`:
-    run the entry a skill declares, resolved by the roots above. argv is passed through
-    unparsed, the entry's exit code is this command's, and neither needs a server nor a
-    runtime -- an entry is a file on this disk. `run` reaches a skill whose own name is
-    `ls` or `which`.
+  - `get_messages [--range <begin:end>] --session <session>(sticky)`: return the items in closed range <begin:end> (negative number count from end, missing number means boundary).
+  - `clone_session --session <session> --name <name>`
+- command layer, without a server:
+  - `skill ls` | `skill run <name>` | `skill <name> [args...]`: the same entry, run on
+    this disk and not on a server -- why a machine with no server still runs a skill.
+    `argv` after the name is the entry's, unparsed, so a flag spelled there is the script's
+    and not this layer's; the entry's exit code is this process's. `run` reaches a skill
+    whose own name is `ls` or `run`.
+    - what leaves this layer: `ls` (its answer is the session's, so it is asked of the
+      server when the shell names one) and `--name`/`--args`, which spell the server's own
+      form, `skill <session> --name <n> --args <json>`. A skill that must receive `--name`
+      itself is `skill run <name> --name …`.
+    - what a skill runs is its `SKILL.md`'s `metadata.entry`, and `skill ls` gives that
+      `SKILL.md`; there is no verb for "which file", since reading the body says it.
 - client:
-  - `set_sticky <type> <value>`:
-  - `del_sticky <type>`
+  - `set_sticky --type <type> --value <value>`:
+  - `del_sticky --type <type>`
   - `set_render [--block_size <n>](initial: 8) [--box_edge <n>](initial: 2)`:
     - `block_size`: max line count of non-output block, auto scroll.
     - `box_edge`: columns at each side of an opened block where the wheel scrolls the
       events instead of the block; the block is drawn there like anywhere else.
-  - `set_render_session <bool> --session <session>(stikcy)`
+  - `set_render_session --show <bool> --session <session>(stikcy)`
   - `connect_server [--ip <ip>](default: localhost) --port <port>`
-  - `serve <port> [--home <home>](default: "~/.gongga")`
+  - `serve --port <port> [--home <home>](default: "~/.gongga")`
 
 ## Skill
 a skill is a directory holding `SKILL.md`: `name`, `description`, and what its body needs.
@@ -201,7 +204,7 @@ resolved silently.
   defines as an arbitrary mapping, so a skill carrying it stays valid elsewhere.
 - a body runs its entry from **its own directory** -- `SKILL_DIR=<dir of SKILL.md>` then
   `"$SKILL_DIR/<entry>"` -- never from an install path. The anchor costs nothing here:
-  `@skill:` expansion and `index_skill` both hand out the `SKILL.md` path.
+  `@skill:` expansion and `skill` with no name both hand out the `SKILL.md` path.
 - a skill with no entry is a body and nothing to run.
 
 ### Invariant
