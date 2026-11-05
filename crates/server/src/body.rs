@@ -72,24 +72,27 @@ impl RequestBody {
     }
 
     /// Queues one stored row in the shape this request is sent in.
-    fn push(&mut self, item: String) {
+    ///
+    /// # Invariant
+    ///
+    /// A row that cannot be expressed stops the body here: SPEC's "everything must
+    /// store and send" is a promise about the request, and a transcript that quietly
+    /// lost a row would be sent anyway.
+    fn push(&mut self, item: String) -> Result<(), IoError> {
         if self.face == Face::Responses {
             self.emit(item);
-            return;
+            return Ok(());
         }
-        // A row this face cannot send stays in the transcript, out of the request.
-        let Ok(stored) = serde_json::from_str::<serde_json::Value>(&item) else {
-            return;
-        };
-        let Some(message) = crate::anthropic::item(&stored) else {
-            return;
-        };
+        let stored = serde_json::from_str::<serde_json::Value>(&item)
+            .map_err(|e| IoError::other(format!("a stored row is not JSON: {e}")))?;
+        let message = crate::anthropic::item(&stored).map_err(IoError::other)?;
         if let Some(previous) = self.held.replace(message.to_string())
             && let Ok(mut previous) = serde_json::from_str::<serde_json::Value>(&previous)
         {
             crate::anthropic::breakpoint(&mut previous);
             self.emit(previous.to_string());
         }
+        Ok(())
     }
 
     /// Queues the item held back, without a breakpoint: it is the last one.
@@ -119,7 +122,9 @@ impl RequestBody {
                 Some(Err(e)) => return Step::Failed(IoError::other(e)),
                 Some(Ok(Stored { item, pictures })) => {
                     if pictures.is_empty() {
-                        self.push(item);
+                        if let Err(e) = self.push(item) {
+                            return Step::Failed(e);
+                        }
                         return Step::Ready(true);
                     }
                     // The one value resolved while writing: the provider's file per picture.
@@ -171,7 +176,9 @@ impl Stream for RequestBody {
             };
             match future.as_mut().poll(cx) {
                 Poll::Ready(text) => {
-                    this.push(text);
+                    if let Err(e) = this.push(text) {
+                        return Poll::Ready(Some(Err(e)));
+                    }
                     continue;
                 }
                 Poll::Pending => {

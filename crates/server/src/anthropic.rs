@@ -86,13 +86,15 @@ pub fn breakpoint(message: &mut Value) {
     }
 }
 
-/// One stored row as this face reads it, or nothing when the row belongs to the other.
+/// A stored row, as this face sends it.
 ///
 /// # Invariant
 ///
-/// The row is read, never rewritten: a shape this face cannot send -- a reasoning item,
-/// a provider-side tool item -- is left out of the request and stays in the transcript.
-pub fn item(stored: &Value) -> Option<Value> {
+/// Every row reaches the request: SPEC's "everything must store and send" is not a
+/// promise about the rows this face likes. A shape it has no block for -- one another
+/// face produced -- is rendered as what it said, and a row that cannot be read at all
+/// fails the request instead of vanishing from it.
+pub fn item(stored: &Value) -> Result<Value, String> {
     match stored.get("type").and_then(Value::as_str) {
         Some("function_call") => {
             let arguments = stored
@@ -101,7 +103,7 @@ pub fn item(stored: &Value) -> Option<Value> {
                 .unwrap_or("{}");
             let input = serde_json::from_str::<Value>(arguments)
                 .unwrap_or_else(|_| json!({ "arguments": arguments }));
-            Some(json!({
+            Ok(json!({
                 "role": "assistant",
                 "content": [{
                     "type": "tool_use",
@@ -111,7 +113,7 @@ pub fn item(stored: &Value) -> Option<Value> {
                 }],
             }))
         }
-        Some("function_call_output") => Some(json!({
+        Some("function_call_output") => Ok(json!({
             "role": "user",
             "content": [{
                 "type": "tool_result",
@@ -119,13 +121,62 @@ pub fn item(stored: &Value) -> Option<Value> {
                 "content": stored.get("output").and_then(Value::as_str).unwrap_or_default(),
             }],
         })),
-        Some(_) => None,
+        // This face's own thought, replayed byte for byte: a tool loop is not accepted
+        // without the block that led to the call.
+        Some("thinking") | Some("redacted_thinking") => Ok(assistant(vec![stored.clone()])),
+        // Another face's thought has no block here, so it travels as prose.
+        Some("reasoning") => Ok(assistant(vec![json!({
+            "type": "text",
+            "text": summary_of(stored),
+        })])),
+        // A provider-side tool item has no block here either: it is what the provider
+        // did, and this face is told it in prose.
+        Some(other) => Ok(assistant(vec![json!({
+            "type": "text",
+            "text": format!(
+                "used {}{}",
+                crate::store::activity_name(other),
+                crate::store::activity_detail(stored)
+            ),
+        })])),
         None => {
-            let role = stored.get("role").and_then(Value::as_str)?;
-            let blocks = blocks_of(stored.get("content")?);
-            (!blocks.is_empty()).then(|| json!({ "role": role, "content": blocks }))
+            let role = stored
+                .get("role")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "a row with neither a type nor a role".to_string())?;
+            let Some(content) = stored.get("content") else {
+                return Err(format!("a {role} row with no content"));
+            };
+            let blocks = blocks_of(content);
+            if blocks.is_empty() {
+                return Err(format!("a {role} row with no content"));
+            }
+            Ok(json!({ "role": role, "content": blocks }))
         }
     }
+}
+
+/// One assistant message holding these blocks.
+fn assistant(blocks: Vec<Value>) -> Value {
+    json!({ "role": "assistant", "content": blocks })
+}
+
+/// What a reasoning row says, in prose: the summary it carries, else its own text.
+fn summary_of(stored: &Value) -> String {
+    let parts = stored["summary"].as_array().cloned().unwrap_or_default();
+    let text = parts
+        .iter()
+        .filter_map(|part| part["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !text.is_empty() {
+        return text;
+    }
+    stored["text"]
+        .as_str()
+        .or_else(|| stored["thinking"].as_str())
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// This face's content blocks for a stored `content` field, which may be text or parts.
