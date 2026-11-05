@@ -336,6 +336,14 @@ A ledger also owns the *width* its blocks were laid out at, which is the whole r
 it is the unit rather than the log: a block is drawn in one pane, and the pane's width
 is the width that block is laid out at. Loading that into the log made the width a
 fact about the log, so two panes of two widths re-laid out all of it twice per frame.
+A ledger's order is the order the pane draws, which is not always the order blocks
+arrived: a page of older rows is fetched when the operator scrolls above what a window
+holds, and its blocks land *in front of* the ones already there. `Log::older` sets the
+position the next block goes to, `attach` inserts there and re-sums the window, and
+`Log::landed` writes the journal in that same order so a restart draws what the pane
+drew. A ledger also remembers each page's first block and its oldest row (`pages`),
+which is where `Log::floor_of` reads how far back the window reaches.
+
 The merged view a ledger used to be -- every block in arrival order, drawn when the
 events area was undivided -- is gone with it: no frame ever drew it (`render` only
 ever reads a session's window and the command line), so it cost a second row sum on
