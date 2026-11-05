@@ -116,7 +116,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     cache_tier TEXT,
     -- Whether a periodic time notice keeps this session's prefix warm. Off by
     -- default: a session that never asked starts no timer of its own.
-    cache_keepalive INTEGER NOT NULL DEFAULT 0
+    cache_keepalive INTEGER NOT NULL DEFAULT 0,
+    -- When this session's last turn ended, and nothing else. NULL is a session
+    -- that has not finished a turn yet, which the list orders by `created_at`.
+    -- Its own column rather than `updated_at`, which a tuning change rewrites:
+    -- the list is ordered by this, so writing it anywhere else would move a row
+    -- for a reason the operator did not give.
+    ended_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS sessions_by_status ON sessions(status);
 
@@ -382,6 +388,10 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (
             "cache_keepalive",
             "ALTER TABLE sessions ADD COLUMN cache_keepalive INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "ended_at",
+            "ALTER TABLE sessions ADD COLUMN ended_at INTEGER",
         ),
     ] {
         add_column_if_missing(conn, "sessions", column, ddl)?;
@@ -722,19 +732,19 @@ impl Store {
         Ok(ids)
     }
 
-    /// Every session, newest first, in an order no session's work can move.
+    /// Every session, the one whose turn ended last first.
     ///
     /// # Invariant
     ///
-    /// `created_at` is written once and never rewritten, and `id` breaks the tie
-    /// between two sessions made in the same millisecond. `updated_at` is not part
-    /// of the order: a finished turn rewrites it, and a restart that replays owed
-    /// work finishes turns, so the list used to come back in another order. See
-    /// `docs/notes/server-store.md`.
+    /// The key is `ended_at`, or `created_at` for a session whose turn never
+    /// ended, newest first. `name` breaks the tie and is unique, so the order is
+    /// total, and the client sorts by the same two numbers. `updated_at` is not
+    /// part of it: `set_session_tuning` rewrites that column, so ordering by it
+    /// moved a row whenever a model was chosen. See `docs/notes/server-store.md`.
     pub fn list_sessions(&self) -> anyhow::Result<Vec<SessionRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(&format!(
-            "{} ORDER BY s.created_at DESC, s.id DESC",
+            "{} ORDER BY COALESCE(s.ended_at, s.created_at) DESC, s.name DESC",
             Self::SESSION_SELECT
         ))?;
         let rows = stmt
@@ -750,14 +760,15 @@ impl Store {
     ///
     /// `model` is the whole model, and a row written before it said that keeps the
     /// bare name in `model_name`: this select reads both, so nothing that was pinned
-    /// stops being pinned.
+    /// stops being pinned. A column is appended, never inserted: `session_row` reads
+    /// these by position.
     const SESSION_SELECT: &'static str = "SELECT s.id, s.name, s.status,
                     COALESCE(s.model, s.model_name), s.cwd,
                     s.created_at, s.updated_at,
                     (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS messages,
                     s.context_limit, s.thinking_effort,
                     s.context_tokens, s.cached_tokens, s.tps, s.ttft_ms, s.remote,
-                    s.cache_tier, s.cache_keepalive
+                    s.cache_tier, s.cache_keepalive, s.ended_at
              FROM sessions s";
 
     /// Every session in `error`, with what a monitor turn still owes it.
@@ -891,6 +902,7 @@ impl Store {
             remote: r.get(14)?,
             cache_tier: r.get(15)?,
             cache_keepalive: r.get::<_, i64>(16)? != 0,
+            ended_at: r.get(17)?,
         })
     }
 
@@ -1807,6 +1819,12 @@ impl Store {
     }
 
     /// Commits the terminal status and the fate of this turn's durable obligations together.
+    ///
+    /// # Invariant
+    ///
+    /// It also stamps `ended_at`, the column the session list is ordered by, so
+    /// "the turn ended" and "the list may move" are the same commit: a reader
+    /// never sees a session that finished while its place still says otherwise.
     pub fn finish_turn(
         &self,
         session_id: i64,
@@ -1818,7 +1836,7 @@ impl Store {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
         tx.execute(
-            "UPDATE sessions SET status = ?1, updated_at = ?2 WHERE id = ?3",
+            "UPDATE sessions SET status = ?1, updated_at = ?2, ended_at = ?2 WHERE id = ?3",
             params![status_name(status), now_millis(), session_id],
         )?;
         if status != SessionStatus::Error {
@@ -2224,6 +2242,13 @@ pub struct SessionRow {
     pub cwd: String,
     pub created_at: i64,
     pub updated_at: i64,
+    /// When its last turn ended; `None` is a session that never finished one.
+    ///
+    /// # Invariant
+    ///
+    /// Written by `finish_turn` and by nothing else, because the list is ordered
+    /// by it: a tuning change has no turn to end.
+    pub ended_at: Option<i64>,
     pub messages: u64,
     /// SPEC's `context (tok)`, `tps (latest)` and `ttft (latest)`: what the last
     /// completed request measured.

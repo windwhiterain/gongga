@@ -659,6 +659,17 @@ pub struct SessionInfo {
     pub status: SessionStatus,
     pub created_at: i64,
     pub updated_at: i64,
+    /// When its last turn ended, in the server's own milliseconds; `None` is a
+    /// session that has not finished one.
+    ///
+    /// # Invariant
+    ///
+    /// This is the key the session list is ordered by, and it is published so a
+    /// client can put a changed row back where it belongs without asking for the
+    /// list again. A session that never finished a turn stands at `created_at`,
+    /// which every client already has.
+    #[serde(default)]
+    pub ended_at: Option<i64>,
     pub messages: u64,
     /// The seq of its last stored row, or 0 for an empty transcript.
     ///
@@ -745,7 +756,6 @@ pub struct CmdArg {
 pub enum Operation {
     /// Make a session the sticky one.
     StickySession { session: String },
-    /// Show or hide a session's window.
     RenderSession { session: String, show: bool },
     /// Delete a session, its shells and its transcript.
     DeleteSession { session: String },

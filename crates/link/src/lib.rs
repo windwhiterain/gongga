@@ -809,8 +809,9 @@ impl Client {
     ///
     /// Every session the server knows is listed whatever its window -- the list is
     /// where a session is clicked -- and `shown` is the ones drawn beside it. Both
-    /// read the announcement backwards: the server publishes newest first, and a
-    /// frame reads like a transcript, where what arrived last is at the bottom.
+    /// read the announcement backwards, because it is ordered by the turn that
+    /// ended last and a frame reads like a transcript: the session that just
+    /// finished stands lowest. See `docs/notes/tui-tree.md`.
     fn layout(&self) -> Layout {
         Layout {
             listed: self
@@ -1355,9 +1356,10 @@ impl Client {
         }
         match self.sessions.iter_mut().find(|s| s.name == row.name) {
             Some(held) => *held = row,
-            // Newest first: the list reads like the greeting wrote it.
-            None => self.sessions.insert(0, row),
+            None => self.sessions.push(row),
         }
+        // A turn that ended moves its session: put the row back where `ended_at` says.
+        self.sessions.sort_by(newest_turn_first);
         self.catalog.set_sessions(self.sessions.clone());
         self.refresh(sink);
     }
@@ -1937,6 +1939,20 @@ fn title_note(session: &protocol::SessionInfo) -> String {
         });
     }
     parts.join(" · ")
+}
+
+/// The session list's order: the turn that ended last comes first.
+///
+/// # Invariant
+///
+/// One key, spelled the way `Store::list_sessions` spells it: `ended_at`, or
+/// `created_at` for a session that has not finished a turn, newest first, with
+/// `name` breaking the tie. Both sides compute it from the same published
+/// numbers, so a row that arrived as a delta lands where the server would have
+/// put it. See `docs/notes/server-store.md`.
+fn newest_turn_first(a: &SessionInfo, b: &SessionInfo) -> std::cmp::Ordering {
+    let ended = |row: &SessionInfo| row.ended_at.unwrap_or(row.created_at);
+    ended(b).cmp(&ended(a)).then_with(|| b.name.cmp(&a.name))
 }
 
 /// SPEC's `active_quota` row: the provider, then the figures it reported.

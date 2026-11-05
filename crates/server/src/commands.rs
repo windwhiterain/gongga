@@ -165,6 +165,8 @@ fn spawn_turn(d: &Dispatch, work: TurnWork) {
         agent
             .run_turn(&work.session, work.tasks, work.epoch, work.gate)
             .await;
+        // The list is ordered by when a turn ended: publish the row that moved.
+        publish_sessions(&keepalive_d);
         // What the turn queued behind itself is this turn's to finish, and the
         // gate is free here without being taken.
         if session.has_move() {
@@ -2455,6 +2457,7 @@ pub fn session_info(d: &Dispatch, row: &crate::store::SessionRow) -> protocol::S
         status: row.status,
         created_at: row.created_at,
         updated_at: row.updated_at,
+        ended_at: row.ended_at,
         messages: row.messages,
         // Read from the transcript, not from a count on the row: a derived number
         // would be a second answer to the same question.
