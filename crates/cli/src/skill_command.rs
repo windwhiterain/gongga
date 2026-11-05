@@ -1,4 +1,4 @@
-//! `skill`: run the entry a skill declares, or say which file a name opens.
+//! `skill`: run what a skill publishes -- an entry, or a package's function.
 //!
 //! See `docs/notes/cli-skill-command.md`.
 
@@ -14,8 +14,9 @@ use anyhow::{Context, anyhow};
 /// # Invariant
 ///
 /// Everything after the name is the entry's argv, unparsed and unquoted, and the
-/// entry's exit code is this process's. A skill whose own name is `ls`, `which` or
-/// `run` is still reachable as `skill run <name>`.
+/// entry's exit code is this process's. A package's first word names the function it
+/// publishes, and the rest bind to that function's parameters. A skill whose own name
+/// is `ls` or `run` is still reachable as `skill run <name>`.
 pub fn dispatch(home: &Path, tokens: &[String]) -> anyhow::Result<()> {
     let cwd = std::env::current_dir().context("reading this process's directory")?;
     let roots = crate::commands::roots(home, Some(&cwd));

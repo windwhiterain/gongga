@@ -2,7 +2,8 @@
 
 ## module doc
 
-`gongga-cli skill <name> [args…]` runs the entry a skill declares. It exists because the
+`gongga-cli skill <name> [args…]` runs what a skill publishes -- the entry its `SKILL.md`
+declares, or the function of the package it is. It exists because the
 alternative the skills had was to spell their own installed path in prose, and that path
 is the one thing about a skill that moves: the home can be another `--home`, the harness
 layer is reinstalled from a pin, and the machine's layer is a clone. A reader that copied
@@ -41,9 +42,18 @@ a word list, while this route passes argv as typed and unparsed, as SPEC says.
 
 ## dispatch
 
-The verbs are `ls`, `which`, `run`, and anything else is a skill name. `run` exists only
-so a skill that is itself named `ls` or `which` is reachable: the two diagnostics are the
-common case and a skill name is the fallback, not the other way round.
+The verbs are `ls`, `run`, and anything else is a skill name. `run` exists only so a skill
+that is itself named `ls` or `run` is reachable: the diagnostic is the common case and a
+skill name is the fallback, not the other way round. There is no `which`: what a skill runs
+is its `SKILL.md`'s `metadata.entry`, which is a line of the body a reader already has, and
+`ls` hands out that `SKILL.md`.
+
+Everything after the name is argv, and a package reads its first word as the function to
+call: `skill subagent spawn impl` is `spawn("impl")`. Nothing here knows that -- `argv` is
+passed through to the runner, and `crates/skill/src/entry.rs` starts
+`python -c <gongga_skill.py> <skill dir> <argv…>`, whose own first argument is the function.
+So this layer stays one rule for every skill, and "what does this package publish" is
+answered where a package is understood.
 
 ## launch
 

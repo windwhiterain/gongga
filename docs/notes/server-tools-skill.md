@@ -36,8 +36,10 @@ it can run. A name in more than one root is refused with both directories
 rather than resolved to the first -- `Roots` documents that a shadowed name is never resolved
 silently, and running a file is the last place to break that.
 
-A skill that is a body with no entry is a refusal, not an empty run: the answer is its
-`SKILL.md`, and the message says so with the path to read.
+A skill that is a body and neither a package nor an entry is a refusal, not an empty run:
+the answer is its `SKILL.md`, and the message says so with the path to read. A directory
+holding `__init__.py` is a Python package, and it wins over a declared entry: what runs is
+the callable its first word names -- see `docs/notes/skill-entry.md`.
 
 ## Where it runs
 
