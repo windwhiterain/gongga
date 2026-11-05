@@ -277,13 +277,12 @@ impl Layout {
             }
         }
         let entries = self.order(tail);
+        // Place the patches first: a revision names its item by index, and forgetting renumbers the items.
+        let revisions = self.place(&entries, revisions);
         // After the plan, never before: forgetting first would renumber the items
         // these ids name.
         self.forget_unwanted(purpose, &ids);
-        Plan {
-            revisions: self.place(&entries, revisions),
-            entries,
-        }
+        Plan { revisions, entries }
     }
 
     /// The revisions in the order their entries are emitted.
