@@ -65,3 +65,35 @@ of writing). Rebase on that move, or land before it — do not edit both trees.
   (the `stale` fix), and the window still ends at the transcript's own end.
 - `grep -c "client fell behind" <server log>` is the observable for the runaway; it must
   stop growing once `stale` replaces `Lost`.
+
+## Landed (2026-11-05)
+
+Points 1-6 above are in, with four corrections the code forced:
+
+- **`Log::prepend` is not a call, it is a position.** The link tells the front-end that
+  the rows arriving are older (`Sink::older`), `Log::older` parks a cursor at the window's
+  front, and `attach` inserts each block there and re-sums that window. The journal is
+  rewritten when the page is closed (`Sink::landed`), not when it starts.
+- **`Floor` marks a page's *start*, not the window's floor.** One record per page,
+  written in front of the block that page began with, so a restart replays one page and
+  knows exactly which rows it holds. `Log::floor_of` answers from memory
+  (`ledger.pages.first()`), which is the only honest answer: the journal can reach further
+  back than a seed read.
+- **The scroll is an event, not a poll.** PageUp changed a pane and produced no `UiEvent`,
+  so the loop that owns the connection never woke (`scripts/tui_live.py` run: 26 presses,
+  zero requests). `UiEvent::Older(Vec<String>)` is taken, not read, by `next_event`; the
+  loop holds the pages owed and asks one page per press.
+- **A journal with no page boundary is refilled whole** (`Sink::forget` on the first fill),
+  because a page appended to rows the window cannot name would land on rows it has.
+
+User's verdict (2026-11-05): of A (replay the whole journal at startup), A′ (journal the
+page boundary) and B (treat a restart as a new window), he asked why A needed a replay at
+all -- it does not -- and approved **A′**: one page at startup, exact floor, no guessing.
+
+Measured (`.dev/verify/older.sh`, `035724d-older.json`): 400-row transcript, 22-row pane,
+26 presses -> 18 page fills for 400 rows, each frame one page, no row twice, restart reads
+back one page and then asks the server for the rows above it (19 -> 37 `get_messages`).
+Mutation: declaring no floor turns the restart phase red (19 -> 19).
+
+Not landed, and not mine to decide alone: merging `fix/older` into `main` while another
+agent has the same checkout on `main` with uncommitted server work in flight.
