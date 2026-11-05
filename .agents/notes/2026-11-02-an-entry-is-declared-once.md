@@ -1,5 +1,10 @@
 # 一个 skill 的入口只声明一次，正文从它自己的目录出发
 
+> 2026-11-05 的一份后续：第一形态现在是 **Python 包**（目录里有 `__init__.py`，公开 API 就是
+> 它全局的函数），声明式入口 `metadata.entry` 降级为脚本形态。这个文件的结论（不要
+> `<home>/bin` 的 shim、三根一份解析、不加 lockfile、正文从自己的目录出发）都还成立。
+> 见 `2026-11-05-a-skill-is-a-python-package.md`。
+
 2026-11-02。用户问：一切皆 skill 之后，怎样让 agent 调这些脚本不用每次列路径；skill 能不能
 做成 package manager + namespace。查了生态之后答案分两半，记在这里以免下一个 agent 重新推导。
 
