@@ -22,8 +22,41 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// `docs/notes/server-llm.md`.
 const HARNESS_AGENT: &str = concat!("gongga-harness/", env!("CARGO_PKG_VERSION"));
 
+/// The request shape a provider is spoken in, named by the roster's endpoint.
+///
+/// # Invariant
+///
+/// One shape per request, decided before the body is built: the two disagree about
+/// where the tool list goes, what a tool result looks like, and where usage is
+/// reported, so a request cannot be half of each. See `docs/notes/server-anthropic.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Face {
+    Responses,
+    Anthropic,
+}
+
+impl Face {
+    /// The face an endpoint's `api` label names; anything else is the Responses API.
+    pub fn of(api: &str) -> Self {
+        match api {
+            "anthropic-messages" => Face::Anthropic,
+            _ => Face::Responses,
+        }
+    }
+
+    /// The last segment of the URL this face appends to a provider's base.
+    fn path(self) -> &'static str {
+        match self {
+            Face::Responses => "/responses",
+            Face::Anthropic => crate::anthropic::PATH,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct LlmClient {
+    /// Which shape this provider is spoken in.
+    face: Face,
     http: reqwest::Client,
     base_url: String,
     api_key: String,
@@ -36,7 +69,8 @@ pub struct LlmClient {
     /// The roster provider this client talks to: SPEC's `active_quota` row.
     provider: Option<String>,
     temperature: Option<f32>,
-    max_output_tokens: Option<u32>,
+    /// The largest answer this model may give; this face requires the number.
+    max_output_tokens: u32,
     store: bool,
     /// How long the provider may take to send response headers: not about the body,
     /// which only [`Self::idle_timeout`] bounds.
@@ -90,6 +124,7 @@ impl RequestSource {
     /// Opens the window as a body; `uploader` is the only handle it may use.
     fn open(
         &self,
+        face: Face,
         head: &[u8],
         uploader: std::sync::Arc<Uploader>,
     ) -> anyhow::Result<(
@@ -100,7 +135,7 @@ impl RequestSource {
             crate::transcript::Transcript::open(&self.db_path, self.session_id, self.upto_seq)?;
         let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let files = crate::image::files::Files::new(self.store.clone(), uploader);
-        let body = crate::body::RequestBody::new(head.to_vec(), rows, files, counter.clone());
+        let body = crate::body::RequestBody::new(face, head.to_vec(), rows, files, counter.clone());
         Ok((body, counter))
     }
 }
@@ -113,6 +148,16 @@ impl LlmClient {
                 cfg.api_key_env
             );
         }
+        let face = Face::of(&cfg.api);
+        // This face requires it, and a guessed answer length is nobody's budget.
+        let max_output_tokens = match cfg.max_output_tokens {
+            Some(tokens) => tokens,
+            None if face == Face::Anthropic => anyhow::bail!(
+                "the anthropic-messages face requires max_tokens: state \"max_output_tokens\" \
+                 in the roster's model entry, or \"[model] max_output_tokens\" in this home"
+            ),
+            None => 0,
+        };
         // No client-wide deadline on purpose: three bounds know what they bound.
         let http = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
@@ -120,6 +165,7 @@ impl LlmClient {
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Ok(Self {
+            face,
             http,
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
             api_key: cfg.api_key.clone(),
@@ -128,7 +174,7 @@ impl LlmClient {
             measure: cfg.measure.clone(),
             provider: cfg.provider.clone(),
             temperature: cfg.temperature,
-            max_output_tokens: cfg.max_output_tokens,
+            max_output_tokens,
             store: cfg.store,
             headers_timeout: cfg.headers_timeout,
             idle_timeout: cfg.idle_timeout,
@@ -222,7 +268,8 @@ impl LlmClient {
         let build_head_ms = build_started.elapsed().as_millis() as u64;
         let head_bytes = head.len();
         let source = source.clone();
-        let url = format!("{}/responses", self.base_url);
+        let url = format!("{}{}", self.base_url, self.face.path());
+        let face = self.face;
         let api_key = self.api_key.clone();
         let http = self.http.clone();
         // The measurement's own record: which model, and where to learn from.
@@ -245,7 +292,7 @@ impl LlmClient {
                 // Opened again for every attempt: a body is read once, and a retry
                 // has to send what the attempt before it sent.
                 let open_started = Instant::now();
-                let opened = source.open(&head, uploader.clone());
+                let opened = source.open(face, &head, uploader.clone());
                 let transcript_open_ms = open_started.elapsed().as_millis() as u64;
                 let mut probe =
                     crate::probe::AttemptProbe::new(build_head_ms, transcript_open_ms, head_bytes);
@@ -267,6 +314,7 @@ impl LlmClient {
                 // The same counter the body writes into, kept here to measure against.
                 let sent = bytes.clone();
                 let mut once = stream_once(
+                    face,
                     &http,
                     &url,
                     &api_key,
@@ -394,6 +442,12 @@ impl LlmClient {
         rx
     }
 
+    /// One request's opening bytes, joined to the transcript by the body.
+    ///
+    /// # Invariant
+    ///
+    /// The head and the body are one shape: the head opens the array the body fills,
+    /// so a face that opened `"messages"` must be the face that writes messages.
     fn build_head(
         &self,
         instructions: &str,
@@ -404,6 +458,30 @@ impl LlmClient {
         effort: Option<&str>,
         cache_tier: Option<&str>,
     ) -> Vec<u8> {
+        // The index joins the prose: both change only when a file does. The card is
+        // stamped once, so the two lifetimes differ.
+        let mut instructions = instructions.to_string();
+        if let Some(index) = index.filter(|index| !index.is_empty()) {
+            if !instructions.is_empty() {
+                instructions.push_str("\n\n");
+            }
+            instructions.push_str(index);
+        }
+        if self.face == Face::Anthropic {
+            let offered: Vec<Value> = tools
+                .iter()
+                .map(|t| crate::anthropic::tool(&t.name, &t.description, &t.parameters))
+                .collect();
+            return crate::anthropic::head(
+                &self.model_name,
+                self.max_output_tokens,
+                &instructions,
+                &offered,
+                effort,
+                self.temperature,
+                card,
+            );
+        }
         let mut body = json!({
             "model": self.model_name,
             "stream": true,
@@ -419,15 +497,6 @@ impl LlmClient {
         // Invariant: the key names the unit that shares a prefix, not a conversation.
         if self.cache_affinity {
             body["prompt_cache_key"] = json!(affinity);
-        }
-        // The index joins the prose: both change only when a file does. The card is
-        // stamped once, so the two lifetimes differ.
-        let mut instructions = instructions.to_string();
-        if let Some(index) = index.filter(|index| !index.is_empty()) {
-            if !instructions.is_empty() {
-                instructions.push_str("\n\n");
-            }
-            instructions.push_str(index);
         }
         if !instructions.is_empty() {
             body["instructions"] = json!(instructions);
@@ -456,8 +525,8 @@ impl LlmClient {
         if let Some(t) = self.temperature {
             body["temperature"] = json!(t);
         }
-        if let Some(m) = self.max_output_tokens {
-            body["max_output_tokens"] = json!(m);
+        if self.max_output_tokens > 0 {
+            body["max_output_tokens"] = json!(self.max_output_tokens);
         }
         if let Some(effort) = effort {
             // The roster's per-model name for this field is
@@ -857,6 +926,7 @@ fn retry_reason(failure: &Option<(String, bool)>, completed: bool, produced: boo
 ///
 /// See `docs/notes/server-llm.md`.
 async fn stream_once(
+    face: Face,
     http: &reqwest::Client,
     url: &str,
     api_key: &str,
@@ -876,6 +946,7 @@ async fn stream_once(
     tokio::spawn(async move {
         let body = body;
         let outcome = AssertUnwindSafe(read_stream(
+            face,
             &http,
             &url,
             &api_key,
@@ -906,6 +977,7 @@ async fn stream_once(
 }
 
 async fn read_stream(
+    face: Face,
     http: &reqwest::Client,
     url: &str,
     api_key: &str,
@@ -919,6 +991,7 @@ async fn read_stream(
     session_header: Option<String>,
 ) {
     let outcome = AssertUnwindSafe(read_stream_inner(
+        face,
         http,
         url,
         api_key,
@@ -951,6 +1024,7 @@ async fn read_stream(
 
 /// Reads the response while the outer attempt owns its final measurement event.
 async fn read_stream_inner(
+    face: Face,
     http: &reqwest::Client,
     url: &str,
     api_key: &str,
@@ -1034,6 +1108,8 @@ async fn read_stream_inner(
     let mut buf = String::new();
     // item_id -> output item metadata, so deltas can be attributed.
     let mut items: HashMap<String, ItemMeta> = HashMap::new();
+    // The other face keeps its own running state; only one of the two is ever read.
+    let mut face_state = crate::anthropic::Stream::default();
     let mut out = Outbox::new(tx);
     // Silence of content is failure: not "time since the request started", which would
     // cut a long answer mid-sentence.
@@ -1066,10 +1142,13 @@ async fn read_stream_inner(
                             let process_started = Instant::now();
                             if let Some(event) = parse_sse_block(&block) {
                                 probe.event(&event.name, &event.data, false);
-                                if event.name == "response.completed" {
+                                if completes(face, &event.name) {
                                     probe.outcome("completed");
                                 }
-                                let result = handle(event, &mut items, &mut out).await;
+                                let result = match face {
+                                    Face::Responses => handle(event, &mut items, &mut out).await,
+                                    Face::Anthropic => face_state.handle(event, &mut out).await,
+                                };
                                 probe.process(process_started.elapsed());
                                 if let Err(e) = result {
                                     probe.outcome("closed_early");
@@ -1101,10 +1180,13 @@ async fn read_stream_inner(
         let process_started = Instant::now();
         if let Some(event) = parse_sse_block(tail) {
             probe.event(&event.name, &event.data, true);
-            if event.name == "response.completed" {
+            if completes(face, &event.name) {
                 probe.outcome("completed");
             }
-            let result = handle(event, &mut items, &mut out).await;
+            let result = match face {
+                Face::Responses => handle(event, &mut items, &mut out).await,
+                Face::Anthropic => face_state.handle(event, &mut out).await,
+            };
             probe.process(process_started.elapsed());
             let _ = result;
         } else {
@@ -1264,9 +1346,17 @@ pub(crate) fn sendable_activity(
     Some(item)
 }
 
-struct SseEvent {
-    name: String,
-    data: Value,
+/// Whether this event ends a response, in the face that is being read.
+fn completes(face: Face, name: &str) -> bool {
+    match face {
+        Face::Responses => name == "response.completed",
+        Face::Anthropic => crate::anthropic::completes(name),
+    }
+}
+
+pub(crate) struct SseEvent {
+    pub(crate) name: String,
+    pub(crate) data: Value,
 }
 
 /// Takes one complete server-sent-event block off the front of `buf`.
@@ -1327,7 +1417,7 @@ fn parse_sse_block(block: &str) -> Option<SseEvent> {
 /// arguments that are not JSON -- bare values, a trailing comma, a tail cut off
 /// mid-key -- and one that cannot read its own output rejects the whole next
 /// request. Only the cheapest rule that parses wins.
-fn repair_arguments(raw: &str) -> String {
+pub(crate) fn repair_arguments(raw: &str) -> String {
     let raw = raw.trim();
     if raw.is_empty() {
         return "{}".to_string();
@@ -1491,17 +1581,20 @@ fn provider_phase(event_name: &str) -> Option<(&str, &str)> {
 }
 
 /// The event channel, plus whether content went out: what the idle clock measures.
-struct Outbox<'a> {
+pub(crate) struct Outbox<'a> {
     tx: &'a mpsc::Sender<LlmEvent>,
     content: bool,
 }
 
 impl<'a> Outbox<'a> {
-    fn new(tx: &'a mpsc::Sender<LlmEvent>) -> Self {
+    pub(crate) fn new(tx: &'a mpsc::Sender<LlmEvent>) -> Self {
         Self { tx, content: false }
     }
 
-    async fn send(&mut self, event: LlmEvent) -> Result<(), mpsc::error::SendError<LlmEvent>> {
+    pub(crate) async fn send(
+        &mut self,
+        event: LlmEvent,
+    ) -> Result<(), mpsc::error::SendError<LlmEvent>> {
         self.content |= event_content(&event);
         self.tx.send(event).await
     }

@@ -18,10 +18,13 @@ use futures_util::stream::Stream;
 use serde_json::Value;
 
 use crate::image::{ImageRef, files::Files};
+use crate::llm::Face;
 use crate::transcript::Transcript;
 
 /// A model request's body, produced as the network asks for it.
 pub struct RequestBody {
+    /// Which shape the rows are written in: one is copied, the other converted.
+    face: Face,
     /// The object up to and including `"input":[`.
     head: Option<Vec<u8>>,
     rows: Option<Transcript>,
@@ -36,11 +39,26 @@ pub struct RequestBody {
     counter: Arc<AtomicUsize>,
     /// A row whose pictures were still being resolved when the last poll returned.
     pending: Option<Next>,
+    /// The newest message, held back on the anthropic face.
+    ///
+    /// # Invariant
+    ///
+    /// The cache breakpoint belongs to the message before the newest one -- the part
+    /// of the transcript a provider has already been sent -- so the newest is always
+    /// held until another arrives, or until the body ends.
+    held: Option<String>,
 }
 
 impl RequestBody {
-    pub fn new(head: Vec<u8>, rows: Transcript, files: Files, counter: Arc<AtomicUsize>) -> Self {
+    pub fn new(
+        face: Face,
+        head: Vec<u8>,
+        rows: Transcript,
+        files: Files,
+        counter: Arc<AtomicUsize>,
+    ) -> Self {
         Self {
+            face,
             head: Some(head),
             rows: Some(rows),
             files,
@@ -49,6 +67,35 @@ impl RequestBody {
             wrote: false,
             counter,
             pending: None,
+            held: None,
+        }
+    }
+
+    /// Queues one stored row in the shape this request is sent in.
+    fn push(&mut self, item: String) {
+        if self.face == Face::Responses {
+            self.emit(item);
+            return;
+        }
+        // A row this face cannot send stays in the transcript, out of the request.
+        let Ok(stored) = serde_json::from_str::<serde_json::Value>(&item) else {
+            return;
+        };
+        let Some(message) = crate::anthropic::item(&stored) else {
+            return;
+        };
+        if let Some(previous) = self.held.replace(message.to_string())
+            && let Ok(mut previous) = serde_json::from_str::<serde_json::Value>(&previous)
+        {
+            crate::anthropic::breakpoint(&mut previous);
+            self.emit(previous.to_string());
+        }
+    }
+
+    /// Queues the item held back, without a breakpoint: it is the last one.
+    fn flush_held(&mut self) {
+        if let Some(held) = self.held.take() {
+            self.emit(held);
         }
     }
 
@@ -72,7 +119,7 @@ impl RequestBody {
                 Some(Err(e)) => return Step::Failed(IoError::other(e)),
                 Some(Ok(Stored { item, pictures })) => {
                     if pictures.is_empty() {
-                        self.emit(item);
+                        self.push(item);
                         return Step::Ready(true);
                     }
                     // The one value resolved while writing: the provider's file per picture.
@@ -80,6 +127,7 @@ impl RequestBody {
                 }
                 None => {
                     self.rows = None;
+                    self.flush_held();
                     return Step::Ready(true);
                 }
             }
@@ -116,13 +164,14 @@ impl Stream for RequestBody {
                     Step::Failed(e) => return Poll::Ready(Some(Err(e))),
                     Step::Resolving((item, pictures)) => {
                         let files = this.files.clone();
-                        Box::pin(async move { resolved(files, item, pictures).await })
+                        let face = this.face;
+                        Box::pin(async move { resolved(files, face, item, pictures).await })
                     }
                 },
             };
             match future.as_mut().poll(cx) {
                 Poll::Ready(text) => {
-                    this.emit(text);
+                    this.push(text);
                     continue;
                 }
                 Poll::Pending => {
@@ -166,7 +215,7 @@ pub struct Stored {
 /// message, `output` for a result -- and the text is what the reader wrote. A row whose
 /// stored item does not parse is sent as stored: a broken row is not this module's to
 /// fix, and least of all on the way to a cache.
-async fn resolved(mut files: Files, item: String, pictures: Vec<ImageRef>) -> String {
+async fn resolved(mut files: Files, face: Face, item: String, pictures: Vec<ImageRef>) -> String {
     let Ok(mut value) = serde_json::from_str::<Value>(&item) else {
         return item;
     };
@@ -177,9 +226,17 @@ async fn resolved(mut files: Files, item: String, pictures: Vec<ImageRef>) -> St
     let Some(text) = value.get(field).and_then(Value::as_str).map(str::to_string) else {
         return item;
     };
-    let mut parts = vec![serde_json::json!({"type": "input_text", "text": text})];
+    // One text block either way; the pictures differ by face.
+    let (kind, mut parts) = match face {
+        Face::Responses => ("input_text", Vec::new()),
+        Face::Anthropic => ("text", Vec::new()),
+    };
+    parts.insert(0, serde_json::json!({"type": kind, "text": text}));
     for picture in &pictures {
-        parts.push(files.part(picture).await);
+        parts.push(match face {
+            Face::Responses => files.part(picture).await,
+            Face::Anthropic => files.base64_part(picture),
+        });
     }
     value[field] = Value::Array(parts);
     value.to_string()

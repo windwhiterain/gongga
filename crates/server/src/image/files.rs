@@ -79,6 +79,31 @@ impl Files {
         }
     }
 
+    /// The content part for one picture, as the bytes it is.
+    ///
+    /// # Invariant
+    ///
+    /// No upload, and no file id: the anthropic-messages face takes a picture inline
+    /// or not at all, so what a request carries here is the copy this home keeps --
+    /// the same bytes the other face would have uploaded.
+    pub fn base64_part(&self, image: &ImageRef) -> Value {
+        let bytes = image
+            .copy
+            .and_then(crate::image::pictures::read)
+            .or_else(|| crate::image::pictures::read_missing(image));
+        match bytes {
+            Some(bytes) => json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": image.media_type,
+                    "data": crate::base64::encode(&bytes),
+                },
+            }),
+            None => note(image),
+        }
+    }
+
     /// Records what this request decided about one copy.
     fn note(&self, copy: i64, answer: Option<String>) {
         self.resolved

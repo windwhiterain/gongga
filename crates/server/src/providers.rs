@@ -44,6 +44,14 @@ pub struct Provider {
     /// header are two spellings, and a provider may document one of them. See
     /// `docs/notes/server-config.md`.
     pub cache_session_header: Option<bool>,
+    /// The face this provider is worth being spoken in, by its endpoint's label.
+    ///
+    /// # Invariant
+    ///
+    /// A preference, not a capability: the endpoints list says what the provider
+    /// offers, and this says which one this machine sends to. Absent keeps the
+    /// built-in order. See `docs/notes/server-anthropic.md`.
+    pub api: Option<String>,
     // No `key` here: a roster is a git checkout, and a key in one is a key in
     // git. Keys come from `~/.agents/keys.toml`.
     /// The variable that should hold the key instead, if one is named.
@@ -95,6 +103,13 @@ pub struct Model {
     pub context: Option<u64>,
     /// Request paths this model accepts; empty means unstated, assume OpenAI.
     pub endpoints: Vec<String>,
+    /// The longest answer this model gives, when the roster states it.
+    ///
+    /// # Invariant
+    ///
+    /// Required by the anthropic-messages face, which asks for it in every request:
+    /// `None` there is a refusal that names this field rather than a guessed length.
+    pub max_output_tokens: Option<u32>,
     /// Levels this model accepts, as the roster spells them; empty passes through.
     pub reasoning_levels: Vec<String>,
     /// The level the roster says to use when nobody asked for one.
@@ -161,7 +176,11 @@ impl Model {
     /// An empty list is unstated, and unstated admits everything: the roster
     /// having no opinion is not the roster saying no.
     pub(crate) fn speaks_responses(&self) -> bool {
-        self.endpoints.is_empty() || self.endpoints.iter().any(|e| e.contains("responses"))
+        self.endpoints.is_empty()
+            || self
+                .endpoints
+                .iter()
+                .any(|e| e.starts_with("openai-") || e.starts_with("anthropic-"))
     }
 }
 
@@ -205,6 +224,10 @@ pub struct Entry {
     pub tier: Option<String>,
     /// Whether the provider documents `prompt_cache_key`; `None` sends nothing.
     pub cache_affinity: Option<bool>,
+    /// Which face this entry is spoken in, by the endpoint's own label.
+    pub api: String,
+    /// The longest answer this model gives, when the roster states it.
+    pub max_output_tokens: Option<u32>,
     /// Whether the provider documents `X-Session-ID`; `None` sends nothing.
     pub cache_session_header: Option<bool>,
 }
@@ -579,8 +602,8 @@ impl Catalog {
                     known.join(", ")
                 )
             })?;
-        let endpoint = openai_endpoint(provider)
-            .ok_or_else(|| format!("provider {} has no OpenAI-compatible endpoint", provider.id))?;
+        let endpoint = endpoint_of(provider)
+            .ok_or_else(|| format!("provider {} has no usable endpoint", provider.id))?;
         Ok(Entry {
             provider: provider.id.clone(),
             provider_name: provider.name.clone(),
@@ -603,6 +626,8 @@ impl Catalog {
             cache_ttl_tiers: provider.cache_ttl_tiers.clone(),
             cache_affinity: provider.cache_affinity,
             cache_session_header: provider.cache_session_header,
+            api: endpoint.api.clone(),
+            max_output_tokens: found.max_output_tokens,
             tier: found.tier.clone(),
         })
     }
@@ -612,7 +637,31 @@ fn lookup_env(name: &str) -> Option<String> {
     std::env::var(name).ok()
 }
 
-/// The endpoint to talk to; `openai-responses` beats the other flavours.
+/// The endpoint to talk to: the one this provider names, else `openai-responses`
+/// beating the other flavours.
+///
+/// # Invariant
+///
+/// A named endpoint wins because the choice is a provider's fact -- which face has a
+/// cache worth the request shape is not this server's to re-rank. A name the provider
+/// does not offer falls through to the built-in order rather than failing: the roster
+/// is read, not obeyed.
+fn endpoint_of(provider: &Provider) -> Option<&Endpoint> {
+    provider
+        .api
+        .as_deref()
+        .and_then(|api| {
+            provider
+                .endpoints
+                .iter()
+                .find(|e| e.api == api && !e.base_url.is_empty())
+        })
+        .or_else(|| openai_endpoint(provider))
+        .or_else(|| provider.endpoints.iter().find(|e| !e.base_url.is_empty()))
+}
+
+/// The endpoint for an OpenAI-shaped request; `openai-responses` beats the other
+/// flavours.
 fn openai_endpoint(provider: &Provider) -> Option<&Endpoint> {
     provider
         .endpoints
@@ -704,6 +753,9 @@ struct FileProvider {
     /// Whether this provider documents the `X-Session-ID` header.
     #[serde(default)]
     cache_session_header: Option<bool>,
+    /// The endpoint label this provider is worth being spoken in.
+    #[serde(default)]
+    api: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -733,6 +785,8 @@ struct FileModel {
     name: String,
     #[serde(default)]
     context: Option<u64>,
+    #[serde(default)]
+    max_output_tokens: Option<u32>,
     #[serde(default)]
     endpoints: Vec<String>,
     /// Levels this model accepts, as the roster spells them; empty means unstated.
@@ -793,6 +847,7 @@ fn parse_value(value: toml::Value) -> Result<Vec<Provider>, toml::de::Error> {
                         },
                         id: m.id,
                         context: m.context,
+                        max_output_tokens: m.max_output_tokens,
                         endpoints: m.endpoints,
                         reasoning_levels: m.reasoning_levels,
                         reasoning_default: m.reasoning_default,
@@ -819,6 +874,7 @@ fn parse_value(value: toml::Value) -> Result<Vec<Provider>, toml::de::Error> {
                 cache_ttl_tiers: p.cache_ttl_tiers,
                 cache_affinity: p.cache_affinity,
                 cache_session_header: p.cache_session_header,
+                api: p.api,
                 key_env: p.key_env,
             }
         })

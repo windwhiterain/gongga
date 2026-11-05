@@ -4,6 +4,7 @@
 
 mod agent;
 mod agents;
+mod anthropic;
 mod base64;
 mod blobs;
 mod body;

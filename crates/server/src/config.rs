@@ -94,7 +94,10 @@ pub struct ModelConfig {
     /// Resolved key. Empty when the variable is unset.
     pub api_key: String,
     pub temperature: Option<f32>,
+    /// The longest answer to ask for. Required by the anthropic-messages face.
     pub max_output_tokens: Option<u32>,
+    /// The endpoint's protocol label: `openai-responses`, `anthropic-messages`, ...
+    pub api: String,
     /// Where a request's measured tokens are recorded, when a store exists.
     pub measure: Option<crate::store::Store>,
     /// What the roster says this model charges, for the prefix cache's plan.
@@ -287,6 +290,8 @@ struct FileModel {
     api_key_env: Option<String>,
     temperature: Option<f32>,
     max_output_tokens: Option<u32>,
+    /// The face to speak, by the endpoint's label; defaults to the roster's choice.
+    api: Option<String>,
     store: Option<bool>,
     cache_tier: Option<String>,
     cache_margin_pct: Option<u8>,
@@ -477,7 +482,16 @@ impl Config {
                 .or_else(|| entry.as_ref().and_then(|e| e.cache_session_header))
                 .unwrap_or(false),
             temperature: model_file.temperature,
-            max_output_tokens: model_file.max_output_tokens,
+            // The roster states it per model when the provider requires one; a home
+            // may override what the face asks for.
+            max_output_tokens: model_file
+                .max_output_tokens
+                .or_else(|| entry.as_ref().and_then(|e| e.max_output_tokens)),
+            api: model_file
+                .api
+                .clone()
+                .or_else(|| entry.as_ref().map(|e| e.api.clone()))
+                .unwrap_or_else(|| "openai-responses".to_string()),
             store: model_file.store.unwrap_or(false),
             headers_timeout: Duration::from_millis(
                 model_file
@@ -702,6 +716,9 @@ impl ModelConfig {
         cfg.base_url = entry.base_url.clone();
         cfg.model_name = entry.model_name.clone();
         cfg.context = entry.context;
+        // The face is the provider's, and so is the length that face must state.
+        cfg.api = entry.api.clone();
+        cfg.max_output_tokens = entry.max_output_tokens;
         cfg.api_key_env = entry.api_key_env.clone().unwrap_or_default();
         cfg.api_key = api_key;
         // Capabilities follow the model: another entry keeps its own tools and eyes.
