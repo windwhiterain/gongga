@@ -71,10 +71,10 @@ fn too_long(name: &str, asked: Duration, cap: Duration) -> String {
     let cap = crate::agent::spent(u64::try_from(cap.as_millis()).unwrap_or(u64::MAX));
     format!(
         "`{name}` did not run: it asked to wait {asked} and no call waits longer than {cap}. \
-         Start it `detached` and let the report come to you instead: `{name}` with \
-         `detached: true` returns at once, keeps running, and this session is told when it \
-         ends -- then `wait` is how you stay in this turn until that news arrives. A wait \
-         that is already running is not lengthened by asking for more."
+         Start the work so that it reports to you instead -- `background` answers at once \
+         with a `job_id` that `check_job` collects, and `detached` hands the answer over \
+         when it lands -- or ask again later. A wait that is already running is not \
+         lengthened by asking for more."
     )
 }
 
@@ -83,6 +83,37 @@ pub fn wants_detached(args: &Value) -> bool {
     args.get("detached")
         .and_then(Value::as_bool)
         .unwrap_or(false)
+}
+
+/// Whether this call said `background`.
+pub fn wants_background(args: &Value) -> bool {
+    args.get("background")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// Whether a call that does not wait asked for both, which is no way to run it.
+///
+/// # Invariant
+///
+/// One refusal for every tool: `background` keeps the answer for `check_job` and
+/// `detached` hands it over, so a call that says both has asked for two answers.
+pub fn both_ways(args: &Value) -> bool {
+    wants_background(args) && wants_detached(args)
+}
+
+/// The word a tool the tunnel leaves alone may not say.
+pub fn foreign(tool: &dyn Tool, args: &Value) -> Option<&'static str> {
+    if tool.tunneled() {
+        return None;
+    }
+    if wants_background(args) {
+        Some("background")
+    } else if wants_detached(args) {
+        Some("detached")
+    } else {
+        None
+    }
 }
 
 /// What carries a call that said `detached`.
@@ -94,20 +125,38 @@ pub enum Carried {
     Call,
 }
 
+/// Which way a call that does not wait gives up its answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// The answer waits in the job's row until `check_job` reads it.
+    Background,
+    /// The answer is handed to the session as a notice when the job ends.
+    Detached,
+}
+
+impl Mode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Background => "background",
+            Self::Detached => "detached",
+        }
+    }
+}
+
 /// Starts the call as a job of this server and answers for it before it is done.
 ///
 /// # Invariant
 ///
-/// The job outlives the call, not the server: it takes its own cancellation, because
-/// the turn that asked for it ends long before it does, and it writes no stream, because
-/// the stream it would have written to belonged to that turn. The row it leaves is what
-/// lets the next start say what a process that stopped lost. See
-/// `docs/notes/server-tools-detached.md`.
-pub async fn detach(
+/// The job outlives the call, not the server: it takes its own cancellation and its
+/// own inbox, because the turn that asked for it ends long before it does, and it
+/// writes no stream, because that stream belonged to the turn. What it keeps is the
+/// session's shells, its interpreters and its store.
+pub async fn spawn(
     tool: Arc<dyn Tool>,
     name: String,
     mut args: Value,
     ctx: &ToolContext,
+    mode: Mode,
 ) -> ToolOutcome {
     let description = args
         .get("description")
@@ -118,135 +167,184 @@ pub async fn detach(
         .and_then(Value::as_u64)
         .map(|max| usize::try_from(max).unwrap_or(usize::MAX))
         .unwrap_or(crate::config::DEFAULT_MAX_OUTPUT_CHARS);
-    // The tool is not told the word: what it runs is the work, not the detachment.
+    // The tool is not told either word: what it runs is the work, not the waiting.
     if let Some(object) = args.as_object_mut() {
+        object.remove("background");
         object.remove("detached");
     }
-    let recorded = ctx
-        .store
-        .add_detached_call(&ctx.session, &ctx.call_id, &name, description.as_deref())
-        .unwrap_or_else(|e| {
-            tracing::warn!(
-                session = %ctx.session, tool = %name, error = %e,
-                "could not record a detached call; the next start cannot report it lost"
-            );
-            -1
-        });
+    // A job nothing records is one whose answer nobody could collect: it is not started.
+    let id = match ctx.store.add_job(
+        &ctx.session,
+        &ctx.call_id,
+        &name,
+        description.as_deref(),
+        mode.as_str(),
+    ) {
+        Ok(id) => id,
+        Err(e) => {
+            return ToolOutcome::err(format!(
+                "`{name}` ran nothing: this call could not be recorded as a job ({e}), and a \
+                 job nothing records is one whose answer nobody could collect."
+            ));
+        }
+    };
     let mut job = ctx.clone();
     job.cancel = CancellationToken::new();
     job.events = None;
-    let call_id = ctx.call_id.clone();
+    job.inbox = crate::session::InboxSignal::never();
     let started = std::time::Instant::now();
-    let where_it_is = name.clone();
+    let called = name.clone();
     tokio::spawn(async move {
-        let outcome = crate::tools::invoke(&name, tool, args, &job).await;
+        let outcome = crate::tools::invoke(&called, tool, args, &job).await;
         let spent = crate::agent::spent(started.elapsed().as_millis() as u64);
         let text = match crate::tools::cap_max_output(
             &job,
-            &name,
+            &called,
             description.as_deref(),
-            &call_id,
+            &job.call_id,
             &outcome.output,
             max,
         ) {
             Some(metadata) => format!("{metadata}\n(over {max} chars: it is all in that file)"),
             None => outcome.output,
         };
-        report(&job, recorded, &name, &text, spent).await;
+        report(&job, id, &called, &text, outcome.ok, &spent, mode).await;
     });
-    ToolOutcome::ok(format!(
-        "`{where_it_is}` started detached: it runs on without this turn, and this session \
-         is told when it ends. `wait` is how you stay in this turn until that news lands."
-    ))
+    ToolOutcome::ok(match mode {
+        Mode::Background => format!(
+            "`{name}` started as job {id}: it runs on without this turn. `check_job` with \
+             `job_id: {id}` collects what it answers, and this session is told when it ends."
+        ),
+        Mode::Detached => format!(
+            "`{name}` started detached as job {id}: it runs on without this turn, and this \
+             session is told when it ends. `wait` is how you stay in this turn until that \
+             news lands."
+        ),
+    })
 }
 
-/// Deletes the call's row and posts what it answered, in that order.
+/// Writes how the job ended, and the notice that says so, in one act.
 ///
 /// # Invariant
 ///
-/// One row in, one row out: the call's own trace is deleted in the same act that posts
-/// its report, so a row left behind always means a report nobody could post. A session
-/// that is gone owes nothing, and a server that is closing did not see it end.
-async fn report(ctx: &ToolContext, recorded: i64, name: &str, text: &str, spent: String) {
-    if recorded >= 0 {
-        if let Err(e) = ctx.store.delete_detached_call(recorded) {
-            tracing::warn!(session = %ctx.session, tool = %name, error = %e,
-                "could not delete a finished detached call's row");
-        }
-    }
-    if matches!(ctx.store.get_session(&ctx.session), Ok(None)) {
-        return;
-    }
-    if ctx.closing.load(std::sync::atomic::Ordering::SeqCst) {
-        return;
-    }
-    let message = format!(
-        "The `{name}` call you started `detached` has finished after {spent}. This is its \
-         answer, arriving after the call that asked for it:\n\n{text}"
-    );
-    if let Err(e) = ctx.store.add_pending_task(
-        &ctx.session,
-        "inject",
-        &json!({"session": ctx.session, "message": message, "notice": "detached"}),
-    ) {
-        tracing::warn!(session = %ctx.session, tool = %name, error = %e,
-            "could not post a detached call's answer");
+/// The row is written even when nobody is left to tell: what a session was owed must
+/// outlive the session's silence, and a deleted session owes nothing. A `detached`
+/// answer is the notice itself, so it counts as collected the moment that notice is
+/// queued; a `background` answer waits for `check_job`.
+async fn report(
+    ctx: &ToolContext,
+    id: i64,
+    name: &str,
+    text: &str,
+    ok: bool,
+    spent: &str,
+    mode: Mode,
+) {
+    let status = if ok { "ok" } else { "error" };
+    let what = match ok {
+        true => "finished successfully",
+        false => "finished with an error",
+    };
+    // A deleted session owes nothing, and a job the exit ended did not finish.
+    let speaking = !matches!(ctx.store.get_session(&ctx.session), Ok(None))
+        && !ctx.closing.load(std::sync::atomic::Ordering::SeqCst);
+    let (message, kind) = match mode {
+        Mode::Background => (
+            format!(
+                "Job {id} you started with `background` on `{name}` has {what} after {spent}. \
+                 `check_job` with `job_id: {id}` collects what it printed."
+            ),
+            "job",
+        ),
+        Mode::Detached => (
+            format!(
+                "The `{name}` call you started `detached` has finished after {spent}. This is \
+                 its answer, arriving after the call that asked for it:\n\n{text}"
+            ),
+            "detached",
+        ),
+    };
+    let notice =
+        speaking.then(|| json!({"session": ctx.session, "message": message, "notice": kind}));
+    let collected = mode == Mode::Detached && notice.is_some();
+    if let Err(e) = ctx
+        .store
+        .finish_job(id, status, text, collected, notice.as_ref())
+    {
+        tracing::warn!(session = %ctx.session, job = id, tool = %name, error = %e,
+            "could not record how a job ended");
     }
 }
 
-/// Tells every session what a previous run left detached and never answered.
+/// Tells every session what a stopped run left owed: a job that never answered, and
+/// an answer nobody read.
 ///
 /// # Invariant
 ///
-/// A row here has no pid to adopt: the job was this server's own task, so a row that
-/// survives a start is a call whose answer died with the process. Saying so is the only
-/// thing that can be said about it, and saying it is required -- a session waiting on
-/// that answer would otherwise wait for ever.
-pub fn announce_lost(store: &Store) -> usize {
-    let Ok(rows) = store.detached_calls() else {
-        tracing::warn!("could not read the detached calls a previous run left");
+/// The row is the truth and the notice only points at it, so a session told about a
+/// job finds the same verdict when it asks `check_job`. A job whose session is gone is
+/// forgotten rather than announced.
+pub fn announce_owed(store: &Store) -> usize {
+    let Ok(rows) = store.owed_jobs() else {
+        tracing::warn!("could not read the jobs a previous run left");
         return 0;
     };
     let mut told = 0;
     for row in rows {
-        if matches!(store.get_session(&row.session), Ok(Some(_))) {
-            let named = match &row.description {
-                Some(description) if !description.trim().is_empty() => {
-                    format!(" (`{}`)", description.trim())
-                }
-                _ => String::new(),
-            };
-            let waiting_since = crate::agent::spent(
-                u64::try_from((crate::store::now_millis() - row.started_at).max(0))
-                    .unwrap_or(u64::MAX),
-            );
-            tracing::info!(
-                session = %row.session, tool = %row.tool, call_id = %row.call_id,
-                "reporting a detached call a stopped server never answered"
-            );
-            let message = format!(
-                "The `{}` call{named} you started `detached` never reported: the server \
-                 stopped before it finished, so nothing here can say what it printed. It \
-                 was a job of that server, not a process of its own, so it did not outlive \
-                 it -- and it was started {waiting_since} before this server was. Run it \
-                 again if it mattered.",
-                row.tool
-            );
-            if let Err(e) = store.add_pending_task(
-                &row.session,
-                "inject",
-                &json!({"session": row.session, "message": message, "notice": "detached"}),
-            ) {
-                tracing::warn!(session = %row.session, error = %e,
-                    "could not report a detached call that a stopped server lost");
-                continue;
+        if matches!(store.get_session(&row.session), Ok(None)) {
+            if let Err(e) = store.delete_job(row.id) {
+                tracing::warn!(session = %row.session, job = row.id, error = %e,
+                    "could not delete a job whose session is gone");
             }
-            told += 1;
+            continue;
         }
-        if let Err(e) = store.delete_detached_call(row.id) {
-            tracing::warn!(session = %row.session, error = %e,
-                "could not delete a dead detached call's row");
+        let named = match &row.description {
+            Some(description) if !description.trim().is_empty() => {
+                format!(" (`{}`)", description.trim())
+            }
+            _ => String::new(),
+        };
+        let (message, kind) = match row.status.as_str() {
+            "running" => {
+                // Nothing can adopt it: a job of a process died with the process.
+                if let Err(e) = store.lose_job(row.id) {
+                    tracing::warn!(session = %row.session, job = row.id, error = %e,
+                        "could not record a job the last run lost");
+                }
+                let waited = crate::agent::spent(
+                    u64::try_from((crate::store::now_millis() - row.started_at).max(0))
+                        .unwrap_or(u64::MAX),
+                );
+                (
+                    format!(
+                        "Job {} (`{}`{named}) never reported: the server stopped before it \
+                         finished, so nothing here can say what it printed. It was a job of that \
+                         server, not a process of its own, so it did not outlive it -- and it was \
+                         started {waited} before this server was. Run it again if it mattered.",
+                        row.id, row.tool
+                    ),
+                    "lost",
+                )
+            }
+            _ => (
+                format!(
+                    "Job {} (`{}`{named}) you started `{}` ended before the server stopped and \
+                     its answer was never collected. `check_job` with `job_id: {}` still reads it.",
+                    row.id, row.tool, row.mode, row.id
+                ),
+                "job",
+            ),
+        };
+        if let Err(e) = store.add_pending_task(
+            &row.session,
+            "inject",
+            &json!({"session": row.session, "message": message, "notice": kind}),
+        ) {
+            tracing::warn!(session = %row.session, job = row.id, error = %e,
+                "could not report a job the last run left owed");
+            continue;
         }
+        told += 1;
     }
     told
 }

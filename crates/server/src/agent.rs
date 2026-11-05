@@ -1963,6 +1963,7 @@ fn summary_keys(tool: &str) -> &'static [&'static str] {
         // SPEC lists bash's own set; another tool is summarised by nothing yet,
         // which still reads better than a wall of JSON.
         "bash" => &["name", "background", "detached", "time_out"],
+        "check_job" => &["job_id", "timeout_ms"],
         _ => &[],
     }
 }

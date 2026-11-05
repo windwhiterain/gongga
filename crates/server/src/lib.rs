@@ -407,13 +407,10 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     }
     // Failures the last run left behind, before a client can ask about them.
     monitor::sweep(&dispatch, &cfg.home).await;
-    // A call a stopped server detached has no pid to adopt: say it was lost.
-    let lost = tools::tunnel::announce_lost(&store);
-    if lost > 0 {
-        tracing::info!(
-            lost,
-            "reported detached calls a stopped server never answered"
-        );
+    // A job of a stopped server has no pid to adopt: say what it owed and never said.
+    let owed = tools::tunnel::announce_owed(&store);
+    if owed > 0 {
+        tracing::info!(owed, "reported jobs a stopped server left owed");
     }
     // Whatever the last run detached is still out there; adopt its pids now.
     let adoption_started = std::time::Instant::now();

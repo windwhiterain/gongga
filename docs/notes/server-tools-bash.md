@@ -309,7 +309,8 @@ and spaces.
 
 `check_bash` owns unread output, so waiting for background jobs belongs here
 rather than in a separate `wait_bash`: the call waits while the shell's job count
-is non-zero, then reads the same pending buffer it always reads. `wait_ms` is a
-ceiling on the tool call, not on the jobs: on timeout the output so far is
-returned and the jobs keep running. A cancelled turn stops the wait and leaves
+is non-zero, then reads the same pending buffer it always reads. Its `timeout_ms`
+is the tunnel's one number for waiting, read back through `tunnel::wait_of`, and it
+is a ceiling on the call rather than on the jobs: passing it returns the output so
+far and the jobs keep running. A read that names no number reads now. A cancelled turn stops the wait and leaves
 them running. `detached` processes have no shell to wait on and are not included.

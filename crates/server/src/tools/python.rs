@@ -425,6 +425,12 @@ impl Tool for PythonTool {
         Some(self.timeout)
     }
 
+    /// An interpreter's `background` is a call of that interpreter, read by
+    /// `check_python`.
+    fn handles_background(&self) -> bool {
+        true
+    }
+
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -497,7 +503,7 @@ impl Tool for PythonTool {
                     return ToolOutcome::err(format!(
                         "`{name}` is running a background call, and this interpreter answers \
                          one call at a time: a foreground call now would read that one's \
-                         answer. Read it with `check_python` (or `wait_ms`), or use another \
+                         answer. Read it with `check_python` (or `timeout_ms`), or use another \
                          name."
                     ));
                 }
@@ -622,12 +628,16 @@ impl Tool for CheckPythonTool {
         "check_python"
     }
 
+    /// A read with no number reads now: waiting is the call's to ask for.
+    fn default_timeout(&self) -> Option<Duration> {
+        Some(Duration::ZERO)
+    }
+
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "name": {"type": "string"},
-                "wait_ms": {"type": "integer"}
+                "name": {"type": "string"}
             },
             "additionalProperties": false
         })
@@ -649,11 +659,7 @@ impl Tool for CheckPythonTool {
                     "no interpreter named {name}; `list_python` says which names exist"
                 ));
             };
-            let wait = args["wait_ms"]
-                .as_u64()
-                .map(Duration::from_millis)
-                .unwrap_or(Duration::ZERO)
-                .min(Duration::from_secs(600));
+            let wait = crate::tools::tunnel::wait_of(&args).unwrap_or_default();
             if !wait.is_zero() {
                 // Only a clock: a message or a cancel ends this from `waited`.
                 handle.wait_idle(wait).await;

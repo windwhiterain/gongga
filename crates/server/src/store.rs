@@ -224,19 +224,29 @@ CREATE TABLE IF NOT EXISTS detached_jobs (
 );
 CREATE INDEX IF NOT EXISTS detached_by_session ON detached_jobs(session);
 
--- A tool call that said `detached` and has not reported yet. The row is how a process
--- that stops can tell the session what it lost: unlike a detached process, such a job
--- has no pid to adopt, so the row is the only trace. See
--- `docs/notes/server-tools-detached.md`.
-CREATE TABLE IF NOT EXISTS detached_calls (
+-- A tool call that did not wait for its answer: `background` keeps that answer for
+-- `check_job`, `detached` hands it to the session when it ends. A job of this server
+-- has no pid to adopt, so the row is the only trace -- and the only way a session
+-- learns what a stopped run still owed it. See `docs/notes/server-tools-tunnel.md`.
+CREATE TABLE IF NOT EXISTS tool_jobs (
     id          INTEGER PRIMARY KEY,
     session     TEXT NOT NULL,
     call_id     TEXT NOT NULL,
     tool        TEXT NOT NULL,
     description TEXT,
-    started_at  INTEGER NOT NULL
+    -- `background` or `detached`: what the caller asked for, which decides who
+    -- reads the answer.
+    mode        TEXT NOT NULL,
+    -- running, ok, error or lost.
+    status      TEXT NOT NULL,
+    output      TEXT,
+    -- Whether the session has been handed the output: read by `check_job`, or
+    -- carried by a `detached` notice.
+    collected   INTEGER NOT NULL DEFAULT 0,
+    started_at  INTEGER NOT NULL,
+    finished_at INTEGER
 );
-CREATE INDEX IF NOT EXISTS detached_calls_by_session ON detached_calls(session);
+CREATE INDEX IF NOT EXISTS tool_jobs_by_session ON tool_jobs(session);
 
 -- What the prefix cache has learnt about the order things are emitted in, one row per
 -- owner -- the unit whose requests share bytes, which is a session's directory. Not one
@@ -438,6 +448,16 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "UPDATE detached_jobs SET name = shell || '-' || job WHERE name = ''",
         [],
     )?;
+    // A `detached` call became one kind of job. Work a stop left owed still is.
+    if has_column(conn, "detached_calls", "call_id") {
+        conn.execute_batch(
+            "INSERT INTO tool_jobs (session, call_id, tool, description, mode, status, started_at)
+             SELECT session, call_id, tool, description, 'detached', 'running', started_at
+               FROM detached_calls
+              WHERE NOT EXISTS (SELECT 1 FROM tool_jobs j WHERE j.call_id = detached_calls.call_id);
+             DROP TABLE detached_calls;",
+        )?;
+    }
     add_column_if_missing(
         conn,
         "messages",
@@ -2003,50 +2023,114 @@ impl Store {
         Ok(rows)
     }
 
-    pub fn add_detached_call(
+    pub fn add_job(
         &self,
         session: &str,
         call_id: &str,
         tool: &str,
         description: Option<&str>,
+        mode: &str,
     ) -> anyhow::Result<i64> {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
         tx.execute(
-            "INSERT INTO detached_calls (session, call_id, tool, description, started_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![session, call_id, tool, description, now_millis()],
+            "INSERT INTO tool_jobs (session, call_id, tool, description, mode, status, started_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'running', ?6)",
+            params![session, call_id, tool, description, mode, now_millis()],
         )?;
         let id = tx.last_insert_rowid();
         tx.commit()?;
         Ok(id)
     }
 
-    /// Every call a run left unresolved, oldest first.
-    pub fn detached_calls(&self) -> anyhow::Result<Vec<DetachedCallRow>> {
+    /// Writes how a job ended, and queues the notice that says so, in one act.
+    ///
+    /// # Invariant
+    ///
+    /// One row and at most one notice, committed together: a row left `running` is a
+    /// job whose answer nobody has, which is exactly what the next start reports. The
+    /// notice's session is the row's, so a job cannot speak for another session.
+    pub fn finish_job(
+        &self,
+        id: i64,
+        status: &str,
+        output: &str,
+        collected: bool,
+        notice: Option<&serde_json::Value>,
+    ) -> anyhow::Result<()> {
+        let now = now_millis();
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "UPDATE tool_jobs SET status = ?2, output = ?3, collected = ?4, finished_at = ?5
+              WHERE id = ?1",
+            params![id, status, output, i64::from(collected), now],
+        )?;
+        if let Some(notice) = notice {
+            tx.execute(
+                "INSERT INTO pending_tasks (session, kind, payload, created_at)
+                 SELECT session, 'inject', ?2, ?3 FROM tool_jobs WHERE id = ?1",
+                params![id, serde_json::to_string(notice)?, now],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// One job, if this home has it.
+    pub fn job(&self, id: i64) -> anyhow::Result<Option<JobRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, call_id, tool, description, started_at
-             FROM detached_calls ORDER BY id",
+            "SELECT id, session, tool, description, mode, status, output, collected,
+                    started_at, finished_at
+             FROM tool_jobs WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query(params![id])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(job_row(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Marks a job's answer as handed to its session, so it is not offered twice.
+    pub fn collect_job(&self, id: i64) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE tool_jobs SET collected = 1 WHERE id = ?1",
+            params![id],
+        )?;
+        Ok(())
+    }
+
+    /// Every job a stopped run left either unanswered or unread, oldest first.
+    pub fn owed_jobs(&self) -> anyhow::Result<Vec<JobRow>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, session, tool, description, mode, status, output, collected,
+                    started_at, finished_at
+             FROM tool_jobs
+             WHERE status = 'running' OR (status IN ('ok', 'error') AND collected = 0)
+             ORDER BY id",
         )?;
         let rows = stmt
-            .query_map([], |r| {
-                Ok(DetachedCallRow {
-                    id: r.get(0)?,
-                    session: r.get(1)?,
-                    call_id: r.get(2)?,
-                    tool: r.get(3)?,
-                    description: r.get(4)?,
-                    started_at: r.get(5)?,
-                })
-            })?
+            .query_map([], job_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
-    pub fn delete_detached_call(&self, id: i64) -> anyhow::Result<()> {
+    /// Says a job will never answer, and keeps the row so `check_job` can say why.
+    pub fn lose_job(&self, id: i64) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE tool_jobs SET status = 'lost', finished_at = ?2
+              WHERE id = ?1 AND status = 'running'",
+            params![id, now_millis()],
+        )?;
+        Ok(())
+    }
+
+    /// Forgets one job: its session is gone, or nothing it said is left to read.
+    pub fn delete_job(&self, id: i64) -> anyhow::Result<()> {
         self.lock()
-            .execute("DELETE FROM detached_calls WHERE id = ?1", params![id])?;
+            .execute("DELETE FROM tool_jobs WHERE id = ?1", params![id])?;
         Ok(())
     }
 
@@ -2239,14 +2323,32 @@ pub struct DetachedRow {
 /// survives a start is a call whose server stopped before it could answer. See
 /// `docs/notes/server-tools-detached.md`.
 #[derive(Debug, Clone)]
-pub struct DetachedCallRow {
+pub struct JobRow {
     pub id: i64,
     pub session: String,
-    /// The tool call this row answers for, so its report names what the transcript names.
-    pub call_id: String,
     pub tool: String,
     pub description: Option<String>,
+    pub mode: String,
+    pub status: String,
+    pub output: Option<String>,
+    pub collected: bool,
     pub started_at: i64,
+    pub finished_at: Option<i64>,
+}
+
+fn job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRow> {
+    Ok(JobRow {
+        id: row.get(0)?,
+        session: row.get(1)?,
+        tool: row.get(2)?,
+        description: row.get(3)?,
+        mode: row.get(4)?,
+        status: row.get(5)?,
+        output: row.get(6)?,
+        collected: row.get::<_, i64>(7)? != 0,
+        started_at: row.get(8)?,
+        finished_at: row.get(9)?,
+    })
 }
 
 #[derive(Debug, Clone)]

@@ -2336,12 +2336,12 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
             }
             continue;
         };
-        // A notice about a shell the last run took names a buffer nothing can
-        // read: delivering it is a turn on stale news.
+        // A notice about work the last run took names nothing readable: stale.
+        // `announce_owed` says what that run still owed.
         let mut kept = Vec::with_capacity(tasks.len());
         let mut dropped = 0;
         for task in tasks {
-            if task.payload["notice"] == json!("background") {
+            if matches!(task.payload["notice"].as_str(), Some("background" | "job")) {
                 let _ = d.store.delete_pending_task(task.id);
                 dropped += 1;
                 continue;
@@ -2351,7 +2351,7 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
         if dropped > 0 {
             tracing::info!(
                 session = %name, dropped,
-                "dropped notices about shells the last run took with it"
+                "dropped notices about work the last run took with it"
             );
         }
         let owed = owes_a_turn(&kept);

@@ -292,6 +292,17 @@ pub trait Tool: Send + Sync {
         tunnel::Carried::Call
     }
 
+    /// Whether `background` is this tool's own work rather than the tunnel's.
+    ///
+    /// # Invariant
+    ///
+    /// A tool that backgrounds into a shell or an interpreter is read back by that
+    /// collector (`check_bash`, `check_python`); every other tool's background is a
+    /// job of this server, read by `check_job`. See `docs/notes/server-tools-mod.md`.
+    fn handles_background(&self) -> bool {
+        false
+    }
+
     fn run<'a>(
         &'a self,
         args: Value,
@@ -382,6 +393,7 @@ impl ToolRegistry {
                     max_output_chars,
                 }),
                 Arc::new(CheckBashTool { max_output_chars }),
+                Arc::new(CheckJobTool { max_output_chars }),
                 Arc::new(WaitTool {
                     timeout: bash_timeout,
                 }),
@@ -526,9 +538,28 @@ impl ToolRegistry {
         if let Err(message) = tunnel::resolve(tool.as_ref(), &mut args, self.max_wait) {
             return ToolOutcome::err(message);
         }
+        // The tunnel's words are the tunnel's to offer: `wait` takes none of them.
+        if let Some(word) = tunnel::foreign(tool.as_ref(), &args) {
+            return ToolOutcome::err(format!(
+                "`{name}` did not run: it said `{word}`, and `{name}` is the one tool the tunnel \
+                 leaves alone -- waiting is its whole work, so it has no answer to leave running. \
+                 Call it without `{word}`."
+            ));
+        }
+        if tunnel::both_ways(&args) {
+            return ToolOutcome::err(
+                "pick one: `background` collects the answer with `check_job`, `detached` hands it \
+                 to you as a notice",
+            );
+        }
+        // A tool whose background is its own shell's keeps it; every other one is a job.
+        if tunnel::wants_background(&args) && !tool.handles_background() {
+            return tunnel::spawn(tool, name.to_string(), args, ctx, tunnel::Mode::Background)
+                .await;
+        }
         // SPEC: `detached` is the tunnel's, except for the tool that carries a process.
         if tunnel::wants_detached(&args) && tool.detached_carrier() == tunnel::Carried::Call {
-            return tunnel::detach(tool, name.to_string(), args, ctx).await;
+            return tunnel::spawn(tool, name.to_string(), args, ctx, tunnel::Mode::Detached).await;
         }
         invoke(name, tool, args, ctx).await
     }
@@ -583,8 +614,13 @@ async fn waited(tool: &dyn Tool, args: &Value, ctx: &ToolContext) -> ToolOutcome
 /// Injected into the model-facing schema in `definitions` (a declared
 /// property wins), read back at the call layer; they never reach the
 /// command surface, which reads `Tool::parameters` raw.
-/// `Tool::parameters` raw.
-pub const GENERAL_ARGS: &[&str] = &["description", "max_output", "timeout_ms", "detached"];
+pub const GENERAL_ARGS: &[&str] = &[
+    "description",
+    "max_output",
+    "timeout_ms",
+    "background",
+    "detached",
+];
 
 /// SPEC's adapter-level parameters added to every tool the model is offered.
 ///
@@ -625,6 +661,13 @@ pub(crate) fn general_parameters(tool: &dyn Tool) -> Value {
                 "type": "boolean"
             })
         });
+        properties
+            .entry("background".to_string())
+            .or_insert_with(|| {
+                json!({
+                    "type": "boolean"
+                })
+            });
     }
     // Last: a sentence is written into a property that must already exist.
     text::shared().apply(tool.name(), &mut schema);
@@ -1004,6 +1047,11 @@ impl Tool for BashTool {
         }
     }
 
+    /// Both machines' `background` is a job of that shell, read by `check_bash`.
+    fn handles_background(&self) -> bool {
+        true
+    }
+
     fn default_timeout(&self) -> Option<Duration> {
         Some(self.timeout)
     }
@@ -1095,11 +1143,6 @@ impl Tool for BashTool {
                 .get("detached")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            if background && detached {
-                return ToolOutcome::err(
-                    "pick one: `background` collects the output, `detached` does not",
-                );
-            }
             // `detached` names the process itself; `background` is a job of a shell.
             if detached {
                 // A detached process runs here, on the machine that holds the registry.
@@ -1381,22 +1424,24 @@ pub struct CheckBashTool {
     pub max_output_chars: usize,
 }
 
-/// How often a waiting read asks whether the shell's jobs are done.
+/// How often a waiting read asks whether the work it waits for is done.
 const WAIT_POLL: Duration = Duration::from_millis(100);
-/// A wait is a tool call, not a turn: beyond this it is better to come back later.
-const MAX_WAIT: Duration = Duration::from_secs(600);
 
 impl Tool for CheckBashTool {
     fn name(&self) -> &'static str {
         "check_bash"
     }
 
+    /// A read with no number reads now: waiting is the call's to ask for.
+    fn default_timeout(&self) -> Option<Duration> {
+        Some(Duration::ZERO)
+    }
+
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "name": {"type": "string"},
-                "wait_ms": {"type": "integer"}
+                "name": {"type": "string"}
             },
             "additionalProperties": false
         })
@@ -1414,12 +1459,8 @@ impl Tool for CheckBashTool {
                     "no live shell named {name}; `list_bash` says which names exist"
                 ));
             };
-            let wait = args
-                .get("wait_ms")
-                .and_then(Value::as_u64)
-                .map(Duration::from_millis)
-                .unwrap_or(Duration::ZERO)
-                .min(MAX_WAIT);
+            // SPEC's `timeout_ms`, resolved by the tunnel: this read's own clock.
+            let wait = tunnel::wait_of(&args).unwrap_or_default();
             if !wait.is_zero() {
                 let deadline = std::time::Instant::now() + wait;
                 loop {
@@ -1475,6 +1516,167 @@ impl Tool for CheckBashTool {
                 why.because()
             ))
         })
+    }
+}
+
+// -------------------------------- check_job --------------------------------
+
+/// SPEC's `check_job`: what became of a call that did not wait for its answer.
+pub struct CheckJobTool {
+    pub max_output_chars: usize,
+}
+
+impl Tool for CheckJobTool {
+    fn name(&self) -> &'static str {
+        "check_job"
+    }
+
+    /// A read with no number reads now: waiting is the call's to ask for.
+    fn default_timeout(&self) -> Option<Duration> {
+        Some(Duration::ZERO)
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "job_id": {"type": "integer"}
+            },
+            "required": ["job_id"],
+            "additionalProperties": false
+        })
+    }
+
+    fn run<'a>(
+        &'a self,
+        args: Value,
+        ctx: &'a ToolContext,
+    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            let Some(id) = args
+                .get("job_id")
+                .and_then(Value::as_u64)
+                .and_then(|id| i64::try_from(id).ok())
+            else {
+                return ToolOutcome::err("check_job needs the `job_id` its start answered with");
+            };
+            // SPEC's `timeout_ms`, resolved by the tunnel: this read's own clock.
+            let wait = tunnel::wait_of(&args).unwrap_or_default();
+            let deadline = std::time::Instant::now() + wait;
+            loop {
+                let row = match ctx.store.job(id) {
+                    Ok(Some(row)) => row,
+                    Ok(None) => {
+                        return ToolOutcome::err(format!(
+                            "no job {id} in this session: a job is named by the start a call \
+                             answered with, and `check_bash` or `check_python` reads the ones \
+                             their own shells started"
+                        ));
+                    }
+                    Err(e) => return ToolOutcome::err(format!("could not read job {id}: {e}")),
+                };
+                // Another session's job is not this session's to read.
+                if row.session != ctx.session {
+                    return ToolOutcome::err(format!("no job {id} in this session"));
+                }
+                if row.status != "running" {
+                    return ToolOutcome::ok(self.answer(ctx, &row));
+                }
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    let ran = crate::agent::spent(
+                        u64::try_from((crate::store::now_millis() - row.started_at).max(0))
+                            .unwrap_or(u64::MAX),
+                    );
+                    return ToolOutcome::ok(format!(
+                        "job {id}{} is still running after {ran}. `timeout_ms` stays in this call \
+                         until it ends, and this session is told when it ends.",
+                        named(&row)
+                    ));
+                }
+                // Only a clock: a message or a cancel ends this from `waited`.
+                tokio::time::sleep(remaining.min(WAIT_POLL)).await;
+            }
+        })
+    }
+
+    /// A job that ended does not stop: it has said all it will say.
+    fn cut<'a>(
+        &'a self,
+        args: &'a Value,
+        _ctx: &'a ToolContext,
+        why: Cut,
+        _started: std::time::Instant,
+    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            let id = args
+                .get("job_id")
+                .and_then(Value::as_u64)
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "?".to_string());
+            ToolOutcome::err(format!(
+                "check_job stopped waiting for job {id}: {}. The job was not stopped, and \
+                 `check_job` reads what it answered.",
+                why.because()
+            ))
+        })
+    }
+}
+
+impl CheckJobTool {
+    /// What one job says about itself, and whether that answer is still unread.
+    fn answer(&self, ctx: &ToolContext, row: &crate::store::JobRow) -> String {
+        let ran = row
+            .finished_at
+            .map(|done| {
+                crate::agent::spent(
+                    u64::try_from((done - row.started_at).max(0)).unwrap_or(u64::MAX),
+                )
+            })
+            .unwrap_or_default();
+        let what = format!("job {}{}", row.id, named(row));
+        let said = match row.status.as_str() {
+            "ok" => format!("{what} finished successfully after {ran}"),
+            "error" => format!("{what} finished with an error after {ran}"),
+            "lost" => format!(
+                "{what} never reported: the server stopped before it finished, so nothing here \
+                 can say what it printed. Run it again if it mattered."
+            ),
+            other => format!("{what} is {other}"),
+        };
+        if row.collected {
+            return format!(
+                "{said}. Its answer has already been collected: it is in the result of the \
+                 `check_job` that read it."
+            );
+        }
+        let Some(output) = row.output.as_deref() else {
+            return format!("{said}, and it left nothing to read.");
+        };
+        if row.status == "lost" {
+            return said;
+        }
+        let text = ctx.cap(
+            ctx.machine,
+            "check_job",
+            None,
+            output.to_string(),
+            self.max_output_chars,
+        );
+        if let Err(e) = ctx.store.collect_job(row.id) {
+            tracing::warn!(job = row.id, error = %e, "could not mark a job's answer collected");
+        }
+        format!("{said}. What it printed:\n\n{text}")
+    }
+}
+
+/// How a job names itself in a sentence: its tool, and the call's own title.
+fn named(row: &crate::store::JobRow) -> String {
+    match &row.description {
+        Some(description) if !description.trim().is_empty() => {
+            format!(" (`{}`, \"{}\")", row.tool, description.trim())
+        }
+        _ => format!(" (`{}`)", row.tool),
     }
 }
 

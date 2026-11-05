@@ -6,7 +6,7 @@ all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, l
 - protocol
 - server: binary (the backend program; also a library for its own tests).
 - client: use protocal to send server cmd
-  - cli: binary.
+  - cli: python.
     - cmd fully documented and diagnosed.
   - tui: binary.
 - bundle: binary, bundle server/cli/tui's binary, route the cmd.
@@ -40,6 +40,7 @@ tool are tunnel of cmd that agents can directly call to avoid escape.
 
 all tool has optional `description`, `max_output`, `timeout_ms`, `background`, `detached` argument that the tunnel consume.
 - `max_output`: in chars, if exeeded, save to temp file and return the file metadata {path, chars, line count}
+- `timeout_ms` is limited, so cancel can finish quick. long job is forced to use detached + wait that job and wait can live across cancel.
 
 wait is the only expecial tool that treated internally.
 
