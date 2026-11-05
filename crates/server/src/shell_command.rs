@@ -50,8 +50,7 @@ pub fn ensure_pair(home: &Path) -> Option<PathBuf> {
     if let Some(source) = server_source() {
         place(&bin, SERVER, &source);
     }
-    // The command line is this home's Python, so what a shell needs is a name that
-    // starts it -- written here, not copied from a build.
+    // The command line is this home's Python: what a shell needs is a name for it.
     for (name, body) in SHIM {
         let _ = write(&bin, name, body);
     }
