@@ -26,6 +26,7 @@ you are about to touch.
 | write into a home (payload, config, database) | [`server-config.md`](server-config.md), [`server-store.md`](server-store.md) |
 | change what a client sends or receives | [`cli-lib.md`](cli-lib.md), [`protocol-lib.md`](protocol-lib.md) |
 | change the window | [`tui-lib.md`](tui-lib.md), [`tui-run.md`](tui-run.md) |
+| change what the window remembers (`cli.toml`) | [`tui-state.md`](tui-state.md), [`tui-command.md`](tui-command.md) |
 
 ## Index
 
@@ -110,6 +111,7 @@ you are about to touch.
 | [`cli-catalog.md`](cli-catalog.md) | `crates/cli/src/catalog.rs` |
 | [`cli-complete.md`](cli-complete.md) | `crates/cli/src/complete.rs` |
 | [`cli-commands.md`](cli-commands.md) | `crates/cli/src/commands.rs` |
+
 | [`cli-skill-command.md`](cli-skill-command.md) | `crates/cli/src/skill_command.rs` |
 
 ### tui
@@ -130,6 +132,8 @@ you are about to touch.
 | [`tui-table.md`](tui-table.md) | `crates/tui/src/table.rs` |
 | [`tui-tree.md`](tui-tree.md) | `crates/tui/src/tree.rs` |
 | [`tui-run.md`](tui-run.md) | `crates/tui/src/run.rs` |
+| [`tui-state.md`](tui-state.md) | `crates/tui/src/state.rs` |
+| [`tui-command.md`](tui-command.md) | `crates/tui/src/command.rs` |
 | [`tui-frame_cost.md`](tui-frame_cost.md) | `crates/tui/examples/frame_cost.rs` |
 
 ### bridge

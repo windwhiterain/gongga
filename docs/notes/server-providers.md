@@ -385,7 +385,8 @@ model is not the same as this server being able to drive it.
 request can actually ask for, by the endpoint's own spelling. It used to be a
 field nobody read; `FileProvider` -> `Provider` -> `Entry` now carries it, and
 `ModelConfig::for_entry` hands it to the client so a configured tier is checked
-before it is sent. A provider that states none gets no cache directive, which is
+before it is sent, and `tier_accepts` publishes the same table to every front-end as
+`ArgSpec.accepts` -- one list, so a completion and a refusal cannot disagree. A provider that states none gets no cache directive, which is
 the default tier. The lifetime of that default is still `cache_ttl_secs`: one
 names which tiers exist, the other how long the one in force lives, and the two
 are not merged.

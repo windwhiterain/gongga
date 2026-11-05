@@ -589,5 +589,7 @@ is the session's own tier's declared lifetime; a roster that states none leaves
 first step, and every step of the turn sends that spelling. A session that named
 none falls back to the server's `cache_tier` and then to the shortest tier its
 model declares; a name the roster does not declare cannot be stored in the first
-place. Nothing re-decides the tier between requests. The `usage` row records what
+place, and the one value every model does take is `none` -- the session stating that
+it sends no tier at all, which neither the server's own nor the roster's shortest
+answers for. Nothing re-decides the tier between requests. The `usage` row records what
 was actually sent, so the observation layer sees the tier that was in force.

@@ -42,15 +42,14 @@ The server answers with `ServerMessage::Hello`, or `ServerMessage::Denied` when
 
 ## ServerMessage::Hello — models
 
-The greeting carries the models a request could run on here, each with the levels the
-roster publishes for it, and that is the whole of what `--model` and `--thinking`
-complete from. They travel together because they are one question asked twice: the
-list of models is the same list, and a model and its levels cannot say different
-things if there is only one of each.
+The greeting carries the models a request could run on here: names, and nothing else.
+What a model *takes* travels on the argument that takes it (`ArgSpec.accepts`), because
+that is the set the command will not refuse -- the roster is only how the server works
+it out. An entry with no levels in it is not a hole in the roster: such a model takes
+whatever it is sent, which is what an absent `PerModel` key says.
 
-`levels` is empty for a model the roster says nothing about, and that is a fact rather
-than a hole: such a model takes whatever it is sent. `#[serde(default)]`, so a
-greeting from a build without the table reads as a roster that publishes none.
+`#[serde(default)]`, so a greeting from a build without the table reads as a roster
+that publishes none.
 
 ## ResponsePart
 
@@ -66,10 +65,9 @@ see that the model went to the network at all.
 
 ## CmdArg
 
-Sticky arguments are a client-side concern -- the CLI keeps them, fills them into
-commands before sending, and never tells the server about them. The type lives
-here only so both the CLI's in-memory map and its on-disk state file agree on one
-shape.
+Sticky arguments are a client-side concern -- the window keeps them, fills them into
+commands before sending, and never tells the server about them. The type lives here
+only so the window's in-memory map and its on-disk state file agree on one shape.
 
 ## CompletionSource::Arguments
 
@@ -89,31 +87,46 @@ Complete this value the way arguments of the type the line names would be
 completed: `set_sticky session <TAB>` offers sessions. The client needs this
 because the shape of the value depends on which type it is going to fill.
 
-## CompletionSource::Models, ::ModelLevels and ::ModelTiers
+## CompletionSource::Models
 
-`Models` completes `provider/model_name` from the greeting's table. `ModelLevels`
-and `ModelTiers` complete what the model *that line runs on* takes -- its reasoning
-levels and its cache tiers -- resolving the model the same way: the one the line
-names, else the one the session it names already has, else the server's own default.
-That is the same three steps `set_session` takes when it resolves a model, so the
-list offered is the list that would run. None is `Static`: the list is a fact about
-this machine's roster, and the client holds no copy of it.
+`Models` completes `provider/model_name` from the greeting's table. What each model
+*takes* is not a source at all: it is `ArgSpec.accepts`, because that is what the
+server's validation will accept, and a client that derived it from the roster
+disagreed -- a level the roster maps (`medium` -> `high`) was offered by nobody and
+dropped as one the model refuses.
 
-A tier list is ordered by window, shortest first, because that is the tier a
-session naming none would send. It carries no "default" sentinel: naming no tier
-and naming the shortest one are the same request.
+## ArgSpec::accepts, ArgSpec::sticky_to
 
-An empty level list is not an empty popup. A model the roster does not describe takes
-any spelling, so the client offers every level some model here publishes -- refusing to
-guess would be the client stating an opinion the roster never had. `THINKING_DEFAULT`
-is appended in both cases, because naming no level is always allowed.
+`accepts` is the closed set of values the argument takes, or `None` when it takes any.
+It is published, not derived: the server's own validation is where the values come
+from, so a front-end can answer "is this value accepted?" from the catalog alone. Two
+shapes, because the roster is per model: `Same(values)`, and `PerModel` keyed by
+`provider/model_name`, where an absent model accepts anything (the roster has no
+opinion) and an empty list takes none (which is an answer too). `--cache_tier` carries
+both facts: every model lists its declared tiers plus `NONE_VALUE`, and a model that
+declares none therefore lists exactly `none`.
+
+An argument with `accepts` publishes `CompletionSource::None`: one list per argument,
+so a suggestion can never be read as a requirement. `--ctx_limit` keeps its ten
+percentages as an offer while accepting any of a hundred.
+
+`sticky_to` is SPEC's `(sticky to <kind>)` as data: `--thinking` and `--ctx_limit`
+follow `model`, `--cwd` follows `remote`. The reader that keeps the entries applies
+the rule without knowing a name.
+
+## Event::Commands
+
+A catalog is a snapshot of the roster, because an argument publishes the values the
+roster lets through. Editing `providers.toml` therefore makes the greeting's catalog
+stale, and the server republishes the whole of it beside `Event::Models` -- never a
+delta, for the same reason the table is whole.
 
 ## Operation
 
 The gestures a window offers, as API rather than as commands. `sticky_session`,
 `render_session` and `delete_session` are what a click means; a window asks for
-one of them and the client answers the two that are its own state, while the
-server answers the one that is not -- and it answers it where it answers
+one of them and answers the two that are its own state itself, while the server
+answers the one that is not -- and it answers it where it answers
 `del_session`, so one deletion has one behavior however it was asked for.
 
 The reason it is not a command line: the window would carry the command syntax,

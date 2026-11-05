@@ -15,15 +15,18 @@ filled in before the command ever reaches the wire.
 
 The catalog is the only list, and it is published to clients at connect time.
 It has four parts -- the server's own commands, the tool commands (one per
-tool, generated from the registry; see `docs/notes/server-tool-cmd.md`), the
-client's (published so no front-end keeps a copy), and whatever scripts
-registered -- and one `target` field on each entry says who runs it. Dispatch
+tool, generated from the registry; see `docs/notes/server-tool-cmd.md`), and
+whatever scripts registered -- and one `target` field on each entry says who runs
+it. The client's own commands are *not* here: they are the window's, and the window
+seeds its own catalog with `protocol::client_commands` (`docs/notes/tui-command.md`). Dispatch
 reads that field; so does the CLI. A command nobody implemented is not
 "unknown" but a catalog entry with no handler, which the answer says outright.
 
 The catalog also decides the sticky vocabulary: an argument's `kind` is the
 entry that fills it (`session`, `model`, `thinking`, `ctx_limit`, `remote`,
-`cwd`). `set_session`'s settings are all optional with the initials SPEC
+`cwd`), and `sticky_to` says which other entry it belongs to -- `--thinking` follows
+`--model`, `--cwd` follows `--remote` -- so a reader that keeps the entries applies
+SPEC's rule from the published data rather than from a table of names. `set_session`'s settings are all optional with the initials SPEC
 spells -- `--model` omitted keeps the session's model (a new one takes the
 configured default), `--cwd` omitted stands the session where the server
 stands -- so a bare `set_session <name>` creates with every default, and each
@@ -32,9 +35,9 @@ setting a caller names becomes a mode the acknowledgement writes back.
 ## Dispatch::resolve
 
 One decision for every kind of command: does the name exist, who runs it, and are
-its required arguments here. Client commands are refused rather than executed --
-the server cannot change a caller's own state, and calling them "unknown" would
-deny an entry that is right there in the greeting it just sent.
+its required arguments here. A `Client`-target entry that reaches here is refused rather than executed: the server
+cannot change a caller's own state. This build publishes none, so the arm is a guard
+for a caller from another build rather than a path the window takes.
 
 ## Dispatch::catalog
 
@@ -85,6 +88,12 @@ because the published `cwd` was the only directory it had and the row's own answ
 the placement rather than the truth.
 
 `thinking_effort` is the exception: it is reported as the row has it, because
+A closed argument also publishes `accepts` (`providers::level_accepts`,
+`providers::tier_accepts`): the values its command will not refuse, per model where the
+roster says something different for each. A tier list carries `none` too, because the
+one value every model takes is "send no tier" -- without it a session that inherited a
+tier could not state on a model that declares none that it sends nothing.
+
 `set_session` is where a model's roster default becomes a stored level. Filling it in
 here as well made the title claim a level the request never carried -- the title said
 `thinking high` for every session nobody had given one, while `build_head` sent no

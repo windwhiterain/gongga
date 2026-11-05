@@ -3,8 +3,9 @@
 ## lib.rs
 
 This crate owns the command surface: it takes the catalog the server publishes,
-keeps the sticky arguments, and turns one command's tokens into either a local
-action or a message on the wire. Which is which is the published `target`, not a
+turns one command's tokens into a message on the wire, and keeps no state of its
+own -- the sticky arguments, the drawn sessions and `cli.toml` are the window's
+(`docs/notes/tui-state.md`). Which is which is the published `target`, not a
 list here -- so a command a script registered is handled by the same code path
 as a built-in, and none of them needs a client rebuild.
 
@@ -202,31 +203,35 @@ The whole `SessionInfo` goes to the completer, not just the name: a value comple
 a session belongs to that session's directory and machine, and the completer has no
 other place to learn them. See `docs/notes/cli-catalog.md`.
 
-## Event::Models — an edited roster
+## Event::Models and Event::Commands — an edited roster
 
-A roster edit arrives as an event on the connection the window already holds, and the
-client answers it by replacing the catalog's table. Nothing is said in the log: the
+A roster edit arrives as two events on the connection the window already holds: the
+table, and the catalog -- because an argument publishes the values the roster lets
+through (`ArgSpec.accepts`). The client answers each by replacing what it holds. Nothing is said in the log: the
 operator edited a file, the server noticed, and the next Tab differs from the last one.
 The popup itself is not recomputed here -- it is rebuilt from the catalog on the next
 keystroke, which is the same rule every other value follows.
 
-## Client::sync_sticky
+## Client::set_sticky_vocabulary
 
-The sticky arguments, and the session a bare message goes to. The second is what makes
-`@skill:` complete the skills of the session the message will be sent to: a message
-names no session on its own line, so the sticky one is the only address it has.
+Two facts the front-end supplies, and this layer stores neither: the sticky argument
+names (what `set_sticky <type>` completes) and the session a bare message goes to
+(what makes `@skill:` complete the skills of the session the message will reach). A
+message names no session on its own line, so that entry is the only address it has.
+The window calls this after any change; nothing here reads `cli.toml`.
 
 Where the skills are read moved out of here and into the catalog, keyed by the
 directory they came from. Pushing a list in from this function made its correctness
 depend on every caller remembering -- the greeting ran it, a session that moved did
 not.
 
-## Sink::block_size, Sink::box_edge and Sink::layout
+## Sink::layout
 
-All three default to a no-op: a front-end that shows every row in one window, or draws
-its boxes at the window's own edges, has to know none of these settings exist, and the
-one-shot sink must not start rendering. All three are pushed on every `refresh`, which
-is how a window that attached after the client learned them still hears about them.
+Defaults to a no-op: a front-end that shows every row in one window has to know the
+layout does not exist, and the one-shot sink must not start rendering. It is pushed on
+every `refresh`, which is how a window that attached late still hears about it -- and
+it carries the sessions the *front-end* asked to see, because which are drawn is the
+window's state (`docs/notes/tui-state.md`).
 
 The layout is announced (`Layout::Merged` or `Layout::Split`) rather than a `split`
 flag, because the front-end has to know the names and their order anyway -- and a flag
@@ -337,19 +342,16 @@ number as if the server were still there.
 Both halves of the grammar reach the same code; the only difference the operator
 should see is that a command looks like a command (`/set_session main`) and a
 message looks like what they wrote. The wire never sees this distinction: a
-message is `send_message <session> <text>`, the session being the sticky one,
-named explicitly so the text never lands on the session argument.
+message is `send_message <session> <text>`, the session passed in by the front-end
+that keeps it, named explicitly so the text never lands on the session argument.
 
 ## Client::apply
 
-The API a window's gestures use. An operation is not a command line: the window
-says what it means -- make this session sticky, show or hide its window, delete
-it -- and the client answers the two that are its own state on the spot, and
-sends the one that is not.
-
-Each of them ends in the same code the matching command ends in (`stick`,
-`set_shown`), so a gesture and the command that does the same thing cannot
-drift into two behaviors.
+The API a window's gestures use. An operation is not a command line: the window says
+what it means. Only one of the three is the server's -- delete a session -- and the
+other two are the window's own state, answered by the window before this is called
+(`docs/notes/tui-run.md`). Answering them here too would make this layer a second
+owner of `cli.toml`, which is what the split removed.
 
 ## Client::handle_bytes
 
@@ -419,28 +421,13 @@ them rather than three commands with one name. Two rules make that legible:
 - **The answer is the whole setting**, on a write as on a read: `block_size = 3
   split = false` in one line, because two answers to one command is an argument.
 
-## Client::run_render_session and Client::follow_shown
+## Client::session_named
 
-`set_render_session` writes `Shown` and answers with the value it wrote, or -- with
-no `true|false` -- the value that session has now. It is a view change: the blocks
-are untouched, so `true` after `false` brings the whole history back.
-
-SPEC hangs two more facts off the click that sends this command, and they live here
-rather than in the window so a typed `/set_render_session` behaves the same: showing a
-session makes it the sticky one, and hiding the *sticky* one clears the sticky.
-Hiding another session says nothing about which window the operator is reading, so it
-leaves the sticky where it was.
-
-The window's click is therefore one command line, not three: `!shown` is what it
-knows, and everything else follows from the flag changing.
-
-## Client::session_named, Client::show_session and Client::show_named_session
-
-The window decides what it draws from the commands it sends, not from the sessions the
-server announces. A session the server announces is a session nobody here asked for:
-it stays in the list and its events are not drawn. A command that names a session --
-`set_session --name`, `get_messages --session`, `send_message --name` -- is a
-session the window was told about, and it is shown.
+Which argument of a command names a session, read off the kind: `set_session` binds
+`--name` and `get_messages` binds `--session` to one idea, and only the kind says which
+is the session. What is *done* with the answer is the window's
+(`docs/notes/tui-run.md`): a session the server announces is one nobody asked for, so
+it is not drawn; a session a command names is drawn and becomes the sticky one.
 
 `session_named` reads the *kind* the catalog gives an argument, not the argument's
 name: `set_session` binds `--name` and `get_messages` binds `--session` to one idea,
@@ -448,10 +435,7 @@ and only the kind says which is the session. It answers `None` for a client comm
 because `set_render_session` has a session argument too and it says whether that
 session is drawn -- following it would undo what it says.
 
-`show_session` is `set_shown` without the row: the operator asked for a command, not
-for a report that the window now draws another session. It is the same rule the click
-uses, so a session the operator named and a session a command named are shown the same
-way, and showing one makes it the sticky session.
+
 
 ## QuotaRow, quota_row
 
@@ -525,24 +509,25 @@ The flag is read off each session rather than off the file's entries, because a
 session nobody set is hidden: reading the map would leave a new session with no window
 at all.
 
-## Sink::sticky_session
+## Sink::settled
 
-The session the sticky `session` argument names, told on every refresh. It is what
-the window's keyboard scrolls and what a click on a pane sets; the argument itself
-stays in `Sticky`, so there is one place that knows it.
+Every `cmd_result`, by id and outcome. A notification, not an instruction: a front-end
+that keeps something for an accepted command -- SPEC's sticky follows an accepted
+`set_session` -- hears it here while the answer is still news. What it does with it is
+its own, because what it keeps is.
 
-## Client::settle_follow
+## The write-back a window does
 
 SPEC's `set_session` carries a second sentence: it also sets the sticky entries --
-every argument with a kind that the accepted command carried, keyed by kind --
-which is what keeps `send_message` from needing the session named every time. The pairs are decided at submission from the bound
-arguments; the write runs on the acknowledgement, never on the submission,
-because a refused `set_session` must leave the client pointed where it was:
-following a session that `--model nosuch/model` refused to create is the kind of
-wrong that reads as "the log stopped".
+every argument with a kind that the accepted command *typed*, keyed by kind -- which
+is what keeps `send_message` from needing the session named every time. The write runs
+on the acknowledgement, never on the submission, because a refused `set_session` must
+leave the window pointed where it was.
 
-`del_session` follows nothing. Which session a command goes to is the sticky's to
-say, and the SPEC sentence about it names only `set_session`.
+Only typed arguments count, and only a different value is a change: a value the sticky
+itself supplied is already in the file, and writing it back as stated is what kept a
+`thinking` alive across a model switch. `del_session` follows nothing; which session a
+command goes to is the sticky's to say, and SPEC names only `set_session`.
 
 ## Client::submit_tokens
 
@@ -596,15 +581,19 @@ what it asks for then. Assembled as tokens, never as a line: whatever the
 operator typed -- quotes, `--`, backslashes, a whole paragraph -- is one
 argument, and no parsing rule can turn part of it into a flag.
 
-## Client::remember_server, Client::take_server_change
+## Client::take_server_change
 
-The client-side half of `connect_server`: save the address, report it, and set a
-flag the front-end reads. A one-shot command reads it by never asking — it decided
-`connect_server` before dialing — and the window reads it to drop the link and
-retry, which is the only way a running window moves to another server.
+Nothing sets it any more: `connect_server` is the window's command, and the window
+learns the new address from its own answer (`Done::Moved`). The accessor stays for the
+one thing it still answers -- whether a move is pending -- so a front-end asks once.
 
-The flag is taken rather than read, so a front-end that handles two submissions in
-one pass cannot redial twice for one move.
+## One-shot: no remembered address
+
+`resolve_server` reads `--server`, then `GONGGA_SERVER`, then `[server] bind`. It used
+to fall through to the address a `connect_server` had written into `cli.toml`, which is
+how a one-shot command reached a server nobody named: exactly the client state this
+crate no longer reads. A tool call has `GONGGA_SERVER` exported for it, so the agent
+still reaches its own server.
 
 ## Client::submit_tokens
 
@@ -612,42 +601,20 @@ one pass cannot redial twice for one move.
 line showed it, a message as the prose it was. What goes on the wire has the
 same shape either way.
 
-Everything below is about *commands*: the catalog, sticky arguments, required
-arguments, the wire. That a line without `/` is prose was decided before this,
-by whoever had an input box.
-
-## Client::remember_server, Client::take_server_change
-
-The client-side half of `connect_server`: save the address, report it, and set a
-flag the front-end reads. A one-shot command reads it by never asking — it decided
-`connect_server` before dialing — and the window reads it to drop the link and
-retry, which is the only way a running window moves to another server.
-
-The flag is taken rather than read, so a front-end that handles two submissions in
-one pass cannot redial twice for one move.
+Everything below is about *commands*: the catalog, the required arguments, the
+wire. That a line without `/` is prose was decided before this, by whoever had an
+input box -- and so was every sticky value it carries, which arrives already bound.
 
 ## Client::submit_tokens — offline
 
-Offline, the catalog holds the client's own commands and whatever the last greeting
-said -- and a client started before its server has had no greeting at all.
-Falling through to "unknown command" would then blame the operator for the server
-being down, so the line says what is really wrong: `{head}: not connected to the
-server, nothing was sent`.
+Offline, the catalog holds whatever the last greeting said -- and a client started
+before its server has had no greeting at all. Falling through to "unknown command"
+would then blame the operator for the server being down, so the line says what is
+really wrong: `{head}: not connected to the server, nothing was sent`.
 
-A client command never leaves this process, so it runs offline like any other
-line: the six of them are in the catalog from the first frame
-(`docs/notes/cli-catalog.md`). What offline cannot do is parse a *server* command,
-whose spec only a greeting carries.
-
-## Client::remember_server, Client::take_server_change
-
-The client-side half of `connect_server`: save the address, report it, and set a
-flag the front-end reads. A one-shot command reads it by never asking — it decided
-`connect_server` before dialing — and the window reads it to drop the link and
-retry, which is the only way a running window moves to another server.
-
-The flag is taken rather than read, so a front-end that handles two submissions in
-one pass cannot redial twice for one move.
+What a window runs itself is not in this catalog at all (`docs/notes/tui-command.md`),
+so no client command reaches this path. What offline cannot do is parse a *server*
+command, whose spec only a greeting carries.
 
 ## Client::submit_tokens — unknown command
 
@@ -668,38 +635,17 @@ easy to make: the agent is told to drive the harness with `gongga
 The last separator is what finds the name in both shapes. Split by hand rather
 than with `Path`, which does not call `\\` a separator on every platform.
 
-## Client::remember_server, Client::take_server_change
-
-The client-side half of `connect_server`: save the address, report it, and set a
-flag the front-end reads. A one-shot command reads it by never asking — it decided
-`connect_server` before dialing — and the window reads it to drop the link and
-retry, which is the only way a running window moves to another server.
-
-The flag is taken rather than read, so a front-end that handles two submissions in
-one pass cannot redial twice for one move.
-
 ## Client::submit_tokens — the rest of the line
 
 Whatever followed the name, in either shape: inside the one argument when the
 whole line was quoted, or in the remaining tokens when it was real argv.
 
-## Client::remember_server, Client::take_server_change
-
-The client-side half of `connect_server`: save the address, report it, and set a
-flag the front-end reads. A one-shot command reads it by never asking — it decided
-`connect_server` before dialing — and the window reads it to drop the link and
-retry, which is the only way a running window moves to another server.
-
-The flag is taken rather than read, so a front-end that handles two submissions in
-one pass cannot redial twice for one move.
-
 ## Client::submit_tokens — unknown flag
 
 Passing an unknown flag through used to be harmless-looking and wrong: after the
-session argument was renamed, `--name x` filled nothing, a sticky `session`
-filled the real one, and the command quietly applied to a session the caller had
-not named. Checked before `fill` so only what was typed is judged -- sticky
-arguments never introduce unknown names.
+session argument was renamed, `--name x` bound nothing and the command quietly applied
+to a session the caller had not named. The spec is the only syntax this layer knows,
+so an unknown flag is refused before anything is sent.
 
 ## Link
 
@@ -874,6 +820,10 @@ whole reason reconnecting is cheap.
 The catalog starts empty and is filled by the greeting, which is why a client can
 exist before its server does -- and why, with no greeting yet, it knows no
 command at all rather than a stale list of its own.
+
+It reads nothing from the home it is given: `cli.toml` is the window's, so a one-shot
+process cannot inherit a sticky session, a remembered address or a drawn set. The home
+is there for one thing -- where `skills/` is read from.
 
 ## connect
 

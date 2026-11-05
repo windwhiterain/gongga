@@ -6,24 +6,21 @@ The TUI supplies the token; this decides what could go there. There is one
 catalog, and the server publishes it at connect time: every command completes from
 the specs the greeting carried, whatever a script registered included.
 
-The one exception is the client's own commands -- `connect_server`, `set_render`,
-`set_render_session`, `set_sticky`, `del_sticky`, `serve`. They come from the
-published spec SPEC gives them (`protocol::client_commands`, the same list `serve`
-parses against) and are in the catalog from the first frame, because a window with
-no server is still a window: the operator types them, completes them and has them
-run while the link is down. For a name both lists carry, the server's spec is the
-one the line is parsed with.
+There is no second list here: what a window runs itself is not in this catalog at
+all. The window seeds its own catalog with `protocol::client_commands` and answers
+those lines before they reach this crate (`docs/notes/tui-command.md`), so a one-shot
+`gongga-cli` neither completes nor runs them.
 
 # Invariant
 
 A command the *server* runs still needs a greeting: with no link there is no spec
 for it, and `submit_tokens` says "not connected" instead of "unknown command".
 
-What the client does own is the *state* those specs point at. `--name` for a
-sticky argument completes from the sticky arguments that exist, and `--name` for
-an event filter from the filters that exist: the server names the source
-(`sticky_arguments`, `event_filters`) and the side that owns it fills it in, the
-same way `sessions` and `paths` already worked.
+What a front-end does own is the *state* those specs point at, and it pushes it in
+rather than keeping it here. `set_sticky <type>` completes the sticky argument names
+(`Client::set_sticky_vocabulary`), and a bare message completes `@skill:` against the
+session the front-end says it goes to: the server names the source, the side that owns
+it fills it in, the same way `sessions` and `paths` already worked.
 
 Values complete from whatever the spec says can be enumerated -- the live
 session list, a fixed set, the argument types the catalog declares, the
@@ -136,52 +133,37 @@ flag on the line moves the offer past it: `/set_session main --model flash <TAB>
 offers thinking. A parameter whose source is `None` offers nothing, which is how
 `send_message --name <name> --message <text>` stops completing after the session.
 
-## models, default_model, and the two sources that read them
+## models, default_model, and the model a line runs on
 
-`Catalog::set_models` keeps the greeting's table as published, and `default_model` holds
-the model the server itself falls back to -- both set on every greeting, and the table
-again whenever the server republishes it (`Event::Models`, sent when `providers.toml` is
-edited). So a window that stays open completes from the roster as it is now, not as it
-was when the window connected. A tuning value is worth nothing on its own:
-`--thinking high` means one thing on a model that publishes three levels and another on
-one that publishes five, so the value's list has to ask which model the line runs on.
+`Catalog::set_models` keeps the greeting's table as published -- set on every greeting,
+and again whenever the server republishes it (`Event::Models`, sent when
+`providers.toml` is edited). So a window that stays open completes from the roster as
+it is now, not as it was when the window connected.
 
-`model_named` answers that in the order the command itself resolves a model: the value
-bound to the line's kind-`model` argument, else the model the session the line names
-already has, else the server's default. The middle step reads `SessionInfo::model`, and
-the session is the one `session_named` finds -- the same binder `place` uses, so a value
-that belongs to a session is read the same way wherever it is read. `level_choices` then
-reads that model's levels, or -- when no model came out of it, one the roster does not
-describe came out, or that model publishes nothing -- every level some model here
-publishes. The union is not a guess at a default: such a model takes whatever it is
-sent, so nothing in the union can be refused, and a popup that offered nothing would be
-this client inventing a restriction the roster never stated. `THINKING_DEFAULT` goes on
-the end of either list.
+What a model *takes* is not in the table: an argument publishes the values its command
+accepts (`ArgSpec.accepts`), because that is the set the server's own validation uses
+and this client must not derive it a second time. The table is the names.
 
-## tier_choices — an empty list is not "anything"
+`model_named` answers which model a line runs on, in the order the command itself
+resolves one: the value bound to the line's kind-`model` argument, else the model the
+session the line names already has, else the server's default. The middle step reads
+`SessionInfo::model`, and the session is the one `session_named` finds -- the same
+binder `place` uses, so a value that belongs to a session is read the same way wherever
+it is read. `accepted_values` then picks that model's list out of the `accepts` table,
+or the union when the line names none: a model the roster says nothing about takes
+whatever it is sent, so nothing in the union can be refused.
 
-A model publishes the cache tiers it takes on the wire, and the roster's own words
-for an empty table are "none selectable" -- so this list is exactly the model's, and
-a model that declares none offers nothing. Levels are the opposite: an empty
-`reasoning_levels` says the roster has no opinion, and a model it says nothing about
-accepts what it is sent, which is why `level_choices` falls back to every level some
-model publishes and this does not. Offering the union here offered `5m` for models
-that would refuse it, and the refusal arrived one command too late.
+## refused_values
 
-## refused_by_model
+A remembered default that cannot apply is not applied: the same rule
+`Entry::level_in_force` already follows on the server, where a stored level the model
+no longer publishes is ignored rather than refused.
 
-A sticky entry is a remembered default, and a default that cannot apply is not
-applied: the same rule `Entry::level_in_force` already follows on the server, where
-a stored level the model no longer publishes is ignored rather than refused. The
-client can ask it now because the greeting carries the model table --
-`refused_by_model` resolves the argument the way the popup would, reports the values
-the model does not take, and the command path drops exactly those it filled.
-
-Measured only where the source *is* the accepted set. `ModelLevels` publishes what
-the model takes and nothing else, so absence means refusal; every other source says
-what is worth offering rather than what is allowed -- the `ctx_limit` list is ten
-percentages, while `50` is a perfectly good value -- and gating a fill on one of
-those would drop values the server accepts.
+The question is answered from the argument's own `accepts` -- the values its command
+will take, published by the server (`docs/notes/protocol-message.md`) -- and from
+nothing else. A source that merely says what is worth offering is not a rule: the
+`ctx_limit` list is ten percentages while `50` is a perfectly good value, and gating a
+fill on one of those would drop values the server accepts.
 
 A value the caller typed never reaches this: it is the difference between a
 remembered default and a statement, and only the statement is worth a refusal.
@@ -190,8 +172,8 @@ remembered default and a statement, and only the statement is worth a refusal.
 
 `depth` exists for the single case that points back into the catalog: a value
 completed the way another argument's values are. The type the line's first word
-names -- `set_sticky <type> <value>` completes the value as arguments of that
-type complete, `session` offering sessions. One hop is enough for the shape the
+names -- `set_sticky <type> <value>` in the window's own catalog completes the value
+as arguments of that type complete, `session` offering sessions. One hop is enough for the shape the
 client actually declares; the second is allowed only so a chain that names itself
 is cut off rather than followed forever.
 

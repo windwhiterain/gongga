@@ -2,137 +2,15 @@
 
 ## commands.rs
 
-`persistant_cmd_arguments[{name, value}]` is a client-side idea: the CLI keeps
-them, fills them into a command that requires the argument and does not carry
-it, and never tells the server. They persist in `~/.gongga/cli.toml`, so a restarted client still knows
-which session you were talking to -- the file, not a running server, is what
-remembers.
+This file is the grammar of a command line and nothing else: `parse_args` binds
+the tokens, `signature` spells a spec back, `roots`/`installed_skills` read where
+a skill lives. The state these were once shared with -- sticky entries, drawn
+sessions, block size, box edge, the remembered address -- is the window's, and
+moved to `crates/tui/src/state.rs` (`docs/notes/tui-state.md`).
 
-`event_filters[{name, value}]` lives in the same file for the same reason, and
-for one more: what a client chooses to watch is a property of that client, not
-of the harness. A per-session "only show main" toggle on the server would have to
-be per connection anyway, and then it would be remembered by whoever holds the
-connection -- which is the client.
-
-## File::connection, Remembered
-
-`connect_server` has to outlive the process that ran it -- a one-shot command has
-nothing else to remember it with -- so the last address lives in `cli.toml`
-beside the sticky arguments. The IP is parsed back as an address rather than
-formatted into one: `"::1:9700"` is not a socket address, and a fallback to the
-default would have silently sent later commands to the wrong port.
-
-## Sticky::load
-
-Tolerating a missing or unreadable file is deliberate: a client that cannot
-remember its defaults is still usable, and refusing to start over a corrupt
-`cli.toml` would make the file a single point of failure for the whole harness.
-
-## Shown
-
-`set_render_session <name> [true|false]` is the client's answer to
-SPEC's UI section, in `cli.toml` beside the sticky arguments: one flag per session
-name, `true` for a session with a window beside the list.
-
-The argument is a *reading*, never a deletion. `false` keeps every block the session
-ever carried, so `true` after it brings the whole history back -- which is the
-property the old session filter did not have, because it dropped the lines on the
-way in.
-
-A session nobody set is hidden (2026-11-05: the operator's ruling). The window draws
-what it was told to draw: a session the operator names -- by clicking it, or by a
-command that names it -- is shown, and a session the server announces is not. The
-earlier default was the other way round, and it made every session somebody else
-created appear in the events area on its own.
-
-`is_shown(name)` is the only question the layout asks, and it is asked of the session
-rather than of the map: a session with no entry is hidden, so reading the map would
-leave a new session with no window.
-
-`stored_show` also reads the words a mode once spelled -- `full` and `line` were on
-screen, `none` was not -- so a `cli.toml` written before SPEC had one flag per session
-keeps meaning what it meant. A word with no meaning is dropped rather than guessed at,
-which leaves the session as having no entry: hidden.
-
-## BlockSize and BoxEdge
-
-`set_render --block_size` (once `set_event_ui --block_size`) and `set_render --box_edge`
-are display preferences, so they are client state: the server sends the same events
-either way. They live in `cli.toml` beside the sticky arguments and the filters, through
-the same read-modify-write, so the writers still do not clobber each other -- each
-structure writes its own key over a file it has just read, which leaves the other's key
-where it was.
-
-`--box_edge` is how many of an opened item's own columns at each side scroll the window
-instead of the item, and it exists because of what the wheel does *not* do any more: a
-box keeps the wheel wherever the pointer lands on it, so a region is how the window under
-a box is reached. Nothing is withheld from the drawing -- the box is full width and those
-columns are part of it.
-
-It starts at `protocol::DEFAULT_BOX_EDGE` (2), because a default of `0` left a box with
-exactly one column of the window outside it -- the spare one the log never draws in, on
-the right -- so the wheel over an opened item scrolled the window on one side only.
-
-It is one number, not a mode list. The setting it replaces (`set_event_detail
---mode all|line`) had to name a *kind* of behaviour per mode, and the two names
-only ever differed by whether a block folded; a count of lines says the same thing
-with no vocabulary to memorise, and `0` is the only word for "no cap".
-
-SPEC words the cap as one on a *non-output* block: an answer is never capped, so
-the number carries its own exception and the setting stays one number rather than
-two switches that can disagree.
-
-Without an argument the command is a read: it prints both numbers in one row and
-changes nothing. Clearing the cap is `--block_size 0`, said on purpose -- a command that
-both reads and resets depending on how much you type is the kind of thing an operator
-learns the hard way.
-
-An unparseable value is refused with the way to say one, and an unknown value
-already in the file falls back to `DEFAULT_BLOCK_SIZE` -- a hand-edited file is not a
-reason for a client to refuse to start. Its own parse failure is different from the
-file's: the first is someone typing, the second is damage.
-
-`DEFAULT_BLOCK_SIZE` is 8, which is SPEC's `initial: 8` for `set_render --block_size`.
-It is the answer for a home whose `cli.toml` says nothing, holds rubbish, or is not
-there at all, so `BlockSize::default()` and the fallback are one number rather than
-two. Before this it was `0`, which meant a fresh home capped nothing while SPEC said
-8 -- a default nobody could see and no `cli.toml` could change.
-
-## Sticky::fill
-
-The catalog decides which entries exist, and a value only ever lands on an
-argument whose `kind` names it -- never on a name: `set_session --name <session>`
-and `get_messages --session <session>` share the `session` entry whatever their
-flags spell. An argument with no kind never fills, which is what keeps
-`--must_create` out: a sticky `must_create` would make every session refuse to
-join an existing one.
-
-SPEC's two bullets are one rule here: a missing non-optional argument is
-filled from its entry, and a missing optional argument takes the entry as its
-initial value. Each argument fills independently -- `--model` named leaves the
-sticky `thinking` in place, where a bundle would have dropped it.
-
-One entry does not always fit. A level remembered for one model is not a level
-another model takes: `longcat/LongCat-2.5` publishes `on`/`off`, so a sticky
-`thinking = low` would fail every `set_session` that names it -- a command with
-nothing wrong with it, refused over a value the caller did not type here. So the
-client drops a filled value the model refuses and says so in one line; a value
-the caller *did* type is sent as typed and judged by the server, because that one
-is a statement rather than a remembered default. See `refused_by_model` in
-`docs/notes/cli-catalog.md`. An argument
-no entry names keeps the command's own initial, applied where the command
-runs (SPEC spells the initials: `--cwd` defaults to `.`, `--ctx_limit` to a
-70% share, and so on), and a required argument with neither is left for the
-missing-arguments refusal.
-
-## Sticky::settle_follow
-
-`set_session` writes entries back on the acknowledgement, not on the submission, so
-a refusal retargets nothing: every argument with a kind that the accepted command
-carried, keyed by kind -- an argument the command did not name is not written, so
-a partial `set_session` never erases the entries it left alone. All are modes the
-next command inherits: the session it acts on, and the model, tuning and place
-it runs with.
+That move is also why a one-shot `gongga-cli` cannot inherit an operator's
+session: the command layer reads no `cli.toml` at all, so an argument it was not
+given is an argument nobody gave it.
 
 ## EVENT_FIELDS
 
@@ -164,17 +42,15 @@ required parameter behind it: `--must_create true main` still binds `main` to
 name, and `--model flash main` binds it to thinking, then refuses the missing
 name. The rule lives in `next_unfilled`, with `after_arg` for the cursor a flag
 leaves, and the completion replays the same two steps (`bound_words`). The spec is the only syntax the client
-knows -- the transparent wrapper keeps no command list of its own, and the
-client's own commands are the published one it does carry
-(`docs/notes/cli-catalog.md`) -- so a `--word` that names nothing in it is a
-typo said as such, and a bare word with no parameter left to guess is "takes
-<signature>".
+knows -- the transparent wrapper keeps no command list of its own -- so a
+`--word` that names nothing in it is a typo said as such, and a bare word with
+no parameter left to guess is "takes <signature>".
 
-Typed arguments win over sticky ones: the binding happens first, and
-`Sticky::fill` afterwards fills only slots still empty, which is the rule the flag
-spelling already had. The pure-text expansion names only the message
-(`send_message --message <text>`): the session is the sticky entry's to fill,
-and a line that names neither is the server's refusal to answer.
+Typed arguments win over sticky ones: the binding happens first, and the window
+fills only slots still empty afterwards (`docs/notes/tui-run.md`). The pure-text
+expansion names only the message (`send_message --message <text>`): the session is
+the window's entry to fill, and a line that names neither is the server's refusal
+to answer.
 
 The flag value is whatever follows its flag, *including* a token that starts with
 `--`. Refusing those made the one thing a message flag exists for impossible:

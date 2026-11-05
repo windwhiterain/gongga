@@ -21,6 +21,34 @@ This is a *redial* cadence, not a budget on anything the agent does: the operato
 keeps the window, the history, the input line and its scroll position throughout,
 and Alt+Q still works while it backs off.
 
+## submission and filled
+
+The line is answered here, in this order: a head the window owns
+(`docs/notes/tui-command.md`) never reaches the command layer; anything else has its
+sticky entries filled in first, and is then handed over as tokens.
+
+Filling appends `--name value` for every argument the catalog declares and the line
+left empty, so a value holding a space stays one token and nothing is re-ordered. What
+the argument's published `accepts` refuses is left out *and said*: a default is not
+something the operator stated, so it is not worth a refusal -- but silently dropping it
+would hide that the entry is still in the file, and a later model may well take it.
+
+## sync, follow and settle
+
+Three steps, and each happens exactly once per submission or answer:
+
+- **sync** puts the window's state where the drawing and the completion read it: block
+  size, box edge, sticky session, the drawn sessions, the completion's vocabulary.
+  Called after anything that could have changed them.
+- **follow** records what an accepted command will keep: a session the command names
+  is drawn and becomes sticky (so the window draws what it was told about), and a
+  `set_session` is remembered as `(id, pairs)` -- typed arguments only, see
+  `docs/notes/cli-lib.md`. Nothing is written before the answer.
+- **settle** applies those pairs on `cmd_result { ok }`, and then SPEC's
+  `sticky to xxx`: an entry that follows a model the command changed is forgotten
+  unless the command stated it too. `Sink::settled` is how the answer reaches here --
+  a `Tui`-side queue the loop drains, so the outcome travels with the frame it came in.
+
 ## submission
 
 The grammar is decided by the first character -- the one piece of syntax an
@@ -70,6 +98,10 @@ one, so an endpoint resolved at startup is the one thing that cannot be right in
 both of those cases.
 
 ## interactive
+
+The address in force is the window's: `connect_server` saves it and the loop dials what
+it saved, starting from the entry `cli.toml` holds (`docs/notes/tui-state.md`). A
+one-shot command has no such memory -- it names its server or reads `GONGGA_SERVER`.
 
 The window and the link are separate things. Nothing here makes the server's
 presence a condition for the client to exist: the TUI opens first, dials from
