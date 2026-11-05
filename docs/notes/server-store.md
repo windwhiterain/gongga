@@ -149,6 +149,16 @@ are laid out in this order, so a name that moves takes the operator's pane with 
 That cost is accepted now: the session being worked on is the one to find, so the row
 that finished a turn moves to the end of the list, where the next one will be.
 
+A home written before the column existed is backfilled once, in `migrate`
+(`backfill_ended_at`): a session's `ended_at` becomes the time of its transcript's
+last row, which is written by its last turn. It runs only while every row still
+answers `NULL`, so it cannot restamp a home that has already ended a turn, and a
+session with no rows keeps `NULL` -- it never ended one, and `created_at` is what
+the order says for it. Without this, every session whose last turn ended before
+the upgrade sorted by creation time, which read as "the list is still ordered by
+when sessions were made". `updated_at` was the other candidate and is worse: it
+also moves when a model is chosen, and it is written after the last row.
+
 ## Store::get_session
 
 A `WHERE name = ?` rather than "list every session and look for it":

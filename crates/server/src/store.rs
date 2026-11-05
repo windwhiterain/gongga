@@ -319,6 +319,34 @@ fn add_column_if_missing(
     Ok(())
 }
 
+/// Gives a row written before `ended_at` existed the turn end it already had.
+///
+/// # Invariant
+///
+/// Once, and only while every row still answers `NULL`: the last row of a
+/// transcript is written by the last turn, so its time is when that turn ended,
+/// and a session with no rows never ended one. `updated_at` would have been
+/// cheaper and wrong: a model being chosen moves it. See
+/// `docs/notes/server-store.md`.
+fn backfill_ended_at(conn: &Connection) -> rusqlite::Result<()> {
+    let pending: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sessions WHERE ended_at IS NOT NULL",
+        [],
+        |r| r.get(0),
+    )?;
+    if pending > 0 {
+        return Ok(());
+    }
+    conn.execute(
+        "UPDATE sessions
+            SET ended_at = (SELECT MAX(m.created_at) FROM messages m
+                             WHERE m.session_id = sessions.id)
+          WHERE ended_at IS NULL",
+        [],
+    )?;
+    Ok(())
+}
+
 /// Whether `table` already answers a select on `column`.
 fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
     conn.prepare(&format!("SELECT {column} FROM {table} LIMIT 1"))
@@ -396,6 +424,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     ] {
         add_column_if_missing(conn, "sessions", column, ddl)?;
     }
+    backfill_ended_at(conn)?;
     settle_handover(conn)?;
     // An old row needs a name before it can be listed or deleted.
     add_column_if_missing(
