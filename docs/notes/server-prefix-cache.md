@@ -111,37 +111,30 @@ the two already hit, from bytes older sessions sent under their own session name
 there the key is not a namespace, and a new session's first turn is warm from its
 siblings.
 
-**MiniMax `MiniMax-M3.1-Flash` is not a prefix cache at all.** Probes with ~8.2k tokens
-of system prose and one tiny user message (`.dev/verify/cache_key_probe.py`):
+**MiniMax `MiniMax-M3.1-Flash` does too, up to the last user message.** What its cache
+serves is everything in front of the request's *final* user message; a difference in that
+region is a miss, a difference inside the final message is not. Two sessions whose stored
+`instructions` and `index` are byte-equal (`cachefix-g`, `cachefix-h`), one user message,
+read twice each (`.dev/verify/`):
 
-| key | prompt | cached |
-| --- | --- | --- |
-| k1 | A | 0 (never sent) |
-| k1 | A | 8192 of 8260 |
-| k2 | A | 128 (k2 had never sent A) |
-| k1 | A with the first user word changed | 0 |
-| k1 | A with one sentence appended to the system prompt | 185 |
-| k1 | A with one sentence prepended to the system prompt | 0 |
-| k1 | A again, after the rows above | 8192 |
+| input order | cached, first send of a card the store had not seen |
+| --- | --- |
+| `[card][user]` -- the order this server sends | 128 of 9586 |
+| `[user][card]` | 9585 of 9586 |
 
-Two rules, neither of them "a shared prefix":
+So the card's *position* is what decides cross-session sharing: in front of the user
+message it sits inside the cached region, and being per-session it is the one byte two
+sessions cannot share; behind it, the region is the system text (and, from the second turn
+on, the transcript), which every session of a directory shares.
 
-- **The key partitions the store.** The same bytes under k2 are a miss.
-- **A prompt is one unit.** One word changed in the first user message, or a sentence at
-  either end of the system prompt, reports the 128-185 baseline -- not "everything before
-  the change". Only a prompt the provider has served before under that key, or one that
-  strictly extends it (which is what a session's own next turn is: 98.7% measured), is
-  served. The store holds several prompts per key: the last row still hits after the
-  three changed ones.
-
-So on MiniMax two sessions share a first turn only if their prompts are byte-identical,
-and this server's card (`dynamic_tail`) names the session and its first minute. That is a
-question about the card's contents, not about the order of the request.
-
-`prompt_cache_key` (`cache_affinity`) and `X-Session-ID` therefore carry the session's
-**directory**: the unit a provider that shares prefixes routes together, and one that
-partitions by key still serves each session its own continuation (a key holds several
-prompts, measured, so siblings do not evict each other).
+Two things this had to be untangled from. One is the first reading of any shape: a prompt
+is cold the first time it is sent and warm on the very next identical send, so a single
+128 means nothing -- repeated readings of one shape were 4 of 4 and 8 of 8 stable. The
+other is the key: 8.2k of the same bytes under a key that had never sent them answered 128
+and 8259 afterwards, so `prompt_cache_key` does partition the store. Neither layer is the
+platform's or the Responses face's fault: the same 8.2k system text with two *different
+final user messages* was served 8272 of 8273 on six of eight requests by **both**
+`/responses` and `/chat/completions` (`.dev/verify/alternate_probe.py`).
 
 ## Node::touched, expire
 

@@ -25,9 +25,10 @@ every new session's first turn a prompt the provider had never seen: 14,310 toke
 
 What the fix is worth depends on the provider, and both readings are in the caching
 note: DeepSeek serves a shared prefix, so a fresh session's first turn went to 15,360 of
-15,625 cached (98.3%) with no other change; MiniMax serves only a prompt it has already
-served under that key (or one that extends it), so neither the head nor the key can give
-it a sibling's first turn.
+15,625 cached (98.3%) with no other change. MiniMax also serves a shared prefix, but only
+the part in front of the request's *final* user message -- and the card sits in front of
+it, one user item before the message, so a sibling's head is not what it serves. That is
+the card's position, not this prose: see `docs/notes/server-prefix-cache.md`.
 
 This rule has been decided twice, which is why it is written down here rather than only
 next to the template. It was `text()` from `09537ef` (2026-11-01). It was reverted the
