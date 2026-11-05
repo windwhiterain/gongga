@@ -2,11 +2,10 @@
 //!
 //! See `docs/notes/cli-bin-gongga.md`.
 
-// The package is `gongga-cli`; every reader, this bin included, calls it `cli`.
-use gongga_cli as cli;
-
+// The package is `gongga-cli`; what a command line means lives in `link`, the
+// same library the window is built on.
 fn main() -> anyhow::Result<()> {
-    let args = cli::parse_argv(cli::spoken_name(), cli::ABOUT);
+    let args = link::parse_argv(link::spoken_name(), link::ABOUT);
     args.check_flag_order()?;
-    cli::main(args)
+    link::main(args)
 }

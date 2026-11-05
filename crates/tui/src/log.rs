@@ -17,7 +17,7 @@ use ratatui::text::{Line, Span};
 use crate::LineKind;
 use crate::cache::{Cache, Record};
 use crate::markdown;
-use cli::protocol;
+use link::protocol;
 
 /// One block: a line that may still be growing, plus its rows.
 ///
@@ -64,7 +64,7 @@ struct Entry {
     /// rows the operator is watching. See `docs/notes/tui-cache.md`.
     pending: bool,
     /// Structured call fields, once the call's head arrives.
-    call: Option<cli::protocol::Head>,
+    call: Option<link::protocol::Head>,
     /// The expanded sections, cached at their measured width.
     sections: String,
     /// The markdown document this block was written as, when it is one.
@@ -1479,7 +1479,7 @@ impl Log {
     /// Holding both was the same arguments twice. The buffer goes with the text:
     /// clearing a `String` keeps the allocation that text needed.
     /// See `docs/notes/tui-log.md`.
-    pub fn describe(&mut self, name: &str, key: &str, head: &cli::protocol::Head) {
+    pub fn describe(&mut self, name: &str, key: &str, head: &link::protocol::Head) {
         let at = match self.entry_by_key(key) {
             Some(at) => at,
             None => {

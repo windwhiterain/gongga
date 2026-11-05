@@ -8,7 +8,7 @@ here, and that is the point -- `evolve` replaces *this file*, so what a successo
 is must be a program and not a mode of somebody else's.
 
 `--bind` rather than `--port`: the address is what the server binds, and
-`127.0.0.1:<port>` is a shorthand the command layer expands (`cli-server.md`). No
+`127.0.0.1:<port>` is a shorthand the command layer expands (`link-server.md`). No
 flags at all is a legitimate way to start it -- every value then comes from the
 home's config, and that is how a staged successor is launched.
 

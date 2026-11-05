@@ -63,7 +63,7 @@ dispatching between them is its whole job. The command layer does not learn a
 
 `exec` on unix, inherited stdio and the child's exit code on Windows -- the same
 rule `cli::server::serve` follows, and for the same reason: one command, one
-console, one exit code (`cli-server.md`).
+console, one exit code (`link-server.md`).
 
 ## payload (the feature)
 

@@ -26,7 +26,7 @@ one file whichever of them looks it up.
 ## Why one name is enough
 
 The name in that directory is not a script, it is the program itself under
-`gongga-cli`'s name (`cli-server.md`). That is what makes both spellings useful: bash
+`gongga-cli`'s name (`link-server.md`). That is what makes both spellings useful: bash
 resolves `gongga-cli` to `gongga-cli.exe` on its own, and `subprocess.run(["gongga-cli"])`
 from a script starts the same file. Measured both ways on Windows, where the
 `#!/bin/sh` name this replaced had failed with `WinError 2` -- Windows appends

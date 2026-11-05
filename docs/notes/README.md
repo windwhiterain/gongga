@@ -22,10 +22,10 @@ you are about to touch.
 | you are about to | read first |
 | --- | --- |
 | run the distribution (`gongga`, `gongga tui`) | [`bundle-main.md`](bundle-main.md) -- it is not a read-only run: pointed at a live home it stops that home's server |
-| start, stop or watch a server | [`cli-server.md`](cli-server.md), [`server-supervise.md`](server-supervise.md), [`server-signal.md`](server-signal.md) |
+| start, stop or watch a server | [`link-server.md`](link-server.md), [`server-supervise.md`](server-supervise.md), [`server-signal.md`](server-signal.md) |
 | write into a home (payload, config, database) | [`server-config.md`](server-config.md), [`server-store.md`](server-store.md) |
 | spend or re-arm the disk safety space, or change what wakes `@monitor/disk` | [`server-disk.md`](server-disk.md), [`server-monitor.md`](server-monitor.md) |
-| change what a client sends or receives | [`cli-lib.md`](cli-lib.md), [`protocol-lib.md`](protocol-lib.md) |
+| change what a client sends or receives | [`link-lib.md`](link-lib.md), [`protocol-lib.md`](protocol-lib.md) |
 | change the window | [`tui-lib.md`](tui-lib.md), [`tui-run.md`](tui-run.md) |
 | change what the window remembers (`cli.toml`) | [`tui-state.md`](tui-state.md), [`tui-command.md`](tui-command.md) |
 
@@ -109,18 +109,25 @@ you are about to touch.
 | [`server-tools-job.md`](server-tools-job.md) | `crates/server/src/tools/job.rs` |
 | [`server-transcript.md`](server-transcript.md) | `crates/server/src/transcript.rs` |
 
+### link
+
+The client side `crates/cli` and `crates/tui` share: one wire client, one command
+surface, two front-ends.
+
+| note | source |
+| --- | --- |
+| [`link-lib.md`](link-lib.md) | `crates/link/src/lib.rs` |
+| [`link-server.md`](link-server.md) | `crates/link/src/server.rs` |
+| [`link-catalog.md`](link-catalog.md) | `crates/link/src/catalog.rs` |
+| [`link-complete.md`](link-complete.md) | `crates/link/src/complete.rs` |
+| [`link-commands.md`](link-commands.md) | `crates/link/src/commands.rs` |
+| [`link-skill-command.md`](link-skill-command.md) | `crates/link/src/skill_command.rs` |
+
 ### cli
 
 | note | source |
 | --- | --- |
-| [`cli-lib.md`](cli-lib.md) | `crates/cli/src/lib.rs` |
-| [`cli-server.md`](cli-server.md) | `crates/cli/src/server.rs` |
 | [`cli-bin-gongga.md`](cli-bin-gongga.md) | `crates/cli/src/bin/gongga-cli.rs` |
-| [`cli-catalog.md`](cli-catalog.md) | `crates/cli/src/catalog.rs` |
-| [`cli-complete.md`](cli-complete.md) | `crates/cli/src/complete.rs` |
-| [`cli-commands.md`](cli-commands.md) | `crates/cli/src/commands.rs` |
-
-| [`cli-skill-command.md`](cli-skill-command.md) | `crates/cli/src/skill_command.rs` |
 
 ### tui
 

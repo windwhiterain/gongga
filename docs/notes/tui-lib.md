@@ -5,23 +5,20 @@
 `gongga-tui`: the terminal front-end.
 
 This crate is deliberately ignorant. It renders lines, keeps an input line, and
-shows a completion popup whose contents somebody else supplies. It has no
-dependency on the wire protocol and no idea what a command is: the command
-layer (`gongga-cli`) owns the catalog, the wire, and the meaning of every line,
-and hands both completion candidates and typed lines over.
+shows a completion popup whose contents somebody else supplies. It has no idea
+what a command is: `crates/link` owns the catalog, the wire, and the meaning of
+every line, and hands both completion candidates and typed lines over.
 
-That is why the dependency runs this way -- `tui` depends on `cli`, never the
-reverse. A command layer that knew about terminals could not be used from a
-script; a front-end that knew about commands would have to change every time one
-is added.
+That is why the dependency runs this way -- `tui` depends on `link`, never the
+reverse, and never on `cli`: the command-line program is a *program*, and a window
+that linked it would be carrying `main`, its flags and its argv for nothing. The
+same holds the other way: a link that knew about terminals could not be used from a
+script, and a front-end that knew about commands would change every time one is
+added.
 
-The `gongga-tui` binary lives here because the window is the only program that
-needs both halves, and linking them is what a binary is for. The command line is
-`gongga-cli`, in the crate this one depends on.
+## link re-exports
 
-## cli re-exports
-
-The vocabulary belongs to the command layer: this crate paints whatever it is
+The vocabulary belongs to the link: this crate paints whatever it is
 told to paint. Re-exported so `crate::LineKind` and friends keep reading the
 same from inside this crate -- the renderer and the log never have to know where
 the words came from.

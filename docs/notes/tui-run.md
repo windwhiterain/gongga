@@ -165,7 +165,7 @@ it -- so a session somebody else created never takes the events area on its own.
 The one thing done before the window opens is `cli::home_of`: the loop needs the
 home for the server it may start, and nothing else. The command an agent's shell
 types is not this front-end's to write -- a shell only exists inside a server, and
-the server writes it from its own program as it comes up (`cli-server.md`).
+the server writes it from its own program as it comes up (`link-server.md`).
 
 Starting a server is SPEC's job for this front-end, and it happens *before the first
 dial*, not on the first failed dial. Asking first cost the first seconds of every
