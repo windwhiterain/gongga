@@ -911,7 +911,6 @@ impl Dispatch {
     pub async fn catalog(&self) -> Vec<CommandSpec> {
         let mut all = server_catalog(&self.sessions.remote_names());
         all.extend(crate::tool_cmd::catalog(&self.agent.tools));
-        all.extend(protocol::client_commands());
         all.extend(self.scripts.commands().await);
         all
     }

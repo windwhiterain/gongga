@@ -1,0 +1,338 @@
+//! The commands the window runs itself.
+//!
+//! A line whose head is a [`protocol::client_commands`] name never reaches the
+//! command layer: it is answered here, against the window's own state, and the
+//! layer keeps no state to answer it with.
+//!
+//! See `docs/notes/tui-command.md`.
+
+use std::net::SocketAddr;
+
+use cli::protocol::{self, Args, CommandSpec};
+use cli::{LineKind, Sink};
+
+use crate::state::{self, BlockSize, BoxEdge, State};
+
+/// What one client command did.
+pub enum Done {
+    /// Answered here; nothing to dial.
+    Local,
+    /// `connect_server`: the address this window dials from now on.
+    Moved(SocketAddr),
+}
+
+/// The spec of the command this line names, when the window runs it itself.
+pub fn spec(name: &str) -> Option<CommandSpec> {
+    protocol::client_commands()
+        .into_iter()
+        .find(|spec| spec.name == name)
+}
+
+/// Whether a line's head is one of the window's own commands.
+pub fn handles(name: &str) -> bool {
+    spec(name).is_some()
+}
+
+/// Runs one of the window's own commands, whose arguments are already bound.
+///
+/// # Invariant
+///
+/// Every answer replaces the command row, the way an answer to a line the server
+/// ran does: SPEC's row is the last thing asked or told, not a log. Nothing here
+/// dials, except the one command whose whole meaning is an address.
+pub fn run(
+    client: &cli::Client,
+    state: &mut State,
+    name: &str,
+    args: &Args,
+    sink: &mut dyn Sink,
+) -> Done {
+    match name {
+        "connect_server" => connect(client, state, args, sink),
+        // The process is the server: a window cannot draw it, so say where to
+        // type it.
+        "serve" => {
+            client.say(
+                LineKind::Error,
+                &format!(
+                    "serve takes over the process; run it in a shell: `{} serve <port>`",
+                    cli::typed_name()
+                ),
+                sink,
+            );
+            Done::Local
+        }
+        "set_render" => render(client, state, args, sink),
+        "set_render_session" => render_session(client, state, args, sink),
+        "set_sticky" => {
+            let kind = args.get("type").cloned().unwrap_or_default();
+            let Some(value) = args.get("value").cloned() else {
+                client.say(
+                    LineKind::Error,
+                    &format!(
+                        "set_sticky is missing required argument(s): value; it takes {}",
+                        cli::commands::signature(spec(name).as_ref()),
+                    ),
+                    sink,
+                );
+                return Done::Local;
+            };
+            // A sticky entry no argument declares never takes effect, so it is
+            // refused while the caller is still looking. An empty catalog cannot
+            // prove a name wrong, and a window with no server still stores one.
+            let kinds: Vec<String> = client
+                .commands()
+                .iter()
+                .flat_map(|command| command.args.iter())
+                .filter_map(|arg| arg.kind.clone())
+                .collect();
+            if !kinds.is_empty() && !kinds.contains(&kind) {
+                client.say(
+                    LineKind::Error,
+                    &format!(
+                        "{kind:?} is not a type any published argument declares, so no \
+                         sticky entry can use it; the types are: {}",
+                        sorted(kinds).join(", ")
+                    ),
+                    sink,
+                );
+                return Done::Local;
+            }
+            match state.set_sticky(&kind, &value) {
+                Ok(()) => {
+                    client.say(LineKind::Result, &format!("sticky {kind} = {value}"), sink);
+                }
+                Err(e) => client.say(LineKind::Error, &format!("could not save: {e}"), sink),
+            }
+            Done::Local
+        }
+        "del_sticky" => {
+            let kind = args.get("type").cloned().unwrap_or_default();
+            match state.del_sticky(&kind) {
+                Ok(true) => client.say(LineKind::Result, &format!("sticky {kind} cleared"), sink),
+                Ok(false) => client.say(
+                    LineKind::Error,
+                    &format!("no sticky argument named {kind:?}"),
+                    sink,
+                ),
+                Err(e) => client.say(LineKind::Error, &format!("could not save: {e}"), sink),
+            }
+            Done::Local
+        }
+        // Published as a client command this build cannot run: say so.
+        other => {
+            client.say(
+                LineKind::Error,
+                &format!(
+                    "{other:?} is a client command, but this window has no handler for it: \
+                     the two are from different builds"
+                ),
+                sink,
+            );
+            Done::Local
+        }
+    }
+}
+
+/// `connect_server`: the address this window dials from now on.
+fn connect(client: &cli::Client, state: &mut State, args: &Args, sink: &mut dyn Sink) -> Done {
+    let port = args.get("port").map(String::as_str).unwrap_or_default();
+    let ip = args.get("ip").map(String::as_str);
+    let addr = match cli::server_address(ip, port) {
+        Ok(addr) => addr,
+        Err(e) => {
+            client.say(LineKind::Error, &format!("{e}"), sink);
+            return Done::Local;
+        }
+    };
+    // Saved before the window is told, so a redial at once reads the new
+    // address rather than the old one.
+    match state.remember(addr) {
+        Ok(()) => {
+            client.say(
+                LineKind::Result,
+                &format!("server is {addr}; reconnecting"),
+                sink,
+            );
+            Done::Moved(addr)
+        }
+        Err(e) => {
+            client.say(LineKind::Error, &format!("could not save: {e}"), sink);
+            Done::Local
+        }
+    }
+}
+
+/// `set_render`: how tall a block may get, and the margin around it.
+///
+/// # Invariant
+///
+/// A value that does not parse saves nothing, and no argument at all is a read of
+/// the setting rather than a reset of it.
+fn render(client: &cli::Client, state: &mut State, args: &Args, sink: &mut dyn Sink) -> Done {
+    let size = args.get("block_size");
+    let edge = args.get("box_edge");
+    if size.is_none() && edge.is_none() {
+        client.say(
+            LineKind::Result,
+            &format!(
+                "render block_size = {}, box_edge = {}",
+                state.block_size().0,
+                state.box_edge().0
+            ),
+            sink,
+        );
+        return Done::Local;
+    }
+    // Both parsed before either is saved: half of a setting that does not parse
+    // is a value nobody asked for.
+    let size = match size.map(|raw| BlockSize::parse(raw)).transpose() {
+        Ok(size) => size,
+        Err(e) => {
+            client.say(LineKind::Error, &e, sink);
+            return Done::Local;
+        }
+    };
+    let edge = match edge.map(|raw| BoxEdge::parse(raw)).transpose() {
+        Ok(edge) => edge,
+        Err(e) => {
+            client.say(LineKind::Error, &e, sink);
+            return Done::Local;
+        }
+    };
+    if let Some(size) = size
+        && let Err(e) = state.set_block_size(size)
+    {
+        client.say(LineKind::Error, &format!("could not save: {e}"), sink);
+        return Done::Local;
+    }
+    if let Some(edge) = edge
+        && let Err(e) = state.set_box_edge(edge)
+    {
+        client.say(LineKind::Error, &format!("could not save: {e}"), sink);
+        return Done::Local;
+    }
+    client.say(
+        LineKind::Result,
+        &format!(
+            "render block_size = {}, box_edge = {}",
+            state.block_size().0,
+            state.box_edge().0
+        ),
+        sink,
+    );
+    Done::Local
+}
+
+/// `set_render_session`: whether one session is drawn beside the list.
+///
+/// # Invariant
+///
+/// It changes a view and never the state: the blocks a session already said are
+/// still held, so `true` after `false` brings them back. SPEC's click is this
+/// command, so the sticky session follows the window: shown makes it sticky, and
+/// hiding the sticky one clears it.
+fn render_session(
+    client: &cli::Client,
+    state: &mut State,
+    args: &Args,
+    sink: &mut dyn Sink,
+) -> Done {
+    let name = args.get("session").cloned().unwrap_or_default();
+    let Some(raw) = args.get("show") else {
+        let show = state.is_shown(&name);
+        client.say(LineKind::Result, &format!("render {name} = {show}"), sink);
+        return Done::Local;
+    };
+    let show = match state::parse_show(raw) {
+        Ok(show) => show,
+        Err(e) => {
+            client.say(LineKind::Error, &e, sink);
+            return Done::Local;
+        }
+    };
+    if let Err(e) = state.set_shown(&name, show) {
+        client.say(LineKind::Error, &format!("could not save: {e}"), sink);
+        return Done::Local;
+    }
+    let saved = if show {
+        state.set_sticky("session", &name)
+    } else if state.sticky().get("session") == Some(name.as_str()) {
+        state.del_sticky("session").map(|_| ())
+    } else {
+        Ok(())
+    };
+    if let Err(e) = saved {
+        client.say(LineKind::Error, &format!("could not save: {e}"), sink);
+    }
+    client.say(LineKind::Result, &format!("render {name} = {show}"), sink);
+    Done::Local
+}
+
+/// The kinds once each, in the order a reader can scan them.
+fn sorted(mut kinds: Vec<String>) -> Vec<String> {
+    kinds.sort_unstable();
+    kinds.dedup();
+    kinds
+}
+
+/// The completion a window offers: its own commands, then the server's catalog.
+///
+/// # Invariant
+///
+/// One catalog per caller, and the window seeds its own with the commands it
+/// runs: the command layer's catalog carries what the server publishes and
+/// nothing of this one's, so a one-shot process cannot complete them and cannot
+/// be handed one by accident.
+pub struct Window {
+    own: cli::Catalog,
+    server: cli::SharedCompleter,
+}
+
+impl Window {
+    pub fn new(server: cli::SharedCompleter) -> Self {
+        let own = cli::Catalog::new();
+        own.set_commands(protocol::client_commands());
+        Self { own, server }
+    }
+
+    /// Hands the completion to a front-end that reads it.
+    pub fn shared(&self) -> cli::SharedCompleter {
+        std::sync::Arc::new(Self {
+            own: self.own.clone(),
+            server: self.server.clone(),
+        })
+    }
+
+    /// Tells the completion what the window's own state is now.
+    pub fn refresh(&self, client: &cli::Client, state: &State) {
+        self.own.set_sticky_names(&state.sticky().names());
+        self.own.set_message_session(state.sticky().get("session"));
+        self.own.set_sessions(client.sessions().to_vec());
+        self.own
+            .set_roots(state.home(), &std::env::current_dir().unwrap_or_default());
+    }
+}
+
+impl cli::Completer for Window {
+    fn complete(&self, line: &str, cursor: usize) -> cli::Offered {
+        match head(line) {
+            Some(name) if handles(name) => self.own.complete(line, cursor),
+            _ => self.server.complete(line, cursor),
+        }
+    }
+
+    fn wants(&self) -> bool {
+        // A client command names no remote, so a listing is never wanted here.
+        self.server.wants()
+    }
+}
+
+/// The command word of a line being typed, without its slash.
+fn head(line: &str) -> Option<&str> {
+    line.trim_start()
+        .strip_prefix('/')?
+        .split_whitespace()
+        .next()
+        .filter(|word| !word.is_empty())
+}

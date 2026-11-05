@@ -6,6 +6,8 @@ use std::pin::Pin;
 use cli::{DialFailure, Greeting, Layout, LineKind, Link, Sink};
 use tokio::time::Duration;
 
+use crate::command::{self, Done};
+use crate::state::State;
 use crate::{Server, Tui, UiEvent};
 
 /// First redial delay, doubling up to the cap; a cadence, not a budget.
@@ -51,14 +53,6 @@ impl Sink for TuiSink<'_> {
         self.0.say(kind, text);
     }
 
-    fn block_size(&mut self, lines: usize) {
-        self.0.set_block_size(lines);
-    }
-
-    fn box_edge(&mut self, columns: usize) {
-        self.0.set_box_edge(columns);
-    }
-
     fn layout(&mut self, layout: &Layout) {
         self.0.set_layout(layout);
     }
@@ -82,8 +76,8 @@ impl Sink for TuiSink<'_> {
         self.0.forget(window);
     }
 
-    fn sticky_session(&mut self, name: Option<&str>) {
-        self.0.set_sticky_session(name);
+    fn settled(&mut self, id: u64, ok: bool) {
+        self.0.settled(id, ok);
     }
 
     fn stopped(&mut self, session: &str, failed: bool) {
@@ -146,18 +140,200 @@ async fn answer_completion(
     }
 }
 
-fn submission(client: &mut cli::Client, line: &str, sink: &mut TuiSink) -> cli::Submission {
+/// One input line, answered.
+///
+/// # Invariant
+///
+/// A line the window runs itself never reaches the command layer, and a line the
+/// server runs carries every argument the operator meant: the sticky entries are
+/// filled here, where they are kept, and a filled value nothing accepts is left
+/// out rather than sent as a statement the operator never made.
+fn submission(
+    client: &mut cli::Client,
+    state: &mut State,
+    line: &str,
+    sink: &mut TuiSink,
+    moved: &mut Option<std::net::SocketAddr>,
+) -> cli::Submission {
     let trimmed = line.trim();
     if trimmed.is_empty() {
         return cli::Submission::Rejected;
     }
     match classified(line) {
-        Some(Ok(tokens)) => client.command(tokens, sink),
+        Some(Ok(tokens)) => {
+            let head = tokens.first().cloned().unwrap_or_default();
+            if let Some(spec) = command::spec(&head) {
+                client.echo(&tokens, None, sink);
+                return match cli::commands::parse_args(&tokens[1..], Some(&spec)) {
+                    Ok(args) => {
+                        if let Done::Moved(addr) = command::run(client, state, &head, &args, sink) {
+                            *moved = Some(addr);
+                        }
+                        cli::Submission::Local
+                    }
+                    Err(e) => {
+                        client.say(LineKind::Error, &e.to_string(), sink);
+                        cli::Submission::Rejected
+                    }
+                };
+            }
+            client.command(filled(client, state, tokens, sink), sink)
+        }
         Some(Err(e)) => {
             sink.say(LineKind::Error, &e);
             cli::Submission::Rejected
         }
-        None => client.message(trimmed, sink),
+        None => match state.sticky().get("session") {
+            Some(session) => client.message(trimmed, session, sink),
+            None => {
+                client.say(
+                    LineKind::Error,
+                    "no session to send to: set one with `/set_sticky session <name>`, or start the line with `/` and name the command",
+                    sink,
+                );
+                cli::Submission::Rejected
+            }
+        },
+    }
+}
+
+/// One command line with the sticky entries filled in.
+///
+/// # Invariant
+///
+/// A value lands on a slot that is still empty, and only through the argument
+/// whose `kind` names it; what the caller typed wins. A filled value the
+/// published `accepts` refuses is left out *and said*, because a default is not
+/// something the operator stated: sending it would be refused for a value nobody
+/// typed, and dropping it silently would hide that the entry is still in the file.
+fn filled(
+    client: &cli::Client,
+    state: &State,
+    tokens: Vec<String>,
+    sink: &mut dyn Sink,
+) -> Vec<String> {
+    let head = tokens.first().cloned().unwrap_or_default();
+    let Some(spec) = client.commands().into_iter().find(|spec| spec.name == head) else {
+        return tokens;
+    };
+    let Ok(args) = cli::commands::parse_args(&tokens[1..], Some(&spec)) else {
+        // The command layer's own diagnosis is better than none: let it speak.
+        return tokens;
+    };
+    let mut merged = args.clone();
+    state.sticky().fill(Some(&spec), &mut merged);
+    let line = format!("/{}", tokens.join(" "));
+    let mut filled = tokens;
+    for arg in &spec.args {
+        // Typed, or no entry names it: nothing to add.
+        if args.contains_key(&arg.name) {
+            continue;
+        }
+        let Some(value) = merged.get(&arg.name).cloned() else {
+            continue;
+        };
+        if client
+            .refused_values(&line, &merged)
+            .iter()
+            .any(|(name, _)| *name == arg.name)
+        {
+            sink.note(
+                LineKind::System,
+                &format!(
+                    "sticky {} = {value} is not one this model takes; left to the model's own",
+                    arg.kind.as_deref().unwrap_or(&arg.name)
+                ),
+            );
+            continue;
+        }
+        // Spelled as a flag whatever its position: the argument is filled, not
+        // re-ordered, and a value holding a space stays one token.
+        filled.push(format!("--{}", arg.name));
+        filled.push(value);
+    }
+    filled
+}
+
+/// Tells the view and the completion what the window's own state is now.
+///
+/// # Invariant
+///
+/// One place sets all of it, after any change: the block size, the margin, the
+/// sticky session, the sessions drawn beside the list, and the completion's own
+/// vocabulary. A front-end that set half of it would draw one state and complete
+/// against another.
+fn sync(client: &mut cli::Client, state: &State, window: &command::Window, ui: &mut Tui) {
+    ui.set_block_size(state.block_size().0);
+    ui.set_box_edge(state.box_edge().0);
+    ui.set_sticky_session(state.sticky().get("session"));
+    client.set_sticky_vocabulary(&state.sticky().names(), state.sticky().get("session"));
+    client.set_shown(state.shown_names());
+    window.refresh(client, state);
+    ui.refresh_completion();
+    client.refresh(&mut TuiSink(ui));
+}
+
+/// What the window keeps for a command it is about to send.
+///
+/// # Invariant
+///
+/// Two things, both SPEC's: a session the command names is drawn and becomes the
+/// sticky one, and an accepted `set_session` writes back every mode it carried.
+/// Neither is written before the answer -- a refused command writes nothing.
+fn follow(
+    client: &cli::Client,
+    state: &mut State,
+    msg: &cli::protocol::ClientMessage,
+    pending: &mut Vec<(u64, crate::state::Follow)>,
+) {
+    let cli::protocol::ClientMessage::Command { id, name, args } = msg else {
+        return;
+    };
+    if let Some(session) = client.session_named(name, args).map(str::to_string) {
+        if !state.is_shown(&session) {
+            let _ = state.set_shown(&session, true);
+        }
+        let _ = state.set_sticky("session", &session);
+    }
+    if name == "set_session"
+        && let Some(spec) = client
+            .commands()
+            .into_iter()
+            .find(|spec| spec.name == *name)
+    {
+        let pairs: Vec<(String, String)> = spec
+            .args
+            .iter()
+            .filter_map(|arg| {
+                let kind = arg.kind.clone()?;
+                let value = args.get(&arg.name)?.clone();
+                Some((kind, value))
+            })
+            .collect();
+        if !pairs.is_empty() {
+            pending.push((*id, pairs));
+        }
+    }
+}
+
+/// Applies what the window kept for the commands the server has now answered.
+///
+/// # Invariant
+///
+/// Only an *accepted* command writes its entries back: a refusal leaves the file
+/// as it was, which is why nothing was written when the line was sent.
+fn settle(state: &mut State, pending: &mut Vec<(u64, crate::state::Follow)>, ui: &mut Tui) {
+    for (id, ok) in ui.take_settled() {
+        let Some(at) = pending.iter().position(|(other, _)| *other == id) else {
+            continue;
+        };
+        let (_, pairs) = pending.remove(at);
+        if !ok {
+            continue;
+        }
+        for (kind, value) in pairs {
+            let _ = state.set_sticky(&kind, &value);
+        }
     }
 }
 
@@ -260,12 +436,22 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
     let home = cli::home_of(args);
     // Both are this process's own: where a row lives never depends on a greeting.
     let client_home = cli::client_home_of(args);
-    let mut endpoint = cli::endpoint_name(&args.conn);
+    // The window's own state: the sticky entries, the drawn sessions, the two
+    // settings and the address it last pointed at. Nothing below reads it twice.
+    let mut state = State::load(&home);
+    // The address in force: what the window remembers first, then the flags.
+    let mut conn = args.conn.clone();
+    if let Some(addr) = state.connection() {
+        conn.server = Some(addr.to_string());
+    }
+    let mut endpoint = cli::endpoint_name(&conn);
 
     let mut client = cli::build_client(args);
-    let mut ui = Tui::new(client.completer(), &client_home, &endpoint)?;
+    let window = command::Window::new(client.completer());
+    let mut ui = Tui::new(window.shared(), &client_home, &endpoint)?;
     // Nothing has been sent yet: a fresh client owes nobody a line.
     let _ = client.set_offline(0, &mut TuiSink(&mut ui));
+    sync(&mut client, &state, &window, &mut ui);
 
     let mut link: Option<cli::Link> = None;
     let mut dialing: Option<Dialing> = None;
@@ -275,9 +461,9 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
     // Started once, before any dial; what it spawned is its to stop, so the
     // server on the address is stopped first.
     let spawned: Option<u32> = match starts_a_server(args.client_only) {
-        true => match cli::server_of(&args.conn) {
+        true => match cli::server_of(&conn) {
             Ok(addr) => {
-                if let Some(old) = cli::stop(&args.conn, &home, addr).await {
+                if let Some(old) = cli::stop(&conn, &home, addr).await {
                     TuiSink(&mut ui).say(
                         LineKind::System,
                         &format!("stopped the server that was serving this home (pid {old})"),
@@ -285,7 +471,7 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                 }
                 // The key this window dials with, so the child does not mint
                 // another one and refuse the window that started it.
-                let key = args.conn.key.clone();
+                let key = conn.key.clone();
                 cli::spawn(&home, addr, Some(std::process::id()), key.as_deref())
                     .ok()
                     .flatten()
@@ -296,6 +482,8 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
     };
     // The version of the listings already drawn, so a landed answer repaints once.
     let mut drawn_listings: u64 = 0;
+    // What the window keeps for commands the server has not answered yet.
+    let mut pending: Vec<(u64, crate::state::Follow)> = Vec::new();
     let result = loop {
         // Every arm keeps the keyboard branch, so no state stops it answering keys.
         let step = if let Some(open) = link.as_mut() {
@@ -335,13 +523,24 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                 }
             }
             Step::Input(Some(UiEvent::Submit(line))) => {
-                let outcome = submission(&mut client, &line, &mut TuiSink(&mut ui));
+                let mut moved = None;
+                let outcome = submission(
+                    &mut client,
+                    &mut state,
+                    &line,
+                    &mut TuiSink(&mut ui),
+                    &mut moved,
+                );
+                // Whatever the line changed of the window's own state reaches
+                // the screen and the completion before the next keystroke.
+                sync(&mut client, &state, &window, &mut ui);
                 // A `connect_server` moved the address: drop the link and let
                 // the next dial find the new one.
-                if client.take_server_change() {
+                if let Some(addr) = moved {
+                    conn.server = Some(addr.to_string());
                     // The rows on screen are the old endpoint's: they go, and the
                     // next frame reads this one's records instead.
-                    endpoint = cli::endpoint_name(&args.conn);
+                    endpoint = cli::endpoint_name(&conn);
                     ui.repoint(&client_home, &endpoint);
                     link = None;
                     ui.set_server(None);
@@ -358,9 +557,10 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                     cli::Submission::Offline => ui.restore_input(&line),
                     cli::Submission::Send(msg) => match link.as_ref() {
                         Some(open) => {
-                            // The command names a session: that session's
-                            // window is drawn.
-                            client.show_named_session(&msg, &mut TuiSink(&mut ui));
+                            // The command names a session: that session's window
+                            // is drawn, and what the server accepts is kept.
+                            follow(&client, &mut state, &msg, &mut pending);
+                            sync(&mut client, &state, &window, &mut ui);
                             if open.send(msg).await.is_err() {
                                 // Its end went unnoticed: nothing was sent, and the
                                 // line goes back like any other unanswered one.
@@ -397,6 +597,8 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                         }
                     }
                 }
+                settle(&mut state, &mut pending, &mut ui);
+                sync(&mut client, &state, &window, &mut ui);
             }
             Step::Wire(None) => {
                 link = None;
@@ -410,7 +612,7 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
             }
             Step::Dial => {
                 attempts += 1;
-                dialing = Some(Box::pin(dial_now(args.conn.clone())));
+                dialing = Some(Box::pin(dial_now(conn.clone())));
             }
             Step::Dialed(outcome) => {
                 // Finished either way: clear it, or a later poll of a dead future panics.

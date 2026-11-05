@@ -7,6 +7,7 @@
 
 mod cache;
 mod clipboard;
+mod command;
 mod fold;
 mod input;
 mod log;
@@ -16,6 +17,7 @@ mod panes;
 pub mod program;
 mod render;
 pub mod run;
+mod state;
 mod table;
 mod tree;
 
@@ -529,6 +531,14 @@ pub struct Tui {
     input_area: Rect,
     /// Where a drag began, while the button is still down.
     dragging: Option<usize>,
+    /// Answers the loop has not read yet: one pair per `cmd_result`.
+    ///
+    /// # Invariant
+    ///
+    /// A queue the sink fills and the loop drains, because the outcome arrives
+    /// inside a frame the command layer is already parsing: what the window keeps
+    /// for an accepted command is the window's, and this is how it hears.
+    answers: Vec<(u64, bool)>,
 }
 
 impl Tui {
@@ -581,6 +591,7 @@ impl Tui {
             clicked: None,
             input_area: Rect::default(),
             dragging: None,
+            answers: Vec::new(),
             events: EventStream::new(),
             mouse_captured: true,
             restored: false,
@@ -660,6 +671,16 @@ impl Tui {
     /// The toast is outside the window, and the mark is inside it: a session that
     /// stops while it is not drawn is the one the operator would not notice.
     /// See `docs/notes/tui-lib.md`.
+    /// Files one command's outcome for the loop.
+    pub fn settled(&mut self, id: u64, ok: bool) {
+        self.answers.push((id, ok));
+    }
+
+    /// Takes every outcome filed since the last call.
+    pub fn take_settled(&mut self) -> Vec<(u64, bool)> {
+        std::mem::take(&mut self.answers)
+    }
+
     pub fn stopped(&mut self, session: &str, failed: bool) {
         if !self.screen.panes.is_shown(session) {
             self.screen.panes.mark_unseen(session);

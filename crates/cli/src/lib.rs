@@ -9,7 +9,6 @@ pub mod server;
 pub mod skill_command;
 
 pub use crate::catalog::Catalog;
-pub use crate::commands::{BlockSize, BoxEdge, Shown, Sticky};
 pub use crate::complete::{
     Candidate, Completer, Completion, Offered, SharedCompleter, token_bounds,
 };
@@ -429,12 +428,6 @@ pub trait Sink {
     fn status(&mut self, text: &str);
     /// The harness's own news, never a command's line.
     fn note(&mut self, _kind: LineKind, _text: &str) {}
-    /// How tall one block may get, in wrapped rows; 0 caps nothing. A front-end
-    /// that shows every row ignores it.
-    fn block_size(&mut self, _lines: usize) {}
-    /// The columns a box leaves to its pane on each side. A front-end that draws no
-    /// boxes ignores it.
-    fn box_edge(&mut self, _columns: usize) {}
     /// How the window lays itself out. A front-end that ignores it shows one list.
     fn layout(&mut self, _layout: &Layout) {}
     /// Replaces the whole text of a block: a call's structure, once known.
@@ -472,6 +465,16 @@ pub trait Sink {
     /// The session the sticky `session` names: what the keys scroll and what a
     /// click sets. See `docs/notes/cli-lib.md`.
     fn sticky_session(&mut self, _name: Option<&str>) {}
+    /// A command's terminal outcome, by id.
+    ///
+    /// # Invariant
+    ///
+    /// Told for every answer, mine or not: a front-end that only watches its own
+    /// still has to know which of its lines the server took. What it does with
+    /// the news is its own -- SPEC's sticky follows an accepted `set_session`,
+    /// and that entry is the front-end's to keep.
+    fn settled(&mut self, _id: u64, _ok: bool) {}
+
     /// A session stopped: its turn ended, and it waits for the operator.
     ///
     /// # Invariant
@@ -538,13 +541,16 @@ pub enum Submission {
 
 pub struct Client {
     catalog: Catalog,
-    sticky: Sticky,
-    /// How tall one block may get, in wrapped rows.
-    block_size: BlockSize,
-    /// The columns a box leaves to its pane on each side.
-    box_edge: BoxEdge,
-    /// Which sessions are shown beside the list.
-    shown: Shown,
+    /// The harness home: where `skills/` is read, and nothing of this client's is
+    /// written. Client state is the window's. See `docs/notes/cli-lib.md`.
+    home: PathBuf,
+    /// Which sessions the front-end wants shown beside the list.
+    ///
+    /// # Invariant
+    ///
+    /// A view the front-end dictates: this layer keeps the names so the layout can
+    /// answer with them, and never sets one itself. Client state is the window's.
+    shown: Vec<String>,
     /// Calls that streamed their arguments, by id: their structure fills that block.
     calls: HashSet<String>,
     /// Which window each accepted command's result belongs to, from its echo.
@@ -557,9 +563,6 @@ pub struct Client {
     /// this list on its `cmd_result`, and a link that ends first gives it back
     /// through `set_offline`. See `docs/notes/cli-lib.md`.
     unconfirmed: Vec<(u64, String)>,
-    /// A `set_session` awaiting acknowledgement: the pairs an accepted one
-    /// writes back, so a refusal writes nothing.
-    follows: Vec<(u64, Vec<(String, String)>)>,
     sessions: Vec<SessionInfo>,
     model: String,
     next_id: u64,
@@ -624,6 +627,57 @@ impl Client {
         let window = self.command_window();
         sink.clear(&window);
         sink.line(&window, kind, text);
+    }
+
+    /// The command row, for a front-end that answered a line itself.
+    ///
+    /// # Invariant
+    ///
+    /// The window naming is this layer's, because only it knows which sessions
+    /// exist: an answer goes where a command's answer goes, whatever ran it.
+    pub fn say(&self, kind: LineKind, text: &str, sink: &mut dyn Sink) {
+        self.row(sink, kind, text);
+    }
+
+    /// The echo of a command line, for a front-end that answered it itself.
+    ///
+    /// # Invariant
+    ///
+    /// The same window `run_client_command` would have used: a command that names
+    /// a session is echoed where that session's lines are read.
+    pub fn echo(&self, tokens: &[String], session: Option<&str>, sink: &mut dyn Sink) {
+        self.show(sink, &Echo::Command, tokens, session);
+    }
+
+    /// Every session the server knows, in its order.
+    pub fn sessions(&self) -> &[SessionInfo] {
+        &self.sessions
+    }
+
+    /// The sessions a front-end wants drawn beside the list.
+    ///
+    /// # Invariant
+    ///
+    /// A view the front-end owns: this layer keeps the names so the layout can
+    /// answer with them, and never decides one itself.
+    pub fn set_shown(&mut self, names: Vec<String>) {
+        self.shown = names;
+    }
+
+    /// What the front-end's own entries mean to a completion.
+    ///
+    /// # Invariant
+    ///
+    /// Two facts and no third: the sticky argument names, and the session a bare
+    /// message goes to. This layer stores neither; it answers from them.
+    pub fn set_sticky_vocabulary(&self, names: &[String], message_session: Option<&str>) {
+        self.catalog.set_sticky_names(names);
+        self.catalog.set_message_session(message_session);
+    }
+
+    /// The arguments of `line` whose value nothing in the catalog accepts.
+    pub fn refused_values(&self, line: &str, args: &protocol::Args) -> Vec<(String, String)> {
+        self.catalog.refused_values(line, args)
     }
 
     /// The window for a line that names no session, named so no session can take it.
@@ -692,12 +746,12 @@ impl Client {
                     title: title_note(s),
                 })
                 .collect(),
-            // A session nobody set is hidden, so this reads the sessions rather
-            // than the file's entries.
+            // The front-end's own view, in the sessions' order: a name it wants
+            // and the server no longer has is not drawn.
             shown: self
                 .sessions
                 .iter()
-                .filter(|s| self.shown.is_shown(&s.name))
+                .filter(|s| self.shown.contains(&s.name))
                 .map(|s| s.name.clone())
                 .collect(),
             command: self.command_window(),
@@ -705,23 +759,16 @@ impl Client {
         }
     }
 
-    fn new(catalog: Catalog, sticky: Sticky) -> Self {
-        let block_size = BlockSize::load(sticky.home());
-        let box_edge = BoxEdge::load(sticky.home());
-        let shown = Shown::load(sticky.home());
-        catalog.set_sticky_names(&sticky.names());
+    fn new(catalog: Catalog, home: PathBuf) -> Self {
         // Where relative values are read until a session says: this process's,
         // which the greeting replaces with the server's.
-        catalog.set_roots(sticky.home(), &std::env::current_dir().unwrap_or_default());
+        catalog.set_roots(&home, &std::env::current_dir().unwrap_or_default());
         Self {
             catalog,
-            sticky,
-            block_size,
-            box_edge,
-            shown,
+            home,
+            shown: Vec::new(),
             results: HashMap::new(),
             unconfirmed: Vec::new(),
-            follows: Vec::new(),
             calls: HashSet::new(),
             sessions: Vec::new(),
             model: "-".to_string(),
@@ -752,7 +799,7 @@ impl Client {
     /// # Invariant
     ///
     /// Hard for separate processes to collide. Command results are connection-
-    /// local, but distinct ids also keep logs and pending follows unambiguous.
+    /// local, but distinct ids also keep logs and the rows they answer clear.
     fn seed_command_id() -> u64 {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -802,9 +849,7 @@ impl Client {
                 self.catalog.set_default_model(&server.model);
                 // Where a session with no directory of its own starts, and the
                 // directory a relative value is read from until one says.
-                self.catalog
-                    .set_roots(self.sticky.home(), Path::new(&server.cwd));
-                self.sync_sticky();
+                self.catalog.set_roots(&self.home, Path::new(&server.cwd));
                 // A greeting *is* the recovery: it carries the catalog and
                 // sessions, so a redial comes up like a fresh client.
                 self.connected = true;
@@ -814,9 +859,10 @@ impl Client {
                 // A warning belongs beside them.
                 self.build_note = (!server.build.is_empty() && server.build != protocol::BUILD)
                     .then(|| format!("build {}", server.build));
-                let mine = self.sticky.home();
-                self.home_note = (!server.home.is_empty() && !same_home(&server.home, mine))
-                    .then(|| format!("home {}", server.home));
+                let mine = self.home.clone();
+                self.home_note = (!server.home.is_empty()
+                    && !same_home(&server.home, mine.as_path()))
+                .then(|| format!("home {}", server.home));
                 self.refresh(sink);
             }
             ServerMessage::Denied { reason } => {
@@ -904,6 +950,9 @@ impl Client {
                 ..
             } => {
                 self.unconfirmed.retain(|(other, _)| *other != id);
+                // Told before the row is drawn: a front-end that keeps something
+                // for an accepted command hears it while the answer is news.
+                sink.settled(id, ok);
                 if let Some(remote) = self.quiet.remove(&id) {
                     match (ok, data.as_ref()) {
                         (true, Some(named)) => self.fill_listing(named),
@@ -912,7 +961,6 @@ impl Client {
                     }
                     return;
                 }
-                self.settle_follow(id, ok, sink);
                 // The rows a read answered with arrived as events before this;
                 // what is left to say is the sentence about them.
                 let window = self.results.remove(&id).unwrap_or_else(|| {
@@ -1101,21 +1149,10 @@ impl Client {
         self.sessions = sessions;
     }
 
-    /// Keeps the completer's state-backed sources in step: the sticky names, and
-    /// the session a bare message goes to.
-    pub fn sync_sticky(&self) {
-        self.catalog.set_sticky_names(&self.sticky.names());
-        self.catalog.set_message_session(self.sticky.get("session"));
-    }
-
     /// The status line: server facts only, never a "current session".
     /// See `docs/notes/cli-lib.md`.
     pub fn refresh(&self, sink: &mut dyn Sink) {
-        // Told on every refresh, so a front-end attached late still learns it.
-        sink.block_size(self.block_size.0);
-        sink.box_edge(self.box_edge.0);
         sink.layout(&self.layout());
-        sink.sticky_session(self.sticky.get("session"));
         let mut facts = if self.connected && self.draining {
             // Connected and stopping: the one thing the reader cannot work out
             // from silence, said outright.
@@ -1201,29 +1238,31 @@ impl Client {
         })
     }
 
-    /// Sends one line of prose: SPEC's UI expands it to `send_message`, the
-    /// session being the sticky one.
+    /// Sends one line of prose: SPEC's UI expands it to `send_message`.
     ///
     /// # Invariant
     ///
-    /// The expansion names only the message; the session argument fills from
-    /// the sticky `session` entry like any omitted argument, and the server
-    /// refuses a line that names neither -- the refusal says so. No sticky
-    /// session is still said here, not sent as a message to nobody.
-    pub fn message(&mut self, text: &str, sink: &mut dyn Sink) -> Submission {
-        if self.sticky.get("session").is_none() {
-            self.row(
-                sink,
-                LineKind::Error,
-                "no session to send to: set one with `/set_sticky session <name>`, or start the line with `/` and name the command",
-            );
-            return Submission::Rejected;
-        }
+    /// The session arrives from the front-end, which is where the sticky
+    /// `session` entry lives: this layer holds no client state, so it takes the
+    /// address it is given and echoes the text, not the command it becomes.
+    pub fn message(&mut self, text: &str, session: &str, sink: &mut dyn Sink) -> Submission {
+        let spec = self.catalog.command("send_message");
+        let name = spec
+            .as_ref()
+            .and_then(|spec| {
+                spec.args
+                    .iter()
+                    .find(|a| a.kind.as_deref() == Some("session"))
+                    .map(|a| a.name.clone())
+            })
+            .unwrap_or_else(|| "name".to_string());
         self.submit_tokens(
             vec![
                 "send_message".to_string(),
                 "--message".to_string(),
                 text.to_string(),
+                format!("--{name}"),
+                session.to_string(),
             ],
             sink,
             Echo::Message(text),
@@ -1243,7 +1282,7 @@ impl Client {
 
         // Offline, the applied catalog is stale: say so, and leave client
         // commands alone.
-        if !self.connected && !self.catalog.is_client_command(&head) {
+        if !self.connected {
             self.row(
                 sink,
                 LineKind::Error,
@@ -1312,31 +1351,13 @@ impl Client {
 
         // Validation by the published spec; `remote` picks the path. A
         // token it does not name is a typo, said before sending.
-        let mut args = match parse_args(&tokens[1..], Some(&spec)) {
+        let args = match parse_args(&tokens[1..], Some(&spec)) {
             Ok(a) => a,
             Err(e) => {
                 self.row(sink, LineKind::Error, &e.to_string());
                 return Submission::Rejected;
             }
         };
-        // Typed arguments win: a sticky fills only a slot still empty, the
-        // same rule the flag spelling had.
-        let typed: Vec<String> = args.keys().cloned().collect();
-        self.sticky.fill(Some(&spec), &mut args);
-        // A filled value the model refuses is left out: a default, not a statement.
-        let line = format!("/{}", tokens.join(" "));
-        for (name, value) in self.catalog.refused_values(&line, &args) {
-            if typed.contains(&name) {
-                continue;
-            }
-            args.remove(&name);
-            sink.note(
-                LineKind::System,
-                &format!(
-                    "sticky {name} = {value} is not one this model takes; left to the model's own"
-                ),
-            );
-        }
         let missing: Vec<&str> = spec
             .args
             .iter()
@@ -1367,30 +1388,7 @@ impl Client {
 
         // One echo per command: this one, where it answers. A server command is
         // drawn from its `cmd` event.
-        if spec.target == protocol::CommandTarget::Client {
-            self.show(sink, &echo, &tokens, None);
-            self.run_client_command(&head, &args, sink);
-            return Submission::Local;
-        }
-
         let id = self.next_id();
-        // SPEC: the sticky follows what the server accepted; the write-back
-        // is decided here. See cli-lib.md.
-        if head == "set_session" {
-            let pairs: Vec<(String, String)> = spec
-                .args
-                .iter()
-                .filter(|a| a.kind.is_some() && args.contains_key(&a.name))
-                .filter_map(|a| {
-                    a.kind
-                        .clone()
-                        .and_then(|kind| args.get(&a.name).map(|value| (kind, value.clone())))
-                })
-                .collect();
-            if !pairs.is_empty() {
-                self.follows.push((id, pairs));
-            }
-        }
         // The words stay the operator's until the server answers them: this is
         // what a link that ends first gives back.
         let typed = match &echo {
@@ -1413,131 +1411,23 @@ impl Client {
         }
     }
 
-    /// `connect_server`: the address a later command dials, written down now.
-    ///
-    /// # Invariant
-    ///
-    /// The move is saved before the front-end is told, so a window that
-    /// redials at once reads the new address rather than the old one.
-    fn remember_server(&mut self, args: &protocol::Args, sink: &mut dyn Sink) {
-        let port = args.get("port").map(String::as_str).unwrap_or_default();
-        let ip = args.get("ip").map(String::as_str);
-        let addr = match server_address(ip, port) {
-            Ok(addr) => addr,
-            Err(e) => {
-                self.row(sink, LineKind::Error, &format!("{e}"));
-                return;
-            }
-        };
-        match commands::Remembered::save(self.sticky.home(), addr) {
-            Ok(()) => {
-                self.row(
-                    sink,
-                    LineKind::Result,
-                    &format!("server is {addr}; reconnecting"),
-                );
-                self.server_changed = true;
-            }
-            Err(e) => self.row(sink, LineKind::Error, &format!("could not save: {e}")),
-        }
-    }
-
-    /// Applies a `set_session` the server accepted; a refusal writes nothing.
-    ///
-    /// # Invariant
-    ///
-    /// It runs on the acknowledgement, not on the submission: a refused
-    /// `set_session` must not retarget the next message.
-    fn settle_follow(&mut self, id: u64, ok: bool, sink: &mut dyn Sink) {
-        let Some(at) = self.follows.iter().position(|(i, _)| *i == id) else {
-            return;
-        };
-        let (_, pairs) = self.follows.remove(at);
-        if !ok {
-            return;
-        }
-        // Each pair is a mode the next command inherits: the session, and
-        // every bundle member the accepted command carried.
-        let saved = pairs
-            .iter()
-            .map(|(kind, value)| self.sticky.set(kind, value))
-            .find(|saved| saved.is_err());
-        if let Some(Err(e)) = saved {
-            self.row(sink, LineKind::Error, &format!("could not save: {e}"));
-        }
-        self.after_sticky_change(sink);
-    }
-
     /// Applies one operation: the API a window's gestures use.
     ///
     /// # Invariant
     ///
-    /// An operation is not a command line: the window asks for "make this
-    /// session sticky", and the client answers it the same way the command
-    /// does -- one behavior per gesture, whichever way it was asked for.
+    /// Only the gesture the server answers is here: a window's own state -- which
+    /// session is sticky, which are drawn -- is the window's, and asking this
+    /// layer to change it would be a second owner of one fact.
     pub fn apply(&mut self, operation: protocol::Operation, sink: &mut dyn Sink) -> Submission {
+        let _ = sink;
         match operation {
-            protocol::Operation::StickySession { session } => {
-                self.stick("session", &session, sink);
-                Submission::Local
-            }
-            protocol::Operation::RenderSession { session, show } => {
-                self.set_shown(&session, show, sink);
-                Submission::Local
-            }
             protocol::Operation::DeleteSession { .. } => {
                 let id = self.next_id();
                 Submission::Send(ClientMessage::Operation { id, operation })
             }
+            protocol::Operation::StickySession { .. }
+            | protocol::Operation::RenderSession { .. } => Submission::Local,
         }
-    }
-
-    /// Makes one argument sticky, and says what it is now.
-    fn stick(&mut self, name: &str, value: &str, sink: &mut dyn Sink) {
-        match self.sticky.set(name, value) {
-            Ok(()) => {
-                self.row(sink, LineKind::Result, &format!("sticky {name} = {value}"));
-                self.after_sticky_change(sink);
-            }
-            Err(e) => self.row(sink, LineKind::Error, &format!("could not save: {e}")),
-        }
-    }
-
-    /// Shows or hides one session's window.
-    fn set_shown(&mut self, session: &str, show: bool, sink: &mut dyn Sink) {
-        if let Err(e) = self.shown.set(session, show) {
-            self.row(sink, LineKind::Error, &format!("could not save: {e}"));
-            return;
-        }
-        self.row(
-            sink,
-            LineKind::Result,
-            &format!("render {session} = {show}"),
-        );
-        self.follow_shown(session, show, sink);
-        self.after_sticky_change(sink);
-    }
-
-    /// Shows one session's window, without saying so.
-    ///
-    /// # Invariant
-    ///
-    /// Silent: this is the window's own bookkeeping, not an answer to the
-    /// operator. A session nobody set is hidden, so this is what puts one on the
-    /// screen -- and it is the same rule the click uses, so a session the
-    /// operator named and a session a command named are shown the same way.
-    /// See `docs/notes/cli-lib.md`.
-    pub fn show_session(&mut self, session: &str, sink: &mut dyn Sink) {
-        if !self.shown.is_shown(session)
-            && let Err(e) = self.shown.set(session, true)
-        {
-            self.row(sink, LineKind::Error, &format!("could not save: {e}"));
-            return;
-        }
-        // The sticky session follows: the session this command names is the
-        // one the window reads.
-        self.follow_shown(session, true, sink);
-        self.after_sticky_change(sink);
     }
 
     /// The session a command names, when the catalog says it names one.
@@ -1561,199 +1451,6 @@ impl Client {
             .find(|a| a.kind.as_deref() == Some("session"))
             .map(|a| a.name.clone())?;
         args.get(&name).map(String::as_str)
-    }
-
-    /// Shows the session a command names, when it names one.
-    ///
-    /// # Invariant
-    ///
-    /// The window works it out for itself, from the command it is about to send:
-    /// a session the server announces is a session the window was never told to
-    /// draw, and one this command names is one it was.
-    /// See `docs/notes/cli-lib.md`.
-    pub fn show_named_session(&mut self, message: &ClientMessage, sink: &mut dyn Sink) {
-        let ClientMessage::Command { name, args, .. } = message else {
-            return;
-        };
-        let Some(session) = self.session_named(name, args).map(str::to_string) else {
-            return;
-        };
-        self.show_session(&session, sink);
-    }
-
-    /// Runs one client command, whose args the spec already validated.
-    fn run_client_command(&mut self, name: &str, args: &protocol::Args, sink: &mut dyn Sink) {
-        let arg_name = args.get("type").cloned().unwrap_or_default();
-        match name {
-            "connect_server" => self.remember_server(args, sink),
-            // The process is the server: a window cannot draw it, so say
-            // where to type it.
-            "serve" => self.row(
-                sink,
-                LineKind::Error,
-                &format!(
-                    "serve takes over the process; run it in a shell: `{} serve <port>`",
-                    typed_name()
-                ),
-            ),
-            "set_render" => self.run_render(args, sink),
-            "set_render_session" => self.run_render_session(args, sink),
-            "set_sticky" => {
-                let Some(value) = args.get("value").cloned() else {
-                    self.row(
-                        sink,
-                        LineKind::Error,
-                        &format!(
-                            "set_sticky is missing required argument(s): value; it takes {}",
-                            commands::signature(self.catalog.command("set_sticky").as_ref()),
-                        ),
-                    );
-                    return;
-                };
-                // A sticky entry no argument declares never takes effect, so it
-                // is refused while the caller is still looking.
-                if self.catalog.fills_sticky(&arg_name) == Some(false) {
-                    self.row(
-                        sink,
-                        LineKind::Error,
-                        &format!(
-                            "{arg_name:?} is not a type any published argument declares, so no \
-                             sticky entry can use it; the types are: {}",
-                            self.catalog.sticky_names().join(", ")
-                        ),
-                    );
-                    return;
-                }
-                self.stick(&arg_name, &value, sink);
-            }
-            "del_sticky" => match self.sticky.del(&arg_name) {
-                Ok(true) => {
-                    self.row(
-                        sink,
-                        LineKind::Result,
-                        &format!("sticky {arg_name} cleared"),
-                    );
-                    self.after_sticky_change(sink);
-                }
-                Ok(false) => self.row(
-                    sink,
-                    LineKind::Error,
-                    &format!("no sticky argument named {arg_name:?}"),
-                ),
-                Err(e) => self.row(sink, LineKind::Error, &format!("could not save: {e}")),
-            },
-            // Published as a client command this build cannot run: say so.
-            other => self.row(
-                sink,
-                LineKind::Error,
-                &format!(
-                    "the server publishes {other:?} as a client command, but this client \
-                     has no handler for it: the two are from different builds"
-                ),
-            ),
-        }
-    }
-
-    /// Every answer names its own subject: the ticker keeps only the last row.
-    ///
-    /// Runs `set_render`: how tall a block may get.
-    ///
-    /// # Invariant
-    ///
-    /// A value that does not parse saves nothing, and no argument is a read of
-    /// the setting rather than a reset of it.
-    fn run_render(&mut self, args: &protocol::Args, sink: &mut dyn Sink) {
-        let size = args.get("block_size");
-        let edge = args.get("box_edge");
-        if size.is_none() && edge.is_none() {
-            let report = self.render_report();
-            self.row(sink, LineKind::Result, &report);
-            return;
-        }
-        // Both parsed before either is saved: half of a setting that does not parse
-        // is a value nobody asked for.
-        let size = match size.map(|raw| BlockSize::parse(raw)).transpose() {
-            Ok(size) => size,
-            Err(e) => return self.row(sink, LineKind::Error, &e),
-        };
-        let edge = match edge.map(|raw| BoxEdge::parse(raw)).transpose() {
-            Ok(edge) => edge,
-            Err(e) => return self.row(sink, LineKind::Error, &e),
-        };
-        let saved = size
-            .map(|size| size.save(self.sticky.home()))
-            .into_iter()
-            .chain(edge.map(|edge| edge.save(self.sticky.home())))
-            .find(|saved| saved.is_err());
-        if let Some(Err(e)) = saved {
-            return self.row(sink, LineKind::Error, &format!("could not save: {e}"));
-        }
-        if let Some(size) = size {
-            self.block_size = size;
-        }
-        if let Some(edge) = edge {
-            self.box_edge = edge;
-        }
-        let report = self.render_report();
-        self.row(sink, LineKind::Result, &report);
-        self.after_sticky_change(sink);
-    }
-
-    /// What `set_render` is set to, in one row: both numbers, in the row's own words.
-    fn render_report(&self) -> String {
-        format!(
-            "render block_size = {}, box_edge = {}",
-            self.block_size.0, self.box_edge.0
-        )
-    }
-
-    /// Runs `set_render_session`: whether one session is shown beside the list.
-    ///
-    /// # Invariant
-    ///
-    /// It changes a view and never the state: the blocks a session already said are
-    /// still held, so `true` after `false` brings them back. SPEC's
-    /// click is this command, so the sticky session follows the window: shown makes
-    /// it sticky, hidden and sticky clears the sticky. See `docs/notes/cli-lib.md`.
-    fn run_render_session(&mut self, args: &protocol::Args, sink: &mut dyn Sink) {
-        let name = args.get("session").cloned().unwrap_or_default();
-        let Some(raw) = args.get("show") else {
-            let show = self.shown.is_shown(&name);
-            self.row(sink, LineKind::Result, &format!("render {name} = {show}"));
-            return;
-        };
-        let show = match commands::parse_show(raw) {
-            Ok(show) => show,
-            Err(e) => {
-                self.row(sink, LineKind::Error, &e);
-                return;
-            }
-        };
-        self.set_shown(&name, show, sink);
-    }
-
-    /// Points the sticky session at the window just shown, or clears it.
-    ///
-    /// # Invariant
-    ///
-    /// Only the session that was sticky is cleared: hiding another session is no
-    /// statement about which window the operator is reading.
-    fn follow_shown(&mut self, name: &str, show: bool, sink: &mut dyn Sink) {
-        let saved = if show {
-            self.sticky.set("session", name)
-        } else if self.sticky.get("session") == Some(name) {
-            self.sticky.del("session").map(|_| ())
-        } else {
-            Ok(())
-        };
-        if let Err(e) = saved {
-            self.row(sink, LineKind::Error, &format!("could not save: {e}"));
-        }
-    }
-
-    fn after_sticky_change(&self, sink: &mut dyn Sink) {
-        self.sync_sticky();
-        self.refresh(sink);
     }
 }
 
@@ -2004,47 +1701,10 @@ pub fn server_address(ip: Option<&str>, port: &str) -> anyhow::Result<SocketAddr
         .ok_or_else(|| anyhow!("{host:?} is not an address"))
 }
 
-/// `connect_server`: remember where the next command goes, then prove it answers.
-async fn connect_elsewhere(args: &Args, command: &[String]) -> anyhow::Result<()> {
-    let spec = protocol::client_commands()
-        .into_iter()
-        .find(|c| c.name == "connect_server");
-    let parsed = parse_args(&command[1..], spec.as_ref())?;
-    let port = parsed.get("port").map(String::as_str).unwrap_or_default();
-    let addr = server_address(parsed.get("ip").map(String::as_str), port)?;
-    // Saved before dialing: a refusal then leaves the client pointed where
-    // the operator asked.
-    commands::Remembered::save(&home_dir(args.conn.home.as_deref()), addr)?;
-    let key = resolve_key(&args.conn).ok_or_else(|| {
-        anyhow!(
-            "{addr} is remembered as this client's server, but there is no key to dial it              with: pass --key, set GONGGA_KEY, or start the server once to generate one"
-        )
-    })?;
-    let (link, greeting) = dial(Endpoint { addr, key })
-        .await
-        .map_err(|failure| failure.into_error())?;
-    let mut client = build_client(args);
-    greeting.apply(&mut client, &mut NullSink::default());
-    println!(
-        "{}",
-        serde_json::json!({
-            "server": addr.to_string(),
-            "connected": true,
-            "model": client.model(),
-        })
-    );
-    link.goodbye().await;
-    Ok(())
-}
-
 /// Headless: one command in, its JSON events out, then exit.
 ///
 /// See `docs/notes/cli-lib.md`.
 pub async fn run(args: &Args, command: &[String]) -> anyhow::Result<()> {
-    // `connect_server` says where a link would go; it cannot need one first.
-    if command.first().map(String::as_str) == Some("connect_server") {
-        return connect_elsewhere(args, command).await;
-    }
     let (mut client, mut link) = connect(args).await?;
     let result = run_once(&mut client, &mut link, command).await;
     // A best-effort goodbye lets the server tear the connection down now
@@ -2338,12 +1998,16 @@ impl Greeting {
     }
 }
 
-/// The client's own state, built without touching the network.
+/// A client for this process's home, built without touching the network.
+///
+/// # Invariant
+///
+/// No state is read: `cli.toml` is the window's, and a one-shot command names
+/// every argument it means. The home is here for one reason -- where `skills/`
+/// is read from -- and never for anything this process would write.
 pub fn build_client(args: &Args) -> Client {
     let home = home_dir(args.conn.home.as_deref());
-    let catalog = Catalog::new();
-    let sticky = Sticky::load(&home);
-    Client::new(catalog, sticky)
+    Client::new(Catalog::new(), home)
 }
 
 /// Connects and returns a client that already knows the server's catalog.
@@ -2442,10 +2106,6 @@ fn resolve_server_with(args: &Connection, env: &Env) -> anyhow::Result<SocketAdd
         return s
             .parse()
             .with_context(|| format!("parsing GONGGA_SERVER {s:?}"));
-    }
-    // What `connect_server` said outlives the process that said it.
-    if let Some(addr) = commands::Remembered::load(&home_dir(args.home.as_deref())) {
-        return Ok(addr);
     }
     if let Some(bind) = config_value(args, |c| c.server.as_ref().and_then(|s| s.bind.clone())) {
         return bind

@@ -8,21 +8,16 @@ use std::sync::{Arc, RwLock};
 
 use crate::commands::installed_skills;
 use crate::complete::{Candidate, Completer, Offered, token_bounds};
-use protocol::{
-    ArgSpec, Args, CommandSpec, CommandTarget, CompletionSource, ModelInfo, Reference, SessionInfo,
-};
+use protocol::{ArgSpec, Args, CommandSpec, CompletionSource, ModelInfo, Reference, SessionInfo};
 
 /// A catalog that can be swapped while the TUI holds a reference to it.
 #[derive(Clone, Default)]
 pub struct Catalog(Arc<RwLock<Inner>>);
 
 struct Inner {
-    /// Everything the server published, as published; for a name both lists carry,
-    /// the server's spec wins.
+    /// Every command this client knows, as published: the server's greeting, or
+    /// what a front-end seeded for the commands it runs itself.
     published: Vec<CommandSpec>,
-    /// This build's client commands: present before any greeting, so a window with
-    /// no server still runs.
-    client: Vec<CommandSpec>,
     /// The live sessions, as the server published them: the names a value
     /// completes against, and where each one works.
     ///
@@ -44,8 +39,8 @@ struct Inner {
     /// The server's, not this process's: a value completed here is resolved there,
     /// and two directories that agree only by luck is what this file keeps apart.
     server_cwd: PathBuf,
-    /// The client's sticky argument names, for the sources the server names
-    /// but cannot fill in.
+    /// The sticky argument names the front-end holds, for the source it names but
+    /// cannot fill in.
     sticky_names: Vec<String>,
     /// The models a request could run on here, and what each of them takes.
     models: Vec<ModelInfo>,
@@ -105,7 +100,6 @@ impl Default for Inner {
     fn default() -> Self {
         Self {
             published: Vec::new(),
-            client: protocol::client_commands(),
             sessions: Vec::new(),
             message_session: None,
             home: PathBuf::new(),
@@ -124,24 +118,20 @@ impl Default for Inner {
 }
 
 impl Inner {
-    /// The command this line names: the server's, else the client's own.
+    /// The command this line names.
+    ///
+    /// # Invariant
+    ///
+    /// What was published, and nothing of this layer's own: a command a front-end
+    /// runs itself is seeded through [`Catalog::set_commands`] like any other, so
+    /// there is one list and one reader.
     fn find(&self, name: &str) -> Option<&CommandSpec> {
-        self.published
-            .iter()
-            .find(|c| c.name == name)
-            .or_else(|| self.client.iter().find(|c| c.name == name))
+        self.published.iter().find(|c| c.name == name)
     }
 
-    /// Every command this client completes: the server's, then the client's own.
+    /// Every command this client completes.
     fn all(&self) -> Vec<CommandSpec> {
-        let mut all = self.published.clone();
-        all.extend(
-            self.client
-                .iter()
-                .filter(|own| !self.published.iter().any(|c| c.name == own.name))
-                .cloned(),
-        );
-        all
+        self.published.clone()
     }
 }
 
@@ -383,49 +373,6 @@ impl Catalog {
 
     pub fn command(&self, name: &str) -> Option<CommandSpec> {
         self.read().find(name).cloned()
-    }
-
-    /// Whether some published command declares an argument by this name as one a
-    /// sticky value would fill.
-    ///
-    /// # Invariant
-    ///
-    /// `None` when no catalog has been published yet: that cannot prove a name
-    /// wrong, and a client that has not connected must still store one.
-    pub fn fills_sticky(&self, kind: &str) -> Option<bool> {
-        let published = self.read().published.clone();
-        if published.is_empty() {
-            return None;
-        }
-        // The catalog decides which entries exist: a type some published
-        // argument declares, never a name.
-        Some(
-            published
-                .iter()
-                .flat_map(|command| command.args.iter())
-                .any(|a| a.kind.as_deref() == Some(kind)),
-        )
-    }
-
-    /// The types a sticky entry could ever name, sorted, for a refusal to name.
-    pub fn sticky_names(&self) -> Vec<String> {
-        let published = self.read().published.clone();
-        let mut names: Vec<String> = published
-            .iter()
-            .flat_map(|command| command.args.iter())
-            .filter_map(|a| a.kind.clone())
-            .collect();
-        names.sort_unstable();
-        names.dedup();
-        names
-    }
-
-    /// Whether the caller runs this one itself. Answered from the published
-    /// remote, never from a list here.
-    pub fn is_client_command(&self, name: &str) -> bool {
-        self.command(name)
-            .map(|c| c.target == CommandTarget::Client)
-            .unwrap_or(false)
     }
 
     fn read(&self) -> std::sync::RwLockReadGuard<'_, Inner> {

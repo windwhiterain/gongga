@@ -23,6 +23,9 @@ anyhow = { workspace = true }
 # The window's own cache on disk: one journal per window, and the versioned
 # record shape a later build has to be able to refuse.
 serde = { workspace = true }
+# `cli.toml` is the window's own file: the harness keeps its server state in
+# sqlite and its config in TOML, and this is the one client-side section.
+toml = "0.8"
 serde_json = { workspace = true }
 tokio = { workspace = true }
 futures-util = "0.3"
