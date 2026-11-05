@@ -10,6 +10,9 @@ const GONGGA_SKILL: &str = include_str!("../../../python/gongga_skill.py");
 /// A client for this server: one function per command it publishes.
 const GONGGA: &str = include_str!("../../../python/gongga.py");
 
+/// The command line, in Python: what `gongga-cli` runs.
+const GONGGA_CLI: &str = include_str!("../../../python/gongga_cli.py");
+
 /// Writes both modules under `<home>/lib`, and answers that directory.
 ///
 /// # Invariant
@@ -20,7 +23,11 @@ const GONGGA: &str = include_str!("../../../python/gongga.py");
 pub fn install(home: &Path) -> std::io::Result<PathBuf> {
     let dir = home.join("lib");
     std::fs::create_dir_all(&dir)?;
-    for (name, source) in [("gongga_skill.py", GONGGA_SKILL), ("gongga.py", GONGGA)] {
+    for (name, source) in [
+        ("gongga_skill.py", GONGGA_SKILL),
+        ("gongga.py", GONGGA),
+        ("gongga_cli.py", GONGGA_CLI),
+    ] {
         let file = dir.join(name);
         if std::fs::read_to_string(&file).ok().as_deref() != Some(source) {
             std::fs::write(&file, source)?;

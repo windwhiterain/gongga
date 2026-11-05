@@ -19,4 +19,6 @@ test = false
 
 [dependencies]
 link = { workspace = true }
+console = { workspace = true }
 anyhow = { workspace = true }
+dirs = "6"

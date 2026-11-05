@@ -117,6 +117,36 @@ def bind(wanted, words):
     return values
 
 
+#: The flags that come before the command's name: they say which home and which
+#: server, and they are this program's, never the command's.
+GLOBALS = {"--home": "GONGGA_HOME", "--server": "GONGGA_SERVER", "--key": "GONGGA_KEY"}
+
+
+def globals_of(words):
+    """The words split into this program's flags and the command's own.
+
+    # Invariant
+
+    Only the flags ahead of the command are read: `--home` after a command name is
+    that command's argument, and the layer's own words are none of this file's
+    business.
+    """
+    settings, i = {}, 0
+    while i < len(words):
+        word = words[i]
+        name, separator, inline = word.partition("=")
+        if name not in GLOBALS:
+            break
+        if not separator:
+            i += 1
+            if i >= len(words):
+                raise ValueError(f"{name} needs a value")
+            inline = words[i]
+        settings[GLOBALS[name]] = inline
+        i += 1
+    return settings, words[i:]
+
+
 def catalog(client):
     """What this server publishes, one command a line: the answer to bare invocation."""
     for row in client.catalog:
@@ -139,6 +169,12 @@ def dial():
 
 
 def main(argv):
+    try:
+        settings, argv = globals_of(argv)
+    except ValueError as refused:
+        print(f"gongga-cli: {refused}", file=sys.stderr)
+        return 2
+    os.environ.update(settings)
     if not argv:
         client = dial()
         if client is None:
@@ -182,8 +218,10 @@ def main(argv):
         client.close()
     for event in reply.events:
         print(json.dumps(event, ensure_ascii=False))
+    # The command's answer is the line a reader (or a pipe) takes away, so it goes to
+    # stdout with the events: stderr is for what this program says itself.
     if reply.message:
-        print(reply.message, file=sys.stderr)
+        print(reply.message)
     return 0 if reply.ok else 1
 
 

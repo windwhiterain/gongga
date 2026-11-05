@@ -2064,6 +2064,16 @@ const CANCEL_ID: u64 = u64::MAX;
 ///
 /// `serve` is decided before a runtime exists: it leaves nothing of the client
 /// behind, and the server builds the runtime it wants to be stopped in.
+/// The first Python that runs on this machine, by the crate's own rule.
+///
+/// # Invariant
+///
+/// One probe, shared: the Python a command line runs on and the one a skill entry
+/// runs on are the same answer, or a `skill` that works here fails there.
+pub fn python_program() -> anyhow::Result<std::path::PathBuf> {
+    crate::skill_command::python()
+}
+
 pub fn main(args: Args) -> anyhow::Result<()> {
     if let Some(Sub::Cmd(tokens)) = &args.command
         && tokens.first().map(String::as_str) == Some("serve")

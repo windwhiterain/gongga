@@ -743,6 +743,8 @@ name = "gongga-cli"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "dirs",
+ "gongga-console",
  "gongga-link",
 ]
 
