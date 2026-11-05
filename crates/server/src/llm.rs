@@ -540,17 +540,18 @@ impl LlmClient {
         head.push_str(",\"input\":[");
         // The opening and separator come first: the index is never the first message.
         let framing = index_framing();
-        if let Some(opening) = &framing.opening {
+        if !framing.opening.is_empty() {
             head.push_str(
                 &json!({
                     "role": "user",
-                    "content": [{"type": "input_text", "text": opening}],
+                    "content": [{"type": "input_text", "text": framing.opening}],
                 })
                 .to_string(),
             );
             head.push(',');
         }
-        if let (Some(separator), Some(_)) = (&framing.separator, &index) {
+        if !framing.separator.is_empty() && index.is_some() {
+            let separator = &framing.separator;
             head.push_str(
                 &json!({
                     "role": "assistant",
@@ -1374,12 +1375,8 @@ pub(crate) fn sendable_activity(
 /// The constant opening and separator, when this home carries them.
 fn index_framing() -> crate::anthropic::Framing {
     let prompts = crate::prompts::shared();
-    let text = |name: &str| {
-        prompts
-            .text(name)
-            .map(|t| t.trim().to_string())
-            .filter(|t| !t.is_empty())
-    };
+    // Both are in `REQUIRED`: a home without them does not start.
+    let text = |name: &str| prompts.text(name).unwrap_or_default().trim().to_string();
     crate::anthropic::Framing {
         opening: text(crate::prompts::INDEX_OPENING),
         separator: text(crate::prompts::INDEX_SEPARATOR),

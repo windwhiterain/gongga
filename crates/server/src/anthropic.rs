@@ -16,11 +16,12 @@ use crate::llm::{LlmEvent, Outbox, SseEvent, Usage};
 /// The last word of the URL: what this face appends to a provider's base.
 pub const PATH: &str = "/v1/messages";
 
-/// The constant messages that keep the index off the first one; absent is "as before".
+/// The constant messages that keep the index off the first one: both are required, so
+/// every request opens the same way.
 #[derive(Debug, Clone, Default)]
 pub struct Framing {
-    pub opening: Option<String>,
-    pub separator: Option<String>,
+    pub opening: String,
+    pub separator: String,
 }
 
 /// The request up to and including `"messages":[`.
@@ -68,17 +69,16 @@ pub fn head(
     let mut head = body.to_string();
     head.pop();
     head.push_str(",\"messages\":[");
-    if let Some(opening) = framing.opening.filter(|t| !t.is_empty()) {
+    if !framing.opening.is_empty() {
         head.push_str(
-            &json!({"role": "user", "content": [{"type": "text", "text": opening}]}).to_string(),
+            &json!({"role": "user", "content": [{"type": "text", "text": framing.opening}]})
+                .to_string(),
         );
         head.push(',');
     }
-    if let Some(separator) = framing.separator.filter(|t| !t.is_empty())
-        && index.is_some()
-    {
+    if !framing.separator.is_empty() && index.is_some() {
         head.push_str(
-            &json!({"role": "assistant", "content": [{"type": "text", "text": separator}]})
+            &json!({"role": "assistant", "content": [{"type": "text", "text": framing.separator}]})
                 .to_string(),
         );
         head.push(',');

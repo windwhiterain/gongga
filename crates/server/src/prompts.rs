@@ -69,6 +69,8 @@ pub const REQUIRED: &[&str] = &[
     "dynamic_tail_remote_unstated",
     "output_cap",
     "output_omitted",
+    INDEX_OPENING,
+    INDEX_SEPARATOR,
 ];
 
 /// The one file section this module reads.
