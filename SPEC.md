@@ -72,7 +72,7 @@ refused: a session's directory is on one peer.
 everything in database (sqlite) under a home directory, structured for agentic retrieval/mutation.
 
 ## Prompt
-the first user message carries a card in front of its text: useful information about session name, harness version (commit id), cwd, time. it is stamped once with the session's first prompt row and never re-rendered.
+after the system prompt, before the first user message, inject one message with useful information about session name, harness version (commit id), cwd, time. it is stamped once with the session's first prompt row and never re-rendered.
 
 ### Invariant
 transcript is append only, transcript that has been sent must not be change.
@@ -162,6 +162,7 @@ all named argument's name can be ommited via argument order.
   - `del_subscribe <subscription>`
 - server_script: that registered by external python scripts
   - `get_messages [<begin>]:[<end>] --session <session>(sticky)`: return the items in closed range <begin>:<end> (negative number count from end, missing number means boundary).
+  - `clone_session <session> <name>`
   - `skill <name> [args...]` | `skill ls` | `skill which <name>` | `skill run <name>`:
     run the entry a skill declares, resolved by the roots above. argv is passed through
     unparsed, the entry's exit code is this command's, and neither needs a server nor a

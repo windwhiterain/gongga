@@ -130,11 +130,11 @@ withdrawn. What decides a hit here is whether the request lands on a node that h
 prefix: of ten fresh sessions of one directory, three hit ~99% and seven were cold, and a
 repeat almost always hits.
 
-The card still sits in front of the first user message's text, because the provider's own
-rule says a hit is a prefix over "tools -> system -> user messages" and its advice is to
-put dynamic content last: there the one byte two sessions differ in is as late as the
-request allows. That is an argument from the documented rule, not a measurement from this
-provider.
+The card stayed where SPEC puts it -- its own item, in front of the messages -- after the
+three positions came out indistinguishable. What that costs in theory is the index: with a
+shared prefix cache the card is the first differing byte, so a sibling can be served the
+tools and the prose and nothing after the card. On this provider it cost nothing
+measurable, and the position is the one the model reads best.
 
 Two things this had to be untangled from. One is the first reading of any shape: a prompt
 is cold the first time it is sent and warm on the very next identical send, so a single

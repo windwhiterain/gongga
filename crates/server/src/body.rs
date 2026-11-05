@@ -2,10 +2,9 @@
 //!
 //! # Invariant
 //!
-//! A row is copied as stored, with two exceptions and both stamped: a picture's provider
-//! file id is resolved while writing, and the session's card is put in front of the first
-//! user message's text. Everything else was decided when the row was appended, so a
-//! replay sends the same bytes. See `docs/notes/server-body.md`.
+//! A row is copied as stored; the one value resolved while writing is a picture's provider
+//! file id. Everything else was decided when the row was appended. See
+//! `docs/notes/server-body.md`.
 
 use std::collections::VecDeque;
 use std::io::Error as IoError;
@@ -26,9 +25,6 @@ pub struct RequestBody {
     /// The object up to and including `"input":[`.
     head: Option<Vec<u8>>,
     rows: Option<Transcript>,
-    /// What the session's first user message carries in front of its text, until the row
-    /// that carries it has been written.
-    card: Option<String>,
     /// What this request knows about the files behind its pictures.
     files: Files,
     /// Encoded items waiting to be read.
@@ -43,17 +39,10 @@ pub struct RequestBody {
 }
 
 impl RequestBody {
-    pub fn new(
-        head: Vec<u8>,
-        rows: Transcript,
-        files: Files,
-        counter: Arc<AtomicUsize>,
-        card: Option<String>,
-    ) -> Self {
+    pub fn new(head: Vec<u8>, rows: Transcript, files: Files, counter: Arc<AtomicUsize>) -> Self {
         Self {
             head: Some(head),
             rows: Some(rows),
-            card,
             files,
             ready: VecDeque::new(),
             tail: Some(b"]}".to_vec()),
@@ -81,27 +70,7 @@ impl RequestBody {
         if let Some(rows) = self.rows.as_mut() {
             match rows.next() {
                 Some(Err(e)) => return Step::Failed(IoError::other(e)),
-                Some(Ok(stored)) => {
-                    let Stored {
-                        mut item,
-                        pictures,
-                        carrier,
-                    } = stored;
-                    if carrier {
-                        // Before the pictures: the card joins the row's own text.
-                        if let Some(card) = self.card.take() {
-                            match carry(&item, &card) {
-                                Some(merged) => item = merged,
-                                None => self.emit(
-                                    serde_json::json!({
-                                        "role": "user",
-                                        "content": [{"type": "input_text", "text": card}],
-                                    })
-                                    .to_string(),
-                                ),
-                            }
-                        }
-                    }
+                Some(Ok(Stored { item, pictures })) => {
                     if pictures.is_empty() {
                         self.emit(item);
                         return Step::Ready(true);
@@ -183,37 +152,10 @@ enum Step {
 /// A resolution in progress: owned, because a `Pending` poll cannot lend `self` out.
 type Next = std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>>;
 
-/// One stored row: its item, its pictures, and whether it is the first user message.
+/// One stored row as a request reads it: the item, and the pictures it named.
 pub struct Stored {
     pub item: String,
     pub pictures: Vec<ImageRef>,
-    pub carrier: bool,
-}
-
-/// One row with the card in front of its text, as the single message the model reads.
-///
-/// # Invariant
-///
-/// Only the text field is rewritten, and only on the row the walk named as the carrier.
-/// The card is stamped in the prompt row, so every request that replays the row produces
-/// these bytes again. `None` when the row keeps its text somewhere this does not know:
-/// the caller then sends the card as its own item, which is the old shape and still
-/// whole. See `docs/notes/server-body.md`.
-fn carry(item: &str, card: &str) -> Option<String> {
-    let mut value: Value = serde_json::from_str(item).ok()?;
-    let content = value.get_mut("content")?;
-    match content {
-        Value::String(text) => *text = format!("{card}\n\n{text}"),
-        Value::Array(parts) => {
-            let part = parts
-                .iter_mut()
-                .find(|part| part.get("type").and_then(Value::as_str) == Some("input_text"))?;
-            let text = part.get("text").and_then(Value::as_str)?.to_string();
-            part["text"] = Value::String(format!("{card}\n\n{text}"));
-        }
-        _ => return None,
-    }
-    Some(value.to_string())
 }
 
 /// The stored item, with its pictures named as the files the provider holds.

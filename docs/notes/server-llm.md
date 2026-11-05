@@ -335,9 +335,10 @@ the record and never used to price anything. See
 
 `build_head` sends `prompt_cache_options` only when the configured tier appears
 in the roster's `cache_ttl_tiers` for that provider, and `prompt_cache_key` only
-when affinity is enabled (it ships enabled). The key names the session's
-directory -- the unit whose requests share a head -- never the conversation;
-`docs/notes/server-prefix-cache.md` has what each provider does with it. A separate switch
+when the roster's `[[provider]] cache_affinity` says this provider documents it (or
+this home overrides that). The key names the session's directory -- the unit whose
+requests share a head -- never the conversation; `docs/notes/server-prefix-cache.md`
+has what each provider does with it. A separate switch
 adds an `X-Session-ID` header with the same value, for the endpoints
 that pin an inference instance that way; the header travels through
 `stream_once` -> `read_stream` -> `read_stream_inner` beside the key. A tier's

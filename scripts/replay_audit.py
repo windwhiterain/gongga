@@ -162,17 +162,9 @@ def main():
           len(texts) == 2 and all(len(rows_) == 1 for rows_ in stamped.values()),
           f"{ {sid: len(rows_) for sid, rows_ in stamped.items()} }")
 
-    # The turn's own facts are a prompt row's `tail`, put in front of the session's first
-    # user message, so they are stored -- and every session's card counts, not just this
-    # one's.
+    # The turn's own facts are a prompt row's `tail`, sent as its own item, so they are
+    # stored -- and every session's card counts, not just this one's.
     notes = {row.get("tail") for rows_ in stamped.values() for row in rows_ if row.get("tail")}
-
-    def carried(text):
-        # A sent user item is a stored message with one of those tails in front of it.
-        for note in notes:
-            if text.startswith(note + "\n\n"):
-                return text[len(note) + 2:]
-        return None
 
     def flat(item):
         c = item.get("content")
@@ -212,10 +204,6 @@ def main():
                 s = ("user", flat(item))
             if s in stored_shapes or (s[1] in notes):
                 continue
-            if s[0] == "user":
-                rest = carried(s[1])
-                if rest is not None and ("user", rest) in stored_shapes:
-                    continue
             unexplained.append((i, s))
     check(f"every one of the {items} sent items is in the database",
           not unexplained, f"{len(unexplained)} unexplained")

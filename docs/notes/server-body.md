@@ -11,14 +11,13 @@ and it made a retry send a body that had already been read.
 serialized as JSON; every item after it is the bytes the database already holds,
 and the array is closed with a tail. Nothing parses the transcript.
 
-## the card rides in front of the first user message
+## the card is the head's first message
 
-SPEC: "the first user message carries a card in front of its text: useful information
-about session name, harness version (commit id), cwd, time." So a request has no card
-item of its own: `RequestBody` puts the card in front of the text of the session's first
-user message, the one row `Transcript` names as its carrier.
+SPEC: "after the system prompt, before the first user message, inject one message with
+useful information about session name, harness version (commit id), cwd, time." So the
+request's head opens with it -- one `input` item, ahead of every row.
 
-Three positions have been tried, and each was measured:
+Four positions have been tried, and each was measured:
 
 - **Inside `instructions`.** A change there costs the index and the whole transcript,
   which is the entire prompt: 24k characters of index edited by one line cost a session
@@ -27,19 +26,18 @@ Three positions have been tried, and each was measured:
 - **Its own item, after the transcript.** A value written after the rows is a *new
   message on every step*: a live session read that as "the harness keeps injecting" and
   spent a 45-step turn answering it.
-- **Its own item, before the first user message.** Well-behaved, and it puts the one byte
-  two sessions differ in in front of the messages -- the earliest place it can be. The
-  three positions were then compared side by side on the body this server really sends,
-  and came out indistinguishable (see `server-prefix-cache.md`), so what moved it was
-  the provider's documented rule, not a reading of this provider.
+- **In front of the first user message's text** (its own item folded into it). Tried,
+  then reverted: compared side by side with the other two on the body this server really
+  sends, the three were indistinguishable -- a new card is cold wherever it sits and the
+  same prompt again is ~99.9% (see `server-prefix-cache.md`). So it bought nothing
+  measurable and cost a rewrite of a stored row on the way out.
 
-In front of the first user message's text, the card is part of the turn the user asked
-for: the model reads it as that message's preamble, and the one byte two sessions differ
-in is as late in the request as the provider's rule allows. That is a reading of the
-rule ("prefix matching, tools -> system -> user messages", "put dynamic user information
-at the end"), not a measurement: on MiniMax the three positions -- before the message, in
-its text, after it -- were indistinguishable (a new card is cold in all three, the same
-prompt again is ~99.9% in all three; see `server-prefix-cache.md`). Measured on the real server after the change: three of ten fresh sessions of one
+As its own item in front of the messages, the card is the first byte two sessions
+differ in, so a provider with a shared prefix cache can serve the tools and the prose and
+nothing after the card -- the index included. That is the one cost of this position, and
+it is accepted: it is where SPEC puts it, the model reads the facts before the request
+rather than after it, and on the provider measured here the position made no difference
+at all. Measured on the real server after the change: three of ten fresh sessions of one
 directory came back 14,336-14,391 of ~14,440 cached; the other seven were cold, and the
 three were the ones not fired within a few seconds of a first send (see
 `server-prefix-cache.md`). `carry` in `body` is the one place the text is rewritten, and what it prepends

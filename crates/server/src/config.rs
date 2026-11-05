@@ -465,9 +465,11 @@ impl Config {
                 .or(model_file.cache_margin_pct)
                 .unwrap_or(5)
                 .min(50),
+            // A fact about the provider, from the roster, unless this home overrides it.
             cache_affinity: env_or("GONGGA_CACHE_AFFINITY")
                 .and_then(|v| v.parse().ok())
                 .or(model_file.cache_affinity)
+                .or_else(|| entry.as_ref().and_then(|e| e.cache_affinity))
                 .unwrap_or(false),
             cache_session_header: env_or("GONGGA_CACHE_SESSION_HEADER")
                 .and_then(|v| v.parse().ok())

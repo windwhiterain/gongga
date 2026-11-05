@@ -268,15 +268,18 @@ would price the plan for a tier that was never in force. Absent means no cache
 directive at all, which lands in the provider's default tier -- still the only
 tier `docs/reference/prefix-cache.md` allows a plan to price.
 
-`[model] cache_affinity` (or `GONGGA_CACHE_AFFINITY`) sends `prompt_cache_key` with
-the session's **directory**: the unit whose sessions send the same head, and so the unit
-a provider that routes by key should route together. It creates no cache and costs
-nothing. It ships on, because a provider whose router scatters identical requests serves
-none of them from cache (LongCat: 0/5 with no key, 5/5 with one); a new endpoint that
-rejects the field fails every request, so it is the one line to remove. What the key
-still cannot do: MiniMax does not document the field at all, so no value of it buys
-anything there; what decides a shared first turn is the card's position in the input, see
-`docs/notes/server-prefix-cache.md`.
+`cache_affinity` says whether a request may carry `prompt_cache_key`, and **it is a
+provider's fact, so the roster owns it**: `[[provider]] cache_affinity = true` means this
+provider documents a field that keeps requests sharing a prefix on one node. LongCat
+states it (measured on this machine: 0/5 cached without the key, 5/5 with it); MiniMax's
+pages document no such field, so nothing is sent there and no reading of it can be
+explained by a key. A provider that states nothing is sent nothing -- a field nobody
+documents buys nothing, and an endpoint that rejects an unknown one fails the request.
+
+`[model] cache_affinity` (or `GONGGA_CACHE_AFFINITY`) still overrides the roster for one
+home, and the value sent is the session's **directory**, never its name: the unit whose
+sessions send the same head. It creates no cache and costs nothing; what it can do is
+route. See `docs/notes/server-prefix-cache.md`.
 
 `[model] cache_session_header` (or `GONGGA_CACHE_SESSION_HEADER`) adds an
 `X-Session-ID` header carrying the same directory, for endpoints that pin an

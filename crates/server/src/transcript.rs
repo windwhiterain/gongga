@@ -21,9 +21,6 @@ pub struct Transcript {
     session_id: i64,
     upto_seq: i64,
     after_seq: i64,
-    /// Whether the session's first user text has been walked: the one row the card
-    /// rides in. See `docs/notes/server-body.md`.
-    seen_user: bool,
 }
 
 impl Transcript {
@@ -38,7 +35,6 @@ impl Transcript {
             session_id,
             upto_seq,
             after_seq: 0,
-            seen_user: false,
         })
     }
 }
@@ -78,19 +74,6 @@ impl Iterator for Transcript {
             }
             _ => Vec::new(),
         };
-        // The card rides in the first user message, so the walk names that row.
-        let carrier = !self.seen_user
-            && kind == "text"
-            && serde_json::from_str::<serde_json::Value>(&item)
-                .map(|value| value.get("role").and_then(|role| role.as_str()) == Some("user"))
-                .unwrap_or(false);
-        if carrier {
-            self.seen_user = true;
-        }
-        Some(Ok(crate::body::Stored {
-            item,
-            pictures,
-            carrier,
-        }))
+        Some(Ok(crate::body::Stored { item, pictures }))
     }
 }

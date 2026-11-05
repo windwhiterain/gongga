@@ -26,6 +26,15 @@ pub struct Provider {
     pub cache_ttl_secs: Option<u64>,
     /// Tiers this provider accepts on the wire, by the endpoint's spelling.
     pub cache_ttl_tiers: HashMap<String, u64>,
+    /// Whether this provider documents a field that keeps requests sharing a prefix on
+    /// one node (`prompt_cache_key`).
+    ///
+    /// # Invariant
+    ///
+    /// `None` is "this provider says nothing about it", and then nothing is sent: a
+    /// field nobody documents buys nothing, and an endpoint that rejects an unknown one
+    /// fails the request. It is the roster's fact, not the home's.
+    pub cache_affinity: Option<bool>,
     // No `key` here: a roster is a git checkout, and a key in one is a key in
     // git. Keys come from `~/.agents/keys.toml`.
     /// The variable that should hold the key instead, if one is named.
@@ -185,6 +194,8 @@ pub struct Entry {
     pub cache_ttl_tiers: HashMap<String, u64>,
     /// The roster's tier for this model, as written.
     pub tier: Option<String>,
+    /// Whether the provider documents `prompt_cache_key`; `None` sends nothing.
+    pub cache_affinity: Option<bool>,
 }
 
 impl Entry {
@@ -579,6 +590,7 @@ impl Catalog {
             price: found.price,
             cache_ttl_secs: provider.cache_ttl_secs,
             cache_ttl_tiers: provider.cache_ttl_tiers.clone(),
+            cache_affinity: provider.cache_affinity,
             tier: found.tier.clone(),
         })
     }
@@ -674,6 +686,9 @@ struct FileProvider {
     /// Tiers that can be asked for on the wire, by the endpoint's spelling.
     #[serde(default)]
     cache_ttl_tiers: HashMap<String, u64>,
+    /// Whether this provider documents `prompt_cache_key`.
+    #[serde(default)]
+    cache_affinity: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -787,6 +802,7 @@ fn parse_value(value: toml::Value) -> Result<Vec<Provider>, toml::de::Error> {
                 name,
                 cache_ttl_secs: p.cache_ttl_secs,
                 cache_ttl_tiers: p.cache_ttl_tiers,
+                cache_affinity: p.cache_affinity,
                 key_env: p.key_env,
             }
         })
