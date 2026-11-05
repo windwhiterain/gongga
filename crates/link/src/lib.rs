@@ -2615,7 +2615,7 @@ impl Greeting {
 ///
 /// # Invariant
 ///
-/// No state is read: `cli.toml` is the window's, and a one-shot command names
+/// No state is read: `tui.toml` is the window's, and a one-shot command names
 /// every argument it means. The home is here for one reason -- where `skills/`
 /// is read from -- and never for anything this process would write.
 pub fn build_client(args: &Args) -> Client {
