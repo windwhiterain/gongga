@@ -53,6 +53,19 @@ shell 全都正常。
 条路径没被看到。没有定论，所以**把磁盘那一支拆成自己的脚本**（`scripts/disk_selftest.sh`），
 两边都绿，并且把这个现象原样记在这里，而不是把"绿"当成答案。
 
+## 一个测试上的坑（记下来，省下一个人的半天）
+
+selftest 的临时 home 里写 `config.toml` 时，**必须以 ship 装进来的那份为底**：
+
+```bash
+cp "$HOME/.gongga/ship/config/config.toml" "$home/config.toml"
+# 再把 disk_low_mb 插到 [server] 下面
+```
+
+只写 `[server] disk_low_mb = …` 的 home 没有 `[tool_text]` 那 40 段句子，服务端会直接拒绝
+启动（`config.toml words nothing about ["bash (what it is)", …]`）。从脚本外面看，症状是
+`the server never listened on 127.0.0.1:<port>`，很容易被当成端口或进程问题。
+
 ## 改了什么（第二版）
 
 - `crates/server/src/disk.rs`：`Watcher { threshold, home }`（进程内一份），`note_tool_end`
