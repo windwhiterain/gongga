@@ -1161,18 +1161,15 @@ impl Tool for BashTool {
             {
                 return ToolOutcome::err(match &ctx.remote {
                     Some(here) => format!(
-                        "`remote_bash` ran nothing: {stated:?} is not this session's \
-                         machine, and this tool runs on the one it has. Write \
-                         `target: {here:?}` -- this session's remote, which changes \
-                         nothing -- or leave `target` out. Moving the session to another \
-                         machine is `set_session --remote`, a command and not an argument."
+                        "`remote_bash` ran nothing: this session's directory is on remote \
+                         {here:?}, and its shells are there -- {stated:?} is another \
+                         machine, which this session has no directory on. A session works \
+                         on one machine: `set_session --remote {stated}` moves it there, \
+                         and ends these shells first."
                     ),
                     None => format!(
                         "`remote_bash` ran nothing: this session names no remote, so it has \
-                         no peer to run on and {stated:?} is not one it can reach from \
-                         here. Write no machine at all: `bash` is the shell on this one, \
-                         and reaching another machine is `set_session --remote <name>`, a \
-                         command rather than an argument."
+                         no peer to run on, and {stated:?} is not one it can reach from here."
                     ),
                 });
             }

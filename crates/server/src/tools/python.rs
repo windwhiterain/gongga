@@ -985,16 +985,14 @@ fn file_remote(args: &Value, ctx: &ToolContext, tool: &str) -> Result<bool, Stri
     }
     Err(match &ctx.remote {
         Some(here) => format!(
-            "`{tool}` ran nothing: {stated:?} is not this session's machine, and these \
-             paths belong to the one it has. Write `remote: {here:?}` -- this session's \
-             remote -- or leave `remote` out. Moving the session to another machine is \
-             `set_session --remote`, a command and not an argument."
+            "`{tool}` ran nothing: this session's directory is on remote {here:?}, and its \
+             files are there -- {stated:?} is another machine, which this session has no \
+             directory on. A session works on one machine: `set_session --remote {stated}` \
+             moves it there, and ends these shells first."
         ),
         None => format!(
             "`{tool}` ran nothing: this session names no remote, so it has no peer to work \
-             on and {stated:?} is not one it can reach from here. Write no machine at \
-             all: this machine's files are the ones this session has, and reaching \
-             another machine is `set_session --remote <name>`."
+             on, and {stated:?} is not one it can reach from here."
         ),
     })
 }
@@ -1036,10 +1034,9 @@ fn remote_arg() -> Value {
     json!({
         "type": "string",
         "description": "Which machine the file is on. Omit it, or name `none`, for this \
-                         machine. Write the name of this session's remote -- the one \
-                         `set_session --remote` named, and the machine its directory is \
-                         on -- to work on that machine's file instead. Any other name \
-                         is refused, and the refusal says which name to write."
+                         machine and its own Python. Name the session's remote -- the \
+                         machine `set_session --remote` named -- to work on that machine's \
+                         file instead. Any other name is refused."
     })
 }
 

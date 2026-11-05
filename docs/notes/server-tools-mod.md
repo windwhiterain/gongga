@@ -435,10 +435,7 @@ it is following the spec rather than this schema. `argument_error` passes a stra
 through rather than failing the call (see above), so an undeclared `target` was a key
 that silently did nothing: the command ran on the session's peer while the model
 believed it had chosen a machine. Declared, it is refused unless it names that peer,
-and the refusal names the value to write -- the peer's own name, or no `target` at all
--- because the model asked about a machine and not about moving the session. Moving it
-is `set_session --remote`, which is a command; a refusal that answered with that
-command read as advice to move a working session.
+and the refusal names `set_session --remote`.
 
 Only one value can be accepted, because the other machine would have no directory to
 stand in: the session's cwd is the peer's path, and a reference printed by a `bash`

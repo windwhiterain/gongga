@@ -104,8 +104,8 @@ process buys nothing and a long-running interpreter must not block an edit.
 
 The driver runs on this machine, or on the session's remote when the call's
 `remote` names it -- the same choice `remote_python` makes, and the same one
-machine: a session's directory is on one peer, so a second name is refused, and
-the refusal names the value to write. The remote driver is started by name there,
+machine: a session's directory is on one peer, so a second name is refused. The
+remote driver is started by name there,
 exactly as `remote_python` starts it, so a peer without Python refuses the call
 rather than writing on this machine.
 
