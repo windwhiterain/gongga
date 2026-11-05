@@ -281,10 +281,14 @@ home, and the value sent is the session's **directory**, never its name: the uni
 sessions send the same head. It creates no cache and costs nothing; what it can do is
 route. See `docs/notes/server-prefix-cache.md`.
 
-`[model] cache_session_header` (or `GONGGA_CACHE_SESSION_HEADER`) adds an
-`X-Session-ID` header carrying the same directory, for endpoints that pin an
-inference instance that way. It is a separate switch: an unknown header is not the
-same risk as an unknown body field, and a provider may want one without the other.
+`cache_session_header` adds an `X-Session-ID` header carrying the same directory, for
+endpoints that pin an inference instance that way. It is a separate fact with the same
+owner: `[[provider]] cache_session_header = true` is the roster saying this provider
+documents the header, and `[model]` / `GONGGA_CACHE_SESSION_HEADER` override it for one
+home. Tencent's guide is the one that states it; a provider that states neither gets
+neither, which is why the two are two switches and not one -- an unknown header is not
+the same risk as an unknown body field, and a provider may document one without the
+other.
 
 `[model] cache_margin_pct` (or `GONGGA_CACHE_MARGIN_PCT`, 5 by default, capped
 at 50) sets where in the tier's window the tool interrupt and the next heartbeat

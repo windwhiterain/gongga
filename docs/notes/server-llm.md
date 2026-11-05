@@ -340,7 +340,9 @@ this home overrides that). The key names the session's directory -- the unit who
 requests share a head -- never the conversation; `docs/notes/server-prefix-cache.md`
 has what each provider does with it. A separate switch
 adds an `X-Session-ID` header with the same value, for the endpoints
-that pin an inference instance that way; the header travels through
+that pin an inference instance that way -- declared the same way, by
+`[[provider]] cache_session_header` in the roster, because it is the same kind of fact;
+the header travels through
 `stream_once` -> `read_stream` -> `read_stream_inner` beside the key. A tier's
 window is a claim about the provider, not a constant of this module: a probe
 330 seconds into a nominal 300-second tier has too little margin, and no

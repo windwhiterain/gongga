@@ -35,6 +35,15 @@ pub struct Provider {
     /// field nobody documents buys nothing, and an endpoint that rejects an unknown one
     /// fails the request. It is the roster's fact, not the home's.
     pub cache_affinity: Option<bool>,
+    /// Whether this provider documents a header that pins a request to one inference
+    /// instance (`X-Session-ID`).
+    ///
+    /// # Invariant
+    ///
+    /// The same rule as `cache_affinity`, and a separate fact: a body field and a
+    /// header are two spellings, and a provider may document one of them. See
+    /// `docs/notes/server-config.md`.
+    pub cache_session_header: Option<bool>,
     // No `key` here: a roster is a git checkout, and a key in one is a key in
     // git. Keys come from `~/.agents/keys.toml`.
     /// The variable that should hold the key instead, if one is named.
@@ -196,6 +205,8 @@ pub struct Entry {
     pub tier: Option<String>,
     /// Whether the provider documents `prompt_cache_key`; `None` sends nothing.
     pub cache_affinity: Option<bool>,
+    /// Whether the provider documents `X-Session-ID`; `None` sends nothing.
+    pub cache_session_header: Option<bool>,
 }
 
 impl Entry {
@@ -591,6 +602,7 @@ impl Catalog {
             cache_ttl_secs: provider.cache_ttl_secs,
             cache_ttl_tiers: provider.cache_ttl_tiers.clone(),
             cache_affinity: provider.cache_affinity,
+            cache_session_header: provider.cache_session_header,
             tier: found.tier.clone(),
         })
     }
@@ -689,6 +701,9 @@ struct FileProvider {
     /// Whether this provider documents `prompt_cache_key`.
     #[serde(default)]
     cache_affinity: Option<bool>,
+    /// Whether this provider documents the `X-Session-ID` header.
+    #[serde(default)]
+    cache_session_header: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -803,6 +818,7 @@ fn parse_value(value: toml::Value) -> Result<Vec<Provider>, toml::de::Error> {
                 cache_ttl_secs: p.cache_ttl_secs,
                 cache_ttl_tiers: p.cache_ttl_tiers,
                 cache_affinity: p.cache_affinity,
+                cache_session_header: p.cache_session_header,
                 key_env: p.key_env,
             }
         })

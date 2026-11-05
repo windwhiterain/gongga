@@ -474,6 +474,7 @@ impl Config {
             cache_session_header: env_or("GONGGA_CACHE_SESSION_HEADER")
                 .and_then(|v| v.parse().ok())
                 .or(model_file.cache_session_header)
+                .or_else(|| entry.as_ref().and_then(|e| e.cache_session_header))
                 .unwrap_or(false),
             temperature: model_file.temperature,
             max_output_tokens: model_file.max_output_tokens,
