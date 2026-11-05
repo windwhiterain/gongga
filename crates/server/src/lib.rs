@@ -382,13 +382,18 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                 tracing::info!(started, "woke sessions holding an undelivered message");
             }
             monitor::sweep(&wake, &watch_home).await;
-            // A client holds the table it was greeted with: hand it the edit.
+            // A client holds the table and the catalog it was greeted with: hand
+            // it the edit. The catalog follows the table because an argument
+            // publishes the values the roster lets through.
             let roster = providers::roster();
             if roster.generation() != published {
                 published = roster.generation();
                 tracing::info!(generation = published, "provider roster republished");
                 wake.bus.publish(protocol::Event::Models {
                     models: providers::model_table(),
+                });
+                wake.bus.publish(protocol::Event::Commands {
+                    commands: wake.catalog().await,
                 });
             }
         }

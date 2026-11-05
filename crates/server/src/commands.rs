@@ -364,9 +364,11 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     false,
                     "thinking",
                     Some("level"),
-                    // What the model publishes on its roster entry, and nothing else.
-                    CompletionSource::ModelLevels,
-                ),
+                    // Nothing to offer through a source: the values are what the
+                    // roster lets through, published as `accepts` below.
+                    CompletionSource::None,
+                )
+                .accepting_when(crate::providers::level_accepts),
                 kind_arg(
                     "ctx_limit",
                     "The context level at which this session gets a `Context notice`, \
@@ -395,8 +397,9 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     false,
                     "cache_tier",
                     Some("name"),
-                    CompletionSource::ModelTiers,
-                ),
+                    CompletionSource::None,
+                )
+                .accepting_when(crate::providers::tier_accepts),
                 kind_arg(
                     "cache_keepalive",
                     "Whether a periodic `(time notice: ...)` message keeps this \
@@ -814,6 +817,7 @@ fn arg_spec(
         kind: kind.map(str::to_string),
         value_hint: value_hint.map(str::to_string),
         completions,
+        accepts: None,
         sticky: false,
     }
 }

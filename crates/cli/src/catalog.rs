@@ -272,14 +272,15 @@ impl Catalog {
         }
     }
 
-    /// The arguments of this line whose value the model it runs on would refuse.
+    /// The arguments of this line whose value nothing would accept.
     ///
     /// # Invariant
     ///
-    /// Measured only where the source *is* the accepted set: `ModelLevels`
-    /// publishes exactly what a model takes, while every other source says what is
-    /// worth offering rather than what is allowed. See `docs/notes/cli-catalog.md`.
-    pub fn refused_by_model(&self, line: &str, args: &Args) -> Vec<(String, String)> {
+    /// Only an argument that publishes `accepts` can be refused here: every other
+    /// source says what is worth offering rather than what is allowed, and calling
+    /// a suggestion a requirement is what the `accepts` field exists to stop.
+    /// See `docs/notes/cli-catalog.md`.
+    pub fn refused_values(&self, line: &str, args: &Args) -> Vec<(String, String)> {
         let words: Vec<String> = shell_words::split(line).unwrap_or_default();
         let snapshot = self.snapshot(&words);
         let ctx = snapshot.ctx(self);
@@ -290,14 +291,16 @@ impl Catalog {
         else {
             return Vec::new();
         };
+        let model = model_named(&ctx, &words);
         spec.args
             .iter()
-            .filter(|a| matches!(a.completions, CompletionSource::ModelLevels))
             .filter_map(|a| {
+                let accepts = a.accepts.as_ref()?;
                 let value = args.get(&a.name)?;
-                let offered = resolve(&a.completions, "", &ctx, &words, 0);
-                let taken = offered.iter().any(|c| &c.insert == value);
-                (!taken).then(|| (a.name.clone(), value.clone()))
+                match accepts.takes(model.as_deref(), value) {
+                    Some(false) => Some((a.name.clone(), value.clone())),
+                    _ => None,
+                }
             })
             .collect()
     }
@@ -567,7 +570,7 @@ impl Completer for Catalog {
             };
             return Offered {
                 subject: Some(format!("--{}", arg.name)),
-                candidates: resolve(&arg.completions, &token, &ctx, &words, 0),
+                candidates: resolve(arg, &token, &ctx, &words, 0),
             };
         }
         // The parser's rule, replayed over the line, so the popup offers what
@@ -576,7 +579,7 @@ impl Completer for Catalog {
         crate::commands::next_unfilled(&spec, &bound, cursor)
             .map(|at| Offered {
                 subject: Some(format!("--{}", spec.args[at].name)),
-                candidates: resolve(&spec.args[at].completions, &token, &ctx, &words, 0),
+                candidates: resolve(&spec.args[at], &token, &ctx, &words, 0),
             })
             .unwrap_or_default()
     }
@@ -686,16 +689,27 @@ fn value(kind: Reference, typed: &str, ctx: &Ctx) -> Vec<Candidate> {
     }
 }
 
-/// Turns one argument's declared source into candidates; `depth` bounds the one
+/// Turns one argument's published values into candidates; `depth` bounds the one
 /// self-referential case.
+///
+/// # Invariant
+///
+/// `accepts` wins over the source, because it is the value the command would take
+/// and a suggestion list is not: an argument that publishes both is a bug in the
+/// publisher, and reading the closed set keeps the popup and the refusal agreeing.
 fn resolve(
-    source: &CompletionSource,
+    arg: &protocol::ArgSpec,
     token: &str,
     ctx: &Ctx,
     words: &[String],
     depth: u8,
 ) -> Vec<Candidate> {
-    match source {
+    if let Some(accepts) = &arg.accepts {
+        let values = accepted_values(accepts, model_named(ctx, words).as_deref());
+        let label = arg.value_hint.as_deref().unwrap_or("value");
+        return pick(values.iter().map(String::as_str), token, label);
+    }
+    match &arg.completions {
         CompletionSource::None => Vec::new(),
         CompletionSource::Sessions => pick(
             ctx.sessions.iter().map(|s| s.name.as_str()),
@@ -729,14 +743,6 @@ fn resolve(
             token,
             "model",
         ),
-        CompletionSource::ModelLevels => {
-            let levels = level_choices(ctx, words);
-            pick(levels.iter().map(String::as_str), token, "level")
-        }
-        CompletionSource::ModelTiers => {
-            let tiers = tier_choices(ctx, words);
-            pick(tiers.iter().map(String::as_str), token, "tier")
-        }
         CompletionSource::Skills => pick(
             ctx.catalog
                 .skill_names(&ctx.place)
@@ -758,21 +764,21 @@ fn resolve(
                 .flat_map(|c| c.args.iter())
                 .filter(|a| {
                     a.kind.as_deref() == Some(named)
-                        && !matches!(
-                            a.completions,
-                            CompletionSource::None | CompletionSource::OfNamedArgument
-                        )
+                        && (a.accepts.is_some()
+                            || !matches!(
+                                a.completions,
+                                CompletionSource::None | CompletionSource::OfNamedArgument
+                            ))
                 })
                 .collect();
             // The required spelling of a name is its remote: that is what a
             // mirrored value completes against.
-            let found = shaped
+            match shaped
                 .iter()
                 .find(|a| a.required)
                 .or_else(|| shaped.first())
-                .map(|a| a.completions.clone());
-            match found {
-                Some(source) => resolve(&source, token, ctx, words, depth + 1),
+            {
+                Some(arg) => resolve(arg, token, ctx, words, depth + 1),
                 None => Vec::new(),
             }
         }
@@ -862,49 +868,21 @@ fn model_named(ctx: &Ctx<'_>, words: &[String]) -> Option<String> {
         .or_else(|| ctx.default_model.map(str::to_string))
 }
 
-/// The levels the line's model takes; every level some model here takes when
-/// the line names none.
+/// The values an `accepts` publishes for a line that runs on `model`.
 ///
 /// # Invariant
 ///
-/// A model the roster says nothing about accepts anything, so the union is what
-/// its completion offers: withholding the list would be this client's opinion.
-fn level_choices(ctx: &Ctx<'_>, words: &[String]) -> Vec<String> {
-    let stated = model_named(ctx, words)
-        .and_then(|model| ctx.models.iter().find(|info| info.model == model))
-        .map(|info| &info.levels)
-        .filter(|levels| !levels.is_empty());
-    // Unstated takes whatever it is sent, so every level some model here
-    // publishes is a fair guess.
-    let source: Box<dyn Iterator<Item = &String>> = match stated {
-        Some(levels) => Box::new(levels.iter()),
-        None => Box::new(ctx.models.iter().flat_map(|info| info.levels.iter())),
-    };
-    let mut seen: HashSet<&str> = HashSet::new();
-    let mut out: Vec<String> = Vec::new();
-    for level in source {
-        if seen.insert(level.as_str()) {
-            out.push(level.clone());
-        }
+/// A model the table does not list accepts anything, so the union is what its
+/// completion offers: withholding the list would be this client's opinion. A line
+/// that names no model at all gets the same union, for the same reason.
+fn accepted_values(accepts: &protocol::Accepts, model: Option<&str>) -> Vec<String> {
+    match accepts {
+        protocol::Accepts::Same(values) => values.clone(),
+        protocol::Accepts::PerModel(table) => match model.and_then(|model| table.get(model)) {
+            Some(values) => values.clone(),
+            None => accepts.union(),
+        },
     }
-    out.push(protocol::THINKING_DEFAULT.to_string());
-    out
-}
-
-/// The cache tiers the line's model declares, and nothing else.
-///
-/// # Invariant
-///
-/// The list comes from the roster, never from this client, and an empty one is an
-/// answer: the roster's tier table says which spellings a provider takes on the
-/// wire, so a model that declares none takes none. Levels are the opposite --
-/// their empty list is "the roster has no opinion" -- which is why only this one
-/// has no union fallback. See `docs/notes/cli-catalog.md`.
-fn tier_choices(ctx: &Ctx<'_>, words: &[String]) -> Vec<String> {
-    model_named(ctx, words)
-        .and_then(|model| ctx.models.iter().find(|info| info.model == model))
-        .map(|info| info.tiers.clone())
-        .unwrap_or_default()
 }
 
 /// The bare words of a command line, in order; `skip` is the cursor's

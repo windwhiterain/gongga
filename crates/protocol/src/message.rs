@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 pub type Args = BTreeMap<String, String>;
 
@@ -150,14 +150,25 @@ pub enum Event {
     ToolAnswer(ToolAnswerEvent),
     /// The set of sessions changed.
     Sessions { sessions: Vec<SessionInfo> },
-    /// The models a request could run on here, or what one of them takes, changed.
+    /// The models a request could run on here changed.
     ///
     /// # Invariant
     ///
-    /// The whole table, never a delta: the roster is one file a person edits, and
+    /// The whole list, never a delta: the roster is one file a person edits, and
     /// a reader that applied differences would have to know what it missed while
-    /// it was away.
+    /// it was away. What each model *takes* is not here: it is `ArgSpec.accepts`
+    /// of the argument that carries it, republished by [`Self::Commands`].
     Models { models: Vec<ModelInfo> },
+    /// The command catalog, re-published.
+    ///
+    /// # Invariant
+    ///
+    /// A catalog is a snapshot of the roster, because an argument publishes the
+    /// values it accepts. Editing `providers.toml` therefore makes the greeting's
+    /// catalog stale, and this message is the whole of it again -- never a delta,
+    /// for the same reason [`Self::Models`] is whole. A client that never sees one
+    /// keeps the catalog it was greeted with.
+    Commands { commands: Vec<CommandSpec> },
     /// A session's run state changed.
     Status {
         session: String,
@@ -211,7 +222,8 @@ impl Event {
             Event::Cmd { .. }
             | Event::CmdResult { .. }
             | Event::Sessions { .. }
-            | Event::Models { .. } => None,
+            | Event::Models { .. }
+            | Event::Commands { .. } => None,
             Event::Log { .. } | Event::Quota(_) => None,
         }
     }
@@ -234,6 +246,7 @@ impl Event {
             Event::ToolAnswer(_) => "tool_answer",
             Event::Sessions { .. } => "sessions",
             Event::Models { .. } => "models",
+            Event::Commands { .. } => "commands",
             Event::Status { .. } => "status",
             Event::Log { .. } => "log",
             Event::Usage(_) => "usage",
@@ -577,24 +590,18 @@ pub struct SessionInfo {
     pub remote: Option<String>,
 }
 
-/// One model a request could run on here, and the levels it publishes.
+/// One model a request could run on here.
 ///
 /// # Invariant
 ///
-/// `levels` is the roster's own spelling and nothing else; empty is a model the
-/// roster says nothing about, which takes whatever it is sent. The completion
-/// adds [`THINKING_DEFAULT`], because naming no level is always allowed.
+/// A name and nothing else. What a model *takes* -- its reasoning levels, its
+/// cache tiers -- is published by the argument that takes it, as
+/// [`ArgSpec::accepts`], because that is the value the server would accept and
+/// the roster's table is only how it works it out.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfo {
     /// `provider/model_name`, as `--model` spells it.
     pub model: String,
-    /// The reasoning levels the roster publishes for this model, in its order.
-    #[serde(default)]
-    pub levels: Vec<String>,
-    /// The cache tiers it declares, shortest window first: the order a session
-    /// that names none walks from.
-    #[serde(default)]
-    pub tiers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -890,6 +897,7 @@ fn spec_arg(
         kind: kind.map(str::to_string),
         value_hint: value_hint.map(str::to_string),
         completions,
+        accepts: None,
         sticky: false,
     }
 }
@@ -930,8 +938,26 @@ pub struct ArgSpec {
     #[serde(default)]
     pub kind: Option<String>,
     /// Where the CLI should source completion candidates.
+    ///
+    /// # Invariant
+    ///
+    /// This is what is *worth offering*, never what is allowed: `--ctx_limit`
+    /// offers ten percentages and accepts any of a hundred. When the set is
+    /// closed, [`Self::accepts`] says so and this is [`CompletionSource::None`],
+    /// so there is one list per argument and not two that can disagree.
     #[serde(default)]
     pub completions: CompletionSource,
+    /// The values this argument accepts, when the set is closed; `None` when any
+    /// value is accepted.
+    ///
+    /// # Invariant
+    ///
+    /// Exactly what the command will not refuse -- the server's own validation is
+    /// the source of these values, so a client can answer "is this value taken?"
+    /// from the published catalog alone, and no front-end derives it from the
+    /// roster a second time.
+    #[serde(default)]
+    pub accepts: Option<Accepts>,
     /// SPEC's `(sticky)`: filled from the entry when omitted, and written back
     /// to it when the command succeeds.
     ///
@@ -944,6 +970,38 @@ pub struct ArgSpec {
     /// different command.
     #[serde(default)]
     pub sticky: bool,
+}
+
+impl ArgSpec {
+    /// Narrows what the argument accepts, and leaves offering to that same list.
+    ///
+    /// # Invariant
+    ///
+    /// One list per argument: a closed set is published as `accepts`, and the
+    /// completion source it would otherwise have had becomes `None`, so no two
+    /// lists of one argument can disagree about a value.
+    pub fn accepting(mut self, accepts: Accepts) -> Self {
+        self.accepts = Some(accepts);
+        self.completions = CompletionSource::None;
+        self
+    }
+
+    /// The same, from a read that may state nothing.
+    ///
+    /// # Invariant
+    ///
+    /// A read with no answer leaves the argument unconstrained: "nothing states a
+    /// set" must not be published as "the set is empty".
+    pub fn accepting_when(mut self, read: impl FnOnce() -> Option<Accepts>) -> Self {
+        match read() {
+            Some(accepts) => {
+                self.accepts = Some(accepts);
+                self.completions = CompletionSource::None;
+            }
+            None => {}
+        }
+        self
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -974,20 +1032,6 @@ pub enum CompletionSource {
     StickyArguments,
     /// Complete against the models this server could send a request on.
     Models,
-    /// Complete against the levels the model this line runs on takes.
-    ///
-    /// # Invariant
-    ///
-    /// The model is the one the line names, else the one the session it names
-    /// already has, else the server's own -- what the command would really run on.
-    ModelLevels,
-    /// Complete against the cache tiers that same model declares.
-    ///
-    /// # Invariant
-    ///
-    /// Same model resolution as [`Self::ModelLevels`]. Only a tier the roster
-    /// declares may be sent, so the list is exactly what the wire would accept.
-    ModelTiers,
     /// Complete against the skills the line's session can open.
     ///
     /// # Invariant
@@ -996,6 +1040,73 @@ pub enum CompletionSource {
     /// `.agents/skills`, the home's `skills/` and the machine's -- so what a
     /// reader completes is what can be opened there.
     Skills,
+}
+
+/// The values an argument accepts, when the set is closed.
+///
+/// # Invariant
+///
+/// One reading, two shapes: a value is accepted when it is in one of these lists.
+/// An argument with no [`Accepts`] accepts any value -- the absence is "the
+/// command looks at nothing", never "it accepts nothing", which is stated by an
+/// empty list instead.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Accepts {
+    /// The same values whatever the line runs on.
+    Same(Vec<String>),
+    /// By model, because the roster says something different for each.
+    ///
+    /// # Invariant
+    ///
+    /// Keyed by `provider/model_name`. A model that is absent accepts any value:
+    /// the roster has no opinion about it, which is a different fact from a model
+    /// whose list is empty and which therefore takes none. Which one a value lands
+    /// in is decided where the roster is read, and the model a line resolves to is
+    /// the one it names, else the one its session already has, else the server's
+    /// own -- what the command would really run on.
+    PerModel(BTreeMap<String, Vec<String>>),
+}
+
+impl Accepts {
+    /// Every value any model would accept, for the case where the line names no
+    /// model at all.
+    pub fn union(&self) -> Vec<String> {
+        match self {
+            Accepts::Same(values) => values.clone(),
+            Accepts::PerModel(table) => {
+                let mut seen: Vec<String> = Vec::new();
+                for value in table.values().flatten() {
+                    if !seen.contains(value) {
+                        seen.push(value.clone());
+                    }
+                }
+                seen
+            }
+        }
+    }
+
+    /// Whether the value is one this accepts, for a line resolving to `model`.
+    ///
+    /// # Invariant
+    ///
+    /// `None` means the line named no model and none could be worked out, so the
+    /// question cannot be answered: a value is not wrong because the reader could
+    /// not tell which model would judge it.
+    pub fn takes(&self, model: Option<&str>, value: &str) -> Option<bool> {
+        match self {
+            Accepts::Same(values) => Some(values.iter().any(|known| known == value)),
+            Accepts::PerModel(table) => {
+                let model = model?;
+                Some(
+                    table
+                        .get(model)
+                        .map(|values| values.iter().any(|known| known == value))
+                        .unwrap_or(true),
+                )
+            }
+        }
+    }
 }
 
 // Encoding helpers

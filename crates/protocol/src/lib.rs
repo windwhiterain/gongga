@@ -31,7 +31,7 @@ pub use channel::{
     accept, connect,
 };
 pub use message::{
-    ArgSpec, Args, BLOCK_SIZES, BOX_EDGES, ClientInfo, ClientMessage, CmdArg, CommandSpec,
+    Accepts, ArgSpec, Args, BLOCK_SIZES, BOX_EDGES, ClientInfo, ClientMessage, CmdArg, CommandSpec,
     CommandTarget, CompletionSource, DEFAULT_BOX_EDGE, Event, Field, Head, HeadKind, LogLevel,
     ModelInfo, Operation, PROTOCOL_VERSION, Quota, REPLAY_TURN, ResponseEvent, ResponsePart,
     SERVER_STOP, SHOW_VALUES, ServerInfo, ServerMessage, SessionInfo, SessionStatus,

@@ -1046,41 +1046,90 @@ fn read_fresh(paths: &[PathBuf]) -> Catalog {
     catalog
 }
 
-/// Every model a request could run on here, and the levels the roster publishes.
+/// Every model a request could run on here.
 ///
 /// # Invariant
 ///
 /// One list, whether it reaches a client in the greeting or in [`Event::Models`]
 /// after an edit: a completion is the same facts however late it learns them.
+/// What each model *takes* is not here: it belongs to the argument that carries
+/// it, so one roster edit republishes one catalog ([`level_accepts`] and
+/// [`tier_accepts`] are where it comes from).
 pub fn model_table() -> Vec<protocol::ModelInfo> {
     let roster = roster();
     roster
         .models()
         .into_iter()
-        .map(|model| {
-            let entry = roster.entry(&model).ok();
-            let levels = entry
-                .as_ref()
-                .map(|entry| entry.reasoning_levels.clone())
-                .unwrap_or_default();
-            let mut tiers: Vec<(String, u64)> = entry
-                .as_ref()
-                .map(|entry| {
-                    entry
-                        .cache_ttl_tiers
-                        .iter()
-                        .map(|(name, secs)| (name.clone(), *secs))
-                        .collect()
-                })
-                .unwrap_or_default();
-            tiers.sort_by_key(|(_, secs)| *secs);
-            protocol::ModelInfo {
-                levels,
-                tiers: tiers.into_iter().map(|(name, _)| name).collect(),
-                model,
-            }
-        })
+        .map(|model| protocol::ModelInfo { model })
         .collect()
+}
+
+/// The reasoning levels a `--thinking` value may name, per model.
+///
+/// # Invariant
+///
+/// The same set [`Entry::reasoning_effort`] lets through: the roster's published
+/// levels, the aliases its `reasoning_mapping` gives them, and
+/// [`protocol::THINKING_DEFAULT`]. A model that publishes no levels takes any
+/// spelling, so it is *absent* from the table rather than listed empty -- the two
+/// are different answers, and `None` at the top says no model here constrains it.
+pub fn level_accepts() -> Option<protocol::Accepts> {
+    let mut table = std::collections::BTreeMap::new();
+    for model in roster().models() {
+        let Ok(entry) = roster().entry(&model) else {
+            continue;
+        };
+        if entry.reasoning_levels.is_empty() {
+            continue;
+        }
+        let mut levels = entry.reasoning_levels.clone();
+        let mut aliases: Vec<String> = entry.reasoning_mapping.keys().cloned().collect();
+        aliases.sort_unstable();
+        for alias in aliases {
+            if !levels.contains(&alias) {
+                levels.push(alias);
+            }
+        }
+        if !levels
+            .iter()
+            .any(|level| level == protocol::THINKING_DEFAULT)
+        {
+            levels.push(protocol::THINKING_DEFAULT.to_string());
+        }
+        table.insert(model, levels);
+    }
+    (!table.is_empty()).then_some(protocol::Accepts::PerModel(table))
+}
+
+/// The cache tiers a `--cache_tier` value may name, per model.
+///
+/// # Invariant
+///
+/// Every model is listed, and its list is exactly the tiers it declares, shortest
+/// window first. A model that declares none takes none, which is an empty list
+/// and not an absent entry: that is what the command refuses.
+pub fn tier_accepts() -> Option<protocol::Accepts> {
+    let models = roster().models();
+    if models.is_empty() {
+        return None;
+    }
+    let mut table = std::collections::BTreeMap::new();
+    for model in models {
+        let tiers = roster()
+            .entry(&model)
+            .map(|entry| {
+                let mut tiers: Vec<(String, u64)> = entry
+                    .cache_ttl_tiers
+                    .iter()
+                    .map(|(name, secs)| (name.clone(), *secs))
+                    .collect();
+                tiers.sort_by_key(|(_, secs)| *secs);
+                tiers.into_iter().map(|(name, _)| name).collect()
+            })
+            .unwrap_or_default();
+        table.insert(model, tiers);
+    }
+    Some(protocol::Accepts::PerModel(table))
 }
 
 /// The machine's roster, re-read whenever a file says it changed.

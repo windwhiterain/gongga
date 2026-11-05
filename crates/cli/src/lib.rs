@@ -947,7 +947,10 @@ impl Client {
                 self.refresh(sink);
             }
             // An edited roster: silent, because nobody asked and nothing failed.
+            // The catalog follows it, because an argument publishes the values
+            // the roster lets through.
             Event::Models { models } => self.catalog.set_models(models),
+            Event::Commands { commands } => self.catalog.set_commands(commands),
             Event::Status {
                 session,
                 status,
@@ -1322,7 +1325,7 @@ impl Client {
         self.sticky.fill(Some(&spec), &mut args);
         // A filled value the model refuses is left out: a default, not a statement.
         let line = format!("/{}", tokens.join(" "));
-        for (name, value) in self.catalog.refused_by_model(&line, &args) {
+        for (name, value) in self.catalog.refused_values(&line, &args) {
             if typed.contains(&name) {
                 continue;
             }
