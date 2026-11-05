@@ -9,7 +9,11 @@ Sources, fetched 2026-11-03:
 - MiniMax, automatic (the OpenAI faces this server speaks) —
   <https://platform.minimax.io/docs/api-reference/text-prompt-caching>
 - MiniMax, explicit (the `/anthropic` face) —
-  <https://platform.minimax.io/docs/api-reference/anthropic-api-compatible-cache>
+  <https://platform.minimax.io/docs/api-reference/anthropic-api-compatible-cache> — **this URL
+  now redirects to the automatic page**: checked 2026-11-05, the explicit cache's
+  `cache_control` rules (breakpoint, 20 blocks, 4 marks, 5 minutes) are no longer on the
+  provider's site. What the page says today is quoted under "what MiniMax documents
+  now", below.
 - Volcengine Ark — <https://docs.volcengine.com/docs/ark/context-cache>
 - Alibaba Model Studio — <https://help.aliyun.com/zh/model-studio/context-cache>
 
@@ -49,6 +53,35 @@ Field names, as each vendor spells them:
 | MiniMax | automatic on `/v1/chat/completions` **and** `/v1/responses`; `cache_control` only on the Anthropic surface | — |
 | Tencent TokenHub | — | `prompt_cache_key` in the body and an `X-Session-ID` header, to pin the inference instance |
 | DeepSeek, StepFun, LongCat, Dots, Zhipu, local | — (implicit only) | — |
+
+### what MiniMax documents now
+
+`platform.minimax.cn/docs/api-reference/text-prompt-caching` (raw markdown at `.md`),
+fetched 2026-11-05, says caching is **automatic** -- its own Anthropic SDK example sends
+no `cache_control` -- and states the boundary in one sentence:
+
+> 缓存采用前缀匹配的方式，以「工具定义-系统提示词-历史对话内容」为顺序构建，任意模块内容的变更，都可能会影响缓存的效果；
+
+with, beside it: 512 or more input tokens; and the best practice *静态内容在前、动态用户信息在最后*.
+Three things follow that no earlier reading of this provider had:
+
+- **The unit is a module, not a byte and not a block**: tool definitions, then system
+  prompt, then history. A change in one module is documented to affect the cache, and
+  this server's prompt index lives *inside the system prompt* -- so a session whose first
+  message names a different skill changes that module, and everything after it is new.
+  Measured: the same request with only the index swapped read 189 cached of 19,952.
+- **`cache_control` is not documented at all any more**, on this page or anywhere else on
+  the site as of 2026-11-05. Measured: `cache_creation_input_tokens` was 0 on every one
+  of a dozen requests that carried a breakpoint, and marking a tool definition or a
+  system block changed the prompt (and so the reading) without writing anything.
+- **A new prompt is cold even when its system module is byte-identical**: sending the same
+  tools and prose with a different first user message read 274 cached of 19,872. What was
+  served in other runs was a prompt the provider had already stored, or a prefix long
+  enough to cover a whole stored span.
+
+The older reading still holds where it was measured (`docs/notes/server-anthropic.md`):
+a *repeat* of one prompt is served almost entirely, and the OpenAI faces serve nothing at
+all across prompts.
 
 MiniMax's automatic cache states three things worth writing down, checked 2026-11-05:
 caching applies to requests of **512 or more input tokens**; the prefix is matched in the
