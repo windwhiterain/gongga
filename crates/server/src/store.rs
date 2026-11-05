@@ -244,7 +244,11 @@ CREATE TABLE IF NOT EXISTS tool_jobs (
     -- carried by a `detached` notice.
     collected   INTEGER NOT NULL DEFAULT 0,
     started_at  INTEGER NOT NULL,
-    finished_at INTEGER
+    finished_at INTEGER,
+    -- A `detached` call runs in a process of its own: the pid is how the next start
+    -- finds it again, and `answer` is the file that process writes.
+    pid         INTEGER,
+    answer      TEXT
 );
 CREATE INDEX IF NOT EXISTS tool_jobs_by_session ON tool_jobs(session);
 
@@ -458,6 +462,18 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
              DROP TABLE detached_calls;",
         )?;
     }
+    add_column_if_missing(
+        conn,
+        "tool_jobs",
+        "pid",
+        "ALTER TABLE tool_jobs ADD COLUMN pid INTEGER",
+    )?;
+    add_column_if_missing(
+        conn,
+        "tool_jobs",
+        "answer",
+        "ALTER TABLE tool_jobs ADD COLUMN answer TEXT",
+    )?;
     add_column_if_missing(
         conn,
         "messages",
@@ -2078,12 +2094,26 @@ impl Store {
         Ok(())
     }
 
+    /// Says which process is running a `detached` job, and where it will answer.
+    ///
+    /// # Invariant
+    ///
+    /// Written before the receipt leaves, so an id the caller can name is an id the next
+    /// start can adopt: a row that never got its pid is a job nobody can find again.
+    pub fn set_job_process(&self, id: i64, pid: u32, answer: &Path) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE tool_jobs SET pid = ?2, answer = ?3 WHERE id = ?1",
+            params![id, i64::from(pid), answer.display().to_string()],
+        )?;
+        Ok(())
+    }
+
     /// One job, if this home has it.
     pub fn job(&self, id: i64) -> anyhow::Result<Option<JobRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT id, session, tool, description, status, output, collected,
-                    started_at, finished_at
+                    started_at, finished_at, pid, answer
              FROM tool_jobs WHERE id = ?1",
         )?;
         let mut rows = stmt.query(params![id])?;
@@ -2107,7 +2137,7 @@ impl Store {
         let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT id, session, tool, description, status, output, collected,
-                    started_at, finished_at
+                    started_at, finished_at, pid, answer
              FROM tool_jobs
              WHERE status = 'running' OR (status IN ('ok', 'error') AND collected = 0)
              ORDER BY id",
@@ -2344,6 +2374,10 @@ pub struct JobRow {
     pub collected: bool,
     pub started_at: i64,
     pub finished_at: Option<i64>,
+    /// The process running it, for a job that is not this server's task.
+    pub pid: Option<i64>,
+    /// The file that process writes its answer to.
+    pub answer: Option<String>,
 }
 
 fn job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRow> {
@@ -2357,6 +2391,8 @@ fn job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRow> {
         collected: row.get::<_, i64>(6)? != 0,
         started_at: row.get(7)?,
         finished_at: row.get(8)?,
+        pid: row.get(9)?,
+        answer: row.get(10)?,
     })
 }
 

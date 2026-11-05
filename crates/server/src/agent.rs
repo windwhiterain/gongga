@@ -64,6 +64,8 @@ pub struct Agent {
     pub compress_above_tokens: u64,
     /// Share of the window a session states no percentage for.
     pub context_limit_percent: u8,
+    /// The home this call belongs to: what a worker needs to be started.
+    pub home: PathBuf,
     /// Where capped tool output is spilled; without it the tail is lost.
     pub output_dir: PathBuf,
     /// Detached jobs of every session, reached through `ToolContext`.
@@ -1306,6 +1308,7 @@ impl Agent {
         let ctx = ToolContext {
             session: name.to_string(),
             call_id: call_id.clone(),
+            home: self.home.clone(),
             output_dir: self.output_dir.clone(),
             shells: session.shells(),
             pythons: session.pythons(),

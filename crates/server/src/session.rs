@@ -78,6 +78,23 @@ struct Peer {
 }
 
 impl Shells {
+    /// A registry with no shells and no peer: what one call in its own process gets.
+    ///
+    /// # Invariant
+    ///
+    /// Empty, never absent: a tool that asks for a shell here is told this machine has
+    /// none, which is the truth about a process that owns no session.
+    pub fn empty(program: std::path::PathBuf) -> Self {
+        Self {
+            local: Arc::new(Mutex::new(crate::remote::shell_set::ShellSet::new(
+                crate::remote::endpoint::Endpoint::local(program),
+                None,
+                Vec::new(),
+            ))),
+            remote: None,
+        }
+    }
+
     /// The name of the peer this session's directory is on, when it is one.
     pub fn remote_name(&self) -> Option<&str> {
         self.remote.as_ref().map(|peer| peer.name.as_str())
@@ -1081,6 +1098,19 @@ pub struct StopSignal {
 }
 
 impl StopSignal {
+    /// A signal nothing asked to stop: what a program of its own runs under.
+    ///
+    /// # Invariant
+    ///
+    /// Nothing owes this call to a turn, so nothing can ask it to stop and nothing
+    /// has to be replayed. See `docs/notes/server-tools-worker.md`.
+    pub fn idle() -> Self {
+        Self {
+            stopping: Arc::new(AtomicBool::new(false)),
+            resumable: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     /// Whether a `cancel` asked this turn to stop.
     pub fn requested(&self) -> bool {
         self.stopping.load(Ordering::SeqCst)

@@ -32,6 +32,7 @@ pub async fn run(
     let ctx = crate::tools::ToolContext {
         session: session.to_string(),
         call_id: format!("cmd-{}", uuid::Uuid::new_v4().simple()),
+        home: agent.home.clone(),
         output_dir: agent.output_dir.clone(),
         shells: handle.shells(),
         pythons: handle.pythons(),

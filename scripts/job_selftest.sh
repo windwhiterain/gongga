@@ -143,12 +143,25 @@ sleep 8
 [[ "$wrote" == 0 ]]
 ok "the work it was running never finished on its own" $?
 
+# A detached job is a process: deleting it has to end that, not a task.
+marker2="$work/deljob-worker"
+rm -f "$marker2"
+said=$(run exec probe "[\"bash\",\"-c\",\"sleep 6; echo late > $marker2\"]" --detached true)
+doomed2=$(job_of "$said")
+said=$(run del_job probe --job_id "$doomed2")
+grep -q "and stopped it" <<<"$said"
+ok "del_job stops a detached worker" $?
+sleep 8
+[[ -f "$marker2" ]] && wrote2=1 || wrote2=0
+[[ "$wrote2" == 0 ]]
+ok "the worker it owned never finished on its own" $?
+
 # ---- a tool that has a background of its own keeps it ----------------------
 
 said=$(run bash probe --command "echo native-slow" --background true)
 grep -q "started background job" <<<"$said"
 ok "bash --background is still the shell's own job" $?
-said=$(run check_bash probe --timeout_ms 10000)
+said=$(run check_bash probe --wait_ms 10000)
 grep -q "native-slow" <<<"$said"
 ok "check_bash still reads it" $?
 
@@ -169,7 +182,23 @@ ok "a call that says both ways is refused" $?
 said=$(run exec probe '["bash","-c","sleep 60; echo never"]' --background true)
 lost=$(job_of "$said")
 [[ -n "$lost" ]]
-ok "a long job is still running when the server is killed" $?
+ok "a long background job is running when the server is killed" $?
+
+# SPEC: a detached job is a process of its own, so the kill is not its end.
+said=$(run exec probe '["bash","-c","sleep 20; echo detach-survives"]' --detached true)
+kept=$(job_of "$said")
+[[ -n "$kept" ]]
+ok "a detached call started as job $kept" $?
+
+kept_pid=$(python - "$home" "$kept" <<'INNER'
+import sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
+row = c.execute("select pid from tool_jobs where id = ?", (int(sys.argv[2]),)).fetchone()
+print((row and row[0]) or 0)
+INNER
+)
+[[ "${kept_pid:-0}" -gt 0 ]]
+ok "the row names the process that owns it (pid $kept_pid)" $?
 
 # An old home has no `tool_jobs`: the row a `detached` call left is the row that
 # must survive, or a session is never told what it lost.
@@ -186,9 +215,10 @@ c.commit()
 INNER
 ok "an older home's detached_calls row is planted" $?
 
-pid=$(cat "$home/server.lock")
-alive "$pid" && taskkill //PID "$pid" //T //F >/dev/null 2>&1
-for _ in $(seq 1 100); do dial_ready "$port" || break; sleep 0.2; done
+# A restart, the way one happens: `cancel` ends the server and leaves what it started
+# detached alone. A tree kill would take the worker too, which no restart does.
+run cancel >/dev/null 2>&1
+for _ in $(seq 1 150); do dial_ready "$port" || break; sleep 0.2; done
 sleep 1
 : > "$log"
 start || { echo "FAIL · job · the second start never listened"; sed -n '1,20p' "$log"; exit 1; }
@@ -198,7 +228,35 @@ ok "the next start says what the last run owed" $?
 
 said=$(run check_job probe --job_id "$lost" --wait_ms 5000)
 grep -q "never reported" <<<"$said"
-ok "the job that died with the server reads as lost" $?
+ok "the job of the server's own died with it" $?
+
+# Whatever the restart found -- still running, or already answered -- it is the same
+# process: the row the next start reads names the pid the last one recorded.
+same_pid=$(python - "$home" "$kept" "$kept_pid" <<'INNER'
+import sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
+row = c.execute("select pid from tool_jobs where id = ?", (int(sys.argv[2]),)).fetchone()
+print(1 if row and row[0] == int(sys.argv[3]) else 0)
+INNER
+)
+[[ "$same_pid" == 1 ]]
+ok "the restart picked up the same worker, not a re-run" $?
+
+said=$(run check_job probe --job_id "$kept" --wait_ms 30000)
+grep -q "already been collected" <<<"$said"
+ok "the adopted job finished, and its answer went out as a notice" $?
+
+python - "$home" "$kept" <<'INNER'
+import sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
+status, output = c.execute("select status, output from tool_jobs where id = ?",
+                           (int(sys.argv[2]),)).fetchone()
+assert status == "ok", status
+assert "detach-survives" in (output or ""), output
+told = c.execute("select payload from pending_tasks where session = 'probe'").fetchall()
+assert any("detach-survives" in (p or "") for (p,) in told), told
+INNER
+ok "what the worker answered is in its row, and the session was told" $?
 
 python - "$home" "$lost" <<'INNER'
 import sqlite3, sys
