@@ -5,12 +5,12 @@ something different:
 
 | written | becomes |
 | --- | --- |
-| `@image: <path>` | the mention plus the id of its copy: `@image: <path> (id)`, with the picture on the row |
-| `@skill: <name>` | its spelling kept, with the `SKILL.md` it names: `@skill: <name> (<path>)` |
-| `@file: <path>` | nothing: a mention, left exactly as written |
+| `@image(<path>)` | the mention plus the id of its copy: `@image(<path>) (id)`, with the picture on the row |
+| `@skill(<name>)` | its spelling kept, with the `SKILL.md` it names: `@skill(<name>) (<path>)` |
+| `@file(<path>)` | nothing: a mention, left exactly as written |
 
-Keeping the spelling is what makes the index work, and it is why `@file:` is left
-alone entirely: without a spelling to match on, `@file: x` would have to be guessed
+Keeping the spelling is what makes the index work, and it is why `@file(...)` is left
+alone entirely: without a spelling to match on, `@file(x)` would have to be guessed
 at, and a message about a picture would attach a picture the user only meant to talk
 about. The prefix decides, not the file's extension.
 
@@ -33,12 +33,12 @@ and then reused by every later request of that conversation; whatever is inline 
 message is re-sent as part of the transcript from that point on. A skill body is the
 one thing whose size makes that difference matter: SPEC asks for the metadata to be
 appended in place (`append path metadata to it`) and for the body to ride the index,
-so `@skill:` expands to a pointer rather than to prose, on the first turn too.
+so `@skill(...)` expands to a pointer rather than to prose, on the first turn too.
 
 That pointer is not a courtesy. The index carries a skill's body and nothing about
-where the file is, so a first message that kept only `@skill: <name>` sent the model
+where the file is, so a first message that kept only `@skill(<name>)` sent the model
 hunting the three roots for the directory; measured on 2026-11-04 in one session, four
-`ls`/`skill` calls before it found `SKILL.md`. `@file:` is the opposite case: its
+`ls`/`skill` calls before it found `SKILL.md`. `@file(...)` is the opposite case: its
 spelling *is* its path, so it is left exactly as written and still keys the index.
 
 ## the rules file is a root, not a message
@@ -54,7 +54,7 @@ Where it lands is the whole point. The index sits in `instructions`, in front of
 transcript, so the rules are charged once and re-used by every later request of the
 conversation; a rules file expanded into a message would ride the transcript instead and
 be re-sent for the life of the session. Being a spelling also means a message that writes
-`@file: AGENTS.md` stays literal and keys the same entry, so one file is never carried
+`@file(AGENTS.md)` stays literal and keys the same entry, so one file is never carried
 twice.
 
 It is read on every request, like every other root, so an edit reaches the next turn --
@@ -71,7 +71,7 @@ turn, all caused by `cd`.
 
 So `roots` now reads everything in one directory: the session's, the one the prompt row
 records. Not a hybrid -- the first attempt kept the shell's directory for references a
-*message* names, and a message naming `@file: docs/notes/tui-main.md` lost that root the
+*message* names, and a message naming `@file(docs/notes/tui-main.md)` lost that root the
 moment the shell `cd`d away. A relative path in a sent message means one file for the
 life of the session; that is what "already sent" has to mean for a map carried in the
 prompt. `scripts/prompt_selftest.sh` holds the line.
@@ -80,11 +80,32 @@ Two consequences, both accepted:
 
 - a session whose directory has no `AGENTS.md` reads none, even if its shell later `cd`s
   somewhere that has one. To reach another directory's rules, name them:
-  `@file: /that/dir/AGENTS.md`.
+  `@file(/that/dir/AGENTS.md)`.
 - a reference in a message is relative to the session's directory, not to wherever the
   shell stood when the message was typed. Absolute paths and references written before a
   `cd` are unaffected; a model that `cd`s and then names `src/x.rs` means `home/src/x.rs`,
   so it should write the full path.
+
+## A session on a peer is handed the `remote` skill
+
+`roots` seeds two references no message named: `AGENTS.md`, which is the rules of where
+the session stands, and — when the session's directory is on a peer — `@skill:remote`.
+The second is there because the tool instructions deliberately say nothing about the two
+machines (a description states what its tool is, and how two machines relate is prose).
+A model that is never told reads `remote_bash` as a second `bash`, which is what it did
+before this: one turn spent on a tool that could only refuse, and then a search for the
+same thing under another name.
+
+The seeding is by machine, not by message: `Source::machine` is `Remote` for a session
+placed on a peer and for one whose peer is unreachable, and the skill's body is read from
+this machine's own home either way. A session on this machine gets nothing — its index
+does not grow by a skill it has no use for.
+
+Measured on a real server, three cases: a local session's request carries no
+`@skill:remote`; a session created with `--remote` carries it, body and all, in its first
+request; and a session created here and then moved carries it from the first request
+after the move (the request before it does not), together with the card that names the
+peer.
 
 ## `roots` is the walk
 
@@ -95,20 +116,20 @@ not text, or a skill this machine does not have -- is left out entirely rather t
 invented: its mention stays literal in the message, so the reader sees a name with
 nothing behind it, which is the truth.
 
-`@image:` is never indexed (a picture is not text), so it is copied and attached
+`@image(...)` is never indexed (a picture is not text), so it is copied and attached
 wherever it is named, or a first message that pointed at a screenshot would lose it.
 An unknown skill is the same shape -- no text to index, so it answers with its path
-instead of a hint about a file. `@skill:` is neither: what the index holds is its
+instead of a hint about a file. `@skill(...)` is neither: what the index holds is its
 body, and a body does not say where the file is.
 
 `spelling` is one function because it must be one spelling. The index carries it and
-`expand` writes it back into every `@skill:` mention, so a message naming a skill a
-second time keys the entry already there. `@skill: heir` and `@skill:heir` are one
+`expand` writes it back into every `@skill(...)` mention, so a message naming a skill a
+second time keys the entry already there. `@skill(heir)` and `@skill(heir)` are one
 reference, and the canonical form is the one with no space.
 
 ## the queue, and why the index is not only the transcript
 
-A message delivered while the session has no prompt row yet keeps its `@file:` mentions
+A message delivered while the session has no prompt row yet keeps its `@file(...)` mentions
 as written, on the promise that the row about to be written will index them. That
 promise is only true if the row reads the inbox too, so `agent::index_of` takes
 `store.user_texts` (the transcript) *and* `store.queued_texts` (the messages still
@@ -129,22 +150,22 @@ start rather than sending a prompt with a hole in it.
 `prompt_in_force` returns that row from then on (see `server-agent.md`), so "when was
 this named" decides whether it is in there at all:
 
-| named in | `@file:` | `@skill:` |
+| named in | `@file(...)`, `@skill(...)` |
 | --- | --- | --- |
-| the session's first user message | in the index; the mention stays as written | in the index; the mention becomes `@skill: <name> (<path>)` |
+| the session's first user message | in the index; the mention stays as written | in the index; the mention becomes `@skill(<name>) (<path>)` |
 | a message already queued when that row was written | the queue is read too, so it is in the index as well | same |
-| any later message | nothing: the mention stays a literal path with no entry behind it | expanded to `@skill: <name> (<its SKILL.md>)`; the body is not in the index, so the reader opens the file itself |
+| any later message | nothing: the mention stays a literal path with no entry behind it | expanded to `@skill(<name>) (<its SKILL.md>)`; the body is not in the index, so the reader opens the file itself |
 
 One more row, because skills name each other: a root's own mentions are walked, so a
-first message naming `@skill:chain` whose body says `@skill:leaf` carries both bodies.
+first message naming `@skill(chain)` whose body says `@skill(leaf)` carries both bodies.
 That is what lets the shipped chapter `ship/skills/prefix-cache` be referenced from four
 other places without being copied into them.
 
 The first two rows are why the writing rule is a rule and not a preference. Measured at
 `52c180a` with a fake provider (`scripts/subagent_selftest.sh`, scenarios 0 and H): a
-session whose first message named `@file: early.md` kept
-`rooted = ['@file:early.md']` through three turns, its later message's `@skill: late`
-was stored as `@skill: late (<path>)`, and the request behind that turn carried `EARLY`
+session whose first message named `@file(early.md)` kept
+`rooted = ['@file(early.md'])` through three turns, its later message's `@skill(late)`
+was stored as `@skill(late) (<path>)`, and the request behind that turn carried `EARLY`
 and no `LATE`. One `system` row, not one per request.
 
 Until 2026-11-03 this section said the index was rebuilt on every request, and that a
@@ -157,15 +178,39 @@ work needs in the first message. `ship/skills/prefix-cache` holds that rule, the
 spelling table, and the examples -- for a reader who is about to write a brief or a
 lesson.
 
-## why the value is one word
+## the parentheses are the delimitation
 
-`@image: shot.png` is a prefix and the word after it, or `@image:shot.png`
-written together. That is exactly what the completion popup inserts, so what a
-reader completes is what the parser reads. A path with a space cannot be named;
-`@file:` is the way to write about one.
+`@file(src/meta.rs)` is a prefix, a group, and the `)` that closes it. Nothing else is
+required of the writer: the `@` need not open a word, the value need not stop at a
+space, and a path holding one needs no quoting. `看下@file(src/meta.rs)这个文件` is one
+sentence holding one reference, and the prose around it is never guessed at.
 
-Trailing punctuation belongs to the sentence: `(@image: shot.png).` names
-`shot.png`. A prefix with nothing after it is prose, and stays prose.
+That is the whole grammar, and it is why it is a grammar rather than an inference. The
+same message used to be written `@file: src/meta.rs`, which left the end of a value to
+be decided from the text: a name written against Chinese had to be separated from it by
+a rule about which characters may follow a name, and a name written against more of the
+same script could not be separated at all without asking the disk which prefix exists.
+Both questions are gone with the `)`: the value ends where its group does.
+
+What the parser does with the group, in order:
+
+- a `(` after `@file`, `@skill` or `@image` opens it; `@file` with nothing after it is
+  prose, so a sentence about the spelling is a sentence;
+- nested parentheses count, and a quoted run carries its own, so `@file(a(b).md)` is
+  `a(b).md` and `@file("a)b.md")` is `a)b.md`;
+- the value is what stands between them, trimmed of the spaces around it and of one
+  pair of quotes if that is all it is -- the way to name something that itself starts or
+  ends with a space;
+- a group with no closing `)` is not a reference at all: the operator is still typing,
+  and prose is not a hole.
+
+Two things this buys beyond the parse. A picture pasted into the prompt is written as
+`@image(<path>)` with the path as it is, spaces and all. And the monitor's own session
+name, `@monitor`, is not a reference and never was: it opens no group.
+
+The completion popup inserts what the parser reads (`link-catalog.md`): the prefix
+candidate is `@file(`, and a chosen value is inserted as `path)` -- a group the operator
+has to close by hand is a reference the parser reads as prose until they do.
 
 ## which machine a reference is read on
 
@@ -193,7 +238,7 @@ See `.agents/notes/2026-11-02-a-session-has-two-machines.md`.
 `expand` runs in `commands::deliver`, before the row is written. The stored row
 therefore never carries a reference a later request would resolve differently: a
 skill keeps the `SKILL.md` path the name resolved to (what that file says may change
-afterwards, exactly as it may for `@file:`), and an image keeps the file id it was
+afterwards, exactly as it may for `@file(...)`), and an image keeps the file id it was
 uploaded as.
 
 That is also what makes the pending-inject path carry the same thing: the payload
@@ -204,14 +249,14 @@ when the turn gets round to it.
 Every replacement keeps text now -- a skill's pointer, a picture's mention and id --
 so none of them touches the space in front of it. It used to: a picture was replaced
 by nothing, and the rule that closed the sentence up around that hole was applied to
-every mention, which glued `and @skill: late` into `andskill` until 2026-11-03.
+every mention, which glued `and @skill(late)` into `andskill` until 2026-11-03.
 
-Expansion is idempotent, by the suffix each kind appends: a `@skill:` mention
-already followed by ` (its SKILL.md's path)`, or an `@image:` mention by
+Expansion is idempotent, by the suffix each kind appends: a `@skill(...)` mention
+already followed by ` (its SKILL.md's path)`, or an `@image(...)` mention by
 ` (the stored copy's id)`, is left exactly as it stands. Stored rows are
 re-sent verbatim -- the monitor's retry carries the report it was given,
 unchanged -- and without the guard every such pass appended the pointer a
-second time, so the row the reader saw was `@skill: monitor (path) (path)`.
+second time, so the row the reader saw was `@skill(monitor) (path) (path)`.
 
 ## a reference that cannot be resolved stays text
 

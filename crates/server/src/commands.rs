@@ -990,7 +990,7 @@ async fn send_message(d: &Dispatch, args: &Args) -> Outcome {
     deliver(d, &name, message).await
 }
 
-/// Resolves a message's `@image:` and `@skill:` references before it is stored.
+/// Resolves a message's `@image(...)` and `@skill(...)` references before it is stored.
 ///
 /// # Invariant
 ///

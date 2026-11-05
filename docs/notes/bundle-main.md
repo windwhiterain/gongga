@@ -134,6 +134,12 @@ window that waited for a server the bundle had just killed, on every upgrade.
 `--client_only` exists so that a server upgrade does not break the client, and
 this is where that promise is kept.
 
+`--force` is the exception to "asked, not killed". It skips `ask_to_cancel` for
+every retired directory and stops the server by the pid `running_in` found under
+that directory, then waits for the pid to go away before `take_over` starts the
+new build. `--client_only` still wins: a window that needs no port does not get
+one freed for it. See the section below for what this costs.
+
 ## What this is not
 
 A build of the programs into one image. `gongga` used to include the server as a
@@ -148,6 +154,7 @@ to the first is an overlay, not a bigger binary.
 ./gongga serve 9700
 ./gongga                  # the catalog, from that server
 ./gongga tui              # the window
+./gongga tui --force      # the window, replacing a build whose cancel is stuck
 ```
 
 Every run places all payloads in `$GONGGA_HOME/payload/<stamp>/` first (all of
@@ -188,6 +195,33 @@ test` in this workspace spawns a nested cargo that compiles the whole dependency
 graph a second time into a second target directory -- 35 s cold, 1.8 GB. That is
 a cost the inner loop pays hundreds of times a day and the installer pays once,
 so it is opt-in and one alias away.
+
+## --force: a build whose cancel cannot finish
+
+    ./gongga tui --force
+
+`cancel` asks the old server to drain its turns. A build that predates the tunnel
+ceiling can hold a turn forever, so the drain never ends, the server keeps the
+port, and the launcher's `gongga-cli cancel` waits for it with no timeout. The
+result is a new build that has placed its payload but never opens a window.
+
+`--force` is the operator's way out of that loop. The head reads the flag before
+it calls `retire`; the program parses argv only afterwards, so write the flag
+*after* the program word (`gongga tui --force`, not `gongga --force tui`). It is a
+global flag in `link::Args`, so `gongga-cli` accepts it too, and
+`check_flag_order` still requires it before a command name.
+
+What it costs: a killed server does not turn its running turns into pending work
+the way `cancel` does, and `taskkill /T` on Windows takes the server's whole
+process tree with it. Messages already in the database are not lost; the turns
+simply stop. Use it when the old build is known to be stuck, not as the everyday
+upgrade path.
+
+What it cannot reach: `retire` walks `<home>/payload/<stamp>` directories other
+than this build's and stops only processes whose executable lives in one of them.
+A server holding the port from `<home>/bin`, a build `target/`, another home or
+another worktree is invisible here. Freeing one of those is a separate, explicit
+step: find the port's owning pid and stop that pid by hand.
 
 ## The cancel the upgrade sends does not flash a window
 

@@ -310,7 +310,7 @@ a name and find it on whichever machine holds it, and say which one that was.
 
 The session's directory belongs to one machine: the remote's when it names one, and
 this machine's otherwise. That single fact answers "whose file is this" for the
-prompt's index, for `@file:`, and for `@image:` -- nothing infers a machine from how
+prompt's index, for `@file(...)`, and for `@image(...)` -- nothing infers a machine from how
 a path is spelled. A reference in a tool's output is read on the machine that ran the
 tool; a reference in a user's message, on the machine the session stands on.
 See `.agents/notes/2026-11-02-a-session-has-two-machines.md`.
@@ -392,7 +392,7 @@ reachable, and `BashTool::run` refuses any name but the session's own:
 
 The conservative branch is the SPEC's own: `target` has a defined cwd only when it is
 the session's remote, and a second peer would have no directory to be in -- plus a
-second reader, since `@file:` in that peer's output must be read there. A session per
+second reader, since `@file(...)` in that peer's output must be read there. A session per
 peer is the cheaper way to reach two, and `set_session --remote` is the one command
 that moves one.
 

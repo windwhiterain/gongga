@@ -4,7 +4,7 @@ SPEC's `## Meta` asks for three things about a picture a message names, and this
 the second of them:
 
 ```
-- `@image: <path>` , append id to it `@image: <path> (id)`.
+- `@image(<path>)` , append id to it `@image(<path>) (id)`.
   - copy the image to transcript, dedup by path.
 ```
 
@@ -114,8 +114,8 @@ through the retry counter: that counts a bad minute against a ceiling, and this 
 
 `.dev/pictures/probe.sh` runs one server against two providers -- one with a working Files
 API, one whose uploads fail -- and checks, on the stored rows and the bodies the provider
-received: the mention keeps `@image: shot.png (<id>)`, the copy holds exactly the named
+received: the mention keeps `@image(shot.png) (<id>)`, the copy holds exactly the named
 bytes, a rewritten file mints a second copy while the first row keeps the first, a failed
 upload still sends the picture out of the copy after the source file is deleted, and a
-`@image:` printed by a command is copied the same way with the command's text left as
+`@image(...)` printed by a command is copied the same way with the command's text left as
 printed.

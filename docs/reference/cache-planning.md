@@ -41,7 +41,7 @@ it.
 | the article | the code |
 | --- | --- |
 | "在 harness 层面模拟一颗缓存树" | `Layout`: `items` plus `nodes`, where a path from a root to a node is one ordering that really went out. One row in `prefix_layout`, keyed by the unit that shares bytes. |
-| "每个节点就是一段记忆，例如一个 skill，一个文档，一张图片" | `Item`: the spelling the index prints (`@file:…`, `@skill:…`), the text, its tokens. Pictures are not items: they travel as attachments through the Files API, so an image is the one kind of memory the tree cannot hold today. |
+| "每个节点就是一段记忆，例如一个 skill，一个文档，一张图片" | `Item`: the spelling the index prints (`@file(…)`, `@skill(…)`), the text, its tokens. Pictures are not items: they travel as attachments through the Files API, so an image is the one kind of memory the tree cannot hold today. |
 | "将提示词引用的 skill，文档的闭包作为需要注入的提示词模块" | `meta::roots`: the closure of every reference the messages name, with the directory's `AGENTS.md` seeded, so a session is under its rules without naming them. |
 | "从模拟的缓存树中找到价格最优的节点，用该节点对应的顺序合成系统提示词" | `Layout::plan`: a cost walk over the emitted chains, priced by the roster's hit/miss ratio; the cheapest chain's order, then what is new in the caller's order. |
 | "给节点加上修改忍耐功能，在 diff 低于一定比例的情况下保留该节点，在系统提示词最后再重放对应的 diff" | `index_change_tolerance` and the `reference_revision` template: an entry whose change stays under the tolerance keeps its node, and the patch is appended after the index (`Plan::revisions`). |

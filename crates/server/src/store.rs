@@ -319,6 +319,27 @@ fn add_column_if_missing(
     Ok(())
 }
 
+/// Gives a row written before `ended_at` existed the turn end it already had.
+///
+/// # Invariant
+///
+/// Only a session that has rows and no stamp: the last row of a transcript is
+/// written by the last turn, so its time is when that turn ended, while a
+/// session with no rows never ended one and keeps `NULL`. Safe at every start,
+/// which is what makes a home an older build wrote right again.
+/// See `docs/notes/server-store.md`.
+fn backfill_ended_at(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE sessions
+            SET ended_at = (SELECT MAX(m.created_at) FROM messages m
+                             WHERE m.session_id = sessions.id)
+          WHERE ended_at IS NULL
+            AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = sessions.id)",
+        [],
+    )?;
+    Ok(())
+}
+
 /// Whether `table` already answers a select on `column`.
 fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
     conn.prepare(&format!("SELECT {column} FROM {table} LIMIT 1"))
@@ -389,13 +410,16 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             "cache_keepalive",
             "ALTER TABLE sessions ADD COLUMN cache_keepalive INTEGER NOT NULL DEFAULT 0",
         ),
-        (
-            "ended_at",
-            "ALTER TABLE sessions ADD COLUMN ended_at INTEGER",
-        ),
     ] {
         add_column_if_missing(conn, "sessions", column, ddl)?;
     }
+    add_column_if_missing(
+        conn,
+        "sessions",
+        "ended_at",
+        "ALTER TABLE sessions ADD COLUMN ended_at INTEGER",
+    )?;
+    backfill_ended_at(conn)?;
     settle_handover(conn)?;
     // An old row needs a name before it can be listed or deleted.
     add_column_if_missing(

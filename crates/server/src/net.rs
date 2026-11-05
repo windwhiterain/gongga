@@ -136,7 +136,7 @@ pub async fn serve(cfg: Arc<Config>, d: Arc<Dispatch>, bus: EventBus) -> anyhow:
             socket.clone(),
             peer,
             rx,
-            cfg.transport.clone().into(),
+            Into::<protocol::ChannelConfig>::into(cfg.transport.clone()).tune_for_peer(peer),
             conn_id,
         );
         tracing::info!(%peer, conn_id, "client connected");

@@ -358,24 +358,6 @@ pub(crate) fn detect() -> anyhow::Result<PathBuf> {
     anyhow::bail!("no python3 or python on PATH; set GONGGA_PYTHON or [tools.python] program")
 }
 
-const DESCRIPTION: &str = "`bash` with Python instead of a shell, on this machine. \
-    Everything `bash` says about `name`, `description`, `timeout_ms` and `background` \
-    holds here unchanged; `code` takes the place of `command`, and `restart` stops this \
-    name's interpreter so the call starts a fresh namespace. State survives between \
-    calls to one name because it is one process, so write ordinary Python -- there is \
-    no shell quoting to escape. Standard output and standard error come back; an \
-    exception comes back as a traceback and the namespace keeps what it had reached.";
-
-/// What `remote_python` says it is: the same interpreter, on the session's peer.
-///
-/// # Invariant
-///
-/// It names the machine a path belongs to, because the one thing a model gets wrong
-/// here is writing to this machine's file while meaning the peer's.
-const REMOTE_DESCRIPTION: &str = "`python` on the session's remote endpoint, exactly \
-    as `remote_bash` is `bash`: same `code`, `name`, `description`, `timeout_ms`, \
-    `background` and `restart`; the paths are that machine's.";
-
 impl PythonTool {
     /// Starts one interpreter on this tool's machine.
     ///
@@ -431,13 +413,6 @@ impl Tool for PythonTool {
         }
     }
 
-    fn description(&self) -> &'static str {
-        match self.machine {
-            Machine::Local => DESCRIPTION,
-            Machine::Remote => REMOTE_DESCRIPTION,
-        }
-    }
-
     fn machine(&self, _args: &Value, _ctx: &ToolContext) -> Machine {
         self.machine
     }
@@ -454,40 +429,12 @@ impl Tool for PythonTool {
         json!({
             "type": "object",
             "properties": {
-                "code": {
-                    "type": "string",
-                    "description": "Python source to execute in the named interpreter. \
-                                     A single expression is evaluated and its repr printed; \
-                                     otherwise the block is executed."
-                },
-                "name": {
-                    "type": "string",
-                    "description": "Which interpreter this call is about. Omitted means \
-                                     `default`; a new name starts a fresh interpreter in the \
-                                     session's working directory."
-                },
-                "description": {
-                    "type": "string",
-                    "description": "What this call is for, in a few words -- read after the \
-                                     tool name, never executed."
-                },
-                "timeout_ms": {
-                    "type": "integer",
-                    "description": "How long to wait for this call. On timeout the \
-                                     interpreter is stopped and the next call to that name \
-                                     starts with a fresh namespace."
-                },
-                "restart": {
-                    "type": "boolean",
-                    "description": "Stop this name's current interpreter and start a fresh \
-                                     one for this call, discarding its namespace."
-                },
-                "background": {
-                    "type": "boolean",
-                    "description": "Start the call and return at once, as `bash`'s \
-                                    `background` does: `check_python` collects what it \
-                                    printed, and this session is told when it ends."
-                }
+                "code": {"type": "string"},
+                "name": {"type": "string"},
+                "description": {"type": "string"},
+                "timeout_ms": {"type": "integer"},
+                "restart": {"type": "boolean"},
+                "background": {"type": "boolean"}
             },
             "required": ["code"]
         })
@@ -675,26 +622,12 @@ impl Tool for CheckPythonTool {
         "check_python"
     }
 
-    fn description(&self) -> &'static str {
-        "What `check_bash` is to a shell, for an interpreter: the output a finished \
-         background call printed, which reading clears."
-    }
-
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "Interpreter to read. Defaults to `default`."
-                },
-                "wait_ms": {
-                    "type": "integer",
-                    "description": "If this interpreter has background calls running, wait \
-                                    up to this many milliseconds for them to finish before \
-                                    reading. A timeout returns what is there and leaves them \
-                                    running. Defaults to 0."
-                }
+                "name": {"type": "string"},
+                "wait_ms": {"type": "integer"}
             },
             "additionalProperties": false
         })
@@ -771,25 +704,12 @@ impl Tool for DelPythonTool {
         "del_python"
     }
 
-    fn description(&self) -> &'static str {
-        "What `del_bash` is to a shell: the interpreters of this session whose name \
-         matches a regex are stopped, and naming one again starts fresh -- no variables, \
-         imports or open files from before, and any call it was running is gone with it."
-    }
-
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "name_regex": {
-                    "type": "string",
-                    "description": "Pattern matched against interpreter names, unanchored: \
-                                    `qa` also takes `qa2`. Defaults to `^default$`."
-                },
-                "description": {
-                    "type": "string",
-                    "description": "What this call is for, in a few words -- read after the tool name, never executed."
-                }
+                "name_regex": {"type": "string"},
+                "description": {"type": "string"}
             },
             "additionalProperties": false
         })
@@ -840,25 +760,12 @@ impl Tool for ListPythonTool {
         "list_python"
     }
 
-    fn description(&self) -> &'static str {
-        "What `list_bash` is to a shell: each interpreter's name, pid, program, \
-         directory, running calls and whether anything unread is waiting. `name_regex` \
-         narrows it."
-    }
-
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "name_regex": {
-                    "type": "string",
-                    "description": "Only names matching this pattern, unanchored: \
-                                    `qa` also takes `qa2`. Defaults to every python."
-                },
-                "description": {
-                    "type": "string",
-                    "description": "What this call is for, in a few words -- read after the tool name, never executed."
-                }
+                "name_regex": {"type": "string"},
+                "description": {"type": "string"}
             },
             "additionalProperties": false
         })
@@ -1030,9 +937,7 @@ async fn one_shot_remote(
 /// a second machine.
 fn remote_arg() -> Value {
     json!({
-        "type": "string",
-        "description": "Which machine the file is on. Omit it for this machine; \
-                         name the session's remote for that machine's file instead."
+        "type": "string"
     })
 }
 
@@ -1048,13 +953,6 @@ impl Tool for ReadFileTool {
         "read_file"
     }
 
-    fn description(&self) -> &'static str {
-        "Read a UTF-8 file through the Python tool's interpreter. `offset` and `limit` \
-         are lines, zero-based; `limit = 0` reads to the end. The content is a tool \
-         result, so it never passes through shell quoting. Use it instead of `cat` when \
-         the file's bytes matter."
-    }
-
     fn machine(&self, args: &Value, ctx: &ToolContext) -> Machine {
         file_machine(args, ctx)
     }
@@ -1067,20 +965,11 @@ impl Tool for ReadFileTool {
         json!({
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File to read."},
+                "path": {"type": "string", },
                 "remote": remote_arg(),
-                "offset": {
-                    "type": "integer",
-                    "description": "First line, zero-based. Defaults to 0."
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "How many lines; 0 means to the end. Defaults to 0."
-                },
-                "description": {
-                    "type": "string",
-                    "description": "What this call is for, in a few words -- read after the tool name, never executed."
-                }
+                "offset": {"type": "integer"},
+                "limit": {"type": "integer"},
+                "description": {"type": "string"}
             },
             "required": ["path"]
         })
@@ -1169,13 +1058,6 @@ impl Tool for WriteFileTool {
         "write_file"
     }
 
-    fn description(&self) -> &'static str {
-        "Write a file through the Python tool's interpreter: `content` is a JSON field, \
-         so it is written exactly as given, with no shell or Python quoting layer. \
-         Missing parent directories are created and the replacement is atomic. Use this \
-         instead of a heredoc or `write_text` inside a `python` program."
-    }
-
     fn machine(&self, args: &Value, ctx: &ToolContext) -> Machine {
         file_machine(args, ctx)
     }
@@ -1188,16 +1070,10 @@ impl Tool for WriteFileTool {
         json!({
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File to write."},
+                "path": {"type": "string", },
                 "remote": remote_arg(),
-                "content": {
-                    "type": "string",
-                    "description": "The complete UTF-8 content; this is the file, not a program."
-                },
-                "description": {
-                    "type": "string",
-                    "description": "What this call is for, in a few words -- read after the tool name, never executed."
-                }
+                "content": {"type": "string"},
+                "description": {"type": "string"}
             },
             "required": ["path", "content"]
         })
@@ -1275,14 +1151,6 @@ impl Tool for ReplaceTool {
         "replace"
     }
 
-    fn description(&self) -> &'static str {
-        "Replace one exact, literal piece of a UTF-8 file through the Python tool's \
-         interpreter. Without `all`, `old` must occur exactly once; any other count is \
-         an error, so a stale context cannot silently rewrite the wrong place. With \
-         `all`, every occurrence is replaced. The write is atomic. `old` and `new` are \
-         JSON fields, not shell or Python syntax."
-    }
-
     fn machine(&self, args: &Value, ctx: &ToolContext) -> Machine {
         file_machine(args, ctx)
     }
@@ -1295,18 +1163,12 @@ impl Tool for ReplaceTool {
         json!({
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File to edit."},
+                "path": {"type": "string", },
                 "remote": remote_arg(),
-                "old": {"type": "string", "description": "Exact text to replace."},
-                "new": {"type": "string", "description": "Replacement text."},
-                "all": {
-                    "type": "boolean",
-                    "description": "Replace every occurrence instead of requiring exactly one. Defaults to false."
-                },
-                "description": {
-                    "type": "string",
-                    "description": "What this call is for, in a few words -- read after the tool name, never executed."
-                }
+                "old": {"type": "string", },
+                "new": {"type": "string", },
+                "all": {"type": "boolean"},
+                "description": {"type": "string"}
             },
             "required": ["path", "old", "new"]
         })

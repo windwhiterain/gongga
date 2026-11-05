@@ -1,4 +1,4 @@
-//! What a tool says it is: the code's default, as a config may word it otherwise.
+//! What each tool says it is: one config, and no default anywhere else.
 //!
 //! See `docs/notes/server-tools-text.md`.
 
@@ -16,6 +16,9 @@ use serde_json::Value;
 /// Not `[tools]`: that one is the runtime settings of a tool (`[tools.bash]`), and
 /// a table of settings must not be read as a table of sentences.
 const TABLE: &str = "tool_text";
+
+/// The entry a tool's shared arguments come from, in the tunnel's own words.
+const GENERAL: &str = "general";
 
 /// One tool's words: what it is, and what each named argument is for.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -48,47 +51,32 @@ struct Snapshot {
     complained: bool,
 }
 
-/// The words in force: the home's `[tools]` over the pinned content's.
+/// The words in force: read from one config and from nowhere else.
 pub struct Texts {
     path: Option<PathBuf>,
-    pinned: BTreeMap<String, Entry>,
     snapshot: Mutex<Snapshot>,
     /// Names already reported, so a misspelling is said once and not every step.
     warned: Mutex<HashSet<String>>,
 }
 
 impl Texts {
-    fn layered(path: Option<PathBuf>, pinned: BTreeMap<String, Entry>) -> Self {
+    fn at(path: Option<PathBuf>) -> Self {
         Self {
             path,
-            pinned,
             snapshot: Mutex::new(Snapshot::default()),
             warned: Mutex::new(HashSet::new()),
         }
     }
 
-    /// The tools whose words differ from the pinned content: a home that never
-    /// mentions a tool overrides none.
-    pub fn overridden(&self) -> Vec<String> {
-        let mut names: Vec<String> = self
-            .entries()
-            .into_iter()
-            .filter(|(name, entry)| self.pinned.get(name) != Some(entry))
-            .map(|(name, _)| name)
-            .collect();
-        names.sort();
-        names
-    }
-
     /// Every tool's words as they stand now, cheap enough to ask once a step.
     fn entries(&self) -> BTreeMap<String, Entry> {
         let Some(path) = &self.path else {
-            return self.pinned.clone();
+            return BTreeMap::new();
         };
         let stamp = Stamp::of(path);
         let mut snapshot = self.snapshot.lock().unwrap_or_else(|e| e.into_inner());
         if snapshot.stamp == stamp && stamp.is_some() {
-            return merged(&self.pinned, &snapshot.entries);
+            return snapshot.entries.clone();
         }
         let (entries, problems) = match std::fs::read_to_string(path) {
             Ok(text) => read_table(&text),
@@ -96,7 +84,7 @@ impl Texts {
                 tracing::warn!(
                     file = %path.display(),
                     error = %e,
-                    "cannot read the tool words; the code's own stand"
+                    "cannot read the tool words; no tool can say what it is"
                 );
                 (BTreeMap::new(), Vec::new())
             }
@@ -109,43 +97,96 @@ impl Texts {
         }
         snapshot.stamp = stamp;
         snapshot.entries = entries;
-        merged(&self.pinned, &snapshot.entries)
+        snapshot.entries.clone()
     }
 
-    /// What one tool says it is: the config's words, or `default` as written.
-    pub fn description(&self, name: &str, default: &str) -> String {
+    /// What one tool says it is.
+    pub fn description(&self, tool: &str) -> Option<String> {
         self.entries()
-            .get(name)
+            .get(tool)
             .and_then(|entry| entry.description.clone())
-            .unwrap_or_else(|| default.to_string())
     }
 
     /// Rewrites the argument sentences of one schema, leaving its shape alone.
     ///
     /// # Invariant
     ///
-    /// Only a description is written: the property stays the object it was, so a
-    /// config cannot add an argument the tool does not read. `docs/notes/server-tools-mod.md`.
-    pub fn apply(&self, name: &str, schema: &mut Value) {
-        let Some(entry) = self.entries().remove(name) else {
-            return;
-        };
-        if entry.arguments.is_empty() {
-            return;
-        }
+    /// Only a `description` is written, and only into a property the schema already
+    /// declares: a config cannot add an argument the tool does not read.
+    pub fn apply(&self, tool: &str, schema: &mut Value) {
+        let entries = self.entries();
         let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) else {
             return;
         };
-        for (argument, text) in entry.arguments {
-            match properties.get_mut(&argument) {
-                Some(property) if property.is_object() => {
-                    property["description"] = Value::String(text);
+        for (argument, property) in properties.iter_mut() {
+            if !property.is_object() {
+                continue;
+            }
+            let Some(text) = sentence(&entries, tool, argument) else {
+                continue;
+            };
+            property["description"] = Value::String(text);
+        }
+    }
+
+    /// What the registry says that this config does not word: a home that cannot start.
+    ///
+    /// # Invariant
+    ///
+    /// Both halves are required -- the tool's own sentence, and one per argument its
+    /// schema declares -- because half a schema is a model guessing what an argument
+    /// is for. A name the tool does not declare is reported and not fatal: it costs a
+    /// sentence, not a call.
+    pub fn missing(&self, registry: &crate::tools::ToolRegistry) -> Vec<String> {
+        let entries = self.entries();
+        let mut out = Vec::new();
+        let mut declared: BTreeMap<String, HashSet<String>> = BTreeMap::new();
+        for tool in registry.iter() {
+            let name = tool.name();
+            declared.entry(name.to_string()).or_default();
+            if entries
+                .get(name)
+                .and_then(|entry| entry.description.as_ref())
+                .is_none()
+            {
+                out.push(format!("{name} (what it is)"));
+            }
+            let schema = crate::tools::general_parameters(tool);
+            let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
+                continue;
+            };
+            for argument in properties.keys() {
+                declared
+                    .entry(name.to_string())
+                    .or_default()
+                    .insert(argument.clone());
+                if sentence(&entries, name, argument).is_none() {
+                    out.push(format!("{name}.{argument}"));
                 }
-                _ => self.warn_once(format!("{name}.{argument}"), || {
-                    format!("`{name}` takes no argument {argument:?}, so its words are ignored")
-                }),
             }
         }
+        for (tool, entry) in &entries {
+            if tool != GENERAL && !declared.contains_key(tool) {
+                self.warn_once(format!("tool:{tool}"), || {
+                    format!("`{TABLE}.{tool}` words a tool this server does not carry")
+                });
+            }
+            for argument in entry.arguments.keys() {
+                let known = declared
+                    .get(tool)
+                    .or_else(|| declared.get(GENERAL))
+                    .is_some_and(|names| names.contains(argument));
+                if !known {
+                    self.warn_once(format!("argument:{tool}.{argument}"), || {
+                        format!(
+                            "`{TABLE}.{tool}.arguments.{argument}` names an argument \
+                             no tool of that name takes"
+                        )
+                    });
+                }
+            }
+        }
+        out
     }
 
     fn warn_once(&self, key: String, message: impl FnOnce() -> String) {
@@ -156,69 +197,50 @@ impl Texts {
     }
 }
 
-/// The home's words over the pinned ones, field by field.
-///
-/// # Invariant
-///
-/// A home that overrides one argument keeps the shipped sentence on the others:
-/// the merge is per field, never per tool, so an edit cannot silently delete the
-/// rest of a tool's prose.
-fn merged(
-    pinned: &BTreeMap<String, Entry>,
-    home: &BTreeMap<String, Entry>,
-) -> BTreeMap<String, Entry> {
-    let mut out = pinned.clone();
-    for (name, entry) in home {
-        let target = out.entry(name.clone()).or_default();
-        if entry.description.is_some() {
-            target.description = entry.description.clone();
-        }
-        for (argument, text) in &entry.arguments {
-            target.arguments.insert(argument.clone(), text.clone());
-        }
-    }
-    out
+/// One argument's sentence: the tool's own, or the tunnel's.
+fn sentence(entries: &BTreeMap<String, Entry>, tool: &str, argument: &str) -> Option<String> {
+    entries
+        .get(tool)
+        .and_then(|entry| entry.arguments.get(argument))
+        .or_else(|| {
+            entries
+                .get(GENERAL)
+                .and_then(|entry| entry.arguments.get(argument))
+        })
+        .cloned()
 }
 
 /// The process's words, installed at startup from the home's config.
 static SHARED: OnceLock<Texts> = OnceLock::new();
 
-/// Points the process at one home's config and reads the shipped words behind it.
+/// Points the process at one home's config, and reads it now.
+///
+/// # Invariant
+///
+/// The file is the only source: a missing sentence is a startup failure, never a
+/// request that sends a schema with half its words in it.
 pub fn install(config: &Path) {
-    let pinned = match crate::ship::config_text() {
-        Some(text) => read_table(&text).0,
-        None => {
-            tracing::warn!(
-                content = crate::ship::resolved_commit().unwrap_or("nothing resolved"),
-                protocol = crate::ship::link().protocol,
-                "the shipped config is not readable here; the code's own words stand"
-            );
-            BTreeMap::new()
-        }
-    };
-    let _ = SHARED.set(Texts::layered(Some(config.to_path_buf()), pinned));
+    let _ = SHARED.set(Texts::at(Some(config.to_path_buf())));
     let texts = shared();
-    let overridden = texts.overridden();
-    if !overridden.is_empty() {
-        tracing::info!(
-            file = %config.display(),
-            overridden = ?overridden,
-            "tool words: the code's own, plus what this home reworded"
-        );
-    }
+    let names: Vec<String> = texts.entries().keys().cloned().collect();
+    tracing::info!(
+        file = %config.display(),
+        tools = ?names,
+        "tool words: read from this config, and from nowhere else"
+    );
 }
 
-/// The words every request is built from; the code's own until `install` runs.
+/// The words every request is built from; empty until `install` runs.
 pub fn shared() -> &'static Texts {
-    SHARED.get_or_init(|| Texts::layered(None, BTreeMap::new()))
+    SHARED.get_or_init(|| Texts::at(None))
 }
 
-/// The `[tools]` of a TOML text, with whatever was wrong with it.
+/// The `[tool_text]` of a TOML text, with whatever was wrong with it.
 ///
 /// # Safety
 ///
-/// A file that does not parse yields nothing: the code's own words are the answer
-/// to a broken config, not a server that cannot start.
+/// A file that does not parse yields nothing, and a server with no words refuses to
+/// start rather than guessing: see `Texts::missing`.
 fn read_table(text: &str) -> (BTreeMap<String, Entry>, Vec<String>) {
     let mut out = BTreeMap::new();
     let mut problems = Vec::new();

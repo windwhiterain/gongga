@@ -36,6 +36,9 @@ impl Candidate {
 pub struct Offered {
     pub subject: Option<String>,
     pub candidates: Vec<Candidate>,
+    /// Where the range begins, when it is not the token's start: a reference sits
+    /// inside a word (`看下@file(x)`).
+    pub start: Option<usize>,
 }
 
 /// The open completion popup: which token is replaced, and the options.

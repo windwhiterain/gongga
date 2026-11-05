@@ -74,4 +74,4 @@ machine. Its checkout is then not on this disk, and reading
 `<that path>/.agents/skills` here would offer the local directory of the same
 name -- a name that cannot be opened, which is the failure this whole area keeps
 producing. The home's and the machine's still count: they are what the server's
-own `@skill:` expansion reads, since that expansion runs on the server.
+own `@skill(...)` expansion reads, since that expansion runs on the server.

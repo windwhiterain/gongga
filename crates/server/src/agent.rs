@@ -467,9 +467,6 @@ impl Agent {
         cwd: &std::path::Path,
         source: crate::meta::Source<'_>,
     ) -> anyhow::Result<crate::store::Prompt> {
-        if let Some(kept) = self.store.prompt(id)? {
-            return Ok(kept);
-        }
         // All three "where"s come from the session: its name, a stated placement, the
         // peer.
         let name = session.name();
@@ -477,14 +474,23 @@ impl Agent {
         let placed = placed.as_deref();
         let remote = session.remote_name();
         let remote = remote.as_deref();
-        let prompts = crate::prompts::shared();
-        // The prose carries no value at all: the card below states the name, the
-        // build, the first minute and the directory.
-        let instructions = prompts.system();
+        // Where it stands now, which is what the card and the index are about.
         let here = match placed {
             Some(path) => crate::session::stated(path),
             None => crate::session::stated(cwd),
         };
+        // Stamped once, and again only on a move: the row records the directory
+        // and the peer it was written for.
+        if let Some(kept) = self.store.prompt(id)?
+            && kept.cwd == here
+            && kept.remote.as_deref() == remote
+        {
+            return Ok(kept);
+        }
+        let prompts = crate::prompts::shared();
+        // The prose carries no value at all: the card below states the name, the
+        // build, the first minute and the directory.
+        let instructions = prompts.system();
         let home = std::path::PathBuf::from(&here);
         let tail = Some(prompts.render(
             // One shape per fact a card states: a template has no conditional.
@@ -677,7 +683,7 @@ impl Agent {
         home: &std::path::Path,
         source: crate::meta::Source<'_>,
     ) -> Option<(String, Vec<String>)> {
-        // The queue as well as the transcript: an early message left its `@file:`
+        // The queue as well as the transcript: an early message left its `@file(...)`
         // mentions for this row to index.
         let mut texts = self.store.user_texts(id).ok()?;
         texts.extend(self.store.queued_texts(name).unwrap_or_default());
@@ -1191,7 +1197,7 @@ impl Agent {
         Ok(StepResult::RanTools)
     }
 
-    /// Turns the `@image:` references in a tool's output into attachments.
+    /// Turns the `@image(...)` references in a tool's output into attachments.
     ///
     /// # Invariant
     ///
@@ -1207,21 +1213,22 @@ impl Agent {
         let mut out = Vec::new();
         // The bytes are on the machine that printed the name. See
         // `docs/notes/server-meta.md`.
-        let named = crate::meta::mentions(output)
-            .into_iter()
-            .filter(|m| m.kind == protocol::Reference::Image)
-            .map(|m| m.value);
         let reader = ctx.reader();
         let source = match (&reader, printed_on) {
             (Some(reader), crate::session::Machine::Remote) => crate::meta::Source::Remote(reader),
             (None, crate::session::Machine::Remote) => crate::meta::Source::Unreachable,
             (_, crate::session::Machine::Local) => crate::meta::Source::Local,
         };
+        let dir = ctx.dir(printed_on);
+        let named = crate::meta::mentions(output)
+            .into_iter()
+            .filter(|m| m.kind == protocol::Reference::Image)
+            .map(|m| m.value);
         for given in named {
             // Read on the machine that printed it: a `bash` picture here, a `remote_bash`
             // one there.
-            let path = source.spelling(&ctx.dir(printed_on), &given);
-            let bytes = match source.read(&ctx.dir(printed_on), &given).await {
+            let path = source.spelling(&dir, &given);
+            let bytes = match source.read(&dir, &given).await {
                 Some(b) => b,
                 // Not a picture this harness can read: leave the text alone.
                 None => continue,
@@ -1389,7 +1396,7 @@ impl Agent {
         }));
 
         let status = if outcome.ok { "ok" } else { "error" };
-        // A command that printed `@image: <path>` names a picture: it becomes an
+        // A command that printed `@image(<path>)` names a picture: it becomes an
         // attachment, uploaded once per file.
         let images: Vec<_> = scanned
             .iter()

@@ -341,8 +341,8 @@ impl Catalog {
     /// Keyed by what the answer depends on, so a session that moves is read again
     /// and no call site has to remember to ask. See `docs/notes/cli-catalog.md`.
     fn skill_names(&self, place: &Place) -> Vec<String> {
-        // A peer's checkout is not here: the home's and the machine's are, and
-        // the server's own `@skill:` expansion reads those.
+        // A peer's checkout is not here: the home's and the machine's are -- the
+        // same rows `@skill(...)` expands against.
         let key = SkillKey {
             project: place.peer.is_none().then(|| place.dir.clone()),
             home: self.read().home.clone(),
@@ -446,10 +446,7 @@ impl Completer for Catalog {
         let all = &snapshot.all;
         let ctx = snapshot.ctx(self);
         if brief {
-            return Offered {
-                subject: None,
-                candidates: reference(&ctx, line, cursor, &token),
-            };
+            return reference(&ctx, line, cursor, &token);
         }
         let position = line[..cursor.min(line.len())].split_whitespace().count();
         let cmd = words.first().map(|t| t.trim_start_matches('/'));
@@ -477,6 +474,7 @@ impl Completer for Catalog {
                     .filter(|a| a.name.starts_with(prefix))
                     .map(|a| Candidate::word(format!("--{}", a.name), a.description.clone()))
                     .collect(),
+                ..Offered::default()
             };
         }
 
@@ -494,6 +492,7 @@ impl Completer for Catalog {
             return Offered {
                 subject: None,
                 candidates: got,
+                ..Offered::default()
             };
         }
 
@@ -517,6 +516,7 @@ impl Completer for Catalog {
             return Offered {
                 subject: Some(format!("--{}", arg.name)),
                 candidates: resolve(arg, &token, &ctx, &words, 0),
+                ..Offered::default()
             };
         }
         // The parser's rule, replayed over the line, so the popup offers what
@@ -526,6 +526,7 @@ impl Completer for Catalog {
             .map(|at| Offered {
                 subject: Some(format!("--{}", spec.args[at].name)),
                 candidates: resolve(&spec.args[at], &token, &ctx, &words, 0),
+                ..Offered::default()
             })
             .unwrap_or_default()
     }
@@ -574,32 +575,47 @@ fn bound_words(spec: &CommandSpec, words: &[String], skip: Option<usize>) -> (Ar
     (bound, cursor)
 }
 
-/// Completes a message's `@image:`, `@skill:` and `@file:` references.
+/// Completes a message's `@image(...)`, `@skill(...)` and `@file(...)` references.
 ///
 /// # Invariant
 ///
-/// A reference is completed in two steps that never overlap: the prefix, while one
-/// is still being typed, and then the value it names -- a path for a picture or a
-/// file, a skill's name for a skill.
-fn reference(ctx: &Ctx, line: &str, cursor: usize, token: &str) -> Vec<Candidate> {
+/// Two steps that never overlap: the prefix, then the value -- a path for a picture
+/// or a file, a skill's name for a skill. What the popup inserts is what the parser
+/// reads: `@file(` opens the group and `path)` closes it. See
+/// `docs/notes/link-catalog.md`.
+fn reference(ctx: &Ctx, line: &str, cursor: usize, token: &str) -> Offered {
     let (start, _, _) = token_bounds(line, cursor);
-    if let Some((kind, typed)) = split_reference(token) {
-        // `@image:pa`, written together: the prefix is already behind the cursor.
-        return value(kind, typed, ctx);
+    if let Some((at, kind, typed)) = opening(token) {
+        // `@file(pa`: the value is what gets replaced, from just past the `(`.
+        return Offered {
+            start: Some(start + at + kind.prefix().len()),
+            candidates: closed(value(kind, typed, ctx)),
+            ..Offered::default()
+        };
     }
-    let previous = line[..start.min(line.len())].split_whitespace().last();
-    if let Some((kind, _)) = previous.and_then(split_reference) {
-        return value(kind, token, ctx);
+    // `@file( pa`: the value is its own word. A prefix that already carries one is
+    // not: that word is prose.
+    let previous = line[..start.min(line.len())].split_whitespace().next_back();
+    if let Some((_, kind, "")) = previous.and_then(opening) {
+        return Offered {
+            candidates: closed(value(kind, token, ctx)),
+            ..Offered::default()
+        };
     }
-    // `@`, `@im`: the three prefixes themselves, and nothing else.
-    let Some(bare) = token.strip_prefix('@') else {
-        return Vec::new();
+    // `@`, `@fi`, `看下@fi`: the three prefixes themselves, and nothing else.
+    let Some(at) = token.rfind('@') else {
+        return Offered::default();
     };
-    Reference::ALL
-        .into_iter()
-        .filter(|kind| kind.prefix()[1..].contains(bare))
-        .map(|kind| Candidate::word(kind.prefix(), reference_detail(kind)))
-        .collect()
+    let bare = &token[at + 1..];
+    Offered {
+        start: Some(start + at),
+        candidates: Reference::ALL
+            .into_iter()
+            .filter(|kind| kind.name().contains(bare))
+            .map(prefix_candidate)
+            .collect(),
+        ..Offered::default()
+    }
 }
 
 /// What a reference is for, said in the popup's right-hand column.
@@ -611,10 +627,42 @@ fn reference_detail(kind: Reference) -> &'static str {
     }
 }
 
-/// The value part of `token` when it opens a reference, and the kind it opens.
-fn split_reference(token: &str) -> Option<(Reference, &str)> {
-    let kind = Reference::of_prefix(token)?;
-    Some((kind, &token[kind.prefix().len()..]))
+/// The prefix as a candidate: `@file(`, and no space after it, because the value
+/// stands inside the group it opens.
+fn prefix_candidate(kind: Reference) -> Candidate {
+    Candidate {
+        insert: kind.prefix().to_string(),
+        detail: reference_detail(kind).to_string(),
+        space: false,
+    }
+}
+
+/// Candidates that close the group they are written in.
+///
+/// # Invariant
+///
+/// A value is inserted as `path)`, because a group the operator has to close by hand
+/// is a reference the parser reads as prose until they do. A directory keeps its `/`
+/// and its open group: Tab on it descends, so the `)` comes when a name is chosen.
+fn closed(candidates: Vec<Candidate>) -> Vec<Candidate> {
+    candidates
+        .into_iter()
+        .map(|mut candidate| {
+            if !candidate.insert.ends_with('/') {
+                candidate.insert.push(')');
+                candidate.space = true;
+            }
+            candidate
+        })
+        .collect()
+}
+
+/// The reference `word` carries: its `@`'s offset, kind, and value so far.
+fn opening(word: &str) -> Option<(usize, Reference, &str)> {
+    let at = word.rfind('@')?;
+    let rest = &word[at..];
+    let kind = Reference::of_prefix(rest)?;
+    Some((at, kind, &rest[kind.prefix().len()..]))
 }
 
 /// Completes one reference's value.

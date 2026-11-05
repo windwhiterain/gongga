@@ -149,6 +149,18 @@ are laid out in this order, so a name that moves takes the operator's pane with 
 That cost is accepted now: the session being worked on is the one to find, so the row
 that finished a turn moves to the end of the list, where the next one will be.
 
+A session with a transcript and no stamp is repaired at start, in `migrate`
+(`backfill_ended_at`): its `ended_at` becomes the time of its last row, which is
+written by its last turn. That condition is the whole of it -- a session with no
+rows never ended a turn and keeps `NULL`, and the order says `created_at` for it --
+so the repair is safe to run every start, and it is what makes an older build's
+home right again after this one has stamped only the turns that ended since. The
+first shape of this checked "no row is stamped yet", which was wrong on the home
+that mattered: it had a handful of stamped rows and twenty-six old ones, so the
+repair skipped itself and the list still read as "ordered by when sessions were
+made". `updated_at` was the other candidate and is worse: it also moves when a
+model is chosen, and it is written after the last row.
+
 ## Store::get_session
 
 A `WHERE name = ?` rather than "list every session and look for it":
@@ -182,7 +194,7 @@ to ask the same question.
 
 ## pictures in a row
 
-A tool result, and a message written with `@image:`, carry the text they always
+A tool result, and a message written with `@image(...)`, carry the text they always
 carried plus `images`: a path, a media type and the id of the copy this home keeps
 per picture, never the bytes themselves.
 

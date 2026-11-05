@@ -796,6 +796,11 @@ impl Tui {
         self.dirty = true;
     }
 
+    /// The rows a window's pane could draw last frame: what one page is.
+    pub fn room_of(&self, name: &str) -> usize {
+        self.screen.panes.room_of(name)
+    }
+
     /// The windows a frame drew last: a window nobody draws costs nothing.
     pub fn drawn(&self) -> &[String] {
         self.screen.panes.drawn()
@@ -1585,9 +1590,7 @@ impl Tui {
     /// the frame that shows it.
     pub fn refresh_completion(&mut self) {
         let fresh = next_completion(&self.screen.input, &self.completer);
-        // The row the operator moved to survives the rebuild: an event arriving is
-        // not a keystroke, and a popup that jumped back to its first candidate on
-        // every streamed chunk could not be walked at all.
+        // A rebuild keeps the row the operator moved to: an event is not a keystroke.
         self.screen.completion = match (self.screen.completion.take(), fresh) {
             (Some(old), Some(mut new)) if same_offering(&old, &new) => {
                 new.selected = old.selected.min(new.candidates.len() - 1);
@@ -1801,7 +1804,8 @@ fn next_completion(input: &InputLine, completer: &SharedCompleter) -> Option<Com
     }
     let (start, end, _) = token_bounds(input.text(), input.cursor());
     Some(Completion {
-        start,
+        // A reference is replaced from its own `@`, which may sit inside the word.
+        start: offered.start.unwrap_or(start),
         end,
         subject: offered.subject,
         candidates,
@@ -1850,16 +1854,20 @@ impl Completer for NoCompleter {
     }
 }
 
-/// The reference the prompt shows for a pasted picture: `@image: <path>`.
+/// The reference the prompt shows for a pasted picture: `@image(<path>)`.
 ///
 /// # Invariant
 ///
-/// The path is inserted verbatim and the reference is exactly the spelling the
-/// server's Meta parser reads (`@image: <one word>`), so the server replaces it
-/// with a file id when the message is sent. The generated file name has no
-/// spaces, so the value is one word.
+/// The path is inserted verbatim inside the group, and that is exactly the spelling
+/// the server's Meta parser reads, so the server replaces the mention with a file id
+/// when the message is sent. Nothing needs escaping: the parenthesis is what ends
+/// the value, and a path holding a space is written like any other.
 fn image_reference(path: &Path) -> String {
-    format!("@image: {}", path.display())
+    format!(
+        "@{}({})",
+        link::protocol::Reference::Image.name(),
+        path.display()
+    )
 }
 
 /// The reference a clipboard's picture becomes, or `None` when the clipboard

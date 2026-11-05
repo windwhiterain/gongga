@@ -292,7 +292,7 @@ enum Handed {
 /// # Invariant
 ///
 /// One path for every kind: `commands::deliver` is how a turn starts anywhere, so
-/// the queue gate, `@skill:` expansion, the tools and the window's rendering are
+/// the queue gate, `@skill(...)` expansion, the tools and the window's rendering are
 /// reused rather than re-implemented. `attempts` is the index of the candidate to
 /// try, which is how a monitor that failed hands the same report to the next model.
 async fn hand_over<F>(d: &Arc<Dispatch>, kind: Kind, attempts: u32, report: F) -> Handed
@@ -390,7 +390,7 @@ fn report(
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default(),
         mine = entry.model,
-        skill = format!("{}{}", protocol::Reference::Skill.prefix(), ERROR.skill),
+        skill = format!("@{}({})", protocol::Reference::Skill.name(), ERROR.skill),
     );
     if !written.is_empty() {
         out.push_str(&format!(
@@ -402,7 +402,7 @@ fn report(
         name = failure.name,
     ));
     out.push_str(
-        "\nIf it is a harness bug, `@skill: self-control` says how to restart the server \
+        "\nIf it is a harness bug, `@skill(self-control)` says how to restart the server \
          without losing a turn. Report what you found and what you changed in one message.\n",
     );
     Ok(out)
@@ -451,7 +451,7 @@ fn disk_report(home: &Path, payload: &str) -> String {
          - its directory: {cwd}\n\
          - harness build: {build}\n\
          - server: pid {pid}, cwd {server_cwd}\n",
-        skill = format!("{}{}", protocol::Reference::Skill.prefix(), DISK.skill),
+        skill = format!("@{}({})", protocol::Reference::Skill.name(), DISK.skill),
         home = home.display(),
         volumes = volumes,
         path = text("reserve"),

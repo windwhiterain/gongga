@@ -243,7 +243,6 @@ impl ToolOutcome {
 /// A tool the model can call; a boxed future instead of `async_trait`, one macro less.
 pub trait Tool: Send + Sync {
     fn name(&self) -> &'static str;
-    fn description(&self) -> &'static str;
     fn parameters(&self) -> Value;
 
     /// Which machine this call's paths belong to.
@@ -491,7 +490,7 @@ impl ToolRegistry {
                 }
                 crate::llm::ToolDefinition {
                     name: t.name().to_string(),
-                    description: text::shared().description(t.name(), t.description()),
+                    description: text::shared().description(t.name()).unwrap_or_default(),
                     parameters,
                 }
             })
@@ -596,53 +595,39 @@ pub const GENERAL_ARGS: &[&str] = &["description", "max_output", "timeout_ms", "
 /// these are the defaults, not an override.
 pub(crate) fn general_parameters(tool: &dyn Tool) -> Value {
     let mut schema = tool.parameters();
-    // A config may reword an argument; the shape stays the tool's. See `text`.
-    text::shared().apply(tool.name(), &mut schema);
     // A tool the tunnel leaves alone takes none of the tunnel's words. See SPEC.
-    if !tool.tunneled() {
-        return schema;
+    if tool.tunneled()
+        && let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut)
+    {
+        properties
+            .entry("description".to_string())
+            .or_insert_with(|| {
+                json!({
+                    "type": "string"
+                })
+            });
+        properties
+            .entry("max_output".to_string())
+            .or_insert_with(|| {
+                json!({
+                    "type": "integer"
+                })
+            });
+        properties
+            .entry("timeout_ms".to_string())
+            .or_insert_with(|| {
+                json!({
+                    "type": "integer"
+                })
+            });
+        properties.entry("detached".to_string()).or_insert_with(|| {
+            json!({
+                "type": "boolean"
+            })
+        });
     }
-    let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) else {
-        return schema;
-    };
-    properties
-        .entry("description".to_string())
-        .or_insert_with(|| {
-            json!({
-                "type": "string",
-                "description": "What this call is for, in a few words: the log carries it \
-                                as the call's title.",
-            })
-        });
-    properties
-        .entry("max_output".to_string())
-        .or_insert_with(|| {
-            json!({
-                "type": "integer",
-                "description": "In chars: when the output exceeds this, it is saved to a \
-                                temp file and the call answers with the file's metadata \
-                                {path, chars, line_count}.",
-            })
-        });
-    properties
-        .entry("timeout_ms".to_string())
-        .or_insert_with(|| {
-            json!({
-                "type": "integer",
-                "description": "How long to wait for this call before leaving it. No call \
-                                waits longer than this machine's ceiling; one that needs \
-                                to is refused and told to say `detached`.",
-            })
-        });
-    properties.entry("detached".to_string()).or_insert_with(|| {
-        json!({
-            "type": "boolean",
-            "description": "Do not wait for this call: it runs as a job of this server, \
-                            which returns at once, and what it answers arrives later as \
-                            a notice for this session -- `wait` is how you stay in this \
-                            turn until that news lands. Defaults to false.",
-        })
-    });
+    // Last: a sentence is written into a property that must already exist.
+    text::shared().apply(tool.name(), &mut schema);
     schema
 }
 
@@ -987,31 +972,6 @@ fn command_line(value: Option<&Value>) -> Result<String, String> {
 /// The name the tool on the session's remote is called by.
 const REMOTE_BASH: &str = "remote_bash";
 
-/// What `bash` says it is: one shell per name, on this machine.
-const LOCAL_BASH_DESCRIPTION: &str = "Run a shell command in a persistent Git Bash on this \
-     machine -- the one the server runs on. Each `name` is a separate shell that keeps \
-     its own working directory, exports and shell functions between calls, and stays \
-     alive until you `del_bash` it; omit `name` to use `default`. So reusing one name is \
-     how state accumulates -- inventing a name per command leaves one idle process behind \
-     per command. A name is one shell: a name already held is refused rather than \
-     quietly becoming a second process. Output is streamed as it is produced. Use `cd` to move around instead of \
-     passing absolute paths every time. Very long output is capped: you get the beginning \
-     and the end, and the full text is written to a file named in the result -- read that \
-     file with `sed -n` or `grep`, do not cat it. With `background`, the command is \
-     started and the call returns immediately; collect what it printed later with \
-     `check_bash`.";
-
-/// What `remote_bash` says it is: `bash`, on the machine that holds the directory.
-///
-/// # Invariant
-///
-/// No word here about two machines, a shared name space or what is not offered: a
-/// tool's instruction says what the tool is, and how the two machines relate is the
-/// `remote` skill's to teach. See `docs/notes/server-tools-mod.md`.
-const REMOTE_BASH_DESCRIPTION: &str = "`bash` on the session's remote endpoint -- the \
-     peer that holds this session's directory. Same `command`, `name`, `description`, \
-     `timeout_ms` and `background` as `bash`; the paths are that machine's.";
-
 pub struct BashTool {
     /// Which machine this tool drives. One implementation, two names.
     pub machine: Machine,
@@ -1025,13 +985,6 @@ impl Tool for BashTool {
         match self.machine {
             Machine::Local => "bash",
             Machine::Remote => REMOTE_BASH,
-        }
-    }
-
-    fn description(&self) -> &'static str {
-        match self.machine {
-            Machine::Local => LOCAL_BASH_DESCRIPTION,
-            Machine::Remote => REMOTE_BASH_DESCRIPTION,
         }
     }
 
@@ -1056,80 +1009,25 @@ impl Tool for BashTool {
     }
 
     fn parameters(&self) -> Value {
-        // Two machines start in two places: this one where the harness runs, the peer in
-        // the session's directory.
-        let name_note = match self.machine {
-            Machine::Local => {
-                "Whichever bash this call is about. Without `detached`: which persistent \
-                 shell to run in, default `default` -- reusing a name is what carries \
-                 `cd`, exports and shell functions from one call to the next. With \
-                 `detached`: the name of the detached bash being created, required, and \
-                 unique in the session -- it is what `del_bash` uses to end that process \
-                 later."
-            }
-            Machine::Remote => {
-                "Which shell to run in on the machine this session's directory is on, \
-                 default `default`. Reusing a name is what carries `cd`, exports and \
-                 shell functions from one call to the next; a name `bash` already holds \
-                 is refused rather than becoming a second shell."
-            }
-        };
         let mut properties = json!({
-            "name": {
-                "type": "string",
-                "description": name_note
-            },
-            "command": {
-                "type": "string",
-                "description": "The command line to execute. A program and its \
-                                 arguments, where an argument holds a space or a quote, \
-                                 belong in `exec`: there the words are not read by a \
-                                 shell and need no escaping."
-            },
-            "description": {
-                "type": "string",
-                "description": "What this call is for, in a few words -- it is read \
-                                 right after the tool's name, so say what the run is \
-                                 for, not what the command is (`check the state`, not \
-                                 `bash`). Optional, and never executed: it also names \
-                                 the file that a too-long output is spilled to, so that \
-                                 later you (and whoever reads the dumps) can tell one \
-                                 run from another. Example: `run the server tests`."
-            },
-            "timeout_ms": {
-                "type": "integer",
-                "description": "How long to wait for the command before returning. \
-                                 This is a limit on waiting, not on the command: when \
-                                 it passes, the command keeps running in the background \
-                                 and its output is posted to this session when it \
-                                 finishes. Ignored for background commands."
-            }
+            "name": {"type": "string"},
+            "command": {"type": "string"},
+            "description": {"type": "string"},
+            "timeout_ms": {"type": "integer"}
         });
         // A job of a shell is that shell's on either machine; only `bash` declares one.
         properties["background"] = json!({
-            "type": "boolean",
-            "description": "Start the command and return immediately instead of waiting \
-                             for it. Collect what it printed with `check_bash`, and this \
-                             session is told when it ends. Defaults to false."
+            "type": "boolean"
         });
         match self.machine {
             Machine::Local => {
                 properties["detached"] = json!({
-                    "type": "boolean",
-                    "description": "Run the command as a process of its own and return at \
-                                     once. It keeps running when the shell is discarded, \
-                                     when the session is cancelled and even after the server \
-                                     exits -- that is how you restart the server you are \
-                                     running on. Nothing is collected: its output is written \
-                                     to the log file named in the result. Stop it later with \
-                                     `del_bash` with its name stops it. Defaults to false."
+                    "type": "boolean"
                 });
             }
             Machine::Remote => {
                 properties["target"] = json!({
-                    "type": "string",
-                    "description": "Which machine to run on. Omit it: this call runs on \
-                                     the session's remote whatever this names."
+                    "type": "string"
                 });
             }
         }
@@ -1493,29 +1391,12 @@ impl Tool for CheckBashTool {
         "check_bash"
     }
 
-    fn description(&self) -> &'static str {
-        "What a shell printed that you have not read: everything its `background` \
-         commands wrote, plus anything it printed while nobody was reading. Reading \
-         clears it, so each chunk comes back once. Empty means nothing yet -- ask \
-         again, or set `wait_ms` to wait for the running jobs."
-    }
-
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "Shell to read. Defaults to `default`."
-                },
-                "wait_ms": {
-                    "type": "integer",
-                    "description": "If this shell has background jobs, wait up to this \
-                                    many milliseconds for them to finish before reading. \
-                                    A timeout returns the output so far and leaves the jobs \
-                                    running; it never stops them. Defaults to 0, which \
-                                    reads now."
-                }
+                "name": {"type": "string"},
+                "wait_ms": {"type": "integer"}
             },
             "additionalProperties": false
         })
@@ -1642,27 +1523,11 @@ impl Tool for WaitTool {
         false
     }
 
-    fn description(&self) -> &'static str {
-        "Stay in this turn until something arrives for this session: the report of \
-         a background job that finished, the news of a `subscribe` whose pattern \
-         matched, or a message from a person. It consumes nothing -- whatever \
-         arrived is delivered at the next step boundary, the same way every other \
-         queued message is -- so this call is how an agent waits without giving up \
-         its turn, and without polling. With no `timeout_ms` it waits for the same \
-         ceiling a `bash` call gets; when that passes it says nothing arrived, which \
-         is not an error."
-    }
-
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "timeout_ms": {
-                    "type": "integer",
-                    "description": "Give up after this many milliseconds. This is a \
-                                    limit on waiting, not on the news: passing it \
-                                    returns what has not arrived, and nothing is lost."
-                }
+                "timeout_ms": {"type": "integer"}
             },
             "additionalProperties": false
         })
@@ -1799,23 +1664,11 @@ impl Tool for ListBashTool {
         "list_bash"
     }
 
-    fn description(&self) -> &'static str {
-        "List the bash of this session: their names, their \
-         working directories, how much unread output they are holding, and how many \
-         background jobs are still running. Also lists the session's detached bashes, \
-         which are not any shell's and survive them all. `name_regex` narrows the \
-         answer to the names that match, which is how one name's state is asked about."
-    }
-
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "name_regex": {
-                    "type": "string",
-                    "description": "Only names matching this pattern, unanchored: \
-                                    `qa` also takes `qa2`. Defaults to every bash."
-                }
+                "name_regex": {"type": "string"}
             },
             "additionalProperties": false
         })
@@ -1891,26 +1744,11 @@ impl Tool for DelBashTool {
         "del_bash"
     }
 
-    fn description(&self) -> &'static str {
-        "Delete bash whose name matches a regex, either kind. A persistent shell \
-         is discarded: its working directories, exports and shell functions are \
-         lost, and naming it again starts a fresh shell in its own session \
-         directory; the background jobs it was running go with it. A name is one shell, \
-         so this ends it wherever it lives. A \
-         detached bash is stopped, which is the only thing that can -- its log file \
-         stays where it is. Use this when a shell is wedged or polluted, and to clean \
-         up the names a long session invented."
-    }
-
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "name_regex": {
-                    "type": "string",
-                    "description": "Pattern matched against shell names, unanchored: \
-                                    `qa` also takes `qa2`. Defaults to `^default$`."
-                }
+                "name_regex": {"type": "string"}
             },
             "additionalProperties": false
         })

@@ -93,7 +93,7 @@ instead of pretending to be protected.
 
 ## After the cleanup, the reserve comes back
 
-The turn that spends the reserve is a monitor turn with `@skill: clean-disk`. Its
+The turn that spends the reserve is a monitor turn with `@skill(clean-disk)`. Its
 end is the fact that the disk has been dealt with:
 
 - the report was accepted → `monitor_state` records the row it became

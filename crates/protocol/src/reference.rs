@@ -20,11 +20,27 @@ impl Reference {
     /// keeps a completed reference parseable.
     pub const ALL: [Reference; 3] = [Reference::Image, Reference::Skill, Reference::File];
 
+    /// What one reference is called, between its `@` and its `(`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Reference::Image => "image",
+            Reference::Skill => "skill",
+            Reference::File => "file",
+        }
+    }
+
+    /// The spelling that opens one: `@file(`, the value and its own `)` to follow.
+    ///
+    /// # Invariant
+    ///
+    /// The opening parenthesis is part of the spelling rather than punctuation after
+    /// it: `@file` with no `(` names nothing, so a sentence that says `@file` is a
+    /// sentence and not a reference to a file called nothing.
     pub fn prefix(self) -> &'static str {
         match self {
-            Reference::Image => "@image:",
-            Reference::Skill => "@skill:",
-            Reference::File => "@file:",
+            Reference::Image => "@image(",
+            Reference::Skill => "@skill(",
+            Reference::File => "@file(",
         }
     }
 

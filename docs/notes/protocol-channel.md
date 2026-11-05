@@ -37,6 +37,37 @@ than at each use, because the task that would notice is the channel's own I/O
 task -- it has no caller to report to. Backing off multiplies the RTO, so
 `effective_rto` and `packet_rto` saturate for the same reason.
 
+## ChannelConfig::tune_for_peer
+
+A channel's timers and frame size are local choices. The frame header names a
+message's fragments, not the sender's MTU, and an ACK's timing belongs to the
+receiver, so each end tunes itself from the peer address and nothing is
+negotiated. `link`, `bridge` and `server/net` all call it at construction.
+
+A loopback peer gets what that link can actually use:
+
+| field | default | loopback |
+| --- | --- | --- |
+| `ack_delay` | 20 ms | 0 |
+| `tick` | 10 ms | 1 ms |
+| `initial_rto` | 200 ms | 20 ms |
+| `min_rto` | 50 ms | 5 ms |
+| `keepalive` | 2 s | 10 s |
+| `mtu` | 1200 | 8192 |
+
+`ack_delay` is the largest transport-side latency here: a one-way event stream
+has no outgoing data to piggyback an ACK on, so the default waits a full 20 ms
+before answering a packet that crossed loopback in under 1 ms. The longer
+keepalive cuts idle traffic by five times. A cross-machine peer keeps every
+default, including the 1200-byte MTU that avoids IP fragmentation.
+
+Only a field still equal to its default is changed, so an explicit
+`[transport]` value on the server wins: `mtu = 1400` stays 1400 even on
+loopback. The client has no such override yet. A loopback address that is really
+an SSH tunnel is therefore the known blind spot -- the client would send 8192
+-byte datagrams through a path that fragments them; point it at a non-loopback
+address in that setup.
+
 ## Inbound
 
 Two things must not live in the I/O task: how far behind the caller is, and the

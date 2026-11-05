@@ -185,7 +185,7 @@ async fn answer_transcripts(client: &mut link::Client, link: Option<&link::Link>
         if !ui.drawn().iter().any(|drawn| *drawn == name) {
             continue;
         }
-        let Some(message) = client.ask_transcript(&name) else {
+        let Some(message) = client.ask_transcript(&name, ui.room_of(&name)) else {
             continue;
         };
         if open.send(message).await.is_err() {

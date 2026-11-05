@@ -47,7 +47,7 @@ of them the same consequence:
 - Its `@` references were neither indexed nor expanded. SPEC's prefix-cache
   optimization starts from the prompt, walks what it names, and appends that to the
   instructions -- and a column is not something the walk looks at. A lesson that said
-  `@file: docs/notes/plan.md` cost a turn to re-read a file the index could have
+  `@file(docs/notes/plan.md)` cost a turn to re-read a file the index could have
   carried once.
 - The prose had to be taught to each new reader: which template, which lifetime,
   which placeholder.

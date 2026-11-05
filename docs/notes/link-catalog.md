@@ -18,7 +18,7 @@ for it, and `submit_tokens` says "not connected" instead of "unknown command".
 
 What a front-end does own is the *state* those specs point at, and it pushes it in
 rather than keeping it here. `set_sticky <type>` completes the sticky argument names
-(`Client::set_sticky_vocabulary`), and a bare message completes `@skill:` against the
+(`Client::set_sticky_vocabulary`), and a bare message completes `@skill(...)` against the
 session the front-end says it goes to: the server names the source, the side that owns
 it fills it in, the same way `sessions` and `paths` already worked.
 
@@ -36,7 +36,7 @@ session to ask.
 `SessionInfo` carries `cwd` and `target`, so the catalog keeps the sessions as
 published rather than as names plus a side map. `message_session` is the sticky
 `session` value: a message is addressed by it, and a message is where an
-`@skill:` reference is typed. `server_cwd` is the directory the server runs in,
+`@skill(...)` reference is typed. `server_cwd` is the directory the server runs in,
 which is where a session with no directory of its own starts.
 
 The client's own process directory is deliberately *not* the fallback any more.
@@ -198,9 +198,15 @@ test that would have caught it.
 ## reference — a message's `@` references
 
 A line that does not start with `/` is a message, and the only thing worth
-completing in one is an `@` reference: `@image:`, `@skill:`, `@file:` first, then
+completing in one is an `@` reference: `@image(...)`, `@skill(...)`, `@file(...)` first, then
 the value each one names -- a path for a picture or a file, a skill's name for a
 skill. Two steps, because the prefix is a decision and the value is a lookup.
+
+The `@` need not open the word. The server reads `看下@file(src/meta.rs)` as a
+reference (`docs/notes/server-meta.md`), so the popup asks from the `@` rather than
+from the word's first character, and replaces from there: `Offered::start` carries
+that offset, because a token's bounds are the word's and would take the prose in
+front of the reference with them.
 
 ## paths
 
