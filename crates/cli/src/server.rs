@@ -163,11 +163,10 @@ async fn waits_out(pid: u32, grace: Duration) -> bool {
 /// a failure to ask counts as alive -- the kill below is what resolves it.
 #[cfg(windows)]
 pub fn alive(pid: u32) -> bool {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    std::process::Command::new("tasklist")
-        .args(["/NH", "/FI", &format!("PID eq {pid}")])
-        .creation_flags(CREATE_NO_WINDOW)
+    let mut query = std::process::Command::new("tasklist");
+    query.args(["/NH", "/FI", &format!("PID eq {pid}")]);
+    console::apply(&mut query, 0);
+    query
         .output()
         .map(|out| String::from_utf8_lossy(&out.stdout).contains(&pid.to_string()))
         .unwrap_or(true)
@@ -189,12 +188,10 @@ pub fn alive(pid: u32) -> bool {
 /// behind holds the console it came from.
 #[cfg(windows)]
 fn kill(pid: u32) {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let _ = std::process::Command::new("taskkill")
-        .args(["/PID", &pid.to_string(), "/T", "/F"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output();
+    let mut kill = std::process::Command::new("taskkill");
+    kill.args(["/PID", &pid.to_string(), "/T", "/F"]);
+    console::apply(&mut kill, 0);
+    let _ = kill.output();
 }
 
 #[cfg(not(windows))]
@@ -526,13 +523,9 @@ fn take_over(cmd: Command, server: &Path) -> anyhow::Result<()> {
 fn detach(cmd: &mut Command) {
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        /// Never shown. Not `DETACHED_PROCESS`: no console at all means one
-        /// window per console child.
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         /// A Ctrl-C in this process's group is not the child's business.
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        cmd.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
+        console::apply(cmd, CREATE_NEW_PROCESS_GROUP);
     }
     #[cfg(unix)]
     {

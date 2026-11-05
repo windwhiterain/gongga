@@ -248,13 +248,15 @@ fn python() -> anyhow::Result<PathBuf> {
         let Ok(program) = which::which(candidate) else {
             continue;
         };
-        let runs = Command::new(&program)
+        let mut probe = Command::new(&program);
+        probe
             .args(["-c", "import sys"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success());
+            .stderr(Stdio::null());
+        // Python is a console program, and the probe has no console to hand down.
+        console::apply(&mut probe, 0);
+        let runs = probe.status().is_ok_and(|status| status.success());
         if runs {
             return Ok(program);
         }

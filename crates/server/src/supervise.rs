@@ -163,6 +163,8 @@ pub fn watch() -> i32 {
         if let Some(crash) = crash.take() {
             cmd.env(LAST_EXIT, crash);
         }
+        // The supervisor has no console to hand down: the server would get a window.
+        console::apply(&mut cmd, 0);
         let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(e) => {

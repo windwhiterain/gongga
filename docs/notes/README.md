@@ -45,6 +45,12 @@ you are about to touch.
 | --- | --- |
 | [`skill-lib.md`](skill-lib.md) | `crates/skill/src/lib.rs` |
 
+### console
+
+| note | source |
+| --- | --- |
+| [`console-lib.md`](console-lib.md) | `crates/console/src/lib.rs` |
+
 ### build
 
 | note | source |

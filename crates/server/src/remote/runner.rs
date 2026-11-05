@@ -233,7 +233,8 @@ impl Runner {
         #[cfg(windows)]
         {
             use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
-            tokio::process::Command::creation_flags(&mut command, CREATE_SUSPENDED);
+            // The runner is started by ssh, which has no console to hand down.
+            tokio::process::Command::creation_flags(&mut command, console::flags(CREATE_SUSPENDED));
         }
         let mut child = command
             .spawn()

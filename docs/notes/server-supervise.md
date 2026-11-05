@@ -148,3 +148,14 @@ is read from its own home's `server.lock`, its supervisor from the OS parent
 relation, and a python helper writes its own pid to a file. `$!` is an MSYS pid on
 Git Bash and names a different process to `taskkill`, and the image name is shared
 with every other server on the machine -- which is what `AGENTS.md` now forbids.
+
+## The child gets a console nobody sees
+
+The supervisor is usually started by something that has no console of its own: the
+bundle's payload, a `serve` on a machine without a terminal, a successor written by
+`evolve`. Windows gives a console program started that way a **new visible
+console**, and the server is a console program -- so the user sees a window appear
+on the desktop every time the server restarts. The child's creation flags carry
+`CREATE_NO_WINDOW` now, so the server gets a console that exists and is never
+shown. The supervisor keeps the window it was given, which is the point of the
+front-end takeover in `bundle::take_over`: that one *must* stay attached.

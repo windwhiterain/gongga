@@ -188,3 +188,13 @@ test` in this workspace spawns a nested cargo that compiles the whole dependency
 graph a second time into a second target directory -- 35 s cold, 1.8 GB. That is
 a cost the inner loop pays hundreds of times a day and the installer pays once,
 so it is opt-in and one alias away.
+
+## The cancel the upgrade sends does not flash a window
+
+`ask_to_cancel` starts `gongga-cli ... cancel` to stop the server of a retired
+build. The bundle is the head of a distribution and may be running with no console
+of its own -- in a service, in a script, over ssh -- so the `cancel` would be
+given a new visible console on the user's desktop. It carries `CREATE_NO_WINDOW`
+like every other command this file starts. The bundle depends on nothing, so it
+spells the flag itself; `crates/console` is the same answer for the crates that
+may depend on something.

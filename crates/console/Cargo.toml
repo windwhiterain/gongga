@@ -1,0 +1,12 @@
+[package]
+name = "gongga-console"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors = ["gongga contributors"]
+description = "One answer to how a program the harness starts keeps its console off the user's desktop"
+
+# The flag and the rule, nothing else. The distribution's head (`gongga-bundle`)
+# carries no dependencies by design, so it spells the flag itself.
+[dependencies]

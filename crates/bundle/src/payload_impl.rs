@@ -5,6 +5,10 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+/// Never shown: a console of the program's own, with no window on the desktop.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 /// Puts `bytes` in `dir` under `name`, and says where it sits now.
 ///
 /// # Invariant
@@ -178,15 +182,22 @@ fn ask_to_cancel(ours: &Path, dir: &Path, server: &Process) -> bool {
     let Some(port) = server.port else {
         return false;
     };
-    let cancel = std::process::Command::new(&program)
+    let mut cancel = std::process::Command::new(&program);
+    cancel
         .arg("--server")
         .arg(format!("127.0.0.1:{port}"))
         .arg("--key")
         .arg(key)
         .arg("cancel")
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+        .stderr(std::process::Stdio::null());
+    // The bundle has no console to hand down: the command would get a window.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cancel.creation_flags(CREATE_NO_WINDOW);
+    }
+    let cancel = cancel.status();
     if !cancel.is_ok_and(|status| status.success()) {
         return false;
     }
@@ -258,7 +269,6 @@ fn alive(pid: u32) -> bool {
     use std::os::windows::process::CommandExt;
     // `tasklist` is on every Windows, and asking it is cheaper than a Win32 call
     // this crate has no dependency for.
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     std::process::Command::new("tasklist")
         .args(["/NH", "/FI", &format!("PID eq {pid}")])
         .creation_flags(CREATE_NO_WINDOW)
@@ -280,7 +290,6 @@ fn kill(pid: u32) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let _ = std::process::Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .creation_flags(CREATE_NO_WINDOW)
@@ -298,7 +307,6 @@ fn kill(pid: u32) {
 #[cfg(windows)]
 fn processes() -> Vec<(u32, Option<PathBuf>, String)> {
     use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     // The full path, because two builds of one name differ by directory.
     let out = std::process::Command::new("powershell")
         .args([

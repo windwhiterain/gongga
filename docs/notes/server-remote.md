@@ -494,3 +494,12 @@ replaces the shell. A command that is merely slow is neither: `sleep 12` measure
 So `list_paths` waits until the peer answers or the shell is gone, and a shell it
 lost is redialled once. Measured on the deadline-free listing: six consecutive
 listings of `C:/Windows/System32`, 6.6s cold then 1.7s each, none cut off.
+
+## The shell on the peer gets a console nobody sees
+
+The runner on the other machine is started by `ssh`, which has no console to hand
+down. A `bash` started there would be given a new visible console on the *peer's*
+desktop -- a window on someone else's screen, caused by a tool call here. The
+creation flags carry `CREATE_NO_WINDOW` next to the `CREATE_SUSPENDED` the
+suspended start already needed, because the standard library replaces the flags
+rather than adding to them: the two have to be computed together.

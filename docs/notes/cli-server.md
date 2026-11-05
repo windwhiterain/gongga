@@ -220,3 +220,13 @@ too (`ServerInfo::supervisor`). A caller comparing pids has to accept either --
 five seconds. It kills the *watchdog* first: a server killed under a live watchdog
 is started again, which would make "stop what serves this home" false. See
 `server-supervise.md`.
+
+## One place spells the flag
+
+`alive`, `kill` and `detach` each start a console program, and each of them used
+to spell `CREATE_NO_WINDOW` itself. They now ask `crates/console` for it, so the
+flag and the rule that adds it to the flags a caller already needs live in one
+file. `detach` still adds `CREATE_NEW_PROCESS_GROUP` of its own, because a Ctrl-C
+in this process's group is not the child's business; the two are computed
+together, since the standard library replaces the creation flags rather than
+adding to them.

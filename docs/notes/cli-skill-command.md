@@ -59,3 +59,12 @@ in python3 python py; do … ; done`, because Windows' Store alias sits on `PATH
 49): asked once here, so a skill's body no longer has to explain which interpreter the
 machine honours. The scripts keep their own loop, because each stays runnable on its own
 -- that is the portable half of the contract, and this command is the shortcut.
+
+## The Python probe does not flash a window
+
+`python()` asks each candidate interpreter to run `import sys`, and `python.exe` is
+a console program on Windows. The command layer often has no console of its own --
+it is a command in a pipeline, or a program the bundle started -- so the probe
+would put a window on the user's desktop for as long as it took to import `sys`.
+The probe's creation flags carry `CREATE_NO_WINDOW`, and its stdio is null: it
+answers a question, it is not a program anyone reads.

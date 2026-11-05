@@ -26,6 +26,7 @@ test = false
 [dependencies]
 protocol = { workspace = true }
 skill = { workspace = true }
+console = { workspace = true }
 
 tokio = { workspace = true }
 serde = { workspace = true }
