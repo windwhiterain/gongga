@@ -74,7 +74,16 @@ gives up instead of writing to a session that no longer exists.
 
 ## SessionInner::resumable
 
-`interrupt_session` leaves this false, because there "stop" means "drop it".
+`interrupt_session` leaves this false, because there "stop" means "drop it". A tool
+call can clear it too, through [`StopSignal`]: a `wait` that a `cancel` ended started
+nothing and is over, so the turn it was in owes nothing and must not be replayed.
+
+## StopSignal
+
+The two flags a turn's tool call may need to read, handed out already paired because
+reading one and acting on the other is one decision: a call that hears the stop must be
+able to say the turn owes nothing. It is a copy, not a handle on the session -- a tool
+must not be able to do anything else to the session that holds it.
 
 ## SessionHandle::open — the part still being written
 
@@ -128,6 +137,11 @@ work it did. So `request_stop` sets a flag and leaves the token alone; the turn 
 at the next step boundary, where every call already has its result. Only
 `interrupt_session` and `del_session` cancel the token, because those mean "stop
 now" rather than "stop cleanly".
+
+One call does not reach a step boundary on its own: `wait` sleeps inside the call for
+its whole ceiling. It reads this flag, which is why the flag exists as well as the
+token -- the token would abandon the call, and the flag lets the call end itself
+politely and say what it did.
 
 `cancels` is still bumped, so a turn that is queued and has not started is dropped
 instead of running into a shutdown.

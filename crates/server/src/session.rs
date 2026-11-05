@@ -479,9 +479,14 @@ struct SessionInner {
     /// Set once the rows are gone, so a queued turn gives up instead of writing.
     deleted: AtomicBool,
     /// Set by a shutdown's `cancel`: the turn stops but its pending row stays.
-    resumable: AtomicBool,
+    ///
+    /// # Invariant
+    ///
+    /// One flag, two holders: [`StopSignal`] hands it to a tool call that can decide
+    /// the turn owes nothing after all, which is the same answer this flag carries.
+    resumable: Arc<AtomicBool>,
     /// Set by `cancel`: stop at the next storable point. See `request_stop`.
-    stopping: AtomicBool,
+    stopping: Arc<AtomicBool>,
     /// Set before the shells end, so a stop announced now is the command's, not the exit's.
     closing: Arc<AtomicBool>,
     /// The connection this session's references are read through, if any.
@@ -836,6 +841,14 @@ impl SessionHandle {
         self.inner.stopping.load(Ordering::SeqCst)
     }
 
+    /// What a tool call reads to know a `cancel` ended the turn it is inside.
+    pub fn stop_signal(&self) -> StopSignal {
+        StopSignal {
+            stopping: self.inner.stopping.clone(),
+            resumable: self.inner.resumable.clone(),
+        }
+    }
+
     /// Remembers a move for whoever holds this session next.
     pub fn queue_move(&self, request: MoveRequest) {
         *self
@@ -1024,6 +1037,7 @@ pub fn placed_directory(stated: &str, remote: Option<&str>, base: &Path) -> Path
 /// Whether a message landed for this session since this signal was taken.
 ///
 /// See `docs/notes/server-session.md`.
+#[derive(Clone)]
 pub struct InboxSignal {
     epoch: Arc<AtomicU64>,
     since: u64,
@@ -1033,6 +1047,32 @@ impl InboxSignal {
     /// True if a message arrived after this signal was taken.
     pub fn arrived(&self) -> bool {
         self.epoch.load(Ordering::SeqCst) != self.since
+    }
+}
+
+/// A `cancel` reaching a turn that is inside a tool call.
+///
+/// # Invariant
+///
+/// The one place a tool learns two things at once: that the server is stopping, and
+/// that what it was doing is finished rather than unfinished. A `wait` that hears this
+/// says so, and a turn that ends after it owes nothing. See
+/// `docs/notes/server-commands.md`.
+#[derive(Clone)]
+pub struct StopSignal {
+    stopping: Arc<AtomicBool>,
+    resumable: Arc<AtomicBool>,
+}
+
+impl StopSignal {
+    /// Whether a `cancel` asked this turn to stop.
+    pub fn requested(&self) -> bool {
+        self.stopping.load(Ordering::SeqCst)
+    }
+
+    /// Records that nothing is left undone, so the next start does not replay the turn.
+    pub fn nothing_owed(&self) {
+        self.resumable.store(false, Ordering::SeqCst);
     }
 }
 
@@ -1694,8 +1734,8 @@ impl SessionManager {
                     cache_keepalive: row.cache_keepalive,
                 }),
                 deleted: AtomicBool::new(false),
-                resumable: AtomicBool::new(false),
-                stopping: AtomicBool::new(false),
+                resumable: Arc::new(AtomicBool::new(false)),
+                stopping: Arc::new(AtomicBool::new(false)),
                 closing: Arc::new(AtomicBool::new(false)),
                 reader: Mutex::new(reader),
                 placed: Mutex::new((!row_cwd.trim().is_empty()).then(|| PathBuf::from(&row_cwd))),

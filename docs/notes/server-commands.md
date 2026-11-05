@@ -449,6 +449,15 @@ Not `cancel()`: a cancelled turn must still be there for the next start to pick
 up, otherwise "cancel, restart, continue" -- the whole point of shutting down
 cleanly -- loses the turn it was protecting.
 
+Except a turn that is only `wait`ing. `request_stop` raises a flag instead of firing
+the token, and every other tool sees it at its next step boundary; `wait` sits inside a
+call for its whole ceiling, so it reads the flag itself (`StopSignal`) and sends an
+answer of its own: the wait ends here, what it was waiting for is the next start's to
+deliver. It then clears the same flag that would have kept the turn's row, because a
+wait started nothing and left nothing undone. So the drain is a hundred milliseconds
+rather than a whole `timeout_ms`, and a restart does not replay a turn whose only work
+was waiting -- which is exactly what the flag used to make it do.
+
 Not quite yet: the acknowledgement announcing what is being cancelled is worth
 more than a fast exit, and the listen loop publishes it only after this handler
 returns. A quarter second is well inside one round trip.

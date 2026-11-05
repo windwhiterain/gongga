@@ -95,7 +95,20 @@ so a provider having a bad minute is waited out rather than hammered.
 
 ## BashConfig::timeout
 
-The number decides when the model stops waiting, nothing else.
+The number decides when the model stops waiting, nothing else. It is a default, not a
+ceiling: `ToolsConfig::max_wait` clamps it, so a home that sets a five-minute `bash`
+wait and leaves the tunnel at sixty seconds waits one minute and is told why.
+
+## ToolsConfig::max_wait
+
+The longest one call may wait for its answer: `[tools] max_wait_ms`, or
+`GONGGA_TOOL_MAX_WAIT_MS`, sixty seconds when neither says. Read from the same
+`[tools]` table the shell and interpreter settings live in, because it is the same
+subject one level up.
+
+It is a ceiling on waiting, not on the work. A call that would need longer is refused
+and told to say `detached`, which is a call that answers at once and reports when it is
+done -- so the ceiling never costs the work, only the turn's hold on it.
 
 ## BashConfig::max_output_chars
 

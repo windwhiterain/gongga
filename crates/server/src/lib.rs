@@ -323,14 +323,18 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         clients: std::sync::Mutex::new(std::collections::HashMap::new()),
         default_context: cfg.model.context,
         tools: Arc::new(
-            ToolRegistry::with_builtins(cfg.bash.timeout, cfg.bash.max_output_chars)
-                .with_python(cfg.python.clone(), skill_lib.clone())
-                .with_skills(
-                    tools::skill::programs(&cfg),
-                    skill_lib,
-                    cfg.bash.timeout,
-                    cfg.bash.max_output_chars,
-                ),
+            ToolRegistry::with_builtins(
+                cfg.tools.max_wait,
+                cfg.bash.timeout,
+                cfg.bash.max_output_chars,
+            )
+            .with_python(cfg.python.clone(), skill_lib.clone())
+            .with_skills(
+                tools::skill::programs(&cfg),
+                skill_lib,
+                cfg.bash.timeout,
+                cfg.bash.max_output_chars,
+            ),
         ),
         bus: bus.clone(),
         compress_above_tokens: cfg.agent.compress_above_tokens,
@@ -388,6 +392,14 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     }
     // Failures the last run left behind, before a client can ask about them.
     monitor::sweep(&dispatch, &cfg.home).await;
+    // A call a stopped server detached has no pid to adopt: say it was lost.
+    let lost = tools::tunnel::announce_lost(&store);
+    if lost > 0 {
+        tracing::info!(
+            lost,
+            "reported detached calls a stopped server never answered"
+        );
+    }
     // Whatever the last run detached is still out there; adopt its pids now.
     let adoption_started = std::time::Instant::now();
     let adopted = detached.adopt().await;
@@ -397,6 +409,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         elapsed_ms = adoption_started.elapsed().as_millis() as u64,
         "detached jobs adopted from the previous run"
     );
+
+    // A detached bash that ends while this server runs is news for its session.
+    let detached_watch = detached.watch(dispatch.shutdown.clone());
 
     // Alive until the drain ends. See `docs/notes/server-subscriptions.md`.
     let watching = subscriptions.clone();
@@ -477,6 +492,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     // The drain's end: nothing new may fire, and what fired is waited for.
     stop_watching.cancel();
     let _ = matcher.await;
+    // Nothing notices a job's end after this: a stopping server did not see it finish.
+    let _ = detached_watch.await;
     while active.load(std::sync::atomic::Ordering::SeqCst) != 0 {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }

@@ -448,6 +448,10 @@ impl Tool for PythonTool {
         self.machine == Machine::Remote
     }
 
+    fn default_timeout(&self) -> Option<Duration> {
+        Some(self.timeout)
+    }
+
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -1058,6 +1062,10 @@ impl Tool for ReadFileTool {
         file_machine(args, ctx)
     }
 
+    fn default_timeout(&self) -> Option<Duration> {
+        Some(self.timeout)
+    }
+
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -1105,6 +1113,8 @@ impl Tool for ReadFileTool {
                 "offset": args["offset"].as_u64().unwrap_or(0),
                 "limit": args["limit"].as_u64().unwrap_or(0),
             });
+            // The wait the tunnel resolved for this call, not this tool's built-in one.
+            let wait = crate::tools::tunnel::wait_of(&args).unwrap_or(self.timeout);
             let outcome = if on_remote {
                 let Some(endpoint) = remote_endpoint(ctx) else {
                     return ToolOutcome::err(
@@ -1112,14 +1122,14 @@ impl Tool for ReadFileTool {
                          endpoint to reach",
                     );
                 };
-                one_shot_remote(&endpoint, &ctx.dir(Machine::Remote), request, self.timeout).await
+                one_shot_remote(&endpoint, &ctx.dir(Machine::Remote), request, wait).await
             } else {
                 one_shot(
                     self.program.as_deref(),
                     &self.args,
                     &ctx.dir(Machine::Local),
                     request,
-                    self.timeout,
+                    wait,
                 )
                 .await
             };
@@ -1173,6 +1183,10 @@ impl Tool for WriteFileTool {
         file_machine(args, ctx)
     }
 
+    fn default_timeout(&self) -> Option<Duration> {
+        Some(self.timeout)
+    }
+
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -1212,6 +1226,8 @@ impl Tool for WriteFileTool {
                 .map(str::trim)
                 .filter(|s| !s.is_empty());
             let request = json!({"op": "write", "path": path, "content": content});
+            // The wait the tunnel resolved for this call, not this tool's built-in one.
+            let wait = crate::tools::tunnel::wait_of(&args).unwrap_or(self.timeout);
             let outcome = if on_remote {
                 let Some(endpoint) = remote_endpoint(ctx) else {
                     return ToolOutcome::err(
@@ -1219,14 +1235,14 @@ impl Tool for WriteFileTool {
                          endpoint to reach",
                     );
                 };
-                one_shot_remote(&endpoint, &ctx.dir(Machine::Remote), request, self.timeout).await
+                one_shot_remote(&endpoint, &ctx.dir(Machine::Remote), request, wait).await
             } else {
                 one_shot(
                     self.program.as_deref(),
                     &self.args,
                     &ctx.dir(Machine::Local),
                     request,
-                    self.timeout,
+                    wait,
                 )
                 .await
             };
@@ -1272,6 +1288,10 @@ impl Tool for ReplaceTool {
 
     fn machine(&self, args: &Value, ctx: &ToolContext) -> Machine {
         file_machine(args, ctx)
+    }
+
+    fn default_timeout(&self) -> Option<Duration> {
+        Some(self.timeout)
     }
 
     fn parameters(&self) -> Value {
@@ -1327,6 +1347,8 @@ impl Tool for ReplaceTool {
                 "new": new,
                 "all": args["all"].as_bool().unwrap_or(false),
             });
+            // The wait the tunnel resolved for this call, not this tool's built-in one.
+            let wait = crate::tools::tunnel::wait_of(&args).unwrap_or(self.timeout);
             let outcome = if on_remote {
                 let Some(endpoint) = remote_endpoint(ctx) else {
                     return ToolOutcome::err(
@@ -1334,14 +1356,14 @@ impl Tool for ReplaceTool {
                          endpoint to reach",
                     );
                 };
-                one_shot_remote(&endpoint, &ctx.dir(Machine::Remote), request, self.timeout).await
+                one_shot_remote(&endpoint, &ctx.dir(Machine::Remote), request, wait).await
             } else {
                 one_shot(
                     self.program.as_deref(),
                     &self.args,
                     &ctx.dir(Machine::Local),
                     request,
-                    self.timeout,
+                    wait,
                 )
                 .await
             };

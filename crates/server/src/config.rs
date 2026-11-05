@@ -65,6 +65,9 @@ pub const DEFAULT_RETRY_CEILING_MS: u64 = 30_000;
 /// `docs/notes/server-disk.md`.
 pub const DEFAULT_DISK_RESERVE_MB: u64 = 1024;
 
+/// How long one call waits when nothing states one.
+pub const DEFAULT_TOOL_MAX_WAIT_MS: u64 = 60_000;
+
 /// Share of a model's window `--context_limit` starts at; see `docs/notes/server-config.md`.
 pub const DEFAULT_CONTEXT_LIMIT_PERCENT: u8 = 70;
 /// Everything the server needs to boot.
@@ -80,6 +83,8 @@ pub struct Config {
     /// The model the server runs on when a session names none.
     pub model: ModelConfig,
     pub bash: BashConfig,
+    /// What every tool call shares: the ceiling on one call's wait.
+    pub tools: ToolsConfig,
     /// The persistent Python interpreter a `python` call runs in.
     pub python: PythonConfig,
     pub scripts: ScriptConfig,
@@ -210,6 +215,19 @@ pub struct PythonConfig {
     pub max_output_chars: usize,
 }
 
+/// What every tool call shares: the tunnel's own ceiling.
+#[derive(Debug, Clone)]
+pub struct ToolsConfig {
+    /// The longest one call may wait for its answer.
+    ///
+    /// # Invariant
+    ///
+    /// A ceiling on waiting, not on the work: a call that would wait longer is
+    /// refused and told to go `detached`, and what it started keeps running. See
+    /// `SPEC`, "Tool", and `docs/notes/server-tools-mod.md`.
+    pub max_wait: Duration,
+}
+
 /// Where commands registered by Python scripts live.
 #[derive(Debug, Clone)]
 pub struct ScriptConfig {
@@ -322,6 +340,7 @@ struct FileModel {
 struct FileTools {
     bash: Option<FileBash>,
     python: Option<FilePython>,
+    max_wait_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -591,6 +610,15 @@ impl Config {
                 .unwrap_or(DEFAULT_MAX_OUTPUT_CHARS),
         };
 
+        let tools = ToolsConfig {
+            max_wait: Duration::from_millis(
+                tools_file
+                    .max_wait_ms
+                    .or_else(|| env_or("GONGGA_TOOL_MAX_WAIT_MS").and_then(|v| v.parse().ok()))
+                    .unwrap_or(DEFAULT_TOOL_MAX_WAIT_MS),
+            ),
+        };
+
         let scripts_file = file.scripts.unwrap_or_default();
         let scripts = ScriptConfig {
             dir: scripts_file
@@ -669,6 +697,7 @@ impl Config {
             key,
             model,
             bash,
+            tools,
             python,
             scripts,
             agent,

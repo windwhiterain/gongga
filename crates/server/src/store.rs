@@ -211,9 +211,26 @@ CREATE TABLE IF NOT EXISTS detached_jobs (
     pid        INTEGER NOT NULL,
     cmd        TEXT NOT NULL,
     log        TEXT NOT NULL,
-    started_at INTEGER NOT NULL
+    started_at INTEGER NOT NULL,
+    -- Whether the session has been told this job ended. Exactly one notice per job,
+    -- across restarts: the watcher sets it, and adoption reads it.
+    noticed    INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS detached_by_session ON detached_jobs(session);
+
+-- A tool call that said `detached` and has not reported yet. The row is how a process
+-- that stops can tell the session what it lost: unlike a detached process, such a job
+-- has no pid to adopt, so the row is the only trace. See
+-- `docs/notes/server-tools-detached.md`.
+CREATE TABLE IF NOT EXISTS detached_calls (
+    id          INTEGER PRIMARY KEY,
+    session     TEXT NOT NULL,
+    call_id     TEXT NOT NULL,
+    tool        TEXT NOT NULL,
+    description TEXT,
+    started_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS detached_calls_by_session ON detached_calls(session);
 
 -- What the prefix cache has learnt about the order things are emitted in, one row per
 -- owner -- the unit whose requests share bytes, which is a session's directory. Not one
@@ -376,6 +393,12 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "detached_jobs",
         "name",
         "ALTER TABLE detached_jobs ADD COLUMN name TEXT NOT NULL DEFAULT ''",
+    )?;
+    add_column_if_missing(
+        conn,
+        "detached_jobs",
+        "noticed",
+        "ALTER TABLE detached_jobs ADD COLUMN noticed INTEGER NOT NULL DEFAULT 0",
     )?;
     conn.execute(
         "UPDATE detached_jobs SET name = shell || '-' || job WHERE name = ''",
@@ -1916,7 +1939,7 @@ impl Store {
     pub fn detached_jobs(&self) -> anyhow::Result<Vec<DetachedRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, name, shell, job, pid, cmd, log, started_at
+            "SELECT id, session, name, shell, job, pid, cmd, log, started_at, noticed
              FROM detached_jobs ORDER BY id",
         )?;
         let rows = stmt
@@ -1931,10 +1954,67 @@ impl Store {
                     cmd: r.get(6)?,
                     log: r.get(7)?,
                     started_at: r.get(8)?,
+                    noticed: r.get::<_, i64>(9)? != 0,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    pub fn add_detached_call(
+        &self,
+        session: &str,
+        call_id: &str,
+        tool: &str,
+        description: Option<&str>,
+    ) -> anyhow::Result<i64> {
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT INTO detached_calls (session, call_id, tool, description, started_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![session, call_id, tool, description, now_millis()],
+        )?;
+        let id = tx.last_insert_rowid();
+        tx.commit()?;
+        Ok(id)
+    }
+
+    /// Every call a run left unresolved, oldest first.
+    pub fn detached_calls(&self) -> anyhow::Result<Vec<DetachedCallRow>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, session, call_id, tool, description, started_at
+             FROM detached_calls ORDER BY id",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(DetachedCallRow {
+                    id: r.get(0)?,
+                    session: r.get(1)?,
+                    call_id: r.get(2)?,
+                    tool: r.get(3)?,
+                    description: r.get(4)?,
+                    started_at: r.get(5)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn delete_detached_call(&self, id: i64) -> anyhow::Result<()> {
+        self.lock()
+            .execute("DELETE FROM detached_calls WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// Records that a session has been told this job ended.
+    pub fn note_detached_noticed(&self, id: i64) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE detached_jobs SET noticed = 1 WHERE id = ?1",
+            params![id],
+        )?;
+        Ok(())
     }
 
     pub fn delete_detached_job(&self, id: i64) -> anyhow::Result<()> {
@@ -2104,6 +2184,26 @@ pub struct DetachedRow {
     pub cmd: String,
     /// Where its output is written; survives the job and the server.
     pub log: String,
+    pub started_at: i64,
+    /// Whether the session was already told this job ended.
+    pub noticed: bool,
+}
+
+/// A tool call that said `detached` and has not reported yet.
+///
+/// # Invariant
+///
+/// The row is deleted in the same act that posts the call's report, so a row that
+/// survives a start is a call whose server stopped before it could answer. See
+/// `docs/notes/server-tools-detached.md`.
+#[derive(Debug, Clone)]
+pub struct DetachedCallRow {
+    pub id: i64,
+    pub session: String,
+    /// The tool call this row answers for, so its report names what the transcript names.
+    pub call_id: String,
+    pub tool: String,
+    pub description: Option<String>,
     pub started_at: i64,
 }
 

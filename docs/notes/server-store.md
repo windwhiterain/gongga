@@ -401,6 +401,17 @@ wants to know.
 Written before the job is handed to the model, so a crash in between leaves a row
 the next start adopts rather than a process nobody knows about.
 
+The row also carries `noticed`: whether the session has been told the job ended. It is
+in the database because the second reader is the next start, and one end is one
+notice even across a restart.
+
+## Store::add_detached_call
+
+The trace of a call that said `detached` and is not a process: there is no pid to
+adopt, so the row is the only thing that can tell the next start the answer was lost.
+Deleted in the same act that posts the report, which is what makes a surviving row
+mean "nobody ever answered this".
+
 ## SessionRow::model
 
 The whole model, `provider/model_name`, because a name alone does not say who serves

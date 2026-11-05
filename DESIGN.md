@@ -1137,6 +1137,7 @@ Windows 给**每个**控制台子进程开一个新窗口 —— 而服务端启
          model = "deepseek-flash"          # 省略同上
          base_url = "https://api.deepseek.com/v1"
          api_key_env = "MINIMAX_CN_API_KEY"
+[tools]      max_wait_ms = 60000     # 一次调用最多等多久；超过它的调用被拒，要求 detached
 [tools.bash] timeout_ms = 120000  max_output_chars = 8000
 [agent]  compress_above_tokens = 40000  keep_recent = 30   # 无步数上限
 [transport] mtu = 1200  window = 64
@@ -1157,6 +1158,9 @@ gongga --home /tmp/scratch serve --port 9700     # 另一个 home，整个状态
 （这里原先还写着 `GONGGA_DB=:memory:`，那个环境变量从来不存在。）
 
 `max_output_chars = 0` 关掉输出上限，`compress_above_tokens = 0` 关掉压缩。
+
+`max_wait_ms` 是**等待**的上限，不是工作的上限：超过它的调用不会被执行，而是要求改成
+`detached`（立即返回，结束时以 notice 报到）。`[tools.bash] timeout_ms` 是默认值，仍受它钳制。
 
 CLI 的 sticky 参数单独放 `~/.gongga/cli.toml`，和服务端配置分开 —— 它们是客户端状态，
 服务端不该看见。
