@@ -246,6 +246,16 @@ pub trait Tool: Send + Sync {
         ctx.machine
     }
 
+    /// Whether this tool drives the session's remote.
+    ///
+    /// # Invariant
+    ///
+    /// The tool answers for itself, so a twin added tomorrow cannot be offered to a
+    /// session that has no such machine. See `definitions`.
+    fn is_remote(&self) -> bool {
+        false
+    }
+
     fn run<'a>(
         &'a self,
         args: Value,
@@ -421,16 +431,28 @@ impl ToolRegistry {
     ///
     /// # Invariant
     ///
-    /// `remote_bash` is offered only to a session that has a remote: a tool the model
-    /// can call but that can never answer is a wrong turn nobody can undo.
+    /// A tool that drives a machine this session does not have is not offered at
+    /// all, and neither is an argument that names one: a model can call what it is
+    /// offered, so what it is offered has to be able to answer. See
+    /// `docs/notes/server-tools-mod.md`.
     pub fn definitions(&self, has_remote: bool) -> Vec<crate::llm::ToolDefinition> {
         self.tools
             .iter()
-            .filter(|t| has_remote || !is_remote_tool(t.name()))
-            .map(|t| crate::llm::ToolDefinition {
-                name: t.name().to_string(),
-                description: t.description().to_string(),
-                parameters: general_parameters(t.parameters()),
+            .filter(|t| has_remote || !t.is_remote())
+            .map(|t| {
+                let mut parameters = general_parameters(t.parameters());
+                if !has_remote
+                    && let Some(properties) = parameters
+                        .get_mut("properties")
+                        .and_then(Value::as_object_mut)
+                {
+                    properties.remove("remote");
+                }
+                crate::llm::ToolDefinition {
+                    name: t.name().to_string(),
+                    description: t.description().to_string(),
+                    parameters,
+                }
             })
             .collect()
     }
@@ -898,25 +920,14 @@ fn command_line(value: Option<&Value>) -> Result<String, String> {
 /// The name the tool on the session's remote is called by.
 const REMOTE_BASH: &str = "remote_bash";
 
-/// Whether a tool is the one that runs on the session's remote.
-///
-/// # Invariant
-///
-/// Such a tool is offered only to a session that has a remote: a tool the model
-/// can call but that can never answer is a wrong turn nobody can undo.
-fn is_remote_tool(name: &str) -> bool {
-    name == REMOTE_BASH || name == "remote_exec"
-}
-
 /// What `bash` says it is: one shell per name, on this machine.
 const LOCAL_BASH_DESCRIPTION: &str = "Run a shell command in a persistent Git Bash on this \
      machine -- the one the server runs on. Each `name` is a separate shell that keeps \
      its own working directory, exports and shell functions between calls, and stays \
      alive until you `del_bash` it; omit `name` to use `default`. So reusing one name is \
      how state accumulates -- inventing a name per command leaves one idle process behind \
-     per command. A name is one shell: `remote_bash` shares this name space, so a name \
-     the other machine already holds is refused rather than quietly becoming a second \
-     process. Output is streamed as it is produced. Use `cd` to move around instead of \
+     per command. A name is one shell: a name already held is refused rather than \
+     quietly becoming a second process. Output is streamed as it is produced. Use `cd` to move around instead of \
      passing absolute paths every time. Very long output is capped: you get the beginning \
      and the end, and the full text is written to a file named in the result -- read that \
      file with `sed -n` or `grep`, do not cat it. With `background`, the command is \
@@ -957,6 +968,10 @@ impl Tool for BashTool {
 
     fn machine(&self, _args: &Value, _ctx: &ToolContext) -> Machine {
         self.machine
+    }
+
+    fn is_remote(&self) -> bool {
+        self.machine == Machine::Remote
     }
 
     fn parameters(&self) -> Value {
@@ -1070,15 +1085,18 @@ impl Tool for BashTool {
             {
                 return ToolOutcome::err(match &ctx.remote {
                     Some(here) => format!(
-                        "`remote_bash` ran nothing: this session's directory is on remote \
-                         {here:?}, and its shells are there -- {stated:?} is another \
-                         machine, which this session has no directory on. A session works \
-                         on one machine: `set_session --remote {stated}` moves it there, \
-                         and ends these shells first."
+                        "`remote_bash` ran nothing: {stated:?} is not this session's \
+                         machine, and this tool runs on the one it has. Write \
+                         `target: {here:?}` -- this session's remote, which changes \
+                         nothing -- or leave `target` out. Moving the session to another \
+                         machine is `set_session --remote`, a command and not an argument."
                     ),
                     None => format!(
                         "`remote_bash` ran nothing: this session names no remote, so it has \
-                         no peer to run on, and {stated:?} is not one it can reach from here."
+                         no peer to run on and {stated:?} is not one it can reach from \
+                         here. Write no machine at all: `bash` is the shell on this one, \
+                         and reaching another machine is `set_session --remote <name>`, a \
+                         command rather than an argument."
                     ),
                 });
             }
@@ -1403,8 +1421,7 @@ impl Tool for CheckBashTool {
         "What a shell printed that you have not read: everything its `background` \
          commands wrote, plus anything it printed while nobody was reading. Reading \
          clears it, so each chunk comes back once. Empty means nothing yet -- ask \
-         again, or set `wait_ms` to wait for the running jobs. A name is one shell on \
-         whichever machine holds it, and the answer says which."
+         again, or set `wait_ms` to wait for the running jobs."
     }
 
     fn parameters(&self) -> Value {
@@ -1636,7 +1653,7 @@ impl Tool for ListBashTool {
     }
 
     fn description(&self) -> &'static str {
-        "List the bash of this session: their names, the machine each runs on, their \
+        "List the bash of this session: their names, their \
          working directories, how much unread output they are holding, and how many \
          background jobs are still running. Also lists the session's detached bashes, \
          which are not any shell's and survive them all. `name_regex` narrows the \
@@ -1730,9 +1747,9 @@ impl Tool for DelBashTool {
     fn description(&self) -> &'static str {
         "Delete bash whose name matches a regex, either kind. A persistent shell \
          is discarded: its working directories, exports and shell functions are \
-         lost, and naming it again starts a fresh shell in its own machine's session \
+         lost, and naming it again starts a fresh shell in its own session \
          directory; the background jobs it was running go with it. A name is one shell, \
-         so this ends it wherever it lives -- this machine or the session's remote. A \
+         so this ends it wherever it lives. A \
          detached bash is stopped, which is the only thing that can -- its log file \
          stays where it is. Use this when a shell is wedged or polluted, and to clean \
          up the names a long session invented."

@@ -444,6 +444,10 @@ impl Tool for PythonTool {
         self.machine
     }
 
+    fn is_remote(&self) -> bool {
+        self.machine == Machine::Remote
+    }
+
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -667,8 +671,7 @@ impl Tool for CheckPythonTool {
 
     fn description(&self) -> &'static str {
         "What `check_bash` is to a shell, for an interpreter: the output a finished \
-         `python` or `remote_python` background call printed, which reading clears. A name \
-         names one interpreter on whichever machine holds it."
+         background call printed, which reading clears."
     }
 
     fn parameters(&self) -> Value {
@@ -832,9 +835,9 @@ impl Tool for ListPythonTool {
     }
 
     fn description(&self) -> &'static str {
-        "What `list_bash` is to a shell: each interpreter's name, the machine it runs \
-         on, pid, program, directory, running calls and whether anything unread is \
-         waiting. `name_regex` narrows it."
+        "What `list_bash` is to a shell: each interpreter's name, pid, program, \
+         directory, running calls and whether anything unread is waiting. `name_regex` \
+         narrows it."
     }
 
     fn parameters(&self) -> Value {
@@ -974,14 +977,16 @@ fn file_remote(args: &Value, ctx: &ToolContext, tool: &str) -> Result<bool, Stri
     }
     Err(match &ctx.remote {
         Some(here) => format!(
-            "`{tool}` ran nothing: this session's directory is on remote {here:?}, and its \
-             files are there -- {stated:?} is another machine, which this session has no \
-             directory on. A session works on one machine: `set_session --remote {stated}` \
-             moves it there, and ends these shells first."
+            "`{tool}` ran nothing: {stated:?} is not this session's machine, and these \
+             paths belong to the one it has. Write `remote: {here:?}` -- this session's \
+             remote -- or leave `remote` out. Moving the session to another machine is \
+             `set_session --remote`, a command and not an argument."
         ),
         None => format!(
             "`{tool}` ran nothing: this session names no remote, so it has no peer to work \
-             on, and {stated:?} is not one it can reach from here."
+             on and {stated:?} is not one it can reach from here. Write no machine at \
+             all: this machine's files are the ones this session has, and reaching \
+             another machine is `set_session --remote <name>`."
         ),
     })
 }
@@ -1013,13 +1018,20 @@ async fn one_shot_remote(
 }
 
 /// The `remote` argument the file tools take: the session's remote, or this machine.
+///
+/// # Invariant
+///
+/// Offered only to a session that has a remote: `definitions` drops it otherwise, so
+/// the argument is its own whole explanation and the descriptions below never mention
+/// a second machine.
 fn remote_arg() -> Value {
     json!({
         "type": "string",
         "description": "Which machine the file is on. Omit it, or name `none`, for this \
-                         machine and its own Python. Name the session's remote -- the \
-                         machine `set_session --remote` named -- to work on that machine's \
-                         file instead. Any other name is refused."
+                         machine. Write the name of this session's remote -- the one \
+                         `set_session --remote` named, and the machine its directory is \
+                         on -- to work on that machine's file instead. Any other name \
+                         is refused, and the refusal says which name to write."
     })
 }
 
@@ -1036,11 +1048,10 @@ impl Tool for ReadFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Read a UTF-8 file through the Python tool's interpreter on this machine, or on \
-         the session's remote when `remote` names it. `offset` and `limit` are lines, \
-         zero-based; `limit = 0` reads to the end. The content is a tool result, so it \
-         never passes through shell quoting. Use it instead of `cat` when the file's \
-         bytes matter."
+        "Read a UTF-8 file through the Python tool's interpreter. `offset` and `limit` \
+         are lines, zero-based; `limit = 0` reads to the end. The content is a tool \
+         result, so it never passes through shell quoting. Use it instead of `cat` when \
+         the file's bytes matter."
     }
 
     fn machine(&self, args: &Value, ctx: &ToolContext) -> Machine {
@@ -1152,11 +1163,10 @@ impl Tool for WriteFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Write a file through the Python tool's interpreter on this machine, or on the \
-         session's remote when `remote` names it: `content` is a JSON field, so it is \
-         written exactly as given, with no shell or Python quoting layer. Missing parent \
-         directories are created and the replacement is atomic. Use this instead of a \
-         heredoc or `write_text` inside a `python` program."
+        "Write a file through the Python tool's interpreter: `content` is a JSON field, \
+         so it is written exactly as given, with no shell or Python quoting layer. \
+         Missing parent directories are created and the replacement is atomic. Use this \
+         instead of a heredoc or `write_text` inside a `python` program."
     }
 
     fn machine(&self, args: &Value, ctx: &ToolContext) -> Machine {
@@ -1254,11 +1264,10 @@ impl Tool for ReplaceTool {
 
     fn description(&self) -> &'static str {
         "Replace one exact, literal piece of a UTF-8 file through the Python tool's \
-         interpreter on this machine, or on the session's remote when `remote` names \
-         it. Without `all`, `old` must occur exactly once; any other count is an error, \
-         so a stale context cannot silently rewrite the wrong place. With `all`, every \
-         occurrence is replaced. The write is atomic. `old` and `new` are JSON fields, \
-         not shell or Python syntax."
+         interpreter. Without `all`, `old` must occur exactly once; any other count is \
+         an error, so a stale context cannot silently rewrite the wrong place. With \
+         `all`, every occurrence is replaced. The write is atomic. `old` and `new` are \
+         JSON fields, not shell or Python syntax."
     }
 
     fn machine(&self, args: &Value, ctx: &ToolContext) -> Machine {

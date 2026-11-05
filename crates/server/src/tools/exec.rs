@@ -61,6 +61,10 @@ impl Tool for ExecTool {
         self.machine
     }
 
+    fn is_remote(&self) -> bool {
+        self.machine == Machine::Remote
+    }
+
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
