@@ -2293,10 +2293,12 @@ async fn run_once(client: &mut Client, link: &mut Link, command: &[String]) -> a
         ClientMessage::Command { id, .. } => *id,
         other => anyhow::bail!("{command:?} produced {other:?}, expected a command"),
     };
-    // This command's own session, if it names one: another session's stream is
-    // not this process's output.
+    // Another session's stream is not this process's output; the kind says
+    // which one is. See `docs/notes/cli-lib.md`.
     let watched = match &msg {
-        ClientMessage::Command { args, .. } => args.get("session").cloned(),
+        ClientMessage::Command { name, args, .. } => {
+            client.session_named(name, args).map(str::to_string)
+        }
         _ => None,
     };
     link.send(msg)
