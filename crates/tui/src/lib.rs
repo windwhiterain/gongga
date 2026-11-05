@@ -1018,12 +1018,24 @@ impl Tui {
             Arrow::Line(up) => {
                 if let Some(c) = self.screen.completion.as_mut() {
                     c.move_selection(if up { -1 } else { 1 });
-                } else if up {
-                    self.screen.input.up();
                 } else {
-                    self.screen.input.down();
+                    self.move_caret_row(up);
                 }
             }
+        }
+    }
+
+    /// Moves the caret one row of the prompt as the frame draws it.
+    ///
+    /// # Invariant
+    ///
+    /// The prompt is drawn in the rows `render::layout_input` cuts, and the
+    /// caret moves through those rows: a long line wrapped over three of them is
+    /// three rows to the arrows, not one. At the top or the bottom row there is
+    /// nowhere to go, and the arrow does nothing.
+    fn move_caret_row(&mut self, up: bool) {
+        if let Some(at) = render::caret_row(&self.screen, self.input_area, up) {
+            self.screen.input.set_cursor(at);
         }
     }
 

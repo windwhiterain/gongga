@@ -538,6 +538,17 @@ characters until it finds the one that covers it; a character two columns wide i
 entered at its own start. The offset is a character boundary, because the text is
 cut at it.
 
+## caret_row
+
+Where a vertical arrow lands: the byte offset of the caret's column in the row
+above or below, in the rows `layout_input` cut. The prompt is drawn in those rows,
+so a wrapped line is several rows to the arrow as it is to the eye.
+
+`offset_in` is the one walk from a display column to a byte, shared by the click
+and the arrow: one reading of a row's characters, so a column the pointer can
+enter is a column the arrow can land on. A row shorter than the column ends at its
+end; a caret on the first or the last row has nowhere to go and answers `None`.
+
 ## draw_completion
 
 The window follows the selection. `move_selection` walks the whole list, so drawing

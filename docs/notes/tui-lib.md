@@ -425,6 +425,13 @@ Performs one of them. The popup answers before the text does: it is what the
 operator is looking at, and moving the line behind it would move the text they
 are choosing for.
 
+A bare `Up`/`Down` moves the caret through `Tui::move_caret_row`, which asks
+`render::caret_row` for the byte the row above or below holds. The rows are the
+ones the prompt is drawn in, not the ones its `'\n'` cuts: a long line that
+wrapped over three rows is three lines to the arrows, which is what the operator
+sees. Reading `'\n'` alone left the arrow dead on every wrapped row. At the
+first or the last row there is nowhere to go and the key does nothing.
+
 ## Shift+Delete
 
 SPEC gives Shift+Delete the sticky session, and not the editor's Delete or

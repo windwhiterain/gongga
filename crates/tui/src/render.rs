@@ -1070,10 +1070,39 @@ pub fn input_offset(s: &Screen, area: Rect, column: u16, row: u16) -> Option<usi
     let height = area.height.max(1) as usize;
     let first = (layout.cursor_row + 1).saturating_sub(height);
     let index = (row - area.y) as usize + first;
-    let (row_start, row_end) = *layout.spans.get(index)?;
-    let text = layout.rows.get(index)?;
     // The prefix takes the first columns; the rest of the row is the text.
     let target = column.saturating_sub(area.x + PREFIX_WIDTH) as usize;
+    Some(offset_in(&layout, index, target)?)
+}
+
+/// Where the caret goes when an arrow moves it one drawn row.
+///
+/// # Invariant
+///
+/// The rows are the ones `layout_input` cuts and the frame paints, so a wrapped
+/// line is several rows to the arrows exactly as it is to the eye; a `None` is
+/// a caret already on the first or the last row. See `docs/notes/tui-render.md`.
+pub fn caret_row(s: &Screen, area: Rect, up: bool) -> Option<usize> {
+    if area.width == 0 {
+        return None;
+    }
+    let layout = layout_input(s.input.text(), s.input.cursor(), content_width(area.width));
+    let index = if up {
+        layout.cursor_row.checked_sub(1)?
+    } else {
+        let below = layout.cursor_row + 1;
+        if below >= layout.rows.len() {
+            return None;
+        }
+        below
+    };
+    offset_in(&layout, index, layout.cursor_col as usize)
+}
+
+/// The byte offset of column `target` of row `index`; the row's end past its text.
+fn offset_in(layout: &InputLayout, index: usize, target: usize) -> Option<usize> {
+    let (row_start, row_end) = *layout.spans.get(index)?;
+    let text = layout.rows.get(index)?;
     let mut used = 0usize;
     for (offset, ch) in text.char_indices() {
         let advance = ch.width().unwrap_or(0);

@@ -149,40 +149,6 @@ impl InputLine {
         self.cursor = self.text.len();
     }
 
-    /// Moves to the line above, keeping the column; false when there is none.
-    pub fn up(&mut self) -> bool {
-        self.collapse(false);
-        let (start, _) = self.line_bounds();
-        if start == 0 {
-            return false;
-        }
-        let column = self.cursor - start;
-        let previous_end = start - 1; // the newline that ends the line above
-        let previous_start = self.text[..previous_end]
-            .rfind('\n')
-            .map(|i| i + 1)
-            .unwrap_or(0);
-        self.cursor = boundary(&self.text, (previous_start + column).min(previous_end));
-        true
-    }
-
-    /// The line below, keeping the column. False on the last line.
-    pub fn down(&mut self) -> bool {
-        self.collapse(false);
-        let (start, end) = self.line_bounds();
-        if end >= self.text.len() {
-            return false;
-        }
-        let column = self.cursor - start;
-        let next_start = end + 1;
-        let next_end = self.text[next_start..]
-            .find('\n')
-            .map(|i| next_start + i)
-            .unwrap_or(self.text.len());
-        self.cursor = boundary(&self.text, (next_start + column).min(next_end));
-        true
-    }
-
     pub fn word_left(&mut self) {
         if self.collapse(false) {
             return;
