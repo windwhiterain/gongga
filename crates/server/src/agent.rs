@@ -467,9 +467,6 @@ impl Agent {
         cwd: &std::path::Path,
         source: crate::meta::Source<'_>,
     ) -> anyhow::Result<crate::store::Prompt> {
-        if let Some(kept) = self.store.prompt(id)? {
-            return Ok(kept);
-        }
         // All three "where"s come from the session: its name, a stated placement, the
         // peer.
         let name = session.name();
@@ -477,14 +474,23 @@ impl Agent {
         let placed = placed.as_deref();
         let remote = session.remote_name();
         let remote = remote.as_deref();
-        let prompts = crate::prompts::shared();
-        // The prose carries no value at all: the card below states the name, the
-        // build, the first minute and the directory.
-        let instructions = prompts.system();
+        // Where it stands now, which is what the card and the index are about.
         let here = match placed {
             Some(path) => crate::session::stated(path),
             None => crate::session::stated(cwd),
         };
+        // Stamped once, and again only on a move: the row records the directory
+        // and the peer it was written for.
+        if let Some(kept) = self.store.prompt(id)?
+            && kept.cwd == here
+            && kept.remote.as_deref() == remote
+        {
+            return Ok(kept);
+        }
+        let prompts = crate::prompts::shared();
+        // The prose carries no value at all: the card below states the name, the
+        // build, the first minute and the directory.
+        let instructions = prompts.system();
         let home = std::path::PathBuf::from(&here);
         let tail = Some(prompts.render(
             // One shape per fact a card states: a template has no conditional.
