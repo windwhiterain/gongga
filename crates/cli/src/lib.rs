@@ -1348,13 +1348,10 @@ impl Client {
     fn apply_session(&mut self, row: SessionInfo, sink: &mut dyn Sink) {
         let added = !self.sessions.iter().any(|s| s.name == row.name);
         self.stamp_server(&row);
-        // A name never listed has no journal, so no history to be behind on.
+        // A name never listed here has no journal either: the whole transcript is owed.
         if added && let Some(sync) = self.sync.get_mut(&row.name) {
-            let (created, server) = (sync.created, sync.server);
-            sync.drawn = Drawn::At {
-                created,
-                seq: server,
-            };
+            let created = sync.created;
+            sync.drawn = Drawn::At { created, seq: 0 };
         }
         match self.sessions.iter_mut().find(|s| s.name == row.name) {
             Some(held) => *held = row,
@@ -1628,20 +1625,18 @@ impl Client {
         }
     }
 
-    /// Declares that this front-end has no record of the session at all.
+    /// Declares that this front-end holds nothing of the session: an empty journal,
+    /// so the whole transcript is owed.
     ///
     /// # Invariant
     ///
-    /// Not "in sync": it says there is no history to be behind on. A window whose
-    /// journal holds blocks has a stamp and is compared, which is where a gap shows.
-    pub fn declare_nothing(&mut self, name: &str) {
+    /// A window with no record is behind by everything, never "in sync": a session
+    /// that ran before this window existed is exactly what the operator came to
+    /// read. Declaring `0` says so without claiming to know where its record ends.
+    pub fn declare_empty(&mut self, name: &str) {
         if let Some(sync) = self.sync.get_mut(name) {
-            let server = sync.server;
             let created = sync.created;
-            sync.drawn = Drawn::At {
-                created,
-                seq: server,
-            };
+            sync.drawn = Drawn::At { created, seq: 0 };
         }
     }
 

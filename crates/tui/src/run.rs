@@ -160,8 +160,8 @@ fn declare(client: &mut cli::Client, ui: &Tui) {
     for name in names {
         match ui.stamp_of(&name) {
             Some((created, drawn)) => client.declare_drawn(&name, created, drawn),
-            // No journal, no history: nothing this window could be behind on.
-            None => client.declare_nothing(&name),
+            // No journal at all: nothing drawn, so the whole transcript is owed.
+            None => client.declare_empty(&name),
         }
     }
 }
