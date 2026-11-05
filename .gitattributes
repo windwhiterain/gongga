@@ -1,0 +1,28 @@
+# 仓库内统一存 LF；检出时也保持 LF
+* text=auto eol=lf
+
+# Windows 批处理必须 CRLF，cmd.exe 对 LF 版本会解析错行
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Shell 脚本永远 LF
+*.sh text eol=lf
+
+# 二进制不要碰
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.7z binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+*.exe binary
+*.dll binary
+*.so binary
+*.dylib binary
