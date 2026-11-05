@@ -210,6 +210,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             installed.pin,
         );
     }
+    // What a tool says it is: the code's own words, as this home rewrote them.
+    tools::text::install(&cfg.config_path);
     let overridden = prompts::shared().overridden();
     tracing::info!(
         file = %cfg.config_path.display(),

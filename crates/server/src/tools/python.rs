@@ -373,10 +373,8 @@ const DESCRIPTION: &str = "`bash` with Python instead of a shell, on this machin
 /// It names the machine a path belongs to, because the one thing a model gets wrong
 /// here is writing to this machine's file while meaning the peer's.
 const REMOTE_DESCRIPTION: &str = "`python` on the session's remote endpoint, exactly \
-    as `remote_bash` is `bash`: same arguments, same name space, same results. Paths are \
-    that machine's, so `open()` here reads and writes the peer's files -- and \
-    `read_file`, `write_file` and `replace` reach the same machine when their `remote` \
-    names it.";
+    as `remote_bash` is `bash`: same `code`, `name`, `description`, `timeout_ms`, \
+    `background` and `restart`; the paths are that machine's.";
 
 impl PythonTool {
     /// Starts one interpreter on this tool's machine.
@@ -1033,10 +1031,8 @@ async fn one_shot_remote(
 fn remote_arg() -> Value {
     json!({
         "type": "string",
-        "description": "Which machine the file is on. Omit it, or name `none`, for this \
-                         machine and its own Python. Name the session's remote -- the \
-                         machine `set_session --remote` named -- to work on that machine's \
-                         file instead. Any other name is refused."
+        "description": "Which machine the file is on. Omit it for this machine; \
+                         name the session's remote for that machine's file instead."
     })
 }
 

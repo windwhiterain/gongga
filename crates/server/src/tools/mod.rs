@@ -31,6 +31,7 @@ pub mod job;
 pub mod python;
 pub mod python_remote;
 pub mod skill;
+pub mod text;
 pub mod tunnel;
 pub mod words;
 
@@ -490,7 +491,7 @@ impl ToolRegistry {
                 }
                 crate::llm::ToolDefinition {
                     name: t.name().to_string(),
-                    description: t.description().to_string(),
+                    description: text::shared().description(t.name(), t.description()),
                     parameters,
                 }
             })
@@ -595,6 +596,8 @@ pub const GENERAL_ARGS: &[&str] = &["description", "max_output", "timeout_ms", "
 /// these are the defaults, not an override.
 pub(crate) fn general_parameters(tool: &dyn Tool) -> Value {
     let mut schema = tool.parameters();
+    // A config may reword an argument; the shape stays the tool's. See `text`.
+    text::shared().apply(tool.name(), &mut schema);
     // A tool the tunnel leaves alone takes none of the tunnel's words. See SPEC.
     if !tool.tunneled() {
         return schema;
@@ -998,14 +1001,16 @@ const LOCAL_BASH_DESCRIPTION: &str = "Run a shell command in a persistent Git Ba
      started and the call returns immediately; collect what it printed later with \
      `check_bash`.";
 
-/// What `remote_bash` says it is: the same thing, on the session's remote endpoint.
-const REMOTE_BASH_DESCRIPTION: &str = "`bash` on the session's remote endpoint -- \
-     the machine `set_session --remote` named. Same `command`, `name`, `description`, \
-     `timeout_ms` and `background`, and the same name space: a name the other machine \
-     already holds is refused rather than becoming a second shell. Paths are that \
-     machine's, and output a cut truncates is not spilled to a file. Two things are not \
-     offered here: `detached`, whose process belongs to this machine's registry, and a \
-     `target` that is not this session's peer.";
+/// What `remote_bash` says it is: `bash`, on the machine that holds the directory.
+///
+/// # Invariant
+///
+/// No word here about two machines, a shared name space or what is not offered: a
+/// tool's instruction says what the tool is, and how the two machines relate is the
+/// `remote` skill's to teach. See `docs/notes/server-tools-mod.md`.
+const REMOTE_BASH_DESCRIPTION: &str = "`bash` on the session's remote endpoint -- the \
+     peer that holds this session's directory. Same `command`, `name`, `description`, \
+     `timeout_ms` and `background` as `bash`; the paths are that machine's.";
 
 pub struct BashTool {
     /// Which machine this tool drives. One implementation, two names.
@@ -1123,10 +1128,8 @@ impl Tool for BashTool {
             Machine::Remote => {
                 properties["target"] = json!({
                     "type": "string",
-                    "description": "Which machine to run on. Omit it: this session's \
-                                     directory is on one peer, and that peer is where \
-                                     `remote_bash` already runs. The name is accepted so \
-                                     that writing it changes nothing."
+                    "description": "Which machine to run on. Omit it: this call runs on \
+                                     the session's remote whatever this names."
                 });
             }
         }

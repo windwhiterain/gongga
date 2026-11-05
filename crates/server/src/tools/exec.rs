@@ -29,12 +29,10 @@ const EXEC_DESCRIPTION: &str = "Run one program with its arguments, without a sh
      in the session's directory. This is not the persistent shell: `cd` and \
      exports do not survive the call.";
 
-/// What `remote_exec` says it is: the same thing, on the session's peer.
-const REMOTE_EXEC_DESCRIPTION: &str = "`exec` on the session's remote endpoint -- \
-     the program and its arguments, with no shell between them. Same command, \
-     same absence of a shell, and the program is looked up on the peer's PATH. \
-     The directory is the one the peer reports, and it is passed as it is: a \
-     path this machine holds is not evidence about one the peer has.";
+/// What `remote_exec` says it is: `exec`, on the machine that holds the directory.
+const REMOTE_EXEC_DESCRIPTION: &str = "`exec` on the session's remote endpoint -- one \
+     program with its arguments, with no shell between them, looked up on the peer's \
+     PATH. Same `command` as `exec`; the paths are that machine's.";
 
 pub struct ExecTool {
     pub machine: Machine,

@@ -21,12 +21,23 @@ so there is no `wait_bash`.
 ## Descriptions point at `bash` instead of repeating it
 
 Every tool's description rides every request, so a sentence said twice is paid on
-every turn. The non-local tools therefore state only their difference: `remote_bash`
-is `bash` on the peer with two things not offered, `python` is `bash` with `code` in
-place of `command`, `remote_python` is `python` as `remote_bash` is `bash`, and
-`check_python` / `del_python` / `list_python` name their shell counterparts in one
-clause. Measured: the four sentences that describe the two machines went from 3391 to
-2269 characters, with `check_python` added rather than dropped.
+every turn. The non-local tools therefore state only their difference, in the tool's
+own terms: `remote_bash` is `bash` on the peer, `remote_exec` is `exec` there,
+`remote_python` is `python` as `remote_bash` is `bash`, `python` is `bash` with `code`
+in place of `command`, and `check_python` / `del_python` / `list_python` name their
+shell counterparts in one clause. Measured: the sentences that describe the two
+machines went from 3391 to 2269 characters, with `check_python` added rather than
+dropped.
+
+A description is also what a config rewords (`[tool_text]`, see `server-tools-text.md`),
+so a sentence a model misreads is fixed without a build.
+
+A description says what the tool *is* and stops there. How the two machines relate --
+one name space, which of them holds `default`, what a remote tool does not offer, what
+to do instead of naming another machine -- is the `remote` skill's, because that is a
+question a model asks and not a call it makes. The instructions a session receives
+carry none of it, which is also what keeps a session without a remote from reading
+about one.
 
 The trade is a reference the model must resolve across the tool list. It can, because
 every tool is visible in the same request; what it cannot do is follow a pointer into
@@ -448,6 +459,10 @@ the peer (`Tool::is_remote`), and the `remote` argument a file tool takes. A ses
 without a peer is told nothing about one -- not a tool it cannot call, not an argument
 that can only be refused, and not a sentence in a description about "the other
 machine", which is a fact it can act on in no way at all.
+
+A session that does have a peer is told what each `remote_*` tool is and nothing
+about the relationship between the two machines: what is shared, what is refused and
+which machine holds `default` are in the `remote` skill.
 
 The tool answers for itself because the list of names drifted once: `remote_python` was
 added to the registry while `is_remote_tool` still named only `remote_bash` and

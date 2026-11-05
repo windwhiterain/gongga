@@ -62,7 +62,10 @@ tools, told what to call the work and where to read it. Measured: *"The backgrou
 
 The same driver on the session's peer. One `Repl` enum holds either side, so a name is
 one interpreter and the other tool's answer to it is refused rather than borrowed --
-`\`default` is already a Python on its remote`, measured.
+`\`default` is already a Python on its remote`, measured. The refusal asks for another
+`name` first and mentions `del_python` second, because a name is what the caller can
+change without ending somebody's work. Its description says only that it is `python` on
+the peer; the name space and the rest are the `remote` skill's.
 
 What is *not* shared is how the process is reached, and two measurements decided it:
 
